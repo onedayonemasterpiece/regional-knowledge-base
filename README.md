@@ -55,3 +55,4 @@ See:
 - [Rights model](docs/rights.md)
 - [MCP surface and Live profile](docs/mcp.md)
 - [Cross-project integrations](docs/integrations.md)
+- [Street Story POI evidence bridge](docs/poi-integration.md)
