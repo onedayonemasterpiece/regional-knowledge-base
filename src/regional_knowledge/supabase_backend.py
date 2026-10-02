@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from typing import Protocol
@@ -19,6 +20,7 @@ from .contracts import (
     SearchResult,
     Visibility,
 )
+from .object_store import ObjectStore, S3Config, S3ObjectStore, UnavailableObjectStore
 from .rights import assert_visibility_allowed
 
 
@@ -76,6 +78,7 @@ class SupabaseConfig:
     url: str
     anon_key: str
     public_base_url: str
+    service_role_key: str | None = None
 
 
 def _halfvec_literal(values: list[float] | None) -> str | None:
@@ -95,9 +98,11 @@ class SupabaseRestBackend(KnowledgeBackend):
         *,
         embedder: Embedder | None = None,
         client: httpx.AsyncClient | None = None,
+        object_store: ObjectStore | None = None,
     ) -> None:
         self.config = config
         self.embedder = embedder or LexicalOnlyEmbedder()
+        self.object_store = object_store or UnavailableObjectStore()
         self.client = client or httpx.AsyncClient(timeout=10.0)
         self._owns_client = client is None
 
@@ -105,6 +110,17 @@ class SupabaseRestBackend(KnowledgeBackend):
         return {
             "apikey": self.config.anon_key,
             "Authorization": f"Bearer {principal.access_token}",
+            "Content-Type": "application/json",
+        }
+
+    def _service_headers(self) -> dict[str, str]:
+        if not self.config.service_role_key:
+            raise RuntimeError(
+                "Supabase service role is required for server-only object locator lookup"
+            )
+        return {
+            "apikey": self.config.service_role_key,
+            "Authorization": f"Bearer {self.config.service_role_key}",
             "Content-Type": "application/json",
         }
 
@@ -148,14 +164,16 @@ class SupabaseRestBackend(KnowledgeBackend):
         )
 
     async def fetch(self, item_id: str, principal: Principal) -> FetchOutput:
+        # Resolve the chunk under the caller's JWT first. This RLS query is the
+        # authorization boundary; service credentials never select user-visible rows.
         response = await self.client.get(
             f"{self.config.url.rstrip('/')}/rest/v1/rkb_chunks",
             headers=self._headers(principal),
             params={
                 "id": f"eq.{item_id}",
                 "select": (
-                    "id,document_id,title,source_text,metadata,page_ids,"
-                    "illustration_ids,footnote_region_ids"
+                    "id,document_id,title,metadata,page_ids,illustration_ids,"
+                    "footnote_region_ids,text_object_id,text_start,text_end,text_sha256"
                 ),
                 "limit": "1",
             },
@@ -165,6 +183,34 @@ class SupabaseRestBackend(KnowledgeBackend):
         if not rows:
             raise LookupError("evidence_not_found")
         row = rows[0]
+
+        # Only after user-RLS authorization may the server resolve the exact
+        # private object locator. Bind object + document IDs to prevent an
+        # arbitrary service-role object lookup.
+        object_response = await self.client.get(
+            f"{self.config.url.rstrip('/')}/rest/v1/rkb_objects",
+            headers=self._service_headers(),
+            params={
+                "id": f"eq.{row['text_object_id']}",
+                "document_id": f"eq.{row['document_id']}",
+                "select": "id,object_key,sha256,mime_type",
+                "limit": "1",
+            },
+        )
+        object_response.raise_for_status()
+        objects = object_response.json()
+        if not objects:
+            raise RuntimeError("authorized text object locator is missing")
+
+        raw = await self.object_store.get_range(
+            str(objects[0]["object_key"]),
+            int(row["text_start"]),
+            int(row["text_end"]),
+        )
+        if hashlib.sha256(raw).hexdigest() != row["text_sha256"]:
+            raise RuntimeError("chunk text integrity check failed")
+        text = raw.decode("utf-8")
+
         metadata = dict(row.get("metadata") or {})
         metadata.update(
             {
@@ -183,7 +229,7 @@ class SupabaseRestBackend(KnowledgeBackend):
         return FetchOutput(
             id=str(row["id"]),
             title=str(row["title"]),
-            text=str(row["source_text"]),
+            text=text,
             url=self._evidence_url(str(row["id"])),
             metadata=metadata,
         )
@@ -266,6 +312,7 @@ def backend_from_env() -> KnowledgeBackend:
     url = os.getenv("SUPABASE_URL", "").strip()
     anon_key = os.getenv("SUPABASE_ANON_KEY", "").strip()
     public_base = os.getenv("RKB_PUBLIC_BASE_URL", "").strip()
+    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip() or None
     if not (url and anon_key and public_base):
         return UnavailableBackend()
 
@@ -282,7 +329,32 @@ def backend_from_env() -> KnowledgeBackend:
     else:
         embedder = LexicalOnlyEmbedder()
 
+    object_store: ObjectStore = UnavailableObjectStore()
+    s3 = S3Config(
+        endpoint_url=os.getenv("RKB_S3_ENDPOINT", "").strip(),
+        region_name=os.getenv("RKB_S3_REGION", "").strip(),
+        bucket=os.getenv("RKB_S3_BUCKET", "").strip(),
+        access_key_id=os.getenv("RKB_S3_ACCESS_KEY_ID", "").strip(),
+        secret_access_key=os.getenv("RKB_S3_SECRET_ACCESS_KEY", "").strip(),
+    )
+    if all(
+        (
+            s3.endpoint_url,
+            s3.region_name,
+            s3.bucket,
+            s3.access_key_id,
+            s3.secret_access_key,
+        )
+    ):
+        object_store = S3ObjectStore(s3)
+
     return SupabaseRestBackend(
-        SupabaseConfig(url=url, anon_key=anon_key, public_base_url=public_base),
+        SupabaseConfig(
+            url=url,
+            anon_key=anon_key,
+            public_base_url=public_base,
+            service_role_key=service_role_key,
+        ),
         embedder=embedder,
+        object_store=object_store,
     )
