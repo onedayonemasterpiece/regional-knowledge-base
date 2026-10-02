@@ -1,16 +1,13 @@
 import hashlib
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
 from regional_knowledge.contracts import ChatFile, Principal
-from regional_knowledge.ingestion import (
-    PdfInfo,
-    PdfRenderedPage,
-    PyMuPdfProcessor,
-    _validate_download_url,
-)
+from regional_knowledge.file_ingress import DownloadedFile, validated_public_https_host
+from regional_knowledge.ingestion import PdfInfo, PdfRenderedPage, PyMuPdfProcessor
 from regional_knowledge.supabase_backend import SupabaseConfig, SupabaseRestBackend
 
 
@@ -29,33 +26,46 @@ class FakeStore:
         self.puts = []
 
     async def put_bytes(self, key, data, content_type):
-        self.puts.append((key, data, content_type))
+        self.puts.append((key, bytes(data), content_type))
 
     async def get_bytes(self, key):
-        assert key == "private/source.pdf"
         return self.source
 
     async def get_range(self, key, start, end):
-        raise AssertionError("ingestion pages read the source PDF, not a text range")
+        raise AssertionError("ingestion pages do not use a text range")
+
+    async def put_file(self, key, path, content_type):
+        data = Path(path).read_bytes()
+        self.puts.append((key, data, content_type))
+
+    async def download_file(self, key, path):
+        assert key == "private/source.pdf"
+        Path(path).write_bytes(self.source)
 
 
 class FakeDownloader:
     def __init__(self, data=b"%PDF-fake"):
         self.data = data
-        self.files = []
+        self.urls = []
 
-    async def download(self, file):
-        self.files.append(file.file_id)
-        return self.data
+    async def download(self, url, directory):
+        self.urls.append(url)
+        path = Path(directory) / "downloaded.pdf"
+        path.write_bytes(self.data)
+        return DownloadedFile(
+            path=path,
+            sha256=hashlib.sha256(self.data).hexdigest(),
+            size_bytes=len(self.data),
+        )
 
 
 class FakePdfProcessor:
-    async def inspect(self, data):
-        assert data.startswith(b"%PDF-")
+    async def inspect_file(self, path):
+        assert Path(path).read_bytes().startswith(b"%PDF-")
         return PdfInfo(page_count=2, title="PDF metadata title")
 
-    async def render(self, data, *, start, count):
-        assert data.startswith(b"%PDF-")
+    async def render_file(self, path, *, start, count):
+        assert Path(path).read_bytes().startswith(b"%PDF-")
         assert start == 0
         assert count == 2
         return 2, (
@@ -99,8 +109,8 @@ def attached_file():
     )
 
 
-def test_download_url_requires_plain_public_https():
-    assert _validate_download_url("https://files.example/book.pdf").startswith("https://")
+def test_download_url_requires_plain_public_https_hostname():
+    assert validated_public_https_host("https://files.example/book.pdf") == "files.example"
     for bad in (
         "http://files.example/book.pdf",
         "https://localhost/book.pdf",
@@ -109,11 +119,11 @@ def test_download_url_requires_plain_public_https():
         "https://files.example/book.pdf#fragment",
     ):
         with pytest.raises(ValueError):
-            _validate_download_url(bad)
+            validated_public_https_host(bad)
 
 
 @pytest.mark.asyncio
-async def test_start_ingestion_stores_private_source_and_activates_staged_job():
+async def test_start_ingestion_streams_private_source_file_and_activates_staged_job():
     calls = []
     source = b"%PDF-fake"
     store = FakeStore(source)
@@ -159,7 +169,6 @@ async def test_start_ingestion_stores_private_source_and_activates_staged_job():
         file_downloader=FakeDownloader(source),
         pdf_processor=FakePdfProcessor(),
     )
-
     result = await backend.book_ingest(
         command="start",
         principal=principal(),
@@ -259,7 +268,7 @@ async def test_failed_start_reuses_same_ingestion_and_existing_source_object():
 
 
 @pytest.mark.asyncio
-async def test_book_pages_requires_user_job_then_server_only_source_lookup():
+async def test_book_pages_downloads_to_file_after_user_job_authorization():
     source = b"%PDF-fake"
     source_hash = hashlib.sha256(source).hexdigest()
     document_id = "22222222-2222-2222-2222-222222222222"
@@ -316,17 +325,19 @@ async def test_book_pages_requires_user_job_then_server_only_source_lookup():
 
 
 @pytest.mark.asyncio
-async def test_real_pymupdf_processor_returns_text_blocks_and_jpeg():
+async def test_real_pymupdf_processor_returns_text_blocks_and_jpeg(tmp_path):
     fitz = pytest.importorskip("fitz")
     document = fitz.open()
     page = document.new_page(width=595, height=842)
     page.insert_text((72, 100), "Koenigsberg 1930")
     data = document.tobytes()
     document.close()
+    path = tmp_path / "book.pdf"
+    path.write_bytes(data)
 
     processor = PyMuPdfProcessor()
-    info = await processor.inspect(data)
-    total, pages = await processor.render(data, start=0, count=1)
+    info = await processor.inspect_file(path)
+    total, pages = await processor.render_file(path, start=0, count=1)
 
     assert info.page_count == 1
     assert total == 1

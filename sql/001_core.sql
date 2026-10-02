@@ -193,6 +193,10 @@ create table if not exists public.rkb_ingestion_jobs (
   updated_at timestamptz not null default now()
 );
 
+create unique index if not exists rkb_ingestion_source_file_once
+  on public.rkb_ingestion_jobs(owner_user_id,source_file_id)
+  where source_file_id is not null;
+
 alter table public.rkb_workspaces enable row level security;
 alter table public.rkb_workspace_members enable row level security;
 alter table public.rkb_documents enable row level security;
@@ -524,6 +528,7 @@ begin
   if p_page_count < 1 then
     raise exception 'page_count must be positive';
   end if;
+
   insert into public.rkb_documents(
     id, owner_user_id, title, authors, publication_year, language,
     source_sha256, source_visibility, content_visibility, rights_status, page_count

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -24,12 +25,8 @@ from .contracts import (
     SearchResult,
     Visibility,
 )
-from .ingestion import (
-    ChatFileDownloader,
-    HttpChatFileDownloader,
-    PdfProcessor,
-    PyMuPdfProcessor,
-)
+from .file_ingress import ChatFileDownloader, sha256_file
+from .ingestion import PdfProcessor, PyMuPdfProcessor
 from .object_store import ObjectStore, S3Config, S3ObjectStore, UnavailableObjectStore
 from .rights import assert_visibility_allowed
 
@@ -115,7 +112,7 @@ class SupabaseRestBackend(KnowledgeBackend):
         self.config = config
         self.embedder = embedder or LexicalOnlyEmbedder()
         self.object_store = object_store or UnavailableObjectStore()
-        self.file_downloader = file_downloader or HttpChatFileDownloader()
+        self.file_downloader = file_downloader or ChatFileDownloader()
         self.pdf_processor = pdf_processor or PyMuPdfProcessor()
         self.client = client or httpx.AsyncClient(timeout=10.0)
         self._owns_client = client is None
@@ -489,6 +486,12 @@ class SupabaseRestBackend(KnowledgeBackend):
             )
         if file is None:
             raise ValueError("attached PDF file is required for start")
+        if file.mime_type and file.mime_type.lower() not in {
+            "application/pdf",
+            "application/x-pdf",
+            "application/octet-stream",
+        }:
+            raise ValueError("attached file must be a PDF")
 
         previous = await self._ingestion_row(
             principal=principal,
@@ -500,110 +503,117 @@ class SupabaseRestBackend(KnowledgeBackend):
                 "Existing ingestion for this attached file",
             )
 
-        source = await self.file_downloader.download(file)
-        source_sha256 = hashlib.sha256(source).hexdigest()
-        pdf_info = await self.pdf_processor.inspect(source)
-        title, authors, publication_year, language = self._start_metadata(
-            file, payload, pdf_info.title
-        )
+        work_root = os.getenv("RKB_WORK_DIR") or None
+        with tempfile.TemporaryDirectory(prefix="rkb-ingest-", dir=work_root) as temp_dir:
+            downloaded = await self.file_downloader.download(
+                str(file.download_url),
+                Path(temp_dir),
+            )
+            source_sha256 = downloaded.sha256
+            pdf_info = await self.pdf_processor.inspect_file(downloaded.path)
+            title, authors, publication_year, language = self._start_metadata(
+                file, payload, pdf_info.title
+            )
 
-        if (
-            previous
-            and previous.get("state") == "failed"
-            and previous.get("document_id")
-            and previous.get("source_sha256") == source_sha256
-        ):
-            document_id = str(previous["document_id"])
-            new_ingestion_id = str(previous["id"])
-            await self._patch_ingestion(
-                new_ingestion_id,
-                principal,
-                {"state": "processing", "error_code": None},
-            )
-        else:
-            document_id = str(uuid4())
-            new_ingestion_id = str(uuid4())
-            start = await self.client.post(
-                f"{self.config.url.rstrip('/')}/rest/v1/rpc/rkb_start_ingestion",
-                headers=self._headers(principal),
-                json={
-                    "p_ingestion_id": new_ingestion_id,
-                    "p_document_id": document_id,
-                    "p_title": title,
-                    "p_authors": authors,
-                    "p_publication_year": publication_year,
-                    "p_language": language,
-                    "p_source_sha256": source_sha256,
-                    "p_source_file_id": file.file_id,
-                    "p_page_count": pdf_info.page_count,
-                },
-            )
-            start.raise_for_status()
-
-        object_key = (
-            f"users/{principal.subject}/documents/{document_id}/"
-            f"source/{source_sha256}.pdf"
-        )
-        try:
-            # PUT is deliberately deterministic and repeatable for the exact
-            # document/hash key, so a lost response can be reconciled safely.
-            await self.object_store.put_bytes(object_key, source, "application/pdf")
-            existing_object = await self._server_object(
-                document_id=document_id,
-                object_key=object_key,
-                kind="source_pdf",
-            )
-            if existing_object:
-                if existing_object.get("sha256") != source_sha256:
-                    raise RuntimeError("existing source object hash mismatch")
-                object_id = str(existing_object["id"])
+            if (
+                previous
+                and previous.get("state") == "failed"
+                and previous.get("document_id")
+                and previous.get("source_sha256") == source_sha256
+            ):
+                document_id = str(previous["document_id"])
+                new_ingestion_id = str(previous["id"])
+                await self._patch_ingestion(
+                    new_ingestion_id,
+                    principal,
+                    {"state": "processing", "error_code": None},
+                )
             else:
-                object_id = str(uuid4())
-                object_write = await self.client.post(
-                    f"{self.config.url.rstrip('/')}/rest/v1/rkb_objects",
-                    headers={**self._service_headers(), "Prefer": "return=minimal"},
+                document_id = str(uuid4())
+                new_ingestion_id = str(uuid4())
+                start = await self.client.post(
+                    f"{self.config.url.rstrip('/')}/rest/v1/rpc/rkb_start_ingestion",
+                    headers=self._headers(principal),
                     json={
-                        "id": object_id,
-                        "document_id": document_id,
-                        "kind": "source_pdf",
-                        "object_key": object_key,
-                        "sha256": source_sha256,
-                        "mime_type": "application/pdf",
-                        "size_bytes": len(source),
-                        "access_class": "private",
+                        "p_ingestion_id": new_ingestion_id,
+                        "p_document_id": document_id,
+                        "p_title": title,
+                        "p_authors": authors,
+                        "p_publication_year": publication_year,
+                        "p_language": language,
+                        "p_source_sha256": source_sha256,
+                        "p_source_file_id": file.file_id,
+                        "p_page_count": pdf_info.page_count,
                     },
                 )
-                object_write.raise_for_status()
+                start.raise_for_status()
 
-            rows = await self._patch_ingestion(
-                new_ingestion_id,
-                principal,
-                {
-                    "source_object_id": object_id,
+            object_key = (
+                f"users/{principal.subject}/documents/{document_id}/"
+                f"source/{source_sha256}.pdf"
+            )
+            try:
+                await self.object_store.put_file(
+                    object_key,
+                    str(downloaded.path),
+                    "application/pdf",
+                )
+                existing_object = await self._server_object(
+                    document_id=document_id,
+                    object_key=object_key,
+                    kind="source_pdf",
+                )
+                if existing_object:
+                    if existing_object.get("sha256") != source_sha256:
+                        raise RuntimeError("existing source object hash mismatch")
+                    object_id = str(existing_object["id"])
+                else:
+                    object_id = str(uuid4())
+                    object_write = await self.client.post(
+                        f"{self.config.url.rstrip('/')}/rest/v1/rkb_objects",
+                        headers={**self._service_headers(), "Prefer": "return=minimal"},
+                        json={
+                            "id": object_id,
+                            "document_id": document_id,
+                            "kind": "source_pdf",
+                            "object_key": object_key,
+                            "sha256": source_sha256,
+                            "mime_type": "application/pdf",
+                            "size_bytes": downloaded.size_bytes,
+                            "access_class": "private",
+                        },
+                    )
+                    object_write.raise_for_status()
+
+                rows = await self._patch_ingestion(
+                    new_ingestion_id,
+                    principal,
+                    {
+                        "source_object_id": object_id,
+                        "state": "staged",
+                        "cursor": "0",
+                        "error_code": None,
+                    },
+                    representation=True,
+                )
+                row = rows[0] if rows else {
+                    "id": new_ingestion_id,
+                    "document_id": document_id,
                     "state": "staged",
                     "cursor": "0",
-                    "error_code": None,
-                },
-                representation=True,
-            )
-            row = rows[0] if rows else {
-                "id": new_ingestion_id,
-                "document_id": document_id,
-                "state": "staged",
-                "cursor": "0",
-                "warnings": [],
-            }
-            return self._ingestion_output(
-                row,
-                "Source PDF stored; use book_pages to parse small page batches",
-            )
-        except Exception as exc:
-            await self._mark_ingestion_failed(
-                new_ingestion_id,
-                principal,
-                type(exc).__name__,
-            )
-            raise
+                    "warnings": [],
+                }
+                return self._ingestion_output(
+                    row,
+                    "Source PDF stored; use book_pages to parse small page batches",
+                )
+            except Exception as exc:
+                await self._mark_ingestion_failed(
+                    new_ingestion_id,
+                    principal,
+                    type(exc).__name__,
+                )
+                raise
 
     async def book_pages(
         self,
@@ -632,10 +642,6 @@ class SupabaseRestBackend(KnowledgeBackend):
         if not source_object:
             raise RuntimeError("ingestion source object is missing")
 
-        source = await self.object_store.get_bytes(str(source_object["object_key"]))
-        if hashlib.sha256(source).hexdigest() != row["source_sha256"]:
-            raise RuntimeError("source PDF integrity check failed")
-
         try:
             start = int(cursor if cursor is not None else "0")
         except (TypeError, ValueError) as exc:
@@ -643,11 +649,23 @@ class SupabaseRestBackend(KnowledgeBackend):
         if start < 0:
             raise ValueError("cursor must be a zero-based page index")
 
-        total, rendered = await self.pdf_processor.render(
-            source,
-            start=start,
-            count=max(1, min(int(batch_size), 8)),
-        )
+        work_root = os.getenv("RKB_WORK_DIR") or None
+        with tempfile.TemporaryDirectory(prefix="rkb-pages-", dir=work_root) as temp_dir:
+            source_path = Path(temp_dir) / "source.pdf"
+            await self.object_store.download_file(
+                str(source_object["object_key"]),
+                str(source_path),
+            )
+            actual_sha256, _ = await asyncio.to_thread(sha256_file, source_path)
+            if actual_sha256 != row["source_sha256"]:
+                raise RuntimeError("source PDF integrity check failed")
+
+            total, rendered = await self.pdf_processor.render_file(
+                source_path,
+                start=start,
+                count=max(1, min(int(batch_size), 8)),
+            )
+
         revision = int(row.get("staged_revision") or 1)
         namespace = UUID(str(row["document_id"]))
         pages = tuple(

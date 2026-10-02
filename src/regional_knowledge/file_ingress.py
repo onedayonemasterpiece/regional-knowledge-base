@@ -44,6 +44,8 @@ def validated_public_https_host(url: str) -> str:
         host = parts.hostname or ""
         if (
             parts.scheme != "https"
+            or host.lower() == "localhost"
+            or host.lower().endswith(".localhost")
             or parts.username is not None
             or parts.password is not None
             or parts.fragment
@@ -66,8 +68,6 @@ def validated_public_https_host(url: str) -> str:
         except ValueError:
             pass
         else:
-            # Signed file URLs should use a hostname. Reject all IP literals so
-            # private/link-local/metadata destinations cannot be smuggled in.
             raise ValueError
         return host.lower()
     except ValueError:
