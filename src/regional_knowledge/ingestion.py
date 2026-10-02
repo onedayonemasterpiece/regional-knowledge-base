@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -23,6 +26,8 @@ class PdfRenderedPage:
     physical_page_index: int
     mime_type: str
     data: bytes
+    width: int
+    height: int
     native_text: str | None
     native_blocks: tuple[dict[str, Any], ...]
 
@@ -141,9 +146,108 @@ class PyMuPdfProcessor:
                         physical_page_index=index,
                         mime_type="image/jpeg",
                         data=image,
+                        width=pixmap.width,
+                        height=pixmap.height,
                         native_text=native_text,
                         native_blocks=tuple(blocks),
                     )
                 )
 
         return total, tuple(output)
+
+
+
+class SourcePdfCache:
+    """Bounded disposable disk cache. Object storage remains authoritative."""
+
+    def __init__(
+        self,
+        directory: Path | None = None,
+        max_bytes: int | None = None,
+    ) -> None:
+        self.directory = directory or Path(
+            os.getenv(
+                "RKB_CACHE_DIR",
+                str(Path.home() / ".cache" / "regional-knowledge-base"),
+            )
+        )
+        self.max_bytes = max_bytes or int(
+            os.getenv("RKB_SOURCE_CACHE_BYTES", str(1024 * 1024 * 1024))
+        )
+        self._lock = asyncio.Lock()
+
+    @property
+    def incoming_dir(self) -> Path:
+        return self.directory / "incoming"
+
+    def path_for(self, sha256: str) -> Path:
+        if len(sha256) != 64 or any(c not in "0123456789abcdef" for c in sha256):
+            raise ValueError("invalid source digest")
+        return self.directory / "pdf" / f"{sha256}.pdf"
+
+    async def adopt(self, source: Path, sha256: str) -> Path:
+        async with self._lock:
+            target = self.path_for(sha256)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                source.unlink(missing_ok=True)
+                if await asyncio.to_thread(self._sha256, target) != sha256:
+                    target.unlink(missing_ok=True)
+                else:
+                    os.utime(target, None)
+                    return target
+            os.replace(source, target)
+            await asyncio.to_thread(self._prune, target)
+            return target
+
+    async def materialize(self, store, key: str, sha256: str) -> Path:
+        async with self._lock:
+            target = self.path_for(sha256)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                if await asyncio.to_thread(self._sha256, target) == sha256:
+                    os.utime(target, None)
+                    return target
+                target.unlink(missing_ok=True)
+
+            fd, name = tempfile.mkstemp(
+                prefix="source-",
+                suffix=".pdf",
+                dir=target.parent,
+            )
+            os.close(fd)
+            temp = Path(name)
+            try:
+                await store.download_file(key, str(temp))
+                if await asyncio.to_thread(self._sha256, temp) != sha256:
+                    raise RuntimeError("source PDF integrity check failed")
+                os.replace(temp, target)
+                await asyncio.to_thread(self._prune, target)
+                return target
+            finally:
+                temp.unlink(missing_ok=True)
+
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _prune(self, keep: Path) -> None:
+        root = self.directory / "pdf"
+        if not root.exists():
+            return
+        files = [path for path in root.glob("*.pdf") if path.is_file()]
+        total = sum(path.stat().st_size for path in files)
+        if total <= self.max_bytes:
+            return
+        for path in sorted(files, key=lambda item: item.stat().st_mtime):
+            if path == keep:
+                continue
+            size = path.stat().st_size
+            path.unlink(missing_ok=True)
+            total -= size
+            if total <= self.max_bytes:
+                break
