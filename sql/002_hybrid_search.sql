@@ -9,7 +9,6 @@ returns table (
   chunk_id uuid,
   document_id uuid,
   title text,
-  snippet text,
   page_ids uuid[],
   illustration_ids uuid[],
   score double precision
@@ -67,7 +66,6 @@ as $$
     c.id as chunk_id,
     c.document_id,
     c.title,
-    left(c.source_text, 1200) as snippet,
     c.page_ids,
     c.illustration_ids,
     (
