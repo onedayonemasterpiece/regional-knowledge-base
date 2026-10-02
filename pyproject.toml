@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "regional-knowledge-base"
+version = "0.1.0"
+description = "Multimodal regional knowledge RAG and MCP service"
+requires-python = ">=3.12"
+dependencies = [
+  "mcp>=2.2,<3",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.10,<3",
+  "httpx>=0.28,<1",
+  "PyJWT[crypto]>=2.10,<3",
+]
+
+[project.optional-dependencies]
+ingest = ["PyMuPDF>=1.26,<2", "boto3>=1.40,<2"]
+dev = ["pytest>=8.4,<9", "pytest-asyncio>=1.2,<2"]
+
+[project.scripts]
+regional-knowledge-mcp = "regional_knowledge.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/regional_knowledge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
