@@ -46,7 +46,7 @@ URLs must be stable, user-openable evidence pages, not expiring object-store URL
 ```text
 start(file) -> ingestion_id
 book_pages(ingestion_id) -> mixed text metadata + MCP ImageContent blocks
-stage(ingestion_id, parsed pages/regions/relations)
+stage(ingestion_id, pages, semantic chunks)
 validate(ingestion_id)
 finalize(ingestion_id)
 status(ingestion_id)
@@ -59,16 +59,25 @@ the model would need to fetch separately. Each batch is deliberately small (defa
 4, maximum 8 pages) so vision context is bounded.
 
 Current implementation checkpoint:
-- `start(file)` is implemented: bounded HTTPS file-parameter download, exact
-  SHA-256, PDF inspection, private Object Storage persistence and private
-  ingestion/document creation;
-- `book_pages` is implemented: small deterministic JPEG page renders plus
-  bounded native PDF text blocks/bboxes;
-- failed start can reconcile and reuse the same document/ingestion/source object
-  without duplicating rows;
-- `stage/validate/finalize` remain the next implementation slice.
+- `start(file)`: bounded HTTPS file-parameter download, exact SHA-256, PDF
+  inspection, private Object Storage persistence and private document/job creation;
+- `book_pages`: small deterministic JPEG page renders plus bounded native PDF
+  text blocks/bboxes, maximum 8 pages per call;
+- `stage`: the model submits page-local short keys (`region_key`,
+  `illustration_key`) and semantic chunk references; the server creates stable
+  UUIDv5 identities and derives chunk text from referenced regions;
+- the full staged graph is an immutable hashed JSON object in Object Storage,
+  not a partially materialized Postgres graph;
+- `validate`: requires complete page coverage, valid relations/illustrations,
+  retrieval coverage and no unresolved `needs_review` regions;
+- `finalize`: builds the UTF-8 text projection, embeddings/FTS, exact source
+  crops, pages/regions/relations/illustrations/chunks and then asks the database
+  to revalidate the materialized revision before atomically switching
+  `active_revision`;
+- retries of the same ChatGPT `file_id` are idempotent at the SQL boundary,
+  including concurrent starts.
 
-Staged books are invisible to retrieval until atomic finalize.
+Staged books remain invisible to retrieval until the final activation RPC.
 
 ## Live profile
 

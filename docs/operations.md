@@ -9,12 +9,17 @@ The service is not production-ready merely because unit tests pass. Required gat
 3. apply SQL migrations and run RLS acceptance with at least two users, one workspace and anonymous public reads;
 4. create a private S3-compatible bucket with public ACL disabled;
 5. configure a 768-dimension external embedding endpoint; verify lexical-only degradation when it is unavailable;
-6. start/pages deterministic ingestion is implemented; complete stage/validate/finalize and exercise the whole workflow against a representative born-digital PDF and a scan-only/multicolumn source;
+6. deterministic start/pages/stage/validate/finalize is implemented locally; exercise the whole workflow against real configured Supabase/Object Storage with a representative born-digital PDF and a scan-only/multicolumn source;
 7. prove raw private source PDFs remain inaccessible when normalized content is public;
 8. connect the MCP from ChatGPT and test `search`, `fetch`, file-parameter ingestion and model-visible page images;
 9. connect the read-only Live profile through `live-interaction` and measure p50/p95 tool latency;
 10. verify a second MCP uses the same Supabase `sub` with a different audience/resource;
-11. verify one first-party delegated integration (prefer Projects Hub -> Knowledge) can refresh its own Knowledge grant and that revoking it does not affect the user's other MCP grants.
+11. verify one first-party delegated integration (prefer Projects Hub -> Knowledge) can refresh its own Knowledge grant and that revoking it does not affect the user's other MCP grants;
+12. verify Knowledge -> Street Story POI delivery with idempotent outbox semantics;
+13. verify private-book POI evidence remains private in Street Story and expert review;
+14. verify ambiguous book POI identity creates an unresolved link instead of a silent merge;
+15. verify unknown author authority remains null and author scoring is domain-specific;
+16. verify unresolved contradiction blocks automatic canonicalization regardless of verification score.
 
 ## Performance targets
 
@@ -37,13 +42,24 @@ Log operation IDs, user subject hash/pseudonymous ID, ingestion/document IDs, st
 
 ## Implemented ingestion checkpoint — 2026-10-02
 
-The source path now has deterministic local coverage for:
-- ChatGPT file-param shape and HTTPS URL constraints;
-- private source persistence;
-- Supabase user-RLS ingestion creation;
-- server-only source-object identity;
-- lost/failed start reconciliation without duplicate document/object rows;
-- real PyMuPDF inspection, native text blocks and JPEG page rendering.
+The ingestion path now has deterministic local coverage for:
+- ChatGPT file-param shape, bounded DNS-pinned HTTPS source download and exact
+  source hashing;
+- private source persistence and opaque source-object identity;
+- lost/failed/concurrent start reconciliation without duplicate jobs;
+- real PyMuPDF inspection, native text blocks and JPEG page rendering;
+- model-friendly page/region/relation/illustration staging with deterministic
+  server IDs and derived semantic chunk text;
+- immutable staged graph snapshots in Object Storage;
+- graph coverage/review validation;
+- exact illustration crop generation from the source PDF;
+- text projection + embeddings/FTS materialization;
+- DB-side revalidation before `active_revision` changes;
+- active materialized revisions protected from ordinary user-token mutation.
 
-CI installs the `ingest` extra so the real PDF renderer is exercised rather
+The local fake-E2E runs `stage -> validate -> finalize` with a real PyMuPDF
+source/crop while mocking only managed external services. Real provider
+acceptance remains a production gate.
+
+CI installs the `ingest` extra so PDF rendering/cropping is exercised rather
 than skipped.

@@ -104,6 +104,116 @@ class Illustration(BaseModel):
     visibility: Visibility = Visibility.PRIVATE
 
 
+class StartMetadataInput(BaseModel):
+    title: str | None = Field(default=None, max_length=500)
+    authors: list[str] = Field(default_factory=list, max_length=50)
+    publication_year: int | None = Field(default=None, ge=1, le=3000)
+    language: str | None = Field(default=None, max_length=80)
+
+
+class StageRegionInput(BaseModel):
+    region_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    kind: RegionKind
+    bbox: BBox
+    reading_order: int = Field(ge=0, le=10_000)
+    column_id: str | None = Field(default=None, max_length=80)
+    source_text: str = Field(default="", max_length=8_000)
+    normalized_text: str = Field(default="", max_length=8_000)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    needs_review: bool = False
+
+    @model_validator(mode="after")
+    def fill_normalized_text(self) -> "StageRegionInput":
+        if not self.normalized_text and self.source_text:
+            self.normalized_text = self.source_text
+        return self
+
+
+class StageRelationInput(BaseModel):
+    kind: RelationKind
+    source_region_key: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$"
+    )
+    target_region_key: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$"
+    )
+
+
+class StageIllustrationInput(BaseModel):
+    illustration_key: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$"
+    )
+    source_region_key: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$"
+    )
+    kind: Literal["photo", "map", "drawing", "diagram", "facsimile", "other"]
+    caption_region_keys: list[str] = Field(default_factory=list, max_length=20)
+    nearby_region_keys: list[str] = Field(default_factory=list, max_length=40)
+
+
+class StagePageInput(BaseModel):
+    page_id: str = Field(min_length=36, max_length=36)
+    physical_page_index: int = Field(ge=0)
+    printed_page_number: str | None = Field(default=None, max_length=40)
+    layout_kind: str | None = Field(default=None, max_length=80)
+    regions: list[StageRegionInput] = Field(default_factory=list, max_length=500)
+    relations: list[StageRelationInput] = Field(default_factory=list, max_length=1_000)
+    illustrations: list[StageIllustrationInput] = Field(
+        default_factory=list, max_length=100
+    )
+
+    @model_validator(mode="after")
+    def validate_local_graph(self) -> "StagePageInput":
+        keys = [region.region_key for region in self.regions]
+        if len(keys) != len(set(keys)):
+            raise ValueError("region_key must be unique within a page")
+        orders = [region.reading_order for region in self.regions]
+        if len(orders) != len(set(orders)):
+            raise ValueError("reading_order must be unique within a page")
+        known = set(keys)
+        for relation in self.relations:
+            if (
+                relation.source_region_key not in known
+                or relation.target_region_key not in known
+            ):
+                raise ValueError("relation references an unknown region_key")
+        illustration_keys = [item.illustration_key for item in self.illustrations]
+        if len(illustration_keys) != len(set(illustration_keys)):
+            raise ValueError("illustration_key must be unique within a page")
+        by_key = {region.region_key: region for region in self.regions}
+        for illustration in self.illustrations:
+            source = by_key.get(illustration.source_region_key)
+            if source is None or source.kind is not RegionKind.FIGURE:
+                raise ValueError("illustration source_region_key must be a figure region")
+            if any(key not in known for key in illustration.caption_region_keys):
+                raise ValueError("caption_region_keys contains an unknown region")
+            if any(key not in known for key in illustration.nearby_region_keys):
+                raise ValueError("nearby_region_keys contains an unknown region")
+        return self
+
+
+class StageRegionRef(BaseModel):
+    page_id: str = Field(min_length=36, max_length=36)
+    region_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+
+
+class StageIllustrationRef(BaseModel):
+    page_id: str = Field(min_length=36, max_length=36)
+    illustration_key: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$"
+    )
+
+
+class StageChunkInput(BaseModel):
+    chunk_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    title: str = Field(min_length=1, max_length=500)
+    region_refs: list[StageRegionRef] = Field(min_length=1, max_length=100)
+    footnote_refs: list[StageRegionRef] = Field(default_factory=list, max_length=50)
+    illustration_refs: list[StageIllustrationRef] = Field(
+        default_factory=list, max_length=30
+    )
+
+
 class SearchResult(BaseModel):
     id: str
     title: str
