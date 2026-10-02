@@ -47,3 +47,21 @@ def test_rls_uses_non_recursive_boolean_helpers():
     ):
         assert f"function public.{helper}" in CORE
     assert CORE.count("security definer") >= 6
+
+
+def test_postgres_does_not_store_corpus_body_text():
+    region = CORE[
+        CORE.index("create table if not exists public.rkb_regions"):
+        CORE.index("create table if not exists public.rkb_region_relations")
+    ]
+    chunk = CORE[
+        CORE.index("create table if not exists public.rkb_chunks"):
+        CORE.index("create index if not exists rkb_chunks_fts_idx")
+    ]
+    assert "source_text" not in region
+    assert "normalized_text" not in region
+    assert "source_text" not in chunk
+    assert "normalized_text" not in chunk
+    assert "text_object_id" in chunk
+    assert "text_start" in chunk and "text_end" in chunk
+    assert "fts tsvector not null" in chunk
