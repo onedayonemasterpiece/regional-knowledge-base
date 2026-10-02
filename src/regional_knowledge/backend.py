@@ -23,6 +23,7 @@ class RenderedPage:
     mime_type: str
     data: bytes
     native_text: str | None = None
+    native_blocks: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

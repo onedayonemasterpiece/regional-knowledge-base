@@ -4,12 +4,14 @@ import asyncio
 import hashlib
 import os
 from dataclasses import dataclass
-from typing import Protocol
+from pathlib import Path
+from typing import Any, Protocol
 from urllib.parse import quote
+from uuid import UUID, uuid4, uuid5
 
 import httpx
 
-from .backend import KnowledgeBackend, RenderedPageBatch, UnavailableBackend
+from .backend import KnowledgeBackend, RenderedPage, RenderedPageBatch, UnavailableBackend
 from .contracts import (
     BookIngestOutput,
     ChatFile,
@@ -21,6 +23,12 @@ from .contracts import (
     SearchOutput,
     SearchResult,
     Visibility,
+)
+from .ingestion import (
+    ChatFileDownloader,
+    HttpChatFileDownloader,
+    PdfProcessor,
+    PyMuPdfProcessor,
 )
 from .object_store import ObjectStore, S3Config, S3ObjectStore, UnavailableObjectStore
 from .rights import assert_visibility_allowed
@@ -101,10 +109,14 @@ class SupabaseRestBackend(KnowledgeBackend):
         embedder: Embedder | None = None,
         client: httpx.AsyncClient | None = None,
         object_store: ObjectStore | None = None,
+        file_downloader: ChatFileDownloader | None = None,
+        pdf_processor: PdfProcessor | None = None,
     ) -> None:
         self.config = config
         self.embedder = embedder or LexicalOnlyEmbedder()
         self.object_store = object_store or UnavailableObjectStore()
+        self.file_downloader = file_downloader or HttpChatFileDownloader()
+        self.pdf_processor = pdf_processor or PyMuPdfProcessor()
         self.client = client or httpx.AsyncClient(timeout=10.0)
         self._owns_client = client is None
 
@@ -324,11 +336,339 @@ class SupabaseRestBackend(KnowledgeBackend):
             message="Access state updated" if changed else "Access state unchanged",
         )
 
-    async def book_ingest(self, **_: object) -> BookIngestOutput:
-        raise RuntimeError("ingestion adapter is not configured yet")
+    async def _ingestion_row(
+        self,
+        *,
+        principal: Principal,
+        ingestion_id: str | None = None,
+        source_file_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        params: dict[str, str] = {
+            "select": (
+                "id,document_id,source_file_id,source_object_id,source_sha256,"
+                "state,cursor,staged_revision,warnings,error_code,created_at"
+            ),
+            "order": "created_at.desc",
+            "limit": "1",
+        }
+        if ingestion_id is not None:
+            params["id"] = f"eq.{ingestion_id}"
+        elif source_file_id is not None:
+            params["source_file_id"] = f"eq.{source_file_id}"
+        else:
+            raise ValueError("ingestion lookup needs an id or file id")
+        response = await self.client.get(
+            f"{self.config.url.rstrip('/')}/rest/v1/rkb_ingestion_jobs",
+            headers=self._headers(principal),
+            params=params,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        return dict(rows[0]) if rows else None
 
-    async def book_pages(self, **_: object) -> RenderedPageBatch:
-        raise RuntimeError("ingestion adapter is not configured yet")
+    @staticmethod
+    def _ingestion_output(row: dict[str, Any], message: str) -> BookIngestOutput:
+        return BookIngestOutput(
+            ingestion_id=str(row["id"]),
+            document_id=str(row["document_id"]) if row.get("document_id") else None,
+            state=str(row["state"]),
+            message=message,
+            next_cursor=row.get("cursor"),
+            warnings=[str(value) for value in (row.get("warnings") or [])],
+        )
+
+    async def _patch_ingestion(
+        self,
+        ingestion_id: str,
+        principal: Principal,
+        values: dict[str, Any],
+        *,
+        representation: bool = False,
+    ) -> list[dict[str, Any]]:
+        headers = self._headers(principal)
+        if representation:
+            headers = {**headers, "Prefer": "return=representation"}
+        response = await self.client.patch(
+            f"{self.config.url.rstrip('/')}/rest/v1/rkb_ingestion_jobs",
+            headers=headers,
+            params={"id": f"eq.{ingestion_id}"},
+            json=values,
+        )
+        response.raise_for_status()
+        if not representation or not response.content:
+            return []
+        return [dict(row) for row in response.json()]
+
+    async def _mark_ingestion_failed(
+        self,
+        ingestion_id: str,
+        principal: Principal,
+        error_code: str,
+    ) -> None:
+        try:
+            await self._patch_ingestion(
+                ingestion_id,
+                principal,
+                {"state": "failed", "error_code": error_code[:120]},
+            )
+        except httpx.HTTPError:
+            return
+
+    async def _server_object(
+        self,
+        *,
+        document_id: str,
+        object_key: str | None = None,
+        object_id: str | None = None,
+        kind: str | None = None,
+    ) -> dict[str, Any] | None:
+        params = {
+            "document_id": f"eq.{document_id}",
+            "select": "id,object_key,sha256,mime_type",
+            "limit": "1",
+        }
+        if object_key is not None:
+            params["object_key"] = f"eq.{object_key}"
+        if object_id is not None:
+            params["id"] = f"eq.{object_id}"
+        if kind is not None:
+            params["kind"] = f"eq.{kind}"
+        response = await self.client.get(
+            f"{self.config.url.rstrip('/')}/rest/v1/rkb_objects",
+            headers=self._service_headers(),
+            params=params,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        return dict(rows[0]) if rows else None
+
+    @staticmethod
+    def _start_metadata(
+        file: ChatFile,
+        payload: dict[str, Any] | None,
+        pdf_title: str | None,
+    ) -> tuple[str, list[str], int | None, str | None]:
+        metadata = payload or {}
+        raw_title = metadata.get("title") or pdf_title or file.file_name or "Untitled source"
+        title = str(raw_title).strip()[:500] or "Untitled source"
+        if title.lower().endswith(".pdf"):
+            title = Path(title).stem or title
+        raw_authors = metadata.get("authors", [])
+        authors = (
+            [str(value).strip()[:300] for value in raw_authors if str(value).strip()]
+            if isinstance(raw_authors, list)
+            else []
+        )[:50]
+        year = metadata.get("publication_year")
+        publication_year = year if isinstance(year, int) and 1 <= year <= 3000 else None
+        raw_language = metadata.get("language")
+        language = str(raw_language).strip()[:80] if raw_language else None
+        return title, authors, publication_year, language
+
+    async def book_ingest(
+        self,
+        *,
+        command: str,
+        principal: Principal,
+        file: ChatFile | None,
+        ingestion_id: str | None,
+        cursor: str | None,
+        payload: dict[str, Any] | None,
+    ) -> BookIngestOutput:
+        del cursor
+        if command == "status":
+            if not ingestion_id:
+                raise ValueError("ingestion_id is required for status")
+            row = await self._ingestion_row(principal=principal, ingestion_id=ingestion_id)
+            if not row:
+                raise LookupError("ingestion_not_found")
+            return self._ingestion_output(row, "Ingestion status")
+        if command != "start":
+            raise RuntimeError(
+                "stage/validate/finalize are not implemented in this ingestion slice"
+            )
+        if file is None:
+            raise ValueError("attached PDF file is required for start")
+
+        previous = await self._ingestion_row(
+            principal=principal,
+            source_file_id=file.file_id,
+        )
+        if previous and previous.get("state") != "failed":
+            return self._ingestion_output(
+                previous,
+                "Existing ingestion for this attached file",
+            )
+
+        source = await self.file_downloader.download(file)
+        source_sha256 = hashlib.sha256(source).hexdigest()
+        pdf_info = await self.pdf_processor.inspect(source)
+        title, authors, publication_year, language = self._start_metadata(
+            file, payload, pdf_info.title
+        )
+
+        if (
+            previous
+            and previous.get("state") == "failed"
+            and previous.get("document_id")
+            and previous.get("source_sha256") == source_sha256
+        ):
+            document_id = str(previous["document_id"])
+            new_ingestion_id = str(previous["id"])
+            await self._patch_ingestion(
+                new_ingestion_id,
+                principal,
+                {"state": "processing", "error_code": None},
+            )
+        else:
+            document_id = str(uuid4())
+            new_ingestion_id = str(uuid4())
+            start = await self.client.post(
+                f"{self.config.url.rstrip('/')}/rest/v1/rpc/rkb_start_ingestion",
+                headers=self._headers(principal),
+                json={
+                    "p_ingestion_id": new_ingestion_id,
+                    "p_document_id": document_id,
+                    "p_title": title,
+                    "p_authors": authors,
+                    "p_publication_year": publication_year,
+                    "p_language": language,
+                    "p_source_sha256": source_sha256,
+                    "p_source_file_id": file.file_id,
+                    "p_page_count": pdf_info.page_count,
+                },
+            )
+            start.raise_for_status()
+
+        object_key = (
+            f"users/{principal.subject}/documents/{document_id}/"
+            f"source/{source_sha256}.pdf"
+        )
+        try:
+            # PUT is deliberately deterministic and repeatable for the exact
+            # document/hash key, so a lost response can be reconciled safely.
+            await self.object_store.put_bytes(object_key, source, "application/pdf")
+            existing_object = await self._server_object(
+                document_id=document_id,
+                object_key=object_key,
+                kind="source_pdf",
+            )
+            if existing_object:
+                if existing_object.get("sha256") != source_sha256:
+                    raise RuntimeError("existing source object hash mismatch")
+                object_id = str(existing_object["id"])
+            else:
+                object_id = str(uuid4())
+                object_write = await self.client.post(
+                    f"{self.config.url.rstrip('/')}/rest/v1/rkb_objects",
+                    headers={**self._service_headers(), "Prefer": "return=minimal"},
+                    json={
+                        "id": object_id,
+                        "document_id": document_id,
+                        "kind": "source_pdf",
+                        "object_key": object_key,
+                        "sha256": source_sha256,
+                        "mime_type": "application/pdf",
+                        "size_bytes": len(source),
+                        "access_class": "private",
+                    },
+                )
+                object_write.raise_for_status()
+
+            rows = await self._patch_ingestion(
+                new_ingestion_id,
+                principal,
+                {
+                    "source_object_id": object_id,
+                    "state": "staged",
+                    "cursor": "0",
+                    "error_code": None,
+                },
+                representation=True,
+            )
+            row = rows[0] if rows else {
+                "id": new_ingestion_id,
+                "document_id": document_id,
+                "state": "staged",
+                "cursor": "0",
+                "warnings": [],
+            }
+            return self._ingestion_output(
+                row,
+                "Source PDF stored; use book_pages to parse small page batches",
+            )
+        except Exception as exc:
+            await self._mark_ingestion_failed(
+                new_ingestion_id,
+                principal,
+                type(exc).__name__,
+            )
+            raise
+
+    async def book_pages(
+        self,
+        *,
+        ingestion_id: str,
+        principal: Principal,
+        cursor: str | None,
+        batch_size: int,
+    ) -> RenderedPageBatch:
+        row = await self._ingestion_row(
+            principal=principal,
+            ingestion_id=ingestion_id,
+        )
+        if not row:
+            raise LookupError("ingestion_not_found")
+        if row["state"] == "failed":
+            raise RuntimeError("ingestion_failed")
+        if not row.get("document_id") or not row.get("source_object_id"):
+            raise RuntimeError("ingestion_source_not_ready")
+
+        source_object = await self._server_object(
+            document_id=str(row["document_id"]),
+            object_id=str(row["source_object_id"]),
+            kind="source_pdf",
+        )
+        if not source_object:
+            raise RuntimeError("ingestion source object is missing")
+
+        source = await self.object_store.get_bytes(str(source_object["object_key"]))
+        if hashlib.sha256(source).hexdigest() != row["source_sha256"]:
+            raise RuntimeError("source PDF integrity check failed")
+
+        try:
+            start = int(cursor if cursor is not None else "0")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("cursor must be a zero-based page index") from exc
+        if start < 0:
+            raise ValueError("cursor must be a zero-based page index")
+
+        total, rendered = await self.pdf_processor.render(
+            source,
+            start=start,
+            count=max(1, min(int(batch_size), 8)),
+        )
+        revision = int(row.get("staged_revision") or 1)
+        namespace = UUID(str(row["document_id"]))
+        pages = tuple(
+            RenderedPage(
+                page_id=str(
+                    uuid5(namespace, f"page:{revision}:{page.physical_page_index}")
+                ),
+                physical_page_index=page.physical_page_index,
+                printed_page_number=None,
+                mime_type=page.mime_type,
+                data=page.data,
+                native_text=page.native_text,
+                native_blocks=page.native_blocks,
+            )
+            for page in rendered
+        )
+        next_index = start + len(pages)
+        return RenderedPageBatch(
+            pages=pages,
+            next_cursor=str(next_index) if next_index < total else None,
+        )
 
     async def aclose(self) -> None:
         if self._owns_client:

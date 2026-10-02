@@ -9,6 +9,8 @@ class ObjectStore(Protocol):
     async def get_range(self, key: str, start: int, end: int) -> bytes: ...
     async def get_bytes(self, key: str) -> bytes: ...
     async def put_bytes(self, key: str, data: bytes, content_type: str) -> None: ...
+    async def put_file(self, key: str, path: str, content_type: str) -> None: ...
+    async def download_file(self, key: str, path: str) -> None: ...
 
 
 class UnavailableObjectStore:
@@ -19,6 +21,12 @@ class UnavailableObjectStore:
         raise RuntimeError("object store is not configured")
 
     async def put_bytes(self, key: str, data: bytes, content_type: str) -> None:
+        raise RuntimeError("object store is not configured")
+
+    async def put_file(self, key: str, path: str, content_type: str) -> None:
+        raise RuntimeError("object store is not configured")
+
+    async def download_file(self, key: str, path: str) -> None:
         raise RuntimeError("object store is not configured")
 
 
@@ -79,3 +87,18 @@ class S3ObjectStore:
             )
 
         await asyncio.to_thread(put)
+
+
+    async def put_file(self, key: str, path: str, content_type: str) -> None:
+        def put() -> None:
+            self.client.upload_file(
+                path,
+                self.bucket,
+                key,
+                ExtraArgs={"ContentType": content_type},
+            )
+
+        await asyncio.to_thread(put)
+
+    async def download_file(self, key: str, path: str) -> None:
+        await asyncio.to_thread(self.client.download_file, self.bucket, key, path)

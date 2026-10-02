@@ -184,6 +184,7 @@ def build_server(
                     "printed_page_number": page.printed_page_number,
                     "mime_type": page.mime_type,
                     "native_text": page.native_text,
+                    "native_blocks": list(page.native_blocks),
                 }
                 for page in batch.pages
             ],

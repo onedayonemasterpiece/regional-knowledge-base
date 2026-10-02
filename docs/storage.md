@@ -59,3 +59,21 @@ compact metadata.
 authorization succeeds may the server use its service credential to resolve the
 exact object locator and issue an S3 Range GET. Returned bytes are hash-verified
 before decoding. The service-role credential is never used for candidate search.
+
+
+## Attached PDF ingestion source
+
+ChatGPT file parameters provide a temporary `download_url` and stable `file_id`.
+The start call downloads the bytes immediately; the temporary URL is never
+persisted. The exact PDF is stored privately under a deterministic
+user/document/hash S3 key and represented in Postgres only by an opaque
+`source_object_id`.
+
+The downloader is bounded to 256 MiB, HTTPS-only, rejects redirects and rejects
+obvious local/non-global destinations after DNS preflight. Production deployment
+should additionally keep restrictive egress/network policy; the model never gets
+object-store credentials or raw object keys.
+
+A failed start keeps only private failed state. Retrying the same attached
+`file_id` and exact source hash reuses the existing ingestion/document and
+reconciles the deterministic source object rather than duplicating it.

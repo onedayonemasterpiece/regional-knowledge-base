@@ -72,3 +72,11 @@ def test_postgres_does_not_store_corpus_body_text():
     assert "text_object_id" in chunk
     assert "text_start" in chunk and "text_end" in chunk
     assert "fts tsvector not null" in chunk
+
+def test_ingestion_job_keeps_only_opaque_source_object_id():
+    start = CORE.index("create table if not exists public.rkb_ingestion_jobs")
+    end = CORE.index("alter table public.rkb_workspaces", start)
+    table = CORE[start:end]
+    assert "source_object_id uuid" in table
+    assert "source_object_key" not in table
+    assert "rkb_start_ingestion" in CORE

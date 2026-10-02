@@ -9,7 +9,7 @@ The service is not production-ready merely because unit tests pass. Required gat
 3. apply SQL migrations and run RLS acceptance with at least two users, one workspace and anonymous public reads;
 4. create a private S3-compatible bucket with public ACL disabled;
 5. configure a 768-dimension external embedding endpoint; verify lexical-only degradation when it is unavailable;
-6. implement and exercise book ingestion against a representative born-digital PDF and a scan-only/multicolumn source;
+6. start/pages deterministic ingestion is implemented; complete stage/validate/finalize and exercise the whole workflow against a representative born-digital PDF and a scan-only/multicolumn source;
 7. prove raw private source PDFs remain inaccessible when normalized content is public;
 8. connect the MCP from ChatGPT and test `search`, `fetch`, file-parameter ingestion and model-visible page images;
 9. connect the read-only Live profile through `live-interaction` and measure p50/p95 tool latency;
@@ -34,3 +34,16 @@ Ingestion is lower priority than interactive retrieval. Page rendering/cropping 
 ## Observability
 
 Log operation IDs, user subject hash/pseudonymous ID, ingestion/document IDs, stage, latency and external dependency status. Never log bearer tokens, signed object URLs, source text, page images or private object keys.
+
+## Implemented ingestion checkpoint — 2026-10-02
+
+The source path now has deterministic local coverage for:
+- ChatGPT file-param shape and HTTPS URL constraints;
+- private source persistence;
+- Supabase user-RLS ingestion creation;
+- server-only source-object identity;
+- lost/failed start reconciliation without duplicate document/object rows;
+- real PyMuPDF inspection, native text blocks and JPEG page rendering.
+
+CI installs the `ingest` extra so the real PDF renderer is exercised rather
+than skipped.
