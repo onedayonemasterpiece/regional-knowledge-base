@@ -283,6 +283,16 @@ class StagePoiFactInput(BaseModel):
         return self
 
 
+class StagePoiMediaLinkInput(BaseModel):
+    link_key: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$"
+    )
+    poi_locator: PoiLocatorInput
+    illustration_ref: StageIllustrationRef
+    relation: Literal["depicts", "illustrates", "map_of", "detail_of"]
+    time_scope: str | None = Field(default=None, max_length=100)
+
+
 class SearchResult(BaseModel):
     id: str
     title: str

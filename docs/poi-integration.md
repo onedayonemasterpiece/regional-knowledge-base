@@ -215,6 +215,51 @@ While ChatGPT parses pages it may identify:
 This material should be staged in the same immutable document graph as the book.
 It is not delivered to Street Story until the book revision successfully finalizes.
 
+## POI-linked historical media
+
+Book ingestion may also detect that an illustration itself depicts or documents a
+POI. This relationship is independent from atomic fact extraction.
+
+Use a separate versioned event:
+
+~~~text
+poi.media_evidence.v1
+~~~
+
+A media event carries:
+
+- the same `poi_locator` rules as fact evidence;
+- `knowledge://illustrations/<id>` instead of object-storage locators;
+- relation: `depicts | illustrates | map_of | detail_of`;
+- source page/figure/caption provenance;
+- exact crop SHA-256;
+- caption and time scope when present;
+- illustration visibility and rights status.
+
+The link is created only when the model explicitly identifies the image as being
+about that POI. Mere co-location on the same page is not enough.
+
+Object Storage remains the binary source of truth. Street Story stores the POI ↔
+illustration relationship and provenance reference, not the image bytes.
+
+This makes future Street Story workflows possible:
+
+~~~text
+POI
+  -> historical media search
+  -> filter by date / media kind / rights / visibility
+  -> fetch permitted Knowledge illustration
+  -> optionally use VibePublish media mirror
+  -> publication/editorial workflow
+~~~
+
+A private or rights-restricted illustration stays non-publishable even if the POI
+itself is public. Street Story must therefore treat media visibility/rights as a
+hard retrieval/publication filter, not as descriptive metadata.
+
+Fact evidence and media evidence remain separate so an old photograph can be
+useful for a POI even when it introduces no new factual claim.
+
 ## Delivery topology
 
 Book finalization must not depend on Street Story availability.

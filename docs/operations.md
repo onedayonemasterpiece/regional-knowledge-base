@@ -1,5 +1,14 @@
 # Operations and acceptance gates
 
+## Current infrastructure state
+
+As of 2026-10-02 no dedicated Regional Knowledge Supabase account/project is
+connected. Supabase configuration will be supplied later through the shared
+environment/secrets layer as a separate owner-controlled setup step.
+
+Therefore SQL migrations, OAuth and RLS are **not deployed yet**; current claims
+refer only to source code, deterministic tests and fake managed-service E2E.
+
 ## Before production
 
 The service is not production-ready merely because unit tests pass. Required gates:
@@ -74,7 +83,9 @@ Local contracts and tests now cover:
 - `poi.fact_evidence.v1` construction;
 - DB-side event scope/provenance checks;
 - durable idempotent outbox written transactionally with revision activation;
-- private/workspace `pending_authorization` versus public `pending_delivery`.
+- private/workspace `pending_authorization` versus public `pending_delivery`;
+- POI ↔ illustration staging and `poi.media_evidence.v1` outbox events, keeping
+  image relation/provenance/rights independent from factual claims.
 
 Not yet claimed:
 - real Street Story network intake;

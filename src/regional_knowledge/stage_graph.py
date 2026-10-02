@@ -14,6 +14,7 @@ from .contracts import (
     StageChunkInput,
     StagePageInput,
     StagePoiFactInput,
+    StagePoiMediaLinkInput,
 )
 
 
@@ -89,12 +90,25 @@ class StagedPoiFact(BaseModel):
     publication_method: str
 
 
+class StagedPoiMediaLink(BaseModel):
+    link_key: str
+    link_id: UUID
+    poi_locator: PoiLocatorInput
+    illustration_id: UUID
+    page_id: UUID
+    relation: Literal["depicts", "illustrates", "map_of", "detail_of"]
+    time_scope: str | None = Field(default=None, max_length=100)
+
+
 class IngestStagePayload(BaseModel):
     pages: list[StagedPage] = Field(default_factory=list, max_length=8)
     relations: list[StagedRelation] = Field(default_factory=list, max_length=2_000)
     illustrations: list[StagedIllustration] = Field(default_factory=list, max_length=200)
     chunks: list[StagedChunk] = Field(default_factory=list, max_length=500)
     poi_facts: list[StagedPoiFact] = Field(default_factory=list, max_length=500)
+    poi_media_links: list[StagedPoiMediaLink] = Field(
+        default_factory=list, max_length=500
+    )
 
 
 class StagedGraph(BaseModel):
@@ -104,6 +118,7 @@ class StagedGraph(BaseModel):
     illustrations: list[StagedIllustration] = Field(default_factory=list)
     chunks: list[StagedChunk] = Field(default_factory=list)
     poi_facts: list[StagedPoiFact] = Field(default_factory=list)
+    poi_media_links: list[StagedPoiMediaLink] = Field(default_factory=list)
 
 
 class GraphValidation(BaseModel):
@@ -135,6 +150,7 @@ def compile_model_stage(
     pages: list[StagePageInput],
     chunks: list[StageChunkInput],
     poi_facts: list[StagePoiFactInput] | None = None,
+    poi_media_links: list[StagePoiMediaLinkInput] | None = None,
 ) -> IngestStagePayload:
     if graph.revision != revision:
         raise ValueError("staged graph revision mismatch")
@@ -356,12 +372,42 @@ def compile_model_stage(
             )
         )
 
+    staged_poi_media_links: list[StagedPoiMediaLink] = []
+    for link in poi_media_links or []:
+        illustration = illustration_by_ref.get(
+            (
+                link.illustration_ref.page_id,
+                link.illustration_ref.illustration_key,
+            )
+        )
+        if illustration is None:
+            raise ValueError(
+                f"POI media link {link.link_key} references unknown illustration "
+                f"{link.illustration_ref.page_id}#"
+                f"{link.illustration_ref.illustration_key}"
+            )
+        staged_poi_media_links.append(
+            StagedPoiMediaLink(
+                link_key=link.link_key,
+                link_id=uuid5(
+                    document_uuid,
+                    f"poi-media:{revision}:{link.link_key}",
+                ),
+                poi_locator=link.poi_locator,
+                illustration_id=illustration.illustration_id,
+                page_id=illustration.page_id,
+                relation=link.relation,
+                time_scope=link.time_scope,
+            )
+        )
+
     return IngestStagePayload(
         pages=staged_pages,
         relations=relations,
         illustrations=illustrations,
         chunks=staged_chunks,
         poi_facts=staged_poi_facts,
+        poi_media_links=staged_poi_media_links,
     )
 
 
@@ -433,6 +479,15 @@ def merge_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
     for item in payload.poi_facts:
         poi_facts[str(item.candidate_id)] = item
 
+    poi_media_links = {
+        str(item.link_id): item
+        for item in graph.poi_media_links
+        if str(item.page_id) not in replaced_page_ids
+        and str(item.illustration_id) not in replaced_illustration_ids
+    }
+    for item in payload.poi_media_links:
+        poi_media_links[str(item.link_id)] = item
+
     return StagedGraph(
         revision=graph.revision,
         pages=sorted(pages.values(), key=lambda item: item.physical_page_index),
@@ -440,6 +495,7 @@ def merge_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
         illustrations=list(illustrations.values()),
         chunks=list(chunks.values()),
         poi_facts=list(poi_facts.values()),
+        poi_media_links=list(poi_media_links.values()),
     )
 
 
@@ -589,6 +645,26 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
                 errors.append(
                     f"POI fact {candidate_id} omits page for region {region_id}"
                 )
+
+    illustration_set = {
+        str(item.illustration_id)
+        for item in graph.illustrations
+    }
+    link_ids: set[str] = set()
+    for link in graph.poi_media_links:
+        link_id = str(link.link_id)
+        if link_id in link_ids:
+            errors.append(f"duplicate POI media link_id: {link_id}")
+        link_ids.add(link_id)
+        if str(link.page_id) not in page_set:
+            errors.append(
+                f"POI media link {link_id} references unknown page {link.page_id}"
+            )
+        if str(link.illustration_id) not in illustration_set:
+            errors.append(
+                f"POI media link {link_id} references unknown illustration "
+                f"{link.illustration_id}"
+            )
 
     if not graph.chunks:
         errors.append("no retrieval chunks staged")

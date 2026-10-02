@@ -24,6 +24,7 @@ from .contracts import (
     StageChunkInput,
     StagePageInput,
     StagePoiFactInput,
+    StagePoiMediaLinkInput,
     StartMetadataInput,
     Visibility,
 )
@@ -151,11 +152,17 @@ def build_server(
         pages: list[StagePageInput] | None = None,
         chunks: list[StageChunkInput] | None = None,
         poi_facts: list[StagePoiFactInput] | None = None,
+        poi_media_links: list[StagePoiMediaLinkInput] | None = None,
     ) -> BookIngestOutput:
         payload: dict[str, Any] | None = None
         if metadata is not None:
             payload = metadata.model_dump(mode="json", exclude_none=True)
-        if pages is not None or chunks is not None or poi_facts is not None:
+        if (
+            pages is not None
+            or chunks is not None
+            or poi_facts is not None
+            or poi_media_links is not None
+        ):
             payload = {
                 "pages": [
                     page.model_dump(mode="json", exclude_none=True)
@@ -168,6 +175,10 @@ def build_server(
                 "poi_facts": [
                     fact.model_dump(mode="json", exclude_none=True)
                     for fact in (poi_facts or [])
+                ],
+                "poi_media_links": [
+                    link.model_dump(mode="json", exclude_none=True)
+                    for link in (poi_media_links or [])
                 ],
             }
         return await backend.book_ingest(
