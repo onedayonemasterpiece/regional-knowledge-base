@@ -1,92 +1,119 @@
 # OAuth, identity and multi-MCP architecture
 
-## Goal
+The platform-level decision is documented in
+[platform-identity.md](platform-identity.md). This file defines the Regional
+Knowledge Base resource-server side of that contract.
 
-One person may connect Regional Knowledge Base, Wonderful Lections, Street Story, Projects Hub and VibePublish to ChatGPT/Codex without creating separate product identities.
+## Shared issuer, separate resource
 
-The services remain separate resource servers. Identity is shared; authorization is not flattened.
+Regional Knowledge Base uses the same Supabase Auth OAuth 2.1/OIDC issuer as the
+other first-party MCP products, but it remains a separate protected resource.
 
-## Shared authorization server
+The stable user identity is `issuer + sub`. Email, display name and product-local
+tenant/workspace names are not identity keys.
 
-Target issuer: **Supabase Auth OAuth 2.1/OIDC**.
+The Knowledge MCP publishes RFC 9728 protected-resource metadata and requires an
+access token bound to its exact HTTPS MCP resource. OpenAI clients propagate the
+RFC 8707 `resource` value during OAuth; production acceptance must prove the
+resulting token is actually audience-bound before enabling the connector.
 
-Supabase provides authorization-code + PKCE, refresh rotation, OIDC/JWKS, Dynamic Client Registration and MCP-oriented protected-resource integration. Use asymmetric signing keys.
+## Production client model
 
-Each MCP publishes RFC 9728 protected-resource metadata that points to the same issuer:
+For production v1 use a **known OAuth client per product/resource** rather than
+depending on unrestricted Dynamic Client Registration.
+
+Reason: Supabase currently exposes standard identity scopes only, and its Custom
+Access Token Hook can reliably differentiate OAuth clients by `client_id`.
+Therefore the platform can map:
 
 ```text
-shared issuer
-    |
-    +-> knowledge.example/mcp
-    +-> wonderful-lections.example/mcp
-    +-> street-story.example/mcp
-    +-> projects-hub.example/mcp
-    +-> vibepublish.example/mcp
+client_id: chatgpt-knowledge       -> aud: https://knowledge.../mcp
+client_id: projects-hub-knowledge -> aud: https://knowledge.../mcp
+client_id: wl-knowledge            -> aud: https://knowledge.../mcp
 ```
 
-Every token remains resource-bound. A token minted for one MCP must be rejected by another.
+Other products use their own target audiences.
 
-## Stable identity
+DCR remains useful for experiments, but it is not the production security
+assumption until a real client proves exact resource-bound token issuance for
+that path.
 
-The stable platform user key is the issuer + JWT `sub` (Supabase user UUID). Email is profile data, never the primary key.
+Official references:
+- https://developers.openai.com/plugins/build/auth
+- https://supabase.com/docs/guides/auth/oauth-server/mcp-authentication
+- https://supabase.com/docs/guides/auth/oauth-server/token-security
 
-Each service maps that subject to its own:
-- memberships;
-- roles;
-- quotas;
-- domain resources;
-- audit trail.
-
-This gives cross-service identity without sharing business tables.
-
-## Authorization: important Supabase limitation
-
-Supabase OAuth Server currently exposes only standard identity scopes (`openid email profile phone`); custom application scopes are not yet an authorization boundary.
-
-Therefore:
-- do not treat a requested OAuth scope such as `knowledge.write` as security;
-- use RLS and explicit service roles/memberships for every row;
-- use OAuth `client_id` to distinguish clients where useful;
-- enforce write/read rules in the service even if the model/tool descriptor claims a narrower capability.
-
-Tool annotations and descriptions are UX hints only.
-
-## Resource binding
-
-The MCP endpoint URL is the RFC 8707 resource identifier. Production acceptance must prove that the Supabase OAuth flow carries the `resource` value through authorization/token exchange and that the access token is audience-bound to the exact MCP resource (directly or through the configured access-token hook).
+## Token verification
 
 The MCP server verifies:
-- signature via issuer JWKS;
-- issuer;
-- expiry/not-before;
-- subject;
-- client identity;
-- expected resource/audience.
 
-Do not enable a permissive “any Supabase token is accepted” mode in production.
+- asymmetric JWT signature through issuer JWKS;
+- exact issuer;
+- expiry/not-before;
+- stable subject;
+- OAuth client identity;
+- exact expected resource/audience.
+
+A generic Supabase token whose audience is only `authenticated` is not accepted
+as a production MCP token.
+
+## Authorization is RLS, not OAuth scope text
+
+Supabase OAuth currently supports the standard identity scopes
+`openid email profile phone`. They do not form our application authorization
+boundary.
+
+Every row is authorized through:
+
+- user `sub`;
+- workspace membership;
+- explicit document grants;
+- resource visibility;
+- client policy where needed.
+
+Tool descriptions and read-only annotations improve model behavior but never grant
+access.
+
+## One user connecting several MCPs
+
+The first connection performs login + resource consent. Later product connections
+reuse the same authorization-server browser session, so the same human receives
+the same `sub` and should not have to create another account.
+
+Each grant remains independently revocable. Revoking Wonderful Lections must not
+revoke Knowledge unless the user/account itself is disabled.
+
+## Cross-service use
+
+Never forward a token minted for one MCP to another MCP.
+
+When Projects Hub, Wonderful Lections or Street Story needs the user's private
+Knowledge data, that service becomes an OAuth client of the Knowledge resource.
+The user authorizes that integration once and the calling service stores the
+refresh grant encrypted at rest. It then obtains Knowledge-audience access tokens
+normally.
+
+Dedicated service identities are allowed only for non-user-specific tasks such as
+public-corpus maintenance or a tightly scoped VibePublish mirror. They cannot be
+used to impersonate arbitrary users.
 
 ## Workspaces
 
-Personal data requires no workspace: ownership by `sub` is sufficient.
-
-Shared collaboration uses stable workspace UUIDs and memberships. Membership is a platform concept but every service still enforces its local resource rules. Do not place large workspace lists into JWTs; memberships change and token claims become stale. Query RLS-backed membership state.
-
-## Second and later MCP connections
-
-The first MCP connection performs sign-in + consent. Later MCPs use the same authorization-server login session, so the user should normally see only the resource-specific consent/connection step, not create another account.
-
-## Service-to-service calls
-
-Never forward the user's Knowledge Base bearer token to VibePublish or Wonderful Lections.
-
-Use one of:
-1. a dedicated service identity with the minimum target-service capability;
-2. a future token-exchange/delegation mechanism when the shared issuer supports a reviewed design.
-
-Carry the end-user subject only as audited request context, not as a substitute credential.
+Personal data needs no synthetic workspace; ownership by `sub` is enough.
+Shared collaboration uses stable workspace UUIDs and current membership rows.
+Do not put large or mutable membership lists into JWT claims.
 
 ## Migration
 
-Wonderful Lections' existing, tested OAuth implementation remains operational during transition. It is a requirements donor and rollback path. Migration to the shared issuer happens only after end-to-end connection, refresh, revocation and resource-audience tests pass.
+Wonderful Lections' existing tested OAuth remains a rollback path. Do not
+flag-day multiple products.
 
-Projects Hub is an orchestration/Live surface, not the authorization server. This avoids turning one product into a mandatory identity monolith.
+Migration gates are:
+
+1. shared issuer + consent UI live;
+2. Knowledge exact audience test;
+3. one real ChatGPT connection;
+4. second MCP connection produces the same `sub` but a different resource token;
+5. refresh rotation/revocation acceptance;
+6. first service-to-service user delegation;
+7. only then migrate additional existing products.

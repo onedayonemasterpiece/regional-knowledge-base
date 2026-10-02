@@ -50,7 +50,8 @@ Architecture and executable contracts are being built. No production deployment 
 See:
 - [Architecture](docs/architecture.md)
 - [Storage and privacy](docs/storage.md)
-- [OAuth and cross-service identity](docs/auth.md)
+- [OAuth resource-server contract](docs/auth.md)
+- [Platform identity: one user, many MCPs](docs/platform-identity.md)
 - [Rights model](docs/rights.md)
 - [MCP surface and Live profile](docs/mcp.md)
 - [Cross-project integrations](docs/integrations.md)

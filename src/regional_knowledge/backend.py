@@ -7,6 +7,7 @@ from .contracts import (
     BookIngestOutput,
     ChatFile,
     DocumentAccessOutput,
+    EvidenceSearchOutput,
     FetchOutput,
     Principal,
     SearchOutput,
@@ -34,6 +35,14 @@ class KnowledgeBackend(Protocol):
     async def search(self, query: str, principal: Principal) -> SearchOutput: ...
 
     async def fetch(self, item_id: str, principal: Principal) -> FetchOutput: ...
+
+    async def search_evidence(
+        self,
+        query: str,
+        principal: Principal,
+        *,
+        max_evidence: int = 3,
+    ) -> EvidenceSearchOutput: ...
 
     async def book_pages(
         self,
@@ -72,6 +81,9 @@ class UnavailableBackend:
         raise RuntimeError("knowledge backend is not configured")
 
     async def fetch(self, item_id: str, principal: Principal) -> FetchOutput:
+        raise RuntimeError("knowledge backend is not configured")
+
+    async def search_evidence(self, *args: Any, **kwargs: Any) -> EvidenceSearchOutput:
         raise RuntimeError("knowledge backend is not configured")
 
     async def book_pages(self, **_: Any) -> RenderedPageBatch:

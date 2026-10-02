@@ -62,22 +62,39 @@ Staged books are invisible to retrieval until atomic finalize.
 
 ## Live profile
 
-Interactive Live consumers use **only search and fetch by default**. They reuse the shared `live-interaction` framework.
+Interactive Live consumers use a separate optimized server profile
+(`RKB_MCP_PROFILE=live`) that exposes **one tool only**:
 
-Fast path:
 ```text
-Live -> search -> Supabase vector + lexical + RRF -> compact evidence -> Live
+knowledge_search(query, max_evidence=3)
 ```
 
-Rules:
-- default search returns a small candidate set;
-- no image bytes in search results;
-- illustrations return IDs/captions/availability only;
-- fetch retrieves detail on demand;
-- deep enrichment is optional/non-blocking;
-- ingestion, sharing and rights tools are not in the Live capability bundle.
+Fast path:
 
-This keeps tool declarations and latency small for weak/fast Live models.
+```text
+Live
+  -> knowledge_search
+      -> Supabase vector + lexical + RRF
+      -> parallel exact evidence range fetches from object storage
+  -> compact evidence pack
+  -> Live answer
+```
+
+This intentionally avoids the two model round-trips of generic `search -> fetch`.
+The full ChatGPT/deep-research profile keeps standard `search` and `fetch`
+semantics plus ingestion/access tools.
+
+Rules:
+- default evidence count is 3, hard maximum 5;
+- no illustration bytes in the first response;
+- illustrations are descriptors/IDs until explicitly requested;
+- ingestion, sharing and rights tools never appear in the Live profile;
+- deep enrichment remains optional/non-blocking;
+- Live transport/capture/session lifecycle is provided by the shared
+  `live-interaction` framework.
+
+This minimizes declaration bytes, tool-choice ambiguity and conversational latency
+for weak/fast Live models.
 
 ## Public and private search
 

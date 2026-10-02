@@ -26,7 +26,7 @@ Projects Hub is the natural user-facing orchestration surface:
 - project selection/routing;
 - Knowledge Base read capability alongside other project tools.
 
-It consumes the Knowledge Base Live profile (`search`, `fetch`) through `live-interaction`. Projects Hub does not become the identity provider.
+It consumes the Knowledge Base Live profile (`search`, `fetch`) through `live-interaction`. For private knowledge, Projects Hub holds a user-approved, resource-bound Knowledge OAuth delegation; it never forwards its own bearer token. Projects Hub does not become the identity provider.
 
 ## VibePublish
 
@@ -54,3 +54,22 @@ vibepublish://assets/<id>
 ```
 
 A reference is identity, not authority. Receiving a reference never bypasses the target service's authorization check.
+
+## Authorization pattern for integrations
+
+For private user data the integration itself must be authorized:
+
+```text
+Wonderful Lections / Street Story / Projects Hub
+        |
+        | OAuth client of Knowledge resource
+        v
+shared Supabase Auth
+        |
+        | same user sub, Knowledge audience
+        v
+Regional Knowledge MCP/API
+```
+
+This makes cross-product synergy explicit and revocable. A service identity is
+not a substitute for the user's grant.

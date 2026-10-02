@@ -12,8 +12,15 @@ def test_raw_object_table_is_not_client_readable():
 def test_public_content_and_media_require_verified_rights():
     assert "rkb_public_content_requires_rights" in CORE
     assert "rkb_public_media_requires_rights" in CORE
-    for allowed in ("licensed", "permission_granted", "public_domain_verified"):
+    for allowed in (
+        "licensed",
+        "permission_granted",
+        "public_domain_verified",
+        "statutory_access_verified",
+    ):
         assert allowed in CORE
+    assert "rights_policy_version is not null" in CORE
+    assert "rights_evidence -> 'public_distribution'" in CORE
 
 
 def test_illustrations_have_independent_visibility_policy():

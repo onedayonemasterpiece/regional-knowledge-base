@@ -16,6 +16,7 @@ from .contracts import (
     BookIngestOutput,
     ChatFile,
     DocumentAccessOutput,
+    EvidenceSearchOutput,
     FetchOutput,
     Principal,
     ProfileOutput,
@@ -44,6 +45,7 @@ def build_server(
     issuer: str | None = None,
     resource_url: str | None = None,
     jwks_url: str | None = None,
+    profile: Literal["full", "live"] = "full",
 ) -> MCPServer:
     backend = backend or backend_from_env()
     issuer = (issuer or os.getenv("RKB_OAUTH_ISSUER", "")).rstrip("/")
@@ -76,6 +78,28 @@ def build_server(
         ),
         **kwargs,
     )
+
+    if profile == "live":
+        @mcp.tool(
+            name="knowledge_search",
+            title="Search regional knowledge",
+            description=(
+                "Return a small ready-to-use evidence pack from accessible regional "
+                "books and journals in one low-latency call. Use for factual Live answers."
+            ),
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        )
+        async def knowledge_search(
+            query: str,
+            max_evidence: int = 3,
+        ) -> EvidenceSearchOutput:
+            return await backend.search_evidence(
+                query.strip(),
+                _principal(),
+                max_evidence=max(1, min(max_evidence, 5)),
+            )
+
+        return mcp
 
     @mcp.tool(
         title="Search regional knowledge",
@@ -210,7 +234,10 @@ def build_server(
 
 
 def main() -> None:
-    build_server().run(
+    profile = os.getenv("RKB_MCP_PROFILE", "full").strip().lower()
+    if profile not in {"full", "live"}:
+        raise RuntimeError("RKB_MCP_PROFILE must be 'full' or 'live'")
+    build_server(profile=profile).run(
         transport="streamable-http",
         stateless_http=True,
         json_response=True,

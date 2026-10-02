@@ -148,3 +148,33 @@ async def test_fetch_authorizes_with_user_rls_then_reads_exact_object_range():
         ("/rest/v1/rkb_chunks", "Bearer user-jwt"),
         ("/rest/v1/rkb_objects", "Bearer server-role"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_live_evidence_search_fetches_only_small_selected_set():
+    class Backend(SupabaseRestBackend):
+        def __init__(self):
+            pass
+
+        async def search(self, query, principal):
+            from regional_knowledge.contracts import SearchOutput, SearchResult
+            return SearchOutput(
+                results=[
+                    SearchResult(id=str(i), title=f"T{i}", url=f"https://e/{i}")
+                    for i in range(8)
+                ],
+                mode="hybrid",
+            )
+
+        async def fetch(self, item_id, principal):
+            from regional_knowledge.contracts import FetchOutput
+            return FetchOutput(
+                id=item_id,
+                title=f"T{item_id}",
+                text=f"E{item_id}",
+                url=f"https://e/{item_id}",
+            )
+
+    result = await Backend().search_evidence("x", principal(), max_evidence=3)
+    assert result.mode == "hybrid"
+    assert [item.id for item in result.evidence] == ["0", "1", "2"]

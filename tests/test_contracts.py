@@ -15,10 +15,36 @@ def test_bbox_is_named_normalized_and_positive_area():
         BBox(left=500, top=1, right=500, bottom=900)
 
 
-def test_unverified_rights_cannot_be_public():
+def test_public_visibility_requires_verified_basis_and_explicit_distribution_scope():
     with pytest.raises(ValueError):
-        assert_visibility_allowed(Visibility.PUBLIC, RightsStatus.PUBLIC_DOMAIN_CANDIDATE)
-    assert_visibility_allowed(Visibility.PUBLIC, RightsStatus.PUBLIC_DOMAIN_VERIFIED)
+        assert_visibility_allowed(
+            Visibility.PUBLIC,
+            RightsStatus.PUBLIC_DOMAIN_CANDIDATE,
+            evidence={"public_distribution": True},
+            policy_version="pd-v1",
+        )
+    with pytest.raises(ValueError):
+        assert_visibility_allowed(
+            Visibility.PUBLIC,
+            RightsStatus.PUBLIC_DOMAIN_VERIFIED,
+            evidence={},
+            policy_version="pd-v1",
+        )
+    assert_visibility_allowed(
+        Visibility.PUBLIC,
+        RightsStatus.PUBLIC_DOMAIN_VERIFIED,
+        evidence={"public_distribution": True},
+        policy_version="pd-v1",
+    )
+    assert_visibility_allowed(
+        Visibility.PUBLIC,
+        RightsStatus.STATUTORY_ACCESS_VERIFIED,
+        evidence={
+            "public_distribution": True,
+            "basis_type": "compensatory_restitution_collection",
+        },
+        policy_version="east-prussian-historical-collection-v1",
+    )
 
 
 def test_old_publication_is_not_enough_for_public_domain():

@@ -19,6 +19,7 @@ class RightsStatus(StrEnum):
     PERMISSION_GRANTED = "permission_granted"
     PUBLIC_DOMAIN_CANDIDATE = "public_domain_candidate"
     PUBLIC_DOMAIN_VERIFIED = "public_domain_verified"
+    STATUTORY_ACCESS_VERIFIED = "statutory_access_verified"
 
 
 PUBLIC_RIGHTS = frozenset(
@@ -26,6 +27,7 @@ PUBLIC_RIGHTS = frozenset(
         RightsStatus.LICENSED,
         RightsStatus.PERMISSION_GRANTED,
         RightsStatus.PUBLIC_DOMAIN_VERIFIED,
+        RightsStatus.STATUTORY_ACCESS_VERIFIED,
     }
 )
 
@@ -97,6 +99,8 @@ class Illustration(BaseModel):
     media_ref: str | None = None
     source_crop_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     rights_status: RightsStatus = RightsStatus.UNKNOWN
+    rights_evidence: dict[str, Any] = Field(default_factory=dict)
+    rights_policy_version: str | None = None
     visibility: Visibility = Visibility.PRIVATE
 
 
@@ -117,6 +121,11 @@ class FetchOutput(BaseModel):
     text: str
     url: str
     metadata: dict[str, Any] | None = None
+
+
+class EvidenceSearchOutput(BaseModel):
+    evidence: list[FetchOutput]
+    mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
 
 
 class ChatFile(BaseModel):

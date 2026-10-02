@@ -19,13 +19,17 @@ The runtime server is not the vector engine, full-text engine or permanent binar
 
 | Layer | Owns |
 |---|---|
-| S3-compatible object storage | exact original bytes, page renders, image crops, canonical document graph snapshots |
+| S3-compatible object storage | exact original bytes, page renders, image crops, canonical document graph snapshots, normalized UTF-8 text projections |
 | Supabase Postgres | catalog, ACLs, rights state, page/region metadata, chunks, embeddings, FTS, ingestion state |
 | VibePublish MediaBank | optional Telegram-backed mirror/catalog of selected reusable illustrations |
 | GitHub | source code, schemas, migrations, tests, public documentation |
 | local disk | bounded disposable cache/work files only |
 
 Object storage is private. “Public document” is an application authorization state, not a public bucket ACL.
+
+Corpus body text is also kept out of Postgres: chunks carry a private text-object
+ID, byte range and hash while Supabase holds only retrieval indexes and compact
+metadata. This preserves the 500 MiB database budget.
 
 ## Canonical document graph
 

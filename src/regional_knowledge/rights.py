@@ -25,15 +25,34 @@ class RightsAssessment:
     rationale: str
 
 
-def can_be_public(status: RightsStatus) -> bool:
-    """Database/application invariant for public content visibility."""
+def can_be_public(
+    status: RightsStatus,
+    *,
+    evidence: dict[str, object] | None = None,
+    policy_version: str | None = None,
+) -> bool:
+    """Require both a verified basis and explicit public-distribution evidence."""
 
-    return status in PUBLIC_RIGHTS
+    return (
+        status in PUBLIC_RIGHTS
+        and bool(policy_version)
+        and (evidence or {}).get("public_distribution") is True
+    )
 
 
-def assert_visibility_allowed(visibility: Visibility, status: RightsStatus) -> None:
-    if visibility is Visibility.PUBLIC and not can_be_public(status):
-        raise ValueError("public visibility requires a verified rights basis")
+def assert_visibility_allowed(
+    visibility: Visibility,
+    status: RightsStatus,
+    *,
+    evidence: dict[str, object] | None = None,
+    policy_version: str | None = None,
+) -> None:
+    if visibility is Visibility.PUBLIC and not can_be_public(
+        status, evidence=evidence, policy_version=policy_version
+    ):
+        raise ValueError(
+            "public visibility requires verified rights evidence for public distribution"
+        )
 
 
 def assess_public_domain_candidate(

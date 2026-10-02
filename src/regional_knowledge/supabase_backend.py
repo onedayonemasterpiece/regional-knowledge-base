@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from .contracts import (
     BookIngestOutput,
     ChatFile,
     DocumentAccessOutput,
+    EvidenceSearchOutput,
     FetchOutput,
     Principal,
     RightsStatus,
@@ -234,6 +236,23 @@ class SupabaseRestBackend(KnowledgeBackend):
             metadata=metadata,
         )
 
+    async def search_evidence(
+        self,
+        query: str,
+        principal: Principal,
+        *,
+        max_evidence: int = 3,
+    ) -> EvidenceSearchOutput:
+        limit = max(1, min(int(max_evidence), 5))
+        found = await self.search(query, principal)
+        selected = found.results[:limit]
+        if not selected:
+            return EvidenceSearchOutput(evidence=[], mode=found.mode)
+        evidence = await asyncio.gather(
+            *(self.fetch(item.id, principal) for item in selected)
+        )
+        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode)
+
     async def document_access(
         self,
         *,
@@ -248,7 +267,10 @@ class SupabaseRestBackend(KnowledgeBackend):
             headers=self._headers(principal),
             params={
                 "id": f"eq.{document_id}",
-                "select": "id,owner_user_id,content_visibility,rights_status",
+                "select": (
+                    "id,owner_user_id,content_visibility,rights_status,"
+                    "rights_evidence,rights_policy_version"
+                ),
                 "limit": "1",
             },
         )
@@ -262,7 +284,12 @@ class SupabaseRestBackend(KnowledgeBackend):
         changed = False
 
         if visibility is not None and visibility is not current_visibility:
-            assert_visibility_allowed(visibility, rights_status)
+            assert_visibility_allowed(
+                visibility,
+                rights_status,
+                evidence=dict(row.get("rights_evidence") or {}),
+                policy_version=row.get("rights_policy_version"),
+            )
             update = await self.client.patch(
                 base,
                 headers={**self._headers(principal), "Prefer": "return=representation"},

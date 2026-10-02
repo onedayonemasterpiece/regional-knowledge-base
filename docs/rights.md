@@ -1,17 +1,27 @@
-# Rights and visibility model
+# Rights, collection provenance and visibility
 
-This system must distinguish “can search privately” from “may publish to everyone”.
+The system must distinguish four different questions:
 
-## Default
+1. who owns or controls the physical/source copy;
+2. whether the service may ingest and privately search it;
+3. whether normalized content may be shared with a workspace;
+4. whether text or media may be distributed publicly.
 
-Every upload starts:
-- source: private;
-- content: private;
-- rights status: unknown.
+Those are not the same legal fact.
 
-The model may extract bibliographic facts and propose a rights hypothesis, but it cannot promote visibility from its own assertion.
+## Safe default
 
-## Rights status
+Every user upload starts:
+
+- source visibility: `private`;
+- content visibility: `private`;
+- media visibility: `private`;
+- rights status: `unknown`.
+
+A model may extract bibliographic facts and suggest a rights hypothesis. A model
+cannot by itself make a private upload public.
+
+## Verified statuses
 
 ```text
 unknown
@@ -20,52 +30,96 @@ licensed
 permission_granted
 public_domain_candidate
 public_domain_verified
+statutory_access_verified
 ```
 
-A document can be public only when the rights status is one of:
-- licensed;
-- permission_granted;
-- public_domain_verified.
+`statutory_access_verified` exists for collections where public use follows
+from a separately reviewed legal/statutory/institutional basis rather than the
+ordinary copyright-term calculation.
 
-This rule belongs in the database as well as application code.
+Public visibility requires **all three**:
 
-## No “75 years old = public” shortcut
+1. a verified status: `licensed`, `permission_granted`,
+   `public_domain_verified` or `statutory_access_verified`;
+2. a non-empty `rights_policy_version`;
+3. evidence explicitly containing `public_distribution: true`.
 
-Publication age alone is insufficient.
+The database enforces this again; UI/model instructions are not the security
+boundary.
 
-For a named Russian author, the normal rule is life + 70 years, with statutory special cases including an additional four years for authors who worked or participated during the Great Patriotic War, plus rules for rehabilitation and posthumous publication.
+## Pre-war German / East Prussian historical collections
 
-German law normally uses life + 70 for identified authors; anonymous/pseudonymous works have separate rules, and scientific editions / first publication of posthumous works can carry related protection.
+Regional collections can contain books and other cultural values moved from
+Germany after World War II under the compensatory-restitution regime. Russian
+law and Constitutional Court practice recognize a specific property regime for
+lawfully displaced cultural values and, for qualifying former-enemy-state
+property, federal ownership / Russian cultural-property status.
 
-Therefore a pre-war German book or a book older than 75 years is only a **candidate for rights verification**, not automatically public.
+That provenance is important and must be represented directly. Do **not** force
+such works through the generic rule “publication year + N years”.
 
-## Work, edition, scan and media are separate
+Recommended evidence shape:
 
-Even when the underlying text is public domain:
-- a modern scientific edition may have separate protection;
-- photographs/illustrations may have their own author and term;
-- a modern scan may carry contractual/access constraints;
-- a user's private copy may contain annotations or personal information.
+```json
+{
+  "basis_type": "compensatory_restitution_collection",
+  "collection_id": "stable-institution-or-fund-id",
+  "provenance_verified": true,
+  "property_basis_verified": true,
+  "public_distribution": true,
+  "evidence_refs": ["..."],
+  "verified_by": "operator-or-institution",
+  "verified_at": "..."
+}
+```
 
-The rights record therefore tracks work-level, edition-level and media/source-level evidence separately.
+A trusted collection policy can map a verified provenance to
+`statutory_access_verified`. This allows automatic availability for a known,
+reviewed corpus without asking the model to re-litigate every volume.
 
-## Verification evidence
+The implementation still stores physical/source ownership separately from
+copyright/publication rights. This is deliberate: the federal law on displaced
+cultural values is a property regime, while copyright protection for foreign
+works is governed separately. If the collection's reviewed policy establishes
+the required public-use basis, the service uses that policy; it does not infer it
+from “German”, “pre-war”, age, or a model assertion alone.
 
-A public-domain verification record should contain, as applicable:
-- jurisdiction/policy version;
-- author identity;
-- death year and evidence URL/reference;
-- publication year;
-- anonymous/pseudonymous status;
-- relevant special-case flags and whether they are known;
-- edition/publication provenance;
-- evidence references;
-- verifier type and timestamp.
+## Ordinary copyright-term triage
 
-Unknown material facts fail closed.
+For material outside a trusted collection policy, publication age alone remains
+insufficient. Russian and foreign works may depend on author death, anonymous or
+pseudonymous publication, rehabilitation, posthumous publication, war-related
+term extensions, international treaties and country-of-origin rules.
 
-## Automatic promotion
+The deterministic age/death calculator therefore produces at most
+`public_domain_candidate`. Promotion to a verified status requires evidence.
 
-Automatic promotion is allowed only when a deterministic policy can prove every required fact from trusted evidence. Otherwise the service may mark `public_domain_candidate` and request review.
+## Work, edition, source and illustration are separate
 
-Never expose the private source PDF merely because normalized content is promoted public.
+Even when a work is publicly usable:
+
+- a later edition can have separate rights;
+- photographs and illustrations can have their own authors/bases;
+- a private scan can contain personal annotations or marginalia;
+- an institution can permit access to normalized content while keeping exact
+  source files private.
+
+For this reason the raw uploaded PDF remains private by default even when its
+normalized content becomes public. Illustrations have their own visibility and
+rights evidence.
+
+## Policy-driven automation
+
+Automatic promotion is allowed only from a versioned trusted policy plus
+deterministic evidence. A useful policy registry entry contains:
+
+- policy ID/version;
+- collection/source identifiers it applies to;
+- allowed content/media actions;
+- required provenance fields;
+- legal/institutional evidence references;
+- effective/review dates;
+- whether public distribution is permitted.
+
+Unknown or conflicting facts fail closed to private. Changing a policy never
+requires re-OCR or rechunking: only rights/visibility projections are re-evaluated.

@@ -13,3 +13,10 @@ def test_model_surface_stays_small_and_goal_oriented(monkeypatch):
     assert tools["profile"].meta["openai/profile"] is True
     assert tools["search"].annotations.read_only_hint is True
     assert tools["fetch"].annotations.read_only_hint is True
+
+def test_live_profile_exposes_one_low_latency_knowledge_tool(monkeypatch):
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    server = build_server(profile="live")
+    tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
+    assert set(tools) == {"knowledge_search"}
+    assert tools["knowledge_search"].annotations.read_only_hint is True

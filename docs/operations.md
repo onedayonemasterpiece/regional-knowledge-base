@@ -5,7 +5,7 @@
 The service is not production-ready merely because unit tests pass. Required gates:
 
 1. create the Supabase project and enable OAuth 2.1 Server with asymmetric signing keys;
-2. configure exact MCP resource binding and prove that a token for another MCP is rejected;
+2. configure the platform client→resource audience mapping and prove that a token for another MCP is rejected;
 3. apply SQL migrations and run RLS acceptance with at least two users, one workspace and anonymous public reads;
 4. create a private S3-compatible bucket with public ACL disabled;
 5. configure a 768-dimension external embedding endpoint; verify lexical-only degradation when it is unavailable;
@@ -13,7 +13,8 @@ The service is not production-ready merely because unit tests pass. Required gat
 7. prove raw private source PDFs remain inaccessible when normalized content is public;
 8. connect the MCP from ChatGPT and test `search`, `fetch`, file-parameter ingestion and model-visible page images;
 9. connect the read-only Live profile through `live-interaction` and measure p50/p95 tool latency;
-10. verify cross-service identity with Wonderful Lections or Projects Hub using the same Supabase `sub` and distinct MCP resources.
+10. verify a second MCP uses the same Supabase `sub` with a different audience/resource;
+11. verify one first-party delegated integration (prefer Projects Hub -> Knowledge) can refresh its own Knowledge grant and that revoking it does not affect the user's other MCP grants.
 
 ## Performance targets
 
