@@ -35,7 +35,6 @@ async def test_search_preserves_user_jwt_and_degrades_to_lexical():
                     "chunk_id": "22222222-2222-2222-2222-222222222222",
                     "document_id": "33333333-3333-3333-3333-333333333333",
                     "title": "Книга",
-                    "snippet": "Фрагмент",
                     "page_ids": [],
                     "illustration_ids": [],
                     "score": 0.02,
@@ -66,25 +65,65 @@ async def test_search_preserves_user_jwt_and_degrades_to_lexical():
 
 
 @pytest.mark.asyncio
-async def test_fetch_uses_rls_user_path():
+async def test_fetch_authorizes_with_user_rls_then_reads_exact_object_range():
+    import hashlib
+
+    text = "Точный фрагмент источника".encode("utf-8")
+
+    class Store:
+        async def get_range(self, key, start, end):
+            assert key == "tenants/t/documents/d/text/rev-1.txt"
+            assert (start, end) == (100, 100 + len(text))
+            return text
+
+        async def get_bytes(self, key):
+            raise AssertionError("fetch should use a byte range")
+
+        async def put_bytes(self, key, data, content_type):
+            raise AssertionError("fetch is read-only")
+
+    calls = []
+
     async def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["authorization"] == "Bearer user-jwt"
-        assert request.url.path == "/rest/v1/rkb_chunks"
-        return httpx.Response(
-            200,
-            json=[
-                {
+        calls.append((request.url.path, request.headers["authorization"]))
+        if request.url.path == "/rest/v1/rkb_chunks":
+            assert request.headers["authorization"] == "Bearer user-jwt"
+            return httpx.Response(
+                200,
+                json=[{
                     "id": "22222222-2222-2222-2222-222222222222",
                     "document_id": "33333333-3333-3333-3333-333333333333",
                     "title": "Источник",
-                    "source_text": "Точный фрагмент источника",
                     "metadata": {"printed_pages": ["15"]},
                     "page_ids": ["44444444-4444-4444-4444-444444444444"],
                     "illustration_ids": ["55555555-5555-5555-5555-555555555555"],
                     "footnote_region_ids": [],
-                }
-            ],
-        )
+                    "text_object_id": "66666666-6666-6666-6666-666666666666",
+                    "text_start": 100,
+                    "text_end": 100 + len(text),
+                    "text_sha256": hashlib.sha256(text).hexdigest(),
+                }],
+            )
+        if request.url.path == "/rest/v1/rkb_objects":
+            assert request.headers["authorization"] == "Bearer server-role"
+            assert (
+                request.url.params["id"]
+                == "eq.66666666-6666-6666-6666-666666666666"
+            )
+            assert (
+                request.url.params["document_id"]
+                == "eq.33333333-3333-3333-3333-333333333333"
+            )
+            return httpx.Response(
+                200,
+                json=[{
+                    "id": "66666666-6666-6666-6666-666666666666",
+                    "object_key": "tenants/t/documents/d/text/rev-1.txt",
+                    "sha256": "0" * 64,
+                    "mime_type": "text/plain",
+                }],
+            )
+        raise AssertionError(request.url)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     backend = SupabaseRestBackend(
@@ -92,8 +131,10 @@ async def test_fetch_uses_rls_user_path():
             url="https://db.example",
             anon_key="public-anon-key",
             public_base_url="https://knowledge.example",
+            service_role_key="server-role",
         ),
         client=client,
+        object_store=Store(),
     )
     result = await backend.fetch(
         "22222222-2222-2222-2222-222222222222", principal()
@@ -103,3 +144,7 @@ async def test_fetch_uses_rls_user_path():
     assert result.text == "Точный фрагмент источника"
     assert result.metadata["printed_pages"] == ["15"]
     assert result.metadata["illustrations"][0]["illustration_id"].startswith("5555")
+    assert calls == [
+        ("/rest/v1/rkb_chunks", "Bearer user-jwt"),
+        ("/rest/v1/rkb_objects", "Bearer server-role"),
+    ]
