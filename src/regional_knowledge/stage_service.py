@@ -647,6 +647,9 @@ def _build_poi_media_events(
                     "source_crop_sha256": row["source_crop_sha256"],
                     "rights_status": row.get("rights_status") or "unknown",
                     "visibility": visibility,
+                    "vibepublish_entry_ref": row.get(
+                        "vibepublish_entry_ref"
+                    ),
                 },
                 "evidence": {
                     "page_ids": [str(illustration.page_id)],
