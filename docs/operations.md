@@ -14,7 +14,12 @@ The service is not production-ready merely because unit tests pass. Required gat
 8. connect the MCP from ChatGPT and test `search`, `fetch`, file-parameter ingestion and model-visible page images;
 9. connect the read-only Live profile through `live-interaction` and measure p50/p95 tool latency;
 10. verify a second MCP uses the same Supabase `sub` with a different audience/resource;
-11. verify one first-party delegated integration (prefer Projects Hub -> Knowledge) can refresh its own Knowledge grant and that revoking it does not affect the user's other MCP grants.
+11. verify one first-party delegated integration (prefer Projects Hub -> Knowledge) can refresh its own Knowledge grant and that revoking it does not affect the user's other MCP grants;
+12. verify Knowledge -> Street Story POI delivery with idempotent outbox semantics;
+13. verify private-book POI evidence remains private in Street Story and expert review;
+14. verify ambiguous book POI identity creates an unresolved link instead of a silent merge;
+15. verify unknown author authority remains null and author scoring is domain-specific;
+16. verify unresolved contradiction blocks automatic canonicalization regardless of verification score.
 
 ## Performance targets
 
