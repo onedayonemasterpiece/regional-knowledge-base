@@ -113,6 +113,7 @@ def test_poi_media_link_and_event_keep_exact_illustration_provenance():
                 "source_crop_sha256": "a" * 64,
                 "visibility": "private",
                 "rights_status": "unknown",
+                "vibepublish_entry_ref": "media:telegram:royal-gate-photo",
             }
         ],
     )
@@ -125,6 +126,10 @@ def test_poi_media_link_and_event_keep_exact_illustration_provenance():
         "knowledge://illustrations/"
     )
     assert event["scope"]["visibility"] == "private"
+    assert (
+        event["media"]["vibepublish_entry_ref"]
+        == "media:telegram:royal-gate-photo"
+    )
     assert "object_key" not in str(event)
 
 
