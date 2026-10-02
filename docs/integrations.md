@@ -15,9 +15,17 @@ Wonderful Lections already has a verified VibePublish asset bridge. For media mi
 
 ## Street Story
 
-Street Story may query geographically relevant historical evidence and illustrations. Knowledge Base remains the evidence authority; Street Story owns camera/location UX and generated output.
+Street Story is the canonical owner of the regional POI graph, POI aliases,
+atomic POI claims, contradiction ledger and expert arbitration state.
 
-Never copy the whole corpus into Street Story.
+Knowledge Base remains the authority for book/journal provenance and exact
+page/region evidence. During book ingestion it may extract evidence-backed POI
+fact candidates and deliver them asynchronously after a successful finalize.
+
+Never copy the whole corpus into Street Story. Deliver only typed evidence events
+with stable knowledge:// references and inherited access scope.
+
+See [POI evidence bridge](poi-integration.md).
 
 ## Projects Hub
 
