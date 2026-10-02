@@ -306,6 +306,7 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
         "p_document_id": DOCUMENT_ID,
         "p_ingestion_id": INGESTION_ID,
         "p_revision": 1,
+        "p_poi_events": [],
     }]
     crop_row = posted["rkb_illustrations"][0]
     assert crop_row["source_crop_sha256"]

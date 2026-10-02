@@ -214,6 +214,75 @@ class StageChunkInput(BaseModel):
     )
 
 
+class PoiLocatorInput(BaseModel):
+    names: list[str] = Field(min_length=1, max_length=30)
+    external_ids: dict[str, str] = Field(default_factory=dict)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+
+    @model_validator(mode="after")
+    def compact_locator(self) -> "PoiLocatorInput":
+        self.names = [
+            value.strip()[:300]
+            for value in self.names
+            if value.strip()
+        ]
+        if not self.names:
+            raise ValueError("POI locator needs at least one non-empty name")
+        if len(self.external_ids) > 20:
+            raise ValueError("too many POI external ids")
+        self.external_ids = {
+            str(key).strip()[:80]: str(value).strip()[:500]
+            for key, value in self.external_ids.items()
+            if str(key).strip() and str(value).strip()
+        }
+        return self
+
+
+class StagePoiFactInput(BaseModel):
+    candidate_key: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$"
+    )
+    poi_locator: PoiLocatorInput
+    kind: Literal[
+        "construction",
+        "architect",
+        "foundation",
+        "reconstruction",
+        "demolition",
+        "ownership",
+        "visit",
+        "use",
+        "opening",
+        "location",
+        "structure",
+        "other",
+    ]
+    text: str = Field(min_length=1, max_length=500)
+    time_scope: str | None = Field(default=None, max_length=100)
+    evidence_refs: list[StageRegionRef] = Field(min_length=1, max_length=50)
+    contributor_names: list[str] = Field(default_factory=list, max_length=20)
+    publication_method: Literal[
+        "source_edition",
+        "scholarly_monograph",
+        "institutional_catalogue",
+        "general_history",
+        "memoir",
+        "unknown",
+    ] = "unknown"
+
+    @model_validator(mode="after")
+    def compact_contributors(self) -> "StagePoiFactInput":
+        self.contributor_names = list(
+            dict.fromkeys(
+                value.strip()[:300]
+                for value in self.contributor_names
+                if value.strip()
+            )
+        )
+        return self
+
+
 class SearchResult(BaseModel):
     id: str
     title: str
