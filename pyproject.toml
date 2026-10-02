@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ingest = ["PyMuPDF>=1.26,<2", "boto3>=1.40,<2"]
+ingest = ["PyMuPDF>=1.26,<2", "boto3>=1.40,<2", "aiohttp>=3.13,<4"]
 dev = ["pytest>=8.4,<9", "pytest-asyncio>=1.2,<2"]
 
 [project.scripts]
