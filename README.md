@@ -48,8 +48,10 @@ The target identity provider is Supabase Auth OAuth 2.1/OIDC. Every MCP remains 
 The public scaffold now includes hybrid retrieval plus deterministic
 `start -> pages -> stage -> validate -> finalize` ingestion with multimodal
 provenance and a Live-optimized MCP profile. Local tests cover the full
-materialization flow; production Supabase/S3/OAuth deployment and real-book
-acceptance remain explicit gates. No public corpus is implied by the code repository.
+materialization flow. The producer side of the Street Story POI bridge also
+stages evidence-backed POI candidates and writes a durable authorization-aware
+outbox at finalize; network delivery is still an explicit gate. Production
+Supabase/S3/OAuth deployment and real-book acceptance remain explicit gates. No public corpus is implied by the code repository.
 
 See:
 - [Architecture](docs/architecture.md)

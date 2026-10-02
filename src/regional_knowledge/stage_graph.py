@@ -9,9 +9,11 @@ from pydantic import BaseModel, Field, model_validator
 from .contracts import (
     BBox,
     RegionKind,
+    PoiLocatorInput,
     RelationKind,
     StageChunkInput,
     StagePageInput,
+    StagePoiFactInput,
 )
 
 
@@ -74,11 +76,25 @@ class StagedChunk(BaseModel):
     normalized_text: str = Field(min_length=1, max_length=40_000)
 
 
+class StagedPoiFact(BaseModel):
+    candidate_key: str
+    candidate_id: UUID
+    poi_locator: PoiLocatorInput
+    kind: str
+    text: str = Field(min_length=1, max_length=500)
+    time_scope: str | None = Field(default=None, max_length=100)
+    region_ids: list[UUID] = Field(min_length=1, max_length=50)
+    page_ids: list[UUID] = Field(min_length=1, max_length=20)
+    contributor_names: list[str] = Field(default_factory=list, max_length=20)
+    publication_method: str
+
+
 class IngestStagePayload(BaseModel):
     pages: list[StagedPage] = Field(default_factory=list, max_length=8)
     relations: list[StagedRelation] = Field(default_factory=list, max_length=2_000)
     illustrations: list[StagedIllustration] = Field(default_factory=list, max_length=200)
     chunks: list[StagedChunk] = Field(default_factory=list, max_length=500)
+    poi_facts: list[StagedPoiFact] = Field(default_factory=list, max_length=500)
 
 
 class StagedGraph(BaseModel):
@@ -87,6 +103,7 @@ class StagedGraph(BaseModel):
     relations: list[StagedRelation] = Field(default_factory=list)
     illustrations: list[StagedIllustration] = Field(default_factory=list)
     chunks: list[StagedChunk] = Field(default_factory=list)
+    poi_facts: list[StagedPoiFact] = Field(default_factory=list)
 
 
 class GraphValidation(BaseModel):
@@ -117,6 +134,7 @@ def compile_model_stage(
     revision: int,
     pages: list[StagePageInput],
     chunks: list[StageChunkInput],
+    poi_facts: list[StagePoiFactInput] | None = None,
 ) -> IngestStagePayload:
     if graph.revision != revision:
         raise ValueError("staged graph revision mismatch")
@@ -305,11 +323,45 @@ def compile_model_stage(
             )
         )
 
+    staged_poi_facts: list[StagedPoiFact] = []
+    for fact in poi_facts or []:
+        evidence_regions: list[StagedRegion] = []
+        for ref in fact.evidence_refs:
+            region = region_by_ref.get((ref.page_id, ref.region_key))
+            if region is None:
+                raise ValueError(
+                    f"POI fact {fact.candidate_key} references unknown region "
+                    f"{ref.page_id}#{ref.region_key}"
+                )
+            evidence_regions.append(region)
+        staged_poi_facts.append(
+            StagedPoiFact(
+                candidate_key=fact.candidate_key,
+                candidate_id=uuid5(
+                    document_uuid,
+                    f"poi-fact:{revision}:{fact.candidate_key}",
+                ),
+                poi_locator=fact.poi_locator,
+                kind=fact.kind,
+                text=fact.text.strip(),
+                time_scope=fact.time_scope,
+                region_ids=_dedupe_preserve(
+                    [region.region_id for region in evidence_regions]
+                ),
+                page_ids=_dedupe_preserve(
+                    [region.page_id for region in evidence_regions]
+                ),
+                contributor_names=fact.contributor_names,
+                publication_method=fact.publication_method,
+            )
+        )
+
     return IngestStagePayload(
         pages=staged_pages,
         relations=relations,
         illustrations=illustrations,
         chunks=staged_chunks,
+        poi_facts=staged_poi_facts,
     )
 
 
@@ -372,12 +424,22 @@ def merge_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
     for item in payload.chunks:
         chunks[str(item.chunk_id)] = item
 
+    poi_facts = {
+        str(item.candidate_id): item
+        for item in graph.poi_facts
+        if not any(str(page_id) in replaced_page_ids for page_id in item.page_ids)
+        and not any(str(region_id) in replaced_region_ids for region_id in item.region_ids)
+    }
+    for item in payload.poi_facts:
+        poi_facts[str(item.candidate_id)] = item
+
     return StagedGraph(
         revision=graph.revision,
         pages=sorted(pages.values(), key=lambda item: item.physical_page_index),
         relations=list(relations.values()),
         illustrations=list(illustrations.values()),
         chunks=list(chunks.values()),
+        poi_facts=list(poi_facts.values()),
     )
 
 
@@ -502,6 +564,30 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
             if str(illustration_id) not in illustration_ids:
                 errors.append(
                     f"chunk {cid} references unknown illustration {illustration_id}"
+                )
+
+    poi_candidate_ids: set[str] = set()
+    for fact in graph.poi_facts:
+        candidate_id = str(fact.candidate_id)
+        if candidate_id in poi_candidate_ids:
+            errors.append(f"duplicate POI fact candidate_id: {candidate_id}")
+        poi_candidate_ids.add(candidate_id)
+        if not fact.text.strip():
+            errors.append(f"POI fact has empty text: {candidate_id}")
+        for page_id in fact.page_ids:
+            if str(page_id) not in page_set:
+                errors.append(
+                    f"POI fact {candidate_id} references unknown page {page_id}"
+                )
+        for region_id in fact.region_ids:
+            value = str(region_id)
+            if value not in region_set:
+                errors.append(
+                    f"POI fact {candidate_id} references unknown region {region_id}"
+                )
+            elif region_page[value] not in {str(page) for page in fact.page_ids}:
+                errors.append(
+                    f"POI fact {candidate_id} omits page for region {region_id}"
                 )
 
     if not graph.chunks:

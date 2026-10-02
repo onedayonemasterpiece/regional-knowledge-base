@@ -4,10 +4,11 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import uuid4, uuid5
 
 import httpx
 
@@ -16,6 +17,7 @@ from .contracts import (
     Principal,
     StageChunkInput,
     StagePageInput,
+    StagePoiFactInput,
 )
 from .file_ingress import sha256_file
 from .stage_graph import (
@@ -93,7 +95,10 @@ async def _document_row(
         headers=service._headers(principal),
         params={
             "id": f"eq.{document_id}",
-            "select": "id,page_count,active_revision,title",
+            "select": (
+                "id,page_count,active_revision,title,authors,publication_year,"
+                "content_visibility,workspace_id"
+            ),
             "limit": "1",
         },
     )
@@ -189,14 +194,25 @@ async def stage_ingestion(
 
     raw_pages = payload.get("pages", [])
     raw_chunks = payload.get("chunks", [])
-    if not isinstance(raw_pages, list) or not isinstance(raw_chunks, list):
-        raise ValueError("stage pages/chunks must be arrays")
+    raw_poi_facts = payload.get("poi_facts", [])
+    if (
+        not isinstance(raw_pages, list)
+        or not isinstance(raw_chunks, list)
+        or not isinstance(raw_poi_facts, list)
+    ):
+        raise ValueError("stage pages/chunks/poi_facts must be arrays")
     pages = [StagePageInput.model_validate(value) for value in raw_pages]
     chunks = [StageChunkInput.model_validate(value) for value in raw_chunks]
+    poi_facts = [
+        StagePoiFactInput.model_validate(value)
+        for value in raw_poi_facts
+    ]
     if len(pages) > 8:
         raise ValueError("stage accepts at most 8 pages per call")
-    if not pages and not chunks:
-        raise ValueError("stage requires at least one page or chunk")
+    if len(poi_facts) > 100:
+        raise ValueError("stage accepts at most 100 POI facts per call")
+    if not pages and not chunks and not poi_facts:
+        raise ValueError("stage requires at least one page, chunk or POI fact")
 
     graph = await _load_graph(service, row)
     revision = int(row.get("staged_revision") or 1)
@@ -206,6 +222,7 @@ async def stage_ingestion(
         revision=revision,
         pages=pages,
         chunks=chunks,
+        poi_facts=poi_facts,
     )
     merged = merge_stage(graph, compiled)
     updated = await _store_graph(
@@ -218,8 +235,9 @@ async def stage_ingestion(
     return service._ingestion_output(
         updated,
         (
-            f"Staged {len(pages)} pages and {len(chunks)} semantic chunks; "
-            "continue with book_pages/stage or validate when complete"
+            f"Staged {len(pages)} pages, {len(chunks)} semantic chunks and "
+            f"{len(poi_facts)} POI facts; continue with book_pages/stage or "
+            "validate when complete"
         ),
     )
 
@@ -345,6 +363,183 @@ async def _embeddings(
         *(one(index, text) for index, text in enumerate(texts))
     )
     return list(values), warnings
+
+
+_PUBLICATION_METHOD_SCORES = {
+    "source_edition": 95,
+    "scholarly_monograph": 85,
+    "institutional_catalogue": 80,
+    "general_history": 65,
+    "memoir": 55,
+    "unknown": None,
+}
+_YEAR_RE = re.compile(r"\b(?:1[0-9]{3}|20[0-9]{2}|[5-9][0-9]{2})\b")
+
+
+def _poi_semantic_key(kind: str, text: str) -> str:
+    years = list(dict.fromkeys(_YEAR_RE.findall(text)))
+    if kind != "other" and years:
+        return f"{kind}:" + "-".join(years)
+    digest = hashlib.sha256(text.casefold().encode("utf-8")).hexdigest()[:20]
+    return f"{kind}:producer:{digest}"
+
+
+async def _author_authority(
+    service,
+    principal: Principal,
+    *,
+    contributor_names: list[str],
+    subject: str,
+) -> tuple[int | None, list[str], str | None]:
+    names = list(
+        dict.fromkeys(
+            value.strip()
+            for value in contributor_names
+            if value.strip()
+        )
+    )
+    if not names:
+        return None, [], None
+
+    response = await service.client.post(
+        f"{service.config.url.rstrip('/')}/rest/v1/rpc/"
+        "rkb_author_authority_for_names",
+        headers=service._headers(principal),
+        json={
+            "p_names": names,
+            "p_subject": subject,
+            "p_geography": "kaliningrad_oblast",
+        },
+    )
+    response.raise_for_status()
+    rows = response.json()
+    by_input = {
+        str(row["input_name"]).casefold(): row
+        for row in rows
+        if row.get("input_name")
+    }
+    if any(name.casefold() not in by_input for name in names):
+        return None, [
+            f"knowledge://authors/{row['author_id']}"
+            for row in rows
+            if row.get("author_id")
+        ], None
+
+    scores = [int(by_input[name.casefold()]["score"]) for name in names]
+    policy_versions = {
+        str(by_input[name.casefold()]["policy_version"])
+        for name in names
+    }
+    if len(policy_versions) != 1:
+        return None, [
+            f"knowledge://authors/{by_input[name.casefold()]['author_id']}"
+            for name in names
+        ], None
+
+    return (
+        round(sum(scores) / len(scores)),
+        [
+            f"knowledge://authors/{by_input[name.casefold()]['author_id']}"
+            for name in names
+        ],
+        next(iter(policy_versions)),
+    )
+
+
+async def _build_poi_events(
+    service,
+    *,
+    principal: Principal,
+    graph: StagedGraph,
+    document: dict[str, Any],
+    document_id: str,
+    revision: int,
+) -> list[dict[str, Any]]:
+    authors = [
+        str(value).strip()
+        for value in (document.get("authors") or [])
+        if str(value).strip()
+    ]
+    events: list[dict[str, Any]] = []
+    for fact in graph.poi_facts:
+        contributors = fact.contributor_names or authors
+        author_score, author_refs, authority_policy = await _author_authority(
+            service,
+            principal,
+            contributor_names=contributors,
+            subject=fact.kind,
+        )
+        method_score = _PUBLICATION_METHOD_SCORES.get(
+            fact.publication_method
+        )
+        provenance_score = 100
+        verification_score = None
+        if author_score is not None and method_score is not None:
+            verification_score = round(
+                0.55 * author_score
+                + 0.25 * method_score
+                + 0.20 * provenance_score
+            )
+
+        candidate_id = str(fact.candidate_id)
+        scope_visibility = str(
+            document.get("content_visibility") or "private"
+        )
+        event_id = str(uuid5(fact.candidate_id, "poi.fact_evidence.v1"))
+        events.append(
+            {
+                "contract_version": "poi.fact_evidence.v1",
+                "event_id": event_id,
+                "idempotency_key": (
+                    f"knowledge:{document_id}:{revision}:{candidate_id}"
+                ),
+                "producer": "regional_knowledge",
+                "scope": {
+                    "visibility": scope_visibility,
+                    "owner_sub": principal.subject,
+                    "workspace_id": document.get("workspace_id"),
+                },
+                "source": {
+                    "document_ref": f"knowledge://documents/{document_id}",
+                    "revision": revision,
+                    "title": str(document.get("title") or "Untitled source"),
+                    "publication_year": document.get("publication_year"),
+                },
+                "poi_locator": fact.poi_locator.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                ),
+                "claim": {
+                    "candidate_id": candidate_id,
+                    "semantic_key": _poi_semantic_key(
+                        fact.kind,
+                        fact.text,
+                    ),
+                    "kind": fact.kind,
+                    "text": fact.text,
+                    "time_scope": fact.time_scope,
+                },
+                "evidence": {
+                    "evidence_ref": f"knowledge://evidence/{candidate_id}",
+                    "page_ids": [str(value) for value in fact.page_ids],
+                    "region_ids": [str(value) for value in fact.region_ids],
+                    "source_family_id": (
+                        f"unresolved:knowledge:{document_id}"
+                    ),
+                    "author_profile_refs": author_refs,
+                    "author_subject_authority": author_score,
+                    "publication_method_score": method_score,
+                    "provenance_precision_score": provenance_score,
+                    "evidence_verification_score": verification_score,
+                    "score_policy_version": (
+                        "book-evidence-v1"
+                        if authority_policy is None
+                        else f"book-evidence-v1+{authority_policy}"
+                    ),
+                },
+            }
+        )
+    return events
 
 
 async def finalize_ingestion(
@@ -589,6 +784,15 @@ async def finalize_ingestion(
             {"warnings": [*validation.warnings, *embedding_warnings]},
         )
 
+    poi_events = await _build_poi_events(
+        service,
+        principal=principal,
+        graph=graph,
+        document=document,
+        document_id=document_id,
+        revision=revision,
+    )
+
     activation = await service.client.post(
         f"{service.config.url.rstrip('/')}/rest/v1/rpc/rkb_activate_revision",
         headers=service._headers(principal),
@@ -596,6 +800,7 @@ async def finalize_ingestion(
             "p_document_id": document_id,
             "p_ingestion_id": ingestion_id,
             "p_revision": revision,
+            "p_poi_events": poi_events,
         },
     )
     activation.raise_for_status()

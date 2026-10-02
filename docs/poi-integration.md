@@ -328,6 +328,34 @@ This fits Projects Hub's existing voice-first model:
 
 Resolution is announced only after Street Story returns a durable receipt/readback.
 
+## Implemented producer checkpoint — 2026-10-02
+
+Regional Knowledge now has a local implementation slice for the producer side:
+
+- `book_ingest(stage)` accepts typed POI fact candidates tied to exact staged
+  page/region refs;
+- candidate/event identities are deterministic per document revision;
+- contributor names prefer chapter/article attribution over generic book authors
+  when the model can identify it;
+- verified author authority is stored in curated, versioned profiles and looked up
+  by geography + subject; ambiguous same-name profiles fail closed;
+- unknown author authority remains `null`;
+- publication method and exact-region provenance feed the versioned
+  `book-evidence-v1` evidence-strength score;
+- finalize builds `poi.fact_evidence.v1` envelopes only from the validated staged
+  graph;
+- DB activation validates document/revision/scope/page/region provenance before
+  writing events;
+- unresolved source lineage is normalized to the conservative family `unknown`;
+- public events enter `pending_delivery`; private/workspace events enter
+  `pending_authorization`;
+- outbox insertion and `active_revision` activation share one DB transaction.
+
+This checkpoint deliberately stops **before** network delivery. A Street Story
+ingest endpoint, authorization/grant resolver and retry worker remain separate
+acceptance gates. Their absence cannot make book finalization fail after the DB
+transaction succeeds.
+
 ## Acceptance gates
 
 Before enabling automatic book→POI delivery:

@@ -63,3 +63,22 @@ acceptance remains a production gate.
 
 CI installs the `ingest` extra so PDF rendering/cropping is exercised rather
 than skipped.
+
+## Implemented POI producer/outbox checkpoint — 2026-10-02
+
+Local contracts and tests now cover:
+- staged POI candidates with exact page/region provenance;
+- contextual versioned author authority where curated evidence exists;
+- `null` author score when identity/authority is unknown;
+- conservative unknown source-family handling;
+- `poi.fact_evidence.v1` construction;
+- DB-side event scope/provenance checks;
+- durable idempotent outbox written transactionally with revision activation;
+- private/workspace `pending_authorization` versus public `pending_delivery`.
+
+Not yet claimed:
+- real Street Story network intake;
+- outbox delivery/retry worker;
+- user OAuth delegation resolution for private evidence;
+- POI identity resolution and contradiction creation E2E;
+- Projects Hub expert assignment E2E.
