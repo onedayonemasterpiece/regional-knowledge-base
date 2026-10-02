@@ -37,3 +37,18 @@ Corpus body text must not be stored in Postgres. Region/chunk text lives in
 private object storage. Postgres keeps hashes, byte-range locators, `tsvector`,
 embeddings and compact metadata only. This is a hard invariant for the 500 MiB
 Free-tier target.
+
+
+## Current infrastructure status — 2026-10-02
+
+No Regional Knowledge Supabase account/project is connected yet.
+
+The codebase and SQL migrations are provider-ready, but:
+- no live Supabase project URL/key is assumed;
+- no migration is considered applied;
+- no OAuth issuer/resource mapping is considered deployed;
+- no RLS acceptance has been run against a real database.
+
+The owner plans to connect a separate Supabase account/project later through the
+shared environment/secrets layer. Until that explicit setup step, all Supabase
+behavior is local/fake-contract coverage only.

@@ -18,6 +18,7 @@ from .contracts import (
     StageChunkInput,
     StagePageInput,
     StagePoiFactInput,
+    StagePoiMediaLinkInput,
 )
 from .file_ingress import sha256_file
 from .stage_graph import (
@@ -195,24 +196,36 @@ async def stage_ingestion(
     raw_pages = payload.get("pages", [])
     raw_chunks = payload.get("chunks", [])
     raw_poi_facts = payload.get("poi_facts", [])
+    raw_poi_media_links = payload.get("poi_media_links", [])
     if (
         not isinstance(raw_pages, list)
         or not isinstance(raw_chunks, list)
         or not isinstance(raw_poi_facts, list)
+        or not isinstance(raw_poi_media_links, list)
     ):
-        raise ValueError("stage pages/chunks/poi_facts must be arrays")
+        raise ValueError(
+            "stage pages/chunks/poi_facts/poi_media_links must be arrays"
+        )
     pages = [StagePageInput.model_validate(value) for value in raw_pages]
     chunks = [StageChunkInput.model_validate(value) for value in raw_chunks]
     poi_facts = [
         StagePoiFactInput.model_validate(value)
         for value in raw_poi_facts
     ]
+    poi_media_links = [
+        StagePoiMediaLinkInput.model_validate(value)
+        for value in raw_poi_media_links
+    ]
     if len(pages) > 8:
         raise ValueError("stage accepts at most 8 pages per call")
     if len(poi_facts) > 100:
         raise ValueError("stage accepts at most 100 POI facts per call")
-    if not pages and not chunks and not poi_facts:
-        raise ValueError("stage requires at least one page, chunk or POI fact")
+    if len(poi_media_links) > 100:
+        raise ValueError("stage accepts at most 100 POI media links per call")
+    if not pages and not chunks and not poi_facts and not poi_media_links:
+        raise ValueError(
+            "stage requires a page, chunk, POI fact or POI media link"
+        )
 
     graph = await _load_graph(service, row)
     revision = int(row.get("staged_revision") or 1)
@@ -223,6 +236,7 @@ async def stage_ingestion(
         pages=pages,
         chunks=chunks,
         poi_facts=poi_facts,
+        poi_media_links=poi_media_links,
     )
     merged = merge_stage(graph, compiled)
     updated = await _store_graph(
@@ -235,9 +249,9 @@ async def stage_ingestion(
     return service._ingestion_output(
         updated,
         (
-            f"Staged {len(pages)} pages, {len(chunks)} semantic chunks and "
-            f"{len(poi_facts)} POI facts; continue with book_pages/stage or "
-            "validate when complete"
+            f"Staged {len(pages)} pages, {len(chunks)} chunks, "
+            f"{len(poi_facts)} POI facts and {len(poi_media_links)} POI media "
+            "links; continue with book_pages/stage or validate when complete"
         ),
     )
 
@@ -542,6 +556,110 @@ async def _build_poi_events(
     return events
 
 
+def _build_poi_media_events(
+    *,
+    principal: Principal,
+    graph: StagedGraph,
+    document: dict[str, Any],
+    document_id: str,
+    revision: int,
+    illustration_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    illustration_row_by_id = {
+        str(row["id"]): row
+        for row in illustration_rows
+    }
+    illustration_by_id = {
+        str(item.illustration_id): item
+        for item in graph.illustrations
+    }
+    region_by_id = {
+        str(region.region_id): region
+        for page in graph.pages
+        for region in page.regions
+    }
+
+    events: list[dict[str, Any]] = []
+    for link in graph.poi_media_links:
+        illustration_id = str(link.illustration_id)
+        illustration = illustration_by_id.get(illustration_id)
+        row = illustration_row_by_id.get(illustration_id)
+        if illustration is None or row is None:
+            raise RuntimeError("POI media link illustration is not materialized")
+
+        caption_parts = [
+            region_by_id[str(region_id)].source_text.strip()
+            for region_id in illustration.caption_region_ids
+            if str(region_id) in region_by_id
+            and region_by_id[str(region_id)].source_text.strip()
+        ]
+        caption = "\n".join(caption_parts)[:2000] or None
+        link_id = str(link.link_id)
+        event_id = str(uuid5(link.link_id, "poi.media_evidence.v1"))
+        evidence_region_ids = [
+            str(illustration.source_region_id),
+            *[str(value) for value in illustration.caption_region_ids],
+        ]
+        visibility = str(row.get("visibility") or "private")
+        events.append(
+            {
+                "contract_version": "poi.media_evidence.v1",
+                "event_id": event_id,
+                "idempotency_key": (
+                    f"knowledge-media:{document_id}:{revision}:{link_id}"
+                ),
+                "producer": "regional_knowledge",
+                "scope": {
+                    "visibility": visibility,
+                    "owner_sub": principal.subject,
+                    "workspace_id": (
+                        document.get("workspace_id")
+                        if visibility == "workspace"
+                        else None
+                    ),
+                },
+                "source": {
+                    "document_ref": f"knowledge://documents/{document_id}",
+                    "revision": revision,
+                    "title": str(document.get("title") or "Untitled source"),
+                    "publication_year": document.get("publication_year"),
+                },
+                "poi_locator": link.poi_locator.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                ),
+                "media": {
+                    "link_id": link_id,
+                    "illustration_id": illustration_id,
+                    "illustration_ref": (
+                        f"knowledge://illustrations/{illustration_id}"
+                    ),
+                    "relation": link.relation,
+                    "time_scope": link.time_scope,
+                    "kind": illustration.kind,
+                    "caption": caption,
+                    "page_id": str(illustration.page_id),
+                    "source_region_id": str(illustration.source_region_id),
+                    "caption_region_ids": [
+                        str(value)
+                        for value in illustration.caption_region_ids
+                    ],
+                    "source_crop_sha256": row["source_crop_sha256"],
+                    "rights_status": row.get("rights_status") or "unknown",
+                    "visibility": visibility,
+                },
+                "evidence": {
+                    "page_ids": [str(illustration.page_id)],
+                    "region_ids": list(dict.fromkeys(evidence_region_ids)),
+                    "source_family_id": (
+                        f"unresolved:knowledge:{document_id}"
+                    ),
+                },
+            }
+        )
+    return events
+
+
 async def finalize_ingestion(
     service,
     *,
@@ -791,6 +909,16 @@ async def finalize_ingestion(
         document=document,
         document_id=document_id,
         revision=revision,
+    )
+    poi_events.extend(
+        _build_poi_media_events(
+            principal=principal,
+            graph=graph,
+            document=document,
+            document_id=document_id,
+            revision=revision,
+            illustration_rows=illustration_rows,
+        )
     )
 
     activation = await service.client.post(
