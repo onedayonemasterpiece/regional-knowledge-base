@@ -11,6 +11,7 @@ Required production settings:
 | `RKB_OAUTH_JWKS_URL` | issuer JWKS endpoint |
 | `SUPABASE_URL` | project API URL |
 | `SUPABASE_ANON_KEY` | public client key used only with the caller's JWT/RLS path |
+| `SUPABASE_SERVICE_ROLE_KEY` | server-only exact object-locator lookup after successful user-RLS authorization; never used for search/ranking |
 | `RKB_PUBLIC_BASE_URL` | stable evidence-page base URL returned by search/fetch |
 | `RKB_EMBEDDING_ENDPOINT` | external OpenAI-compatible embeddings endpoint; optional for lexical-only degraded mode |
 | `RKB_EMBEDDING_MODEL` | configured 768-dimension embedding model |
@@ -29,3 +30,10 @@ The server must separate two database access modes:
 Never expose object-store access keys, service-role Supabase keys or raw object keys through MCP.
 
 `RKB_DEV_NOAUTH=1` exists only for local deterministic tests and must be rejected by deployment configuration.
+
+## Database-size invariant
+
+Corpus body text must not be stored in Postgres. Region/chunk text lives in
+private object storage. Postgres keeps hashes, byte-range locators, `tsvector`,
+embeddings and compact metadata only. This is a hard invariant for the 500 MiB
+Free-tier target.
