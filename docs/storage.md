@@ -46,3 +46,16 @@ Deleting a private document removes:
 4. service-owned media mirrors where deletion is supported.
 
 If a separately curated public corpus item exists, it has its own provenance and lifecycle; deleting one user's private source cannot silently delete a public canonical record.
+
+
+## Text projections and range reads
+
+Full normalized region/chunk text is not stored in Supabase. Ingestion writes
+UTF-8 text projections to private object storage. A retrieval chunk stores only a
+server-only `text_object_id`, byte offsets, SHA-256, `tsvector`, embedding and
+compact metadata.
+
+`fetch` first resolves the chunk using the caller's JWT and RLS. Only after that
+authorization succeeds may the server use its service credential to resolve the
+exact object locator and issue an S3 Range GET. Returned bytes are hash-verified
+before decoding. The service-role credential is never used for candidate search.
