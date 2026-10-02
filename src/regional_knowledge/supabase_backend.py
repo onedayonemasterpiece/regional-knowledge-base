@@ -343,7 +343,8 @@ class SupabaseRestBackend(KnowledgeBackend):
         params: dict[str, str] = {
             "select": (
                 "id,document_id,source_file_id,source_object_id,source_sha256,"
-                "state,cursor,staged_revision,warnings,error_code,created_at"
+                "staged_graph_object_id,state,cursor,staged_revision,warnings,"
+                "error_code,created_at"
             ),
             "order": "created_at.desc",
             "limit": "1",
@@ -472,18 +473,48 @@ class SupabaseRestBackend(KnowledgeBackend):
         cursor: str | None,
         payload: dict[str, Any] | None,
     ) -> BookIngestOutput:
-        del cursor
         if command == "status":
             if not ingestion_id:
                 raise ValueError("ingestion_id is required for status")
-            row = await self._ingestion_row(principal=principal, ingestion_id=ingestion_id)
+            row = await self._ingestion_row(
+                principal=principal,
+                ingestion_id=ingestion_id,
+            )
             if not row:
                 raise LookupError("ingestion_not_found")
             return self._ingestion_output(row, "Ingestion status")
-        if command != "start":
-            raise RuntimeError(
-                "stage/validate/finalize are not implemented in this ingestion slice"
+
+        if command in {"stage", "validate", "finalize"}:
+            if not ingestion_id:
+                raise ValueError(f"ingestion_id is required for {command}")
+            from .stage_service import (
+                finalize_ingestion,
+                stage_ingestion,
+                validate_ingestion,
             )
+
+            if command == "stage":
+                return await stage_ingestion(
+                    self,
+                    principal=principal,
+                    ingestion_id=ingestion_id,
+                    cursor=cursor,
+                    payload=payload,
+                )
+            if command == "validate":
+                return await validate_ingestion(
+                    self,
+                    principal=principal,
+                    ingestion_id=ingestion_id,
+                )
+            return await finalize_ingestion(
+                self,
+                principal=principal,
+                ingestion_id=ingestion_id,
+            )
+
+        if command != "start":
+            raise ValueError("unsupported ingestion command")
         if file is None:
             raise ValueError("attached PDF file is required for start")
         if file.mime_type and file.mime_type.lower() not in {

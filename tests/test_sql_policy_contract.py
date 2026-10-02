@@ -80,3 +80,54 @@ def test_ingestion_job_keeps_only_opaque_source_object_id():
     assert "source_object_id uuid" in table
     assert "source_object_key" not in table
     assert "rkb_start_ingestion" in CORE
+
+def test_ingestion_start_is_db_idempotent_under_model_retries():
+    start = CORE.index("create or replace function public.rkb_start_ingestion")
+    end = CORE.index("revoke all on function public.rkb_start_ingestion", start)
+    function = CORE[start:end]
+    assert "source_file_id = p_source_file_id" in function
+    assert "source_sha256 is distinct from p_source_sha256" in function
+    assert "exception when unique_violation" in function
+    assert "subtransaction rolls back the unused document row" in function
+
+def test_active_revision_and_verified_rights_are_not_direct_user_patch_fields():
+    assert "revoke update on public.rkb_documents from authenticated;" in CORE
+    grant_start = CORE.index("grant update (", CORE.index("rkb_documents_update_owner"))
+    grant_end = CORE.index(";", grant_start)
+    grant = CORE[grant_start:grant_end]
+    assert "content_visibility" in grant
+    assert "active_revision" not in grant
+    assert "rights_status" not in grant
+    assert "rights_evidence" not in grant
+    assert "source_sha256" not in grant
+
+
+def test_materialized_rows_are_mutable_only_before_activation():
+    for policy in (
+        "rkb_pages_owner_write",
+        "rkb_regions_owner_write",
+        "rkb_relations_owner_write",
+        "rkb_illustrations_owner_write",
+        "rkb_chunks_owner_write",
+    ):
+        start = CORE.index(f"create policy {policy}")
+        section = CORE[start:start + 2200]
+        assert "active_revision" in section
+
+
+def test_relation_and_illustration_writes_cannot_cross_document_graphs():
+    relation = CORE[
+        CORE.index("create policy rkb_relations_owner_write"):
+        CORE.index("drop policy if exists rkb_illustrations_read")
+    ]
+    assert "tp.document_id = sp.document_id" in relation
+    assert "tp.revision = sp.revision" in relation
+
+    illustration = CORE[
+        CORE.index("create policy rkb_illustrations_owner_write"):
+        CORE.index("drop policy if exists rkb_chunks_read")
+    ]
+    assert "p.id = rkb_illustrations.page_id" in illustration
+    assert "p.document_id = rkb_illustrations.document_id" in illustration
+    assert "r.id = rkb_illustrations.source_region_id" in illustration
+    assert "r.page_id = p.id" in illustration

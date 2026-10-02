@@ -401,6 +401,11 @@ create policy rkb_documents_update_owner on public.rkb_documents for update
 using (owner_user_id = auth.uid())
 with check (owner_user_id = auth.uid());
 
+revoke update on public.rkb_documents from authenticated;
+grant update (
+  workspace_id,title,authors,publication_year,language,content_visibility
+) on public.rkb_documents to authenticated;
+
 drop policy if exists rkb_grants_read on public.rkb_document_grants;
 create policy rkb_grants_read on public.rkb_document_grants for select using (
   grantee_user_id = auth.uid() or public.rkb_is_document_owner(document_id)
@@ -424,8 +429,22 @@ create policy rkb_pages_read on public.rkb_pages for select using (
 
 drop policy if exists rkb_pages_owner_write on public.rkb_pages;
 create policy rkb_pages_owner_write on public.rkb_pages for all
-using (public.rkb_is_document_owner(document_id))
-with check (public.rkb_is_document_owner(document_id));
+using (
+  public.rkb_is_document_owner(rkb_pages.document_id)
+  and exists (
+    select 1 from public.rkb_documents d
+    where d.id = rkb_pages.document_id
+      and rkb_pages.revision > d.active_revision
+  )
+)
+with check (
+  public.rkb_is_document_owner(rkb_pages.document_id)
+  and exists (
+    select 1 from public.rkb_documents d
+    where d.id = rkb_pages.document_id
+      and rkb_pages.revision > d.active_revision
+  )
+);
 
 drop policy if exists rkb_regions_read on public.rkb_regions;
 create policy rkb_regions_read on public.rkb_regions for select using (
@@ -439,14 +458,22 @@ drop policy if exists rkb_regions_owner_write on public.rkb_regions;
 create policy rkb_regions_owner_write on public.rkb_regions for all
 using (
   exists (
-    select 1 from public.rkb_pages p
-    where p.id = page_id and public.rkb_is_document_owner(p.document_id)
+    select 1
+    from public.rkb_pages p
+    join public.rkb_documents d on d.id = p.document_id
+    where p.id = rkb_regions.page_id
+      and d.owner_user_id = auth.uid()
+      and p.revision > d.active_revision
   )
 )
 with check (
   exists (
-    select 1 from public.rkb_pages p
-    where p.id = page_id and public.rkb_is_document_owner(p.document_id)
+    select 1
+    from public.rkb_pages p
+    join public.rkb_documents d on d.id = p.document_id
+    where p.id = rkb_regions.page_id
+      and d.owner_user_id = auth.uid()
+      and p.revision > d.active_revision
   )
 );
 
@@ -465,17 +492,31 @@ create policy rkb_relations_owner_write on public.rkb_region_relations for all
 using (
   exists (
     select 1
-    from public.rkb_regions r
-    join public.rkb_pages p on p.id = r.page_id
-    where r.id = source_region_id and public.rkb_is_document_owner(p.document_id)
+    from public.rkb_regions sr
+    join public.rkb_pages sp on sp.id = sr.page_id
+    join public.rkb_regions tr on tr.id = rkb_region_relations.target_region_id
+    join public.rkb_pages tp on tp.id = tr.page_id
+    join public.rkb_documents d on d.id = sp.document_id
+    where sr.id = rkb_region_relations.source_region_id
+      and tp.document_id = sp.document_id
+      and tp.revision = sp.revision
+      and d.owner_user_id = auth.uid()
+      and sp.revision > d.active_revision
   )
 )
 with check (
   exists (
     select 1
-    from public.rkb_regions r
-    join public.rkb_pages p on p.id = r.page_id
-    where r.id = source_region_id and public.rkb_is_document_owner(p.document_id)
+    from public.rkb_regions sr
+    join public.rkb_pages sp on sp.id = sr.page_id
+    join public.rkb_regions tr on tr.id = rkb_region_relations.target_region_id
+    join public.rkb_pages tp on tp.id = tr.page_id
+    join public.rkb_documents d on d.id = sp.document_id
+    where sr.id = rkb_region_relations.source_region_id
+      and tp.document_id = sp.document_id
+      and tp.revision = sp.revision
+      and d.owner_user_id = auth.uid()
+      and sp.revision > d.active_revision
   )
 );
 
@@ -486,8 +527,32 @@ create policy rkb_illustrations_read on public.rkb_illustrations for select usin
 
 drop policy if exists rkb_illustrations_owner_write on public.rkb_illustrations;
 create policy rkb_illustrations_owner_write on public.rkb_illustrations for all
-using (public.rkb_is_document_owner(document_id))
-with check (public.rkb_is_document_owner(document_id));
+using (
+  exists (
+    select 1
+    from public.rkb_pages p
+    join public.rkb_documents d on d.id = p.document_id
+    join public.rkb_regions r on r.id = rkb_illustrations.source_region_id
+    where p.id = rkb_illustrations.page_id
+      and p.document_id = rkb_illustrations.document_id
+      and r.page_id = p.id
+      and d.owner_user_id = auth.uid()
+      and p.revision > d.active_revision
+  )
+)
+with check (
+  exists (
+    select 1
+    from public.rkb_pages p
+    join public.rkb_documents d on d.id = p.document_id
+    join public.rkb_regions r on r.id = rkb_illustrations.source_region_id
+    where p.id = rkb_illustrations.page_id
+      and p.document_id = rkb_illustrations.document_id
+      and r.page_id = p.id
+      and d.owner_user_id = auth.uid()
+      and p.revision > d.active_revision
+  )
+);
 
 drop policy if exists rkb_chunks_read on public.rkb_chunks;
 create policy rkb_chunks_read on public.rkb_chunks for select using (
@@ -496,13 +561,32 @@ create policy rkb_chunks_read on public.rkb_chunks for select using (
 
 drop policy if exists rkb_chunks_owner_write on public.rkb_chunks;
 create policy rkb_chunks_owner_write on public.rkb_chunks for all
-using (public.rkb_is_document_owner(document_id))
-with check (public.rkb_is_document_owner(document_id));
+using (
+  public.rkb_is_document_owner(rkb_chunks.document_id)
+  and exists (
+    select 1 from public.rkb_documents d
+    where d.id = rkb_chunks.document_id
+      and rkb_chunks.revision > d.active_revision
+  )
+)
+with check (
+  public.rkb_is_document_owner(rkb_chunks.document_id)
+  and exists (
+    select 1 from public.rkb_documents d
+    where d.id = rkb_chunks.document_id
+      and rkb_chunks.revision > d.active_revision
+  )
+);
 
 drop policy if exists rkb_ingestion_owner on public.rkb_ingestion_jobs;
 create policy rkb_ingestion_owner on public.rkb_ingestion_jobs for all
 using (owner_user_id = auth.uid())
 with check (owner_user_id = auth.uid());
+
+revoke update on public.rkb_ingestion_jobs from authenticated;
+grant update (
+  source_object_id,state,cursor,warnings,error_code
+) on public.rkb_ingestion_jobs to authenticated;
 
 create or replace function public.rkb_start_ingestion(
   p_ingestion_id uuid,
@@ -521,6 +605,8 @@ volatile
 security invoker
 set search_path = public
 as $$
+declare
+  existing_job public.rkb_ingestion_jobs%rowtype;
 begin
   if auth.uid() is null then
     raise exception 'authentication required';
@@ -528,23 +614,58 @@ begin
   if p_page_count < 1 then
     raise exception 'page_count must be positive';
   end if;
+  if p_source_file_id is null or btrim(p_source_file_id) = '' then
+    raise exception 'source_file_id is required';
+  end if;
 
-  insert into public.rkb_documents(
-    id, owner_user_id, title, authors, publication_year, language,
-    source_sha256, source_visibility, content_visibility, rights_status, page_count
-  ) values (
-    p_document_id, auth.uid(), p_title, coalesce(p_authors, '[]'::jsonb),
-    p_publication_year, p_language, p_source_sha256,
-    'private', 'private', 'unknown', p_page_count
-  );
+  select *
+  into existing_job
+  from public.rkb_ingestion_jobs
+  where owner_user_id = auth.uid()
+    and source_file_id = p_source_file_id
+  limit 1;
 
-  insert into public.rkb_ingestion_jobs(
-    id, owner_user_id, document_id, source_file_id, source_sha256,
-    state, cursor, staged_revision
-  ) values (
-    p_ingestion_id, auth.uid(), p_document_id, p_source_file_id, p_source_sha256,
-    'processing', '0', 1
-  );
+  if found then
+    if existing_job.source_sha256 is distinct from p_source_sha256 then
+      raise exception 'source_file_id is already bound to different bytes';
+    end if;
+    return query select existing_job.id, existing_job.document_id;
+    return;
+  end if;
+
+  begin
+    insert into public.rkb_documents(
+      id, owner_user_id, title, authors, publication_year, language,
+      source_sha256, source_visibility, content_visibility, rights_status, page_count
+    ) values (
+      p_document_id, auth.uid(), p_title, coalesce(p_authors, '[]'::jsonb),
+      p_publication_year, p_language, p_source_sha256,
+      'private', 'private', 'unknown', p_page_count
+    );
+
+    insert into public.rkb_ingestion_jobs(
+      id, owner_user_id, document_id, source_file_id, source_sha256,
+      state, cursor, staged_revision
+    ) values (
+      p_ingestion_id, auth.uid(), p_document_id, p_source_file_id, p_source_sha256,
+      'processing', '0', 1
+    );
+  exception when unique_violation then
+    -- Another identical start may have committed after the first lookup.
+    -- The subtransaction rolls back the unused document row before reuse.
+    select *
+    into existing_job
+    from public.rkb_ingestion_jobs
+    where owner_user_id = auth.uid()
+      and source_file_id = p_source_file_id
+    limit 1;
+
+    if not found or existing_job.source_sha256 is distinct from p_source_sha256 then
+      raise;
+    end if;
+    return query select existing_job.id, existing_job.document_id;
+    return;
+  end;
 
   return query select p_ingestion_id, p_document_id;
 end;

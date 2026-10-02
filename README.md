@@ -45,7 +45,11 @@ The target identity provider is Supabase Auth OAuth 2.1/OIDC. Every MCP remains 
 
 ## Status
 
-Architecture and executable contracts are being built. No production deployment or public corpus is implied by repository creation.
+The public scaffold now includes hybrid retrieval plus deterministic
+`start -> pages -> stage -> validate -> finalize` ingestion with multimodal
+provenance and a Live-optimized MCP profile. Local tests cover the full
+materialization flow; production Supabase/S3/OAuth deployment and real-book
+acceptance remain explicit gates. No public corpus is implied by the code repository.
 
 See:
 - [Architecture](docs/architecture.md)

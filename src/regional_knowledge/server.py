@@ -21,6 +21,9 @@ from .contracts import (
     Principal,
     ProfileOutput,
     SearchOutput,
+    StageChunkInput,
+    StagePageInput,
+    StartMetadataInput,
     Visibility,
 )
 from .supabase_backend import backend_from_env
@@ -143,8 +146,24 @@ def build_server(
         file: ChatFile | None = None,
         ingestion_id: str | None = None,
         cursor: str | None = None,
-        payload: dict[str, Any] | None = None,
+        metadata: StartMetadataInput | None = None,
+        pages: list[StagePageInput] | None = None,
+        chunks: list[StageChunkInput] | None = None,
     ) -> BookIngestOutput:
+        payload: dict[str, Any] | None = None
+        if metadata is not None:
+            payload = metadata.model_dump(mode="json", exclude_none=True)
+        if pages is not None or chunks is not None:
+            payload = {
+                "pages": [
+                    page.model_dump(mode="json", exclude_none=True)
+                    for page in (pages or [])
+                ],
+                "chunks": [
+                    chunk.model_dump(mode="json", exclude_none=True)
+                    for chunk in (chunks or [])
+                ],
+            }
         return await backend.book_ingest(
             command=command,
             principal=_principal(),

@@ -128,3 +128,30 @@ the requested small page batch with PyMuPDF.
 
 The PDF bytes are therefore not retained on local disk between calls and do not
 become a high-memory runtime dependency.
+
+## Staged graph and finalization
+
+Semantic parsing does not write half-complete page graphs into active database
+tables. Each `stage` call merges into a canonical staged graph and writes a new
+immutable, content-hashed `document_graph` object. The ingestion row exposes
+only its opaque object ID.
+
+Model-facing keys are deliberately short and local. The server deterministically
+derives region, illustration and chunk UUIDs from the document/revision/page and
+those keys. Semantic chunk text is assembled server-side from referenced source
+regions, so the model does not need to duplicate long text inside a second tool
+argument.
+
+Only `finalize` materializes a revision into Postgres. It creates:
+
+- one UTF-8 text projection with exact byte ranges and SHA-256 per chunk;
+- page and region provenance rows;
+- region relations;
+- exact illustration crops derived from source-page bbox coordinates;
+- illustration provenance rows;
+- FTS and vector retrieval rows.
+
+The activation RPC independently checks complete page indexes, unresolved review
+flags, textual-region coverage and cross-document provenance before changing
+`active_revision`. Ordinary authenticated tokens cannot directly patch the
+active revision or mutate an already active materialized revision.
