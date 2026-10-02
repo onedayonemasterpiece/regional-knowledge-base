@@ -58,6 +58,16 @@ The OpenAI tool descriptor marks the top-level file parameter with `_meta["opena
 the model would need to fetch separately. Each batch is deliberately small (default
 4, maximum 8 pages) so vision context is bounded.
 
+Current implementation checkpoint:
+- `start(file)` is implemented: bounded HTTPS file-parameter download, exact
+  SHA-256, PDF inspection, private Object Storage persistence and private
+  ingestion/document creation;
+- `book_pages` is implemented: small deterministic JPEG page renders plus
+  bounded native PDF text blocks/bboxes;
+- failed start can reconcile and reuse the same document/ingestion/source object
+  without duplicating rows;
+- `stage/validate/finalize` remain the next implementation slice.
+
 Staged books are invisible to retrieval until atomic finalize.
 
 ## Live profile

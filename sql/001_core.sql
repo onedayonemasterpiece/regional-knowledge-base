@@ -180,7 +180,7 @@ create table if not exists public.rkb_ingestion_jobs (
   owner_user_id uuid not null references auth.users(id) on delete cascade,
   document_id uuid references public.rkb_documents(id) on delete cascade,
   source_file_id text,
-  source_object_key text,
+  source_object_id uuid references public.rkb_objects(id) on delete set null,
   source_sha256 text check (source_sha256 is null or source_sha256 ~ '^[a-f0-9]{64}$'),
   state text not null check (state in (
     'staged','processing','needs_review','ready','finalized','failed'
@@ -192,6 +192,10 @@ create table if not exists public.rkb_ingestion_jobs (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+create unique index if not exists rkb_ingestion_source_file_once
+  on public.rkb_ingestion_jobs(owner_user_id,source_file_id)
+  where source_file_id is not null;
 
 alter table public.rkb_workspaces enable row level security;
 alter table public.rkb_workspace_members enable row level security;
@@ -499,5 +503,58 @@ drop policy if exists rkb_ingestion_owner on public.rkb_ingestion_jobs;
 create policy rkb_ingestion_owner on public.rkb_ingestion_jobs for all
 using (owner_user_id = auth.uid())
 with check (owner_user_id = auth.uid());
+
+create or replace function public.rkb_start_ingestion(
+  p_ingestion_id uuid,
+  p_document_id uuid,
+  p_title text,
+  p_authors jsonb,
+  p_publication_year integer,
+  p_language text,
+  p_source_sha256 text,
+  p_source_file_id text,
+  p_page_count integer
+)
+returns table(ingestion_id uuid, document_id uuid)
+language plpgsql
+volatile
+security invoker
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'authentication required';
+  end if;
+  if p_page_count < 1 then
+    raise exception 'page_count must be positive';
+  end if;
+
+  insert into public.rkb_documents(
+    id, owner_user_id, title, authors, publication_year, language,
+    source_sha256, source_visibility, content_visibility, rights_status, page_count
+  ) values (
+    p_document_id, auth.uid(), p_title, coalesce(p_authors, '[]'::jsonb),
+    p_publication_year, p_language, p_source_sha256,
+    'private', 'private', 'unknown', p_page_count
+  );
+
+  insert into public.rkb_ingestion_jobs(
+    id, owner_user_id, document_id, source_file_id, source_sha256,
+    state, cursor, staged_revision
+  ) values (
+    p_ingestion_id, auth.uid(), p_document_id, p_source_file_id, p_source_sha256,
+    'processing', '0', 1
+  );
+
+  return query select p_ingestion_id, p_document_id;
+end;
+$$;
+
+revoke all on function public.rkb_start_ingestion(
+  uuid,uuid,text,jsonb,integer,text,text,text,integer
+) from public;
+grant execute on function public.rkb_start_ingestion(
+  uuid,uuid,text,jsonb,integer,text,text,text,integer
+) to authenticated;
 
 commit;
