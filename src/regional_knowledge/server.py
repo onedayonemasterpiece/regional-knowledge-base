@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from mcp.server.mcpserver import Image, MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import (
     AuthSettings,
@@ -50,6 +52,42 @@ def _principal() -> Principal:
         client_id=token.client_id,
         issuer=issuer,
         access_token=token.token,
+    )
+
+
+def _transport_security(resource_url: str | None = None) -> TransportSecuritySettings:
+    resource = (
+        resource_url
+        if resource_url is not None
+        else os.getenv("RKB_RESOURCE_URL", "").strip()
+    )
+    allowed_hosts = [
+        "127.0.0.1",
+        "127.0.0.1:*",
+        "localhost",
+        "localhost:*",
+        "[::1]",
+        "[::1]:*",
+    ]
+    allowed_origins = [
+        "http://127.0.0.1",
+        "http://127.0.0.1:*",
+        "http://localhost",
+        "http://localhost:*",
+        "http://[::1]",
+        "http://[::1]:*",
+    ]
+    if resource:
+        parsed = urlsplit(resource)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise RuntimeError("RKB_RESOURCE_URL must be an absolute HTTP(S) URL")
+        allowed_hosts.append(parsed.netloc)
+        allowed_origins.append(f"{parsed.scheme}://{parsed.netloc}")
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
     )
 
 
@@ -333,6 +371,7 @@ def main() -> None:
         transport="streamable-http",
         stateless_http=True,
         json_response=True,
+        transport_security=_transport_security(),
     )
 
 
