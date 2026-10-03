@@ -232,7 +232,23 @@ def test_legacy_service_role_keeps_bearer_header():
     assert headers["Authorization"] == "Bearer legacy-service-role"
 
 
-def test_backend_from_env_prefers_kb_prefixed_new_keys(monkeypatch):
+def test_backend_from_env_refuses_hidden_supabase_user_jwt_coupling(monkeypatch):
+    from regional_knowledge.backend import UnavailableBackend
+    from regional_knowledge.supabase_backend import backend_from_env
+
+    monkeypatch.delenv(
+        "RKB_ALLOW_LEGACY_SUPABASE_USER_JWT",
+        raising=False,
+    )
+    monkeypatch.setenv("KB_SUPABASE_URL", "https://kb.example")
+    monkeypatch.setenv("KB_SUPABASE_PUBLISHABLE_KEY", "sb_publishable_kb")
+    monkeypatch.setenv("KB_SUPABASE_SECRET_KEY", "sb_secret_kb")
+
+    backend = backend_from_env()
+    assert isinstance(backend, UnavailableBackend)
+
+
+def test_legacy_backend_requires_explicit_opt_in(monkeypatch):
     from regional_knowledge.supabase_backend import backend_from_env
 
     for name in (
@@ -245,6 +261,7 @@ def test_backend_from_env_prefers_kb_prefixed_new_keys(monkeypatch):
         "KB_SUPABASE_SERVICE_ROLE_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RKB_ALLOW_LEGACY_SUPABASE_USER_JWT", "1")
     monkeypatch.setenv("KB_SUPABASE_URL", "https://kb.example")
     monkeypatch.setenv("KB_SUPABASE_PUBLISHABLE_KEY", "sb_publishable_kb")
     monkeypatch.setenv("KB_SUPABASE_SECRET_KEY", "sb_secret_kb")

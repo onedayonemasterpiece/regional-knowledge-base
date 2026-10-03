@@ -1,119 +1,97 @@
-# OAuth, identity and multi-MCP architecture
+# MCP authentication and database identity
 
-The platform-level decision is documented in
-[platform-identity.md](platform-identity.md). This file defines the Regional
-Knowledge Base resource-server side of that contract.
+## Decision
 
-## Shared issuer, separate resource
+Regional Knowledge Base must not use Supabase OAuth as its MCP authorization
+server.
 
-Regional Knowledge Base uses the same Supabase Auth OAuth 2.1/OIDC issuer as the
-other first-party MCP products, but it remains a separate protected resource.
-
-The stable user identity is `issuer + sub`. Email, display name and product-local
-tenant/workspace names are not identity keys.
-
-The Knowledge MCP publishes RFC 9728 protected-resource metadata and requires an
-access token bound to its exact HTTPS MCP resource. OpenAI clients propagate the
-RFC 8707 `resource` value during OAuth; production acceptance must prove the
-resulting token is actually audience-bound before enabling the connector.
-
-## Production client model
-
-For production v1 use a **known OAuth client per product/resource** rather than
-depending on unrestricted Dynamic Client Registration.
-
-Reason: Supabase currently exposes standard identity scopes only, and its Custom
-Access Token Hook can reliably differentiate OAuth clients by `client_id`.
-Therefore the platform can map:
+The two planes are independent:
 
 ```text
-client_id: chatgpt-knowledge       -> aud: https://knowledge.../mcp
-client_id: projects-hub-knowledge -> aud: https://knowledge.../mcp
-client_id: wl-knowledge            -> aud: https://knowledge.../mcp
+ChatGPT / Codex
+      |
+      | OAuth 2.1
+      v
+application/platform auth
+      |
+      | verified actor: platform subject UUID
+      v
+Regional Knowledge MCP
+      |
+      | transaction-local DB actor context
+      v
+Supabase Postgres / pgvector / RLS
 ```
 
-Other products use their own target audiences.
+Supabase is the managed **data plane**: Postgres, pgvector and database
+operations. It is not the end-user OAuth provider for the MCP.
 
-DCR remains useful for experiments, but it is not the production security
-assumption until a real client proves exact resource-bound token issuance for
-that path.
+No Supabase Dashboard OAuth switch is required for this project.
 
-Official references:
-- https://developers.openai.com/plugins/build/auth
-- https://supabase.com/docs/guides/auth/oauth-server/mcp-authentication
-- https://supabase.com/docs/guides/auth/oauth-server/token-security
+## MCP authorization server
 
-## Token verification
+Authenticated ChatGPT MCPs still require OAuth 2.1. The authorization server is
+application-owned and separate from Supabase.
 
-The MCP server verifies:
+For the beta, implement the smallest safe flow needed for one owner while keeping
+the contracts multi-user capable:
 
-- asymmetric JWT signature through issuer JWKS;
-- exact issuer;
-- expiry/not-before;
-- stable subject;
-- OAuth client identity;
-- exact expected resource/audience.
+- authorization code + PKCE S256;
+- exact `resource` binding to the Knowledge MCP URL;
+- explicit consent;
+- short-lived access tokens;
+- refresh rotation and replay revocation;
+- discovery/protected-resource metadata;
+- stable UUID subject;
+- no secrets in URLs/logs/repository.
 
-A generic Supabase token whose audience is only `authenticated` is not accepted
-as a production MCP token.
+Use the already deployed/tested Wonderful Lections OAuth implementation as a
+behavioral donor. Do not couple the new implementation to Wonderful Lections
+business state.
 
-## Authorization is RLS, not OAuth scope text
+The resource server verifies application tokens with generic
+`RKB_AUTH_ISSUER`, `RKB_AUTH_JWKS_URL` and `RKB_RESOURCE_URL`. It must never
+derive these values from `KB_SUPABASE_URL`.
 
-Supabase OAuth currently supports the standard identity scopes
-`openid email profile phone`. They do not form our application authorization
-boundary.
+## Database actor identity
 
-Every row is authorized through:
+The MCP bearer must **not** be forwarded to Supabase PostgREST.
 
-- user `sub`;
-- workspace membership;
-- explicit document grants;
-- resource visibility;
-- client policy where needed.
+Target production data path:
 
-Tool descriptions and read-only annotations improve model behavior but never grant
-access.
+1. verify the application OAuth token;
+2. resolve its stable UUID subject;
+3. open a transaction through `KB_SUPABASE_SESSION_CONNECTION`;
+4. switch to a non-bypass RLS role;
+5. set a transaction-local application actor UUID;
+6. execute SQL/RPC under RLS;
+7. reset automatically at transaction end.
 
-## One user connecting several MCPs
+The database must use an application-owned helper such as
+`rkb_current_actor_id()`, not `auth.uid()`, as the source of user identity.
 
-The first connection performs login + resource consent. Later product connections
-reuse the same authorization-server browser session, so the same human receives
-the same `sub` and should not have to create another account.
+The existing `SupabaseRestBackend` is transitional and explicitly disabled by
+default because it forwards the caller bearer to PostgREST. It may only be
+enabled by `RKB_ALLOW_LEGACY_SUPABASE_USER_JWT=1` for bounded legacy tests and
+must not be used by the finished beta.
 
-Each grant remains independently revocable. Revoking Wonderful Lections must not
-revoke Knowledge unless the user/account itself is disabled.
+## Identity registry
 
-## Cross-service use
+Do not require Supabase Auth users for application identity.
 
-Never forward a token minted for one MCP to another MCP.
+Use an application-owned UUID user/identity table in the RKB schema. The beta has
+one owner UUID. Future shared platform auth can issue the same stable platform
+UUID without changing document ownership or corpus rows.
 
-When Projects Hub, Wonderful Lections or Street Story needs the user's private
-Knowledge data, that service becomes an OAuth client of the Knowledge resource.
-The user authorizes that integration once and the calling service stores the
-refresh grant encrypted at rest. It then obtains Knowledge-audience access tokens
-normally.
+Email/display name are profile attributes, not identity keys.
 
-Dedicated service identities are allowed only for non-user-specific tasks such as
-public-corpus maintenance or a tightly scoped VibePublish mirror. They cannot be
-used to impersonate arbitrary users.
+## Cross-service access
 
-## Workspaces
+A bearer minted for one MCP resource is not forwarded to another service.
 
-Personal data needs no synthetic workspace; ownership by `sub` is enough.
-Shared collaboration uses stable workspace UUIDs and current membership rows.
-Do not put large or mutable membership lists into JWT claims.
+For future private cross-service operations, the calling service obtains a
+resource-specific grant/delegation. Public/system corpus maintenance may use a
+narrow service identity.
 
-## Migration
-
-Wonderful Lections' existing tested OAuth remains a rollback path. Do not
-flag-day multiple products.
-
-Migration gates are:
-
-1. shared issuer + consent UI live;
-2. Knowledge exact audience test;
-3. one real ChatGPT connection;
-4. second MCP connection produces the same `sub` but a different resource token;
-5. refresh rotation/revocation acceptance;
-6. first service-to-service user delegation;
-7. only then migrate additional existing products.
+This design keeps the user identity layer replaceable without moving the
+Supabase database or corpus objects.

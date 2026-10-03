@@ -23,7 +23,7 @@ def test_live_profile_exposes_one_low_latency_knowledge_tool(monkeypatch):
 
 
 
-def test_oauth_defaults_derive_from_kb_supabase_url(monkeypatch):
+def test_auth_uses_application_issuer_not_supabase(monkeypatch):
     import regional_knowledge.server as server_module
 
     seen = {}
@@ -33,47 +33,40 @@ def test_oauth_defaults_derive_from_kb_supabase_url(monkeypatch):
             seen.update(kwargs)
 
     monkeypatch.delenv("RKB_DEV_NOAUTH", raising=False)
-    monkeypatch.delenv("RKB_OAUTH_ISSUER", raising=False)
-    monkeypatch.delenv("RKB_OAUTH_JWKS_URL", raising=False)
-    monkeypatch.delenv("KB_SUPABASE_JWKS_URL", raising=False)
-    monkeypatch.delenv("SUPABASE_URL", raising=False)
-    monkeypatch.setenv("KB_SUPABASE_URL", "https://kb-project.example")
-    monkeypatch.setenv("RKB_RESOURCE_URL", "https://knowledge.example/mcp")
-    monkeypatch.setattr(server_module, "SupabaseJwtVerifier", FakeVerifier)
-
-    server = build_server()
-    assert server is not None
-    assert seen["issuer"] == "https://kb-project.example/auth/v1"
-    assert (
-        seen["jwks_url"]
-        == "https://kb-project.example/auth/v1/.well-known/jwks.json"
-    )
-    assert seen["resource"] == "https://knowledge.example/mcp"
-
-
-def test_oauth_accepts_project_scoped_supabase_jwks_url(monkeypatch):
-    import regional_knowledge.server as server_module
-
-    seen = {}
-
-    class FakeVerifier:
-        def __init__(self, **kwargs):
-            seen.update(kwargs)
-
-    monkeypatch.delenv("RKB_DEV_NOAUTH", raising=False)
-    monkeypatch.delenv("RKB_OAUTH_ISSUER", raising=False)
-    monkeypatch.delenv("RKB_OAUTH_JWKS_URL", raising=False)
     monkeypatch.setenv("KB_SUPABASE_URL", "https://kb-project.example")
     monkeypatch.setenv(
         "KB_SUPABASE_JWKS_URL",
         "https://kb-project.example/auth/v1/.well-known/jwks.json",
     )
+    monkeypatch.setenv("RKB_AUTH_ISSUER", "https://auth.example")
+    monkeypatch.setenv(
+        "RKB_AUTH_JWKS_URL",
+        "https://auth.example/.well-known/jwks.json",
+    )
     monkeypatch.setenv("RKB_RESOURCE_URL", "https://knowledge.example/mcp")
-    monkeypatch.setattr(server_module, "SupabaseJwtVerifier", FakeVerifier)
+    monkeypatch.setattr(server_module, "JwtResourceVerifier", FakeVerifier)
 
     server = build_server()
     assert server is not None
-    assert (
-        seen["jwks_url"]
-        == "https://kb-project.example/auth/v1/.well-known/jwks.json"
+    assert seen == {
+        "issuer": "https://auth.example",
+        "jwks_url": "https://auth.example/.well-known/jwks.json",
+        "resource": "https://knowledge.example/mcp",
+    }
+
+
+def test_supabase_configuration_never_enables_mcp_auth(monkeypatch):
+    monkeypatch.delenv("RKB_DEV_NOAUTH", raising=False)
+    monkeypatch.delenv("RKB_AUTH_ISSUER", raising=False)
+    monkeypatch.delenv("RKB_AUTH_JWKS_URL", raising=False)
+    monkeypatch.delenv("RKB_RESOURCE_URL", raising=False)
+    monkeypatch.setenv("KB_SUPABASE_URL", "https://kb-project.example")
+    monkeypatch.setenv(
+        "KB_SUPABASE_JWKS_URL",
+        "https://kb-project.example/auth/v1/.well-known/jwks.json",
     )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="Supabase is only the data plane"):
+        build_server()
