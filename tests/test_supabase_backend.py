@@ -178,3 +178,66 @@ async def test_live_evidence_search_fetches_only_small_selected_set():
     result = await Backend().search_evidence("x", principal(), max_evidence=3)
     assert result.mode == "hybrid"
     assert [item.id for item in result.evidence] == ["0", "1", "2"]
+
+
+def test_new_supabase_secret_key_is_not_sent_as_bearer():
+    backend = SupabaseRestBackend(
+        SupabaseConfig(
+            url="https://db.example",
+            anon_key="sb_publishable_test",
+            public_base_url="https://knowledge.example",
+            service_role_key="sb_secret_test",
+        ),
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(500)
+            )
+        ),
+    )
+    headers = backend._service_headers()
+    assert headers["apikey"] == "sb_secret_test"
+    assert "Authorization" not in headers
+
+
+def test_legacy_service_role_keeps_bearer_header():
+    backend = SupabaseRestBackend(
+        SupabaseConfig(
+            url="https://db.example",
+            anon_key="legacy-anon",
+            public_base_url="https://knowledge.example",
+            service_role_key="legacy-service-role",
+        ),
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(500)
+            )
+        ),
+    )
+    headers = backend._service_headers()
+    assert headers["apikey"] == "legacy-service-role"
+    assert headers["Authorization"] == "Bearer legacy-service-role"
+
+
+def test_backend_from_env_prefers_kb_prefixed_new_keys(monkeypatch):
+    from regional_knowledge.supabase_backend import backend_from_env
+
+    for name in (
+        "SUPABASE_URL",
+        "SUPABASE_PUBLISHABLE_KEY",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SECRET_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "KB_SUPABASE_ANON_KEY",
+        "KB_SUPABASE_SERVICE_ROLE_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("KB_SUPABASE_URL", "https://kb.example")
+    monkeypatch.setenv("KB_SUPABASE_PUBLISHABLE_KEY", "sb_publishable_kb")
+    monkeypatch.setenv("KB_SUPABASE_SECRET_KEY", "sb_secret_kb")
+    monkeypatch.setenv("RKB_PUBLIC_BASE_URL", "https://knowledge.example")
+
+    backend = backend_from_env()
+    assert isinstance(backend, SupabaseRestBackend)
+    assert backend.config.url == "https://kb.example"
+    assert backend.config.anon_key == "sb_publishable_kb"
+    assert backend.config.service_role_key == "sb_secret_kb"
