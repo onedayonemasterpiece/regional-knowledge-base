@@ -752,17 +752,11 @@ def _embedder_from_env() -> Embedder:
             model=model,
         )
 
-    # Cheap production default when the shared OpenAI key is already present.
-    # Explicit RKB_* settings above always win, so deployments can swap provider
-    # without touching code.
-    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if openai_key:
-        return OpenAICompatibleEmbedder(
-            endpoint="https://api.openai.com/v1/embeddings",
-            api_key=openai_key,
-            model="text-embedding-3-small",
-            dimensions=768,
-        )
+    # Embeddings are opt-in for this service. Never inherit a shared provider
+    # credential such as OPENAI_API_KEY: doing so can silently turn search or
+    # ingestion into a billable external operation. Operators must configure
+    # the dedicated RKB_EMBEDDING_* triplet explicitly; otherwise the service
+    # degrades safely to lexical retrieval.
     return LexicalOnlyEmbedder()
 
 

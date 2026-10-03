@@ -67,6 +67,11 @@ Never expose object-store credentials, raw object keys or signed URLs through MC
 | `RKB_EMBEDDING_API_KEY` | provider credential |
 | `RKB_PUBLIC_BASE_URL` | optional HTTP evidence-page base; canonical knowledge:// URIs work without it |
 
+Embeddings are explicit opt-in. The service never inherits `OPENAI_API_KEY`,
+`GOOGLE_API_KEY`, `GEMINI_API_KEY` or any other shared provider credential.
+Without the complete dedicated `RKB_EMBEDDING_*` configuration it performs no
+external embedding request and degrades to lexical retrieval.
+
 Lexical-only degradation is allowed as a failure mode, not as the final hybrid
 beta acceptance.
 
