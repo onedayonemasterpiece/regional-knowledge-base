@@ -191,7 +191,7 @@ def test_poi_outbox_sql_enforces_acl_provenance_and_conservative_lineage():
 
     assert "rkb_author_profiles" in sql
     assert "rkb_author_authority_for_names" in sql
-    assert "count(distinct matched.author_id) = 1" in sql
+    assert "count(distinct matched.author_id) = 1" in sql\n    assert "min(matched.author_id::text)::uuid" in sql
     assert "rkb_integration_outbox" in sql
     assert "owner_user_id = auth.uid()" in sql
     assert "POI event visibility mismatch" in sql
