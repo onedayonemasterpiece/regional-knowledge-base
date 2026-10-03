@@ -116,6 +116,8 @@ class SupabaseRestBackend(KnowledgeBackend):
         self.pdf_processor = pdf_processor or PyMuPdfProcessor()
         self.client = client or httpx.AsyncClient(timeout=10.0)
         self._owns_client = client is None
+        self._finalize_lock = asyncio.Lock()
+        self._finalize_tasks: dict[str, asyncio.Task[None]] = {}
 
     def _headers(self, principal: Principal) -> dict[str, str]:
         return {
@@ -421,6 +423,119 @@ class SupabaseRestBackend(KnowledgeBackend):
         except httpx.HTTPError:
             return
 
+    async def _finalize_in_background(
+        self,
+        principal: Principal,
+        ingestion_id: str,
+    ) -> None:
+        from .stage_service import finalize_ingestion
+
+        try:
+            await finalize_ingestion(
+                self,
+                principal=principal,
+                ingestion_id=ingestion_id,
+            )
+        except asyncio.CancelledError:
+            # Keep state=processing/cursor=finalize so a later finalize call can
+            # resume after a normal service restart.
+            raise
+        except Exception as exc:
+            # Finalize is retryable: it resets the inactive revision before
+            # materializing rows, while object writes are content-addressed.
+            # Return the ingestion to ready instead of leaving a dead
+            # processing job after a dependency failure.
+            try:
+                row = await self._ingestion_row(
+                    principal=principal,
+                    ingestion_id=ingestion_id,
+                )
+                warnings = [
+                    str(value) for value in ((row or {}).get("warnings") or [])
+                ]
+                warning = f"finalize_failed:{type(exc).__name__}"
+                if warning not in warnings:
+                    warnings.append(warning)
+                await self._patch_ingestion(
+                    ingestion_id,
+                    principal,
+                    {
+                        "state": "ready",
+                        "cursor": "finalize",
+                        "warnings": warnings,
+                        "error_code": type(exc).__name__[:120],
+                    },
+                )
+            except Exception:
+                # If the data plane is unavailable as well, persisted
+                # state=processing/cursor=finalize is still resumable later.
+                return
+
+    def _schedule_finalize(
+        self,
+        principal: Principal,
+        ingestion_id: str,
+    ) -> None:
+        current = self._finalize_tasks.get(ingestion_id)
+        if current is not None and not current.done():
+            return
+        task = asyncio.create_task(
+            self._finalize_in_background(principal, ingestion_id),
+            name=f"rkb-finalize-{ingestion_id}",
+        )
+        self._finalize_tasks[ingestion_id] = task
+
+        def forget(done: asyncio.Task[None]) -> None:
+            if self._finalize_tasks.get(ingestion_id) is done:
+                self._finalize_tasks.pop(ingestion_id, None)
+
+        task.add_done_callback(forget)
+
+    async def _start_or_resume_finalize(
+        self,
+        principal: Principal,
+        ingestion_id: str,
+    ) -> BookIngestOutput:
+        async with self._finalize_lock:
+            row = await self._ingestion_row(
+                principal=principal,
+                ingestion_id=ingestion_id,
+            )
+            if not row:
+                raise LookupError("ingestion_not_found")
+            if row["state"] == "finalized":
+                return self._ingestion_output(row, "Ingestion already finalized")
+            if row["state"] == "ready":
+                rows = await self._patch_ingestion(
+                    ingestion_id,
+                    principal,
+                    {
+                        "state": "processing",
+                        "cursor": "finalize",
+                        "error_code": None,
+                    },
+                    representation=True,
+                )
+                row = (
+                    rows[0]
+                    if rows
+                    else {**row, "state": "processing", "cursor": "finalize"}
+                )
+            elif not (
+                row["state"] == "processing" and row.get("cursor") == "finalize"
+            ):
+                raise RuntimeError("ingestion must validate as ready before finalize")
+
+            self._schedule_finalize(principal, ingestion_id)
+            return self._ingestion_output(
+                row,
+                (
+                    "Finalization accepted and is running server-side. "
+                    "Do not keep this ChatGPT turn open polling; return control "
+                    "to the user and check status in a later turn."
+                ),
+            )
+
     async def _server_object(
         self,
         *,
@@ -491,16 +606,27 @@ class SupabaseRestBackend(KnowledgeBackend):
             )
             if not row:
                 raise LookupError("ingestion_not_found")
-            return self._ingestion_output(row, "Ingestion status")
+            message = "Ingestion status"
+            if row["state"] == "processing" and row.get("cursor") == "finalize":
+                task = self._finalize_tasks.get(ingestion_id)
+                if task is not None and not task.done():
+                    message = "Finalization is running server-side; check status later."
+                else:
+                    message = (
+                        "Finalization is paused after an interruption or service "
+                        "restart; call finalize once to resume."
+                    )
+            return self._ingestion_output(row, message)
 
         if command in {"stage", "validate", "finalize"}:
             if not ingestion_id:
                 raise ValueError(f"ingestion_id is required for {command}")
-            from .stage_service import (
-                finalize_ingestion,
-                stage_ingestion,
-                validate_ingestion,
-            )
+            if command == "finalize":
+                return await self._start_or_resume_finalize(
+                    principal,
+                    ingestion_id,
+                )
+            from .stage_service import stage_ingestion, validate_ingestion
 
             if command == "stage":
                 return await stage_ingestion(
@@ -510,13 +636,7 @@ class SupabaseRestBackend(KnowledgeBackend):
                     cursor=cursor,
                     payload=payload,
                 )
-            if command == "validate":
-                return await validate_ingestion(
-                    self,
-                    principal=principal,
-                    ingestion_id=ingestion_id,
-                )
-            return await finalize_ingestion(
+            return await validate_ingestion(
                 self,
                 principal=principal,
                 ingestion_id=ingestion_id,
@@ -729,6 +849,12 @@ class SupabaseRestBackend(KnowledgeBackend):
         )
 
     async def aclose(self) -> None:
+        tasks = [task for task in self._finalize_tasks.values() if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._finalize_tasks.clear()
         if self._owns_client:
             await self.client.aclose()
 

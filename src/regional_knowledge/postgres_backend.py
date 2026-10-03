@@ -501,4 +501,5 @@ class PostgresBackend(SupabaseRestBackend):
             return
 
     async def aclose(self) -> None:
+        await super().aclose()
         await self.data_client.aclose()

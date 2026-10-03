@@ -46,6 +46,9 @@ The next executor must deliver a usable product, not another architecture audit.
 - fetch p95 without image bytes: <500 ms;
 - page vision batch: default 4, hard max 8;
 - no corpus-wide ANN/FTS/cross-encoder compute on the gateway.
+- `finalize` must return control promptly for large books. Long render/index work
+  runs server-side under persisted `processing/finalize` state; callers use
+  `status` later instead of holding one MCP request/ChatGPT turn open for minutes.
 
 ## Ingestion isolation
 

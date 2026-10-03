@@ -677,7 +677,9 @@ async def finalize_ingestion(
         raise LookupError("ingestion_not_found")
     if row["state"] == "finalized":
         return service._ingestion_output(row, "Ingestion already finalized")
-    if row["state"] != "ready":
+    if row["state"] == "processing" and row.get("cursor") == "finalize":
+        pass
+    elif row["state"] != "ready":
         raise RuntimeError("ingestion must validate as ready before finalize")
     if not row.get("document_id") or not row.get("source_object_id"):
         raise RuntimeError("ingestion_source_not_ready")
