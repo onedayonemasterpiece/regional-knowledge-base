@@ -127,13 +127,19 @@ class SupabaseRestBackend(KnowledgeBackend):
     def _service_headers(self) -> dict[str, str]:
         if not self.config.service_role_key:
             raise RuntimeError(
-                "Supabase service role is required for server-only object locator lookup"
+                "Supabase secret/service key is required for server-only object locator lookup"
             )
-        return {
-            "apikey": self.config.service_role_key,
-            "Authorization": f"Bearer {self.config.service_role_key}",
+        key = self.config.service_role_key
+        headers = {
+            "apikey": key,
             "Content-Type": "application/json",
         }
+        # New sb_secret_* API keys are not JWTs and must not be sent as
+        # Authorization: Bearer. Legacy service_role JWTs still need the
+        # Authorization header for backward compatibility.
+        if not key.startswith("sb_secret_"):
+            headers["Authorization"] = f"Bearer {key}"
+        return headers
 
     def _evidence_url(self, item_id: str) -> str:
         return f"{self.config.public_base_url.rstrip('/')}/evidence/{quote(item_id, safe='')}"
@@ -724,11 +730,29 @@ class SupabaseRestBackend(KnowledgeBackend):
             await self.client.aclose()
 
 
+def _first_env(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
 def backend_from_env() -> KnowledgeBackend:
-    url = os.getenv("SUPABASE_URL", "").strip()
-    anon_key = os.getenv("SUPABASE_ANON_KEY", "").strip()
+    url = _first_env("KB_SUPABASE_URL", "SUPABASE_URL")
+    anon_key = _first_env(
+        "KB_SUPABASE_PUBLISHABLE_KEY",
+        "KB_SUPABASE_ANON_KEY",
+        "SUPABASE_PUBLISHABLE_KEY",
+        "SUPABASE_ANON_KEY",
+    )
     public_base = os.getenv("RKB_PUBLIC_BASE_URL", "").strip()
-    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip() or None
+    service_role_key = _first_env(
+        "KB_SUPABASE_SECRET_KEY",
+        "KB_SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_SECRET_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+    ) or None
     if not (url and anon_key and public_base):
         return UnavailableBackend()
 
