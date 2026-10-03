@@ -8,6 +8,7 @@ import pytest
 from mcp.server.auth.provider import AuthorizationParams, AuthorizeError, RegistrationError
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
+from starlette.testclient import TestClient
 
 from regional_knowledge.backend import UnavailableBackend
 from regional_knowledge.oauth_provider import (
@@ -168,6 +169,12 @@ def test_embedded_oauth_mounts_standard_and_consent_routes(
         oauth_provider=provider,
     )
     app = server.streamable_http_app()
+    assert provider.issuer == "https://knowledge.example.test/"
+    assert provider.origin == "https://knowledge.example.test"
+    with TestClient(app, base_url=provider.origin) as client:
+        metadata = client.get("/.well-known/oauth-authorization-server")
+        assert metadata.status_code == 200
+        assert metadata.json()["issuer"] == provider.issuer
     paths = {getattr(route, "path", None) for route in app.routes}
     assert "/mcp" in paths
     assert "/authorize" in paths
