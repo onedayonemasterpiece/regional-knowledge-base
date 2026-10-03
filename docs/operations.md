@@ -2,20 +2,36 @@
 
 ## Current infrastructure state
 
-As of 2026-10-02 no dedicated Regional Knowledge Supabase account/project is
-connected. Supabase configuration will be supplied later through the shared
-environment/secrets layer as a separate owner-controlled setup step.
+As of 2026-10-03 the dedicated Regional Knowledge Supabase project is live and
+accepted from DevCoveer through the Session Pooler.
 
-Therefore SQL migrations, OAuth and RLS are **not deployed yet**; current claims
-refer only to source code, deterministic tests and fake managed-service E2E.
+Verified:
+- DB connectivity and Supabase Auth schema;
+- Auth/JWKS/REST API;
+- migrations 001–005;
+- pgvector + pgcrypto;
+- 15 RKB tables;
+- 25 RLS policies;
+- no corpus body text columns in Postgres;
+- migration/readback verifier success.
+
+The direct database endpoint remains IPv6-only from the current host; operations
+must use `KB_SUPABASE_SESSION_CONNECTION`.
+
+Not yet deployed/accepted:
+- public MCP resource URL and exact resource-bound OAuth client;
+- object storage;
+- embedding provider;
+- real multi-user RLS E2E;
+- ChatGPT/Live network deployment.
 
 ## Before production
 
 The service is not production-ready merely because unit tests pass. Required gates:
 
-1. create the Supabase project and enable OAuth 2.1 Server with asymmetric signing keys;
+1. Supabase project/JWKS/DB are live; finish resource-bound OAuth client acceptance after the public MCP resource URL exists;
 2. configure the platform client→resource audience mapping and prove that a token for another MCP is rejected;
-3. apply SQL migrations and run RLS acceptance with at least two users, one workspace and anonymous public reads;
+3. SQL migrations are live; run remaining RLS acceptance with at least two users, one workspace and anonymous public reads;
 4. create a private S3-compatible bucket with public ACL disabled;
 5. configure a 768-dimension external embedding endpoint; verify lexical-only degradation when it is unavailable;
 6. deterministic start/pages/stage/validate/finalize is implemented locally; exercise the whole workflow against real configured Supabase/Object Storage with a representative born-digital PDF and a scan-only/multicolumn source;
