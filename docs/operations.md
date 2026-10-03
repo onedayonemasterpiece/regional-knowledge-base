@@ -24,9 +24,7 @@ Not yet deployed/accepted:
 - Supabase OAuth 2.1 Server feature-toggle/authorization path (MCP discovery is
   currently 404 while OIDC/JWKS are healthy);
 - public MCP resource URL and exact resource-bound OAuth client;
-- object storage;
 - embedding provider;
-- real multi-user RLS E2E;
 - ChatGPT/Live network deployment.
 
 ## Before production
@@ -36,7 +34,8 @@ The service is not production-ready merely because unit tests pass. Required gat
 1. Supabase project/JWKS/DB are live; finish resource-bound OAuth client acceptance after the public MCP resource URL exists;
 2. configure the platform client→resource audience mapping and prove that a token for another MCP is rejected;
 3. SQL migrations and two-user/workspace/private/anonymous RLS acceptance are live; repeat only after policy changes;
-4. create a private S3-compatible bucket with public ACL disabled;
+4. private S3-compatible bucket is live and anonymous reads are denied; repeat
+   acceptance only after credential/bucket policy changes;
 5. configure a 768-dimension external embedding endpoint; verify lexical-only degradation when it is unavailable;
 6. deterministic start/pages/stage/validate/finalize is implemented locally; exercise the whole workflow against real configured Supabase/Object Storage with a representative born-digital PDF and a scan-only/multicolumn source;
 7. prove raw private source PDFs remain inaccessible when normalized content is public;
@@ -113,3 +112,21 @@ Not yet claimed:
 - user OAuth delegation resolution for private evidence;
 - POI identity resolution and contradiction creation E2E;
 - Projects Hub expert assignment E2E.
+
+
+## Live object-storage acceptance — 2026-10-03
+
+Regional Knowledge now has a dedicated Yandex Object Storage bucket configured
+through `RKB_S3_*`.
+
+Verified:
+- bucket exists and is reachable with the configured service credentials;
+- ACL has no public grantee;
+- put/get round-trip succeeded;
+- anonymous GET returned HTTP 403;
+- acceptance object was deleted afterward.
+
+The current credentials are inherited from the existing shared Yandex storage
+service account. This is operationally sufficient for beta; a dedicated
+least-privilege service account remains a hardening option and does not require
+changing object IDs or bucket layout.

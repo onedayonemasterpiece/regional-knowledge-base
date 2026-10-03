@@ -84,7 +84,7 @@ class OpenAICompatibleEmbedder:
 class SupabaseConfig:
     url: str
     anon_key: str
-    public_base_url: str
+    public_base_url: str | None = None
     service_role_key: str | None = None
 
 
@@ -142,7 +142,10 @@ class SupabaseRestBackend(KnowledgeBackend):
         return headers
 
     def _evidence_url(self, item_id: str) -> str:
-        return f"{self.config.public_base_url.rstrip('/')}/evidence/{quote(item_id, safe='')}"
+        encoded = quote(item_id, safe="")
+        if self.config.public_base_url:
+            return f"{self.config.public_base_url.rstrip('/')}/evidence/{encoded}"
+        return f"knowledge://evidence/{encoded}"
 
     async def search(self, query: str, principal: Principal) -> SearchOutput:
         query = query.strip()
@@ -753,7 +756,7 @@ def backend_from_env() -> KnowledgeBackend:
         "SUPABASE_SECRET_KEY",
         "SUPABASE_SERVICE_ROLE_KEY",
     ) or None
-    if not (url and anon_key and public_base):
+    if not (url and anon_key):
         return UnavailableBackend()
 
     endpoint = os.getenv("RKB_EMBEDDING_ENDPOINT", "").strip()

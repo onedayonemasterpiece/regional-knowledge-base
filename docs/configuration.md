@@ -16,7 +16,7 @@ Required production settings:
 | `KB_SUPABASE_SESSION_CONNECTION` | PostgreSQL Session Pooler connection string for migrations/ops from IPv4-only DevCoveer |
 | `KB_SUPABASE_DIRECT_CONNECTION` | direct PostgreSQL connection string; IPv6 on Supabase Free and therefore not usable from the current IPv4-only DevCoveer host |
 | `KB_SUPABASE_ANON_KEY` / `KB_SUPABASE_SERVICE_ROLE_KEY` | legacy fallbacks only; current publishable/secret keys are preferred |
-| `RKB_PUBLIC_BASE_URL` | stable evidence-page base URL returned by search/fetch |
+| `RKB_PUBLIC_BASE_URL` | optional HTTP evidence-page base URL; until deployed, search/fetch use canonical `knowledge://evidence/<id>` URIs |
 | `RKB_EMBEDDING_ENDPOINT` | external OpenAI-compatible embeddings endpoint; optional for lexical-only degraded mode |
 | `RKB_EMBEDDING_MODEL` | configured 768-dimension embedding model |
 | `RKB_EMBEDDING_API_KEY` | server-side embedding-provider credential |
@@ -85,8 +85,9 @@ Still required for full MCP deployment:
 - enable Supabase OAuth 2.1 Server and configure the consent authorization path;
 - `RKB_RESOURCE_URL` once the public MCP URL is assigned;
 - resource-bound OAuth client acceptance against that URL;
-- `RKB_PUBLIC_BASE_URL`;
-- private S3-compatible object storage;
+- optional `RKB_PUBLIC_BASE_URL` for clickable HTTP evidence pages; canonical
+  `knowledge://` evidence URIs already work without it;
+- private S3-compatible object storage is now configured and accepted;
 - embedding provider configuration;
 - ChatGPT connection and resource/client acceptance.
 
