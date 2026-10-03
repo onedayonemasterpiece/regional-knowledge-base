@@ -53,9 +53,22 @@ def build_server(
     profile: Literal["full", "live"] = "full",
 ) -> MCPServer:
     backend = backend or backend_from_env()
-    issuer = (issuer or os.getenv("RKB_OAUTH_ISSUER", "")).rstrip("/")
+    supabase_url = (
+        os.getenv("KB_SUPABASE_URL", "").strip()
+        or os.getenv("SUPABASE_URL", "").strip()
+    ).rstrip("/")
+    default_issuer = f"{supabase_url}/auth/v1" if supabase_url else ""
+    issuer = (
+        issuer
+        or os.getenv("RKB_OAUTH_ISSUER", "").strip()
+        or default_issuer
+    ).rstrip("/")
     resource_url = (resource_url or os.getenv("RKB_RESOURCE_URL", "")).rstrip("/")
-    jwks_url = jwks_url or os.getenv("RKB_OAUTH_JWKS_URL", "")
+    jwks_url = (
+        jwks_url
+        or os.getenv("RKB_OAUTH_JWKS_URL", "").strip()
+        or (f"{issuer}/.well-known/jwks.json" if issuer else "")
+    )
 
     kwargs: dict[str, Any] = {}
     if issuer and resource_url and jwks_url:
