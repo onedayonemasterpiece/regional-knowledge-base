@@ -67,6 +67,7 @@ def build_server(
     jwks_url = (
         jwks_url
         or os.getenv("RKB_OAUTH_JWKS_URL", "").strip()
+        or os.getenv("KB_SUPABASE_JWKS_URL", "").strip()
         or (f"{issuer}/.well-known/jwks.json" if issuer else "")
     )
 
