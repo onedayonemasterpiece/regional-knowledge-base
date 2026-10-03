@@ -10,6 +10,7 @@ Required production settings:
 | `RKB_OAUTH_ISSUER` | shared Supabase Auth OAuth/OIDC issuer |
 | `RKB_OAUTH_JWKS_URL` | issuer JWKS endpoint |
 | `KB_SUPABASE_URL` | Regional Knowledge project API URL; preferred over generic `SUPABASE_URL` |
+| `KB_SUPABASE_JWKS_URL` | project-scoped Supabase JWKS endpoint; accepted directly by runtime |
 | `KB_SUPABASE_PUBLISHABLE_KEY` | current low-privilege Supabase API key for user-JWT/RLS requests; preferred over legacy anon key |
 | `KB_SUPABASE_SECRET_KEY` | current server-only elevated Supabase API key for exact object-locator lookup after successful user-RLS authorization; never used for search/ranking |
 | `KB_SUPABASE_SESSION_CONNECTION` | PostgreSQL Session Pooler connection string for migrations/ops from IPv4-only DevCoveer |
@@ -44,24 +45,40 @@ Free-tier target.
 
 ## Current infrastructure status — 2026-10-03
 
-A dedicated Regional Knowledge Supabase project has now been added to the
-canonical shared DevCoveer environment at `/home/dev/.env`.
+A dedicated Regional Knowledge Supabase project is connected through the canonical
+shared DevCoveer environment.
 
-Present:
+Live-verified:
 - `KB_SUPABASE_URL`;
-- `KB_SUPABASE_DIRECT_CONNECTION`.
+- `KB_SUPABASE_SESSION_CONNECTION` via IPv4 Session Pooler;
+- `KB_SUPABASE_DIRECT_CONNECTION` is structurally valid but resolves IPv6-only
+  from the current DevCoveer host and is therefore not used for operations;
+- `KB_SUPABASE_PUBLISHABLE_KEY` is a current `sb_publishable_*` key;
+- `KB_SUPABASE_SECRET_KEY` is a current `sb_secret_*` key;
+- `KB_SUPABASE_JWKS_URL` returns a usable asymmetric signing key;
+- Auth health, PostgREST publishable access and secret access return HTTP 200;
+- OIDC discovery returns the expected issuer/JWKS and publishes authorization and
+  token endpoints.
 
-Still required before live DB/runtime acceptance:
-- `KB_SUPABASE_SESSION_CONNECTION` copied from Supabase Dashboard → Connect →
-  Session pooler; the current DevCoveer network is IPv4-only while the Free-plan
-  direct database endpoint is IPv6;
-- `KB_SUPABASE_PUBLISHABLE_KEY`;
-- `KB_SUPABASE_SECRET_KEY`.
+Database rollout:
+- migrations `001_core.sql` through `005_poi_media_outbox.sql` are applied;
+- 15 RKB tables exist;
+- 25 RLS policies exist;
+- `pgcrypto` and `vector` are installed;
+- DB size at acceptance was 11.83 MiB;
+- forbidden corpus body columns are absent from Postgres;
+- schema/RLS/RPC readback completed successfully.
 
-No migration is considered applied until the migration runner successfully
-connects through the session pooler and performs schema/RLS/RPC readback.
-OAuth resource binding remains a later acceptance gate.
+Still required for full MCP deployment:
+- `RKB_RESOURCE_URL` once the public MCP URL is assigned;
+- resource-bound OAuth client acceptance against that URL;
+- `RKB_PUBLIC_BASE_URL`;
+- private S3-compatible object storage;
+- embedding provider configuration;
+- live two-user/workspace RLS acceptance and ChatGPT connection.
 
+The absence of these later runtime dependencies does not invalidate the live
+Supabase database setup.
 
 ## API key compatibility
 
