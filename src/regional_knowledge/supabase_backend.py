@@ -741,46 +741,32 @@ def _first_env(*names: str) -> str:
     return ""
 
 
-def backend_from_env() -> KnowledgeBackend:
-    # Transitional PostgREST adapter: it forwards the caller bearer token to
-    # Supabase and therefore only works when application auth is itself a
-    # Supabase user JWT. The product architecture no longer permits that hidden
-    # coupling. Production must use the direct Postgres RLS bridge implemented
-    # in the product-completion slice; keep this adapter only for bounded legacy
-    # tests until then.
-    if os.getenv("RKB_ALLOW_LEGACY_SUPABASE_USER_JWT") != "1":
-        return UnavailableBackend()
-
-    url = _first_env("KB_SUPABASE_URL", "SUPABASE_URL")
-    anon_key = _first_env(
-        "KB_SUPABASE_PUBLISHABLE_KEY",
-        "KB_SUPABASE_ANON_KEY",
-        "SUPABASE_PUBLISHABLE_KEY",
-        "SUPABASE_ANON_KEY",
-    )
-    public_base = os.getenv("RKB_PUBLIC_BASE_URL", "").strip()
-    service_role_key = _first_env(
-        "KB_SUPABASE_SECRET_KEY",
-        "KB_SUPABASE_SERVICE_ROLE_KEY",
-        "SUPABASE_SECRET_KEY",
-        "SUPABASE_SERVICE_ROLE_KEY",
-    ) or None
-    if not (url and anon_key):
-        return UnavailableBackend()
-
+def _embedder_from_env() -> Embedder:
     endpoint = os.getenv("RKB_EMBEDDING_ENDPOINT", "").strip()
     api_key = os.getenv("RKB_EMBEDDING_API_KEY", "").strip()
     model = os.getenv("RKB_EMBEDDING_MODEL", "").strip()
-    embedder: Embedder
     if endpoint and api_key and model:
-        embedder = OpenAICompatibleEmbedder(
+        return OpenAICompatibleEmbedder(
             endpoint=endpoint,
             api_key=api_key,
             model=model,
         )
-    else:
-        embedder = LexicalOnlyEmbedder()
 
+    # Cheap production default when the shared OpenAI key is already present.
+    # Explicit RKB_* settings above always win, so deployments can swap provider
+    # without touching code.
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if openai_key:
+        return OpenAICompatibleEmbedder(
+            endpoint="https://api.openai.com/v1/embeddings",
+            api_key=openai_key,
+            model="text-embedding-3-small",
+            dimensions=768,
+        )
+    return LexicalOnlyEmbedder()
+
+
+def _object_store_from_env() -> ObjectStore:
     object_store: ObjectStore = UnavailableObjectStore()
     s3 = S3Config(
         endpoint_url=os.getenv("RKB_S3_ENDPOINT", "").strip(),
@@ -799,6 +785,54 @@ def backend_from_env() -> KnowledgeBackend:
         )
     ):
         object_store = S3ObjectStore(s3)
+    return object_store
+
+
+def backend_from_env() -> KnowledgeBackend:
+    public_base = os.getenv("RKB_PUBLIC_BASE_URL", "").strip() or None
+    embedder = _embedder_from_env()
+    object_store = _object_store_from_env()
+
+    # Production path: Session Pooler + transaction-local application actor.
+    # This path never forwards an MCP bearer to Supabase/PostgREST.
+    session_dsn = _first_env("KB_SUPABASE_SESSION_CONNECTION")
+    if session_dsn:
+        from .postgres_backend import PostgresBackend
+
+        try:
+            pool_max = max(1, min(int(os.getenv("RKB_DB_POOL_MAX", "6")), 32))
+        except ValueError as exc:
+            raise RuntimeError("RKB_DB_POOL_MAX must be an integer") from exc
+        return PostgresBackend(
+            session_dsn,
+            embedder=embedder,
+            object_store=object_store,
+            pool_min_size=1,
+            pool_max_size=pool_max,
+            public_base_url=public_base,
+        )
+
+    # Transitional test-only PostgREST adapter. It forwards the caller bearer
+    # token and is therefore never selected while the production Session Pooler
+    # DSN is configured.
+    if os.getenv("RKB_ALLOW_LEGACY_SUPABASE_USER_JWT") != "1":
+        return UnavailableBackend()
+
+    url = _first_env("KB_SUPABASE_URL", "SUPABASE_URL")
+    anon_key = _first_env(
+        "KB_SUPABASE_PUBLISHABLE_KEY",
+        "KB_SUPABASE_ANON_KEY",
+        "SUPABASE_PUBLISHABLE_KEY",
+        "SUPABASE_ANON_KEY",
+    )
+    service_role_key = _first_env(
+        "KB_SUPABASE_SECRET_KEY",
+        "KB_SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_SECRET_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+    ) or None
+    if not (url and anon_key):
+        return UnavailableBackend()
 
     return SupabaseRestBackend(
         SupabaseConfig(
