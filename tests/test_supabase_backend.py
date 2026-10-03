@@ -11,6 +11,20 @@ from regional_knowledge.supabase_backend import (
 )
 
 
+def test_evidence_url_uses_canonical_uri_without_public_base():
+    backend = SupabaseRestBackend(
+        SupabaseConfig(
+            url="https://db.example",
+            anon_key="public-anon-key",
+            public_base_url=None,
+        )
+    )
+    assert (
+        backend._evidence_url("abc/123")
+        == "knowledge://evidence/abc%2F123"
+    )
+
+
 def principal():
     return Principal(
         subject="11111111-1111-1111-1111-111111111111",
