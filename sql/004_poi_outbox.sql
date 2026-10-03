@@ -141,7 +141,7 @@ as $$
   unambiguous as (
     select
       matched.input_name,
-      min(matched.author_id) as author_id
+      min(matched.author_id::text)::uuid as author_id
     from matched
     group by matched.input_name
     having count(distinct matched.author_id) = 1
