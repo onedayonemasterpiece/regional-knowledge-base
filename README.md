@@ -9,8 +9,8 @@ A non-technical user can attach a book to ChatGPT and say “add this to the reg
 ## Architecture
 
 ```text
-                       shared Supabase Auth OAuth 2.1
-                           one user / many MCPs
+                      application/platform OAuth 2.1
+                         independent from Supabase
                                     |
                                     v
 ChatGPT / Codex / Live adapter -> Regional Knowledge MCP
@@ -41,7 +41,9 @@ Object storage is authoritative. VibePublish MediaBank is an optional secondary 
 
 ## OAuth and multi-service identity
 
-The target identity provider is Supabase Auth OAuth 2.1/OIDC. Every MCP remains a separate OAuth resource server but receives the same stable user `sub`. Each service enforces its own roles and RLS. See [docs/auth.md](docs/auth.md).
+Supabase is only the data plane. MCP authentication uses an application/platform
+OAuth 2.1 authorization server and a stable application user UUID. Every MCP
+remains a separate OAuth resource. See [docs/auth.md](docs/auth.md).
 
 ## Status
 
@@ -50,8 +52,9 @@ The public scaffold now includes hybrid retrieval plus deterministic
 provenance and a Live-optimized MCP profile. Local tests cover the full
 materialization flow. The producer side of the Street Story POI bridge also
 stages evidence-backed POI candidates and writes a durable authorization-aware
-outbox at finalize; network delivery is still an explicit gate. Production
-Supabase/S3/OAuth deployment and real-book acceptance remain explicit gates. No public corpus is implied by the code repository.
+outbox at finalize; network delivery is still an explicit gate. Supabase/S3 are configured, but the product is intentionally not considered
+ready until the independent MCP auth plane and direct Postgres RLS actor bridge
+are implemented and a real book is imported end-to-end. No public corpus is implied by the code repository.
 
 See:
 - [Architecture](docs/architecture.md)

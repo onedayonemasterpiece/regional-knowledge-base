@@ -72,9 +72,9 @@ Wonderful Lections / Street Story / Projects Hub
         |
         | OAuth client of Knowledge resource
         v
-shared Supabase Auth
+shared application/platform identity
         |
-        | same user sub, Knowledge audience
+        | same stable platform user UUID, Knowledge resource
         v
 Regional Knowledge MCP/API
 ```

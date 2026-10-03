@@ -1,132 +1,71 @@
 # Operations and acceptance gates
 
-## Current infrastructure state
+## Current state
 
-As of 2026-10-03 the dedicated Regional Knowledge Supabase project is live and
-accepted from DevCoveer through the Session Pooler.
-
-Verified:
-- DB connectivity and Supabase Auth schema;
-- Auth/JWKS/REST API;
+Data infrastructure is available:
+- dedicated Supabase Postgres project;
+- Session Pooler connectivity from DevCoveer;
 - migrations 001–005;
-- pgvector + pgcrypto;
-- live two-user RLS acceptance with owner/private/workspace/grant/anonymous
-  isolation and viewer write denial;
-- 15 RKB tables;
-- 25 RLS policies;
-- no corpus body text columns in Postgres;
-- migration/readback verifier success.
+- pgvector/pgcrypto;
+- private S3-compatible corpus bucket;
+- deterministic ingestion implementation and tests.
 
-The direct database endpoint remains IPv6-only from the current host; operations
-must use `KB_SUPABASE_SESSION_CONNECTION`.
+Authentication correction:
+- Supabase OAuth is **not** required;
+- current source now refuses to derive MCP auth from `KB_SUPABASE_URL`;
+- the old PostgREST user-JWT backend is disabled by default;
+- the next implementation slice must provide application OAuth plus a direct
+  Postgres RLS actor bridge.
 
-Not yet deployed/accepted:
-- Supabase OAuth 2.1 Server feature-toggle/authorization path (MCP discovery is
-  currently 404 while OIDC/JWKS are healthy);
-- public MCP resource URL and exact resource-bound OAuth client;
-- embedding provider;
-- ChatGPT/Live network deployment.
+There is therefore no remaining user action in the Supabase Dashboard related to
+OAuth.
 
-## Before production
+## Product beta gates
 
-The service is not production-ready merely because unit tests pass. Required gates:
+The next executor must deliver a usable product, not another architecture audit.
 
-1. Supabase project/JWKS/DB are live; finish resource-bound OAuth client acceptance after the public MCP resource URL exists;
-2. configure the platform client→resource audience mapping and prove that a token for another MCP is rejected;
-3. SQL migrations and two-user/workspace/private/anonymous RLS acceptance are live; repeat only after policy changes;
-4. private S3-compatible bucket is live and anonymous reads are denied; repeat
-   acceptance only after credential/bucket policy changes;
-5. configure a 768-dimension external embedding endpoint; verify lexical-only degradation when it is unavailable;
-6. deterministic start/pages/stage/validate/finalize is implemented locally; exercise the whole workflow against real configured Supabase/Object Storage with a representative born-digital PDF and a scan-only/multicolumn source;
-7. prove raw private source PDFs remain inaccessible when normalized content is public;
-8. connect the MCP from ChatGPT and test `search`, `fetch`, file-parameter ingestion and model-visible page images;
-9. connect the read-only Live profile through `live-interaction` and measure p50/p95 tool latency;
-10. verify a second MCP uses the same Supabase `sub` with a different audience/resource;
-11. verify one first-party delegated integration (prefer Projects Hub -> Knowledge) can refresh its own Knowledge grant and that revoking it does not affect the user's other MCP grants;
-12. verify Knowledge -> Street Story POI delivery with idempotent outbox semantics;
-13. verify private-book POI evidence remains private in Street Story and expert review;
-14. verify ambiguous book POI identity creates an unresolved link instead of a silent merge;
-15. verify unknown author authority remains null and author scoring is domain-specific;
-16. verify unresolved contradiction blocks automatic canonicalization regardless of verification score.
+1. Implement application-owned OAuth 2.1 for the Knowledge MCP, independent from Supabase.
+2. Implement direct Postgres RLS actor binding through `KB_SUPABASE_SESSION_CONNECTION`; remove runtime dependence on forwarding user bearer tokens to Supabase.
+3. Add/migrate application-owned user identity and replace `auth.uid()` policy dependence.
+4. Re-run two-user/private/workspace/grant/anonymous RLS acceptance against the live database through the new actor bridge.
+5. Keep the existing private object-storage acceptance green.
+6. Configure a real 768-dimension external embedding provider and verify hybrid search plus lexical degradation.
+7. Deploy a stable HTTPS MCP resource on DevCoveer.
+8. Prove OAuth discovery, PKCE, exact resource binding, refresh rotation/revocation and authenticated MCP initialize/tools/list.
+9. Run a real book end-to-end: attached PDF -> start -> page batches -> model stage -> validate -> finalize.
+10. Verify exact source PDF and derived graph/text/crops in object storage and only compact index/catalog data in Postgres.
+11. Verify search/fetch returns evidence from that imported book with page provenance.
+12. Include at least one illustration/caption/POI relationship in the acceptance source and verify crop/media evidence.
+13. Verify raw private source remains private.
+14. Return the exact ChatGPT MCP URL and short owner connection/import instructions.
 
 ## Performance targets
 
-Initial targets, to be measured rather than assumed:
-
-- search tool p95 excluding model generation: < 1.0 s in normal hybrid mode;
-- lexical degraded search p95: < 750 ms;
-- fetch p95 without image bytes: < 500 ms;
-- default Live search result count: 5–8;
-- page-vision ingestion batch: 4 pages, hard maximum 8;
-- online server CPU must not perform vector ANN, corpus-wide FTS or cross-encoder inference.
+- hybrid search p95 excluding model generation: <1.0 s;
+- lexical degraded p95: <750 ms;
+- fetch p95 without image bytes: <500 ms;
+- page vision batch: default 4, hard max 8;
+- no corpus-wide ANN/FTS/cross-encoder compute on the gateway.
 
 ## Ingestion isolation
 
-Ingestion is lower priority than interactive retrieval. Page rendering/cropping concurrency is bounded independently. A large PDF must not starve Live/search requests. Staged data never participates in retrieval until finalize atomically switches `active_revision`.
+Page rendering/cropping concurrency is bounded and lower priority than interactive
+retrieval. Staged data never participates in retrieval until finalize atomically
+switches the active revision.
 
 ## Observability
 
-Log operation IDs, user subject hash/pseudonymous ID, ingestion/document IDs, stage, latency and external dependency status. Never log bearer tokens, signed object URLs, source text, page images or private object keys.
+Log operation IDs, pseudonymous actor ID, document/ingestion IDs, stage, latency
+and dependency state. Never log bearer tokens, OAuth codes, source text, page
+images, object keys or signed URLs.
 
-## Implemented ingestion checkpoint — 2026-10-02
+## Existing producer integrations
 
-The ingestion path now has deterministic local coverage for:
-- ChatGPT file-param shape, bounded DNS-pinned HTTPS source download and exact
-  source hashing;
-- private source persistence and opaque source-object identity;
-- lost/failed/concurrent start reconciliation without duplicate jobs;
-- real PyMuPDF inspection, native text blocks and JPEG page rendering;
-- model-friendly page/region/relation/illustration staging with deterministic
-  server IDs and derived semantic chunk text;
-- immutable staged graph snapshots in Object Storage;
-- graph coverage/review validation;
-- exact illustration crop generation from the source PDF;
-- text projection + embeddings/FTS materialization;
-- DB-side revalidation before `active_revision` changes;
-- active materialized revisions protected from ordinary user-token mutation.
+Source code already contains:
+- POI fact candidates + durable outbox;
+- POI-linked historical media evidence;
+- rights/access-aware media relations;
+- Street Story/Projects Hub contracts.
 
-The local fake-E2E runs `stage -> validate -> finalize` with a real PyMuPDF
-source/crop while mocking only managed external services. Real provider
-acceptance remains a production gate.
-
-CI installs the `ingest` extra so PDF rendering/cropping is exercised rather
-than skipped.
-
-## Implemented POI producer/outbox checkpoint — 2026-10-02
-
-Local contracts and tests now cover:
-- staged POI candidates with exact page/region provenance;
-- contextual versioned author authority where curated evidence exists;
-- `null` author score when identity/authority is unknown;
-- conservative unknown source-family handling;
-- `poi.fact_evidence.v1` construction;
-- DB-side event scope/provenance checks;
-- durable idempotent outbox written transactionally with revision activation;
-- private/workspace `pending_authorization` versus public `pending_delivery`;
-- POI ↔ illustration staging and `poi.media_evidence.v1` outbox events, keeping
-  image relation/provenance/rights independent from factual claims.
-
-Not yet claimed:
-- real Street Story network intake;
-- outbox delivery/retry worker;
-- user OAuth delegation resolution for private evidence;
-- POI identity resolution and contradiction creation E2E;
-- Projects Hub expert assignment E2E.
-
-
-## Live object-storage acceptance — 2026-10-03
-
-Regional Knowledge now has a dedicated Yandex Object Storage bucket configured
-through `RKB_S3_*`.
-
-Verified:
-- bucket exists and is reachable with the configured service credentials;
-- ACL has no public grantee;
-- put/get round-trip succeeded;
-- anonymous GET returned HTTP 403;
-- acceptance object was deleted afterward.
-
-The current credentials are inherited from the existing shared Yandex storage
-service account. This is operationally sufficient for beta; a dedicated
-least-privilege service account remains a hardening option and does not require
-changing object IDs or bucket layout.
+These must remain non-blocking for book finalize. Network delivery can remain a
+post-beta integration step if the local durable outbox and contracts stay intact.

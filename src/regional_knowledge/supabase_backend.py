@@ -742,6 +742,15 @@ def _first_env(*names: str) -> str:
 
 
 def backend_from_env() -> KnowledgeBackend:
+    # Transitional PostgREST adapter: it forwards the caller bearer token to
+    # Supabase and therefore only works when application auth is itself a
+    # Supabase user JWT. The product architecture no longer permits that hidden
+    # coupling. Production must use the direct Postgres RLS bridge implemented
+    # in the product-completion slice; keep this adapter only for bounded legacy
+    # tests until then.
+    if os.getenv("RKB_ALLOW_LEGACY_SUPABASE_USER_JWT") != "1":
+        return UnavailableBackend()
+
     url = _first_env("KB_SUPABASE_URL", "SUPABASE_URL")
     anon_key = _first_env(
         "KB_SUPABASE_PUBLISHABLE_KEY",

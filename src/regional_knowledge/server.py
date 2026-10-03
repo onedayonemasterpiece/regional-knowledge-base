@@ -10,7 +10,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import AnyHttpUrl
 
-from .auth import SupabaseJwtVerifier
+from .auth import JwtResourceVerifier
 from .backend import KnowledgeBackend
 from .contracts import (
     BookIngestOutput,
@@ -53,27 +53,23 @@ def build_server(
     profile: Literal["full", "live"] = "full",
 ) -> MCPServer:
     backend = backend or backend_from_env()
-    supabase_url = (
-        os.getenv("KB_SUPABASE_URL", "").strip()
-        or os.getenv("SUPABASE_URL", "").strip()
-    ).rstrip("/")
-    default_issuer = f"{supabase_url}/auth/v1" if supabase_url else ""
     issuer = (
         issuer
-        or os.getenv("RKB_OAUTH_ISSUER", "").strip()
-        or default_issuer
+        or os.getenv("RKB_AUTH_ISSUER", "").strip()
     ).rstrip("/")
-    resource_url = (resource_url or os.getenv("RKB_RESOURCE_URL", "")).rstrip("/")
+    resource_url = (
+        resource_url
+        or os.getenv("RKB_RESOURCE_URL", "").strip()
+    ).rstrip("/")
     jwks_url = (
         jwks_url
-        or os.getenv("RKB_OAUTH_JWKS_URL", "").strip()
-        or os.getenv("KB_SUPABASE_JWKS_URL", "").strip()
+        or os.getenv("RKB_AUTH_JWKS_URL", "").strip()
         or (f"{issuer}/.well-known/jwks.json" if issuer else "")
     )
 
     kwargs: dict[str, Any] = {}
     if issuer and resource_url and jwks_url:
-        kwargs["token_verifier"] = SupabaseJwtVerifier(
+        kwargs["token_verifier"] = JwtResourceVerifier(
             issuer=issuer,
             jwks_url=jwks_url,
             resource=resource_url,
@@ -86,7 +82,9 @@ def build_server(
         )
     elif os.getenv("RKB_DEV_NOAUTH") != "1":
         raise RuntimeError(
-            "OAuth configuration is required; set RKB_DEV_NOAUTH=1 only for local tests"
+            "Application OAuth/JWT configuration is required; Supabase is only "
+            "the data plane. Set RKB_AUTH_ISSUER, RKB_AUTH_JWKS_URL and "
+            "RKB_RESOURCE_URL, or RKB_DEV_NOAUTH=1 for local tests only."
         )
 
     mcp = MCPServer(

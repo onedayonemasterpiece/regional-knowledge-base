@@ -9,6 +9,8 @@ This repository contains only public source code, schemas, tests and documentati
 - Preserve provenance: document -> page -> region -> relation -> illustration. Chunks are derived and replaceable.
 - Original uploads are private by default. Never publish an uploaded source merely because its publication date looks old.
 - Public visibility requires a verified rights basis. Rights uncertainty fails closed to private.
-- Cross-service user identity is the stable Supabase Auth subject. Never forward an end-user bearer token to another MCP; use resource-specific tokens or a dedicated service identity.
+- Supabase is a data plane, never the MCP OAuth authority. Cross-service identity uses a stable application/platform user UUID. Never forward an end-user bearer token to another MCP; use resource-specific grants or a dedicated service identity.
 - New interactive Live work must reuse onedayonemasterpiece/live-interaction.
 - Every behavior change needs focused tests and matching documentation.
+
+- Do not reintroduce implicit MCP-auth defaults from `KB_SUPABASE_URL`, Supabase JWKS, Supabase OAuth Server or `auth.uid()`. Production RLS must use the application actor bridge.

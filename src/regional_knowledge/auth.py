@@ -58,8 +58,8 @@ def claims_to_access_token(
     )
 
 
-class SupabaseJwtVerifier(TokenVerifier):
-    """Verify Supabase asymmetric JWTs and bind them to exactly one MCP resource."""
+class JwtResourceVerifier(TokenVerifier):
+    """Verify application OAuth JWTs and bind them to exactly one MCP resource."""
 
     def __init__(
         self,
