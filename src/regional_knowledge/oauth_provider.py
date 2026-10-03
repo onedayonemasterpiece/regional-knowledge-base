@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import os
 import secrets
 import threading
@@ -40,6 +41,7 @@ _MAX_PENDING = 4096
 _MAX_REGISTERED_CLIENTS = 256
 _COOKIE_SESSION = "__Host-rkb_owner"
 _COOKIE_CSRF = "__Host-rkb_csrf"
+_LOGGER = logging.getLogger(__name__)
 
 
 def _digest(value: str) -> str:
@@ -640,8 +642,18 @@ class RegionalOAuthProvider:
             raise ValueError("duplicate form field")
         return {key: values[0] for key, values in parsed.items()}
 
-    @staticmethod
-    def _security_headers() -> dict[str, str]:
+    def _security_headers(self, redirect_uri: str | None = None) -> dict[str, str]:
+        form_action = "'self'"
+        if redirect_uri is not None:
+            if not self._redirect_allowed(redirect_uri):
+                raise ValueError("invalid redirect")
+            # Chrome checks form-action across POST -> 303 redirects. Allow
+            # only the origin of this already validated OAuth callback, never
+            # append raw callback paths or query parameters to a CSP header.
+            callback = AnyUrl(redirect_uri)
+            form_action += f" {callback.scheme}://{callback.host}"
+            if callback.port not in (None, 443):
+                form_action += f":{callback.port}"
         return {
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
@@ -649,11 +661,11 @@ class RegionalOAuthProvider:
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy": (
                 "default-src 'none'; style-src 'unsafe-inline'; "
-                "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+                f"form-action {form_action}; frame-ancestors 'none'; base-uri 'none'"
             ),
         }
 
-    def _html_page(self, body: str) -> HTMLResponse:
+    def _html_page(self, body: str, redirect_uri: str | None = None) -> HTMLResponse:
         return HTMLResponse(
             "<!doctype html><html lang='ru'><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -664,7 +676,7 @@ class RegionalOAuthProvider:
             "button{cursor:pointer}button[value=allow]{background:#1820b8;color:white}</style>"
             + body
             + "</html>",
-            headers=self._security_headers(),
+            headers=self._security_headers(redirect_uri),
         )
 
     def register_routes(self, mcp) -> None:
@@ -699,7 +711,10 @@ class RegionalOAuthProvider:
                     "<button name='decision' value='allow'>Разрешить доступ</button>"
                     "<button name='decision' value='deny'>Отмена</button></form>"
                 )
-            response = self._html_page(body)
+            response = self._html_page(
+                body,
+                str(pending["redirect_uri"]) if subject == self.owner_subject else None,
+            )
             response.set_cookie(
                 _COOKIE_CSRF,
                 csrf,
@@ -727,6 +742,7 @@ class RegionalOAuthProvider:
                 if not self.verify_owner_login(form.get("secret", "")):
                     raise ValueError("login")
                 session = self._new_owner_session()
+                _LOGGER.info("oauth_owner_login outcome=accepted")
                 response = RedirectResponse(
                     f"/oauth/consent?id={request_id}",
                     status_code=303,
@@ -742,7 +758,12 @@ class RegionalOAuthProvider:
                     max_age=_OWNER_SESSION_SECONDS,
                 )
                 return response
-            except (ValueError, LookupError):
+            except (ValueError, LookupError) as exc:
+                reason = str(exc) if str(exc) in {
+                    "invalid origin", "csrf", "login", "duplicate form field",
+                    "form too large", "authorization request expired",
+                } else "invalid form"
+                _LOGGER.warning("oauth_owner_login outcome=rejected reason=%s", reason)
                 return Response(
                     "Login rejected",
                     status_code=401,
@@ -767,20 +788,29 @@ class RegionalOAuthProvider:
                 ):
                     raise ValueError("csrf")
                 decision = form.get("decision")
+                pending = self._pending(request_id)
+                if not pending:
+                    raise LookupError("authorization request expired")
                 if decision == "allow":
                     target = self.approve(request_id)
                 elif decision == "deny":
                     target = self.deny(request_id)
                 else:
                     raise ValueError("decision")
+                _LOGGER.info("oauth_consent outcome=accepted decision=%s", decision)
                 response = RedirectResponse(
                     target,
                     status_code=303,
-                    headers=self._security_headers(),
+                    headers=self._security_headers(str(pending["redirect_uri"])),
                 )
                 response.delete_cookie(_COOKIE_CSRF, path="/")
                 return response
-            except (ValueError, LookupError):
+            except (ValueError, LookupError) as exc:
+                reason = str(exc) if str(exc) in {
+                    "invalid origin", "owner session required", "csrf", "decision",
+                    "duplicate form field", "form too large", "authorization request expired",
+                } else "invalid form"
+                _LOGGER.warning("oauth_consent outcome=rejected reason=%s", reason)
                 return Response(
                     "Consent rejected",
                     status_code=400,

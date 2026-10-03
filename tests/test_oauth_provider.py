@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
@@ -184,3 +185,63 @@ def test_embedded_oauth_mounts_standard_and_consent_routes(
     assert "/oauth/consent" in paths
     assert "/oauth/login" in paths
     assert "/health" in paths
+
+
+@pytest.mark.parametrize("redirect", [
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+    "https://chatgpt.com/connector/oauth/browser-callback",
+])
+@pytest.mark.parametrize("decision", ["allow", "deny"])
+def test_browser_consent_csp_allows_validated_callback_and_keeps_csrf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, redirect: str, decision: str,
+) -> None:
+    provider = _provider(tmp_path)
+    dynamic = _dynamic_client(redirect_uri=redirect)
+    asyncio.run(provider.register_client(dynamic))
+    consent = asyncio.run(provider.authorize(dynamic, _params(redirect_uri=redirect)))
+    request_id = parse_qs(urlsplit(consent).query)["id"][0]
+    monkeypatch.setenv("RKB_AUTH_MODE", "embedded")
+    server = build_server(
+        backend=UnavailableBackend(), issuer=provider.issuer,
+        resource_url=provider.resource, oauth_provider=provider,
+    )
+    with TestClient(server.streamable_http_app(), base_url=provider.origin) as client:
+        login_page = client.get(consent)
+        login_csp = login_page.headers["content-security-policy"]
+        assert "form-action 'self';" in login_csp
+        assert "chatgpt.com" not in login_csp
+        login = client.post("/oauth/login", data={
+            "id": request_id, "csrf": client.cookies.get("__Host-rkb_csrf"),
+            "secret": "owner-login-secret-12345",
+        }, headers={"Origin": provider.origin}, follow_redirects=False)
+        assert login.status_code == 303
+        consent_page = client.get(login.headers["location"])
+        csp = consent_page.headers["content-security-policy"]
+        assert "form-action 'self' https://chatgpt.com;" in csp
+        assert "default-src 'none'" in csp
+        assert "frame-ancestors 'none'; base-uri 'none'" in csp
+        form = {
+            "id": request_id, "csrf": client.cookies.get("__Host-rkb_csrf"),
+            "decision": decision,
+        }
+        bad_origin = client.post("/oauth/consent", data=form,
+                                 headers={"Origin": "https://evil.example"})
+        assert bad_origin.status_code == 400
+        bad_csrf = client.post("/oauth/consent", data={**form, "csrf": "wrong"},
+                               headers={"Origin": provider.origin})
+        assert bad_csrf.status_code == 400
+        accepted = client.post("/oauth/consent", data=form,
+                               headers={"Origin": provider.origin}, follow_redirects=False)
+        assert accepted.status_code == 303
+        assert accepted.headers["content-security-policy"] == csp
+        callback = urlsplit(accepted.headers["location"])
+        assert callback.scheme == "https" and callback.hostname == "chatgpt.com"
+        assert callback.path == urlsplit(redirect).path
+        query = parse_qs(callback.query)
+        assert ("code" in query) if decision == "allow" else query["error"] == ["access_denied"]
+
+
+def test_consent_csp_rejects_unapproved_redirect(tmp_path: Path) -> None:
+    provider = _provider(tmp_path)
+    with pytest.raises(ValueError, match="invalid redirect"):
+        provider._security_headers("https://evil.example/callback")
