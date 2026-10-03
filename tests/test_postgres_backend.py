@@ -119,7 +119,7 @@ async def test_rpc_dispatch_is_lazy_for_start_ingestion(
     assert response.json()
 
 
-def test_shared_openai_key_is_embedding_fallback(
+def test_shared_openai_key_is_not_embedding_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     for name in (
@@ -130,7 +130,4 @@ def test_shared_openai_key_is_embedding_fallback(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     embedder = _embedder_from_env()
-    assert isinstance(embedder, OpenAICompatibleEmbedder)
-    assert embedder.endpoint == "https://api.openai.com/v1/embeddings"
-    assert embedder.model == "text-embedding-3-small"
-    assert embedder.dimensions == 768
+    assert isinstance(embedder, LexicalOnlyEmbedder)
