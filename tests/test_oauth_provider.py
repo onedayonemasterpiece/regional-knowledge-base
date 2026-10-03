@@ -5,7 +5,8 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 import pytest
-from mcp.server.auth.provider import AuthorizationParams, AuthorizeError
+from mcp.server.auth.provider import AuthorizationParams, AuthorizeError, RegistrationError
+from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
 from regional_knowledge.backend import UnavailableBackend
@@ -30,14 +31,31 @@ def _provider(tmp_path: Path) -> RegionalOAuthProvider:
     )
 
 
-def _params(*, resource: str = "https://knowledge.example.test/mcp") -> AuthorizationParams:
+def _params(
+    *,
+    resource: str = "https://knowledge.example.test/mcp",
+    redirect_uri: str = "https://chatgpt.com/connector_platform_oauth_redirect",
+) -> AuthorizationParams:
     return AuthorizationParams(
         state="state-1",
         scopes=[KNOWLEDGE_SCOPE],
         code_challenge="challenge-value",
-        redirect_uri=AnyUrl("https://chatgpt.com/connector_platform_oauth_redirect"),
+        redirect_uri=AnyUrl(redirect_uri),
         redirect_uri_provided_explicitly=True,
         resource=resource,
+    )
+
+
+def _dynamic_client(*, redirect_uri: str) -> OAuthClientInformationFull:
+    return OAuthClientInformationFull(
+        client_id=str(uuid4()),
+        client_secret="d" * 64,
+        redirect_uris=[AnyUrl(redirect_uri)],
+        token_endpoint_auth_method="client_secret_post",
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+        scope=KNOWLEDGE_SCOPE,
+        application_type="web",
     )
 
 
@@ -109,6 +127,34 @@ async def test_oauth_rejects_wrong_resource(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_dynamic_chatgpt_client_survives_restart(tmp_path: Path) -> None:
+    provider = _provider(tmp_path)
+    redirect = "https://chatgpt.com/connector/oauth/callback-123"
+    client = _dynamic_client(redirect_uri=redirect)
+    await provider.register_client(client)
+    loaded = await provider.get_client(client.client_id)
+    assert loaded is not None
+    assert loaded.client_secret == client.client_secret
+
+    restarted = _provider(tmp_path)
+    restored = await restarted.get_client(client.client_id)
+    assert restored is not None
+    consent = await restarted.authorize(
+        restored,
+        _params(redirect_uri=redirect),
+    )
+    assert parse_qs(urlsplit(consent).query)["id"]
+
+
+@pytest.mark.asyncio
+async def test_dynamic_client_rejects_non_chatgpt_redirect(tmp_path: Path) -> None:
+    provider = _provider(tmp_path)
+    client = _dynamic_client(redirect_uri="https://evil.example/callback")
+    with pytest.raises(RegistrationError):
+        await provider.register_client(client)
+
+
 def test_embedded_oauth_mounts_standard_and_consent_routes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -126,6 +172,7 @@ def test_embedded_oauth_mounts_standard_and_consent_routes(
     assert "/mcp" in paths
     assert "/authorize" in paths
     assert "/token" in paths
+    assert "/register" in paths
     assert "/revoke" in paths
     assert "/oauth/consent" in paths
     assert "/oauth/login" in paths

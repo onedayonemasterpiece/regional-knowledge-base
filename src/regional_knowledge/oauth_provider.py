@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 from cryptography.fernet import Fernet
@@ -19,6 +19,7 @@ from mcp.server.auth.provider import (
     AuthorizationCode,
     AuthorizationParams,
     AuthorizeError,
+    RegistrationError,
     RefreshToken,
     TokenError,
     construct_redirect_uri,
@@ -36,6 +37,7 @@ _CODE_SECONDS = 60
 _REQUEST_SECONDS = 600
 _OWNER_SESSION_SECONDS = 15 * 60
 _MAX_PENDING = 4096
+_MAX_REGISTERED_CLIENTS = 256
 _COOKIE_SESSION = "__Host-rkb_owner"
 _COOKIE_CSRF = "__Host-rkb_csrf"
 
@@ -68,6 +70,7 @@ class _EncryptedStateStore:
     @staticmethod
     def _empty() -> dict[str, Any]:
         return {
+            "clients": {},
             "pending": {},
             "codes": {},
             "access": {},
@@ -216,11 +219,93 @@ class RegionalOAuthProvider:
         self._admission_started = 0.0
         self._admission_count = 0
 
+    def _redirect_allowed(self, value: str) -> bool:
+        if value in self.redirect_uris:
+            return True
+        try:
+            parsed = urlsplit(value)
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname != "chatgpt.com"
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+                or parsed.port not in (None, 443)
+            ):
+                return False
+        except ValueError:
+            return False
+        if parsed.path == "/connector_platform_oauth_redirect":
+            return True
+        prefix = "/connector/oauth/"
+        if not parsed.path.startswith(prefix):
+            return False
+        callback_id = parsed.path[len(prefix):]
+        return bool(callback_id) and "/" not in callback_id and len(callback_id) <= 256
+
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        return self.client if client_id == self.client.client_id else None
+        if client_id == self.client.client_id:
+            return self.client
+        record = self.store.read(
+            lambda state: state["clients"].get(_digest(client_id))
+        )
+        if not record:
+            return None
+        return OAuthClientInformationFull.model_validate(record)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
-        raise NotImplementedError("dynamic client registration is disabled")
+        redirects = [str(value) for value in (client_info.redirect_uris or [])]
+        if not redirects or any(not self._redirect_allowed(value) for value in redirects):
+            raise RegistrationError(
+                error="invalid_redirect_uri",
+                error_description="only registered ChatGPT HTTPS callbacks are allowed",
+            )
+        if client_info.token_endpoint_auth_method not in {
+            "client_secret_basic",
+            "client_secret_post",
+        }:
+            raise RegistrationError(
+                error="invalid_client_metadata",
+                error_description="registered clients must use a supported client secret method",
+            )
+        if not client_info.client_secret:
+            raise RegistrationError(
+                error="invalid_client_metadata",
+                error_description="registered client secret is required",
+            )
+        if set(client_info.grant_types) - {"authorization_code", "refresh_token"}:
+            raise RegistrationError(
+                error="invalid_client_metadata",
+                error_description="unsupported OAuth grant type",
+            )
+        scopes = set((client_info.scope or "").split())
+        if scopes and scopes != {KNOWLEDGE_SCOPE}:
+            raise RegistrationError(
+                error="invalid_client_metadata",
+                error_description="unsupported OAuth scope",
+            )
+
+        record = client_info.model_dump(mode="json", exclude_none=True)
+        key = _digest(client_info.client_id)
+
+        def write(state: dict[str, Any]) -> None:
+            existing = state["clients"].get(key)
+            if existing is not None:
+                if existing != record:
+                    raise RegistrationError(
+                        error="invalid_client_metadata",
+                        error_description="client identifier collision",
+                    )
+                return
+            if len(state["clients"]) >= _MAX_REGISTERED_CLIENTS:
+                raise RegistrationError(
+                    error="invalid_client_metadata",
+                    error_description="client registration capacity reached",
+                )
+            state["clients"][key] = record
+
+        self.store.mutate(write)
 
     def _admit(self) -> None:
         now = self.clock()
@@ -241,9 +326,11 @@ class RegionalOAuthProvider:
     ) -> str:
         self._admit()
         if client.client_id != self.client.client_id:
-            raise AuthorizeError(error="unauthorized_client")
+            if await self.get_client(client.client_id) is None:
+                raise AuthorizeError(error="unauthorized_client")
         redirect = str(params.redirect_uri)
-        if redirect not in self.redirect_uris:
+        registered_redirects = {str(value) for value in (client.redirect_uris or [])}
+        if redirect not in registered_redirects or not self._redirect_allowed(redirect):
             raise AuthorizeError(error="invalid_request")
         if params.resource != self.resource:
             raise AuthorizeError(error="invalid_target")

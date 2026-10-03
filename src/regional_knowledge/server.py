@@ -6,7 +6,11 @@ from typing import Any, Literal
 
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.settings import AuthSettings, RevocationOptions
+from mcp.server.auth.settings import (
+    AuthSettings,
+    ClientRegistrationOptions,
+    RevocationOptions,
+)
 from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import AnyHttpUrl
 
@@ -95,6 +99,12 @@ def build_server(
             issuer_url=AnyHttpUrl(issuer),
             resource_server_url=AnyHttpUrl(resource_url),
             required_scopes=[KNOWLEDGE_SCOPE],
+            client_registration_options=ClientRegistrationOptions(
+                enabled=True,
+                valid_scopes=[KNOWLEDGE_SCOPE],
+                default_scopes=[KNOWLEDGE_SCOPE],
+                client_secret_expiry_seconds=None,
+            ),
             revocation_options=RevocationOptions(enabled=True),
             validate_token_resource=True,
         )
