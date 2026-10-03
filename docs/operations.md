@@ -10,6 +10,8 @@ Verified:
 - Auth/JWKS/REST API;
 - migrations 001–005;
 - pgvector + pgcrypto;
+- live two-user RLS acceptance with owner/private/workspace/grant/anonymous
+  isolation and viewer write denial;
 - 15 RKB tables;
 - 25 RLS policies;
 - no corpus body text columns in Postgres;
@@ -19,6 +21,8 @@ The direct database endpoint remains IPv6-only from the current host; operations
 must use `KB_SUPABASE_SESSION_CONNECTION`.
 
 Not yet deployed/accepted:
+- Supabase OAuth 2.1 Server feature-toggle/authorization path (MCP discovery is
+  currently 404 while OIDC/JWKS are healthy);
 - public MCP resource URL and exact resource-bound OAuth client;
 - object storage;
 - embedding provider;
@@ -31,7 +35,7 @@ The service is not production-ready merely because unit tests pass. Required gat
 
 1. Supabase project/JWKS/DB are live; finish resource-bound OAuth client acceptance after the public MCP resource URL exists;
 2. configure the platform client→resource audience mapping and prove that a token for another MCP is rejected;
-3. SQL migrations are live; run remaining RLS acceptance with at least two users, one workspace and anonymous public reads;
+3. SQL migrations and two-user/workspace/private/anonymous RLS acceptance are live; repeat only after policy changes;
 4. create a private S3-compatible bucket with public ACL disabled;
 5. configure a 768-dimension external embedding endpoint; verify lexical-only degradation when it is unavailable;
 6. deterministic start/pages/stage/validate/finalize is implemented locally; exercise the whole workflow against real configured Supabase/Object Storage with a representative born-digital PDF and a scan-only/multicolumn source;
