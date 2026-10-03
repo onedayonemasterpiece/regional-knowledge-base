@@ -1,6 +1,21 @@
 import os
 
-from regional_knowledge.server import build_server
+from regional_knowledge.server import _transport_security, build_server
+
+
+
+
+
+def test_transport_security_keeps_dns_rebinding_protection_exact():
+    settings = _transport_security("https://knowledge.example/mcp")
+
+    assert settings.enable_dns_rebinding_protection is True
+    assert "knowledge.example" in settings.allowed_hosts
+    assert "https://knowledge.example" in settings.allowed_origins
+    assert "127.0.0.1:*" in settings.allowed_hosts
+    assert "http://127.0.0.1:*" in settings.allowed_origins
+    assert "*.example" not in settings.allowed_hosts
+    assert "*" not in settings.allowed_hosts
 
 
 def test_model_surface_stays_small_and_goal_oriented(monkeypatch):
