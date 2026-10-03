@@ -140,8 +140,8 @@ def test_poi_media_sql_validates_rights_acl_and_atomic_core_activation():
 
     for expected in (
         "poi.media_evidence.v1",
-        "do $",
-        "$;",
+        "do $rkb$",
+        "$rkb$;",
         "to_regprocedure(",
         "rename to rkb_activate_revision_core",
         "POI media crop hash mismatch",

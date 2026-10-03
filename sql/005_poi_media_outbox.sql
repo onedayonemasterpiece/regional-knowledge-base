@@ -7,7 +7,7 @@ alter table public.rkb_integration_outbox
   add constraint rkb_integration_outbox_event_type_check
   check (event_type in ('poi.fact_evidence.v1','poi.media_evidence.v1'));
 
-do $
+do $rkb$
 begin
   if to_regprocedure(
     'public.rkb_activate_revision_core(uuid,uuid,bigint,jsonb)'
@@ -16,7 +16,7 @@ begin
       rename to rkb_activate_revision_core;
   end if;
 end
-$;
+$rkb$;
 
 create or replace function public.rkb_activate_revision(
   p_document_id uuid,
