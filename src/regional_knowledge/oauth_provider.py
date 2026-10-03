@@ -25,7 +25,7 @@ from mcp.server.auth.provider import (
     construct_redirect_uri,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
-from pydantic import AnyUrl
+from pydantic import AnyHttpUrl, AnyUrl
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
@@ -182,11 +182,17 @@ class RegionalOAuthProvider:
         key_file: Path,
         clock: Callable[[], float] = time.time,
     ) -> None:
-        self.issuer = issuer.rstrip("/")
+        # MCP's AuthSettings serializes a host-only AnyHttpUrl with the
+        # canonical trailing slash (RFC 8414 issuer identifier). Keep that exact
+        # identifier for OAuth metadata, callback `iss`, and token claims.
+        # Browser Origin headers never contain the trailing slash, so retain a
+        # separate origin form for CSRF/origin checks and consent URLs.
+        self.issuer = str(AnyHttpUrl(issuer))
+        self.origin = self.issuer.rstrip("/")
         self.resource = resource.rstrip("/")
         if not self.issuer.startswith("https://"):
             raise ValueError("embedded OAuth issuer must use HTTPS")
-        if self.resource != self.issuer + "/mcp":
+        if self.resource != self.origin + "/mcp":
             raise ValueError("embedded OAuth resource must be the issuer /mcp URL")
         if len(client_secret) < 32:
             raise ValueError("OAuth client secret must contain at least 32 characters")
@@ -355,7 +361,7 @@ class RegionalOAuthProvider:
             }
 
         self.store.mutate(write)
-        return f"{self.issuer}/oauth/consent?id={request_id}"
+        return f"{self.origin}/oauth/consent?id={request_id}"
 
     def _pending(self, request_id: str) -> dict[str, Any] | None:
         return self.store.read(
@@ -708,7 +714,7 @@ class RegionalOAuthProvider:
         @mcp.custom_route("/oauth/login", methods=["POST"])
         async def owner_login(request: Request) -> Response:
             try:
-                if request.headers.get("origin") != self.issuer:
+                if request.headers.get("origin") != self.origin:
                     raise ValueError("invalid origin")
                 form = await self._form(request)
                 request_id = form.get("id", "")
@@ -746,7 +752,7 @@ class RegionalOAuthProvider:
         @mcp.custom_route("/oauth/consent", methods=["POST"])
         async def consent_submit(request: Request) -> Response:
             try:
-                if request.headers.get("origin") != self.issuer:
+                if request.headers.get("origin") != self.origin:
                     raise ValueError("invalid origin")
                 form = await self._form(request)
                 request_id = form.get("id", "")
