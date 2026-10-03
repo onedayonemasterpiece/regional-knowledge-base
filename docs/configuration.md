@@ -9,9 +9,12 @@ Required production settings:
 | `RKB_RESOURCE_URL` | exact public MCP resource URL used for RFC 8707 audience/resource binding |
 | `RKB_OAUTH_ISSUER` | shared Supabase Auth OAuth/OIDC issuer |
 | `RKB_OAUTH_JWKS_URL` | issuer JWKS endpoint |
-| `SUPABASE_URL` | project API URL |
-| `SUPABASE_ANON_KEY` | public client key used only with the caller's JWT/RLS path |
-| `SUPABASE_SERVICE_ROLE_KEY` | server-only exact object-locator lookup after successful user-RLS authorization; never used for search/ranking |
+| `KB_SUPABASE_URL` | Regional Knowledge project API URL; preferred over generic `SUPABASE_URL` |
+| `KB_SUPABASE_PUBLISHABLE_KEY` | current low-privilege Supabase API key for user-JWT/RLS requests; preferred over legacy anon key |
+| `KB_SUPABASE_SECRET_KEY` | current server-only elevated Supabase API key for exact object-locator lookup after successful user-RLS authorization; never used for search/ranking |
+| `KB_SUPABASE_SESSION_CONNECTION` | PostgreSQL Session Pooler connection string for migrations/ops from IPv4-only DevCoveer |
+| `KB_SUPABASE_DIRECT_CONNECTION` | direct PostgreSQL connection string; IPv6 on Supabase Free and therefore not usable from the current IPv4-only DevCoveer host |
+| `KB_SUPABASE_ANON_KEY` / `KB_SUPABASE_SERVICE_ROLE_KEY` | legacy fallbacks only; current publishable/secret keys are preferred |
 | `RKB_PUBLIC_BASE_URL` | stable evidence-page base URL returned by search/fetch |
 | `RKB_EMBEDDING_ENDPOINT` | external OpenAI-compatible embeddings endpoint; optional for lexical-only degraded mode |
 | `RKB_EMBEDDING_MODEL` | configured 768-dimension embedding model |
@@ -39,16 +42,44 @@ embeddings and compact metadata only. This is a hard invariant for the 500 MiB
 Free-tier target.
 
 
-## Current infrastructure status — 2026-10-02
+## Current infrastructure status — 2026-10-03
 
-No Regional Knowledge Supabase account/project is connected yet.
+A dedicated Regional Knowledge Supabase project has now been added to the
+canonical shared DevCoveer environment at `/home/dev/.env`.
 
-The codebase and SQL migrations are provider-ready, but:
-- no live Supabase project URL/key is assumed;
-- no migration is considered applied;
-- no OAuth issuer/resource mapping is considered deployed;
-- no RLS acceptance has been run against a real database.
+Present:
+- `KB_SUPABASE_URL`;
+- `KB_SUPABASE_DIRECT_CONNECTION`.
 
-The owner plans to connect a separate Supabase account/project later through the
-shared environment/secrets layer. Until that explicit setup step, all Supabase
-behavior is local/fake-contract coverage only.
+Still required before live DB/runtime acceptance:
+- `KB_SUPABASE_SESSION_CONNECTION` copied from Supabase Dashboard → Connect →
+  Session pooler; the current DevCoveer network is IPv4-only while the Free-plan
+  direct database endpoint is IPv6;
+- `KB_SUPABASE_PUBLISHABLE_KEY`;
+- `KB_SUPABASE_SECRET_KEY`.
+
+No migration is considered applied until the migration runner successfully
+connects through the session pooler and performs schema/RLS/RPC readback.
+OAuth resource binding remains a later acceptance gate.
+
+
+## API key compatibility
+
+Runtime accepts project-prefixed current keys first and legacy names only as
+fallback:
+
+```text
+KB_SUPABASE_PUBLISHABLE_KEY
+  -> KB_SUPABASE_ANON_KEY
+  -> SUPABASE_PUBLISHABLE_KEY
+  -> SUPABASE_ANON_KEY
+
+KB_SUPABASE_SECRET_KEY
+  -> KB_SUPABASE_SERVICE_ROLE_KEY
+  -> SUPABASE_SECRET_KEY
+  -> SUPABASE_SERVICE_ROLE_KEY
+```
+
+New `sb_secret_*` keys are sent in the `apikey` header and are not treated as
+JWT bearer tokens. User requests still carry the actual user access JWT in the
+`Authorization` header, preserving RLS.
