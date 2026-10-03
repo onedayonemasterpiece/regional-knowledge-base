@@ -67,15 +67,28 @@ Database rollout:
 - `pgcrypto` and `vector` are installed;
 - DB size at acceptance was 11.83 MiB;
 - forbidden corpus body columns are absent from Postgres;
-- schema/RLS/RPC readback completed successfully.
+- schema/RLS/RPC readback completed successfully;
+- live two-user RLS acceptance passed: owner isolation, workspace membership,
+  explicit document grant, anonymous isolation and viewer update denial;
+- temporary acceptance users were deleted afterward; the Auth project remains
+  clean.
+
+OAuth 2.1 Server status:
+- OIDC discovery and asymmetric JWKS are live;
+- MCP OAuth discovery at
+  `/.well-known/oauth-authorization-server/auth/v1` currently returns 404,
+  which means Supabase OAuth 2.1 Server is not enabled yet;
+- enabling it requires the Supabase Dashboard or an account-level Management API
+  token; project `sb_secret_*` credentials cannot change project Auth config.
 
 Still required for full MCP deployment:
+- enable Supabase OAuth 2.1 Server and configure the consent authorization path;
 - `RKB_RESOURCE_URL` once the public MCP URL is assigned;
 - resource-bound OAuth client acceptance against that URL;
 - `RKB_PUBLIC_BASE_URL`;
 - private S3-compatible object storage;
 - embedding provider configuration;
-- live two-user/workspace RLS acceptance and ChatGPT connection.
+- ChatGPT connection and resource/client acceptance.
 
 The absence of these later runtime dependencies does not invalidate the live
 Supabase database setup.
