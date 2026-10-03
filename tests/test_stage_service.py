@@ -285,8 +285,22 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
     assert validated.state == "ready"
     assert posted["rkb_pages"] == []
 
-    finalized = await backend.book_ingest(
+    finalizing = await backend.book_ingest(
         command="finalize",
+        principal=principal(),
+        file=None,
+        ingestion_id=INGESTION_ID,
+        cursor=None,
+        payload=None,
+    )
+    assert finalizing.state == "processing"
+    assert finalizing.next_cursor == "finalize"
+    assert "running server-side" in finalizing.message
+
+    task = backend._finalize_tasks[INGESTION_ID]
+    await task
+    finalized = await backend.book_ingest(
+        command="status",
         principal=principal(),
         file=None,
         ingestion_id=INGESTION_ID,
