@@ -53,6 +53,7 @@ def test_backend_from_env_prefers_session_pooler(
         "RKB_EMBEDDING_ENDPOINT",
         "RKB_EMBEDDING_API_KEY",
         "RKB_EMBEDDING_MODEL",
+        "RKB_EMBEDDING_SPACE",
         "OPENAI_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -126,8 +127,41 @@ def test_shared_openai_key_is_not_embedding_fallback(
         "RKB_EMBEDDING_ENDPOINT",
         "RKB_EMBEDDING_API_KEY",
         "RKB_EMBEDDING_MODEL",
+        "RKB_EMBEDDING_SPACE",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    embedder = _embedder_from_env()
+    assert isinstance(embedder, LexicalOnlyEmbedder)
+
+
+def test_explicit_embedding_quartet_selects_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "RKB_EMBEDDING_ENDPOINT",
+        "http://127.0.0.1:8199/v1/embeddings",
+    )
+    monkeypatch.setenv("RKB_EMBEDDING_API_KEY", "local")
+    monkeypatch.setenv("RKB_EMBEDDING_MODEL", "multilingual-mpnet-base-v2")
+    monkeypatch.setenv(
+        "RKB_EMBEDDING_SPACE",
+        "local:multilingual-mpnet-base-v2:v1",
+    )
+    embedder = _embedder_from_env()
+    assert isinstance(embedder, OpenAICompatibleEmbedder)
+    assert embedder.embedding_space == "local:multilingual-mpnet-base-v2:v1"
+
+
+def test_embedding_config_without_space_degrades_safely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "RKB_EMBEDDING_ENDPOINT",
+        "http://127.0.0.1:8199/v1/embeddings",
+    )
+    monkeypatch.setenv("RKB_EMBEDDING_API_KEY", "local")
+    monkeypatch.setenv("RKB_EMBEDDING_MODEL", "multilingual-mpnet-base-v2")
+    monkeypatch.delenv("RKB_EMBEDDING_SPACE", raising=False)
     embedder = _embedder_from_env()
     assert isinstance(embedder, LexicalOnlyEmbedder)

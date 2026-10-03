@@ -32,10 +32,14 @@ from .rights import assert_visibility_allowed
 
 
 class Embedder(Protocol):
+    embedding_space: str | None
+
     async def embed(self, text: str) -> list[float] | None: ...
 
 
 class LexicalOnlyEmbedder:
+    embedding_space: str | None = None
+
     async def embed(self, text: str) -> list[float] | None:
         return None
 
@@ -49,12 +53,14 @@ class OpenAICompatibleEmbedder:
         endpoint: str,
         api_key: str,
         model: str,
+        embedding_space: str,
         dimensions: int = 768,
         timeout_seconds: float = 8.0,
     ) -> None:
         self.endpoint = endpoint
         self.api_key = api_key
         self.model = model
+        self.embedding_space = embedding_space
         self.dimensions = dimensions
         self.timeout_seconds = timeout_seconds
 
@@ -168,6 +174,9 @@ class SupabaseRestBackend(KnowledgeBackend):
             json={
                 "query_text": query,
                 "query_embedding": _halfvec_literal(vector),
+                "query_embedding_space": (
+                    self.embedder.embedding_space if vector is not None else None
+                ),
                 "match_count": 8,
             },
         )
@@ -871,18 +880,21 @@ def _embedder_from_env() -> Embedder:
     endpoint = os.getenv("RKB_EMBEDDING_ENDPOINT", "").strip()
     api_key = os.getenv("RKB_EMBEDDING_API_KEY", "").strip()
     model = os.getenv("RKB_EMBEDDING_MODEL", "").strip()
-    if endpoint and api_key and model:
+    embedding_space = os.getenv("RKB_EMBEDDING_SPACE", "").strip()
+    if endpoint and api_key and model and embedding_space:
         return OpenAICompatibleEmbedder(
             endpoint=endpoint,
             api_key=api_key,
             model=model,
+            embedding_space=embedding_space,
         )
 
     # Embeddings are opt-in for this service. Never inherit a shared provider
     # credential such as OPENAI_API_KEY: doing so can silently turn search or
     # ingestion into a billable external operation. Operators must configure
-    # the dedicated RKB_EMBEDDING_* triplet explicitly; otherwise the service
-    # degrades safely to lexical retrieval.
+    # the dedicated RKB_EMBEDDING_* quartet explicitly; otherwise the service
+    # degrades safely to lexical retrieval. The explicit space identifier also
+    # prevents comparing vectors produced by different models.
     return LexicalOnlyEmbedder()
 
 

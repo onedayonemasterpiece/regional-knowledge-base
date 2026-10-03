@@ -380,10 +380,11 @@ class PostgresDataClient:
         headers: dict[str, str] | None,
     ) -> _DbResponse:
         if name == "rkb_hybrid_search":
-            statement = "select * from public.rkb_hybrid_search(%s,%s,%s)"
+            statement = "select * from public.rkb_hybrid_search(%s,%s,%s,%s)"
             values = (
                 payload.get("query_text"),
                 payload.get("query_embedding"),
+                payload.get("query_embedding_space"),
                 payload.get("match_count", 8),
             )
         elif name == "rkb_start_ingestion":

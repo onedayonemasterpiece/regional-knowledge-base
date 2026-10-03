@@ -64,13 +64,16 @@ Never expose object-store credentials, raw object keys or signed URLs through MC
 |---|---|
 | `RKB_EMBEDDING_ENDPOINT` | external OpenAI-compatible embeddings endpoint |
 | `RKB_EMBEDDING_MODEL` | 768-dimension embedding model |
-| `RKB_EMBEDDING_API_KEY` | provider credential |
+| `RKB_EMBEDDING_API_KEY` | provider credential; may be a local placeholder for a loopback sidecar |
+| `RKB_EMBEDDING_SPACE` | stable vector-space identity, e.g. `local:multilingual-mpnet-base-v2:v1` |
 | `RKB_PUBLIC_BASE_URL` | optional HTTP evidence-page base; canonical knowledge:// URIs work without it |
 
 Embeddings are explicit opt-in. The service never inherits `OPENAI_API_KEY`,
 `GOOGLE_API_KEY`, `GEMINI_API_KEY` or any other shared provider credential.
-Without the complete dedicated `RKB_EMBEDDING_*` configuration it performs no
-external embedding request and degrades to lexical retrieval.
+Without the complete dedicated `RKB_EMBEDDING_*` quartet it performs no
+embedding request and degrades to lexical retrieval. `RKB_EMBEDDING_SPACE` is
+stored with every embedded chunk and must match the query vector space; vectors
+from different models are never compared even when their dimensions are equal.
 
 Lexical-only degradation is allowed as a failure mode, not as the final hybrid
 beta acceptance.

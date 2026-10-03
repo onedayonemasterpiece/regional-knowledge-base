@@ -56,6 +56,8 @@ class FakeStore:
 
 
 class FakeEmbedder:
+    embedding_space = "test:fake-768:v1"
+
     async def embed(self, text):
         assert text
         return [0.001] * 768
@@ -316,6 +318,7 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
     assert len(posted["rkb_illustrations"]) == 1
     assert len(posted["chunks"]) == 1
     assert posted["chunks"][0]["embedding"].startswith("[")
+    assert posted["chunks"][0]["metadata"]["embedding_space"] == "test:fake-768:v1"
     assert activation_calls == [{
         "p_document_id": DOCUMENT_ID,
         "p_ingestion_id": INGESTION_ID,

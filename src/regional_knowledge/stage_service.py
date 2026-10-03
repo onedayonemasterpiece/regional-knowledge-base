@@ -749,8 +749,15 @@ async def finalize_ingestion(
         service,
         normalized_texts,
     )
+    embedding_space = getattr(service.embedder, "embedding_space", None)
     for item, embedding in zip(chunk_rows, embeddings, strict=True):
         item["embedding"] = _vector_literal(embedding)
+        if embedding is not None:
+            if not embedding_space:
+                raise RuntimeError(
+                    "embedding provider returned a vector without an embedding space"
+                )
+            item["metadata"]["embedding_space"] = embedding_space
 
     source_object = await service._server_object(
         document_id=document_id,
