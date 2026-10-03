@@ -13,6 +13,9 @@ dependencies = [
   "pydantic-settings>=2.10,<3",
   "httpx>=0.28,<1",
   "PyJWT[crypto]>=2.10,<3",
+  "cryptography>=45,<47",
+  "psycopg[binary,pool]>=3.2,<4",
+  "starlette>=0.47,<1",
 ]
 
 [project.optional-dependencies]

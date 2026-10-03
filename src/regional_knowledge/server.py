@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.settings import AuthSettings
+from mcp.server.auth.settings import AuthSettings, RevocationOptions
 from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import AnyHttpUrl
 
@@ -27,6 +27,11 @@ from .contracts import (
     StagePoiMediaLinkInput,
     StartMetadataInput,
     Visibility,
+)
+from .oauth_provider import (
+    KNOWLEDGE_SCOPE,
+    RegionalOAuthProvider,
+    oauth_provider_from_env,
 )
 from .supabase_backend import backend_from_env
 
@@ -50,6 +55,7 @@ def build_server(
     issuer: str | None = None,
     resource_url: str | None = None,
     jwks_url: str | None = None,
+    oauth_provider: RegionalOAuthProvider | None = None,
     profile: Literal["full", "live"] = "full",
 ) -> MCPServer:
     backend = backend or backend_from_env()
@@ -67,8 +73,32 @@ def build_server(
         or (f"{issuer}/.well-known/jwks.json" if issuer else "")
     )
 
+    auth_mode = os.getenv("RKB_AUTH_MODE", "external").strip().lower()
+    if oauth_provider is not None:
+        auth_mode = "embedded"
+    if auth_mode not in {"embedded", "external"}:
+        raise RuntimeError("RKB_AUTH_MODE must be 'embedded' or 'external'")
+
     kwargs: dict[str, Any] = {}
-    if issuer and resource_url and jwks_url:
+    embedded_provider: RegionalOAuthProvider | None = None
+    if auth_mode == "embedded":
+        if not issuer or not resource_url:
+            raise RuntimeError(
+                "Embedded OAuth requires RKB_AUTH_ISSUER and RKB_RESOURCE_URL"
+            )
+        embedded_provider = oauth_provider or oauth_provider_from_env(
+            issuer=issuer,
+            resource=resource_url,
+        )
+        kwargs["auth_server_provider"] = embedded_provider
+        kwargs["auth"] = AuthSettings(
+            issuer_url=AnyHttpUrl(issuer),
+            resource_server_url=AnyHttpUrl(resource_url),
+            required_scopes=[KNOWLEDGE_SCOPE],
+            revocation_options=RevocationOptions(enabled=True),
+            validate_token_resource=True,
+        )
+    elif issuer and resource_url and jwks_url:
         kwargs["token_verifier"] = JwtResourceVerifier(
             issuer=issuer,
             jwks_url=jwks_url,
@@ -83,7 +113,7 @@ def build_server(
     elif os.getenv("RKB_DEV_NOAUTH") != "1":
         raise RuntimeError(
             "Application OAuth/JWT configuration is required; Supabase is only "
-            "the data plane. Set RKB_AUTH_ISSUER, RKB_AUTH_JWKS_URL and "
+            "the data plane. Configure embedded/external app OAuth and "
             "RKB_RESOURCE_URL, or RKB_DEV_NOAUTH=1 for local tests only."
         )
 
@@ -95,6 +125,9 @@ def build_server(
         ),
         **kwargs,
     )
+
+    if embedded_provider is not None:
+        embedded_provider.register_routes(mcp)
 
     if profile == "live":
         @mcp.tool(

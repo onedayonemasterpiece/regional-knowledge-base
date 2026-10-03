@@ -758,24 +758,73 @@ async def finalize_ingestion(
     if not source_object:
         raise RuntimeError("source PDF object is missing")
 
+    page_render_object_ids: dict[int, str] = {}
     illustration_rows: list[dict[str, Any]] = []
-    if graph.illustrations:
-        work_root = os.getenv("RKB_WORK_DIR") or None
-        with tempfile.TemporaryDirectory(
-            prefix="rkb-finalize-",
-            dir=work_root,
-        ) as temp_dir:
-            source_path = Path(temp_dir) / "source.pdf"
-            await service.object_store.download_file(
-                str(source_object["object_key"]),
-                str(source_path),
+    work_root = os.getenv("RKB_WORK_DIR") or None
+    with tempfile.TemporaryDirectory(
+        prefix="rkb-finalize-",
+        dir=work_root,
+    ) as temp_dir:
+        source_path = Path(temp_dir) / "source.pdf"
+        await service.object_store.download_file(
+            str(source_object["object_key"]),
+            str(source_path),
+        )
+        actual_sha, _ = await asyncio.to_thread(sha256_file, source_path)
+        if actual_sha != row["source_sha256"]:
+            raise RuntimeError(
+                "source PDF integrity check failed during finalize"
             )
-            actual_sha, _ = await asyncio.to_thread(sha256_file, source_path)
-            if actual_sha != row["source_sha256"]:
-                raise RuntimeError(
-                    "source PDF integrity check failed during finalize"
-                )
 
+        # Page renders are canonical derived corpus objects, not an ephemeral
+        # side effect of the model-facing book_pages tool. Materialize every
+        # staged page during finalize so page evidence survives restarts and is
+        # linked from the active page graph.
+        expected_page_indexes = {
+            page.physical_page_index
+            for page in graph.pages
+        }
+        cursor = 0
+        total_pages = int(document.get("page_count") or 0)
+        while cursor < total_pages:
+            total, rendered_pages = await service.pdf_processor.render_file(
+                source_path,
+                start=cursor,
+                count=min(8, total_pages - cursor),
+            )
+            if total != total_pages or not rendered_pages:
+                raise RuntimeError("page render coverage changed during finalize")
+            for rendered_page in rendered_pages:
+                if rendered_page.physical_page_index not in expected_page_indexes:
+                    raise RuntimeError(
+                        "page render is outside the staged graph"
+                    )
+                if rendered_page.mime_type != "image/jpeg":
+                    raise RuntimeError(
+                        "canonical page renderer returned unsupported MIME type"
+                    )
+                page_sha = hashlib.sha256(rendered_page.data).hexdigest()
+                page_key = (
+                    f"users/{principal.subject}/documents/{document_id}/"
+                    f"pages/r{revision}/"
+                    f"{rendered_page.physical_page_index:06d}-{page_sha}.jpg"
+                )
+                page_render_object_ids[
+                    rendered_page.physical_page_index
+                ] = await _ensure_object(
+                    service,
+                    document_id=document_id,
+                    kind="page_render",
+                    object_key=page_key,
+                    data=rendered_page.data,
+                    mime_type=rendered_page.mime_type,
+                )
+            cursor += len(rendered_pages)
+
+        if set(page_render_object_ids) != expected_page_indexes:
+            raise RuntimeError("canonical page render coverage is incomplete")
+
+        if graph.illustrations:
             page_by_id = {str(page.page_id): page for page in graph.pages}
             for item in graph.illustrations:
                 page = page_by_id[str(item.page_id)]
@@ -839,6 +888,7 @@ async def finalize_ingestion(
                 "width": page.width,
                 "height": page.height,
                 "layout_kind": page.layout_kind,
+                "page_object_id": page_render_object_ids[page.physical_page_index],
                 "revision": revision,
             }
         )
