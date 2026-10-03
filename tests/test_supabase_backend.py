@@ -72,10 +72,43 @@ async def test_search_preserves_user_jwt_and_degrades_to_lexical():
     assert seen["authorization"] == "Bearer user-jwt"
     assert seen["apikey"] == "public-anon-key"
     assert seen["payload"]["query_embedding"] is None
+    assert seen["payload"]["query_embedding_space"] is None
     assert result.mode == "lexical_degraded"
     assert result.results[0].url.endswith(
         "/evidence/22222222-2222-2222-2222-222222222222"
     )
+
+
+@pytest.mark.asyncio
+async def test_search_sends_embedding_space_with_vector():
+    seen = {}
+
+    class FixedEmbedder:
+        embedding_space = "local:multilingual-mpnet-base-v2:v1"
+
+        async def embed(self, text):
+            assert text
+            return [0.001] * 768
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json=[])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    backend = SupabaseRestBackend(
+        SupabaseConfig(url="https://db.example", anon_key="public-anon-key"),
+        embedder=FixedEmbedder(),
+        client=client,
+    )
+    result = await backend.search("семь мостов", principal())
+    await client.aclose()
+
+    assert seen["payload"]["query_embedding"] is not None
+    assert (
+        seen["payload"]["query_embedding_space"]
+        == "local:multilingual-mpnet-base-v2:v1"
+    )
+    assert result.mode == "hybrid"
 
 
 @pytest.mark.asyncio
