@@ -64,3 +64,46 @@ def test_bge_1024_normalized_space_is_not_e5_or_legacy():
     assert len(validate_vector([1]+[0]*1023))==1024
     for values in ([1]+[0]*383,[1]+[0]*767,[0]*1024,[float('nan')]+[0]*1023):
         with pytest.raises(ValueError):validate_vector(values)
+
+def test_worker_diagnostics_do_not_preserve_arbitrary_private_fields(tmp_path):
+    queue=BgeQueue(tmp_path/'queue.sqlite');queue.enqueue('actor','one',['query'])
+    run,token=run_details(queue)
+    queue.heartbeat(run,token,ready=True,diagnostics={'rss_kib':1024,'token':'private','texts':['private']})
+    import json
+    with queue.connect() as db:
+        assert json.loads(db.execute('select diagnostics from runs where id=?',(run,)).fetchone()[0])=={'rss_kib':1024}
+
+def test_startup_failure_cooldown_preserves_jobs_and_does_not_relaunch_ambiguously(tmp_path):
+    now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
+    job=queue.enqueue('actor','one',['query']);run,token=run_details(queue)
+    assert queue.launch_claim(run)==token and queue.launch_claim(run) is None
+    queue.launch_record(run,'owner/slug',failed=True)
+    assert queue.status()['state']=='failed' and queue.result('actor',job)['state']=='pending'
+    now[0]+=59;queue.maintenance();assert queue.status()['state']=='failed'
+    now[0]+=2;queue.maintenance();assert queue.status()['state']=='starting'
+    successor,_=run_details(queue);assert successor!=run
+
+def test_fusion_preserves_independent_alias_diagnostics_and_deduplicates():
+    from regional_knowledge.rank_fusion import fuse
+    rows=[{'chunk_id':'a','branch':'bge','rank':1},{'chunk_id':'b','branch':'e5','rank':1},{'chunk_id':'b','branch':'bge','rank':2},{'chunk_id':'a','branch':'exact_historical_alias','rank':1,'matched_alias':'Königsberg'}]
+    ids,signals=fuse(rows+rows,['bge','e5'])
+    assert ids==['b','a'] and len(signals['b'])==2
+    ids,signals=fuse(rows,['bge','exact_historical_alias'])
+    assert ids[0]=='a' and signals['a'][1]['matched_alias']=='Königsberg'
+
+@pytest.mark.asyncio
+async def test_cold_main_returns_fast_evidence_and_actor_bound_pending_job(monkeypatch,tmp_path):
+    from regional_knowledge.multilingual_retrieval import main_search
+    from regional_knowledge.contracts import Principal,SearchOutput,SearchResult
+    monkeypatch.setenv('RKB_BGE_QUEUE_PATH',str(tmp_path/'queue.sqlite'))
+    class Backend:
+        async def search(self,query,principal,**kwargs):
+            assert kwargs['_fast_only'] is True
+            return SearchOutput(results=[SearchResult(id='safe',title='title',url='knowledge://evidence/safe')],retrieval_mode='fast_e5')
+    actor=Principal(subject='actor',client_id='test',issuer='test',access_token='test')
+    result=await main_search(Backend(),'query',actor)
+    assert result.main_state=='starting' and result.results[0].id=='safe'
+    queue=BgeQueue(tmp_path/'queue.sqlite')
+    assert queue.result('actor',result.main_job_id)['state']=='pending'
+    with pytest.raises(PermissionError):queue.result('other',result.main_job_id)
+    with pytest.raises(ValueError):await main_search(Backend(),'changed',actor,main_job_id=result.main_job_id)

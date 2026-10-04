@@ -206,11 +206,13 @@ def build_server(
         async def knowledge_search(
             query: str,
             max_evidence: int = 3,
+            main_job_id: str | None = None,
         ) -> EvidenceSearchOutput:
             return await backend.search_evidence(
                 query.strip(),
                 _principal(),
                 max_evidence=max(1, min(max_evidence, 5)),
+                **({'main_job_id': main_job_id} if main_job_id else {}),
             )
 
         return mcp
@@ -223,8 +225,9 @@ def build_server(
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
-    async def search(query: str) -> SearchOutput:
-        return await backend.search(query.strip(), _principal())
+    async def search(query: str, main_job_id: str | None = None) -> SearchOutput:
+        if main_job_id is None:return await backend.search(query.strip(), _principal())
+        return await backend.search(query.strip(), _principal(),main_job_id=main_job_id)
 
     @mcp.tool(
         title="Fetch regional evidence",

@@ -23,6 +23,7 @@ def main():
     broker=os.environ['RKB_BGE_BROKER_URL']
     if not broker.startswith('https://'):raise RuntimeError('HTTPS broker required')
     state=queue.path.parent/'bge-launches';state.mkdir(mode=0o700,exist_ok=True)
+    probed={}
     while True:
         runs=queue.maintenance()
         for run in runs:
@@ -48,6 +49,12 @@ def main():
                     # issue another save/version: reconcile the stable slug.
                     status=api.kernels_status(ref)
                     if status:queue.launch_record(run_id,ref)
+                elif run['status']=='starting' and run['launch_state']=='dispatched' and time.monotonic()-probed.get(run_id,0)>30:
+                    probed[run_id]=time.monotonic();status=api.kernels_status(ref)
+                    phase=status.get('status') if isinstance(status,dict) else getattr(status,'status',None)
+                    if str(phase).upper() in ('ERROR','FAILED','CANCELED','CANCELLED','COMPLETE'):
+                        queue.launch_record(run_id,ref,failed=True)
+                        logging.warning(json.dumps({'event':'bge_startup_failed','run_id':run_id,'provider_status':str(phase)}))
                 elif run['status']=='expired' and run['launch_state']=='dispatched':
                     # Expired credential makes worker polling stop even when
                     # provider cancellation is unavailable in this SDK.

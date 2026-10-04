@@ -42,6 +42,8 @@ class BgeQueue:
               unique(actor,idempotency));
             create index if not exists bge_pending on jobs(state,kind,created);
             ''')
+            if 'diagnostics' not in {row['name'] for row in db.execute('pragma table_info(runs)')}:
+                db.execute("alter table runs add column diagnostics text not null default '{}'")
         self.path.chmod(0o600)
 
     @contextlib.contextmanager
@@ -70,13 +72,14 @@ class BgeQueue:
         return run_id
 
     def _expire(self, db, now):
-        for run in db.execute("select * from runs where status in ('starting','ready','draining')").fetchall():
+        for run in db.execute("select * from runs where status in ('starting','ready','draining','failed')").fetchall():
+            if run['status']=='failed' and now-run['heartbeat']<60:continue
             deadline = run['started'] + MAX_LIFETIME
             idle = run['useful'] + IDLE_SECONDS
             # A cold start gets at most 15 minutes to become ready. Heartbeats
             # cannot perpetually preserve an idle run or a failed warm-up.
             lost = (now-run['heartbeat']>HEARTBEAT_SECONDS if run['status']!='starting' else now-run['started']>900)
-            if now>=deadline or now>=idle or lost:
+            if now>=deadline or now>=idle or lost or run['status']=='failed':
                 db.execute("update runs set status='expired' where id=?",(run['id'],))
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
                 db.execute('update control set current_run=null where current_run=?',(run['id'],))
@@ -125,11 +128,14 @@ class BgeQueue:
             raise PermissionError('invalid or stale BGE worker')
         return run
 
-    def heartbeat(self, run_id, token, *, ready=False):
+    def heartbeat(self, run_id, token, *, ready=False, diagnostics=None):
         now=self.clock()
         with self.connect() as db:
             self._expire(db,now);run=self._authorize(db,run_id,token,now)
             db.execute('update runs set heartbeat=? where id=?',(now,run_id))
+            if diagnostics is not None:
+                safe={key:diagnostics[key] for key in ('startup_seconds','rss_kib','hwm_kib','pss_kib','cpu_seconds','cpu_threads','pid') if key in diagnostics}
+                db.execute('update runs set diagnostics=? where id=?',(json.dumps(safe),run_id))
             if ready and run['status']=='starting':
                 control=db.execute('select * from control where id=1').fetchone()
                 db.execute("update runs set status='ready',ready_at=? where id=?",(now,run_id))
@@ -209,3 +215,6 @@ class BgeQueue:
         with self.connect() as db:
             db.execute('update runs set provider_ref=?,launch_state=?,status=case when ? then ? else status end where id=?',
                        (provider_ref,'failed' if failed else 'dispatched',failed,'failed',run_id))
+            if failed:
+                db.execute('update runs set heartbeat=? where id=?',(self.clock(),run_id))
+                db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run_id,))

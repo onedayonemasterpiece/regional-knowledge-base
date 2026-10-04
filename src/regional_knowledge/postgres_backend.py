@@ -387,6 +387,9 @@ class PostgresDataClient:
                 payload.get("query_embedding_space"),
                 payload.get("match_count", 8),
             )
+        elif name == 'rkb_multilingual_rankings':
+            statement='select * from public.rkb_multilingual_rankings(%s,%s,%s,%s,%s,%s::jsonb,%s)'
+            values=(payload.get('query_text'),payload.get('bge_vector'),payload.get('bge_space'),payload.get('e5_vector'),payload.get('e5_space'),json.dumps(payload.get('aliases') or []),payload.get('depth',100))
         elif name == "rkb_start_ingestion":
             statement = (
                 "select * from public.rkb_start_ingestion("

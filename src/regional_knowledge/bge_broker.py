@@ -22,7 +22,7 @@ def register_routes(mcp,queue):
                     if payload.get('space')!=SPACE:raise ValueError('BGE space mismatch')
                     if action=='heartbeat':
                         if payload.get('ready') is True and payload.get('model_revision')!=REVISION:raise ValueError('BGE revision mismatch')
-                        result=await asyncio.to_thread(queue.heartbeat,run_id,token,ready=payload.get('ready') is True)
+                        result=await asyncio.to_thread(queue.heartbeat,run_id,token,ready=payload.get('ready') is True,diagnostics=payload.get('diagnostics'))
                     elif action=='claim':
                         result={'job':await asyncio.to_thread(queue.claim,run_id,token)}
                     else:
