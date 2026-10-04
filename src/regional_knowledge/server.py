@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from mcp.server.mcpserver import Image, MCPServer
@@ -14,7 +14,7 @@ from mcp.server.auth.settings import (
     RevocationOptions,
 )
 from mcp.types import ImageContent, TextContent, ToolAnnotations
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, Field
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -178,7 +178,8 @@ def build_server(
             "When a user asks to add an attached PDF/DjVu book, start ingestion and carry "
             "it through book_pages, model review/stage, validate and finalize by following "
             "next_action/status. When a user asks to reimport an existing book without an "
-            "attachment, use book_find by title/author, disambiguate only when needed, then "
+            "attachment, use book_find by title/author; if several plausible books remain, "
+            "ask which one using title, author and year, never UUIDs. Then use "
             "book_ingest(reprocess) from its verified archived source; ask for a re-upload "
             "only when that archive is genuinely unavailable. Resume existing ingestion "
             "state after interruptions. The model performs semantic reading/recognition; "
@@ -268,11 +269,11 @@ def build_server(
         description=(
             "Deterministically find accessible books by title or author before reprocessing. "
             "Returns compact document metadata only. If several plausible matches remain, "
-            "ask the user which book they mean; do not ask for document UUIDs."
+            "ask the user which book they mean using title, author and year; do not ask for document UUIDs."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
-    async def book_find(query: str, limit: int = 8) -> BookFindOutput:
+    async def book_find(query: str, limit: Annotated[int, Field(ge=1, le=8)] = 8) -> BookFindOutput:
         return await backend.book_find(
             query.strip(),
             _principal(),
