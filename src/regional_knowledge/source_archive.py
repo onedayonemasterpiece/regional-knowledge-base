@@ -57,7 +57,7 @@ class SourceArchive:
             await db.execute(query,(*values.values(),document['id'],UUID(self.client.owner),document['source_sha256']))
     async def tick(self):
         actor=Principal(subject=self.client.owner,client_id='source-archive',issuer='internal-actor-bridge',access_token='internal-actor-bridge')
-        async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
+        async with self.backend.data_client._connection({'x-rkb-service':'1'}) as db:
             docs=await(await db.execute("""select d.*,o.object_key,o.id object_id,o.mime_type from rkb_documents d
              join rkb_objects o on o.document_id=d.id and o.kind='source_pdf' and o.sha256=d.source_sha256 and o.deleted_at is null
              where d.owner_user_id=%s and d.source_archive_status='pending' and not exists(select 1 from rkb_documents other where other.owner_user_id=d.owner_user_id and other.source_sha256=d.source_sha256 and other.id<d.id)
@@ -65,6 +65,10 @@ class SourceArchive:
         count=0
         for doc in docs:
             try:
+                # System selection contains metadata only; source bytes require actor authorization.
+                async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
+                    authorized=await(await db.execute('select id from rkb_documents where id=%s and owner_user_id=rkb_current_actor_id()', (doc['id'],))).fetchone()
+                    if not authorized:continue
                 await self.update(doc,source_archive_attempt_at=datetime.now(timezone.utc))
                 if not doc.get('source_format'):
                     await self.update(doc,source_format='djvu' if doc['mime_type']=='image/vnd.djvu' else 'pdf')
