@@ -63,6 +63,20 @@ class FakeEmbedder:
         return [0.001] * 768
 
 
+def test_display_rotation_is_clockwise_and_swaps_non_square_dimensions():
+    import io
+    from PIL import Image
+    from regional_knowledge.stage_service import _rotate_png_clockwise
+
+    image=Image.new("RGB",(4,2),"white")
+    image.putpixel((0,0),(255,0,0))
+    raw=io.BytesIO()
+    image.save(raw,format="PNG")
+    rotated=Image.open(io.BytesIO(_rotate_png_clockwise(raw.getvalue(),90)))
+    assert rotated.size==(2,4)
+    assert rotated.getpixel((1,0))==(255,0,0)
+
+
 @pytest.mark.asyncio
 async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
     source_pdf = make_pdf()
@@ -257,6 +271,7 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
                     "illustration_key": "image-1",
                     "source_region_key": "figure-1",
                     "kind": "photo",
+                    "display_rotation_degrees": 90,
                     "caption_region_keys": ["caption-1"],
                     "nearby_region_keys": ["body-1"],
                 }],
@@ -337,5 +352,10 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
     }]
     crop_row = posted["rkb_illustrations"][0]
     assert crop_row["source_crop_sha256"]
+    assert crop_row["display_rotation_degrees"] == 90
+    assert crop_row["display_crop_sha256"]
+    assert crop_row["display_crop_sha256"] != crop_row["source_crop_sha256"]
     crop_object = object_rows[crop_row["crop_object_id"]]
-    assert store.objects[crop_object["object_key"]].startswith(b"\x89PNG")
+    crop_bytes = store.objects[crop_object["object_key"]]
+    assert crop_bytes.startswith(b"\x89PNG")
+    assert hashlib.sha256(crop_bytes).hexdigest() == crop_row["display_crop_sha256"]

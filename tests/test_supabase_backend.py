@@ -140,9 +140,11 @@ async def test_fetch_authorizes_with_user_rls_then_reads_exact_object_range():
                 json=[{
                     "id": "22222222-2222-2222-2222-222222222222",
                     "document_id": "33333333-3333-3333-3333-333333333333",
+                    "revision": 1,
                     "title": "Источник",
                     "metadata": {"printed_pages": ["15"]},
                     "page_ids": ["44444444-4444-4444-4444-444444444444"],
+                    "region_ids": ["77777777-7777-7777-7777-777777777777"],
                     "illustration_ids": ["55555555-5555-5555-5555-555555555555"],
                     "footnote_region_ids": [],
                     "text_object_id": "66666666-6666-6666-6666-666666666666",
@@ -176,7 +178,7 @@ async def test_fetch_authorizes_with_user_rls_then_reads_exact_object_range():
         if request.url.path == '/rest/v1/rkb_pages':
             return httpx.Response(200,json=[{'id':'44444444-4444-4444-4444-444444444444','document_id':'33333333-3333-3333-3333-333333333333','physical_page_index':0,'revision':1}])
         if request.url.path == '/rest/v1/rkb_regions':
-            return httpx.Response(200,json=[{'id':'77777777-7777-7777-7777-777777777777','page_id':'44444444-4444-4444-4444-444444444444','kind':'figure','bbox':{'left':0,'top':0,'right':500,'bottom':500}}])
+            return httpx.Response(200,json=[{'id':'77777777-7777-7777-7777-777777777777','page_id':'44444444-4444-4444-4444-444444444444','kind':'figure','reading_order':2,'bbox':{'left':0,'top':0,'right':500,'bottom':500}}])
         raise AssertionError(request.url)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -197,10 +199,15 @@ async def test_fetch_authorizes_with_user_rls_then_reads_exact_object_range():
 
     assert result.text == "Точный фрагмент источника"
     assert result.metadata["printed_pages"] == ["15"]
+    assert result.metadata["revision"] == 1
+    assert result.metadata["source_pages"] == [{"page_id": "44444444-4444-4444-4444-444444444444", "physical_page_index": 0}]
+    assert result.metadata["regions"][0]["reading_order"] == 2
     assert result.metadata["illustrations"][0]["illustration_id"].startswith("5555")
     assert calls == [
         ("/rest/v1/rkb_chunks", "Bearer user-jwt"),
         ("/rest/v1/rkb_objects", "Bearer server-role"),
+        ('/rest/v1/rkb_pages', 'Bearer user-jwt'),
+        ('/rest/v1/rkb_regions', 'Bearer user-jwt'),
         ('/rest/v1/rkb_illustrations', 'Bearer user-jwt'),
         ('/rest/v1/rkb_pages', 'Bearer user-jwt'),
         ('/rest/v1/rkb_regions', 'Bearer user-jwt'),

@@ -351,6 +351,20 @@ async def _reset_revision(
         response.raise_for_status()
 
 
+def _rotate_png_clockwise(data: bytes, degrees: int) -> bytes:
+    if degrees not in (0, 90, 180, 270):
+        raise ValueError("display rotation must be a cardinal clockwise turn")
+    if degrees == 0:
+        return data
+    import io
+    from PIL import Image
+    with Image.open(io.BytesIO(data)) as image:
+        rotated = image.convert("RGB").rotate(-degrees, expand=True)
+        output = io.BytesIO()
+        rotated.save(output, format="PNG")
+        return output.getvalue()
+
+
 def _crop_sync(path: Path, page_index: int, bbox: dict[str, int]) -> bytes:
     import fitz
 
@@ -798,24 +812,30 @@ async def finalize_ingestion(
             page_by_id = {str(page.page_id): page for page in graph.pages}
             for item in graph.illustrations:
                 page = page_by_id[str(item.page_id)]
-                crop = await asyncio.to_thread(
+                source_crop = await asyncio.to_thread(
                     __import__("regional_knowledge.source_adapter",fromlist=["crop_sync"]).crop_sync,
                     source_path,
                     page.physical_page_index,
                     item.bbox.model_dump(),
                 )
-                crop_sha = hashlib.sha256(crop).hexdigest()
+                source_crop_sha = hashlib.sha256(source_crop).hexdigest()
+                display_crop = await asyncio.to_thread(
+                    _rotate_png_clockwise,
+                    source_crop,
+                    item.display_rotation_degrees,
+                )
+                display_crop_sha = hashlib.sha256(display_crop).hexdigest()
                 crop_key = (
                     f"users/{principal.subject}/documents/{document_id}/"
                     f"illustrations/r{revision}/"
-                    f"{item.illustration_id}-{crop_sha}.png"
+                    f"{item.illustration_id}-{display_crop_sha}.png"
                 )
                 crop_object_id = await _ensure_object(
                     service,
                     document_id=document_id,
                     kind="illustration_crop",
                     object_key=crop_key,
-                    data=crop,
+                    data=display_crop,
                     mime_type="image/png",
                 )
                 illustration_rows.append(
@@ -829,6 +849,8 @@ async def finalize_ingestion(
                         "visual_description": item.visual_description,
                         "visual_description_provenance": item.visual_description_provenance,
                         "visual_description_language": item.visual_description_language,
+                        "display_rotation_degrees": item.display_rotation_degrees,
+                        "display_crop_sha256": display_crop_sha,
                         "caption_text": '\n'.join(region.source_text for page in graph.pages for rid in item.caption_region_ids for region in page.regions if region.region_id == rid),
                         "caption_region_ids": [
                             str(value) for value in item.caption_region_ids
@@ -839,7 +861,7 @@ async def finalize_ingestion(
                         "visibility": "private",
                         "rights_status": "unknown",
                         "rights_evidence": {},
-                        "source_crop_sha256": crop_sha,
+                        "source_crop_sha256": source_crop_sha,
                     }
                 )
 

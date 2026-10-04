@@ -9,6 +9,28 @@ from .illustration_mirror import VibePublishClient
 log=logging.getLogger(__name__)
 
 
+def _source_display_metadata(document):
+    source_format=(document.get('source_format') or ('djvu' if document.get('mime_type')=='image/vnd.djvu' else 'pdf')).lower()
+    extension='.djvu' if source_format=='djvu' else '.pdf'
+    raw_name=(document.get('source_filename') or '').strip()
+    if raw_name:
+        filename=Path(raw_name).name
+    else:
+        title=(document.get('title') or 'regional-knowledge-source').strip()
+        stem=''.join(ch if ch.isalnum() or ch in ' ._()-' else '_' for ch in title).strip(' ._')
+        filename=(stem[:120] or 'regional-knowledge-source')+extension
+    authors=document.get('authors') or []
+    if isinstance(authors,str):
+        authors=[authors]
+    lines=[str(document.get('title') or filename).strip()]
+    if authors:
+        lines.append('Автор: '+', '.join(str(value).strip() for value in authors if str(value).strip())[:300])
+    if document.get('publication_year'):
+        lines.append('Год: '+str(document['publication_year']))
+    lines.append('Файл: '+filename)
+    return filename, '\n'.join(lines)[:1000]
+
+
 async def archive_bytes(client, entry_ref):
     read=await client.call('vibepublish_media_store',{'command':{'kind':'get','entry_ref':entry_ref}})
     for _ in range(60):
@@ -85,11 +107,12 @@ class SourceArchive:
                     key="rkb:source:"+hashlib.sha256(f"{self.client.owner}:{doc['id']}:{doc['source_sha256']}".encode()).hexdigest()
                     upload=await self.client.request('POST',self.client.issuer+'/v1/assets',
                         headers={'Content-Type':doc['mime_type'],'Idempotency-Key':key+':asset'},content=data)
+                    filename,caption=_source_display_metadata(doc)
                     receipt=await self.client.call('vibepublish_media_store',{'request_key':key,'command':{
                         'kind':'put','to':self.client.grant['destination_alias'],'thread_ref':self.client.grant['source_thread_ref'],
-                        'content':{'text':'Regional Knowledge source '+uri},'origin':origin,
+                        'content':{'text':caption},'origin':origin,
                         'media':[{'source':{'kind':'asset','id':upload.json()['asset_id']},'role':'document',
-                                  'alt_text':doc.get('source_filename') or 'source.'+(doc.get('source_format') or 'pdf')}]}})
+                                  'alt_text':filename}]}})
                     operation=receipt['operation_id'];await self.update(doc,source_archive_operation_id=operation)
                 receipt=await self.client.receipt(operation)
                 if not receipt['operation_complete']:continue

@@ -122,8 +122,31 @@ async def test_source_archive_lost_response_exact_replay_and_historical_roots(gr
             db.execute("update rkb_documents set source_archive_attempt_at=now()-interval '1 minute' where id=%s",(canonical,))
         assert await archive.tick()==1
         assert await archive.tick()==0 and len(client.puts)==1
+        put=next(iter(client.puts.values()))
+        with psycopg.connect(graph_db) as db:
+            display_title=db.execute("select title from rkb_documents where id=%s",(canonical,)).fetchone()[0]
+        assert put["content"]["text"].startswith(display_title)
+        assert put["media"][0]["alt_text"].endswith(".pdf")
+        assert put["media"][0]["alt_text"] != "source.pdf"
         with psycopg.connect(graph_db) as db:
             rows=db.execute('select id,source_archive_ref,source_archive_origin_ref,source_archive_status from rkb_documents where id=any(%s)',([doc,duplicate],)).fetchall()
             assert len(rows)==2
             assert all(r[1]=='entry_source' and r[2]=='knowledge://documents/'+str(canonical)+'/source' and r[3]=='verified' for r in rows)
     finally:await b.aclose()
+
+
+def test_source_display_metadata_uses_human_title_when_filename_missing():
+    from regional_knowledge.source_archive import _source_display_metadata
+    filename, caption = _source_display_metadata({
+        "title": "Кёнигсберг в Пруссии. История одного европейского города",
+        "authors": ["Фриц Гаузе"],
+        "publication_year": 1994,
+        "source_filename": None,
+        "source_format": "pdf",
+        "mime_type": "application/pdf",
+    })
+    assert filename.endswith(".pdf") and filename != "source.pdf"
+    assert "Кёнигсберг в Пруссии" in filename
+    assert "Фриц Гаузе" in caption
+    assert "1994" in caption
+    assert filename in caption

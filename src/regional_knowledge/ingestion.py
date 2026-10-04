@@ -138,6 +138,10 @@ class PyMuPdfProcessor:
                         raise ValueError("invalid native text offset")
                     end = min(offset + MAX_NATIVE_BLOCK_TEXT, len(text))
                     x0, y0, x1, y1 = map(float, raw[:4])
+                    block_rect = fitz.Rect(x0, y0, x1, y1)
+                    if page.rotation:
+                        block_rect = block_rect * page.rotation_matrix
+                    x0, y0, x1, y1 = block_rect
                     width = max(float(rect.width), 1.0)
                     height = max(float(rect.height), 1.0)
                     bbox = {

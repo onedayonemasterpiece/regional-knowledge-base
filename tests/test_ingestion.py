@@ -407,6 +407,36 @@ async def test_native_block_preview_continuations_are_bounded_and_repeatable(tmp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+async def test_rotated_pdf_native_block_bbox_uses_display_frame(tmp_path, rotation):
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=500)
+    page.insert_text((40, 80), "Rotated evidence block", fontsize=12)
+    page.set_rotation(rotation)
+    path = tmp_path / f"rotated-{rotation}.pdf"
+    doc.save(path)
+    doc.close()
+
+    with fitz.open(path) as check:
+        page = check.load_page(0)
+        raw = next(block for block in page.get_text("blocks", sort=False) if str(block[4]).strip())
+        expected_rect = fitz.Rect(*map(float, raw[:4]))
+        if page.rotation:
+            expected_rect = expected_rect * page.rotation_matrix
+        rect = page.rect
+        expected = {
+            "left": max(0, min(1000, round(expected_rect.x0 / rect.width * 1000))),
+            "top": max(0, min(1000, round(expected_rect.y0 / rect.height * 1000))),
+            "right": max(0, min(1000, round(expected_rect.x1 / rect.width * 1000))),
+            "bottom": max(0, min(1000, round(expected_rect.y1 / rect.height * 1000))),
+        }
+
+    _, pages = await PyMuPdfProcessor().render_file(path, start=0, count=1)
+    assert pages[0].native_blocks[0]["bbox"] == expected
+
+
+@pytest.mark.asyncio
 async def test_textless_image_page_requires_visual_review(tmp_path):
     fitz = pytest.importorskip("fitz")
     doc = fitz.open()

@@ -99,7 +99,7 @@ class IllustrationMirror:
         from .contracts import Principal
         actor=Principal(subject=self.client.owner,client_id='private-mirror',issuer='internal-actor-bridge',access_token='internal-actor-bridge')
         async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
-            items=await(await db.execute("""select i.id,i.document_id,p.revision,i.mirror_operation_id,i.mirror_read_operation_id from rkb_illustrations i
+            items=await(await db.execute("""select i.id,i.document_id,p.revision,i.mirror_operation_id,i.mirror_read_operation_id,i.display_crop_sha256,i.source_crop_sha256 from rkb_illustrations i
              join rkb_pages p on p.id=i.page_id join rkb_documents d on d.id=i.document_id
              where d.owner_user_id=%s and p.revision=d.active_revision and i.visibility='private'
               and i.vibepublish_entry_ref is null and i.crop_object_id is not null order by i.mirror_attempt_at nulls first,i.id limit 4""",(UUID(self.client.owner),))).fetchall()
@@ -133,7 +133,8 @@ class IllustrationMirror:
                     continue
                 entries=read.get('media_store_items') or []
                 evidence=[e for r in read.get('items',[]) for e in r.get('media_evidence',[])]
-                if read['state']!='verified' or len(entries)!=1 or entries[0]['thread_ref']!=self.client.grant['thread_ref'] or entries[0].get('origin')!={'system':'regional_knowledge','ref':'knowledge://illustrations/'+str(item['id'])} or not evidence or any(e['media_kind']!='document' for e in evidence):
+                expected_sha=item.get('display_crop_sha256') or item.get('source_crop_sha256')
+                if read['state']!='verified' or len(entries)!=1 or entries[0]['thread_ref']!=self.client.grant['thread_ref'] or entries[0].get('origin')!={'system':'regional_knowledge','ref':'knowledge://illustrations/'+str(item['id'])} or not evidence or any(e['media_kind']!='document' or (e.get('sha256') is not None and expected_sha and e.get('sha256')!=expected_sha) for e in evidence):
                     raise RuntimeError('mirror native document/topic readback mismatch')
                 await self.update(item,vibepublish_entry_ref=entries[0]['entry_ref'],mirror_error_type=None)
                 verified+=1

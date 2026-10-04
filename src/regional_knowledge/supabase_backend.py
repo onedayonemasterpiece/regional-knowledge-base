@@ -344,7 +344,7 @@ class SupabaseRestBackend(KnowledgeBackend):
             params={
                 "id": f"eq.{item_id}",
                 "select": (
-                    "id,document_id,title,metadata,page_ids,illustration_ids,"
+                    "id,document_id,revision,title,metadata,page_ids,region_ids,illustration_ids,"
                     "footnote_region_ids,text_object_id,text_start,text_end,text_sha256,source_text"
                 ),
                 "limit": "1",
@@ -387,12 +387,53 @@ class SupabaseRestBackend(KnowledgeBackend):
         text = raw.decode("utf-8")
 
         metadata = dict(row.get("metadata") or {})
+        page_ids=[str(value) for value in row.get("page_ids") or []]
+        region_ids=[str(value) for value in row.get("region_ids") or []]
+        async def related_rows(table: str, ids: list[str], select: str) -> dict[str, dict[str, Any]]:
+            # Keep this compatible with the direct PostgreSQL REST adapter, which
+            # deliberately implements only exact filters. A semantic chunk normally
+            # spans only a small number of source regions/pages.
+            output: dict[str, dict[str, Any]] = {}
+            for ident in ids:
+                related_response=await self.client.get(
+                    f"{self.config.url.rstrip('/')}/rest/v1/{table}",
+                    headers=self._headers(principal),
+                    params={"id":"eq."+ident,"select":select,"limit":"1"},
+                )
+                related_response.raise_for_status()
+                values=related_response.json()
+                if values:
+                    output[str(values[0]["id"])]=values[0]
+            return output
+
+        page_meta=await related_rows("rkb_pages",page_ids,"id,physical_page_index,revision")
+        region_meta=await related_rows("rkb_regions",region_ids,"id,page_id,kind,reading_order")
         from .illustrations import descriptor
         figures = [await descriptor(self, principal, str(value), row['document_id']) for value in row.get('illustration_ids') or []]
+        revision=row.get("revision")
+        if revision is None and page_meta:
+            revision=next(iter(page_meta.values())).get("revision")
         metadata.update(
             {
                 "document_id": str(row["document_id"]),
-                "pages": [str(value) for value in row.get("page_ids") or []],
+                **({"revision": int(revision)} if revision is not None else {}),
+                "pages": page_ids,
+                "source_pages": [
+                    {
+                        "page_id": page_id,
+                        "physical_page_index": page_meta[page_id]["physical_page_index"],
+                    }
+                    for page_id in page_ids if page_id in page_meta
+                ],
+                "regions": [
+                    {
+                        "region_id": region_id,
+                        "page_id": str(region_meta[region_id]["page_id"]),
+                        "kind": region_meta[region_id]["kind"],
+                        "reading_order": region_meta[region_id]["reading_order"],
+                    }
+                    for region_id in region_ids if region_id in region_meta
+                ],
                 "illustrations": figures,
                 "footnotes": [
                     {"region_id": str(value)}
