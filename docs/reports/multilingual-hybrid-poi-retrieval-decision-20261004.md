@@ -290,3 +290,27 @@ wrong-POI merges.
 This sequence keeps the system small: one Knowledge corpus, two intentional vector
 spaces, one canonical POI graph in Street Story, and rank fusion rather than a new
 semantic platform.
+
+
+## Relation to the accumulative knowledge graph
+
+The new IdeaHub voice requirement generalizes this POI work into a small
+evidence-backed regional graph of people, events, historical threads and stable
+POI references.
+
+This does **not** change the embedding rollout order. The accepted multilingual
+retrieval stack is reused by graph reverse-discovery instead of creating another
+search engine.
+
+Before graph implementation, the BGE acceptance should therefore include a few
+entity-oriented cross-language cases in addition to POI names:
+
+- German source person name -> Russian question;
+- Russian/current POI name -> German historical passage;
+- one event described with several people;
+- one person appearing in more than one event/thread.
+
+The graph design itself remains a later, separate implementation task.
+
+See
+[accumulative knowledge graph decision](accumulative-knowledge-graph-decision-20261004.md).
