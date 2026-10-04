@@ -1,23 +1,46 @@
 # Storage, privacy and lifecycle
 
-## Object storage is canonical
+## Storage boundary — Telegram source archive, Supabase retrieval state, bounded object cache
 
-Corpus data does **not** live in GitHub. Use a private S3-compatible bucket
-(initial provider may be Yandex Object Storage; code must depend on the S3
-contract, not provider-specific APIs).
+The current S3-compatible bucket is capacity-constrained (about 1 GiB) and must
+**not** be treated as the permanent corpus archive.
 
-Recommended logical keys:
+Long-lived storage is split deliberately:
 
 ```text
-users/<user_id>/documents/<document_id>/source/<source_sha256>.pdf
-users/<user_id>/documents/<document_id>/pages/<page_id>.webp
-users/<user_id>/documents/<document_id>/illustrations/<illustration_id>.png
-users/<user_id>/documents/<document_id>/graph/<revision>.json
-users/<user_id>/documents/<document_id>/text/<revision>.txt
+VibePublish / Telegram, TELEGRAM_KNOWLEDGE_BASE connection
+  topic /2 = exact original source files (PDF, DjVu, ...)
+  topic /4 = extracted illustration documents
+
+Supabase Postgres
+  = catalog / ACL / rights / revisions
+  = source format + exact source SHA + Telegram source entry ref
+  = chunk source text + search material
+  = page/region/illustration/entity metadata
+  = FTS + pgvector E5/BGE + indexing state
+
+S3-compatible object storage
+  = bounded ingestion/cache workspace only
+  = temporary source copy while Telegram archival is pending
+  = at most the current staged graph / temporary derived files
+  != permanent corpus archive
+
+local disk
+  = bounded disposable work/cache
 ```
 
-Keys are not authorization. Every read is authorized from database state before
-the server resolves an object locator or streams bytes.
+The exact original file is archived through VibePublish as a Telegram DOCUMENT
+using the dedicated Knowledge Base Telegram session/connection
+`TELEGRAM_KNOWLEDGE_BASE`. Regional Knowledge stores the verified media-store
+reference and SHA-256; Telegram object identity never replaces application ACL.
+
+The source topic is `https://t.me/c/4368830579/2`.
+The illustration topic is `https://t.me/c/4368830579/4`.
+
+Object storage may be used as a temporary safety buffer until exact Telegram
+provider readback succeeds. Once the Telegram source archive is verified and the
+active/staged state no longer requires the temporary object, the S3 copy must be
+eligible for deletion/GC rather than accumulating indefinitely.
 
 ## Why not global content-addressed public keys
 
@@ -43,15 +66,38 @@ A public or statutory-access work uploaded from a private scan does **not** make
 the user's exact PDF, annotations, ex libris, marginalia or scan metadata public
 automatically.
 
-## VibePublish
+## VibePublish / Telegram
 
-VibePublish MediaBank is a secondary integration surface, not canonical storage.
-Mirror an illustration only when its policy permits that use. Store its immutable
-VibePublish origin/entry reference alongside the illustration; do not make
-Telegram availability part of search correctness.
+VibePublish is the provider boundary for the Knowledge Base binary archive.
 
-Private user assets are not mirrored to the operator's Telegram media bank by
-default.
+Use the dedicated Telegram session/connection `TELEGRAM_KNOWLEDGE_BASE` so
+Knowledge Base source/media transfers do not occupy the ordinary VibePublish
+Telegram connection lane. This isolates our own queue/rate budget; Telegram may
+still impose account-wide/provider-wide limits independently.
+
+Two private topics are reserved:
+
+- `https://t.me/c/4368830579/2` — exact original book/source files as DOCUMENT;
+- `https://t.me/c/4368830579/4` — extracted illustrations as DOCUMENT.
+
+Regional Knowledge remains the semantic/ACL authority. VibePublish owns Telegram
+transport identity, durable send/replay/readback and provider pacing.
+
+A verified source entry stores immutable origin such as:
+
+```text
+origin.system = regional_knowledge
+origin.ref = knowledge://documents/<document_id>/source
+origin.sha256 = <exact original bytes sha256>
+```
+
+A verified illustration entry continues to use
+`knowledge://illustrations/<id>`.
+
+Search correctness depends on Supabase text/index state, not on a live Telegram
+request. Reprocessing a source may require the archived original; if that archive
+is unavailable, the existing parsed revision remains searchable but source
+reconstruction must report unavailable rather than fabricate bytes.
 
 ## Deletion
 
@@ -66,23 +112,31 @@ If a separately curated public corpus item exists, it has its own provenance and
 lifecycle; deleting one user's private source cannot silently delete a public
 canonical record.
 
-## Text projections and range reads
+## Chunk text and retrieval material
 
-Full normalized region/chunk text is not stored in Supabase. Ingestion writes
-UTF-8 text projections to private object storage. A retrieval chunk stores only a
-server-only `text_object_id`, byte offsets, SHA-256, `tsvector`, embedding and
-compact metadata.
+Canonical parsed chunk text belongs in Supabase, not in object storage.
 
-`fetch` first resolves the chunk using the caller's JWT and RLS. Only after that
-authorization succeeds may the server use its service credential to resolve the
-exact object locator and issue an S3 Range GET. Returned bytes are hash-verified
-before decoding. The service-role credential is never used for candidate search.
+Keep two separate values:
 
-## Attached PDF ingestion source
+- `source_text` — exact text/transcription accepted by ChatGPT as source evidence;
+- `search_material` — deterministic retrieval augmentation containing source text,
+  printed captions and explicitly labelled model observations.
+
+Each keeps its own SHA-256 identity. FTS and E5/BGE indexing are derived from
+these fields. A model observation must never be returned as if it were a printed
+quotation.
+
+The legacy text-projection/range-read path may remain temporarily during migration,
+but new imports must not require a permanent text blob in S3.
+
+## Attached source ingestion — PDF and DjVu
 
 ChatGPT file parameters provide a temporary `download_url` and stable
 `file_id`. The start call downloads the source immediately; the temporary URL is
 never persisted.
+
+Real corpus sources include at least PDF and DjVu. Source type is detected from
+bytes/container signature, not trusted filename extension.
 
 The source path is deliberately **file-backed**, not whole-file-in-memory:
 
@@ -90,11 +144,16 @@ The source path is deliberately **file-backed**, not whole-file-in-memory:
 temporary ChatGPT HTTPS URL
   -> DNS/public-address preflight
   -> DNS-pinned streaming download
-  -> bounded local temporary PDF
-  -> SHA-256 + PyMuPDF inspection
-  -> S3 upload_file
-  -> temporary file removed
+  -> bounded local temporary source
+  -> SHA-256 + deterministic format/container inspection
+  -> VibePublish archive to Telegram /2
+  -> optional temporary S3 safety copy until verified archive/readback
+  -> local temporary file removed
 ```
+
+Format adapters may deterministically report page count, render a requested page
+to an image and expose an embedded/native text layer when the container already
+has one. They must not perform OCR, semantic recognition, captioning or layout AI.
 
 The downloader:
 
@@ -107,7 +166,8 @@ The downloader:
 - streams in bounded chunks instead of loading the whole PDF into Python heap;
 - defaults to **128 MiB** maximum source size;
 - allows an operator-configured `RKB_MAX_PDF_BYTES`, hard-capped at **512 MiB**;
-- requires a PDF signature before admission.
+- requires a supported source signature/container before admission; initially PDF
+  and DjVu are mandatory production formats.
 
 Production should additionally use restrictive egress/network policy. The model
 never receives object-store credentials or raw object keys.
@@ -121,13 +181,18 @@ deterministic source object instead of creating a second document or object row.
 
 ## Page reads
 
-`book_pages` first authorizes the ingestion job under the user's JWT. Only then
-does the server resolve the exact source object with its service credential,
-download it to a bounded temporary file, verify the full SHA-256 and render only
-the requested small page batch with PyMuPDF.
+`book_pages` first authorizes the ingestion job. It then resolves the exact
+temporary/archive source, verifies full SHA-256 and asks the deterministic source
+adapter to render only the requested small page batch.
 
-The PDF bytes are therefore not retained on local disk between calls and do not
-become a high-memory runtime dependency.
+For PDF this may use PyMuPDF. DjVu uses a deterministic DjVu decoder/renderer.
+That decoder is transport, not recognition.
+
+The returned page image is what ChatGPT reads. Optional native/embedded text is a
+hint only and never proves visual completeness.
+
+No Tesseract, OCR service, VLM, layout model or other semantic recognizer belongs
+inside Regional Knowledge MCP.
 
 ## Staged graph and finalization
 
