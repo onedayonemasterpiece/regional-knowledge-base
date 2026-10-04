@@ -46,7 +46,7 @@ async def ablate(backend,actor,fixture,vectors,output):
     for case in fixture['cases']:
         started=time.monotonic();vector=vectors[case['id']]
         if vector['query_sha256']!=hashlib.sha256(case['query'].encode()).hexdigest():raise ValueError('stale benchmark query encoding')
-        response=await backend.client.post(f'{backend.config.url.rstrip("/")}/rest/v1/rpc/rkb_multilingual_rankings',headers=backend._headers(actor),json={'query_text':case['query'],'bge_vector':literal(vector['bge']),'bge_space':BGE_SPACE,'e5_vector':literal(vector['e5']),'e5_space':E5_SPACE,'aliases':fixture.get('aliases',[]) if any('name' in name or 'poi' in name for name in case['classes']) else [],'depth':100})
+        response=await backend.client.post(f'{backend.config.url.rstrip("/")}/rest/v1/rpc/rkb_multilingual_rankings',headers=backend._headers(actor),json={'query_text':case['query'],'bge_vector':literal(vector['bge']),'bge_space':BGE_SPACE,'e5_vector':literal(vector['e5']),'e5_space':E5_SPACE,'aliases':case.get('aliases',[]),'depth':100})
         response.raise_for_status();rows=response.json();result['database_seconds'].append(time.monotonic()-started)
         branch_counts[case['id']]={branch:sum(row['branch']==branch for row in rows) for branch in ('e5','bge','lexical','exact_current_alias','exact_historical_alias','exact_alias')}
         diagnostics={}

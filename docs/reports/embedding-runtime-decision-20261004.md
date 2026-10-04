@@ -5,7 +5,7 @@
 For the first production retrieval stack of Regional Knowledge Base:
 
 1. **Fast / always-ready semantic tier:** multilingual E5-small INT8 on DevCoveer.
-2. **Main / higher-quality tier:** BGE-M3 on Kaggle CPU, to be implemented separately after the fast tier is operational.
+2. **Main semantic tier:** pinned BGE-M3 on Kaggle CPU, now deployed and accepted; use BGE + lexical when warm. E5 remains independent for cold/pending results.
 3. **Client-side inference:** proven technically viable on one representative Android device, but **deferred from production**. It is not needed while the server-side E5 tier fits the resource envelope, and avoiding client inference reduces battery, thermal and device-compatibility risk.
 4. **Lexical retrieval remains available** and is fused with E5 where it materially helps short names/toponyms.
 5. **No paid or implicit external embedding API fallback is allowed.**
@@ -20,6 +20,8 @@ Primary reports:
 - [DevCoveer small encoder benchmark](devcoveer-small-embedding-benchmark-20261004.md)
 - [Retrieval validation follow-up](embedding-retrieval-validation-followup-20261004.md)
 - [Gause import coverage audit](gause-import-coverage-audit-20261004.md)
+- [Completed E5 production acceptance](fast-e5-production-acceptance-20261004.md), PR #27
+- [Completed BGE/Kaggle multilingual acceptance](bge-kaggle-multilingual-hybrid-acceptance-20261004.md), PR #28
 - PR #26: https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/26
 
 ### DevCoveer benchmark
@@ -126,7 +128,7 @@ query
 
 ### Main tier — Kaggle CPU
 
-Planned separately:
+Implemented and accepted in production:
 
 - BGE-M3, CPU only;
 - durable queue outside the notebook;
@@ -140,34 +142,70 @@ Planned separately:
 
 When BGE is warm, E5 does not need to be executed for every request unless later measurements show value in multi-encoder fusion.
 
-## Concurrency hypothesis to verify next
+## Measured production acceptance
 
-The isolated DevCoveer benchmark already measured four queued E5 requests with low latency, but production acceptance must include the whole path:
+E5 production acceptance is complete; one encoder stays within 1 CPU / 1 GiB.
+Actual public search/fetch p95 at 1/5/10 users was **0.879 / 1.412 / 2.121 s**.
+The original 5-user <1 s and 10-user <2 s product targets were missed; the E5
+report records the concrete PostgreSQL/hydration bottleneck. Completion does not
+mean those latency targets were met.
 
-- encoder queue;
-- query embedding;
-- PostgreSQL/pgvector retrieval;
-- lexical branch/fusion;
-- evidence hydration;
-- API/MCP response.
+BGE uses a private Kaggle CPU worker and durable DevCoveer queue. Backfill covers
+**747/747 authorized active chunks** with source hash/revision checks; replay
+skips all 747 with zero submitted/written jobs. Separate typed E5/BGE tables leave
+907 legacy vectors intact. Exact BGE space is
+`bge-m3:5617a9f:t211-tr5161:cls-l2-512:q1-d1:v1`, 1024-d FP32 CLS/L2, no prefixes,
+512-token truncation, query/document batch 1. Pinned model revision is
+`5617a9f61b028005a4858fdac845db406aefb181`; no inference runs in MCP.
 
-The next acceptance should measure **1, 5 and 10 concurrent end-to-end searches**.
+Seven same-corpus ablations on **40 DE/RU queries** (38 positive, two unsupported;
+16 paired needs; original German evidence, no evidence translation) select
+**BGE + lexical**: Recall@10 **82.89%**, MRR@20 **.7757**, multi completeness
+**6/9**. BGE alone gives **77.63%**; all-three gives **67.11%**, MRR **.5819**,
+multi **5/9**. Do not execute E5 on every warm request: it adds work and loses
+known-evidence quality on this fixture. Dual encoders were evaluated in parallel,
+with separate spaces and RRF, not by mixing cosine scores.
 
-Start with one encoder worker and inference concurrency = 1. Do not add multiple model processes unless measurements require it.
+For 12 paired natural-language needs, German-source DE/RU BGE+lexical Recall@10
+is **95.83% / 87.50%** (8.33 pp loss); including four short-name pairs, the gap is
+18.75 pp. Lexical improves short German names but does not itself bridge Russian
+aliases. Person/event/place readiness favors BGE+lexical; explicit exact/current/
+historical alias signals remain separate and caller-scoped, with no POI merge.
+Judgments are agent-authored known positives, not exhaustive independent labels;
+Precision/nDCG and calibrated abstention cannot be claimed. Both vector models
+return nearest passages for unsupported premises. This is one narrow German
+source, not a universal multilingual quality result.
 
-Initial product target:
+Actual warm production backend and public OAuth MCP each passed **90/90 requests**,
+30 per concurrency level. HTTP p95 at 1/5/10 users: **1.778 / 5.105 / 9.164 s**.
+At ten users BGE queue p95 is **7.927 s**, inference **.259 s**, database **.204 s**,
+fusion/metadata **.062 s**, hydration **.543 s**. Functional acceptance is complete;
+a subsecond warm SLA is not established.
 
-- 5 concurrent users: p95 end-to-end fast search comfortably below 1 second;
-- 10 concurrent users: no OOM/crash and bounded queue behavior; target p95 below 2 seconds;
-- encoder remains within the 1 CPU / 1 GiB envelope.
+First cold demand → ready was **73.686 s**; later cold **75.370 s**. Ten public
+cold users received E5 evidence + starting/job ID at p95 **2.595 s**, then main
+packs at p95 **92.587 s** including client polling. Warm calls wait at most ten
+seconds before returning fast evidence + pending. Same-query, actor-bound job
+polling is available in full search and Live evidence search.
 
-These are acceptance targets, not previously measured facts.
+Useful demand/work renews a **30-minute** lease; heartbeat never renews it.
+Planned **10h45m** succession allows one serving + one warming worker. Real
+rotation accepted 120 queued jobs, with 43 pending at handoff; successor ready in
+68.142 s. Worker loss recovered a claimed job at attempt 2; stale results were
+403. An actual intentionally failing private CPU notebook returned ERROR;
+controller preserved jobs and E5 evidence. Provider unavailability and idle/
+lifetime deadlines also passed controlled tests. Boundary timestamps were
+accelerated; no eleven-hour wall-clock soak or natural provider outage is claimed.
+
+See the [BGE report](bge-kaggle-multilingual-hybrid-acceptance-20261004.md) and
+[operator runbook](../operations/bge-kaggle.md) for complete measurements,
+contract, ACL/migration proof, private-evidence checksums and recovery procedure.
 
 ## Vector-space storage requirement
 
 The current legacy embedding column must not be reused by dimensional coincidence or by overwriting its model identity.
 
-Production needs an explicit E5 384-dimensional vector space and, later, a separate BGE-M3 1024-dimensional vector space. The implementation may use a verified multi-space embedding table or separate typed vector fields, but must preserve these invariants:
+Production now uses separate E5 384-dimensional and BGE-M3 1024-dimensional embedding tables (migrations 010 and 011). Both preserve these invariants:
 
 - vector-space identifier is stored with the vector;
 - dimensions are enforced;
@@ -190,8 +228,12 @@ PR #26 prepares bounded continuation/source-review mechanics. After that transpo
 
 ## Next implementation step
 
-The immediate implementation task is:
+Implement the **minimal accumulative knowledge graph + bidirectional entity/POI
+discovery** using existing PostgreSQL/Supabase and the accepted retrieval stack:
+[execution prompt](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/main/docs/prompts/accumulative-knowledge-graph-mvp-after-bge-20261004.md).
 
-**Productionize E5-small INT8 as the always-ready DevCoveer fast semantic tier and perform real 1/5/10-user end-to-end concurrency acceptance.**
-
-Do not implement Kaggle/BGE in the same task. Once the fast tier is deployed and measured, the next implementation task is the Kaggle CPU BGE worker/orchestrator.
+Keep evidence-scoped people/events/threads and canonical Street Story POI
+references, bounded alias-triggered discovery, ambiguity review and one-hop
+navigation. Do not introduce a separate graph database, automatic identity merge
+or backend LLM extraction. Graph readiness does not repair the known source
+coverage defect.

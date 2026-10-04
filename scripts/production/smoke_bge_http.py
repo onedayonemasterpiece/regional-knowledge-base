@@ -45,9 +45,15 @@ async def run(args):
                 rows=[]
                 for start in range(0,args.requests,users):rows.extend(await asyncio.gather(*(request(i) for i in range(start,min(start+users,args.requests)))))
                 level={'requests':len(rows),'failures':sum(not row['ok'] for row in rows),'initial_fast':sum(row.get('initial_mode')=='fast_e5' for row in rows),'initial_seconds':distribution([row['initial_seconds'] for row in rows if 'initial_seconds' in row]),'main_seconds':distribution([row['main_seconds'] for row in rows]),'rows':rows};output['levels'][str(users)]=level;args.output.write_text(json.dumps(output,indent=2));print(json.dumps({'http_users':users,**{key:value for key,value in level.items() if key!='rows'}}),flush=True)
+            if args.alias_smoke:
+                case=next(case for case in cases if case.get('aliases'))
+                data=await search({'query':case['query'],'aliases':case['aliases']})
+                branches={signal['branch'] for item in data['results'] for signal in item.get('ranking_signals',[])}
+                output['explicit_alias_smoke']={'state':data['main_state'],'branches':sorted(branches),'fetched':len(await fetch(data))}
+                if data['main_state']!='ready' or not any(branch.startswith('exact_') for branch in branches):raise RuntimeError('explicit alias diagnostic missing')
     finally:
         if access:await provider.revoke_token(access)
     output['temporary_family_revoked']=await provider.load_access_token(token.access_token) is None;args.output.write_text(json.dumps(output,indent=2))
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('fixture',type=Path);parser.add_argument('output',type=Path);parser.add_argument('--requests',type=int,default=30);parser.add_argument('--users',type=int,nargs='+',default=[1,5,10]);parser.add_argument('--poll-seconds',type=float,default=1);asyncio.run(run(parser.parse_args()))
+    parser=argparse.ArgumentParser();parser.add_argument('fixture',type=Path);parser.add_argument('output',type=Path);parser.add_argument('--requests',type=int,default=30);parser.add_argument('--users',type=int,nargs='+',default=[1,5,10]);parser.add_argument('--poll-seconds',type=float,default=1);parser.add_argument('--alias-smoke',action='store_true');asyncio.run(run(parser.parse_args()))
