@@ -6,6 +6,8 @@ from uuid import UUID, uuid5
 
 from pydantic import BaseModel, Field, model_validator
 
+from .entity_graph import GraphBundle,validate_staged_bundle,digest
+
 from .contracts import (
     BBox,
     RegionKind,
@@ -114,6 +116,7 @@ class IngestStagePayload(BaseModel):
 
 
 class StagedGraph(BaseModel):
+    entity_candidates: list[GraphBundle] = Field(default_factory=list,max_length=256)
     revision: int = Field(ge=1)
     pages: list[StagedPage] = Field(default_factory=list)
     relations: list[StagedRelation] = Field(default_factory=list)
@@ -494,6 +497,7 @@ def merge_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
 
     return StagedGraph(
         revision=graph.revision,
+        entity_candidates=graph.entity_candidates,
         pages=sorted(pages.values(), key=lambda item: item.physical_page_index),
         relations=list(relations.values()),
         illustrations=list(illustrations.values()),
@@ -506,6 +510,9 @@ def merge_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
 def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphValidation:
     errors: list[str] = []
     warnings: list[str] = []
+    for bundle in graph.entity_candidates:
+        try: validate_staged_bundle(bundle,graph)
+        except ValueError as error: errors.append(str(error))
 
     for page in graph.pages:
         if page.source_material != "visual_reviewed" or not (page.source_review_note or "").strip():

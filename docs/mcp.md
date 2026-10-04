@@ -144,3 +144,26 @@ contract does not alter already active revisions or reimport their source.
 Split long source material into bounded regions (maximum 8000 characters each)
 with correct reading order; continuation portions are not automatically new
 semantic regions. Parsing/recognizing scans remains ChatGPT's work.
+
+## Minimal entity graph tools
+
+`book_ingest(stage)` accepts one `entity_candidates` bundle (up to 32 typed nodes
+and 64 evidenced relations). Each quote must match its exact staged chunk and
+region. Node kinds: person/event/historical_thread/poi_ref. Relation shapes are
+restricted to participated_in, occurred_at and member_of.
+
+`graph_stage(document_id, revision, candidates)` adds model-authored bounded
+candidates to an owned active revision; it does not reimport or declare the full
+source complete. `graph_stage(entity_id, alias)` adds one sourced alias and queues
+reverse discovery. Explicit entity IDs reuse only same-owner/kind identities.
+Unknown/ambiguous POI resolution remains unresolved; there is no name-based merge.
+
+`graph_fetch(entity_id, limit<=20)` returns one authorized entity, bounded
+aliases/mentions, and one-hop neighbors. Every relation includes exact
+chunk/page/region/quote evidence; fetch the referenced chunk before asserting a
+fact. Aliases and discovered mentions are candidates, not automatically accepted
+identity truth. `graph_related` uses the existing multilingual retrieval and can
+return a pending main job in its retrieval envelope.
+
+Live exposes no graph-write or traversal tools. Private source existence and
+relations stay evidence-RLS scoped even when a referenced canonical POI is public.

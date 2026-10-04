@@ -18,6 +18,8 @@ from pydantic import AnyHttpUrl
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from .entity_graph import GraphBundle,GraphAlias
+from .graph_service import GraphService
 from .local_e5 import LocalE5Embedder
 from .auth import JwtResourceVerifier
 from .backend import KnowledgeBackend
@@ -270,6 +272,7 @@ def build_server(
         chunks: list[StageChunkInput] | None = None,
         poi_facts: list[StagePoiFactInput] | None = None,
         poi_media_links: list[StagePoiMediaLinkInput] | None = None,
+        entity_candidates: GraphBundle | None = None,
     ) -> BookIngestOutput:
         payload: dict[str, Any] | None = None
         if metadata is not None:
@@ -279,8 +282,10 @@ def build_server(
             or chunks is not None
             or poi_facts is not None
             or poi_media_links is not None
+            or entity_candidates is not None
         ):
             payload = {
+                "entity_candidates": entity_candidates.model_dump(mode="json") if entity_candidates else None,
                 "pages": [
                     page.model_dump(mode="json", exclude_none=True)
                     for page in (pages or [])
@@ -306,6 +311,25 @@ def build_server(
             cursor=cursor,
             payload=payload,
         )
+
+    @mcp.tool(title="Stage evidence-backed entity graph", description="Submit bounded model-authored graph candidates on an owned active document, or add a sourced alias to one owned entity. No automatic identity merge. Exact source chunk/page/region evidence required.", annotations=ToolAnnotations(read_only_hint=False,open_world_hint=False))
+    async def graph_stage(document_id:str|None=None,revision:int|None=None,candidates:GraphBundle|None=None,entity_id:str|None=None,alias:GraphAlias|None=None)->dict[str,Any]:
+        service=GraphService(backend);principal=_principal()
+        if alias is not None and entity_id is not None:
+            return await service.add_alias(principal,entity_id,alias)
+        if candidates is None or document_id is None or revision is None:raise ValueError("document/revision/candidates or entity/alias required")
+        async with service.connection(principal) as db:
+            row=await(await db.execute("select active_revision from rkb_documents where id=%s",(__import__('uuid').UUID(document_id),))).fetchone()
+            if not row or row['active_revision']!=revision:raise ValueError("active document revision required")
+        return await service.stage(principal,document_id,revision,candidates)
+
+    @mcp.tool(title="Read one evidence-backed graph entity",description="One entity, authorized aliases/mentions and at most 20 one-hop relations with exact source evidence. No recursive traversal or graph dump.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+    async def graph_fetch(entity_id:str,limit:int=20)->dict[str,Any]:
+        return await GraphService(backend).read(_principal(),entity_id,limit)
+
+    @mcp.tool(title="Find related entity evidence",description="One authorized entity context and bounded related evidence through the existing E5/BGE/lexical retrieval. Hits are identity candidates, not facts.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+    async def graph_related(entity_id:str,query:str|None=None,limit:int=8)->dict[str,Any]:
+        return await GraphService(backend).related(_principal(),entity_id,query,limit)
 
     @mcp.tool(
         title="Read staged book pages",

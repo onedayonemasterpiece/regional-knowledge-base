@@ -416,3 +416,24 @@ Before enabling automatic book→POI delivery:
 9. Street Story outage does not fail Knowledge finalize;
 10. expert resolution is visible in Street Story and Projects Hub readback;
 11. revoking an expert/user grant immediately prevents further private evidence reads.
+
+## Entity graph and reverse discovery checkpoint — 2026-10-04
+
+Regional Knowledge now stores only `streetstory://poi/<uuid>` canonical links.
+Typed POI locators resolve through a read-only native Street Story identity/alias
+projection; zero/multiple matches stay unresolved/reviewable, and outages defer
+resolution without failing valid book finalization. Historical objects remain
+valid references even when their building no longer exists; lifecycle truth
+remains Street Story-owned. POI status `candidate` is not a verified identity claim.
+
+A bounded round-robin worker checks 16 existing POI references per synchronization
+pass. Meaningful alias-set changes enqueue actor-scoped, version/boundary-keyed
+discovery. Person/event aliases and new document revision activation likewise
+enqueue durable jobs; new documents page 32 owned entities per pass. Public/system
+reads cannot enumerate private graph evidence. No private evidence is forwarded
+without a separate delegated grant.
+
+Discovery returns candidate mentions with exact source locators and independent
+ranking diagnostics. Vector-only hits have no asserted source-name spelling;
+matching and grouping are review aids, not automatic merges or atomic facts.
+Owner-scoped identity reuse across books requires an explicit entity ID.

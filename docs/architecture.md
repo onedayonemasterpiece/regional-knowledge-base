@@ -81,3 +81,22 @@ creating a second POI catalogue.
 
 See
 [accumulative knowledge graph decision](reports/accumulative-knowledge-graph-decision-20261004.md).
+
+## Evidence-backed entity graph MVP
+
+Migration 012 adds owner-scoped people, events, historical threads and canonical
+Street Story POI references. Mentions, aliases and three structural edge kinds
+retain exact chunk/page/region locators and source quotes. Reads are evidence-RLS
+filtered, active-revision filtered and limited to one hop/20 edges. Identity keys
+are explicit; Unicode alias normalization never merges people or places.
+
+ChatGPT submits bounded typed `entity_candidates` during staging, or
+`graph_stage` on an owned active revision. The backend validates source bytes,
+region attribution, shape and idempotency; it performs no semantic extraction.
+Unresolved POI locators remain reviewable and do not block book activation.
+
+A separate small Postgres discovery queue drives one bounded background worker.
+It reuses accepted E5/BGE/lexical retrieval and exact alias branches. Candidates
+retain retrieval signals and never become facts or identity merges automatically.
+New revisions enqueue one paging job; alias versions enqueue idempotent jobs.
+Existing incomplete source projections remain incomplete.

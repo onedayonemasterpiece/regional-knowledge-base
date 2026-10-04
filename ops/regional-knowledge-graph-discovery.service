@@ -1,0 +1,14 @@
+[Unit]
+Description=Regional Knowledge bounded graph discovery
+After=network-online.target regional-knowledge-base.service
+[Service]
+Type=simple
+# Set immutable release paths during deployment; model inference stays in E5/Kaggle.
+EnvironmentFile=/home/dev/.local/state/regional-knowledge-base/service.env
+ExecStart=/home/dev/projects/regional-knowledge-base/.venv/bin/python -m regional_knowledge.graph_discovery
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+[Install]
+WantedBy=default.target

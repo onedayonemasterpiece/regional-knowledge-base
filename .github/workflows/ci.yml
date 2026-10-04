@@ -14,6 +14,18 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.12", "3.13"]
+    services:
+      graph-postgres:
+        image: pgvector/pgvector:0.8.2-pg17
+        env:
+          POSTGRES_PASSWORD: graph_fixture_only
+          POSTGRES_DB: rkb_graph_test
+        ports: ["54329:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rkb_graph_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      RKB_GRAPH_TEST_DSN: postgresql://postgres:graph_fixture_only@127.0.0.1:54329/rkb_graph_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

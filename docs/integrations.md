@@ -91,3 +91,19 @@ This makes cross-product synergy explicit and revocable. A service identity is
 not a substitute for the user's grant.
 
 See also [accumulative knowledge graph decision](reports/accumulative-knowledge-graph-decision-20261004.md).
+
+## Implemented entity/POI discovery MVP
+
+`graph_fetch` returns one authorized entity and at most 20 one-hop evidenced
+relations; `graph_related` reuses accepted retrieval around its authorized aliases.
+`graph_stage` writes model-authored candidates/aliases with exact evidence. These
+three narrow tools are available only in the regular MCP profile; Live stays
+search/evidence-only. No graph dump or automatic narrative service exists.
+
+Production uses a read-only adapter to Street Story's local canonical identity
+projection (`RKB_STREET_STORY_POI_DB`), reading only POI identity/name aliases.
+No end-user bearer, book text or private claim is sent to another MCP. The adapter
+never creates POIs and never copies claims/location/lifecycle records. Alias-set
+versions on already referenced canonical POIs schedule bounded reverse discovery.
+A remote resolver/delegated intake transport remains a future integration; no
+unauthorized private-source delivery is enabled by this local adapter.
