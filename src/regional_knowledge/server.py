@@ -180,6 +180,11 @@ def build_server(
     if embedded_provider is not None:
         embedded_provider.register_routes(mcp)
 
+    if os.getenv('RKB_BGE_QUEUE_PATH'):
+        from .bge_queue import BgeQueue
+        from .bge_broker import register_routes
+        register_routes(mcp,BgeQueue(os.environ['RKB_BGE_QUEUE_PATH']))
+
     @mcp.custom_route("/fast-tier/health", methods=["GET"])
     async def fast_tier_health(request: Request):
         encoder = getattr(backend, "embedder", None)
@@ -201,11 +206,13 @@ def build_server(
         async def knowledge_search(
             query: str,
             max_evidence: int = 3,
+            main_job_id: str | None = None,
         ) -> EvidenceSearchOutput:
             return await backend.search_evidence(
                 query.strip(),
                 _principal(),
                 max_evidence=max(1, min(max_evidence, 5)),
+                **({'main_job_id': main_job_id} if main_job_id else {}),
             )
 
         return mcp
@@ -218,8 +225,11 @@ def build_server(
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
-    async def search(query: str) -> SearchOutput:
-        return await backend.search(query.strip(), _principal())
+    async def search(query: str, main_job_id: str | None = None, aliases: list[dict[str,str]] | None = None) -> SearchOutput:
+        options={}
+        if main_job_id:options['main_job_id']=main_job_id
+        if aliases:options['aliases']=aliases
+        return await backend.search(query.strip(), _principal(),**options)
 
     @mcp.tool(
         title="Fetch regional evidence",

@@ -297,12 +297,15 @@ class SearchResult(BaseModel):
     id: str
     title: str
     url: str
+    ranking_signals: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SearchOutput(BaseModel):
     results: list[SearchResult]
     mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
-    retrieval_mode: Literal["fast_e5", "lexical_only"] = "lexical_only"
+    retrieval_mode: Literal["fast_e5", "lexical_only", "bge_lexical", "e5_bge_lexical", "bge", "e5_bge"] = "lexical_only"
+    main_state: Literal['disabled','starting','pending','ready','unavailable'] = 'disabled'
+    main_job_id: str | None = None
     timings: dict[str, float] = Field(default_factory=dict, exclude=True)
 
 
@@ -317,7 +320,9 @@ class FetchOutput(BaseModel):
 class EvidenceSearchOutput(BaseModel):
     evidence: list[FetchOutput]
     mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
-    retrieval_mode: Literal["fast_e5", "lexical_only"] = "lexical_only"
+    retrieval_mode: Literal["fast_e5", "lexical_only", "bge_lexical", "e5_bge_lexical", "bge", "e5_bge"] = "lexical_only"
+    main_state: Literal['disabled','starting','pending','ready','unavailable'] = 'disabled'
+    main_job_id: str | None = None
     timings: dict[str, float] = Field(default_factory=dict, exclude=True)
 
 

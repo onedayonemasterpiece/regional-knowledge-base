@@ -161,11 +161,14 @@ class SupabaseRestBackend(KnowledgeBackend):
             return f"{self.config.public_base_url.rstrip('/')}/evidence/{encoded}"
         return f"knowledge://evidence/{encoded}"
 
-    async def search(self, query: str, principal: Principal, *, match_count: int = 8) -> SearchOutput:
+    async def search(self, query: str, principal: Principal, *, match_count: int = 8, main_job_id: str | None = None, aliases: list | None = None, _fast_only: bool = False) -> SearchOutput:
         started = time.monotonic()
         query = query.strip()
         if not query:
             return SearchOutput(results=[], mode="lexical_degraded")
+        if not _fast_only and os.getenv('RKB_BGE_ENABLED')=='1':
+            from .multilingual_retrieval import main_search
+            return await main_search(self,query,principal,match_count=match_count,main_job_id=main_job_id,aliases=aliases)
 
         vector: list[float] | None = None
         try:
@@ -287,18 +290,19 @@ class SupabaseRestBackend(KnowledgeBackend):
         principal: Principal,
         *,
         max_evidence: int = 3,
+        main_job_id: str | None = None,
     ) -> EvidenceSearchOutput:
         started = time.monotonic()
         limit = max(1, min(int(max_evidence), 5))
-        found = await self.search(query, principal)
+        found = await self.search(query, principal, **({'main_job_id': main_job_id} if main_job_id else {}))
         selected = found.results[:limit]
         if not selected:
-            return EvidenceSearchOutput(evidence=[], mode=found.mode, retrieval_mode=found.retrieval_mode, timings={**found.timings,"hydration_seconds":0,"total_seconds":time.monotonic()-started})
+            return EvidenceSearchOutput(evidence=[], mode=found.mode, retrieval_mode=found.retrieval_mode, main_state=found.main_state, main_job_id=found.main_job_id, timings={**found.timings,"hydration_seconds":0,"total_seconds":time.monotonic()-started})
         hydration_start = time.monotonic()
         evidence = await asyncio.gather(
             *(self.fetch(item.id, principal) for item in selected)
         )
-        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode, retrieval_mode=found.retrieval_mode, timings={**found.timings,"hydration_seconds":time.monotonic()-hydration_start,"total_seconds":time.monotonic()-started})
+        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode, retrieval_mode=found.retrieval_mode, main_state=found.main_state, main_job_id=found.main_job_id, timings={**found.timings,"hydration_seconds":time.monotonic()-hydration_start,"total_seconds":time.monotonic()-started})
 
     async def document_access(
         self,
