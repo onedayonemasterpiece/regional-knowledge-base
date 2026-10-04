@@ -186,23 +186,28 @@ For every active private illustration eligible for the owner's private mirror:
 
 - canonical bytes = RKB illustration crop;
 - send as Telegram DOCUMENT;
-- stable request key derived from owner/document/revision/illustration ID/crop hash;
+- stable request key derived from owner/document/revision/illustration ID;
 - origin.system = `regional_knowledge`;
 - origin.ref = `knowledge://illustrations/<id>`;
-- origin.sha256 = crop hash;
+- optional origin.sha256 = crop hash, as provenance only;
 - configured target thread = `https://t.me/c/4368830579/4`;
 - mirror asynchronously after activation;
 - never block/fail book activation because Telegram/VibePublish is unavailable;
-- write `vibepublish_entry_ref` only after verified exact provider readback;
+- write `vibepublish_entry_ref` after verified native message/topic/DOCUMENT readback;
 - restart resumes missing mirrors;
 - replay never creates a second Telegram item.
 
 Keep the exact provider destination alias in deployment/runtime configuration,
 not hardcoded application source.
 
-A crop already mirrored for the same canonical illustration/hash is complete.
+A crop already mirrored for the same canonical illustration/revision is complete.
 Do not globally merge two semantically distinct illustrations merely because
 their bytes happen to match.
+
+Owner correction, 2026-10-04: image SHA equality and visual-similarity checks are
+not mirror acceptance gates. Do not add a new perceptual matching pipeline for
+delivery. Compression/cropping must not block the mirror. This correction does
+not change the exact PDF-source deduplication requirement in Phase A.
 
 ## Telegram rate-limit acceptance
 
@@ -253,7 +258,8 @@ Acceptance must prove all of the following:
 15. Unchanged source chunks are skipped.
 16. Private VibePublish mirror reaches
     `https://t.me/c/4368830579/4` for the small real canary.
-17. Exact media bytes/hash and origin metadata are verified.
+17. Native private-topic/DOCUMENT delivery and origin metadata are verified;
+    source-image SHA equality is not an acceptance gate (owner correction).
 18. Replay creates no duplicate Telegram document.
 19. VibePublish outage/restart does not fail or duplicate the book import.
 20. No public media publication occurs.

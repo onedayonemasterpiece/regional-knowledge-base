@@ -244,6 +244,14 @@ def build_server(
     async def fetch(id: str) -> FetchOutput:
         return await backend.fetch(id, _principal())
 
+    @mcp.tool(title='Read an authorized illustration', description='Return the canonical source crop and labelled caption/model-observation metadata. Model observation is not printed evidence. No OCR or inference.', annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+    async def illustration_fetch(id: str) -> list[TextContent | ImageContent]:
+        import base64
+        from .illustrations import fetch_crop
+        metadata, data, mime = await fetch_crop(backend, _principal(), id)
+        return [TextContent(type='text', text=json.dumps(metadata, ensure_ascii=False)),
+                ImageContent(type='image', data=base64.b64encode(data).decode(), mimeType=mime)]
+
     @mcp.tool(
         title="Add or continue a book",
         description=(

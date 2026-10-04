@@ -10,6 +10,15 @@ Keep the public model-facing API small and goal-oriented:
 4. `book_pages(...)` — read-only staged page batches returned as model-visible MCP image content.
 5. `document_access(...)` — inspect/change visibility and sharing, subject to rights and role checks.
 6. `profile()` — tiny identity/profile read for clients that display connected account identity.
+7. `illustration_fetch(id)` — authorized canonical crop as ImageContent, with
+   printed caption and explicitly labelled model observation metadata. Available
+   in the full profile; Live retains its existing bounded evidence surface.
+
+`book_ingest` start metadata accepts `duplicate_policy=reuse|new_revision`.
+See [ingestion](ingestion.md) for source identity and visual review requirements.
+Chunk `fetch` includes illustration URI, source page/bbox, caption, observation,
+crop provenance, visibility/rights and a verified private mirror reference when
+present. An observation never replaces the returned printed `text`.
 
 Internal vector, FTS, object-store, crop and embedding operations are not model tools.
 

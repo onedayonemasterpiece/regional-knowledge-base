@@ -170,6 +170,13 @@ async def test_fetch_authorizes_with_user_rls_then_reads_exact_object_range():
                     "mime_type": "text/plain",
                 }],
             )
+        if request.url.path == '/rest/v1/rkb_illustrations':
+            assert request.headers['authorization']=='Bearer user-jwt'
+            return httpx.Response(200,json=[{'id':'55555555-5555-5555-5555-555555555555','document_id':'33333333-3333-3333-3333-333333333333','page_id':'44444444-4444-4444-4444-444444444444','source_region_id':'77777777-7777-7777-7777-777777777777','kind':'drawing','caption_text':'Printed caption','visual_description':'A model description','visual_description_provenance':'model_observation'}])
+        if request.url.path == '/rest/v1/rkb_pages':
+            return httpx.Response(200,json=[{'id':'44444444-4444-4444-4444-444444444444','document_id':'33333333-3333-3333-3333-333333333333','physical_page_index':0,'revision':1}])
+        if request.url.path == '/rest/v1/rkb_regions':
+            return httpx.Response(200,json=[{'id':'77777777-7777-7777-7777-777777777777','page_id':'44444444-4444-4444-4444-444444444444','kind':'figure','bbox':{'left':0,'top':0,'right':500,'bottom':500}}])
         raise AssertionError(request.url)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -194,6 +201,9 @@ async def test_fetch_authorizes_with_user_rls_then_reads_exact_object_range():
     assert calls == [
         ("/rest/v1/rkb_chunks", "Bearer user-jwt"),
         ("/rest/v1/rkb_objects", "Bearer server-role"),
+        ('/rest/v1/rkb_illustrations', 'Bearer user-jwt'),
+        ('/rest/v1/rkb_pages', 'Bearer user-jwt'),
+        ('/rest/v1/rkb_regions', 'Bearer user-jwt'),
     ]
 
 

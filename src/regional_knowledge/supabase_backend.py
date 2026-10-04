@@ -271,7 +271,7 @@ class SupabaseRestBackend(KnowledgeBackend):
         if not objects:
             raise RuntimeError("authorized text object locator is missing")
 
-        raw = await self.object_store.get_range(
+        raw = b'' if row['text_start'] == row['text_end'] else await self.object_store.get_range(
             str(objects[0]["object_key"]),
             int(row["text_start"]),
             int(row["text_end"]),
@@ -281,14 +281,13 @@ class SupabaseRestBackend(KnowledgeBackend):
         text = raw.decode("utf-8")
 
         metadata = dict(row.get("metadata") or {})
+        from .illustrations import descriptor
+        figures = [await descriptor(self, principal, str(value), row['document_id']) for value in row.get('illustration_ids') or []]
         metadata.update(
             {
                 "document_id": str(row["document_id"]),
                 "pages": [str(value) for value in row.get("page_ids") or []],
-                "illustrations": [
-                    {"illustration_id": str(value)}
-                    for value in row.get("illustration_ids") or []
-                ],
+                "illustrations": figures,
                 "footnotes": [
                     {"region_id": str(value)}
                     for value in row.get("footnote_region_ids") or []
@@ -718,7 +717,10 @@ class SupabaseRestBackend(KnowledgeBackend):
             principal=principal,
             source_file_id=file.file_id,
         )
-        if previous and previous.get("state") != "failed":
+        policy = (payload or {}).get('duplicate_policy', 'reuse')
+        if policy not in ('reuse', 'new_revision'):
+            raise ValueError('invalid duplicate_policy')
+        if previous and previous.get("state") != "failed" and policy == 'reuse':
             return self._ingestion_output(
                 previous,
                 "Existing ingestion for this attached file",
@@ -738,6 +740,7 @@ class SupabaseRestBackend(KnowledgeBackend):
 
             if (
                 previous
+                and policy == 'reuse'
                 and previous.get("state") == "failed"
                 and previous.get("document_id")
                 and previous.get("source_sha256") == source_sha256
@@ -765,9 +768,17 @@ class SupabaseRestBackend(KnowledgeBackend):
                         "p_source_sha256": source_sha256,
                         "p_source_file_id": file.file_id,
                         "p_page_count": pdf_info.page_count,
+                        "p_duplicate_policy": policy,
                     },
                 )
                 start.raise_for_status()
+                identities = start.json()
+                if identities:
+                    new_ingestion_id = str(identities[0]['ingestion_id'])
+                    document_id = str(identities[0]['document_id'])
+                    existing = await self._ingestion_row(principal=principal, ingestion_id=new_ingestion_id)
+                    if existing and existing.get('source_object_id') and existing['state'] != 'failed':
+                        return await self._ingestion_with_indexing(self._ingestion_output(existing, 'Existing exact-source document/revision reused'), principal)
 
             object_key = (
                 f"users/{principal.subject}/documents/{document_id}/"
@@ -789,10 +800,10 @@ class SupabaseRestBackend(KnowledgeBackend):
                         raise RuntimeError("existing source object hash mismatch")
                     object_id = str(existing_object["id"])
                 else:
-                    object_id = str(uuid4())
+                    object_id = str(uuid5(UUID(document_id), 'source:' + source_sha256))
                     object_write = await self.client.post(
                         f"{self.config.url.rstrip('/')}/rest/v1/rkb_objects",
-                        headers={**self._service_headers(), "Prefer": "return=minimal"},
+                        headers={**self._service_headers(), "Prefer": "resolution=ignore-duplicates,return=minimal"},
                         json={
                             "id": object_id,
                             "document_id": document_id,

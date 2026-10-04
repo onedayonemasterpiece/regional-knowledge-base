@@ -304,6 +304,8 @@ class PostgresDataClient:
                         " on conflict (document_id, grantee_user_id) "
                         "do update set role = excluded.role"
                     )
+                elif target == 'rkb_objects' and 'resolution=ignore-duplicates' in prefer:
+                    query += sql.SQL(' on conflict (document_id,object_key) do nothing')
                 await connection.execute(query, tuple(values))
         return _DbResponse([])
 
@@ -393,7 +395,7 @@ class PostgresDataClient:
         elif name == "rkb_start_ingestion":
             statement = (
                 "select * from public.rkb_start_ingestion("
-                "%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s)"
+                "%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s)"
             )
             values = (
                 UUID(str(payload["p_ingestion_id"])),
@@ -405,6 +407,7 @@ class PostgresDataClient:
                 payload["p_source_sha256"],
                 payload["p_source_file_id"],
                 payload["p_page_count"],
+                payload.get('p_duplicate_policy', 'reuse'),
             )
         elif name == "rkb_author_authority_for_names":
             statement = (

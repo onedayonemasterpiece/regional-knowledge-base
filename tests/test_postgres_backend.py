@@ -93,7 +93,7 @@ async def test_rpc_dispatch_is_lazy_for_start_ingestion(
     class Connection:
         async def execute(self, statement, values):
             assert "rkb_start_ingestion" in statement
-            assert len(values) == 9
+            assert len(values) == 10
             return Cursor()
 
     @asynccontextmanager

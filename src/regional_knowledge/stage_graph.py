@@ -35,6 +35,7 @@ class StagedRegion(BaseModel):
 
 
 class StagedPage(BaseModel):
+    excluded_figure_regions: dict[str, str] = Field(default_factory=dict, max_length=100)
     source_material: Literal["unreviewed", "preview", "full_native", "visual_reviewed"] = "unreviewed"
     source_review_note: str | None = Field(default=None, min_length=1, max_length=500)
     page_id: UUID
@@ -59,6 +60,9 @@ class StagedRelation(BaseModel):
 
 
 class StagedIllustration(BaseModel):
+    visual_description: str | None = Field(default=None, min_length=1, max_length=2000)
+    visual_description_provenance: Literal['model_observation'] = 'model_observation'
+    visual_description_language: str | None = Field(default=None, max_length=80)
     illustration_key: str
     illustration_id: UUID
     page_id: UUID
@@ -77,8 +81,8 @@ class StagedChunk(BaseModel):
     page_ids: list[UUID] = Field(min_length=1, max_length=20)
     illustration_ids: list[UUID] = Field(default_factory=list, max_length=30)
     footnote_region_ids: list[UUID] = Field(default_factory=list, max_length=50)
-    text: str = Field(min_length=1, max_length=40_000)
-    normalized_text: str = Field(min_length=1, max_length=40_000)
+    text: str = Field(default='', max_length=40_000)
+    normalized_text: str = Field(default='', max_length=40_000)
 
 
 class StagedPoiFact(BaseModel):
@@ -206,6 +210,7 @@ def compile_model_stage(
                 layout_kind=page.layout_kind,
                 source_material=page.source_material,
                 source_review_note=page.source_review_note,
+                excluded_figure_regions=page.excluded_figure_regions,
                 regions=staged_regions,
             )
         )
@@ -238,6 +243,9 @@ def compile_model_stage(
                     source_region_id=source_id,
                     bbox=source_region.bbox,
                     kind=item.kind,
+                    visual_description=item.visual_description,
+                    visual_description_provenance=item.visual_description_provenance,
+                    visual_description_language=item.visual_description_language,
                     caption_region_ids=[
                         region_ids[key] for key in item.caption_region_keys
                     ],
@@ -317,7 +325,7 @@ def compile_model_stage(
                 normalized_parts.append(f"[Footnote] {normalized}")
         text = "\n".join(source_parts).strip()
         normalized_text = "\n".join(normalized_parts).strip()
-        if not text or not normalized_text:
+        if (not text or not normalized_text) and not chunk_illustrations:
             raise ValueError(f"chunk {chunk.chunk_key} resolves to empty text")
 
         page_ids = _dedupe_preserve(
@@ -590,10 +598,19 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
                 errors.append(
                     f"illustration {iid} references unknown region {region_id}"
                 )
+        for region_id in item.caption_region_ids:
+            caption=regions.get(str(region_id))
+            if caption is not None and (caption.kind is not RegionKind.CAPTION or str(caption.page_id)!=str(item.page_id)):
+                errors.append(f'illustration caption must be a printed caption on its source page: {iid}')
         if not item.caption_region_ids:
             warnings.append(f"illustration_without_caption:{iid}")
 
     chunk_ids: set[str] = set()
+    represented = {str(item.source_region_id) for item in graph.illustrations}
+    for page in graph.pages:
+        for region in page.regions:
+            if region.kind is RegionKind.FIGURE and str(region.region_id) not in represented and not page.excluded_figure_regions.get(region.region_key, '').strip():
+                errors.append(f'figure must be staged or explicitly excluded: {region.region_id}')
     covered_regions: set[str] = set()
     for chunk in graph.chunks:
         cid = str(chunk.chunk_id)
@@ -683,6 +700,10 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
 
     if not graph.chunks:
         errors.append("no retrieval chunks staged")
+    from .search_material import graph_material
+    for chunk in graph.chunks:
+        try:graph_material(graph,chunk)
+        except (ValueError,KeyError):errors.append(f'chunk has missing or invalid visual search material: {chunk.chunk_id}')
 
     required_coverage = {
         region_id

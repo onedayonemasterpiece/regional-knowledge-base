@@ -15,6 +15,18 @@ from regional_knowledge.contracts import FetchOutput
 
 V384=[1.0]+[0.0]*383;V1024=[1.0]+[0.0]*1023
 
+@pytest.mark.asyncio
+async def test_unavailable_mirror_grant_does_not_block_automatic_vectors(graph_db,tmp_path,monkeypatch):
+    monkeypatch.setenv('RKB_VIBEPUBLISH_GRANT_FILE',str(tmp_path/'unavailable-grant.json'))
+    b,q,actor,doc,rows,calls=source_fixture(graph_db,tmp_path,n=1)
+    try:
+        result=await IndexReconciler(b,q).tick()
+        assert result['e5_written']==result['bge_submitted']==1 and result['errors']==[]
+    finally:
+        async with b.data_client._connection({'x-rkb-service':'1'}) as db:
+            await db.execute('update rkb_documents set active_revision=0 where id=%s',(doc,))
+        await b.aclose()
+
 def source_fixture(dsn,tmp_path,n=10,active=True):
     actor=Principal(subject=str(uuid4()),client_id='test',issuer='test',access_token='not-token');doc,obj,page=uuid4(),uuid4(),uuid4();raw=bytearray();chunks=[]
     with psycopg.connect(dsn,autocommit=True) as db:
