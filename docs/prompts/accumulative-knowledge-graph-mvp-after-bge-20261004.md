@@ -4,8 +4,13 @@ Date: 2026-10-04
 
 Run this **only after**:
 
-1. the DevCoveer E5 fast tier is accepted in production;
-2. the BGE-M3 Kaggle multilingual retrieval acceptance is complete.
+1. the DevCoveer E5 fast tier is accepted in production **and merged into canonical main**;
+2. the BGE-M3 Kaggle multilingual retrieval acceptance is complete **and merged into canonical main**;
+3. production runtime is read back from that integrated main;
+4. the source-completeness transport fix needed for future ChatGPT-led reimport is integrated or explicitly blocked.
+
+If PR #27/#28 are still open/stacked or production is ahead of main, stop and run:
+`docs/prompts/reconcile-e5-bge-main-before-graph-20261004.md`.
 
 Read first:
 
