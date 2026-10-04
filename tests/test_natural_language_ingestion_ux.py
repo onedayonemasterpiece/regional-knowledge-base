@@ -484,3 +484,31 @@ async def test_status_guides_interrupted_finalization_resume_or_wait(graph_db, t
         assert (await status()).next_action == 'resume_finalize'
     finally:
         await b.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reprocess_explicitly_selected_historical_duplicate_keeps_roots_separate(graph_db, tmp_path, monkeypatch):
+    b, doc, owner, _, control, reprocess = await archived_book(graph_db, tmp_path, monkeypatch)
+    sibling = uuid4()
+    try:
+        with psycopg.connect(graph_db, autocommit=True) as db:
+            migration = (Path(__file__).parents[1] / 'sql/018_selected_source_revision.sql').read_text()
+            db.execute(migration)
+            db.execute(migration)
+            db.execute('update rkb_documents set source_identity_primary=false where id=%s', (doc,))
+            db.execute("insert into rkb_documents(id,owner_user_id,title,source_sha256,page_count,source_identity_primary,active_revision) select %s,owner_user_id,'Historical duplicate control',source_sha256,page_count,false,1 from rkb_documents where id=%s", (sibling, doc))
+        result = await reprocess()
+        assert result.document_id == str(doc)
+        with pytest.raises(psycopg.errors.RaiseException, match='historical_source_identity_ambiguous'):
+            await b.client.post(b.config.url+'/rest/v1/rpc/rkb_start_ingestion',
+                headers=b._headers(owner), json={'p_ingestion_id': str(uuid4()),
+                'p_document_id': str(uuid4()), 'p_title': 'Unselected attachment',
+                'p_source_sha256': hashlib.sha256(control['data']).hexdigest(),
+                'p_source_file_id': 'unselected', 'p_page_count': 1,
+                'p_duplicate_policy': 'new_revision'})
+        with psycopg.connect(graph_db) as db:
+            assert db.execute('select document_id,staged_revision from rkb_ingestion_jobs where id=%s', (UUID(result.ingestion_id),)).fetchone() == (doc, 2)
+            assert db.execute('select active_revision from rkb_documents where id=%s', (sibling,)).fetchone()[0] == 1
+            assert db.execute('select count(*) from rkb_documents where owner_user_id=%s', (UUID(owner.subject),)).fetchone()[0] == 2
+    finally:
+        await b.aclose()

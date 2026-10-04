@@ -73,6 +73,9 @@ that verified archive is genuinely unavailable. Multiple plausible catalog match
 a user-facing disambiguation case: show title, author and year; hidden IDs are never
 a user requirement. A pending archive is a recovery/wait blocker, not an immediate
 request to upload the book again.
+An explicitly selected owned logical document remains usable when historical roots
+share the same source SHA; the roots stay separate. An attached-source start without
+that selection continues to fail closed on ambiguous historical identities.
 
 ### Internal resumable workflow
 
