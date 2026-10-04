@@ -78,7 +78,7 @@ class SourceArchive:
                 if not operation:
                     data=await self.backend.object_store.get_bytes(doc['object_key'])
                     if hashlib.sha256(data).hexdigest()!=doc['source_sha256']:raise ValueError('source_integrity_mismatch')
-                    key=f"rkb:source:{self.client.owner}:{doc['id']}:{doc['source_sha256']}"
+                    key="rkb:source:"+hashlib.sha256(f"{self.client.owner}:{doc['id']}:{doc['source_sha256']}".encode()).hexdigest()
                     upload=await self.client.request('POST',self.client.issuer+'/v1/assets',
                         headers={'Content-Type':doc['mime_type'],'Idempotency-Key':key+':asset'},content=data)
                     receipt=await self.client.call('vibepublish_media_store',{'request_key':key,'command':{

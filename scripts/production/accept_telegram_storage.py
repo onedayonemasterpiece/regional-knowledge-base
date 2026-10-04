@@ -75,7 +75,7 @@ async def run(args):
                 async with backend.data_client._connection({'x-rkb-service':'1'}) as db:
                     first=await(await db.execute('select staged_graph_object_id from rkb_ingestion_jobs where id=%s',(UUID(control['ingestion_id']),))).fetchone()
                 page['source_review_note']+=' Entire single page accounted for.'
-                await call('book_ingest',{'command':'stage','ingestion_id':control['ingestion_id'],'pages':[page]})
+                await call('book_ingest',{'command':'stage','ingestion_id':control['ingestion_id'],'pages':[page],'chunks':[{'chunk_key':'control','title':'Synthetic blue circle archive evidence','region_refs':[{'page_id':pid,'region_key':'heading'},{'page_id':pid,'region_key':'caption'}],'illustration_refs':[{'page_id':pid,'illustration_key':'circle'}]}]})
                 assert (await call('book_ingest',{'command':'validate','ingestion_id':control['ingestion_id']}))['state']=='ready'
                 await call('book_ingest',{'command':'finalize','ingestion_id':control['ingestion_id']})
                 for _ in range(90):

@@ -63,7 +63,10 @@ class VibePublishClient:
         result = body['result']
         data = result.get('structuredContent') or json.loads(result['content'][0]['text'])
         if result.get('isError') or 'error' in data:
-            raise RuntimeError('VibePublish tool error')
+            code=data.get('error',{}).get('code','tool_failed')
+            import logging
+            logging.getLogger(__name__).warning(json.dumps({'event':'vibepublish_tool_failed','tool':name,'code':code}))
+            raise RuntimeError('VibePublish tool error: '+code)
         return data
 
     async def receipt(self, operation):
