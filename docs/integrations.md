@@ -59,6 +59,15 @@ VibePublish owns:
 
 The VibePublish media-store origin metadata binds an entry back to a stable Knowledge resource without granting Knowledge access.
 
+For illustration mirroring, use the illustration reference and a stable request
+key based on owner/document/revision/illustration identity. Do not compare source
+and delivered image SHA values or require image-similarity verification before
+accepting the mirror. Compression or cropping must not become a delivery gate.
+Optional crop SHA is technical provenance only. If visual deduplication is needed
+later, reuse the existing perceptual-image tools from other projects; exact-byte
+SHA does not establish visual sameness and ordinary pHash alone does not cover
+partial crops. Exact PDF source deduplication remains a separate SHA-based rule.
+
 ## Cross-service references
 
 Use typed stable opaque references, for example:

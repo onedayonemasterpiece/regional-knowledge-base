@@ -157,11 +157,16 @@ VibePublish/Telegram is only a secondary durable private media mirror. Use
 ~~~text
 origin.system = regional_knowledge
 origin.ref = knowledge://illustrations/<id>
-origin.sha256 = <crop sha256>
+origin.sha256 = <optional crop sha256; provenance only>
 ~~~
 
 Persist `vibepublish_entry_ref` only after verified VibePublish/provider
 readback.
+
+Owner correction (2026-10-04): mirror identity uses the illustration resource and
+request key, without comparing image SHA or requiring visual matching. Verify
+native message, private topic and DOCUMENT delivery. Preserve crop hashes only
+as technical provenance; do not build a new image-deduplication pipeline here.
 
 Mirroring is asynchronous and must never block book activation.
 
