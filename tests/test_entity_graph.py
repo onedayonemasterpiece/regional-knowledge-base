@@ -49,3 +49,17 @@ def test_poi_read_only_resolution_preserves_ambiguity(tmp_path):
 
 def test_bounded_bundle():
     with pytest.raises(ValidationError):GraphBundle(entities=[node(str(i)) for i in range(33)])
+
+@pytest.mark.asyncio
+async def test_related_reuses_backend_and_canonical_alias_contract():
+    from regional_knowledge.graph_service import GraphService
+    from regional_knowledge.contracts import SearchOutput
+    class Backend:
+        data_client=None
+        async def search(self,query,principal,**kw):self.called=(query,kw);return SearchOutput(results=[],mode='lexical_degraded')
+    class Resolver:
+        def version(self,ref):return {'names':['Modern','Old German'],'version':'1'}
+    b=Backend();g=GraphService(b,Resolver())
+    async def read(*args):return {'entity':{'external_ref':'streetstory://poi/'+str(uuid4()),'canonical_label':'Modern'},'aliases':[]}
+    g.read=read;await g.related(None,str(uuid4()),'Current name query',100)
+    assert b.called==('Current name query',{'match_count':20,'aliases':[{'name':'Modern','kind':'historical'},{'name':'Old German','kind':'historical'}]})

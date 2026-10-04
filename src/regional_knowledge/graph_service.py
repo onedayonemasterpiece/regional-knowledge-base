@@ -138,5 +138,11 @@ class GraphService:
     async def related(self,principal,nid,query=None,limit=8):
         graph=await self.read(principal,nid,20)
         names=[{'name':a['value'],'kind':a['alias_type']} for a in graph['aliases']][:20]
+        if graph['entity']['external_ref']:
+            try:
+                canonical=await asyncio.to_thread(self.resolver.version,graph['entity']['external_ref'])
+                if canonical:names += [{'name':name,'kind':'historical'} for name in canonical['names']]
+            except Exception as error:log.info(json.dumps({'event':'graph_related_poi_alias_deferred','error_type':type(error).__name__}))
+        names=list({a['name']:a for a in names}.values())[:20]
         result=await self.backend.search(query or graph['entity']['canonical_label'],principal,match_count=max(1,min(limit,20)),aliases=names)
         return {'graph':graph,'retrieval':result.model_dump(mode='json')}
