@@ -105,6 +105,7 @@ class Illustration(BaseModel):
 
 
 class StartMetadataInput(BaseModel):
+    duplicate_policy: Literal['reuse', 'new_revision'] = 'reuse'
     title: str | None = Field(default=None, max_length=500)
     authors: list[str] = Field(default_factory=list, max_length=50)
     publication_year: int | None = Field(default=None, ge=1, le=3000)
@@ -140,6 +141,9 @@ class StageRelationInput(BaseModel):
 
 
 class StageIllustrationInput(BaseModel):
+    visual_description: str | None = Field(default=None, min_length=1, max_length=2000)
+    visual_description_provenance: Literal['model_observation'] = 'model_observation'
+    visual_description_language: str | None = Field(default=None, max_length=80)
     illustration_key: str = Field(
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$"
     )
@@ -152,6 +156,7 @@ class StageIllustrationInput(BaseModel):
 
 
 class StagePageInput(BaseModel):
+    excluded_figure_regions: dict[str, str] = Field(default_factory=dict, max_length=100)
     source_material: Literal["unreviewed", "preview", "full_native", "visual_reviewed"] = "unreviewed"
     source_review_note: str | None = Field(default=None, min_length=1, max_length=500)
     page_id: str = Field(min_length=36, max_length=36)
@@ -187,10 +192,13 @@ class StagePageInput(BaseModel):
             source = by_key.get(illustration.source_region_key)
             if source is None or source.kind is not RegionKind.FIGURE:
                 raise ValueError("illustration source_region_key must be a figure region")
-            if any(key not in known for key in illustration.caption_region_keys):
-                raise ValueError("caption_region_keys contains an unknown region")
+            if any(key not in known or by_key[key].kind is not RegionKind.CAPTION for key in illustration.caption_region_keys):
+                raise ValueError("caption_region_keys must reference printed caption regions")
             if any(key not in known for key in illustration.nearby_region_keys):
                 raise ValueError("nearby_region_keys contains an unknown region")
+        for key, reason in self.excluded_figure_regions.items():
+            if key not in known or by_key[key].kind is not RegionKind.FIGURE or not reason.strip() or len(reason)>500:
+                raise ValueError('figure exclusion requires a figure region and bounded reason')
         return self
 
 

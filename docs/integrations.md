@@ -68,6 +68,14 @@ later, reuse the existing perceptual-image tools from other projects; exact-byte
 SHA does not establish visual sameness and ordinary pHash alone does not cover
 partial crops. Exact PDF source deduplication remains a separate SHA-based rule.
 
+The existing indexing owner also reconciles active private illustrations through
+VibePublish binary asset ingress and media-store put/status/search/get. It persists
+native operation IDs and verified entry references; failed provider/grant reads
+leave missing mirrors recoverable without holding activation or vector indexing.
+Only the RKB owner named in the private resource-specific OAuth grant is eligible.
+Destination alias/topic stay in that runtime grant, and token rotation is written
+atomically. RKB owns no Telegram session or second provider limiter.
+
 ## Cross-service references
 
 Use typed stable opaque references, for example:

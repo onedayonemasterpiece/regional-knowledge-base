@@ -713,13 +713,14 @@ async def finalize_ingestion(
     projection = bytearray()
     chunk_rows: list[dict[str, Any]] = []
     normalized_texts: list[str] = []
+    from .search_material import graph_material
     for chunk in graph.chunks:
         raw = chunk.text.encode("utf-8")
         start = len(projection)
         projection.extend(raw)
         end = len(projection)
         projection.extend(b"\n\n")
-        normalized = chunk.normalized_text or chunk.text
+        normalized, material_sha = graph_material(graph, chunk)
         normalized_texts.append(normalized)
         chunk_rows.append(
             {
@@ -735,6 +736,8 @@ async def finalize_ingestion(
                 "text_start": start,
                 "text_end": end,
                 "text_sha256": hashlib.sha256(raw).hexdigest(),
+                "search_material": normalized,
+                "search_material_sha256": material_sha,
                 "title": chunk.title,
                 "normalized_text": normalized,
                 "metadata": {"chunk_key": chunk.chunk_key},
@@ -876,6 +879,10 @@ async def finalize_ingestion(
                         "source_region_id": str(item.source_region_id),
                         "crop_object_id": crop_object_id,
                         "kind": item.kind,
+                        "visual_description": item.visual_description,
+                        "visual_description_provenance": item.visual_description_provenance,
+                        "visual_description_language": item.visual_description_language,
+                        "caption_text": '\n'.join(region.source_text for page in graph.pages for rid in item.caption_region_ids for region in page.regions if region.region_id == rid),
                         "caption_region_ids": [
                             str(value) for value in item.caption_region_ids
                         ],
