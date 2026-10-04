@@ -12,6 +12,9 @@ from uuid import uuid4, uuid5
 
 import httpx
 
+from .entity_graph import GraphBundle,validate_staged_bundle,digest
+from .graph_service import GraphService
+
 from .contracts import (
     BookIngestOutput,
     Principal,
@@ -193,6 +196,7 @@ async def stage_ingestion(
     if payload is None:
         raise ValueError("stage pages/chunks are required")
 
+    entity_candidates = GraphBundle.model_validate(payload["entity_candidates"]) if payload.get("entity_candidates") is not None else None
     raw_pages = payload.get("pages", [])
     raw_chunks = payload.get("chunks", [])
     raw_poi_facts = payload.get("poi_facts", [])
@@ -222,7 +226,7 @@ async def stage_ingestion(
         raise ValueError("stage accepts at most 100 POI facts per call")
     if len(poi_media_links) > 100:
         raise ValueError("stage accepts at most 100 POI media links per call")
-    if not pages and not chunks and not poi_facts and not poi_media_links:
+    if not pages and not chunks and not poi_facts and not poi_media_links and not entity_candidates:
         raise ValueError(
             "stage requires a page, chunk, POI fact or POI media link"
         )
@@ -239,6 +243,10 @@ async def stage_ingestion(
         poi_media_links=poi_media_links,
     )
     merged = merge_stage(graph, compiled)
+    if entity_candidates is not None:
+        validate_staged_bundle(entity_candidates,merged)
+        if digest(entity_candidates.model_dump(mode="json")) not in {digest(b.model_dump(mode="json")) for b in merged.entity_candidates}:
+            merged = StagedGraph.model_validate({**merged.model_dump(mode="json"),"entity_candidates":[*[b.model_dump(mode="json") for b in merged.entity_candidates],entity_candidates.model_dump(mode="json")]})
     updated = await _store_graph(
         service,
         principal,
@@ -985,6 +993,11 @@ async def finalize_ingestion(
             illustration_rows=illustration_rows,
         )
     )
+
+    if graph.entity_candidates:
+        semantic = GraphService(service)
+        for bundle in graph.entity_candidates:
+            await semantic.stage(principal,document_id,revision,bundle,staged_texts={str(c.chunk_id):c.text for c in graph.chunks})
 
     activation = await service.client.post(
         f"{service.config.url.rstrip('/')}/rest/v1/rpc/rkb_activate_revision",
