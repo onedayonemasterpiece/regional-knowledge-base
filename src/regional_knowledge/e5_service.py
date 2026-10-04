@@ -124,7 +124,7 @@ class LocalService:
                 texts = data.get('texts');role = data.get('role')
                 if data.get('space')!=SPACE:raise ValueError('embedding_space_mismatch')
                 if role not in ('query','passage') or not isinstance(texts,list) or not texts or len(texts)>(1 if role=='query' else 4):raise ValueError('role_batch_contract')
-                if any(not isinstance(t,str) or not t.strip() or len(t)>8000 for t in texts):raise ValueError('text_size')
+                if any(not isinstance(t,str) or not t.strip() or len(t)>(8000 if role=='query' else 40000) for t in texts):raise ValueError('text_size')
                 payload = await self.encoder.submit(texts,role)
             else:status,payload = 404,{'error':'not_found'}
         except QueueFull:status,payload = 429,{'error':'encoder_queue_full'}

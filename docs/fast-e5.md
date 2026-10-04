@@ -43,8 +43,10 @@ receipt and legacy identity. `backfill_e5.py` reads active authorized source
 projections, checks exact hashes, serializes operator runs with a host lock, writes
 idempotently per group, rechecks active revision/source in the write transaction,
 and verifies full valid active coverage. Rerunning unchanged input skips inference
-and inserts nothing. Newly finalized chunks keep legacy embedding NULL and record
-`fast_e5_backfill_required`; run backfill to populate their separate fast space.
+and inserts nothing. Newly finalized chunks keep legacy embedding NULL. With production
+`RKB_AUTO_INDEX_ENABLED=1`, activation automatically wakes the index reconciler;
+`automatic_indexing_pending` clears from live status when both spaces are complete.
+Normal imports need no operator backfill. See [automatic indexing](operations/automatic-indexing.md).
 The MCP ingestion process never stores a query vector in legacy passage storage.
 
 Operations: `systemctl --user status/restart regional-knowledge-e5.service`;

@@ -20,14 +20,13 @@ FP32 CLS pooling and L2 normalization, batch 1, four intra-op/one inter-op threa
 Long chunks can lose tail information; this contract does not claim the model's
 full 8192-token context. Source SHA256 and active revision must match at ranking.
 
-Run `scripts/production/backfill_bge.py <managed-private-report>` with the
-production operator environment. It first selects chunks through the ordinary
-actor bridge, binds object locators to authorized chunk/document identities,
-checks original bytes and rechecks authorization/revision before upsert. A host
-lock prevents duplicate backfills; actor/space/chunk/revision/hash job keys make
-restart idempotent. Rerun after new source revisions. Never send unauthorized
-corpora to Kaggle. Other sources can remain unindexed; no corpus completeness is
-inferred from an embedding-row count.
+Normal imports automatically enqueue/install BGE document vectors after activation.
+The [automatic indexing reconciler](automatic-indexing.md) uses active missing
+vectors and this existing durable queue; no user/operator backfill is required.
+`backfill_bge.py` remains an explicit maintenance tool, not an import step.
+Owner RLS, source-byte hash, active revision, model revision and exact space are
+rechecked before installation. Counts describe indexed chunks, not source-book
+completeness.
 
 ## Queue and services
 
@@ -45,7 +44,8 @@ Run credentials/private launch sources stay in runtime state, not Git or reports
 ranking (`bge_lexical`, `e5_bge_lexical`, `bge` or `e5_bge`). Vectors remain in
 separate 384/1024-d spaces. Fusion uses RRF with k=60 and independent branch depth
 100; no cross-model cosine arithmetic. Disable the flag to serve E5 immediately
-while investigating BGE. Reindex before relying on BGE for newly imported data.
+while investigating BGE. Missing vectors are reconciled automatically; search
+uses E5/lexical until the authorized active BGE coverage is complete.
 
 On cold demand, search returns normal E5 evidence plus `main_state=starting` and
 an actor-bound `main_job_id`. Reissue the same query with that ID to obtain its

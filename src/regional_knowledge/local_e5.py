@@ -31,4 +31,11 @@ class LocalE5Embedder:
             return {'configured':True,**{k:data.get(k) for k in ('ready','space','queue_depth','busy','queue_capacity')},'retrieval_mode':'fast_e5' if data.get('ready') and data.get('space')==SPACE else 'lexical_only'}
         except (httpx.HTTPError,ValueError):return {'configured':True,'ready':False,'space':SPACE,'retrieval_mode':'lexical_only'}
 
+    async def embed_passages(self,texts):
+        if not 1<=len(texts)<=4:raise ValueError('E5 passage batch1..4 required')
+        response=await self.client.post('/embed',json={'space':SPACE,'role':'passage','texts':texts})
+        response.raise_for_status();data=response.json()
+        if data.get('space')!=SPACE or len(data.get('vectors',[]))!=len(texts):raise ValueError('local E5 passage contract')
+        return [validate_vector(v) for v in data['vectors']]
+
     async def aclose(self):await self.client.aclose()

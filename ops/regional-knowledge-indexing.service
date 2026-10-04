@@ -1,0 +1,15 @@
+[Unit]
+Description=Regional Knowledge automatic active E5/BGE indexing
+After=network-online.target regional-knowledge-e5.service regional-knowledge-base.service
+[Service]
+Type=simple
+EnvironmentFile=/home/dev/.local/state/regional-knowledge-base/service.env
+ExecStart=/usr/bin/env RKB_DB_POOL_MAX=2 /home/dev/projects/regional-knowledge-base/.venv/bin/python -m regional_knowledge.indexing
+Restart=on-failure
+RestartSec=5
+MemoryMax=512M
+CPUQuota=50%
+UMask=0077
+NoNewPrivileges=true
+[Install]
+WantedBy=default.target

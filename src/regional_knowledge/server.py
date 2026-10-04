@@ -334,6 +334,11 @@ def build_server(
     async def graph_related(entity_id:str,query:str|None=None,limit:int=8)->dict[str,Any]:
         return await GraphService(backend).related(_principal(),entity_id,query,limit)
 
+    @mcp.tool(title="Active source indexing status",description="Authorized active chunk/vector counts and automatic indexing/readiness state. Optional document scope; no private titles, text or other actors' inventory.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+    async def indexing_status(document_id:str|None=None)->dict[str,Any]:
+        from .index_readiness import status
+        return (await status(backend,_principal(),document_id)).model_dump(mode='json')
+
     @mcp.tool(
         title="Read staged book pages",
         description=(

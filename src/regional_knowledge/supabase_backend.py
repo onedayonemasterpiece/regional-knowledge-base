@@ -168,15 +168,31 @@ class SupabaseRestBackend(KnowledgeBackend):
             return SearchOutput(results=[], mode="lexical_degraded")
         if not _fast_only and os.getenv('RKB_BGE_ENABLED')=='1':
             from .multilingual_retrieval import main_search
-            return await main_search(self,query,principal,match_count=match_count,main_job_id=main_job_id,aliases=aliases)
+            from .index_readiness import enabled,counts,status
+            if enabled():
+                coverage=await counts(self,principal)
+                if coverage['bge_ready']<coverage['active_chunks']:
+                    fast=await self.search(query,principal,match_count=match_count,_fast_only=True)
+                    return fast.model_copy(update={'main_state':'pending'})
+            result=await main_search(self,query,principal,match_count=match_count,main_job_id=main_job_id,aliases=aliases)
+            if enabled():
+                readiness=await status(self,principal)
+                if readiness.bge_missing and result.main_state=='ready':
+                    fast=await self.search(query,principal,match_count=match_count,_fast_only=True)
+                    return fast.model_copy(update={'main_state':'pending'})
+                result=result.model_copy(update={'indexing':readiness})
+            return result
 
         vector: list[float] | None = None
-        try:
-            vector = await self.embedder.embed(query)
-        except (httpx.HTTPError, TimeoutError, RuntimeError, ValueError):
-            # Search availability is more important than vector-only perfection:
-            # the SQL RPC accepts NULL and performs RLS-protected lexical retrieval.
-            vector = None
+        from .index_readiness import enabled,counts,status
+        coverage=await counts(self,principal) if enabled() else None
+        if coverage is None or coverage['e5_ready']==coverage['active_chunks']:
+            try:
+                vector = await self.embedder.embed(query)
+            except (httpx.HTTPError, TimeoutError, RuntimeError, ValueError):
+                # Search availability is more important than vector-only perfection:
+                # the SQL RPC accepts NULL and performs RLS-protected lexical retrieval.
+                vector = None
 
         is_e5 = isinstance(self.embedder, LocalE5Embedder)
         if is_e5 and vector is not None:
@@ -199,9 +215,12 @@ class SupabaseRestBackend(KnowledgeBackend):
         rows = response.json()
         timings = {**(encoding_timings.get() if is_e5 else {}), "database_seconds": time.monotonic()-database_start, "search_seconds": time.monotonic()-started}
         retrieval_mode = rows[0].get("retrieval_mode", "fast_e5" if is_e5 and vector is not None else "lexical_only") if rows else ("fast_e5" if is_e5 and vector is not None else "lexical_only")
+        readiness=await status(self,principal) if enabled() else None
+        if readiness and readiness.e5_missing:
+            retrieval_mode='lexical_only';vector=None
         logger.info(json.dumps({"event":"retrieval_served","retrieval_mode":retrieval_mode,"results":len(rows),"embedding_space":self.embedder.embedding_space if vector is not None else None,**timings}))
         return SearchOutput(
-            retrieval_mode=retrieval_mode, timings=timings,
+            retrieval_mode=retrieval_mode, timings=timings,indexing=readiness,
             results=[
                 SearchResult(
                     id=str(row["chunk_id"]),
@@ -297,12 +316,12 @@ class SupabaseRestBackend(KnowledgeBackend):
         found = await self.search(query, principal, **({'main_job_id': main_job_id} if main_job_id else {}))
         selected = found.results[:limit]
         if not selected:
-            return EvidenceSearchOutput(evidence=[], mode=found.mode, retrieval_mode=found.retrieval_mode, main_state=found.main_state, main_job_id=found.main_job_id, timings={**found.timings,"hydration_seconds":0,"total_seconds":time.monotonic()-started})
+            return EvidenceSearchOutput(evidence=[], mode=found.mode, retrieval_mode=found.retrieval_mode, main_state=found.main_state, main_job_id=found.main_job_id, indexing=found.indexing, timings={**found.timings,"hydration_seconds":0,"total_seconds":time.monotonic()-started})
         hydration_start = time.monotonic()
         evidence = await asyncio.gather(
             *(self.fetch(item.id, principal) for item in selected)
         )
-        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode, retrieval_mode=found.retrieval_mode, main_state=found.main_state, main_job_id=found.main_job_id, timings={**found.timings,"hydration_seconds":time.monotonic()-hydration_start,"total_seconds":time.monotonic()-started})
+        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode, retrieval_mode=found.retrieval_mode, main_state=found.main_state, main_job_id=found.main_job_id, indexing=found.indexing, timings={**found.timings,"hydration_seconds":time.monotonic()-hydration_start,"total_seconds":time.monotonic()-started})
 
     async def document_access(
         self,
@@ -620,6 +639,14 @@ class SupabaseRestBackend(KnowledgeBackend):
         language = str(raw_language).strip()[:80] if raw_language else None
         return title, authors, publication_year, language
 
+    async def _ingestion_with_indexing(self,output,principal):
+        from .index_readiness import enabled,status
+        if not enabled() or output.state!='finalized' or not output.document_id:return output
+        readiness=await status(self,principal,output.document_id)
+        warnings=[w for w in output.warnings if w not in ('fast_e5_backfill_required','automatic_indexing_pending')]
+        if readiness.e5_missing or readiness.bge_missing:warnings.append('automatic_indexing_pending')
+        return output.model_copy(update={'indexing':readiness,'warnings':warnings})
+
     async def book_ingest(
         self,
         *,
@@ -649,16 +676,17 @@ class SupabaseRestBackend(KnowledgeBackend):
                         "Finalization is paused after an interruption or service "
                         "restart; call finalize once to resume."
                     )
-            return self._ingestion_output(row, message)
+            return await self._ingestion_with_indexing(self._ingestion_output(row, message),principal)
 
         if command in {"stage", "validate", "finalize"}:
             if not ingestion_id:
                 raise ValueError(f"ingestion_id is required for {command}")
             if command == "finalize":
-                return await self._start_or_resume_finalize(
+                result=await self._start_or_resume_finalize(
                     principal,
                     ingestion_id,
                 )
+                return await self._ingestion_with_indexing(result,principal)
             from .stage_service import stage_ingestion, validate_ingestion
 
             if command == "stage":
@@ -913,6 +941,7 @@ def _first_env(*names: str) -> str:
 
 def _embedder_from_env() -> Embedder:
     fast = os.getenv("RKB_FAST_E5_ENABLED", "0")
+    if os.getenv('RKB_AUTO_INDEX_ENABLED')=='1' and fast!='1':raise RuntimeError('automatic indexing requires local E5; external provider fallback forbidden')
     if fast == "1":
         return LocalE5Embedder(os.getenv("RKB_FAST_E5_ENDPOINT", "http://127.0.0.1:8767"))
     if fast not in {"0", ""}:
