@@ -313,8 +313,9 @@ def build_server(
         )
 
     @mcp.tool(title="Stage evidence-backed entity graph", description="Submit bounded model-authored graph candidates on an owned active document, or add a sourced alias to one owned entity. No automatic identity merge. Exact source chunk/page/region evidence required.", annotations=ToolAnnotations(read_only_hint=False,open_world_hint=False))
-    async def graph_stage(document_id:str|None=None,revision:int|None=None,candidates:GraphBundle|None=None,entity_id:str|None=None,alias:GraphAlias|None=None)->dict[str,Any]:
+    async def graph_stage(document_id:str|None=None,revision:int|None=None,candidates:GraphBundle|None=None,entity_id:str|None=None,alias:GraphAlias|None=None,poi_discovery_ref:str|None=None)->dict[str,Any]:
         service=GraphService(backend);principal=_principal()
+        if poi_discovery_ref is not None:return await service.discover_poi(principal,poi_discovery_ref)
         if alias is not None and entity_id is not None:
             return await service.add_alias(principal,entity_id,alias)
         if candidates is None or document_id is None or revision is None:raise ValueError("document/revision/candidates or entity/alias required")
@@ -324,7 +325,9 @@ def build_server(
         return await service.stage(principal,document_id,revision,candidates)
 
     @mcp.tool(title="Read one evidence-backed graph entity",description="One entity, authorized aliases/mentions and at most 20 one-hop relations with exact source evidence. No recursive traversal or graph dump.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
-    async def graph_fetch(entity_id:str,limit:int=20)->dict[str,Any]:
+    async def graph_fetch(entity_id:str|None=None,limit:int=20,discovery_job_id:str|None=None)->dict[str,Any]:
+        if discovery_job_id is not None:return await GraphService(backend).job_read(_principal(),discovery_job_id,limit)
+        if entity_id is None:raise ValueError("entity or discovery job required")
         return await GraphService(backend).read(_principal(),entity_id,limit)
 
     @mcp.tool(title="Find related entity evidence",description="One authorized entity context and bounded related evidence through the existing E5/BGE/lexical retrieval. Hits are identity candidates, not facts.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))

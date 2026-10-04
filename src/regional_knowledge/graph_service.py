@@ -127,6 +127,26 @@ class GraphService:
             jid=await self.enqueue(db,principal.subject,nid,{'kind':'entity','version':digest(a.model_dump(mode='json'))})
         return {'job_id':jid,'state':'candidate_discovery'}
 
+    async def discover_poi(self,principal,external_ref):
+        if not external_ref.startswith('streetstory://poi/'):raise ValueError('canonical Street Story ref required')
+        UUID(external_ref.removeprefix('streetstory://poi/'))
+        canonical=await asyncio.to_thread(self.resolver.version,external_ref)
+        if not canonical:raise LookupError('canonical POI not found')
+        async with self.connection(principal) as db:
+            jid=await self.enqueue(db,principal.subject,None,{'kind':'poi','external_ref':external_ref,'version':canonical['version'],'names':canonical['names']})
+        return {'job_id':jid,'state':'candidate_discovery'}
+
+    async def job_read(self,principal,jid,limit=20):
+        async with self.connection(principal) as db:
+            job=await(await db.execute('select id,state,error_code,payload from rkb_graph_discovery_jobs where id=%s',(UUID(str(jid)),))).fetchone()
+            if not job:raise LookupError('discovery job not found')
+            candidates=[]
+            for candidate in job['payload'].get('candidates',[])[:max(1,min(limit,20))]:
+                e=candidate['evidence']
+                row=await(await db.execute('select c.id from rkb_chunks c join rkb_documents d on d.id=c.document_id where c.id=%s and c.revision=d.active_revision',(UUID(e['chunk_id']),))).fetchone()
+                if row:candidates.append(candidate)
+        return {'job_id':job['id'],'state':job['state'],'error_code':job['error_code'],'candidates':candidates,'automatic_merges':0}
+
     async def read(self,principal,nid,limit=20):
         nid=UUID(str(nid));limit=max(1,min(int(limit),20))
         async with self.connection(principal) as db:
@@ -140,6 +160,11 @@ class GraphService:
              from rkb_entity_relations e join rkb_entities n on n.id=case when e.source_id=%s then e.target_id else e.source_id end
              where (e.source_id=%s or e.target_id=%s) and rkb_graph_active(e.document_id,e.revision) and rkb_graph_active(n.document_id,n.revision)
              order by e.id limit %s''',(nid,nid,nid,limit+1))).fetchall()
+        if node['external_ref']:
+            try:
+                identity=await asyncio.to_thread(self.resolver.version,node['external_ref'])
+                node['external_identity_state']=identity.get('identity_state','candidate') if identity else 'unavailable'
+            except Exception:node['external_identity_state']='unavailable'
         return {'entity':node,'aliases':[{**a,'state':'candidate'} for a in aliases],'mentions':mentions,'neighbors':edges[:limit],'truncated':len(edges)>limit,'max_hops':1,'discovery_jobs':jobs}
 
     async def related(self,principal,nid,query=None,limit=8):

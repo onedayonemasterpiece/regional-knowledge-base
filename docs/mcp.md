@@ -167,3 +167,11 @@ return a pending main job in its retrieval envelope.
 
 Live exposes no graph-write or traversal tools. Private source existence and
 relations stay evidence-RLS scoped even when a referenced canonical POI is public.
+
+`graph_stage(poi_discovery_ref="streetstory://poi/<uuid>")` schedules a canonical
+POI/version discovery request even before that POI has a graph evidence seed.
+Names/version are verified through Street Story's identity projection; callers
+cannot inject a new canonical alias. `graph_fetch(discovery_job_id=...)` returns
+at most 20 still-authorized source candidates for the requesting actor. No
+entity/fact is automatically materialized from these hits. A later ChatGPT
+review may stage their exact evidence through the normal contract.

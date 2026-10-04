@@ -34,9 +34,15 @@ class GraphDiscoveryWorker:
                 return False
         return True
     async def entity(self,job,actor):
-        try:graph=await self.graph.read(actor,job['entity_id'],20)
+        try:
+            graph=await self.graph.read(actor,job['entity_id'],20) if job['entity_id'] else {'entity':{'canonical_label':job['payload']['names'][0]},'aliases':[]}
         except LookupError:return # Revoked/replaced source: no authorized projection.
         names=list(dict.fromkeys([graph['entity']['canonical_label'],*[a['value'] for a in graph['aliases']],*job['payload'].get('names',[])]))[:20]
+        if graph['entity'].get('external_ref'):
+            try:
+                canonical=await asyncio.to_thread(self.graph.resolver.version,graph['entity']['external_ref'])
+                if canonical:names=list(dict.fromkeys([*names,*canonical['names']]))[:20]
+            except Exception as error:log.info(json.dumps({'event':'graph_discovery_poi_alias_deferred','error_type':type(error).__name__}))
         aliases=[{'name':n,'kind':'historical'} for n in names]
         exact=await self.backend.client.post(self.backend.config.url.rstrip('/')+'/rest/v1/rpc/rkb_multilingual_rankings',headers=self.backend._headers(actor),json={'query_text':names[0],'bge_vector':None,'bge_space':None,'e5_vector':None,'e5_space':None,'aliases':aliases,'depth':100})
         exact.raise_for_status();signals={}
@@ -57,7 +63,7 @@ class GraphDiscoveryWorker:
         async with self.graph.connection(actor) as db:
             rows=await(await db.execute('''select c.id,c.document_id,c.revision,c.page_ids,c.region_ids from rkb_chunks c join rkb_documents d on d.id=c.document_id
               where c.id=any(%s::uuid[]) and c.revision=d.active_revision and (%s::uuid is null or c.document_id=%s) and (%s::bigint is null or c.revision=%s)''',(ids,job['document_id'],job['document_id'],job['revision'],job['revision']))).fetchall()
-        written=0
+        written=0;poi_candidates=[]
         for row in rows:
             if not row['region_ids'] or not row['page_ids']:continue
             text=(await self.backend.fetch(str(row['id']),actor)).text
@@ -80,9 +86,17 @@ class GraphDiscoveryWorker:
             if not quote or quote not in text:continue
             async with self.graph.connection(actor) as db:
                 e=GraphEvidence(chunk_id=row['id'],page_id=pair['page_id'],region_id=pair['region_id'],exact_quote=quote)
+                if job['entity_id'] is None:
+                    poi_candidates.append({'evidence':locator(e),'exact_source_spelling':spelling,'state':'candidate','ranking':signals[str(row['id'])],'identity_unresolved':True,'external_ref':job['payload']['external_ref']})
+                    written+=1
+                    continue
                 mid=uuid5(job['entity_id'],f"discovery:{row['id']}:{row['revision']}:{digest(names)}")
                 await db.execute('insert into rkb_entity_mentions(id,entity_id,document_id,revision,chunk_id,page_id,region_id,exact_source_spelling,evidence,state,signals) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,\'candidate\',%s) on conflict(id) do nothing',(mid,job['entity_id'],row['document_id'],row['revision'],row['id'],pair['page_id'],pair['region_id'],spelling,Jsonb(locator(e)),Jsonb({'ranking':signals[str(row['id'])],'exact_alias_match':bool(spelling),'normalized_alias_match':bool(matching),'identity_unresolved':True,'retrieval_mode':result.retrieval_mode})))
                 written+=1
+        if job['entity_id'] is None:
+            async with self.graph.connection(actor) as db:
+                current=await(await db.execute('select payload from rkb_graph_discovery_jobs where id=%s and claim=%s',(job['id'],job['claim']))).fetchone()
+                if current:await db.execute('update rkb_graph_discovery_jobs set payload=%s where id=%s and claim=%s',(Jsonb({**current['payload'],'candidates':poi_candidates}),job['id'],job['claim']))
         log.info(json.dumps({'event':'graph_discovery_complete','job_id':str(job['id']),'candidates':written,'retrieval_mode':result.retrieval_mode,'automatic_merges':0}))
 
     async def sync_pois(self):

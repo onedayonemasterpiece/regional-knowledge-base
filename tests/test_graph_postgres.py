@@ -153,3 +153,20 @@ async def test_new_revision_does_not_hide_active_graph_before_activation(graph_d
         with psycopg.connect(graph_db,autocommit=True) as db:db.execute('update rkb_documents set active_revision=2 where id=%s',(doc,))
         new=await g.read(owner,nid);assert new['mentions'][0]['evidence']['chunk_id']==str(chunk)
     finally:await b.data_client.aclose()
+
+@pytest.mark.asyncio
+async def test_unseeded_canonical_poi_discovery_is_idempotent_and_private(graph_db):
+    doc,owner,other,e,bundle,texts=fixture(graph_db);b=Backend(graph_db,texts)
+    ref='streetstory://poi/'+str(uuid4())
+    class Resolver:
+        def version(self,r):return {'names':['Place','Former name'],'version':'v1'} if r==ref else None
+    g=GraphService(b,Resolver())
+    try:
+        a=await g.discover_poi(owner,ref);assert a==await g.discover_poi(owner,ref)
+        job=await g.job_read(owner,a['job_id']);assert job['candidates']==[] and job['state']=='pending'
+        async with g.connection(owner) as db:
+            await db.execute('update rkb_graph_discovery_jobs set payload=payload||%s where id=%s',(Jsonb({'candidates':[{'evidence':e,'state':'candidate'}]}),UUID(a['job_id'])))
+        assert len((await g.job_read(owner,a['job_id']))['candidates'])==1
+        with pytest.raises(LookupError):await g.job_read(other,a['job_id'])
+        with pytest.raises(LookupError):await g.discover_poi(owner,'streetstory://poi/'+str(uuid4()))
+    finally:await b.data_client.aclose()

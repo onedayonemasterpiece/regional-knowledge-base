@@ -34,4 +34,4 @@ class StreetStoryPoiResolver:
             if not row or row[1]=='merged':return None
             names=[row[0],*[r[0] for r in db.execute("select value from poi_aliases where poi_id=? and namespace='name' order by normalized_value",(pid,))]]
         names=list(dict.fromkeys(names))[:20]
-        return {'names':names,'version':digest(names)}
+        return {'names':names,'version':digest(names),'identity_state':row[1]}

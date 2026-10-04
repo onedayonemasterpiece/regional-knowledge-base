@@ -28,7 +28,7 @@ async def run(a):
     if deny:return 'error' in data or data.get('result',{}).get('isError',False)
     if 'error' in data or data['result'].get('isError'):raise RuntimeError('graph tool error:'+name)
     result=data['result'];return result.get('structuredContent') or json.loads(result['content'][0]['text'])
-   german=fixture['german'];first=await call('graph_stage',{'document_id':german['document_id'],'revision':german['revision'],'candidates':german['bundle']});second=await call('graph_stage',{'document_id':german['document_id'],'revision':german['revision'],'candidates':german['bundle']});assert first==second;out['stage_replay_identical']=True;ids=first['entities'];keys=fixture['keys']
+   german=fixture['german'];first=await call('graph_stage',{'document_id':german['document_id'],'revision':german['revision'],'candidates':german['bundle']});second=await call('graph_stage',{'document_id':german['document_id'],'revision':german['revision'],'candidates':german['bundle']});assert first==second;out['stage_replay_identical']=True;ids=first['entities'];keys=fixture['keys'];alias_person=ids[keys.get('alias_person',keys['person'])]
    russian=fixture['russian'];bundle=russian['bundle'];next(n for n in bundle['entities'] if n['key']==keys['thread'])['entity_id']=ids[keys['thread']];ru=await call('graph_stage',{'document_id':russian['document_id'],'revision':russian['revision'],'candidates':bundle});out['canonical_entities']={**ids,**ru['entities']}
    thread=await call('graph_fetch',{'entity_id':ids[keys['thread']],'limit':20});out['thread']=thread;out['thread_neighbor_kinds']=sorted({r['neighbor_kind'] for r in thread['neighbors']});out['relations_have_exact_evidence']=all(r['evidence'] and all(e.get('chunk_id') and e.get('page_id') and e.get('region_id') and e.get('exact_quote') for e in r['evidence']) for r in thread['neighbors']);assert out['relations_have_exact_evidence']
    person=await call('graph_fetch',{'entity_id':ids[keys['person']]});out['person_events']=sum(r['kind']=='participated_in' for r in person['neighbors']);out['person_threads']=sum(r['kind']=='member_of' for r in person['neighbors']);assert out['person_events']>=2 and out['person_threads']>=2
@@ -36,14 +36,14 @@ async def run(a):
    out['foreign_graph_denied']=await call('graph_fetch',{'entity_id':ids[keys['thread']]},other,True);out['foreign_stage_denied']=await call('graph_stage',{'document_id':german['document_id'],'revision':german['revision'],'candidates':german['bundle']},other,True);assert out['foreign_graph_denied'] and out['foreign_stage_denied']
    narrow=await call('graph_fetch',{'entity_id':ids[keys['thread']],'limit':1});assert len(narrow['neighbors'])==1 and narrow['truncated'];out['one_hop_bound']=True
    evidence_ids=list(dict.fromkeys(e['chunk_id'] for r in thread['neighbors'] for e in r['evidence']))[:8];fetched=[await call('fetch',{'id':id}) for id in evidence_ids];out['outline_source_fetches']=len(fetched);out['outline_structured_only']=True
-   alias=await call('graph_stage',{'entity_id':ids[keys['person']],'alias':fixture['person_alias']});assert alias==await call('graph_stage',{'entity_id':ids[keys['person']],'alias':fixture['person_alias']});out['person_alias_job']=alias['job_id']
+   alias=await call('graph_stage',{'entity_id':alias_person,'alias':fixture['person_alias']});assert alias==await call('graph_stage',{'entity_id':alias_person,'alias':fixture['person_alias']});out['person_alias_job']=alias['job_id']
    if a.poi_alias_update:subprocess.run(a.poi_alias_update,check=True)
    # Real native alias version is picked up asynchronously by the production worker.
    started=time.monotonic();completed=False
    while time.monotonic()-started<600:
     async with b.data_client._connection(b._headers(principal)) as db:
-     rows=await(await db.execute('select entity_id,chunk_id,signals from rkb_entity_mentions where entity_id=any(%s::uuid[]) and state=\'candidate\' and rkb_graph_active(document_id,revision)',([ids[keys['person']],ids[keys['poi']]],))).fetchall()
-     person_hits={str(r['chunk_id']) for r in rows if str(r['entity_id'])==ids[keys['person']] and r['signals'].get('exact_alias_match')}
+     rows=await(await db.execute('select entity_id,chunk_id,signals from rkb_entity_mentions where entity_id=any(%s::uuid[]) and state=\'candidate\' and rkb_graph_active(document_id,revision)',([alias_person,ids[keys['poi']]],))).fetchall()
+     person_hits={str(r['chunk_id']) for r in rows if str(r['entity_id'])==alias_person and r['signals'].get('exact_alias_match')}
      poi_hits={str(r['chunk_id']) for r in rows if str(r['entity_id'])==ids[keys['poi']] and r['signals'].get('exact_alias_match')}
      done=await(await db.execute('select state from rkb_graph_discovery_jobs where id=%s',(UUID(alias['job_id']),))).fetchone()
     completed=set(fixture['gold']['person_alias']).issubset(person_hits) and set(fixture['gold']['poi_alias']).issubset(poi_hits) and done['state']=='done'
