@@ -76,6 +76,16 @@ async def test_source_race_visual_crop_new_revision_and_changed_index(graph_db,t
         async with b.data_client._connection(b._headers(owner)) as db:
             rows=await(await db.execute('select * from rkb_chunks where document_id=%s order by title',(doc,))).fetchall()
         images=[r for r in rows if r['illustration_ids']];assert len(images)==2
+        from regional_knowledge import server as server_module
+        monkeypatch.setenv('RKB_DEV_NOAUTH','1')
+        monkeypatch.setattr(server_module,'_principal',lambda:owner)
+        server=server_module.build_server(b)
+        for row in images:
+            content=await server._tool_manager.call_tool('illustration_fetch',{'id':str(row['illustration_ids'][0])},None)
+            assert content[1].type=='image' and content[1].mime_type=='image/png'
+            metadata=json.loads(content[0].text)
+            assert all(isinstance(value,str) for value in metadata['caption_region_ids'])
+        assert metadata['visual_description_provenance']=='model_observation'
         image_only=next(r for r in images if r['text_start']==r['text_end'])
         fetched=await b.fetch(str(image_only['id']),owner);assert fetched.text==''
         description=fetched.metadata['illustrations'][0];assert description['visual_description_provenance']=='model_observation'
