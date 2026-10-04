@@ -44,6 +44,8 @@ class BgeQueue:
             ''')
             if 'diagnostics' not in {row['name'] for row in db.execute('pragma table_info(runs)')}:
                 db.execute("alter table runs add column diagnostics text not null default '{}'")
+            if 'provider_version' not in {row['name'] for row in db.execute('pragma table_info(runs)')}:
+                db.execute('alter table runs add column provider_version integer')
         self.path.chmod(0o600)
 
     @contextlib.contextmanager
@@ -217,22 +219,28 @@ class BgeQueue:
                 db.execute('update control set successor=? where id=1',(self._new_run(db,now),))
             # Old workers drain only their already claimed job; no more claims.
             db.execute("update runs set status='expired' where status='draining' and not exists(select 1 from jobs where jobs.run_id=runs.id and state='claimed')")
-            return [dict(row) for row in db.execute('select id,status,launch_state,provider_ref from runs').fetchall()]
+            return [dict(row) for row in db.execute('select id,status,launch_state,provider_ref,provider_version from runs').fetchall()]
 
-    def launch_claim(self, run_id):
+    def launch_claim(self, run_id, *, provider_ref=None):
         with self.connect() as db:
             row=db.execute('select * from runs where id=?',(run_id,)).fetchone()
             if not row or row['status']!='starting' or row['launch_state']!='pending':return None
             # Claim once. An ambiguous provider response is reconciled by its
             # stable notebook slug, never retried as an unknown second launch.
-            db.execute("update runs set launch_state='dispatching' where id=?",(run_id,))
+            db.execute("update runs set launch_state='dispatching',provider_ref=coalesce(provider_ref,?) where id=?",(provider_ref,run_id))
             token=(self.path.parent/'bge-worker-credentials'/run_id).read_text()
             return token
 
-    def launch_record(self, run_id, provider_ref, *, failed=False):
+    def launch_record(self, run_id, provider_ref, *, failed=False, provider_version=None):
+        if provider_version is not None and (type(provider_version) is not int or provider_version<1):
+            raise ValueError('invalid Kaggle notebook version')
         with self.connect() as db:
-            db.execute('update runs set provider_ref=?,launch_state=?,status=case when ? then ? else status end where id=?',
-                       (provider_ref,'failed' if failed else 'dispatched',failed,'failed',run_id))
+            row=db.execute('select provider_ref,provider_version from runs where id=?',(run_id,)).fetchone()
+            if row and ((row['provider_ref'] and row['provider_ref']!=provider_ref)
+                    or (row['provider_version'] and provider_version and row['provider_version']!=provider_version)):
+                raise ValueError('Kaggle run identity changed')
+            db.execute('update runs set provider_ref=?,provider_version=coalesce(provider_version,?),launch_state=?,status=case when ? then ? else status end where id=?',
+                       (provider_ref,provider_version,'failed' if failed else 'dispatched',failed,'failed',run_id))
             if failed:
                 db.execute('update runs set heartbeat=? where id=?',(self.clock(),run_id))
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run_id,))
