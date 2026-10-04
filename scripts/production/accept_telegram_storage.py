@@ -66,27 +66,31 @@ async def run(args):
                 print('PDF/DjVu public ingress/renders prepared; inspect images before execute')
             elif args.execute:
                 assert fixture;control=fixture['pdf'];source=control['pages'][0];pid=source['page_id']
-                page={'page_id':pid,'physical_page_index':0,'source_material':'visual_reviewed','source_review_note':'Owned synthetic source visually reviewed: exact heading, blue circle, printed caption.',
-                    'regions':[{'region_key':'heading','kind':'body','bbox':{'left':50,'top':50,'right':950,'bottom':120},'reading_order':0,'source_text':'SYNTHETIC ARCHIVE CONTROL. NOT HISTORICAL EVIDENCE.'},
-                               {'region_key':'figure','kind':'figure','bbox':{'left':300,'top':250,'right':700,'bottom':550},'reading_order':1},
-                               {'region_key':'caption','kind':'caption','bbox':{'left':80,'top':650,'right':900,'bottom':730},'reading_order':2,'source_text':'Abb. 1: Blauer Kreis.'}],
-                    'illustrations':[{'illustration_key':'circle','source_region_key':'figure','caption_region_keys':['caption'],'kind':'drawing','visual_description':'Ein ausgefuellter blauer Kreis.','visual_description_provenance':'model_observation','visual_description_language':'de'}]}
-                await call('book_ingest',{'command':'stage','ingestion_id':control['ingestion_id'],'pages':[page],'chunks':[{'chunk_key':'control','title':'Synthetic blue circle archive evidence','region_refs':[{'page_id':pid,'region_key':'heading'},{'page_id':pid,'region_key':'caption'}],'illustration_refs':[{'page_id':pid,'illustration_key':'circle'}]}]})
-                async with backend.data_client._connection({'x-rkb-service':'1'}) as db:
-                    first=await(await db.execute('select staged_graph_object_id from rkb_ingestion_jobs where id=%s',(UUID(control['ingestion_id']),))).fetchone()
-                page['source_review_note']+=' Entire single page accounted for.'
-                await call('book_ingest',{'command':'stage','ingestion_id':control['ingestion_id'],'pages':[page],'chunks':[{'chunk_key':'control','title':'Synthetic blue circle archive evidence','region_refs':[{'page_id':pid,'region_key':'heading'},{'page_id':pid,'region_key':'caption'}],'illustration_refs':[{'page_id':pid,'illustration_key':'circle'}]}]})
-                assert (await call('book_ingest',{'command':'validate','ingestion_id':control['ingestion_id']}))['state']=='ready'
-                await call('book_ingest',{'command':'finalize','ingestion_id':control['ingestion_id']})
-                for _ in range(90):
-                    status=await call('book_ingest',{'command':'status','ingestion_id':control['ingestion_id']})
-                    if status['state']=='finalized' and status['indexing']['e5_ready']==1:break
-                    await asyncio.sleep(1)
-                assert status['state']=='finalized' and status['source_archive_status']=='pending'
-                async with backend.data_client._connection({'x-rkb-service':'1'}) as db:
-                    objects=await(await db.execute('select kind,count(*) n from rkb_objects where document_id=%s group by kind',(UUID(control['document_id']),))).fetchall();assert not any(r['kind'] in ('page_render','text_projection') for r in objects)
-                subprocess.run(['systemctl','--user','restart','regional-knowledge-indexing'],check=True)
-                subprocess.run(['systemctl','--user','start','vibepublish-worker'],check=True)
+                if not args.resume:
+                    page={'page_id':pid,'physical_page_index':0,'source_material':'visual_reviewed','source_review_note':'Owned synthetic source visually reviewed: exact heading, blue circle, printed caption.',
+                        'regions':[{'region_key':'heading','kind':'body','bbox':{'left':50,'top':50,'right':950,'bottom':120},'reading_order':0,'source_text':'SYNTHETIC ARCHIVE CONTROL. NOT HISTORICAL EVIDENCE.'},
+                                   {'region_key':'figure','kind':'figure','bbox':{'left':300,'top':250,'right':700,'bottom':550},'reading_order':1},
+                                   {'region_key':'caption','kind':'caption','bbox':{'left':80,'top':650,'right':900,'bottom':730},'reading_order':2,'source_text':'Abb. 1: Blauer Kreis.'}],
+                        'illustrations':[{'illustration_key':'circle','source_region_key':'figure','caption_region_keys':['caption'],'kind':'drawing','visual_description':'Ein ausgefuellter blauer Kreis.','visual_description_provenance':'model_observation','visual_description_language':'de'}]}
+                    await call('book_ingest',{'command':'stage','ingestion_id':control['ingestion_id'],'pages':[page],'chunks':[{'chunk_key':'control','title':'Synthetic blue circle archive evidence','region_refs':[{'page_id':pid,'region_key':'heading'},{'page_id':pid,'region_key':'caption'}],'illustration_refs':[{'page_id':pid,'illustration_key':'circle'}]}]})
+                    async with backend.data_client._connection({'x-rkb-service':'1'}) as db:
+                        first=await(await db.execute('select staged_graph_object_id from rkb_ingestion_jobs where id=%s',(UUID(control['ingestion_id']),))).fetchone()
+                    page['source_review_note']+=' Entire single page accounted for.'
+                    await call('book_ingest',{'command':'stage','ingestion_id':control['ingestion_id'],'pages':[page],'chunks':[{'chunk_key':'control','title':'Synthetic blue circle archive evidence','region_refs':[{'page_id':pid,'region_key':'heading'},{'page_id':pid,'region_key':'caption'}],'illustration_refs':[{'page_id':pid,'illustration_key':'circle'}]}]})
+                    assert (await call('book_ingest',{'command':'validate','ingestion_id':control['ingestion_id']}))['state']=='ready'
+                    await call('book_ingest',{'command':'finalize','ingestion_id':control['ingestion_id']})
+                    for _ in range(90):
+                        status=await call('book_ingest',{'command':'status','ingestion_id':control['ingestion_id']})
+                        if status['state']=='finalized' and status['indexing']['e5_ready']==1:break
+                        await asyncio.sleep(1)
+                    assert status['state']=='finalized' and status['source_archive_status']=='pending'
+                    async with backend.data_client._connection({'x-rkb-service':'1'}) as db:
+                        objects=await(await db.execute('select kind,count(*) n from rkb_objects where document_id=%s group by kind',(UUID(control['document_id']),))).fetchall();assert not any(r['kind'] in ('page_render','text_projection') for r in objects)
+                    subprocess.run(['systemctl','--user','restart','regional-knowledge-indexing'],check=True)
+                    subprocess.run(['systemctl','--user','start','vibepublish-worker'],check=True)
+                else:
+                    async with backend.data_client._connection({'x-rkb-service':'1'}) as db:
+                        first=await(await db.execute("select id staged_graph_object_id from rkb_objects where document_id=%s and kind='document_graph' order by created_at limit 1",(UUID(control['document_id']),))).fetchone()
                 for _ in range(600):
                     async with backend.data_client._connection({'x-rkb-service':'1'}) as db:
                         docs=await(await db.execute('select id,source_archive_status,source_archive_ref from rkb_documents where id=any(%s::uuid[])',([control['document_id'],fixture['djvu']['document_id']],))).fetchall()
@@ -115,4 +119,4 @@ async def run(args):
         await backend.aclose()
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--work-dir',required=True,type=Path);g=p.add_mutually_exclusive_group(required=True);g.add_argument('--prepare',action='store_true');g.add_argument('--execute',action='store_true');g.add_argument('--readback',action='store_true');asyncio.run(run(p.parse_args()))
+    p=argparse.ArgumentParser();p.add_argument('--work-dir',required=True,type=Path);p.add_argument('--resume',action='store_true');g=p.add_mutually_exclusive_group(required=True);g.add_argument('--prepare',action='store_true');g.add_argument('--execute',action='store_true');g.add_argument('--readback',action='store_true');asyncio.run(run(p.parse_args()))
