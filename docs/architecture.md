@@ -6,11 +6,13 @@ Regional Knowledge Base is deliberately split into a cheap online retrieval plan
 
 ```text
 ONLINE / latency-sensitive
-model -> MCP -> embedding provider -> Supabase hybrid RPC -> object fragment fetch -> evidence
+model -> MCP -> E5/BGE + Supabase pgvector/FTS -> authorized evidence
 
 INGESTION / throughput-insensitive
-uploaded PDF -> object storage -> page renderer -> ChatGPT vision/layout -> staged graph
-             -> crops/media -> validation -> index revision -> activate
+PDF/DjVu source -> thin format adapter -> page image/native hints -> ChatGPT vision/reading
+               -> typed staged graph -> validate/finalize -> Supabase text/index state
+               -> original source archive through VibePublish Telegram /2
+               -> illustration archive through VibePublish Telegram /4
 ```
 
 The runtime server is not the vector engine, full-text engine or permanent binary store.
@@ -19,17 +21,19 @@ The runtime server is not the vector engine, full-text engine or permanent binar
 
 | Layer | Owns |
 |---|---|
-| S3-compatible object storage | exact original bytes, page renders, image crops, canonical document graph snapshots, normalized UTF-8 text projections |
-| Supabase Postgres | catalog, ACLs, rights state, page/region metadata, chunks, embeddings, FTS, ingestion state |
-| VibePublish MediaBank | optional Telegram-backed mirror/catalog of selected reusable illustrations |
+| VibePublish / Telegram via dedicated `TELEGRAM_KNOWLEDGE_BASE` connection | durable original source DOCUMENTs in topic /2 and extracted illustration DOCUMENTs in topic /4 |
+| Supabase Postgres | catalog, ACLs, rights state, revisions, source refs/hashes/formats, chunk source text/search material, page/region/graph metadata, embeddings, FTS, ingestion/index state |
+| S3-compatible object storage | bounded temporary ingestion/cache objects only; not the corpus archive |
 | GitHub | source code, schemas, migrations, tests, public documentation |
 | local disk | bounded disposable cache/work files only |
 
-Object storage is private. “Public document” is an application authorization state, not a public bucket ACL.
+Telegram/provider IDs and object-store keys are never authorization. “Public
+document” is an application authorization state enforced by Regional Knowledge.
 
-Corpus body text is also kept out of Postgres: chunks carry a private text-object
-ID, byte range and hash while Supabase holds only retrieval indexes and compact
-metadata. This preserves the 500 MiB database budget.
+Parsed chunk text is compact enough for the current corpus scale and belongs in
+Supabase alongside FTS/pgvector. The 500 MiB database budget is protected by
+keeping large original binaries out of Postgres, not by pushing sub-megabyte book
+text into a permanent S3 corpus.
 
 ## Canonical document graph
 
@@ -55,9 +59,19 @@ Ingestion never competes with Live search for mandatory CPU. Concurrency is boun
 
 ## Deployment shape
 
-Initial target: one lightweight MCP/gateway process on DevCoveer plus managed Supabase and S3-compatible object storage. The MCP Python SDK 2.x stateless HTTP mode is preferred so no user session is pinned to one worker.
+Initial target: one lightweight MCP/gateway process on DevCoveer plus managed
+Supabase, VibePublish/Telegram binary archival and a bounded S3-compatible staging
+cache. The MCP Python SDK 2.x stateless HTTP mode is preferred so no user session
+is pinned to one worker.
 
-Do not add Redis, Kafka, a local Postgres, a local vector database or a second OCR service until measurements justify them.
+The MCP is deliberately a **thin document orchestrator**, not a recognition
+service. It may decode/render supported containers (PDF, DjVu), hash bytes, expose
+native text already present in the container, persist typed results and route
+binary assets. ChatGPT performs transcription/recognition, semantic layout,
+caption/footnote reasoning, chunking and entity extraction.
+
+Do not add Redis, Kafka, a local Postgres, a local vector database, OCR engine,
+VLM or server-side LLM parser until measured product need justifies one.
 
 ## Accumulative semantic graph
 
