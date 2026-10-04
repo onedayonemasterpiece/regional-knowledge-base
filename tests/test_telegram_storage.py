@@ -4,6 +4,7 @@ from uuid import UUID,uuid4
 import pytest,psycopg
 from test_graph_postgres import graph_db,fixture
 from regional_knowledge.postgres_backend import PostgresBackend
+from regional_knowledge.supabase_backend import LexicalOnlyEmbedder
 from regional_knowledge.graph_service import GraphService
 from regional_knowledge.storage_gc import collect
 
@@ -23,7 +24,7 @@ async def test_postgres_evidence_acl_and_guarded_gc_preserve_pending_source(grap
         db.execute("update rkb_objects set created_at=now()-interval '2 hours' where id=%s",(projection,))
         source=uuid4()
         db.execute("insert into rkb_objects(id,document_id,kind,object_key,sha256,mime_type,size_bytes,created_at) values(%s,%s,'source_pdf','pending-source',%s,'application/pdf',10,now()-interval '2 hours')",(source,doc,'a'*64))
-    cache=Cache();b=PostgresBackend(graph_db,public_base_url='https://example.test',object_store=cache)
+    cache=Cache();b=PostgresBackend(graph_db,public_base_url='https://example.test',object_store=cache,embedder=LexicalOnlyEmbedder())
     try:
         assert (await b.fetch(e['chunk_id'],owner)).text==text
         with pytest.raises(LookupError):await b.fetch(e['chunk_id'],foreign)
