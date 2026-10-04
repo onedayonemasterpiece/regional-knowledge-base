@@ -258,7 +258,8 @@ Acceptance must prove all of the following:
 15. Unchanged source chunks are skipped.
 16. Private VibePublish mirror reaches
     `https://t.me/c/4368830579/4` for the small real canary.
-17. Exact media bytes/hash and origin metadata are verified.
+17. Native private-topic/DOCUMENT delivery and origin metadata are verified;
+    source-image SHA equality is not an acceptance gate (owner correction).
 18. Replay creates no duplicate Telegram document.
 19. VibePublish outage/restart does not fail or duplicate the book import.
 20. No public media publication occurs.

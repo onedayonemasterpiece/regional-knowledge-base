@@ -25,6 +25,10 @@ class VibePublishClient:
         await self.http.aclose()
 
     async def refresh(self):
+        latest=json.loads(self.path.read_text())
+        if latest['client_id']!=self.grant['client_id'] or latest['rkb_owner_id']!=self.owner or latest['issuer'].rstrip('/')!=self.issuer:
+            raise PermissionError('mirror grant binding changed; restart required')
+        self.grant=latest
         response = await self.http.post(self.issuer+'/token', data={
             'grant_type':'refresh_token', 'refresh_token':self.grant['refresh_token'],
             'client_id':self.grant['client_id'], 'scope':'vibepublish',

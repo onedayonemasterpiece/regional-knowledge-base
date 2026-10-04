@@ -47,6 +47,11 @@ async def run(args):
         token=provider.store.mutate(lambda s:provider._mint_family(s,client_id=principal.client_id,scopes=[KNOWLEDGE_SCOPE],resource=os.environ['RKB_RESOURCE_URL'],subject=subject));tokens.append(token);return token
     owner=mint(owner_id);fixture_path=root/'visual-fixture.json';fixture=json.loads(fixture_path.read_text()) if fixture_path.exists() else None
     other_owner=fixture['other_owner'] if fixture else str(uuid4())
+    if not fixture and (root/'synthetic-visual-control.pdf').exists():
+        async with b.data_client._connection({'x-rkb-service':'1'}) as db:
+            old=await(await db.execute("select owner_user_id from rkb_ingestion_jobs where source_file_id='rkb-robust-control-20261004-other-owner'")).fetchall()
+            assert len(old)<=1
+            if old:other_owner=str(old[0]['owner_user_id'])
     foreign=mint(other_owner);out={'manual_backfill_used':False,'external_paid_embedding_calls':0,'server_ocr_vlm':False,'public_media_publication':False}
     vibe_stopped=False
     try:
@@ -70,8 +75,10 @@ async def run(args):
                      (select md5(string_agg(e.chunk_id::text||e.embedding::text||e.updated_at::text,',' order by e.chunk_id)) from rkb_chunk_embeddings_bge e join rkb_chunks c on c.id=e.chunk_id where not(c.document_id=any(%s::uuid[]))) bge''',(list(excluded),)*3)).fetchone()
             if args.prepare:
                 if fixture:raise RuntimeError('Fixture already prepared; resume execute/readback')
-                save(root/'visual-baseline.json',{'corpus':await digest(),'readiness':await call('indexing_status',{})})
-                pdf=root/'synthetic-visual-control.pdf';make_pdf(pdf);sha=hashlib.sha256(pdf.read_bytes()).hexdigest()
+                if not (root/'visual-baseline.json').exists():save(root/'visual-baseline.json',{'corpus':await digest(),'readiness':await call('indexing_status',{})})
+                pdf=root/'synthetic-visual-control.pdf'
+                if not pdf.exists():make_pdf(pdf)
+                sha=hashlib.sha256(pdf.read_bytes()).hexdigest()
                 key='users/'+owner_id+'/transport-controls/rkb-robust-control-20261004/'+sha+'.pdf'
                 await b.object_store.put_file(key,str(pdf),'application/pdf')
                 url=await asyncio.to_thread(b.object_store.client.generate_presigned_url,'get_object',Params={'Bucket':b.object_store.bucket,'Key':key},ExpiresIn=600)
@@ -84,7 +91,7 @@ async def run(args):
                 response=await call('book_pages',{'ingestion_id':first['ingestion_id'],'batch_size':3},raw=True);manifest=json.loads(response['content'][0]['text']);images=[c for c in response['content'] if c['type']=='image'];assert len(images)==3
                 for page,image in zip(manifest['pages'],images,strict=True):
                     path=root/f"visual-page-{page['physical_page_index']+1}.jpg";path.write_bytes(base64.b64decode(image['data']));path.chmod(0o600)
-                assert not manifest['pages'][2]['native_text'].strip()
+                assert not (manifest['pages'][2]['native_text'] or '').strip()
                 fixture={'document_id':first['document_id'],'ingestion_id':first['ingestion_id'],'other_document_id':other['document_id'],'other_owner':other_owner,'source_sha256':sha,'pages':manifest['pages']}
                 save(fixture_path,fixture);save(root/'visual-prepare.json',{'public_ingress':True,'concurrent_starts_logical_documents':1,'new_file_id_extra_documents':0,'different_owner_separate_root':True,'image_only_native_text_empty':True})
             else:
