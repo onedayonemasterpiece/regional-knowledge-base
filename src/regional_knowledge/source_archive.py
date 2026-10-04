@@ -22,7 +22,7 @@ async def archive_bytes(client, entry_ref):
     return response.content
 
 
-async def download_source(backend, principal, document_id, obj, path):
+async def download_source(backend, principal, document_id, obj, path, *, require_archive=False):
     # Caller already resolves ingestion/illustration under RLS. Recheck source privacy:
     # public parsed text does not confer access to the private original scan.
     response=await backend.client.get(backend.config.url.rstrip('/')+'/rest/v1/rkb_documents',
@@ -30,7 +30,7 @@ async def download_source(backend, principal, document_id, obj, path):
     response.raise_for_status();rows=response.json()
     if not rows or str(rows[0]['owner_user_id'])!=principal.subject:raise PermissionError('private_source_owner_required')
     doc=rows[0]
-    if not obj.get('deleted_at'):
+    if not require_archive and not obj.get('deleted_at'):
         try:
             await backend.object_store.download_file(obj['object_key'],str(path))
             if (await asyncio.to_thread(sha256_file,path))[0]!=obj['sha256']:raise ValueError('source_integrity_mismatch')
