@@ -700,6 +700,10 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
 
     if not graph.chunks:
         errors.append("no retrieval chunks staged")
+    from .search_material import graph_material
+    for chunk in graph.chunks:
+        try:graph_material(graph,chunk)
+        except (ValueError,KeyError):errors.append(f'chunk has missing or invalid visual search material: {chunk.chunk_id}')
 
     required_coverage = {
         region_id
