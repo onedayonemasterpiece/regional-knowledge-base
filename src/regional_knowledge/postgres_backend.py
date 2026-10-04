@@ -379,8 +379,8 @@ class PostgresDataClient:
         payload: dict[str, Any],
         headers: dict[str, str] | None,
     ) -> _DbResponse:
-        if name == "rkb_hybrid_search":
-            statement = "select * from public.rkb_hybrid_search(%s,%s,%s,%s)"
+        if name in {"rkb_hybrid_search", "rkb_fast_e5_search"}:
+            statement = f"select * from public.{name}(%s,%s,%s,%s)"
             values = (
                 payload.get("query_text"),
                 payload.get("query_embedding"),

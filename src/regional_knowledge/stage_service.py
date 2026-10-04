@@ -362,6 +362,9 @@ async def _embeddings(
     service,
     texts: list[str],
 ) -> tuple[list[list[float] | None], list[str]]:
+    from .e5_contract import SPACE
+    if getattr(service.embedder, "embedding_space", "") == SPACE:
+        return [None] * len(texts), ["fast_e5_backfill_required"]
     semaphore = asyncio.Semaphore(4)
     warnings: list[str] = []
 

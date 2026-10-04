@@ -1,0 +1,23 @@
+[Unit]
+Description=Regional Knowledge pinned E5 CPU encoder
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dev/.local/share/regional-knowledge-base/fast-e5/current
+Environment=PYTHONPATH=/home/dev/.local/share/regional-knowledge-base/fast-e5/current/src
+Environment=RKB_E5_MODEL_DIR=/home/dev/.local/share/regional-knowledge-base/fast-e5/models
+ExecStart=/home/dev/.local/share/regional-knowledge-base/fast-e5/runtime/bin/python -m regional_knowledge.e5_service
+MemoryMax=1G
+MemorySwapMax=0
+CPUQuota=100%
+CPUAffinity=0
+MemoryAccounting=true
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

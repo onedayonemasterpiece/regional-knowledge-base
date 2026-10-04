@@ -16,6 +16,9 @@ from mcp.server.auth.settings import (
 from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import AnyHttpUrl
 
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from .local_e5 import LocalE5Embedder
 from .auth import JwtResourceVerifier
 from .backend import KnowledgeBackend
 from .contracts import (
@@ -176,6 +179,14 @@ def build_server(
 
     if embedded_provider is not None:
         embedded_provider.register_routes(mcp)
+
+    @mcp.custom_route("/fast-tier/health", methods=["GET"])
+    async def fast_tier_health(request: Request):
+        encoder = getattr(backend, "embedder", None)
+        if isinstance(encoder, LocalE5Embedder):
+            status = await encoder.status()
+            return JSONResponse({k:status[k] for k in ("configured","ready","retrieval_mode")},headers={"Cache-Control":"no-store"})
+        return JSONResponse({"configured":False,"ready":False,"retrieval_mode":"lexical_only"},headers={"Cache-Control":"no-store"})
 
     if profile == "live":
         @mcp.tool(

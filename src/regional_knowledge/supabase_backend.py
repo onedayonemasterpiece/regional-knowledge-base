@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import time
+import logging
+import json
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +32,9 @@ from .file_ingress import ChatFileDownloader, sha256_file
 from .ingestion import PdfProcessor, PyMuPdfProcessor
 from .object_store import ObjectStore, S3Config, S3ObjectStore, UnavailableObjectStore
 from .rights import assert_visibility_allowed
+from .local_e5 import LocalE5Embedder, encoding_timings
+from .e5_contract import SPACE, validate_vector
+logger = logging.getLogger(__name__)
 
 
 class Embedder(Protocol):
@@ -155,7 +161,8 @@ class SupabaseRestBackend(KnowledgeBackend):
             return f"{self.config.public_base_url.rstrip('/')}/evidence/{encoded}"
         return f"knowledge://evidence/{encoded}"
 
-    async def search(self, query: str, principal: Principal) -> SearchOutput:
+    async def search(self, query: str, principal: Principal, *, match_count: int = 8) -> SearchOutput:
+        started = time.monotonic()
         query = query.strip()
         if not query:
             return SearchOutput(results=[], mode="lexical_degraded")
@@ -168,21 +175,30 @@ class SupabaseRestBackend(KnowledgeBackend):
             # the SQL RPC accepts NULL and performs RLS-protected lexical retrieval.
             vector = None
 
+        is_e5 = isinstance(self.embedder, LocalE5Embedder)
+        if is_e5 and vector is not None:
+            vector = validate_vector(vector)
+        database_start = time.monotonic()
+        rpc = "rkb_fast_e5_search" if is_e5 else "rkb_hybrid_search"
         response = await self.client.post(
-            f"{self.config.url.rstrip('/')}/rest/v1/rpc/rkb_hybrid_search",
+            f"{self.config.url.rstrip('/')}/rest/v1/rpc/{rpc}",
             headers=self._headers(principal),
             json={
                 "query_text": query,
-                "query_embedding": _halfvec_literal(vector),
+                "query_embedding": ("[" + ",".join(format(v,".9g") for v in vector) + "]") if is_e5 and vector is not None else _halfvec_literal(vector),
                 "query_embedding_space": (
                     self.embedder.embedding_space if vector is not None else None
                 ),
-                "match_count": 8,
+                "match_count": max(1,min(match_count,20)),
             },
         )
         response.raise_for_status()
         rows = response.json()
+        timings = {**(encoding_timings.get() if is_e5 else {}), "database_seconds": time.monotonic()-database_start, "search_seconds": time.monotonic()-started}
+        retrieval_mode = rows[0].get("retrieval_mode", "fast_e5" if is_e5 and vector is not None else "lexical_only") if rows else ("fast_e5" if is_e5 and vector is not None else "lexical_only")
+        logger.info(json.dumps({"event":"retrieval_served","retrieval_mode":retrieval_mode,"results":len(rows),"embedding_space":self.embedder.embedding_space if vector is not None else None,**timings}))
         return SearchOutput(
+            retrieval_mode=retrieval_mode, timings=timings,
             results=[
                 SearchResult(
                     id=str(row["chunk_id"]),
@@ -272,15 +288,17 @@ class SupabaseRestBackend(KnowledgeBackend):
         *,
         max_evidence: int = 3,
     ) -> EvidenceSearchOutput:
+        started = time.monotonic()
         limit = max(1, min(int(max_evidence), 5))
         found = await self.search(query, principal)
         selected = found.results[:limit]
         if not selected:
-            return EvidenceSearchOutput(evidence=[], mode=found.mode)
+            return EvidenceSearchOutput(evidence=[], mode=found.mode, retrieval_mode=found.retrieval_mode, timings={**found.timings,"hydration_seconds":0,"total_seconds":time.monotonic()-started})
+        hydration_start = time.monotonic()
         evidence = await asyncio.gather(
             *(self.fetch(item.id, principal) for item in selected)
         )
-        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode)
+        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode, retrieval_mode=found.retrieval_mode, timings={**found.timings,"hydration_seconds":time.monotonic()-hydration_start,"total_seconds":time.monotonic()-started})
 
     async def document_access(
         self,
@@ -864,6 +882,8 @@ class SupabaseRestBackend(KnowledgeBackend):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._finalize_tasks.clear()
+        if isinstance(self.embedder, LocalE5Embedder):
+            await self.embedder.aclose()
         if self._owns_client:
             await self.client.aclose()
 
@@ -877,6 +897,11 @@ def _first_env(*names: str) -> str:
 
 
 def _embedder_from_env() -> Embedder:
+    fast = os.getenv("RKB_FAST_E5_ENABLED", "0")
+    if fast == "1":
+        return LocalE5Embedder(os.getenv("RKB_FAST_E5_ENDPOINT", "http://127.0.0.1:8767"))
+    if fast not in {"0", ""}:
+        raise RuntimeError("RKB_FAST_E5_ENABLED must be0/1")
     endpoint = os.getenv("RKB_EMBEDDING_ENDPOINT", "").strip()
     api_key = os.getenv("RKB_EMBEDDING_API_KEY", "").strip()
     model = os.getenv("RKB_EMBEDDING_MODEL", "").strip()

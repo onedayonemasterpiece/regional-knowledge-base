@@ -302,6 +302,8 @@ class SearchResult(BaseModel):
 class SearchOutput(BaseModel):
     results: list[SearchResult]
     mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
+    retrieval_mode: Literal["fast_e5", "lexical_only"] = "lexical_only"
+    timings: dict[str, float] = Field(default_factory=dict, exclude=True)
 
 
 class FetchOutput(BaseModel):
@@ -315,6 +317,8 @@ class FetchOutput(BaseModel):
 class EvidenceSearchOutput(BaseModel):
     evidence: list[FetchOutput]
     mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
+    retrieval_mode: Literal["fast_e5", "lexical_only"] = "lexical_only"
+    timings: dict[str, float] = Field(default_factory=dict, exclude=True)
 
 
 class ChatFile(BaseModel):
