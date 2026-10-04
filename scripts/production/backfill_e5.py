@@ -6,6 +6,19 @@ from operator_env import load_service_env
 from regional_knowledge.supabase_backend import backend_from_env
 from regional_knowledge.e5_contract import SPACE,validate_vector
 
+def document_batches(rows):
+    groups=[]
+    for row in rows:
+        if not groups or groups[-1][0]['document_id']!=row['document_id'] or len(groups[-1])==4:groups.append([])
+        groups[-1].append(row)
+    return groups
+
+def batch_fingerprint(group):
+    return hashlib.sha256(json.dumps([(str(r['id']),r['text_sha256'],r['revision']) for r in group],separators=(',',':')).encode()).hexdigest()
+
+def already_current(group,fingerprint):
+    return all(r['existing_hash']==r['text_sha256'] and r['existing_batch']==fingerprint and r['existing_revision']==r['revision'] for r in group)
+
 async def backfill(output):
     load_service_env();b=backend_from_env();stats={'space':SPACE,'encoded_batches':0,'written_vectors':0,'skipped_vectors':0,'external_embedding_calls':0}
     try:
@@ -17,15 +30,12 @@ async def backfill(output):
               where c.revision=d.active_revision order by c.document_id,c.text_start,c.id''')).fetchall()
         stats['expected_active_chunks']=len(rows)
         # Process one document at a time; reproduce the original text_start/id batch4 order.
-        groups=[]
-        for row in rows:
-            if not groups or groups[-1][0]['document_id']!=row['document_id'] or len(groups[-1])==4:groups.append([])
-            groups[-1].append(row)
+        groups=document_batches(rows)
         cache={}
         async with httpx.AsyncClient(base_url='http://127.0.0.1:8767',timeout=4,trust_env=False) as client:
             for group in groups:
-                fingerprint=hashlib.sha256(json.dumps([(str(r['id']),r['text_sha256'],r['revision']) for r in group],separators=(',',':')).encode()).hexdigest()
-                if all(r['existing_hash']==r['text_sha256'] and r['existing_batch']==fingerprint and r['existing_revision']==r['revision'] for r in group):
+                fingerprint=batch_fingerprint(group)
+                if already_current(group,fingerprint):
                     stats['skipped_vectors']+=len(group);continue
                 texts=[]
                 for row in group:

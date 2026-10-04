@@ -8,7 +8,8 @@ def main():
  p=argparse.ArgumentParser();p.add_argument('dsn');p.add_argument('output',type=Path);a=p.parse_args()
  owner=str(uuid.uuid4());doc=str(uuid.uuid4());chunk=str(uuid.uuid4());vec='['+','.join(['1']+['0']*383)+']'
  with psycopg.connect(a.dsn,autocommit=True) as c:
-  assert c.info.host=='127.0.0.1' and c.info.port==54329 and c.info.dbname=='rkb_e5_test', 'isolated fixture DB required'
+  if not(c.info.host=='127.0.0.1' and c.info.port==54329 and c.info.dbname=='rkb_e5_test'):
+   raise RuntimeError('isolated fixture DB required')
   c.execute('create extension if not exists vector')
   for role in ('anon','authenticated','rkb_app'):
    if not c.execute('select 1 from pg_roles where rolname=%s',(role,)).fetchone():c.execute(f'create role {role}')
@@ -27,8 +28,11 @@ def main():
    else:raise AssertionError('incompatible query accepted')
   c.execute('set role rkb_app');c.execute("select set_config('rkb.actor_id',%s,false)",(owner,));assert len(c.execute('select * from rkb_fast_e5_search(%s,%s,%s,10)',('query',vec,SPACE)).fetchall())==1
   c.execute("select set_config('rkb.actor_id',%s,false)",(str(uuid.uuid4()),));assert c.execute('select * from rkb_fast_e5_search(%s,%s,%s,10)',('query',vec,SPACE)).fetchall()==[]
+  c.execute("select set_config('rkb.actor_id',%s,false)",(owner,))
+  fused=c.execute('select score,retrieval_mode from rkb_fast_e5_search(%s,%s,%s,10)',('synthetic',vec,SPACE)).fetchone();assert abs(fused[0]-2/61)<1e-12 and fused[1]=='fast_e5'
+  lexical=c.execute('select score,retrieval_mode from rkb_fast_e5_search(%s,null,null,10)',('synthetic',)).fetchone();assert abs(lexical[0]-1/61)<1e-12 and lexical[1]=='lexical_only'
   c.execute('reset role');c.execute('update rkb_chunk_embeddings_e5 set text_sha256=%s',('c'*64,));assert c.execute('select * from rkb_fast_e5_search(%s,%s,%s,10)',('query',vec,SPACE)).fetchall()==[]
   c.execute(Path('sql/010_fast_e5.rollback.sql').read_text());assert c.execute('select count(*) from rkb_chunks').fetchone()[0]==1;assert c.execute("select to_regclass('public.rkb_chunk_embeddings_e5')").fetchone()[0] is None
-  result={'migration_sha256':hashlib.sha256(migration.encode()).hexdigest(),'rollback_sha256':hashlib.sha256(Path('sql/010_fast_e5.rollback.sql').read_bytes()).hexdigest(),'postgres':c.execute('select version()').fetchone()[0],'pgvector':c.execute("select extversion from pg_extension where extname='vector'").fetchone()[0],'migration_twice':True,'dimension_and_space_rejection':True,'owner_and_denied_actor':True,'stale_hash_excluded':True,'rollback_preserves_legacy_chunks':True}
+  result={'migration_sha256':hashlib.sha256(migration.encode()).hexdigest(),'rollback_sha256':hashlib.sha256(Path('sql/010_fast_e5.rollback.sql').read_bytes()).hexdigest(),'postgres':c.execute('select version()').fetchone()[0],'pgvector':c.execute("select extversion from pg_extension where extname='vector'").fetchone()[0],'migration_twice':True,'dimension_and_space_rejection':True,'owner_and_denied_actor':True,'stale_hash_excluded':True,'rrf60_fusion':True,'lexical_only_without_vector':True,'rollback_preserves_legacy_chunks':True}
  a.output.write_text(json.dumps(result,indent=2));print(json.dumps(result))
 if __name__=='__main__':main()

@@ -79,3 +79,43 @@ async def test_unavailable_fast_encoder_degrades_to_lexical_without_provider(mon
     assert calls[0][0].endswith('/rkb_fast_e5_search') and calls[0][1]['query_embedding'] is None
     status=await e.status();assert not status['ready'] and status['retrieval_mode']=='lexical_only'
     await b.aclose();await dbclient.aclose()
+
+
+def test_changed_passage_requires_reencoding_whole_batch_and_preserves_other_groups():
+    import importlib.util
+    from pathlib import Path
+    import sys
+    folder=Path(__file__).parents[1]/'scripts/production'
+    sys.path.insert(0,str(folder))
+    try:
+        spec=importlib.util.spec_from_file_location('backfill_operator',folder/'backfill_e5.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        rows=[dict(id=str(i),document_id='a' if i<5 else 'b',revision=1,text_sha256=str(i),existing_hash=None,existing_batch=None,existing_revision=None) for i in range(7)]
+        groups=module.document_batches(rows)
+        assert [len(group) for group in groups]==[4,1,2]
+        for group in groups:
+            fingerprint=module.batch_fingerprint(group)
+            for row in group:row.update(existing_hash=row['text_sha256'],existing_batch=fingerprint,existing_revision=1)
+        assert all(module.already_current(group,module.batch_fingerprint(group)) for group in groups)
+        rows[2]['text_sha256']='changed'
+        assert not module.already_current(groups[0],module.batch_fingerprint(groups[0]))
+        assert all(module.already_current(group,module.batch_fingerprint(group)) for group in groups[1:])
+    finally:sys.path.remove(str(folder))
+
+
+@pytest.mark.asyncio
+async def test_public_status_surface_returns_readiness_without_private_details(monkeypatch):
+    from regional_knowledge.server import build_server
+    from regional_knowledge.backend import UnavailableBackend
+    from starlette.requests import Request
+    backend=UnavailableBackend()
+    e=LocalE5Embedder();backend.embedder=e
+    async def health():return {'configured':True,'ready':True,'retrieval_mode':'fast_e5','space':SPACE,'model_path':'private','queue_depth':0}
+    monkeypatch.setattr(e,'status',health)
+    monkeypatch.setenv('RKB_DEV_NOAUTH','1')
+    server=build_server(backend=backend)
+    route=next(route for route in server._custom_starlette_routes if route.path=='/fast-tier/health')
+    response=await route.endpoint(Request({'type':'http'}))
+    import json
+    assert json.loads(response.body)=={'configured':True,'ready':True,'retrieval_mode':'fast_e5'}
+    await e.aclose()

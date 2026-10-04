@@ -20,6 +20,13 @@ def resources():
     import subprocess
     fields=subprocess.check_output(['systemctl','--user','show','regional-knowledge-e5.service','-p','MainPID','-p','MemoryCurrent','-p','MemoryPeak','-p','ControlGroup'],text=True)
     result=dict(line.split('=',1) for line in fields.splitlines())
+    processes=0
+    for path in Path('/proc').glob('[0-9]*/cmdline'):
+        try:
+            args=path.read_bytes().rstrip(b'\0').split(b'\0')
+            processes+=args[-2:]==[b'-m',b'regional_knowledge.e5_service']
+        except (FileNotFoundError,PermissionError,ProcessLookupError):pass
+    result['actual_encoder_processes']=processes
     pid=int(result['MainPID'])
     if pid:
         result['process_status']={line.split(':',1)[0]:line.split(':',1)[1].strip() for line in Path(f'/proc/{pid}/status').read_text().splitlines() if line.startswith(('VmRSS:','VmHWM:','Threads:'))}
@@ -29,9 +36,11 @@ def resources():
     return result
 
 async def run(args):
-    load_service_env();backend=backend_from_env();actor=principal()
+    load_service_env()
+    if args.pool_max:os.environ['RKB_DB_POOL_MAX']=str(args.pool_max)
+    backend=backend_from_env();actor=principal()
     fixture=json.loads(args.fixture.read_text());questions=fixture['questions']
-    output={'path':'production backend search_evidence; owner actor bridge with normal rkb_app ACL; OAuth HTTP smoke measured separately','external_embedding_calls':0,'levels':{},'resources_before':resources()}
+    output={'path':'production backend search_evidence; owner actor bridge with normal rkb_app ACL; OAuth HTTP smoke measured separately','db_pool_max':os.environ.get('RKB_DB_POOL_MAX','6'),'external_embedding_calls':0,'levels':{},'resources_before':resources()}
     try:
         await backend.search_evidence(questions[0]['query'],actor)
         for users in (1,5,10):
@@ -60,5 +69,5 @@ async def run(args):
     finally:await backend.aclose()
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('fixture',type=Path);parser.add_argument('output',type=Path);parser.add_argument('--requests',type=int,default=60)
+    parser=argparse.ArgumentParser();parser.add_argument('fixture',type=Path);parser.add_argument('output',type=Path);parser.add_argument('--requests',type=int,default=60);parser.add_argument('--pool-max',type=int)
     asyncio.run(run(parser.parse_args()))
