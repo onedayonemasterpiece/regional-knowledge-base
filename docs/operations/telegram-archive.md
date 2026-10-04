@@ -47,3 +47,11 @@ Telegram bytes with full exact hash checking; crop reads use provider bytes afte
 actor authorization. Set `RKB_STORAGE_GC_ENABLED=1` after guarded acceptance to
 run at most one bounded 100-object pass per minute under the existing maintenance
 owner. No whole-bucket deletion or independent scheduler is introduced.
+
+Terminal source failures stay pending. A proven zero-dispatch blocked/failed
+operation is retried through Vibe's existing `retry_failed` gate with its original
+publication/revision/attempt and a stable recovery key. Dispatched or uncertain
+outcomes are refused by that gate; they are never replaced with a fresh send.
+Failed retries use a 30-second minimum retry interval. A deliberate new revision
+after source-cache GC reserves capacity again, revives the existing cache metadata
+under the document lifecycle lock and starts a fresh cache grace period.

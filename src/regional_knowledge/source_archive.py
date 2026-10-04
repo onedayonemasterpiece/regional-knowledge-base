@@ -61,6 +61,7 @@ class SourceArchive:
             docs=await(await db.execute("""select d.*,o.object_key,o.id object_id,o.mime_type from rkb_documents d
              join rkb_objects o on o.document_id=d.id and o.kind='source_pdf' and o.sha256=d.source_sha256 and o.deleted_at is null
              where d.owner_user_id=%s and d.source_archive_status='pending' and not exists(select 1 from rkb_documents other where other.owner_user_id=d.owner_user_id and other.source_sha256=d.source_sha256 and other.id<d.id)
+             and (d.source_archive_attempt_at is null or d.source_archive_error is null or d.source_archive_attempt_at<now()-interval '30 seconds')
              order by d.source_archive_attempt_at nulls first,d.id limit 1""",(UUID(self.client.owner),))).fetchall()
         count=0
         for doc in docs:
@@ -89,6 +90,16 @@ class SourceArchive:
                     operation=receipt['operation_id'];await self.update(doc,source_archive_operation_id=operation)
                 receipt=await self.client.receipt(operation)
                 if not receipt['operation_complete']:continue
+                if receipt['state'] in ('blocked','failed'):
+                    # Vibe owns the dispatch proof. Its existing recovery refuses
+                    # dispatched/uncertain effects; preserve the original operation.
+                    await self.client.call('vibepublish_publication_update',{
+                        'publication_id':receipt['resource_id'],'expected_revision':receipt['revision'],
+                        'request_key':'rkb:source:retry:'+operation,
+                        'change':{'kind':'retry_failed','destinations':[self.client.grant['destination_alias']]}})
+                    await self.update(doc,source_archive_error='source_retry_admitted')
+                    log.info(json.dumps({'event':'source_archive_safe_retry','document_id':str(doc['id']),'operation_id':operation}))
+                    continue
                 if receipt['state']!='verified':raise RuntimeError('source_delivery_not_verified')
                 read_id=doc['source_archive_read_id']
                 if not read_id:

@@ -42,6 +42,36 @@ async def test_postgres_evidence_acl_and_guarded_gc_preserve_pending_source(grap
 
 
 @pytest.mark.asyncio
+async def test_source_cache_reimport_reserves_again_after_gc(graph_db,monkeypatch):
+    from types import SimpleNamespace
+    from uuid import uuid5
+    from regional_knowledge.storage_gc import reserve_source
+    doc,owner,_,_,_,_=fixture(graph_db);sha='a'*64
+    b=PostgresBackend(graph_db,object_store=Cache(),embedder=LexicalOnlyEmbedder())
+    downloaded=SimpleNamespace(sha256=sha,size_bytes=20)
+    monkeypatch.setenv('RKB_STAGING_MAX_BYTES','10000000')
+    try:
+        await reserve_source(b,owner,str(doc),'reimport-source',downloaded,'application/pdf')
+        ident=uuid5(doc,'source:'+sha)
+        with psycopg.connect(graph_db) as db:
+            db.execute("update rkb_documents set source_archive_status='verified',source_archive_ref='entry_verified' where id=%s",(doc,))
+            db.execute("update rkb_objects set created_at=now()-interval '2 hours' where id=%s",(ident,))
+        assert (await collect(b,apply=True))['deleted_objects']==1
+        with psycopg.connect(graph_db) as db:
+            used=db.execute('select coalesce(sum(size_bytes),0) from rkb_objects where deleted_at is null').fetchone()[0]
+        monkeypatch.setenv('RKB_STAGING_MAX_BYTES',str(used))
+        with pytest.raises(RuntimeError,match='capacity_exceeded'):
+            await reserve_source(b,owner,str(doc),'reimport-source',downloaded,'application/pdf')
+        monkeypatch.setenv('RKB_STAGING_MAX_BYTES','10000000')
+        await reserve_source(b,owner,str(doc),'reimport-source',downloaded,'application/pdf')
+        with psycopg.connect(graph_db) as db:
+            row=db.execute("select deleted_at,created_at>now()-interval '1 minute' from rkb_objects where id=%s",(ident,)).fetchone()
+            assert row==(None,True)
+        assert (await collect(b))['candidate_objects']==0
+    finally:await b.aclose()
+
+
+@pytest.mark.asyncio
 async def test_source_archive_lost_response_exact_replay_and_historical_roots(graph_db):
     from types import SimpleNamespace
     from regional_knowledge.source_archive import SourceArchive
@@ -58,11 +88,14 @@ async def test_source_archive_lost_response_exact_replay_and_historical_roots(gr
     class Client:
         def __init__(self):
             self.owner=owner.subject;self.issuer='https://vibe.test';self.grant={'destination_alias':'kb','source_thread_ref':'https://t.me/c/4368830579/2'}
-            self.puts={};self.lost=True;self.origin=None
+            self.puts={};self.lost=True;self.origin=None;self.blocked=True;self.retries=[]
         async def request(self,method,url,**kw):
             assert kw['content']==data
             return SimpleNamespace(json=lambda:{'asset_id':'asset_source'})
         async def call(self,name,args):
+            if name=='vibepublish_publication_update':
+                assert args['publication_id']=='pub_source' and args['change']['kind']=='retry_failed'
+                self.retries.append(args);self.blocked=False;return {'operation_id':'op_source'}
             cmd=args['command']
             if cmd['kind']=='put':
                 assert len(args['request_key'])<=128
@@ -73,6 +106,8 @@ async def test_source_archive_lost_response_exact_replay_and_historical_roots(gr
             return {'operation_id':'op_read'}
         def entry(self):return {'entry_ref':'entry_source','origin':self.origin,'thread_ref':self.grant['source_thread_ref']}
         async def receipt(self,op):
+            if op=='op_source' and self.blocked:
+                return {'state':'blocked','operation_complete':True,'resource_id':'pub_source','revision':1}
             return {'state':'verified','operation_complete':True,'media_store_items':[self.entry()],
                     'items':[{'media_evidence':[{'media_kind':'document','sha256':sha}]}]}
     b=PostgresBackend(graph_db,object_store=Store(),embedder=LexicalOnlyEmbedder());client=Client()
@@ -81,6 +116,10 @@ async def test_source_archive_lost_response_exact_replay_and_historical_roots(gr
         assert await archive.tick()==0
         with psycopg.connect(graph_db) as db:
             assert db.execute('select source_archive_status from rkb_documents where id=%s',(canonical,)).fetchone()[0]=='pending'
+            db.execute("update rkb_documents set source_archive_attempt_at=now()-interval '1 minute' where id=%s",(canonical,))
+        assert await archive.tick()==0 and len(client.retries)==1
+        with psycopg.connect(graph_db) as db:
+            db.execute("update rkb_documents set source_archive_attempt_at=now()-interval '1 minute' where id=%s",(canonical,))
         assert await archive.tick()==1
         assert await archive.tick()==0 and len(client.puts)==1
         with psycopg.connect(graph_db) as db:

@@ -53,9 +53,15 @@ async def reserve_source(backend, principal, document_id, key, downloaded, mime)
     ident=uuid5(UUID(document_id),'source:'+downloaded.sha256)
     async with backend.data_client._connection({'x-rkb-service':'1'}) as db:
         await db.execute("select pg_advisory_xact_lock(hashtext('rkb-staging-capacity'))")
-        existing=await(await db.execute('select id from rkb_objects where id=%s',(ident,))).fetchone()
-        if existing:return
+        await db.execute('select id from rkb_documents where id=%s for update',(UUID(document_id),))
+        existing=await(await db.execute('select id,deleted_at from rkb_objects where id=%s',(ident,))).fetchone()
+        if existing and existing['deleted_at'] is None:return
         used=await(await db.execute('select coalesce(sum(size_bytes),0)::bigint bytes from rkb_objects where deleted_at is null')).fetchone()
         if used['bytes']+downloaded.size_bytes>maximum:raise RuntimeError('source_staging_capacity_exceeded')
+        if existing:
+            # A deliberate revision after source-cache GC reuses the same identity,
+            # but must reserve capacity again and track the new temporary bytes.
+            await db.execute('update rkb_objects set deleted_at=null,created_at=now() where id=%s',(ident,))
+            return
         await db.execute("insert into rkb_objects(id,document_id,kind,object_key,sha256,mime_type,size_bytes,access_class) values(%s,%s,'source_pdf',%s,%s,%s,%s,'private')",
             (ident,UUID(document_id),key,downloaded.sha256,mime,downloaded.size_bytes))
