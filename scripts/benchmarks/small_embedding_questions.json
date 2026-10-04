@@ -1,0 +1,686 @@
+{
+  "document_id": "7ce738b0-d3d3-4fc2-9a61-aa58b537a0e9",
+  "revision": 1,
+  "corpus_sha256": "f1b3a74797e2cc11b82fbcdcb4611e5b8db871491244e9b3b584c91459d5171f",
+  "questions": [
+    {
+      "id": "q01",
+      "query": "Почему крепость Кёнигсберг получила своё название и какую роль играл король Оттокар?",
+      "classes": [
+        "name",
+        "cause",
+        "multi"
+      ],
+      "evidence_groups": [
+        [
+          "9869b831-1ff4-56bd-b304-a154c85d7468"
+        ],
+        [
+          "985ab824-72b4-532e-934c-96af2a42b7ac"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Название связывают с богемским королём, альтернативы не доказаны; он возглавил войско крестоносцев.",
+      "source_provenance": [
+        {
+          "chunk_id": "9869b831-1ff4-56bd-b304-a154c85d7468",
+          "text_sha256": "3eff8f1a7e3ca824e051c403f2ed97391e977efb3790d61ac5d306bb3946b681",
+          "physical_page_index": 4
+        },
+        {
+          "chunk_id": "985ab824-72b4-532e-934c-96af2a42b7ac",
+          "text_sha256": "2620db2a9085519cc61db5f9989dc0da9609df46ae178f99ae69048957f88b5e",
+          "physical_page_index": 4
+        }
+      ]
+    },
+    {
+      "id": "q02",
+      "query": "Когда Альтштадт получил городскую грамоту и какие права она закрепляла?",
+      "classes": [
+        "date",
+        "fact"
+      ],
+      "evidence_groups": [
+        [
+          "ff936345-f134-57f4-bc17-2738a0b061b7"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "28 февраля 1286; самоуправление по Кульмскому праву.",
+      "source_provenance": [
+        {
+          "chunk_id": "ff936345-f134-57f4-bc17-2738a0b061b7",
+          "text_sha256": "9ad362277048074df0c4b67ec5a98e4d49fcb54ef8864d5084a3bdc1e970d201",
+          "physical_page_index": 6
+        }
+      ]
+    },
+    {
+      "id": "q03",
+      "query": "Когда и на каком праве был основан Лёбенихт?",
+      "classes": [
+        "date",
+        "name"
+      ],
+      "evidence_groups": [
+        [
+          "ad2dd9c8-4cc6-561f-b20a-e24d200946f6"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "27 мая 1300; Кульмское право.",
+      "source_provenance": [
+        {
+          "chunk_id": "ad2dd9c8-4cc6-561f-b20a-e24d200946f6",
+          "text_sha256": "2ca9d7d76be5dfee411420cc4e30595915de060dbc6bb556401bd7d738dd020b",
+          "physical_page_index": 7
+        }
+      ]
+    },
+    {
+      "id": "q04",
+      "query": "Когда и на каком праве был основан Кнайпхоф?",
+      "classes": [
+        "date",
+        "name"
+      ],
+      "evidence_groups": [
+        [
+          "8441d1dc-825b-562a-a4ba-12bf43afa92e"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "6 апреля 1327; Кульмское право.",
+      "source_provenance": [
+        {
+          "chunk_id": "8441d1dc-825b-562a-a4ba-12bf43afa92e",
+          "text_sha256": "d8fd6ea86d9a43556ddbe861d9060a3fc30fb930e6b82b89e594430e798bb0da",
+          "physical_page_index": 8
+        }
+      ]
+    },
+    {
+      "id": "q05",
+      "query": "Почему Кёнигсберг стал резиденцией и столицей орденского государства в 1457 году?",
+      "classes": [
+        "cause",
+        "date"
+      ],
+      "evidence_groups": [
+        [
+          "02013e44-7067-561c-a421-145c11e9419f"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Людвиг фон Эрлихсхаузен вынужден оставить Мариенбург и прибывает 8 июня.",
+      "source_provenance": [
+        {
+          "chunk_id": "02013e44-7067-561c-a421-145c11e9419f",
+          "text_sha256": "487cf856269b707433f9044fa698088159914e20d304d0bf9876001a645f29cb",
+          "physical_page_index": 26
+        }
+      ]
+    },
+    {
+      "id": "q06",
+      "query": "Когда была основана Альбертина и какие задачи ставил перед университетом герцог Альбрехт?",
+      "classes": [
+        "date",
+        "multi",
+        "cause"
+      ],
+      "evidence_groups": [
+        [
+          "7220e9ff-5df8-535f-976f-382eb9e5cab1"
+        ],
+        [
+          "8691822a-67ad-52bc-9898-367c6b5eff98"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Цели: Евангелие, гуманизм, подготовка специалистов; открытие 17 августа 1544.",
+      "source_provenance": [
+        {
+          "chunk_id": "7220e9ff-5df8-535f-976f-382eb9e5cab1",
+          "text_sha256": "ceeb2e7c45fdd70788054cf4226a6b2e8fefe30aa769472c760b37811892f4e7",
+          "physical_page_index": 38
+        },
+        {
+          "chunk_id": "8691822a-67ad-52bc-9898-367c6b5eff98",
+          "text_sha256": "253a66593e481c25f280877c97910b71cc6bbd5ff06f6608b450126f3e3530f7",
+          "physical_page_index": 39
+        }
+      ]
+    },
+    {
+      "id": "q07",
+      "query": "Как чума 1709–1710 годов повлияла на население Кёнигсберга?",
+      "classes": [
+        "date",
+        "cause"
+      ],
+      "evidence_groups": [
+        [
+          "f5018c1c-8e9a-5d38-a921-9bc23349d5a0"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "9368 смертей от нескольких болезней, около четверти населения.",
+      "source_provenance": [
+        {
+          "chunk_id": "f5018c1c-8e9a-5d38-a921-9bc23349d5a0",
+          "text_sha256": "739f994f1da4b61c72de9a67838fa1bef69fa0e17b450b216b797294fc951b51",
+          "physical_page_index": 69
+        }
+      ]
+    },
+    {
+      "id": "q08",
+      "query": "Почему три города Кёнигсберга объединили в 1724 году?",
+      "classes": [
+        "cause",
+        "date"
+      ],
+      "evidence_groups": [
+        [
+          "aa0d8079-c604-51d7-9061-01cce5136319"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Экономия и упрощение тройного управления и финансов.",
+      "source_provenance": [
+        {
+          "chunk_id": "aa0d8079-c604-51d7-9061-01cce5136319",
+          "text_sha256": "cbffefc62e885836dc77ed614443fad9f6e6d27816a7d04885298a2bea94e959",
+          "physical_page_index": 71
+        }
+      ]
+    },
+    {
+      "id": "q09",
+      "query": "Какую роль играли голландские купцы в торговле Кёнигсберга в XVI–XVII веках?",
+      "classes": [
+        "fact",
+        "name"
+      ],
+      "evidence_groups": [
+        [
+          "25a0af7c-043e-5e03-be40-b80b16ccc73e"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Господствовали вместе с англичанами; вывоз зерна в Данию в 1522.",
+      "source_provenance": [
+        {
+          "chunk_id": "25a0af7c-043e-5e03-be40-b80b16ccc73e",
+          "text_sha256": "60b01646bf4c1dce5cd07d72edcb59ff5781397fd8efafa9064e3b0422e911e2",
+          "physical_page_index": 19
+        }
+      ]
+    },
+    {
+      "id": "q10",
+      "query": "Кто такой Иеронимус Рот и почему его конфликт с курфюрстом дошёл до преследования?",
+      "classes": [
+        "name",
+        "cause",
+        "multi"
+      ],
+      "evidence_groups": [
+        [
+          "6deca026-f8b8-51e6-9b0d-5db614284a62"
+        ],
+        [
+          "4a540ada-dd2d-5977-b294-f2ea7d4b842a"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Лидер сопротивления, призывал не платить налоги; контакты с Варшавой считались изменой.",
+      "source_provenance": [
+        {
+          "chunk_id": "6deca026-f8b8-51e6-9b0d-5db614284a62",
+          "text_sha256": "5664a7d8463f170a116a743d877419a7930714567f9281b9b9fb37f0f4d4c3de",
+          "physical_page_index": 61
+        },
+        {
+          "chunk_id": "4a540ada-dd2d-5977-b294-f2ea7d4b842a",
+          "text_sha256": "503a94814b6e49f4646ede2a6bfa88502f9f328c245467468c5077538315ed95",
+          "physical_page_index": 61
+        }
+      ]
+    },
+    {
+      "id": "q11",
+      "query": "Почему узник, которому предлагали освобождение через покаяние, так и остался за решёткой до смерти?",
+      "classes": [
+        "paraphrase",
+        "cause"
+      ],
+      "evidence_groups": [
+        [
+          "6c504976-bd45-59fd-97ee-463316ca0e26"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Рот считал себя правым, отказался просить помилование; заключение 16 лет.",
+      "source_provenance": [
+        {
+          "chunk_id": "6c504976-bd45-59fd-97ee-463316ca0e26",
+          "text_sha256": "97da9fd2d80539e66b964c3fd5697d41511a9b03285bd39aaf9b61defb3b6bdf",
+          "physical_page_index": 61
+        }
+      ]
+    },
+    {
+      "id": "q12",
+      "query": "Какой английский торговец был близким другом и собеседником Канта?",
+      "classes": [
+        "name",
+        "fact"
+      ],
+      "evidence_groups": [
+        [
+          "54c03dc3-75fa-5a39-b9a2-7e289bd65a99"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Джозеф Грин.",
+      "source_provenance": [
+        {
+          "chunk_id": "54c03dc3-75fa-5a39-b9a2-7e289bd65a99",
+          "text_sha256": "b4d4551c37d8042102c2b41fa085d5b8983cfa5d8720945d2c1ab9071b1c00a6",
+          "physical_page_index": 78
+        }
+      ]
+    },
+    {
+      "id": "q13",
+      "query": "Из-за чего производство пшеничной водки, расширенное меннонитами, пришло в упадок?",
+      "classes": [
+        "cause"
+      ],
+      "evidence_groups": [
+        [
+          "6eb6cf3e-5789-598c-b55e-ae4245092b4d"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Конкуренция дешёвой картофельной водки.",
+      "source_provenance": [
+        {
+          "chunk_id": "6eb6cf3e-5789-598c-b55e-ae4245092b4d",
+          "text_sha256": "6cc0dd930c0d3f0f2255ceaa6817bf86c50a963cc981cb6edd2a3c0556413a2d",
+          "physical_page_index": 78
+        }
+      ]
+    },
+    {
+      "id": "q14",
+      "query": "В какие годы правительство Пруссии работало в Кёнигсберге вместо Берлина?",
+      "classes": [
+        "date",
+        "paraphrase"
+      ],
+      "evidence_groups": [
+        [
+          "3435422a-0590-5ac0-a892-16d58d6b19bc"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Январь 1808 — декабрь 1809; столица в 1808–1809.",
+      "source_provenance": [
+        {
+          "chunk_id": "3435422a-0590-5ac0-a892-16d58d6b19bc",
+          "text_sha256": "3f2a5b981fbaab7e19ceec955302ca6d777668546b8b7f1695b7e028c3978aba",
+          "physical_page_index": 88
+        }
+      ]
+    },
+    {
+      "id": "q15",
+      "query": "Какие два человека создали Городское уложение и как оно изменило участие жителей в управлении?",
+      "classes": [
+        "name",
+        "cause",
+        "multi"
+      ],
+      "evidence_groups": [
+        [
+          "da949048-f8f3-5d96-ada8-6196f6091e9c"
+        ],
+        [
+          "d2361510-9b85-578c-9f05-3e13eac548dd"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Штайн и Фрай; выборные представители округов с цензом вместо сословных корпораций.",
+      "source_provenance": [
+        {
+          "chunk_id": "da949048-f8f3-5d96-ada8-6196f6091e9c",
+          "text_sha256": "27296073e69bbcc1ac9f0484a0a583ae1d5a0230c4f6119350f4009e76995e7c",
+          "physical_page_index": 88
+        },
+        {
+          "chunk_id": "d2361510-9b85-578c-9f05-3e13eac548dd",
+          "text_sha256": "08ca9951a994bc395f85f06aa47b735a6c49f4ba7c22ebe87f0622065dca67bb",
+          "physical_page_index": 88
+        }
+      ]
+    },
+    {
+      "id": "q16",
+      "query": "Почему первая городская избирательная система не давала голос всем пятидесяти тысячам жителей?",
+      "classes": [
+        "paraphrase",
+        "cause"
+      ],
+      "evidence_groups": [
+        [
+          "d2361510-9b85-578c-9f05-3e13eac548dd"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Ценз; только 3426 избирателей, требование землевладения к двум третям депутатов.",
+      "source_provenance": [
+        {
+          "chunk_id": "d2361510-9b85-578c-9f05-3e13eac548dd",
+          "text_sha256": "08ca9951a994bc395f85f06aa47b735a6c49f4ba7c22ebe87f0622065dca67bb",
+          "physical_page_index": 88
+        }
+      ]
+    },
+    {
+      "id": "q17",
+      "query": "Кто стал первым выборным обербургомистром и кто его сменил после ухода в 1810 году?",
+      "classes": [
+        "name",
+        "date"
+      ],
+      "evidence_groups": [
+        [
+          "55de49d6-3ff3-500a-9716-01405a18fb57"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Деетц, затем Август Вильгельм Хайдеманн.",
+      "source_provenance": [
+        {
+          "chunk_id": "55de49d6-3ff3-500a-9716-01405a18fb57",
+          "text_sha256": "da78b19fc64b20ec9d7936479ed2961abcad4e27d98d8564b7e29219d88c0726",
+          "physical_page_index": 88
+        }
+      ]
+    },
+    {
+      "id": "q18",
+      "query": "Где и когда состоялась массовая встреча восточнопрусских либералов с предложением Якоби о конституции?",
+      "classes": [
+        "name",
+        "date"
+      ],
+      "evidence_groups": [
+        [
+          "043e4ee8-0764-5554-82f0-1143901b8105"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Пиллау, 8 июня 1845, лесопарк Плантация.",
+      "source_provenance": [
+        {
+          "chunk_id": "043e4ee8-0764-5554-82f0-1143901b8105",
+          "text_sha256": "76a9cb1549fae6b44d533049a25827d258fbee24b61ba6ca5e66ed6a3a80132b",
+          "physical_page_index": 100
+        }
+      ]
+    },
+    {
+      "id": "q19",
+      "query": "Зачем были снесены дома у южной стороны замка, если сегодня их могли бы ценить за красоту?",
+      "classes": [
+        "paraphrase",
+        "cause"
+      ],
+      "evidence_groups": [
+        [
+          "709c0804-0265-579a-86f1-667edfd2b7d2"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Освобождали вид и пространство вокруг архитектурного памятника.",
+      "source_provenance": [
+        {
+          "chunk_id": "709c0804-0265-579a-86f1-667edfd2b7d2",
+          "text_sha256": "5ba93ce78a074ac00bfd1fe310ac35382d8a7cfced5657bf9bf5a4f8af6752a1",
+          "physical_page_index": 110
+        }
+      ]
+    },
+    {
+      "id": "q20",
+      "query": "В каком году уничтожили дом Канта и почему не превратили его в музей?",
+      "classes": [
+        "date",
+        "multi",
+        "cause"
+      ],
+      "evidence_groups": [
+        [
+          "dcfde9b6-07d6-5fc5-af70-53df0061e9d6"
+        ],
+        [
+          "fef12c8c-2299-5aac-a192-158742be8ba5"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "1893; фирма хотела расширить торговый дом.",
+      "source_provenance": [
+        {
+          "chunk_id": "dcfde9b6-07d6-5fc5-af70-53df0061e9d6",
+          "text_sha256": "2bc8c0e9c4cc832e7f0cd55f4319ef363bb5d0ae8e0fb781b93c26c48f81c007",
+          "physical_page_index": 110
+        },
+        {
+          "chunk_id": "fef12c8c-2299-5aac-a192-158742be8ba5",
+          "text_sha256": "a0cbc801434b6e03af9c6e9715cb5b5c26b9a8923011e9e563c1047c8442852b",
+          "physical_page_index": 110
+        }
+      ]
+    },
+    {
+      "id": "q21",
+      "query": "Как бургомистр Кёрте преодолел ограничения военных на расширение городской территории?",
+      "classes": [
+        "cause",
+        "name"
+      ],
+      "evidence_groups": [
+        [
+          "16b5bc07-d8ec-5f63-8817-ab2040dd3f39"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Включил 17 пригородов в 1905–1908, после чего военная казна уступила.",
+      "source_provenance": [
+        {
+          "chunk_id": "16b5bc07-d8ec-5f63-8817-ab2040dd3f39",
+          "text_sha256": "7713002538032d55aa59708e59d5c1a6b1aa6649171569ef85cc0b9a9c8994ba",
+          "physical_page_index": 110
+        }
+      ]
+    },
+    {
+      "id": "q22",
+      "query": "Когда началась Восточная ярмарка и какие страны регулярно участвовали?",
+      "classes": [
+        "date",
+        "name"
+      ],
+      "evidence_groups": [
+        [
+          "caf51d10-c758-52da-9237-2066c8ed2261"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Сентябрь 1920; СССР, скандинавские и среднеевропейские страны.",
+      "source_provenance": [
+        {
+          "chunk_id": "caf51d10-c758-52da-9237-2066c8ed2261",
+          "text_sha256": "23e3d0f8cd36190e4058ed6ace8e08c1465dc6a87ad935c683798cb6655d3a8f",
+          "physical_page_index": 125
+        }
+      ]
+    },
+    {
+      "id": "q23",
+      "query": "Какими средствами порт поддерживали открытым зимой и насколько углубили морской канал?",
+      "classes": [
+        "fact"
+      ],
+      "evidence_groups": [
+        [
+          "6c00a192-9d7a-52b9-af4b-fd3506b44324"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Три ледокола, глубина канала 8 м.",
+      "source_provenance": [
+        {
+          "chunk_id": "6c00a192-9d7a-52b9-af4b-fd3506b44324",
+          "text_sha256": "7d114e9c746a669017d98c19315e39ab8fb160434ee847d070f1f0a01d754e6a",
+          "physical_page_index": 125
+        }
+      ]
+    },
+    {
+      "id": "q24",
+      "query": "Какой город взял шефство над кёнигсбержцами после войны и когда освятили Кёнигсбергский дом?",
+      "classes": [
+        "name",
+        "date"
+      ],
+      "evidence_groups": [
+        [
+          "d9d2fac4-6199-52d0-b7c0-d1e7029a6897"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Дуйсбург с 1951; дом в 1968.",
+      "source_provenance": [
+        {
+          "chunk_id": "d9d2fac4-6199-52d0-b7c0-d1e7029a6897",
+          "text_sha256": "806636f5c47f33f5f849605649b8143b5c607a3dee2ec10b60239f451e35edae",
+          "physical_page_index": 139
+        }
+      ]
+    },
+    {
+      "id": "q25",
+      "query": "Каково точное население Калининграда по переписи 2026 года?",
+      "classes": [
+        "unanswerable",
+        "date"
+      ],
+      "evidence_groups": [],
+      "unanswerable": true,
+      "verification_note": "В историческом тексте нет переписи 2026; проверка всех чанков по 2026 дала ноль.",
+      "source_provenance": []
+    },
+    {
+      "id": "q26",
+      "query": "Какой действующий в октябре 2026 года тариф на проезд в калининградском трамвае?",
+      "classes": [
+        "unanswerable",
+        "fact"
+      ],
+      "evidence_groups": [],
+      "unanswerable": true,
+      "verification_note": "Книга не содержит актуального тарифа 2026; все чанки проверены по 2026.",
+      "source_provenance": []
+    },
+    {
+      "id": "q27",
+      "query": "Иеронимус Рот",
+      "classes": [
+        "keyword_control"
+      ],
+      "evidence_groups": [
+        [
+          "5ae7d9f9-ed94-5f28-8141-170509f0b7e3"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Short keyword control; explicitly relevant passage verified. Not counted as paraphrase.",
+      "source_provenance": [
+        {
+          "chunk_id": "5ae7d9f9-ed94-5f28-8141-170509f0b7e3",
+          "text_sha256": "e4e4fe910e8c89b2677e39527e96787ac7b3309e20b82805913f527b50e6601e",
+          "physical_page_index": 61
+        }
+      ]
+    },
+    {
+      "id": "q28",
+      "query": "Альбертина",
+      "classes": [
+        "keyword_control"
+      ],
+      "evidence_groups": [
+        [
+          "8691822a-67ad-52bc-9898-367c6b5eff98"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Short keyword control; explicitly relevant passage verified. Not counted as paraphrase.",
+      "source_provenance": [
+        {
+          "chunk_id": "8691822a-67ad-52bc-9898-367c6b5eff98",
+          "text_sha256": "253a66593e481c25f280877c97910b71cc6bbd5ff06f6608b450126f3e3530f7",
+          "physical_page_index": 39
+        }
+      ]
+    },
+    {
+      "id": "q29",
+      "query": "Шлосстайх",
+      "classes": [
+        "keyword_control"
+      ],
+      "evidence_groups": [
+        [
+          "7a612826-c13e-5ab4-8696-77f84f85d065"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Short keyword control; explicitly relevant passage verified. Not counted as paraphrase.",
+      "source_provenance": [
+        {
+          "chunk_id": "7a612826-c13e-5ab4-8696-77f84f85d065",
+          "text_sha256": "e7641714621dbd90ba29e62e86beb3fc71674f23e1f9d03a1fec8b1e11c75d81",
+          "physical_page_index": 110
+        }
+      ]
+    },
+    {
+      "id": "q30",
+      "query": "Восточная ярмарка",
+      "classes": [
+        "keyword_control"
+      ],
+      "evidence_groups": [
+        [
+          "caf51d10-c758-52da-9237-2066c8ed2261"
+        ]
+      ],
+      "unanswerable": false,
+      "verification_note": "Short keyword control; explicitly relevant passage verified. Not counted as paraphrase.",
+      "source_provenance": [
+        {
+          "chunk_id": "caf51d10-c758-52da-9237-2066c8ed2261",
+          "text_sha256": "23e3d0f8cd36190e4058ed6ace8e08c1465dc6a87ad935c683798cb6655d3a8f",
+          "physical_page_index": 125
+        }
+      ]
+    }
+  ]
+}
