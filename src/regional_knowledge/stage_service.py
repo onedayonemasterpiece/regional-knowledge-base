@@ -736,6 +736,7 @@ async def finalize_ingestion(
                 "text_start": start,
                 "text_end": end,
                 "text_sha256": hashlib.sha256(raw).hexdigest(),
+                "source_text":chunk.text,
                 "search_material": normalized,
                 "search_material_sha256": material_sha,
                 "title": chunk.title,
@@ -744,20 +745,7 @@ async def finalize_ingestion(
             }
         )
 
-    projection_bytes = bytes(projection)
-    projection_sha = hashlib.sha256(projection_bytes).hexdigest()
-    projection_key = (
-        f"users/{principal.subject}/documents/{document_id}/"
-        f"text/{revision}-{projection_sha}.txt"
-    )
-    text_object_id = await _ensure_object(
-        service,
-        document_id=document_id,
-        kind="text_projection",
-        object_key=projection_key,
-        data=projection_bytes,
-        mime_type="text/plain; charset=utf-8",
-    )
+    text_object_id = None
 
     embeddings, embedding_warnings = await _embeddings(
         service,
@@ -789,70 +777,20 @@ async def finalize_ingestion(
         dir=work_root,
     ) as temp_dir:
         source_path = Path(temp_dir) / "source.pdf"
-        await service.object_store.download_file(
-            str(source_object["object_key"]),
-            str(source_path),
-        )
+        from .source_archive import download_source
+        await download_source(service,principal,document_id,source_object,source_path)
         actual_sha, _ = await asyncio.to_thread(sha256_file, source_path)
         if actual_sha != row["source_sha256"]:
             raise RuntimeError(
                 "source PDF integrity check failed during finalize"
             )
 
-        # Page renders are canonical derived corpus objects, not an ephemeral
-        # side effect of the model-facing book_pages tool. Materialize every
-        # staged page during finalize so page evidence survives restarts and is
-        # linked from the active page graph.
-        expected_page_indexes = {
-            page.physical_page_index
-            for page in graph.pages
-        }
-        cursor = 0
-        total_pages = int(document.get("page_count") or 0)
-        while cursor < total_pages:
-            total, rendered_pages = await service.pdf_processor.render_file(
-                source_path,
-                start=cursor,
-                count=min(8, total_pages - cursor),
-            )
-            if total != total_pages or not rendered_pages:
-                raise RuntimeError("page render coverage changed during finalize")
-            for rendered_page in rendered_pages:
-                if rendered_page.physical_page_index not in expected_page_indexes:
-                    raise RuntimeError(
-                        "page render is outside the staged graph"
-                    )
-                if rendered_page.mime_type != "image/jpeg":
-                    raise RuntimeError(
-                        "canonical page renderer returned unsupported MIME type"
-                    )
-                page_sha = hashlib.sha256(rendered_page.data).hexdigest()
-                page_key = (
-                    f"users/{principal.subject}/documents/{document_id}/"
-                    f"pages/r{revision}/"
-                    f"{rendered_page.physical_page_index:06d}-{page_sha}.jpg"
-                )
-                page_render_object_ids[
-                    rendered_page.physical_page_index
-                ] = await _ensure_object(
-                    service,
-                    document_id=document_id,
-                    kind="page_render",
-                    object_key=page_key,
-                    data=rendered_page.data,
-                    mime_type=rendered_page.mime_type,
-                )
-            cursor += len(rendered_pages)
-
-        if set(page_render_object_ids) != expected_page_indexes:
-            raise RuntimeError("canonical page render coverage is incomplete")
-
         if graph.illustrations:
             page_by_id = {str(page.page_id): page for page in graph.pages}
             for item in graph.illustrations:
                 page = page_by_id[str(item.page_id)]
                 crop = await asyncio.to_thread(
-                    _crop_sync,
+                    __import__("regional_knowledge.source_adapter",fromlist=["crop_sync"]).crop_sync,
                     source_path,
                     page.physical_page_index,
                     item.bbox.model_dump(),
@@ -915,7 +853,7 @@ async def finalize_ingestion(
                 "width": page.width,
                 "height": page.height,
                 "layout_kind": page.layout_kind,
-                "page_object_id": page_render_object_ids[page.physical_page_index],
+                "page_object_id": None,
                 "revision": revision,
             }
         )
@@ -932,6 +870,7 @@ async def finalize_ingestion(
                     "text_sha256": hashlib.sha256(text).hexdigest()
                     if text
                     else None,
+                    "source_text":region.source_text,
                     "confidence": region.confidence,
                     "needs_review": region.needs_review,
                 }

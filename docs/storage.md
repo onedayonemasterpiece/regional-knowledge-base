@@ -197,8 +197,9 @@ inside Regional Knowledge MCP.
 ## Staged graph and finalization
 
 Semantic parsing does not write half-complete page graphs into active database
-tables. Each `stage` call merges into a canonical staged graph and writes a new
-immutable, content-hashed `document_graph` object. The ingestion row exposes
+tables. Each `stage` call merges into the canonical staged graph and replaces its current
+immutable, content-hashed pointer. Superseded snapshots become GC-eligible after
+the recovery grace; only the latest active-ingestion graph is required. The ingestion row exposes
 only its opaque object ID.
 
 Model-facing keys are deliberately short and local. The server deterministically
@@ -209,10 +210,11 @@ argument.
 
 Only `finalize` materializes a revision into Postgres. It creates:
 
-- one UTF-8 text projection with exact byte ranges and SHA-256 per chunk;
-- page and region provenance rows;
+- exact Postgres chunk/region source text with SHA-256 per chunk;
+- page and region provenance rows without permanent page-render objects;
 - region relations;
-- exact illustration crops derived from source-page bbox coordinates;
+- temporary exact illustration crops derived from source-page bbox coordinates,
+  eligible for deletion after verified archive;
 - illustration provenance rows;
 - FTS and vector retrieval rows.
 
@@ -220,3 +222,12 @@ The activation RPC independently checks complete page indexes, unresolved review
 flags, textual-region coverage and cross-document provenance before changing
 `active_revision`. Ordinary authenticated tokens cannot directly patch the
 active revision or mutate an already active materialized revision.
+
+## Implemented migration and lifecycle
+
+Migration 017 and the guarded exact-hash backfill switch canonical chunk/region
+text to Postgres. New imports omit permanent page renders/text projections.
+Verified source/illustration archives replace temporary source/crop objects;
+registered-object GC preserves active-ingestion and unverified-source recovery.
+The [operator procedure](operations/telegram-archive.md) defines capacity bounds,
+one-hour cache grace, exact source readback and opt-in bounded maintenance GC.

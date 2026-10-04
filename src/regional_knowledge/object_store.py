@@ -11,6 +11,7 @@ class ObjectStore(Protocol):
     async def put_bytes(self, key: str, data: bytes, content_type: str) -> None: ...
     async def put_file(self, key: str, path: str, content_type: str) -> None: ...
     async def download_file(self, key: str, path: str) -> None: ...
+    async def delete(self, key: str) -> None: ...
 
 
 class UnavailableObjectStore:
@@ -102,3 +103,6 @@ class S3ObjectStore:
 
     async def download_file(self, key: str, path: str) -> None:
         await asyncio.to_thread(self.client.download_file, self.bucket, key, path)
+
+    async def delete(self, key: str) -> None:
+        await asyncio.to_thread(self.client.delete_object, Bucket=self.bucket, Key=key)

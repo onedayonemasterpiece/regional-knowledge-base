@@ -427,7 +427,7 @@ class PostgresDataClient:
                 UUID(str(payload["p_document_id"])),
                 UUID(str(payload["p_ingestion_id"])),
                 int(payload["p_revision"]),
-                UUID(str(payload["p_text_object_id"])),
+                UUID(str(payload["p_text_object_id"])) if payload.get("p_text_object_id") else None,
                 json.dumps(payload.get("p_chunks") or [], ensure_ascii=False),
             )
         elif name == "rkb_activate_revision":

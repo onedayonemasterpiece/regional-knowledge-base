@@ -68,3 +68,7 @@ the RKB owner UUID, VibePublish issuer/client/rotating OAuth credentials, destin
 alias and private thread. Never commit it. OAuth refresh rotation is atomically
 persisted by the sole existing indexing owner; a revoked/expired grant leaves
 mirrors pending and imports/search independent.
+
+Migration 017 moves exact chunk/region text into Postgres and adds the dedicated
+source archive. New revisions do not persist page renders or text-projection
+objects. See [deployment, recovery and guarded GC](operations/telegram-archive.md).

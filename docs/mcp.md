@@ -68,9 +68,9 @@ the model would need to fetch separately. Each batch is deliberately small (defa
 4, maximum 8 pages) so vision context is bounded.
 
 Current implementation checkpoint:
-- `start(file)`: bounded HTTPS file-parameter download, exact SHA-256, PDF
+- `start(file)`: bounded HTTPS file-parameter download, exact SHA-256, PDF/DjVu
   inspection, private Object Storage persistence and private document/job creation;
-- `book_pages`: small deterministic JPEG page renders plus bounded native PDF
+- `book_pages`: small deterministic JPEG page renders plus bounded native/embedded source
   text blocks/bboxes, maximum 8 pages per call;
 - `stage`: the model submits page-local short keys (`region_key`,
   `illustration_key`) and semantic chunk references; the server creates stable

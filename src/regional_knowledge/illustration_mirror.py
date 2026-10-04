@@ -18,7 +18,7 @@ class VibePublishClient:
         self.issuer = self.grant['issuer'].rstrip('/')
         if not self.issuer.startswith('https://'):
             raise ValueError('VibePublish grant must use HTTPS')
-        self.http = httpx.AsyncClient(timeout=30, trust_env=False)
+        self.http = httpx.AsyncClient(timeout=120, trust_env=False)
         self.sequence = 0
 
     async def close(self):
@@ -63,7 +63,10 @@ class VibePublishClient:
         result = body['result']
         data = result.get('structuredContent') or json.loads(result['content'][0]['text'])
         if result.get('isError') or 'error' in data:
-            raise RuntimeError('VibePublish tool error')
+            code=data.get('error',{}).get('code','tool_failed')
+            import logging
+            logging.getLogger(__name__).warning(json.dumps({'event':'vibepublish_tool_failed','tool':name,'code':code}))
+            raise RuntimeError('VibePublish tool error: '+code)
         return data
 
     async def receipt(self, operation):

@@ -256,7 +256,7 @@ def build_server(
         title="Add or continue a book",
         description=(
             "Start or continue a resumable book/journal ingestion. Use start with an "
-            "attached PDF, then book_pages plus stage/validate/finalize/status as needed. "
+            "attached PDF or DjVu source, then book_pages plus stage/validate/finalize/status as needed. "
             "Finalization is the only step that makes an indexed revision active. "
             "For large books finalize starts or resumes server-side work and returns "
             "processing promptly; do not poll in a tight loop or keep the same ChatGPT "

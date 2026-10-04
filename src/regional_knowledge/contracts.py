@@ -377,6 +377,7 @@ class BookIngestOutput(BaseModel):
     next_cursor: str | None = None
     warnings: list[str] = Field(default_factory=list)
     indexing: IndexingStatus | None = None
+    source_archive_status: Literal["pending", "verified"] | None = None
 
 
 class DocumentAccessOutput(BaseModel):
