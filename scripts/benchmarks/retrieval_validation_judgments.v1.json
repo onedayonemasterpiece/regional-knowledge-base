@@ -1,0 +1,1357 @@
+{
+  "schema": "rkb-retrieval-judgments.v1",
+  "annotator": "ChatGPT model-assisted; same source/question author; no independent second expert",
+  "blinding": "Private pool contains no model names or ranks; order by stable opaque SHA ID. Initial five new answerable questions fully read and labeled semantically; other pairs explicitly unjudged unless source seed verified. Annotator has historical benchmark context; blinding is incomplete at study level.",
+  "pool_sha256": "d5135e0c76478225f4fc1069a7c12b25c8cab189e708e9fae52885d05987c76c",
+  "pool_pairs": 957,
+  "fully_judged_questions": [
+    "v31",
+    "v32",
+    "v33",
+    "v34",
+    "v35"
+  ],
+  "unknown_policy": "absence means unjudged, never grade0",
+  "judgments": [
+    {
+      "question_id": "q01",
+      "chunk_id": "985ab824-72b4-532e-934c-96af2a42b7ac",
+      "grade": 2,
+      "physical_pages": [
+        5
+      ],
+      "text_sha256": "2620db2a9085519cc61db5f9989dc0da9609df46ae178f99ae69048957f88b5e",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q01",
+      "chunk_id": "9869b831-1ff4-56bd-b304-a154c85d7468",
+      "grade": 2,
+      "physical_pages": [
+        5
+      ],
+      "text_sha256": "3eff8f1a7e3ca824e051c403f2ed97391e977efb3790d61ac5d306bb3946b681",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q02",
+      "chunk_id": "ff936345-f134-57f4-bc17-2738a0b061b7",
+      "grade": 2,
+      "physical_pages": [
+        7
+      ],
+      "text_sha256": "9ad362277048074df0c4b67ec5a98e4d49fcb54ef8864d5084a3bdc1e970d201",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q03",
+      "chunk_id": "ad2dd9c8-4cc6-561f-b20a-e24d200946f6",
+      "grade": 2,
+      "physical_pages": [
+        8
+      ],
+      "text_sha256": "2ca9d7d76be5dfee411420cc4e30595915de060dbc6bb556401bd7d738dd020b",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q04",
+      "chunk_id": "8441d1dc-825b-562a-a4ba-12bf43afa92e",
+      "grade": 2,
+      "physical_pages": [
+        9
+      ],
+      "text_sha256": "d8fd6ea86d9a43556ddbe861d9060a3fc30fb930e6b82b89e594430e798bb0da",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q05",
+      "chunk_id": "02013e44-7067-561c-a421-145c11e9419f",
+      "grade": 2,
+      "physical_pages": [
+        27
+      ],
+      "text_sha256": "487cf856269b707433f9044fa698088159914e20d304d0bf9876001a645f29cb",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q06",
+      "chunk_id": "7220e9ff-5df8-535f-976f-382eb9e5cab1",
+      "grade": 2,
+      "physical_pages": [
+        39
+      ],
+      "text_sha256": "ceeb2e7c45fdd70788054cf4226a6b2e8fefe30aa769472c760b37811892f4e7",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q06",
+      "chunk_id": "8691822a-67ad-52bc-9898-367c6b5eff98",
+      "grade": 2,
+      "physical_pages": [
+        40
+      ],
+      "text_sha256": "253a66593e481c25f280877c97910b71cc6bbd5ff06f6608b450126f3e3530f7",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q07",
+      "chunk_id": "f5018c1c-8e9a-5d38-a921-9bc23349d5a0",
+      "grade": 2,
+      "physical_pages": [
+        70
+      ],
+      "text_sha256": "739f994f1da4b61c72de9a67838fa1bef69fa0e17b450b216b797294fc951b51",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q08",
+      "chunk_id": "aa0d8079-c604-51d7-9061-01cce5136319",
+      "grade": 2,
+      "physical_pages": [
+        72
+      ],
+      "text_sha256": "cbffefc62e885836dc77ed614443fad9f6e6d27816a7d04885298a2bea94e959",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q09",
+      "chunk_id": "25a0af7c-043e-5e03-be40-b80b16ccc73e",
+      "grade": 2,
+      "physical_pages": [
+        20
+      ],
+      "text_sha256": "60b01646bf4c1dce5cd07d72edcb59ff5781397fd8efafa9064e3b0422e911e2",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q10",
+      "chunk_id": "4a540ada-dd2d-5977-b294-f2ea7d4b842a",
+      "grade": 2,
+      "physical_pages": [
+        62
+      ],
+      "text_sha256": "503a94814b6e49f4646ede2a6bfa88502f9f328c245467468c5077538315ed95",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q10",
+      "chunk_id": "6deca026-f8b8-51e6-9b0d-5db614284a62",
+      "grade": 2,
+      "physical_pages": [
+        62
+      ],
+      "text_sha256": "5664a7d8463f170a116a743d877419a7930714567f9281b9b9fb37f0f4d4c3de",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q11",
+      "chunk_id": "6c504976-bd45-59fd-97ee-463316ca0e26",
+      "grade": 2,
+      "physical_pages": [
+        62
+      ],
+      "text_sha256": "97da9fd2d80539e66b964c3fd5697d41511a9b03285bd39aaf9b61defb3b6bdf",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q12",
+      "chunk_id": "54c03dc3-75fa-5a39-b9a2-7e289bd65a99",
+      "grade": 2,
+      "physical_pages": [
+        79
+      ],
+      "text_sha256": "b4d4551c37d8042102c2b41fa085d5b8983cfa5d8720945d2c1ab9071b1c00a6",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q13",
+      "chunk_id": "6eb6cf3e-5789-598c-b55e-ae4245092b4d",
+      "grade": 2,
+      "physical_pages": [
+        79
+      ],
+      "text_sha256": "6cc0dd930c0d3f0f2255ceaa6817bf86c50a963cc981cb6edd2a3c0556413a2d",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q14",
+      "chunk_id": "3435422a-0590-5ac0-a892-16d58d6b19bc",
+      "grade": 2,
+      "physical_pages": [
+        89
+      ],
+      "text_sha256": "3f2a5b981fbaab7e19ceec955302ca6d777668546b8b7f1695b7e028c3978aba",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q15",
+      "chunk_id": "d2361510-9b85-578c-9f05-3e13eac548dd",
+      "grade": 2,
+      "physical_pages": [
+        89
+      ],
+      "text_sha256": "08ca9951a994bc395f85f06aa47b735a6c49f4ba7c22ebe87f0622065dca67bb",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q15",
+      "chunk_id": "da949048-f8f3-5d96-ada8-6196f6091e9c",
+      "grade": 2,
+      "physical_pages": [
+        89
+      ],
+      "text_sha256": "27296073e69bbcc1ac9f0484a0a583ae1d5a0230c4f6119350f4009e76995e7c",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q16",
+      "chunk_id": "d2361510-9b85-578c-9f05-3e13eac548dd",
+      "grade": 2,
+      "physical_pages": [
+        89
+      ],
+      "text_sha256": "08ca9951a994bc395f85f06aa47b735a6c49f4ba7c22ebe87f0622065dca67bb",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q17",
+      "chunk_id": "55de49d6-3ff3-500a-9716-01405a18fb57",
+      "grade": 2,
+      "physical_pages": [
+        89
+      ],
+      "text_sha256": "da78b19fc64b20ec9d7936479ed2961abcad4e27d98d8564b7e29219d88c0726",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q18",
+      "chunk_id": "043e4ee8-0764-5554-82f0-1143901b8105",
+      "grade": 2,
+      "physical_pages": [
+        101
+      ],
+      "text_sha256": "76a9cb1549fae6b44d533049a25827d258fbee24b61ba6ca5e66ed6a3a80132b",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q19",
+      "chunk_id": "709c0804-0265-579a-86f1-667edfd2b7d2",
+      "grade": 2,
+      "physical_pages": [
+        111
+      ],
+      "text_sha256": "5ba93ce78a074ac00bfd1fe310ac35382d8a7cfced5657bf9bf5a4f8af6752a1",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q20",
+      "chunk_id": "dcfde9b6-07d6-5fc5-af70-53df0061e9d6",
+      "grade": 2,
+      "physical_pages": [
+        111
+      ],
+      "text_sha256": "2bc8c0e9c4cc832e7f0cd55f4319ef363bb5d0ae8e0fb781b93c26c48f81c007",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q20",
+      "chunk_id": "fef12c8c-2299-5aac-a192-158742be8ba5",
+      "grade": 2,
+      "physical_pages": [
+        111
+      ],
+      "text_sha256": "a0cbc801434b6e03af9c6e9715cb5b5c26b9a8923011e9e563c1047c8442852b",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q21",
+      "chunk_id": "16b5bc07-d8ec-5f63-8817-ab2040dd3f39",
+      "grade": 2,
+      "physical_pages": [
+        111
+      ],
+      "text_sha256": "7713002538032d55aa59708e59d5c1a6b1aa6649171569ef85cc0b9a9c8994ba",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q22",
+      "chunk_id": "caf51d10-c758-52da-9237-2066c8ed2261",
+      "grade": 2,
+      "physical_pages": [
+        126
+      ],
+      "text_sha256": "23e3d0f8cd36190e4058ed6ace8e08c1465dc6a87ad935c683798cb6655d3a8f",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q23",
+      "chunk_id": "6c00a192-9d7a-52b9-af4b-fd3506b44324",
+      "grade": 2,
+      "physical_pages": [
+        126
+      ],
+      "text_sha256": "7d114e9c746a669017d98c19315e39ab8fb160434ee847d070f1f0a01d754e6a",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q24",
+      "chunk_id": "d9d2fac4-6199-52d0-b7c0-d1e7029a6897",
+      "grade": 2,
+      "physical_pages": [
+        140
+      ],
+      "text_sha256": "806636f5c47f33f5f849605649b8143b5c607a3dee2ec10b60239f451e35edae",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q27",
+      "chunk_id": "5ae7d9f9-ed94-5f28-8141-170509f0b7e3",
+      "grade": 1,
+      "physical_pages": [
+        62
+      ],
+      "text_sha256": "e4e4fe910e8c89b2677e39527e96787ac7b3309e20b82805913f527b50e6601e",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q28",
+      "chunk_id": "8691822a-67ad-52bc-9898-367c6b5eff98",
+      "grade": 1,
+      "physical_pages": [
+        40
+      ],
+      "text_sha256": "253a66593e481c25f280877c97910b71cc6bbd5ff06f6608b450126f3e3530f7",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q29",
+      "chunk_id": "7a612826-c13e-5ab4-8696-77f84f85d065",
+      "grade": 1,
+      "physical_pages": [
+        111
+      ],
+      "text_sha256": "e7641714621dbd90ba29e62e86beb3fc71674f23e1f9d03a1fec8b1e11c75d81",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "q30",
+      "chunk_id": "caf51d10-c758-52da-9237-2066c8ed2261",
+      "grade": 1,
+      "physical_pages": [
+        126
+      ],
+      "text_sha256": "23e3d0f8cd36190e4058ed6ace8e08c1465dc6a87ad935c683798cb6655d3a8f",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "02013e44-7067-561c-a421-145c11e9419f",
+      "grade": 0,
+      "physical_pages": [
+        27
+      ],
+      "text_sha256": "487cf856269b707433f9044fa698088159914e20d304d0bf9876001a645f29cb",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71",
+      "grade": 0,
+      "physical_pages": [
+        139
+      ],
+      "text_sha256": "aa4d5752d19ba2dfe09e37676c6a90e0eb54916d63036d8384ea654417eae85d",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "1657174b-c3ae-5d83-96f1-dc2744dc325d",
+      "grade": 0,
+      "physical_pages": [
+        73
+      ],
+      "text_sha256": "cafa4da5aa69b36df2c55bc49d27f42e6c5707174416e0607bcb8179e4ec32de",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "1cd8c473-6945-5308-a958-48941dc3b13a",
+      "grade": 1,
+      "physical_pages": [
+        11
+      ],
+      "text_sha256": "bcefb891c8553f633d8025905a5c799e0d11a79cdd81edba96832420463749d9",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "209be8db-9883-5a3d-bb22-3e2c24465bc7",
+      "grade": 0,
+      "physical_pages": [
+        117
+      ],
+      "text_sha256": "fbedb138124bea7306c085140fa78f17dada750a8be8d4e35bafc86b34ecb9a1",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "25a0af7c-043e-5e03-be40-b80b16ccc73e",
+      "grade": 0,
+      "physical_pages": [
+        20
+      ],
+      "text_sha256": "60b01646bf4c1dce5cd07d72edcb59ff5781397fd8efafa9064e3b0422e911e2",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "3bdd756d-eac5-5b1c-930a-10ba1892cf5f",
+      "grade": 0,
+      "physical_pages": [
+        15
+      ],
+      "text_sha256": "da1bbff3a150f88743ed2249b1d38b01ae15953b159e35997b46e0a9ce9be907",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "5832ab3d-6dd0-5325-8c66-a969a3795f6e",
+      "grade": 0,
+      "physical_pages": [
+        65
+      ],
+      "text_sha256": "bafa97e4a594f6cfb0f5ff20660db890a5d2197cd7bf89d7be0a2604375dfb1c",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "60348faf-b116-5737-8630-bf0a6abe0886",
+      "grade": 0,
+      "physical_pages": [
+        42
+      ],
+      "text_sha256": "887f48e38fb1a035ac401cb922da10dd57d10b859348ed99c8f44d73f3a97d79",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "679a64c1-e9ad-5982-bec2-600c8c86a460",
+      "grade": 2,
+      "physical_pages": [
+        10
+      ],
+      "text_sha256": "3cad80691ab8d469e15a1f3aa73a36d553f44e10ac3527515b4d3f0b46f8835b",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "70b40be8-44e5-5862-b34c-fbcce78121df",
+      "grade": 0,
+      "physical_pages": [
+        73
+      ],
+      "text_sha256": "187d1892c8657e7fc9b7066db80368342ed25ec253a940647199e17169fed945",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "81e91a03-8c54-501f-8309-20a538dbe98b",
+      "grade": 0,
+      "physical_pages": [
+        15
+      ],
+      "text_sha256": "73704da9654fd3559707548575431a9dfbf01c780fd1603d373ca8288d7cba58",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "8951ee1a-fd70-5b7f-bf0e-6bd5bd11e747",
+      "grade": 0,
+      "physical_pages": [
+        22
+      ],
+      "text_sha256": "6b437f3d63a06617480269582f51b872544a28d284bc5393be662b8661d5d4d2",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "9d1ab5b9-0f8e-572c-9311-dbf73860fd3e",
+      "grade": 0,
+      "physical_pages": [
+        118
+      ],
+      "text_sha256": "5bc17f8b2f6767c5c5ac5a3b832ca7db506046107fa8bf5d8a1e6c751a6a53e7",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "bb83b8a6-2447-5bd2-8170-cbcc9a850a66",
+      "grade": 0,
+      "physical_pages": [
+        117
+      ],
+      "text_sha256": "1c95acbbe343ceaaf20b450cc7b1b427056321b3f2b0775163a607ca2fe147a2",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "bd62a357-8656-5899-b6aa-c78a4a898ac2",
+      "grade": 0,
+      "physical_pages": [
+        20
+      ],
+      "text_sha256": "0fdacf85a657a003208177a33a77afd460f25a83c362d0c9e11bec870d94038f",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v31",
+      "chunk_id": "d78aaee3-21d0-51da-8139-203dc6a7fcdb",
+      "grade": 0,
+      "physical_pages": [
+        42
+      ],
+      "text_sha256": "49b1e54e9d4139deb171e1ed3f24c0a6e4c79e2c507154f33fec664770199da5",
+      "rationale": "Only the ownership/lease paragraph proves both requested facts. Cascade/mill uses provide context; later trade/industry passages do not."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "1a54430d-47ea-5ec2-94d3-66154702fa07",
+      "grade": 2,
+      "physical_pages": [
+        14
+      ],
+      "text_sha256": "ff53c84159966ca4b85b62ba9bfbe36fb33702b6e64643f3da6c9e93208b5a8e",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "26785a66-a078-5442-8834-e346a082eae1",
+      "grade": 0,
+      "physical_pages": [
+        16
+      ],
+      "text_sha256": "e81bcbb022e5c467ab644bc7534898f9cc3f2478b931582daacbefc2557dabb2",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "3bdd756d-eac5-5b1c-930a-10ba1892cf5f",
+      "grade": 0,
+      "physical_pages": [
+        15
+      ],
+      "text_sha256": "da1bbff3a150f88743ed2249b1d38b01ae15953b159e35997b46e0a9ce9be907",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "4c11718b-9afc-5a50-a7ec-03b117b55fb7",
+      "grade": 1,
+      "physical_pages": [
+        14
+      ],
+      "text_sha256": "88c3670c4165b4cc55f5908a5f460c458d1ca31d8b81c292b21efb6bd9f6dedd",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "4df87f93-806c-5ee3-81a1-3368e3a505e9",
+      "grade": 0,
+      "physical_pages": [
+        51
+      ],
+      "text_sha256": "ce9757a4d0dd2287f84e9d561ad63a85fb1e6a5190869cba3b97ce10d0ff2863",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "4e87e19d-41af-51c4-98cd-8acff0f100f7",
+      "grade": 0,
+      "physical_pages": [
+        72
+      ],
+      "text_sha256": "9d2ae3c80eafb52bc8fb4cf399ea036d5027c3e9fe0b54c2fa181b692830e3e1",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "6ade036c-efb0-59f0-b5f7-4a53e99a1680",
+      "grade": 0,
+      "physical_pages": [
+        33
+      ],
+      "text_sha256": "3fd76908e2e46f630c1afc2432b5976afb84dacf7b639ccb947b73298a2895f3",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "97f1e6eb-a7d3-5ecd-abc4-b630f90a40a7",
+      "grade": 1,
+      "physical_pages": [
+        14
+      ],
+      "text_sha256": "af5a4e95b463057c35a61fca97beeba8563bd5c2a21c5d2ba5e6b18dce841be0",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "980159c7-018d-54fe-9603-40fac6717522",
+      "grade": 0,
+      "physical_pages": [
+        73
+      ],
+      "text_sha256": "2a48d77746c409807fd73c70227bfc98302c163c3cdb15032400f4065d529c52",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "9b4214d1-cc62-5fbb-b2fa-49a85a14f458",
+      "grade": 0,
+      "physical_pages": [
+        126
+      ],
+      "text_sha256": "7e66108f45a06b186886de0e4cc2b492d7488fb72386ef1c1878d4d832332825",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "a4536bcf-b648-500c-bb0f-e344731ebdcb",
+      "grade": 0,
+      "physical_pages": [
+        34
+      ],
+      "text_sha256": "34329a3588b2f30b6c6cfd39a1f7e94cd1b6ece4f5872eaf8f5eccee1efb0971",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "d2361510-9b85-578c-9f05-3e13eac548dd",
+      "grade": 0,
+      "physical_pages": [
+        89
+      ],
+      "text_sha256": "08ca9951a994bc395f85f06aa47b735a6c49f4ba7c22ebe87f0622065dca67bb",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "e9c8922c-2f9a-50d0-8868-bc599c9ba139",
+      "grade": 0,
+      "physical_pages": [
+        72
+      ],
+      "text_sha256": "8dea7c2226df77597d73108781d7c7b9361f37c2f364b900df7e0dced2583ff9",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v32",
+      "chunk_id": "ff936345-f134-57f4-bc17-2738a0b061b7",
+      "grade": 1,
+      "physical_pages": [
+        7
+      ],
+      "text_sha256": "9ad362277048074df0c4b67ec5a98e4d49fcb54ef8864d5084a3bdc1e970d201",
+      "rationale": "Only the 24-member paragraph states the two groups of twelve. Adjacent appointments/city founding/judiciary explain structure; later merger/reforms describe different arrangements."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "3556f4f1-c66a-5a75-afdb-5f25b4cb45da",
+      "grade": 0,
+      "physical_pages": [
+        80
+      ],
+      "text_sha256": "eabc290bb330869c91e720bda4d47faa0049f7970964b8d349d35a0c51dac207",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "5023a38b-01bb-5ccd-8c27-567299aafa16",
+      "grade": 0,
+      "physical_pages": [
+        107
+      ],
+      "text_sha256": "42eb148f55320959a10085ad59a978b17f315fdd3deda9950ae19ba71cb7201f",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "705dc574-5cdc-5efb-9c12-d535d09f00bd",
+      "grade": 0,
+      "physical_pages": [
+        18
+      ],
+      "text_sha256": "6b959b85b1d16e882609acaa309516a3f5a04782a2e931014e74290105c81168",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "7a47fbf4-1887-520f-a593-bc1ea84a921a",
+      "grade": 0,
+      "physical_pages": [
+        11
+      ],
+      "text_sha256": "081dcf41688b5eb7022479b3304a34ca521a796d68e59b4250b735f8630641c3",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "7ca83838-da3c-5b2b-be27-121e1e23c23c",
+      "grade": 0,
+      "physical_pages": [
+        30
+      ],
+      "text_sha256": "4078372938d65e0e8c8ca632074c18ddb8bd89378200a73d62518514fcb6c107",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "81e91a03-8c54-501f-8309-20a538dbe98b",
+      "grade": 0,
+      "physical_pages": [
+        15
+      ],
+      "text_sha256": "73704da9654fd3559707548575431a9dfbf01c780fd1603d373ca8288d7cba58",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "8296184c-1215-5ca6-90ac-f1fbd8e77c1d",
+      "grade": 0,
+      "physical_pages": [
+        79
+      ],
+      "text_sha256": "1fec23cfe7063cc0852655d8fabc0dfcf474d0bdc94ba1bc1722f06eb48cbf10",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "8441d1dc-825b-562a-a4ba-12bf43afa92e",
+      "grade": 0,
+      "physical_pages": [
+        9
+      ],
+      "text_sha256": "d8fd6ea86d9a43556ddbe861d9060a3fc30fb930e6b82b89e594430e798bb0da",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "8951ee1a-fd70-5b7f-bf0e-6bd5bd11e747",
+      "grade": 0,
+      "physical_pages": [
+        22
+      ],
+      "text_sha256": "6b437f3d63a06617480269582f51b872544a28d284bc5393be662b8661d5d4d2",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "8b1d33b1-0b55-5131-9403-3a028658fd85",
+      "grade": 0,
+      "physical_pages": [
+        19
+      ],
+      "text_sha256": "fdc2591d49c713ef7626a61ae816599845649b32f3bcf88dfb20076211190bac",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "9107e154-795b-5900-9334-671dc25846be",
+      "grade": 2,
+      "physical_pages": [
+        14
+      ],
+      "text_sha256": "2fc7d6a6076cb96fac628c4823cf25cdd337745d18418ce9ac684d3c974efc9a",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "ce073fe9-36fa-5f46-94a6-b99d4eb2f73e",
+      "grade": 1,
+      "physical_pages": [
+        15
+      ],
+      "text_sha256": "ba2468be67c3b8ee42aad4c79cc918530358bb0632e32716dc18b826b8fdc7f6",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "d5f1ac8d-bc71-599e-a84b-ff4b11c66c1f",
+      "grade": 0,
+      "physical_pages": [
+        12
+      ],
+      "text_sha256": "ab9d314337354fe7248b8e981113157a5cb3bb4cc8b9bb3ac6462f2312ca6996",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "d78aaee3-21d0-51da-8139-203dc6a7fcdb",
+      "grade": 0,
+      "physical_pages": [
+        42
+      ],
+      "text_sha256": "49b1e54e9d4139deb171e1ed3f24c0a6e4c79e2c507154f33fec664770199da5",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "fdc7bd15-bd62-54c5-9b8b-60f6caae48c6",
+      "grade": 1,
+      "physical_pages": [
+        15
+      ],
+      "text_sha256": "de0f99e2640bb0fb51620958def88826b09307e1f46f31265a41d2a8b898163e",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v33",
+      "chunk_id": "fea45882-c65d-5528-a3e6-29bd158a352d",
+      "grade": 0,
+      "physical_pages": [
+        19
+      ],
+      "text_sha256": "9feb6af9eba77e8fc30266e9d356c483e726047a5b5e2c68095df0bf5a497310",
+      "rationale": "Olaf paragraph identifies the oldest guild and founding. Continuation and guild-hall organization are useful context; Order trading court, schools and later lodges are different institutions."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "0159ffc4-4781-5710-9c48-38ef2808a946",
+      "grade": 2,
+      "physical_pages": [
+        21
+      ],
+      "text_sha256": "78de0b3d2fceb65d13ece041bcddbb6cca7433c7d8775fba72871270d594ace9",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "0f0197af-9824-5db9-a63b-4b70e9ed819f",
+      "grade": 0,
+      "physical_pages": [
+        118
+      ],
+      "text_sha256": "7b4a44a3ec1788af2f3800fe75dad4969fb164f59f0313034bde5cb0d5991254",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "1657174b-c3ae-5d83-96f1-dc2744dc325d",
+      "grade": 0,
+      "physical_pages": [
+        73
+      ],
+      "text_sha256": "cafa4da5aa69b36df2c55bc49d27f42e6c5707174416e0607bcb8179e4ec32de",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "25a0af7c-043e-5e03-be40-b80b16ccc73e",
+      "grade": 0,
+      "physical_pages": [
+        20
+      ],
+      "text_sha256": "60b01646bf4c1dce5cd07d72edcb59ff5781397fd8efafa9064e3b0422e911e2",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "40e07753-4b48-596c-84ac-fab2be890d62",
+      "grade": 0,
+      "physical_pages": [
+        73
+      ],
+      "text_sha256": "bfe31b49f94f7561a7e1a9e41559cb8c253cd71daa8f345f7d3767ef0ccd9c47",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "4e3430c6-7441-5c0a-86e5-3d28aeb762a9",
+      "grade": 0,
+      "physical_pages": [
+        88
+      ],
+      "text_sha256": "3cba71497537ac5f91bfe93fa146ed7e0be65d50eff290aba956515aecb7c384",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "5832ab3d-6dd0-5325-8c66-a969a3795f6e",
+      "grade": 0,
+      "physical_pages": [
+        65
+      ],
+      "text_sha256": "bafa97e4a594f6cfb0f5ff20660db890a5d2197cd7bf89d7be0a2604375dfb1c",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "87913f94-5c48-5a88-9899-95a7b31b5f74",
+      "grade": 1,
+      "physical_pages": [
+        42
+      ],
+      "text_sha256": "f3b5b1dca0b71a79db95b7bc5d926ad1eeeb70058502f27c645347559276e040",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "8a852a89-650e-5dc2-b1b5-474ffd97ad74",
+      "grade": 0,
+      "physical_pages": [
+        117
+      ],
+      "text_sha256": "bee9932f03a737bc1a147954226e387d97b59efc400a05cbd6bcbcd3f2748a20",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "8b1d33b1-0b55-5131-9403-3a028658fd85",
+      "grade": 0,
+      "physical_pages": [
+        19
+      ],
+      "text_sha256": "fdc2591d49c713ef7626a61ae816599845649b32f3bcf88dfb20076211190bac",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "bb83b8a6-2447-5bd2-8170-cbcc9a850a66",
+      "grade": 0,
+      "physical_pages": [
+        117
+      ],
+      "text_sha256": "1c95acbbe343ceaaf20b450cc7b1b427056321b3f2b0775163a607ca2fe147a2",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "bd62a357-8656-5899-b6aa-c78a4a898ac2",
+      "grade": 1,
+      "physical_pages": [
+        20
+      ],
+      "text_sha256": "0fdacf85a657a003208177a33a77afd460f25a83c362d0c9e11bec870d94038f",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v34",
+      "chunk_id": "c34096e1-53e1-519c-a373-90704a601ed9",
+      "grade": 0,
+      "physical_pages": [
+        116
+      ],
+      "text_sha256": "f78d33ddbae75a4c30b310d5275993cf75fbf61e3dad877ad33dd8fdb9e922b8",
+      "rationale": "Only the explicit denial of staple right answers the question. Guest-trade restrictions and transit geography explain context, not existence of that right."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "0159ffc4-4781-5710-9c48-38ef2808a946",
+      "grade": 0,
+      "physical_pages": [
+        21
+      ],
+      "text_sha256": "78de0b3d2fceb65d13ece041bcddbb6cca7433c7d8775fba72871270d594ace9",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "2a0a0503-730b-5fdd-a6ed-7aa914f837f3",
+      "grade": 0,
+      "physical_pages": [
+        90
+      ],
+      "text_sha256": "eae4f67fc3cb9e66bda1abcbdb270654da90c0dc9d16f4ef4dd5b60b9aff20e8",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "2b09eab9-8ea9-5a17-9f91-48ebcf19e4c9",
+      "grade": 0,
+      "physical_pages": [
+        5
+      ],
+      "text_sha256": "d5ac53d783329176f21956d4ce58d3bb13c4e707a91ab10d9d7a4a9ede684707",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "46bd8f9e-6cd5-5210-bc30-0454d8a0bf7a",
+      "grade": 0,
+      "physical_pages": [
+        6
+      ],
+      "text_sha256": "406a7dde3b7e03e5d62c91db3529ee2e38a728f546623e697ef1451bc247e6af",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "53661eca-a4ee-5c7b-95f0-0f1827326e86",
+      "grade": 1,
+      "physical_pages": [
+        14
+      ],
+      "text_sha256": "4e4de2f2c48c7f793fcdeeefafa5354b45ff7d3c47420373093387fb5db1537a",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "62d7913d-5876-5ae5-8465-bcff8d47fcab",
+      "grade": 0,
+      "physical_pages": [
+        46
+      ],
+      "text_sha256": "c477d7d3bc8db85c86ca49ccfc0772896f3838a2c06c3027d21c7e84a5c53d07",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "62d810db-6fca-5c06-bd30-26fef4aad23d",
+      "grade": 0,
+      "physical_pages": [
+        11
+      ],
+      "text_sha256": "dca42d895d2ff086b3e5916cf215cd6054606e45083f5d94b18660e93b36d59d",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "679a64c1-e9ad-5982-bec2-600c8c86a460",
+      "grade": 0,
+      "physical_pages": [
+        10
+      ],
+      "text_sha256": "3cad80691ab8d469e15a1f3aa73a36d553f44e10ac3527515b4d3f0b46f8835b",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "6caeac2a-627e-528d-b8a1-be4059941111",
+      "grade": 0,
+      "physical_pages": [
+        51
+      ],
+      "text_sha256": "8abe05f86d29a981bba9262940476d82b6a65696894e8eeea5efefb18780a6ad",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "6f38b65a-6b5d-507a-9364-9efa26e2b590",
+      "grade": 0,
+      "physical_pages": [
+        19
+      ],
+      "text_sha256": "7f1965c64757f69e76f1e1abee0de7e6ae5f3259c1d3ade8d644ed1acb864334",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "75da3b82-febe-5a9a-8acb-10d6903b9d1b",
+      "grade": 2,
+      "physical_pages": [
+        21
+      ],
+      "text_sha256": "769dbd1421a681536bf5602cfa323f943a411fd2fcd133139111d206cf6e722b",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "9ed3034d-4a05-586c-9ebd-b8d835674214",
+      "grade": 0,
+      "physical_pages": [
+        47
+      ],
+      "text_sha256": "734c8e7f7d97cc93d27d90ba2ca72f481318d1ceed5afd8e4c97437844fa4d1d",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "a00bd603-c341-5115-8b14-ba108aab0c19",
+      "grade": 0,
+      "physical_pages": [
+        9
+      ],
+      "text_sha256": "46aed1f733d91bbd941ff21b0b70b3bf70d9d4ba3ce0431b80450a6e83ea270d",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "c4266292-cc6d-5167-8dbb-d0e04294b17c",
+      "grade": 0,
+      "physical_pages": [
+        8
+      ],
+      "text_sha256": "3b0a33b29b4cc25adaa52c9c88d7ce1781285d976ee693392e7e63637a6f7bb0",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "e6dad452-60f5-5a41-b6cd-654fd3a2a622",
+      "grade": 0,
+      "physical_pages": [
+        22
+      ],
+      "text_sha256": "a283e78ed7f8b27ee0f91ad560c45eb159a01eea330967801c5ce798ff909a06",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v35",
+      "chunk_id": "ebc745ff-6b05-5be3-b4e6-0867e15a5220",
+      "grade": 1,
+      "physical_pages": [
+        10
+      ],
+      "text_sha256": "2c50c81f6af2b8eb30b729b4c1a63329863395a121679d34342c94f27fd1d72f",
+      "rationale": "Only the inseparable land/privilege paragraph answers transferability. Home brewing and privilege holders give context; mill/property/other trade rights do not establish brewing transfer rules."
+    },
+    {
+      "question_id": "v36",
+      "chunk_id": "c8433b4c-2731-500e-89a8-ed176babc872",
+      "grade": 2,
+      "physical_pages": [
+        44
+      ],
+      "text_sha256": "fd5d59f0f209252934e3934de402357107c56fc8e79700980bb47e9bdd2ec2f0",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v37",
+      "chunk_id": "caf71329-7736-5b5e-ac24-79e0884fa991",
+      "grade": 2,
+      "physical_pages": [
+        50
+      ],
+      "text_sha256": "58f7164454e8c66dbb347d44f057d0b44985175cff27df55d0ebe3536165260e",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v38",
+      "chunk_id": "72cc734b-934b-5d9e-8880-7bfd17d6ed9c",
+      "grade": 2,
+      "physical_pages": [
+        55
+      ],
+      "text_sha256": "2c7cec7d9ceec32ed615b1b4f86191a84e9ad87982274540ff074b5c2b611039",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v39",
+      "chunk_id": "1657174b-c3ae-5d83-96f1-dc2744dc325d",
+      "grade": 2,
+      "physical_pages": [
+        73
+      ],
+      "text_sha256": "cafa4da5aa69b36df2c55bc49d27f42e6c5707174416e0607bcb8179e4ec32de",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v40",
+      "chunk_id": "470b4178-92b3-5acd-836a-c74f05640c8e",
+      "grade": 2,
+      "physical_pages": [
+        91
+      ],
+      "text_sha256": "87ccd16c30e513905e72e4edf011a0f1ff0a81f9b5608422c7abfaec99f6d3e9",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v41",
+      "chunk_id": "4c0071b4-b6a6-5173-85d3-1bcbe8fcd421",
+      "grade": 2,
+      "physical_pages": [
+        95
+      ],
+      "text_sha256": "baea95189714727f0f95220b5eae6f1122df79cfe59bb818b24f3f9ab0c2506f",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v42",
+      "chunk_id": "41798b62-3f8b-5e61-9b7a-84aed96d6074",
+      "grade": 2,
+      "physical_pages": [
+        104
+      ],
+      "text_sha256": "44b339bb080961c9346b07dc33b06e250926bd4ee35b5e0bb27a5e579d0f543a",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v43",
+      "chunk_id": "a58b4357-b7aa-5dad-8c20-7e0c6f90ad2d",
+      "grade": 2,
+      "physical_pages": [
+        115
+      ],
+      "text_sha256": "e8c289a4a08bc54b6de5534c30ec9b6d0d1c96202b8a2284e6e29e6999a64290",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v44",
+      "chunk_id": "eb15e735-7cca-5cbf-a63a-5d2796b51ee4",
+      "grade": 2,
+      "physical_pages": [
+        120
+      ],
+      "text_sha256": "3e7d319aab7682d5cb0b13980661a52120947848bc493319cb038c5a212a5f4c",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v45",
+      "chunk_id": "3e1a7367-f3c1-5f54-8ed5-d0e3dc8e4070",
+      "grade": 2,
+      "physical_pages": [
+        130
+      ],
+      "text_sha256": "3a2d56041c9ab78929c4e1b1c9fde44b2feb334506844987c43603618469d751",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v46",
+      "chunk_id": "90ac2be6-c7d0-5449-80a6-53b59866166e",
+      "grade": 2,
+      "physical_pages": [
+        136
+      ],
+      "text_sha256": "56914cb42d427cb8fad5e3254b7ae16aa980f111a152db215720a412e2f8caf5",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v47",
+      "chunk_id": "2de2ebee-0e35-5dd2-a85d-9515268107f9",
+      "grade": 2,
+      "physical_pages": [
+        142
+      ],
+      "text_sha256": "f5d705e5ddab88009449d30cea4796ccde122494f694a5105f03df40c8f1b1c4",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v48",
+      "chunk_id": "ea2d51d1-be92-554c-bc80-6bfe3f138d82",
+      "grade": 2,
+      "physical_pages": [
+        142
+      ],
+      "text_sha256": "fae3fd596850659678995603716ae5a77fa77f71d793fe4557198ee487701457",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v49",
+      "chunk_id": "2c4c9943-18aa-510d-b01d-df3639effe4f",
+      "grade": 2,
+      "physical_pages": [
+        142
+      ],
+      "text_sha256": "0fb0fe1598b9884891cfdcd872c7ef302e22889b2fffedc94c700e317fa6681c",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v50",
+      "chunk_id": "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+      "grade": 2,
+      "physical_pages": [
+        142
+      ],
+      "text_sha256": "a893fcb31d6df6e944d86b734a61b5374688bac6a03ed73c1afae033874cfa61",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v51",
+      "chunk_id": "679a64c1-e9ad-5982-bec2-600c8c86a460",
+      "grade": 2,
+      "physical_pages": [
+        10
+      ],
+      "text_sha256": "3cad80691ab8d469e15a1f3aa73a36d553f44e10ac3527515b4d3f0b46f8835b",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v52",
+      "chunk_id": "1a54430d-47ea-5ec2-94d3-66154702fa07",
+      "grade": 2,
+      "physical_pages": [
+        14
+      ],
+      "text_sha256": "ff53c84159966ca4b85b62ba9bfbe36fb33702b6e64643f3da6c9e93208b5a8e",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v53",
+      "chunk_id": "0159ffc4-4781-5710-9c48-38ef2808a946",
+      "grade": 2,
+      "physical_pages": [
+        21
+      ],
+      "text_sha256": "78de0b3d2fceb65d13ece041bcddbb6cca7433c7d8775fba72871270d594ace9",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v54",
+      "chunk_id": "75da3b82-febe-5a9a-8acb-10d6903b9d1b",
+      "grade": 2,
+      "physical_pages": [
+        21
+      ],
+      "text_sha256": "769dbd1421a681536bf5602cfa323f943a411fd2fcd133139111d206cf6e722b",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v55",
+      "chunk_id": "caf71329-7736-5b5e-ac24-79e0884fa991",
+      "grade": 2,
+      "physical_pages": [
+        50
+      ],
+      "text_sha256": "58f7164454e8c66dbb347d44f057d0b44985175cff27df55d0ebe3536165260e",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v56",
+      "chunk_id": "72cc734b-934b-5d9e-8880-7bfd17d6ed9c",
+      "grade": 2,
+      "physical_pages": [
+        55
+      ],
+      "text_sha256": "2c7cec7d9ceec32ed615b1b4f86191a84e9ad87982274540ff074b5c2b611039",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v57",
+      "chunk_id": "a58b4357-b7aa-5dad-8c20-7e0c6f90ad2d",
+      "grade": 2,
+      "physical_pages": [
+        115
+      ],
+      "text_sha256": "e8c289a4a08bc54b6de5534c30ec9b6d0d1c96202b8a2284e6e29e6999a64290",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v58",
+      "chunk_id": "eb15e735-7cca-5cbf-a63a-5d2796b51ee4",
+      "grade": 2,
+      "physical_pages": [
+        120
+      ],
+      "text_sha256": "3e7d319aab7682d5cb0b13980661a52120947848bc493319cb038c5a212a5f4c",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v59",
+      "chunk_id": "41798b62-3f8b-5e61-9b7a-84aed96d6074",
+      "grade": 2,
+      "physical_pages": [
+        104
+      ],
+      "text_sha256": "44b339bb080961c9346b07dc33b06e250926bd4ee35b5e0bb27a5e579d0f543a",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    },
+    {
+      "question_id": "v60",
+      "chunk_id": "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+      "grade": 2,
+      "physical_pages": [
+        142
+      ],
+      "text_sha256": "a893fcb31d6df6e944d86b734a61b5374688bac6a03ed73c1afae033874cfa61",
+      "rationale": "Source-verified fact/correction locator; sparse seed judgment, not an exhaustive pool assessment."
+    }
+  ]
+}

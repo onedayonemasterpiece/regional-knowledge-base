@@ -9,7 +9,8 @@ from regional_knowledge.supabase_backend import backend_from_env
 
 async def main():
     root = Path(sys.argv[1])
-    questions = json.loads(Path('scripts/benchmarks/small_embedding_questions.json').read_text())['questions']
+    fixture = Path(sys.argv[2]) if len(sys.argv) > 2 else Path('scripts/benchmarks/small_embedding_questions.json')
+    questions = json.loads(fixture.read_text())['questions']
     load_service_env()
     backend = backend_from_env()
     assert type(backend.embedder).__name__ == 'LexicalOnlyEmbedder', 'external embeddings must be disabled'
@@ -17,7 +18,7 @@ async def main():
     try:
         async with backend.data_client._connection({'x-rkb-service':'1'}) as conn:
             await conn.execute('set transaction read only')
-            for i in range(104):
+            for i in range(len(questions) if len(sys.argv) > 2 else 104):
                 q = questions[i%len(questions)]
                 start = time.perf_counter()
                 rows = await (await conn.execute('''

@@ -811,8 +811,15 @@ class SupabaseRestBackend(KnowledgeBackend):
         if not source_object:
             raise RuntimeError("ingestion source object is missing")
 
+        text_part = None
         try:
-            start = int(cursor if cursor is not None else "0")
+            if cursor and cursor.startswith("text:"):
+                _, page_index, block_index, offset = cursor.split(":")
+                start = int(page_index)
+                text_part = (int(block_index), int(offset))
+                batch_size = 1
+            else:
+                start = int(cursor if cursor is not None else "0")
         except (TypeError, ValueError) as exc:
             raise ValueError("cursor must be a zero-based page index") from exc
         if start < 0:
@@ -833,6 +840,7 @@ class SupabaseRestBackend(KnowledgeBackend):
                 source_path,
                 start=start,
                 count=max(1, min(int(batch_size), 8)),
+                **({"text_part": text_part} if text_part is not None else {}),
             )
 
         revision = int(row.get("staged_revision") or 1)
@@ -848,6 +856,7 @@ class SupabaseRestBackend(KnowledgeBackend):
                 data=page.data,
                 native_text=page.native_text,
                 native_blocks=page.native_blocks,
+                native_text_info=page.native_text_info,
             )
             for page in rendered
         )

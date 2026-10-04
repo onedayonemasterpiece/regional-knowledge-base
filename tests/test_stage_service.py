@@ -207,6 +207,8 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
             "pages": [{
                 "page_id": page_id,
                 "physical_page_index": 0,
+                "source_material": "visual_reviewed",
+                "source_review_note": "Synthetic page image checked; text and figure represented",
                 "layout_kind": "single_column",
                 "regions": [
                     {

@@ -97,3 +97,30 @@ query and document roles using the same pinned export and preprocessing. The
 hash detects exact agreement; tolerance comparison permits small CPU/backend
 floating-point differences. Test the local fixture with the ordinary project
 suite; no ML dependency or download is required by CI.
+
+## Retrieval follow-up (2026-10-04, continuing PR #26)
+
+The original benchmark is historical evidence on an **incomplete source
+projection**. Read `docs/reports/gause-import-coverage-audit-20261004.md` and
+`docs/reports/embedding-retrieval-validation-followup-20261004.md` before treating
+its E5 recommendation as quality acceptance. Original fixtures/results stay
+unchanged; `retrieval_validation_questions.v1.json`,
+`retrieval_validation_original_qrels.v2.json` and
+`retrieval_validation_judgments.v1.json` are separate artifacts. The latter is
+explicitly partial, model-assisted and coverage-aware.
+
+Reuse the original retained `lab` path and venv/cache. A separate retained
+`output` directory stores private follow-up evidence, with `questions-freeze.json`
+and the new-query read-only `lexical.json`. Run `retrieval_validation_worker.py
+lab output e5` and then `gemma` under the same systemd `MemoryMax=1G`,
+`MemorySwapMax=0`, `CPUQuota=100%`, `taskset` controls as the original launcher;
+its own guard rejects missing hard memory/CPU limits. It encodes only new queries
+and necessary batch1 documents, never overwriting historical matrices/results.
+`small_embedding_lexical.py output scripts/benchmarks/retrieval_validation_questions.v1.json`
+uses the unchanged production baseline and verifies NULL-vector RPC equivalence.
+Then run `retrieval_validation_pool.py lab output` and
+`summarize_retrieval_validation.py lab output`. Pool passages, ranking matrices
+and full coverage output remain private; only aggregate statistics/locators go
+into Git. Full pool absence of a judgment means unknown, never grade zero.
+The source audit command and read-only object provenance are retained with the
+private evidence; do not fetch/reimport source implicitly to reproduce metrics.

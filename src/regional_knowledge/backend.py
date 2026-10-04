@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .contracts import (
@@ -24,6 +24,7 @@ class RenderedPage:
     data: bytes
     native_text: str | None = None
     native_blocks: tuple[dict[str, Any], ...] = ()
+    native_text_info: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

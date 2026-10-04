@@ -1,0 +1,801 @@
+{
+  "schema": "rkb-retrieval-validation-questions.v1",
+  "corpus_sha256": "f1b3a74797e2cc11b82fbcdcb4611e5b8db871491244e9b3b584c91459d5171f",
+  "pdf_sha256": "10328207e2664aabef78201fb997e18f3ea8e48f8d7d56a98f3d6832b21ddb65",
+  "labeling": "ChatGPT model-assisted source-selected; no independent second annotator",
+  "split_policy": "No train/test; paired positive/negative facts share family. New fact families overlap neither old question intent nor tuned training set; chronology museum related to old Kant family so no claim of independent test.",
+  "questions": [
+    {
+      "id": "v31",
+      "family": "mills",
+      "query": "Кому принадлежали кёнигсбергские мельницы и кто мог пользоваться ими по аренде?",
+      "classes": [
+        "natural",
+        "relation"
+      ],
+      "status": "answerable",
+      "answer_outline": "Орден владел мельницами; ремесленники арендовали их.",
+      "evidence_groups": [
+        [
+          "679a64c1-e9ad-5982-bec2-600c8c86a460"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "679a64c1-e9ad-5982-bec2-600c8c86a460",
+          "physical_page": 10,
+          "text_sha256": "3cad80691ab8d469e15a1f3aa73a36d553f44e10ac3527515b4d3f0b46f8835b",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v32",
+      "family": "council",
+      "query": "Как делились 24 члена городского муниципалитета между постоянным и общим Советом?",
+      "classes": [
+        "natural",
+        "fact"
+      ],
+      "status": "answerable",
+      "answer_outline": "Два Совета по двенадцать человек.",
+      "evidence_groups": [
+        [
+          "1a54430d-47ea-5ec2-94d3-66154702fa07"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "1a54430d-47ea-5ec2-94d3-66154702fa07",
+          "physical_page": 14,
+          "text_sha256": "ff53c84159966ca4b85b62ba9bfbe36fb33702b6e64643f3da6c9e93208b5a8e",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v33",
+      "family": "guild",
+      "query": "Какая купеческая гильдия считалась старейшей и какой кнайпхофский двор она основала?",
+      "classes": [
+        "natural",
+        "rare_name",
+        "relation"
+      ],
+      "status": "answerable",
+      "answer_outline": "Олафская гильдия основала Юнкерхоф.",
+      "evidence_groups": [
+        [
+          "9107e154-795b-5900-9334-671dc25846be"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "9107e154-795b-5900-9334-671dc25846be",
+          "physical_page": 14,
+          "text_sha256": "2fc7d6a6076cb96fac628c4823cf25cdd337745d18418ce9ac684d3c974efc9a",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v34",
+      "family": "staple",
+      "query": "Было ли в Кёнигсберге право обязательного выставления транзитных товаров на продажу?",
+      "classes": [
+        "natural",
+        "negation",
+        "paraphrase"
+      ],
+      "status": "answerable",
+      "answer_outline": "Право складирования никогда не существовало, хотя город добивался его.",
+      "evidence_groups": [
+        [
+          "0159ffc4-4781-5710-9c48-38ef2808a946"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "0159ffc4-4781-5710-9c48-38ef2808a946",
+          "physical_page": 21,
+          "text_sha256": "78de0b3d2fceb65d13ece041bcddbb6cca7433c7d8775fba72871270d594ace9",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v35",
+      "family": "brewing",
+      "query": "Можно ли было продать право пивоварения отдельно от земельного участка?",
+      "classes": [
+        "natural",
+        "negation",
+        "relation"
+      ],
+      "status": "answerable",
+      "answer_outline": "Право связано с участком и передавалось только вместе с ним.",
+      "evidence_groups": [
+        [
+          "75da3b82-febe-5a9a-8acb-10d6903b9d1b"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "75da3b82-febe-5a9a-8acb-10d6903b9d1b",
+          "physical_page": 21,
+          "text_sha256": "769dbd1421a681536bf5602cfa323f943a411fd2fcd133139111d206cf6e722b",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v36",
+      "family": "heir",
+      "query": "Кто был сыном Альбрехта и Анны Брауншвейгской и где он родился?",
+      "classes": [
+        "natural",
+        "multi",
+        "relation"
+      ],
+      "status": "answerable",
+      "answer_outline": "Альбрехт Фридрих родился в Нойхаузене.",
+      "evidence_groups": [
+        [
+          "c8433b4c-2731-500e-89a8-ed176babc872"
+        ],
+        [
+          "c8433b4c-2731-500e-89a8-ed176babc872"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "c8433b4c-2731-500e-89a8-ed176babc872",
+          "physical_page": 44,
+          "text_sha256": "fd5d59f0f209252934e3934de402357107c56fc8e79700980bb47e9bdd2ec2f0",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v37",
+      "family": "recognition",
+      "query": "Какие два деятеля помогли признанию бранденбургских курфюрстов польским королём?",
+      "classes": [
+        "natural",
+        "multi",
+        "rare_name"
+      ],
+      "status": "answerable",
+      "answer_outline": "Фабиан цу Дона и Михаэль Фризе.",
+      "evidence_groups": [
+        [
+          "caf71329-7736-5b5e-ac24-79e0884fa991"
+        ],
+        [
+          "caf71329-7736-5b5e-ac24-79e0884fa991"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "caf71329-7736-5b5e-ac24-79e0884fa991",
+          "physical_page": 50,
+          "text_sha256": "58f7164454e8c66dbb347d44f057d0b44985175cff27df55d0ebe3536165260e",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v38",
+      "family": "war30",
+      "query": "Как Тридцатилетняя война сказалась на Пруссии по сравнению с остальной Германией?",
+      "classes": [
+        "natural",
+        "paraphrase"
+      ],
+      "status": "answerable",
+      "answer_outline": "Пруссию обошла стороной, кроме нескольких лет шведско-польской войны; хозяйство росло.",
+      "evidence_groups": [
+        [
+          "72cc734b-934b-5d9e-8880-7bfd17d6ed9c"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "72cc734b-934b-5d9e-8880-7bfd17d6ed9c",
+          "physical_page": 55,
+          "text_sha256": "2c7cec7d9ceec32ed615b1b4f86191a84e9ad87982274540ff074b5c2b611039",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v39",
+      "family": "trade",
+      "query": "Какие товары закупали в Нюрнберге для рождественской ярмарки?",
+      "classes": [
+        "natural",
+        "fact"
+      ],
+      "status": "answerable",
+      "answer_outline": "В основном игрушки.",
+      "evidence_groups": [
+        [
+          "1657174b-c3ae-5d83-96f1-dc2744dc325d"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "1657174b-c3ae-5d83-96f1-dc2744dc325d",
+          "physical_page": 73,
+          "text_sha256": "cafa4da5aa69b36df2c55bc49d27f42e6c5707174416e0607bcb8179e4ec32de",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v40",
+      "family": "celler",
+      "query": "Почему учительская семинария Карла Августа Целлера не достигла своей цели?",
+      "classes": [
+        "natural",
+        "cause",
+        "rare_name"
+      ],
+      "status": "answerable",
+      "answer_outline": "Заорганизованность подавила добровольность обучения.",
+      "evidence_groups": [
+        [
+          "470b4178-92b3-5acd-836a-c74f05640c8e"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "470b4178-92b3-5acd-836a-c74f05640c8e",
+          "physical_page": 91,
+          "text_sha256": "87ccd16c30e513905e72e4edf011a0f1ff0a81f9b5608422c7abfaec99f6d3e9",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v41",
+      "family": "hagen",
+      "query": "Для кого в 1830 году создали первую прусскую кафедру истории искусств?",
+      "classes": [
+        "natural",
+        "rare_name"
+      ],
+      "status": "answerable",
+      "answer_outline": "Для Эрнста Августа Хагена.",
+      "evidence_groups": [
+        [
+          "4c0071b4-b6a6-5173-85d3-1bcbe8fcd421"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "4c0071b4-b6a6-5173-85d3-1bcbe8fcd421",
+          "physical_page": 95,
+          "text_sha256": "baea95189714727f0f95220b5eae6f1122df79cfe59bb818b24f3f9ab0c2506f",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v42",
+      "family": "rail",
+      "query": "Когда открыли вокзал в присутствии Фридриха Вильгельма IV и с каким городом связала железная дорога Кёнигсберг?",
+      "classes": [
+        "natural",
+        "multi",
+        "date"
+      ],
+      "status": "answerable",
+      "answer_outline": "2 августа 1853; с Берлином.",
+      "evidence_groups": [
+        [
+          "41798b62-3f8b-5e61-9b7a-84aed96d6074"
+        ],
+        [
+          "41798b62-3f8b-5e61-9b7a-84aed96d6074"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "41798b62-3f8b-5e61-9b7a-84aed96d6074",
+          "physical_page": 104,
+          "text_sha256": "44b339bb080961c9346b07dc33b06e250926bd4ee35b5e0bb27a5e579d0f543a",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v43",
+      "family": "students",
+      "query": "В каком году число студентов университета впервые превысило тысячу и сколько слушателей было к 1914 году?",
+      "classes": [
+        "natural",
+        "multi",
+        "date"
+      ],
+      "status": "answerable",
+      "answer_outline": "1904; 1650 слушателей.",
+      "evidence_groups": [
+        [
+          "a58b4357-b7aa-5dad-8c20-7e0c6f90ad2d"
+        ],
+        [
+          "a58b4357-b7aa-5dad-8c20-7e0c6f90ad2d"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "a58b4357-b7aa-5dad-8c20-7e0c6f90ad2d",
+          "physical_page": 115,
+          "text_sha256": "e8c289a4a08bc54b6de5534c30ec9b6d0d1c96202b8a2284e6e29e6999a64290",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v44",
+      "family": "pappritz",
+      "query": "Кто в начале Первой мировой войны призывал не занятых работой жителей покинуть крепость?",
+      "classes": [
+        "natural",
+        "rare_name",
+        "paraphrase"
+      ],
+      "status": "answerable",
+      "answer_outline": "Военный губернатор генерал-лейтенант фон Паппритц.",
+      "evidence_groups": [
+        [
+          "eb15e735-7cca-5cbf-a63a-5d2796b51ee4"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "eb15e735-7cca-5cbf-a63a-5d2796b51ee4",
+          "physical_page": 120,
+          "text_sha256": "3e7d319aab7682d5cb0b13980661a52120947848bc493319cb038c5a212a5f4c",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v45",
+      "family": "crisis",
+      "query": "Сколько кёнигсбергских фирм разорилось с 1929 по 1931 год?",
+      "classes": [
+        "natural",
+        "fact"
+      ],
+      "status": "answerable",
+      "answer_outline": "513 фирм.",
+      "evidence_groups": [
+        [
+          "3e1a7367-f3c1-5f54-8ed5-d0e3dc8e4070"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "3e1a7367-f3c1-5f54-8ed5-d0e3dc8e4070",
+          "physical_page": 130,
+          "text_sha256": "3a2d56041c9ab78929c4e1b1c9fde44b2feb334506844987c43603618469d751",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v46",
+      "family": "lasch",
+      "query": "Какие разнородные части находились в распоряжении коменданта Отто Лаша?",
+      "classes": [
+        "natural",
+        "rare_name",
+        "paraphrase"
+      ],
+      "status": "answerable",
+      "answer_outline": "Остатки боевых частей, новые подразделения, тревожные группы и фольксштурм.",
+      "evidence_groups": [
+        [
+          "90ac2be6-c7d0-5449-80a6-53b59866166e"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "90ac2be6-c7d0-5449-80a6-53b59866166e",
+          "physical_page": 136,
+          "text_sha256": "56914cb42d427cb8fad5e3254b7ae16aa980f111a152db215720a412e2f8caf5",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v47",
+      "family": "museum",
+      "query": "Где и когда открыли Музей Канта и что прошло тогда впервые?",
+      "classes": [
+        "natural",
+        "multi"
+      ],
+      "status": "answerable",
+      "answer_outline": "1974, западная пристройка Альбертины; первый Кантовский симпозиум.",
+      "evidence_groups": [
+        [
+          "2de2ebee-0e35-5dd2-a85d-9515268107f9"
+        ],
+        [
+          "2de2ebee-0e35-5dd2-a85d-9515268107f9"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "2de2ebee-0e35-5dd2-a85d-9515268107f9",
+          "physical_page": 142,
+          "text_sha256": "f5d705e5ddab88009449d30cea4796ccde122494f694a5105f03df40c8f1b1c4",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v48",
+      "family": "juditten",
+      "query": "Какое событие произошло с Юдиттер Кирхе в 1986 году?",
+      "classes": [
+        "natural",
+        "rare_name"
+      ],
+      "status": "answerable",
+      "answer_outline": "Освящена как первая православная церковь послевоенного Калининграда и северной Восточной Пруссии.",
+      "evidence_groups": [
+        [
+          "ea2d51d1-be92-554c-bc80-6bfe3f138d82"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "ea2d51d1-be92-554c-bc80-6bfe3f138d82",
+          "physical_page": 142,
+          "text_sha256": "fae3fd596850659678995603716ae5a77fa77f71d793fe4557198ee487701457",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v49",
+      "family": "amber",
+      "query": "Какое название свободной экономической зоны получила область в 1992 году?",
+      "classes": [
+        "natural",
+        "fact"
+      ],
+      "status": "answerable",
+      "answer_outline": "Янтарь.",
+      "evidence_groups": [
+        [
+          "2c4c9943-18aa-510d-b01d-df3639effe4f"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "2c4c9943-18aa-510d-b01d-df3639effe4f",
+          "physical_page": 142,
+          "text_sha256": "0fb0fe1598b9884891cfdcd872c7ef302e22889b2fffedc94c700e317fa6681c",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v50",
+      "family": "open",
+      "query": "Какие три города стали открытыми с февраля 1991 года?",
+      "classes": [
+        "natural",
+        "multi"
+      ],
+      "status": "answerable",
+      "answer_outline": "Калининград, Светлогорск, Советск.",
+      "evidence_groups": [
+        [
+          "599d0fc3-aafe-5953-9b2b-80946b5a2b93"
+        ],
+        [
+          "599d0fc3-aafe-5953-9b2b-80946b5a2b93"
+        ]
+      ],
+      "source_provenance": [
+        {
+          "chunk_id": "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+          "physical_page": 142,
+          "text_sha256": "a893fcb31d6df6e944d86b734a61b5374688bac6a03ed73c1afae033874cfa61",
+          "verification": "Direct source block/prefix verified in original PDF; authored before ranking."
+        }
+      ]
+    },
+    {
+      "id": "v51",
+      "family": "mills",
+      "query": "В каком году ремесленники выкупили у Ордена все мельницы, согласно этому описанию?",
+      "classes": [
+        "negative",
+        "false_premise"
+      ],
+      "status": "negative",
+      "negative_kind": "false_premise",
+      "evidence_groups": [],
+      "correction_groups": [
+        [
+          "679a64c1-e9ad-5982-bec2-600c8c86a460"
+        ]
+      ],
+      "verification_note": "Указана аренда, а не выкуп всех мельниц.",
+      "source_provenance": [
+        {
+          "chunk_id": "679a64c1-e9ad-5982-bec2-600c8c86a460",
+          "physical_page": 10,
+          "text_sha256": "3cad80691ab8d469e15a1f3aa73a36d553f44e10ac3527515b4d3f0b46f8835b"
+        }
+      ]
+    },
+    {
+      "id": "v52",
+      "family": "council",
+      "query": "Почему каждый из двух городских Советов состоял из 24 человек?",
+      "classes": [
+        "negative",
+        "false_premise"
+      ],
+      "status": "negative",
+      "negative_kind": "false_premise",
+      "evidence_groups": [],
+      "correction_groups": [
+        [
+          "1a54430d-47ea-5ec2-94d3-66154702fa07"
+        ]
+      ],
+      "verification_note": "Всего 24; по 12 в каждом.",
+      "source_provenance": [
+        {
+          "chunk_id": "1a54430d-47ea-5ec2-94d3-66154702fa07",
+          "physical_page": 14,
+          "text_sha256": "ff53c84159966ca4b85b62ba9bfbe36fb33702b6e64643f3da6c9e93208b5a8e"
+        }
+      ]
+    },
+    {
+      "id": "v53",
+      "family": "staple",
+      "query": "Когда Кёнигсберг впервые ввёл право складирования транзитных товаров?",
+      "classes": [
+        "negative",
+        "false_premise"
+      ],
+      "status": "negative",
+      "negative_kind": "false_premise",
+      "evidence_groups": [],
+      "correction_groups": [
+        [
+          "0159ffc4-4781-5710-9c48-38ef2808a946"
+        ]
+      ],
+      "verification_note": "Источник прямо говорит, что права никогда не было.",
+      "source_provenance": [
+        {
+          "chunk_id": "0159ffc4-4781-5710-9c48-38ef2808a946",
+          "physical_page": 21,
+          "text_sha256": "78de0b3d2fceb65d13ece041bcddbb6cca7433c7d8775fba72871270d594ace9"
+        }
+      ]
+    },
+    {
+      "id": "v54",
+      "family": "brewing",
+      "query": "В каком точном году пожаловали первое право пивоварения и скольким домам?",
+      "classes": [
+        "negative",
+        "detail_unknown"
+      ],
+      "status": "negative",
+      "negative_kind": "detail_unknown",
+      "evidence_groups": [],
+      "correction_groups": [
+        [
+          "75da3b82-febe-5a9a-8acb-10d6903b9d1b"
+        ]
+      ],
+      "verification_note": "Источник прямо признаёт, что год и число домов неизвестны.",
+      "source_provenance": [
+        {
+          "chunk_id": "75da3b82-febe-5a9a-8acb-10d6903b9d1b",
+          "physical_page": 21,
+          "text_sha256": "769dbd1421a681536bf5602cfa323f943a411fd2fcd133139111d206cf6e722b"
+        }
+      ]
+    },
+    {
+      "id": "v55",
+      "family": "recognition",
+      "query": "Какой географ Михаэль Фризе помог польскому признанию курфюрстов?",
+      "classes": [
+        "negative",
+        "confused_person"
+      ],
+      "status": "negative",
+      "negative_kind": "confused_person",
+      "evidence_groups": [],
+      "correction_groups": [
+        [
+          "caf71329-7736-5b5e-ac24-79e0884fa991"
+        ]
+      ],
+      "verification_note": "Фризе назван юристом и бургомистром, не географом.",
+      "source_provenance": [
+        {
+          "chunk_id": "caf71329-7736-5b5e-ac24-79e0884fa991",
+          "physical_page": 50,
+          "text_sha256": "58f7164454e8c66dbb347d44f057d0b44985175cff27df55d0ebe3536165260e"
+        }
+      ]
+    },
+    {
+      "id": "v56",
+      "family": "war30",
+      "query": "Какие районы Пруссии Тридцатилетняя война разоряла на протяжении целой человеческой жизни?",
+      "classes": [
+        "negative",
+        "false_premise"
+      ],
+      "status": "negative",
+      "negative_kind": "false_premise",
+      "evidence_groups": [],
+      "correction_groups": [
+        [
+          "72cc734b-934b-5d9e-8880-7bfd17d6ed9c"
+        ]
+      ],
+      "verification_note": "Разорение Германии противопоставлено обходу Пруссии стороной.",
+      "source_provenance": [
+        {
+          "chunk_id": "72cc734b-934b-5d9e-8880-7bfd17d6ed9c",
+          "physical_page": 55,
+          "text_sha256": "2c7cec7d9ceec32ed615b1b4f86191a84e9ad87982274540ff074b5c2b611039"
+        }
+      ]
+    },
+    {
+      "id": "v57",
+      "family": "students",
+      "query": "Почему к 1914 году Альбертина насчитывала десять тысяч студентов?",
+      "classes": [
+        "negative",
+        "false_premise"
+      ],
+      "status": "negative",
+      "negative_kind": "false_premise",
+      "evidence_groups": [],
+      "correction_groups": [
+        [
+          "a58b4357-b7aa-5dad-8c20-7e0c6f90ad2d"
+        ]
+      ],
+      "verification_note": "В источнике 1650 слушателей.",
+      "source_provenance": [
+        {
+          "chunk_id": "a58b4357-b7aa-5dad-8c20-7e0c6f90ad2d",
+          "physical_page": 115,
+          "text_sha256": "e8c289a4a08bc54b6de5534c30ec9b6d0d1c96202b8a2284e6e29e6999a64290"
+        }
+      ]
+    },
+    {
+      "id": "v58",
+      "family": "pappritz",
+      "query": "Почему фон Паппритц запретил неработающим жителям покидать город в 1914 году?",
+      "classes": [
+        "negative",
+        "false_premise"
+      ],
+      "status": "negative",
+      "negative_kind": "false_premise",
+      "evidence_groups": [],
+      "correction_groups": [
+        [
+          "eb15e735-7cca-5cbf-a63a-5d2796b51ee4"
+        ]
+      ],
+      "verification_note": "Он призывал таких жителей покинуть город.",
+      "source_provenance": [
+        {
+          "chunk_id": "eb15e735-7cca-5cbf-a63a-5d2796b51ee4",
+          "physical_page": 120,
+          "text_sha256": "3e7d319aab7682d5cb0b13980661a52120947848bc493319cb038c5a212a5f4c"
+        }
+      ]
+    },
+    {
+      "id": "v59",
+      "family": "rail",
+      "query": "Почему король присутствовал при открытии вокзала 2 августа 1863 года?",
+      "classes": [
+        "negative",
+        "false_premise"
+      ],
+      "status": "negative",
+      "negative_kind": "false_premise",
+      "evidence_groups": [],
+      "correction_groups": [
+        [
+          "41798b62-3f8b-5e61-9b7a-84aed96d6074"
+        ]
+      ],
+      "verification_note": "Встреча датирована 1853 годом.",
+      "source_provenance": [
+        {
+          "chunk_id": "41798b62-3f8b-5e61-9b7a-84aed96d6074",
+          "physical_page": 104,
+          "text_sha256": "44b339bb080961c9346b07dc33b06e250926bd4ee35b5e0bb27a5e579d0f543a"
+        }
+      ]
+    },
+    {
+      "id": "v60",
+      "family": "open",
+      "query": "Какие города получили открытый статус 1 февраля 1981 года?",
+      "classes": [
+        "negative",
+        "false_premise"
+      ],
+      "status": "negative",
+      "negative_kind": "false_premise",
+      "evidence_groups": [],
+      "correction_groups": [
+        [
+          "599d0fc3-aafe-5953-9b2b-80946b5a2b93"
+        ]
+      ],
+      "verification_note": "Дата в проверенной хронологии — 1991, не 1981.",
+      "source_provenance": [
+        {
+          "chunk_id": "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+          "physical_page": 142,
+          "text_sha256": "a893fcb31d6df6e944d86b734a61b5374688bac6a03ed73c1afae033874cfa61"
+        }
+      ]
+    },
+    {
+      "id": "v61",
+      "family": "visual-caption-168",
+      "query": "Какую дату открытия главного железнодорожного вокзала указывает подпись к его фотографии?",
+      "classes": [
+        "source_gap"
+      ],
+      "status": "source_gap",
+      "evidence_groups": [],
+      "source_provenance": [
+        {
+          "physical_page": 168,
+          "locator": "caption below/alongside scanned illustration"
+        }
+      ],
+      "verification_note": "Дата видна в подписи на сканированной странице; совпадения текста в snapshot не гарантированы."
+    },
+    {
+      "id": "v62",
+      "family": "visual-caption-174",
+      "query": "Какой архитектор построил Дом техники и в каком году, согласно подписи к фотографии?",
+      "classes": [
+        "source_gap"
+      ],
+      "status": "source_gap",
+      "evidence_groups": [],
+      "source_provenance": [
+        {
+          "physical_page": 174,
+          "locator": "caption below/alongside scanned illustration"
+        }
+      ],
+      "verification_note": "Архитектор и год видны в подписи, которая не импортирована."
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "rkb-original-qrel-review.v2",
+  "based_on_sha256": "b06c6ee0a1b44bd9a246009432deaed28e87c992989d294ff59ba1cd90b2cbd0",
+  "annotator": "ChatGPT model-assisted",
+  "changes": [
+    {
+      "question_id": "q15",
+      "evidence_groups": [
+        [
+          "d2361510-9b85-578c-9f05-3e13eac548dd"
+        ],
+        [
+          "d2361510-9b85-578c-9f05-3e13eac548dd"
+        ]
+      ],
+      "reason": "This single paragraph names Stein/Frey and describes representative governance; preceding paragraph is useful background, not a mandatory second passage. Two requested fact groups can share the same sufficient proof.",
+      "locator": "physical page89, chunk d2361510, opening attribution and following governance explanation"
+    }
+  ],
+  "limitations": [
+    "Other original groups retained as sparse known proofs; all alternative passages not independently exhausted.",
+    "Keyword controls are topical-target diagnostics, not exhaustive relevance qrels.",
+    "q11 unnamed Roth prisoner requires resolving referent across adjacent paragraphs; retained seed alone is not independent proof of all attribution."
+  ]
+}

@@ -33,6 +33,8 @@ class StagedRegion(BaseModel):
 
 
 class StagedPage(BaseModel):
+    source_material: Literal["unreviewed", "preview", "full_native", "visual_reviewed"] = "unreviewed"
+    source_review_note: str | None = Field(default=None, min_length=1, max_length=500)
     page_id: UUID
     physical_page_index: int = Field(ge=0)
     printed_page_number: str | None = Field(default=None, max_length=80)
@@ -199,6 +201,8 @@ def compile_model_stage(
                 physical_page_index=page.physical_page_index,
                 printed_page_number=page.printed_page_number,
                 layout_kind=page.layout_kind,
+                source_material=page.source_material,
+                source_review_note=page.source_review_note,
                 regions=staged_regions,
             )
         )
@@ -502,6 +506,10 @@ def merge_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
 def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphValidation:
     errors: list[str] = []
     warnings: list[str] = []
+
+    for page in graph.pages:
+        if page.source_material != "visual_reviewed" or not page.source_review_note:
+            errors.append(f"source completeness unreviewed: page {page.physical_page_index}; visual review and note required (page IDs/native previews are insufficient)")
 
     page_ids = [str(page.page_id) for page in graph.pages]
     page_indexes = [page.physical_page_index for page in graph.pages]

@@ -290,7 +290,9 @@ def build_server(
         title="Read staged book pages",
         description=(
             "Return the next small batch of staged source pages as model-visible image "
-            "content plus page metadata. Use this only while parsing an existing ingestion."
+            "content plus explicit native preview metadata. Read block continuation cursors "
+            "with the same tool before using clipped text. Native extraction never proves "
+            "visual completeness. Use only while parsing an existing ingestion."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
@@ -317,6 +319,7 @@ def build_server(
                     "mime_type": page.mime_type,
                     "native_text": page.native_text,
                     "native_blocks": list(page.native_blocks),
+                    "native_text_info": page.native_text_info,
                 }
                 for page in batch.pages
             ],
