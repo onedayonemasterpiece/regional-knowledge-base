@@ -180,6 +180,11 @@ def build_server(
     if embedded_provider is not None:
         embedded_provider.register_routes(mcp)
 
+    if os.getenv('RKB_BGE_QUEUE_PATH'):
+        from .bge_queue import BgeQueue
+        from .bge_broker import register_routes
+        register_routes(mcp,BgeQueue(os.environ['RKB_BGE_QUEUE_PATH']))
+
     @mcp.custom_route("/fast-tier/health", methods=["GET"])
     async def fast_tier_health(request: Request):
         encoder = getattr(backend, "embedder", None)
