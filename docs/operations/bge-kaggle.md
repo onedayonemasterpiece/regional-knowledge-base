@@ -98,3 +98,20 @@ provider/start-failure injection. Run only with a ready empty queue during an
 operator acceptance window; it intentionally rotates the current worker. It
 always restores the controller. These are injected failures, not measurements of
 a natural provider outage or an eleven-hour wall-clock soak.
+
+## One persistent notebook, versioned runs
+
+New worker launches use the same `KAGGLE_USERNAME/rkb-bge-m3-cpu` notebook and
+create new Kaggle versions. `RKB_BGE_KERNEL_SLUG` can override the deployment's
+constant slug; it must never contain a run/job UUID. Generated source remains
+private and run-bound, and job identity/fencing remains in the existing queue.
+Each run records its immutable provider ref and returned `provider_version`.
+Existing workers and ambiguous pre-migration launches retain their old refs.
+
+A timeout/crash after `kernels_push` never causes another save/version. The
+controller reads the notebook's current source and version and checks the exact
+`RUN_CONFIG.run_id` before recording a recovered launch. Because Kaggle status
+addresses the latest version, a starting run's terminal status is accepted only
+when its stored version and source identity match. Another run's old/latest
+version cannot be mistaken for the current launch. Private source/credentials
+are never emitted into logs/reports. Model/embedding contracts are unchanged.
