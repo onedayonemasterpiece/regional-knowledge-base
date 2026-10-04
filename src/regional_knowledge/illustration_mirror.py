@@ -18,7 +18,7 @@ class VibePublishClient:
         self.issuer = self.grant['issuer'].rstrip('/')
         if not self.issuer.startswith('https://'):
             raise ValueError('VibePublish grant must use HTTPS')
-        self.http = httpx.AsyncClient(timeout=30, trust_env=False)
+        self.http = httpx.AsyncClient(timeout=120, trust_env=False)
         self.sequence = 0
 
     async def close(self):

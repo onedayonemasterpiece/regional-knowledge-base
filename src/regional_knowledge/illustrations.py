@@ -50,11 +50,27 @@ async def fetch_crop(backend, principal, illustration_id):
     item = await row(backend, principal, illustration_id)
     # Scope a service-only locator to the exact actor-authorized document/object.
     obj = await backend._server_object(document_id=str(item['document_id']),
-                                       object_id=str(item['crop_object_id']), kind='illustration_crop')
+                                       object_id=str(item['crop_object_id']), kind='illustration_crop') if item.get('crop_object_id') else None
     if not obj:
-        raise LookupError('illustration_crop_missing')
-    data = await backend.object_store.get_bytes(obj['object_key'])
-    if hashlib.sha256(data).hexdigest() != obj['sha256']:
+        if not item.get('vibepublish_entry_ref'):raise LookupError('illustration_crop_missing')
+        obj={'deleted_at':True,'mime_type':'image/png'}
+    data=None
+    if not obj.get('deleted_at'):
+        try:
+            data=await backend.object_store.get_bytes(obj['object_key'])
+        except Exception:
+            if not item.get('vibepublish_entry_ref'):raise
+    if data is not None and hashlib.sha256(data).hexdigest()!=obj['sha256']:
         raise ValueError('stored crop integrity mismatch')
+    if data is None:
+        from .source_archive import archive_bytes
+        from .illustration_mirror import VibePublishClient
+        import os
+        client=VibePublishClient(os.environ['RKB_VIBEPUBLISH_GRANT_FILE'])
+        try:
+            # Actor authorized the illustration above; grant never widens that ACL.
+            data=await archive_bytes(client,item['vibepublish_entry_ref'])
+        finally:
+            await client.close()
     logging.getLogger(__name__).info(json.dumps({'event':'illustration_crop_read','illustration_id':str(item['id']),'bytes':len(data),'mime_type':obj['mime_type']}))
     return await descriptor(backend, principal, str(item['id'])), data, obj['mime_type']

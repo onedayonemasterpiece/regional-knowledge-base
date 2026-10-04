@@ -159,6 +159,10 @@ async def test_start_ingestion_streams_private_source_file_and_activates_staged_
                 "cursor": body.get("cursor", "0"),
                 "warnings": [],
             }])
+        if request.method=='PATCH' and request.url.path=='/rest/v1/rkb_documents':
+            return httpx.Response(204)
+        if request.method=='GET' and request.url.path=='/rest/v1/rkb_documents':
+            return httpx.Response(200,json=[{'owner_user_id':principal().subject}])
         raise AssertionError((request.method, request.url))
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -239,6 +243,10 @@ async def test_failed_start_reuses_same_ingestion_and_existing_source_object():
             raise AssertionError("failed retry must not create another document/job")
         if request.method == "POST" and request.url.path == "/rest/v1/rkb_objects":
             raise AssertionError("existing source object row must be reused")
+        if request.method=='PATCH' and request.url.path=='/rest/v1/rkb_documents':
+            return httpx.Response(204)
+        if request.method=='GET' and request.url.path=='/rest/v1/rkb_documents':
+            return httpx.Response(200,json=[{'owner_user_id':principal().subject}])
         raise AssertionError((request.method, request.url))
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -301,6 +309,10 @@ async def test_book_pages_downloads_to_file_after_user_job_authorization(cursor)
                 "sha256": source_hash,
                 "mime_type": "application/pdf",
             }])
+        if request.method=='PATCH' and request.url.path=='/rest/v1/rkb_documents':
+            return httpx.Response(204)
+        if request.method=='GET' and request.url.path=='/rest/v1/rkb_documents':
+            return httpx.Response(200,json=[{'owner_user_id':principal().subject}])
         raise AssertionError((request.method, request.url))
 
     class CursorProcessor(FakePdfProcessor):

@@ -125,7 +125,8 @@ class SupabaseRestBackend(KnowledgeBackend):
         self.embedder = embedder or LexicalOnlyEmbedder()
         self.object_store = object_store or UnavailableObjectStore()
         self.file_downloader = file_downloader or ChatFileDownloader()
-        self.pdf_processor = pdf_processor or PyMuPdfProcessor()
+        from .source_adapter import SourceProcessor
+        self.pdf_processor = pdf_processor or SourceProcessor()
         self.client = client or httpx.AsyncClient(timeout=10.0)
         self._owns_client = client is None
         self._finalize_lock = asyncio.Lock()
@@ -242,7 +243,7 @@ class SupabaseRestBackend(KnowledgeBackend):
                 "id": f"eq.{item_id}",
                 "select": (
                     "id,document_id,title,metadata,page_ids,illustration_ids,"
-                    "footnote_region_ids,text_object_id,text_start,text_end,text_sha256"
+                    "footnote_region_ids,text_object_id,text_start,text_end,text_sha256,source_text"
                 ),
                 "limit": "1",
             },
@@ -253,29 +254,32 @@ class SupabaseRestBackend(KnowledgeBackend):
             raise LookupError("evidence_not_found")
         row = rows[0]
 
-        # Only after user-RLS authorization may the server resolve the exact
-        # private object locator. Bind object + document IDs to prevent an
-        # arbitrary service-role object lookup.
-        object_response = await self.client.get(
-            f"{self.config.url.rstrip('/')}/rest/v1/rkb_objects",
-            headers=self._service_headers(),
-            params={
-                "id": f"eq.{row['text_object_id']}",
-                "document_id": f"eq.{row['document_id']}",
-                "select": "id,object_key,sha256,mime_type",
-                "limit": "1",
-            },
-        )
-        object_response.raise_for_status()
-        objects = object_response.json()
-        if not objects:
-            raise RuntimeError("authorized text object locator is missing")
+        if row.get('source_text') is not None:
+            raw=row['source_text'].encode('utf-8')
+        else:
+            # Only after user-RLS authorization may the server resolve the exact
+            # private object locator. Bind object + document IDs to prevent an
+            # arbitrary service-role object lookup.
+            object_response = await self.client.get(
+                f"{self.config.url.rstrip('/')}/rest/v1/rkb_objects",
+                headers=self._service_headers(),
+                params={
+                    "id": f"eq.{row['text_object_id']}",
+                    "document_id": f"eq.{row['document_id']}",
+                    "select": "id,object_key,sha256,mime_type,deleted_at",
+                    "limit": "1",
+                },
+            )
+            object_response.raise_for_status()
+            objects = object_response.json()
+            if not objects:
+                raise RuntimeError("authorized text object locator is missing")
 
-        raw = b'' if row['text_start'] == row['text_end'] else await self.object_store.get_range(
-            str(objects[0]["object_key"]),
-            int(row["text_start"]),
-            int(row["text_end"]),
-        )
+            raw = b'' if row['text_start'] == row['text_end'] else await self.object_store.get_range(
+                str(objects[0]["object_key"]),
+                int(row["text_start"]),
+                int(row["text_end"]),
+            )
         if hashlib.sha256(raw).hexdigest() != row["text_sha256"]:
             raise RuntimeError("chunk text integrity check failed")
         text = raw.decode("utf-8")
@@ -597,7 +601,7 @@ class SupabaseRestBackend(KnowledgeBackend):
     ) -> dict[str, Any] | None:
         params = {
             "document_id": f"eq.{document_id}",
-            "select": "id,object_key,sha256,mime_type",
+            "select": "id,object_key,sha256,mime_type,deleted_at",
             "limit": "1",
         }
         if object_key is not None:
@@ -640,6 +644,10 @@ class SupabaseRestBackend(KnowledgeBackend):
 
     async def _ingestion_with_indexing(self,output,principal):
         from .index_readiness import enabled,status
+        if output.document_id and hasattr(self,'data_client'):
+            async with self.data_client._connection(self._headers(principal)) as db:
+                source=await(await db.execute('select source_archive_status from rkb_documents where id=%s', (UUID(output.document_id),))).fetchone()
+                if source:output=output.model_copy(update={'source_archive_status':source['source_archive_status']})
         if not enabled() or output.state!='finalized' or not output.document_id:return output
         readiness=await status(self,principal,output.document_id)
         warnings=[w for w in output.warnings if w not in ('fast_e5_backfill_required','automatic_indexing_pending')]
@@ -705,13 +713,14 @@ class SupabaseRestBackend(KnowledgeBackend):
         if command != "start":
             raise ValueError("unsupported ingestion command")
         if file is None:
-            raise ValueError("attached PDF file is required for start")
+            raise ValueError("attached source file is required for start")
         if file.mime_type and file.mime_type.lower() not in {
             "application/pdf",
             "application/x-pdf",
+            "image/vnd.djvu", "image/x-djvu", "application/x-djvu",
             "application/octet-stream",
         }:
-            raise ValueError("attached file must be a PDF")
+            raise ValueError("attached file must be PDF or DjVu")
 
         previous = await self._ingestion_row(
             principal=principal,
@@ -732,6 +741,9 @@ class SupabaseRestBackend(KnowledgeBackend):
                 str(file.download_url),
                 Path(temp_dir),
             )
+            from .source_adapter import source_format
+            format_name=source_format(downloaded.path)
+            source_mime="application/pdf" if format_name=="pdf" else "image/vnd.djvu"
             source_sha256 = downloaded.sha256
             pdf_info = await self.pdf_processor.inspect_file(downloaded.path)
             title, authors, publication_year, language = self._start_metadata(
@@ -780,15 +792,23 @@ class SupabaseRestBackend(KnowledgeBackend):
                     if existing and existing.get('source_object_id') and existing['state'] != 'failed':
                         return await self._ingestion_with_indexing(self._ingestion_output(existing, 'Existing exact-source document/revision reused'), principal)
 
+            filename=Path(file.file_name or ('source.'+format_name)).name[:160]
+            description=await self.client.patch(self.config.url.rstrip('/')+'/rest/v1/rkb_documents',
+                headers={**self._service_headers(), 'Prefer':'return=minimal'},
+                params={'id':'eq.'+document_id},json={'source_format':format_name,'source_filename':filename})
+            description.raise_for_status()
+
             object_key = (
                 f"users/{principal.subject}/documents/{document_id}/"
-                f"source/{source_sha256}.pdf"
+                f"source/{source_sha256}.{format_name}"
             )
             try:
+                from .storage_gc import reserve_source
+                await reserve_source(self,principal,document_id,object_key,downloaded,source_mime)
                 await self.object_store.put_file(
                     object_key,
                     str(downloaded.path),
-                    "application/pdf",
+                    source_mime,
                 )
                 existing_object = await self._server_object(
                     document_id=document_id,
@@ -810,7 +830,7 @@ class SupabaseRestBackend(KnowledgeBackend):
                             "kind": "source_pdf",
                             "object_key": object_key,
                             "sha256": source_sha256,
-                            "mime_type": "application/pdf",
+                            "mime_type": source_mime,
                             "size_bytes": downloaded.size_bytes,
                             "access_class": "private",
                         },
@@ -891,10 +911,8 @@ class SupabaseRestBackend(KnowledgeBackend):
         work_root = os.getenv("RKB_WORK_DIR") or None
         with tempfile.TemporaryDirectory(prefix="rkb-pages-", dir=work_root) as temp_dir:
             source_path = Path(temp_dir) / "source.pdf"
-            await self.object_store.download_file(
-                str(source_object["object_key"]),
-                str(source_path),
-            )
+            from .source_archive import download_source
+            await download_source(self,principal,str(row['document_id']),source_object,source_path)
             actual_sha256, _ = await asyncio.to_thread(sha256_file, source_path)
             if actual_sha256 != row["source_sha256"]:
                 raise RuntimeError("source PDF integrity check failed")

@@ -156,7 +156,7 @@ class ChatFileDownloader:
         addresses = await _public_addresses(host)
         directory.mkdir(parents=True, exist_ok=True)
         fd, temp_name = tempfile.mkstemp(
-            prefix="incoming-", suffix=".pdf", dir=directory
+            prefix="incoming-", suffix=".source", dir=directory
         )
         os.close(fd)
         temp = Path(temp_name)
@@ -206,9 +206,11 @@ class ChatFileDownloader:
                                 out.write(chunk)
             if size < 5:
                 raise FileIngressError("invalid_pdf")
-            with temp.open("rb") as source:
-                if source.read(5) != b"%PDF-":
-                    raise FileIngressError("invalid_pdf")
+            from .source_adapter import source_format
+            try:
+                source_format(temp)
+            except ValueError as exc:
+                raise FileIngressError("unsupported_source_container") from exc
             return DownloadedFile(temp, digest.hexdigest(), size)
         except FileIngressError:
             temp.unlink(missing_ok=True)

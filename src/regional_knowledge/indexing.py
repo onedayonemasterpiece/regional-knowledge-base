@@ -37,6 +37,8 @@ class IndexReconciler:
         if not isinstance(backend.embedder,LocalE5Embedder):raise RuntimeError('local E5 required; no provider fallback')
         self.backend=backend;self.queue=queue;self.cursor=None
         self.mirror=None
+        self.archive=None
+        self.last_gc=0
 
     def actor(self,owner):return Principal(subject=str(owner),client_id='index-maintenance',issuer='internal-actor-bridge',access_token='internal-actor-bridge')
 
@@ -147,9 +149,16 @@ class IndexReconciler:
                 if self.mirror is None:
                     from .illustration_mirror import IllustrationMirror,VibePublishClient
                     self.mirror=IllustrationMirror(self.backend,VibePublishClient(os.environ['RKB_VIBEPUBLISH_GRANT_FILE']))
+                if self.archive is None:
+                    from .source_archive import SourceArchive
+                    self.archive=SourceArchive(self.backend,self.mirror.client)
+                stats['sources_verified']=await self.archive.tick()
                 stats['mirrors_verified']=await self.mirror.tick()
             except Exception as error:
                 log.warning(json.dumps({'event':'illustration_mirror_pass_retry','error_type':type(error).__name__}))
+        if os.getenv('RKB_STORAGE_GC_ENABLED')=='1' and time.time()-self.last_gc>60:
+            from .storage_gc import collect
+            await collect(self.backend,apply=True);self.last_gc=time.time()
         for document in await self.documents():
             actor=self.actor(document['owner_user_id'])
             # An E5 outage must not prevent durable BGE enqueue/install.

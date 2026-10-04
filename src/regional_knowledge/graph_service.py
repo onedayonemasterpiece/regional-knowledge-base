@@ -19,8 +19,12 @@ class GraphService:
     async def region_text(self,principal,document_id,revision,chunk_id,region_id):
         # The actor authorizes the exact chunk/region before internal object lookup.
         async with self.connection(principal) as db:
-            row=await(await db.execute('select r.text_sha256 from rkb_regions r join rkb_chunks c on r.id=any(c.region_ids) where c.id=%s and c.document_id=%s and c.revision=%s and r.id=%s',(UUID(str(chunk_id)),UUID(str(document_id)),revision,UUID(str(region_id))))).fetchone()
+            row=await(await db.execute('select r.text_sha256,r.source_text from rkb_regions r join rkb_chunks c on r.id=any(c.region_ids) where c.id=%s and c.document_id=%s and c.revision=%s and r.id=%s',(UUID(str(chunk_id)),UUID(str(document_id)),revision,UUID(str(region_id))))).fetchone()
             if not row:raise LookupError('region evidence not found')
+        if row.get('source_text') is not None:
+            text=row['source_text']
+            if hashlib.sha256(text.encode()).hexdigest()!=row['text_sha256']:raise RuntimeError('region text integrity failure')
+            return text
         key=(str(document_id),revision)
         if key not in self._regions:
             async with self.backend.data_client._connection({'x-rkb-service':'1'}) as db:

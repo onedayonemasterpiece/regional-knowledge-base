@@ -121,6 +121,7 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
                 200,
                 json=[{
                     "id": DOCUMENT_ID,
+                    "owner_user_id":principal().subject,
                     "page_count": 1,
                     "active_revision": 0,
                     "title": "Regional history",
@@ -315,6 +316,9 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
 
     assert finalized.state == "finalized"
     assert len(posted["rkb_pages"]) == 1
+    assert all(p["page_object_id"] is None for p in posted["rkb_pages"])
+    assert not any(o["kind"] in {"page_render","text_projection"} for o in object_rows.values())
+    assert posted["chunks"][0]["source_text"]
     assert len(posted["rkb_regions"]) == 3
     assert len(posted["rkb_region_relations"]) == 1
     assert len(posted["rkb_illustrations"]) == 1
