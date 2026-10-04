@@ -1,8 +1,16 @@
 # Book ingestion
 
-Use `book_ingest(start, file, metadata)` with an attached PDF. Private source bytes
-remain in canonical object storage. The exact downloaded PDF SHA and owner identify
-one logical document; attachment IDs are resumable request identities.
+Use `book_ingest(start, file, metadata)` with an attached source. Production
+must accept at least **PDF and DjVu**. The exact downloaded source SHA and owner
+identify one logical document; attachment IDs are resumable request identities.
+
+The MCP does not recognize the book. It detects/validates the source container,
+archives exact bytes, renders requested pages and exposes any native embedded text
+as a hint. **ChatGPT itself** visually reads/transcribes pages and supplies the
+semantic page graph, chunks, captions, footnotes, illustrations, people/events/POI
+links and review notes.
+
+No OCR engine, VLM, layout AI or server-side LLM parser is part of the MCP.
 
 `metadata.duplicate_policy` is `reuse` by default. Another attachment containing
 the same PDF returns the existing ingestion/document, including an in-progress or
@@ -33,8 +41,22 @@ search material: source text, linked printed captions and labelled observations.
 input. Ready vectors must match both, and partial/stale coverage degrades search
 safely. No backend OCR, VLM, CLIP or paid inference is introduced.
 
-Eligible active private illustrations mirror asynchronously through VibePublish.
-Activation never waits for the provider. Stable owner/document/revision/figure
+Original source files and eligible active private illustrations are routed through
+VibePublish using the dedicated Knowledge Base Telegram connection/session
+`TELEGRAM_KNOWLEDGE_BASE`.
+
+- sources -> `https://t.me/c/4368830579/2` as exact DOCUMENT bytes;
+- illustrations -> `https://t.me/c/4368830579/4` as DOCUMENTs.
+
+The separate Telegram session/connection is intentional: Knowledge Base binary
+traffic must not occupy the ordinary VibePublish Telegram connection lane.
+Provider/account-wide Telegram limits may still exist, but VibePublish's own lane
+and pacing state are isolated by connection.
+
+Activation does not need to wait for illustration delivery. A source may stay in
+bounded temporary storage until its Telegram archive has verified exact provider
+readback; after that the temporary binary is GC-eligible.
+ Stable owner/document/revision/figure
 keys survive restart and replay; native private-topic/DOCUMENT readback confirms
 the mirror. The source image SHA is not a sameness gate. A configured resource
 grant binds the eligible RKB owner to the VibePublish destination. Other owners
