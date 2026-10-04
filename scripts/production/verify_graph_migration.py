@@ -13,9 +13,10 @@ def main():
   for role in ('anon','authenticated','service_role','rkb_app'):
    if not db.execute('select 1 from pg_roles where rolname=%s',(role,)).fetchone():db.execute('create role '+role)
   for path in sorted(Path('sql').glob('0*.sql')):
-   if path.name.endswith('rollback.sql') or path.name.startswith('012'):continue
+   if path.name.endswith('rollback.sql') or path.name.startswith(('012','013')):continue
    db.execute(path.read_text())
   migration=Path('sql/012_entity_graph.sql').read_text();db.execute(migration);db.execute(migration)
+  finalize_guard=Path('sql/013_async_finalize_guard.sql').read_text();db.execute(finalize_guard);db.execute(finalize_guard)
   owner,other,doc,page,region,chunk,obj,nid=([uuid4() for _ in range(8)])
   db.execute('insert into rkb_users(id) values(%s),(%s)',(owner,other))
   db.execute("insert into rkb_documents(id,owner_user_id,title,source_sha256,active_revision,page_count) values(%s,%s,'Synthetic graph source',%s,1,1)",(doc,owner,'a'*64))
@@ -44,5 +45,6 @@ def main():
   db.execute('update rkb_documents set active_revision=2 where id=%s',(doc,));assert db.execute('select count(*) from rkb_graph_discovery_jobs where document_id=%s',(doc,)).fetchone()[0]==1
   db.execute('set role rkb_app');db.execute("select set_config('rkb.actor_id',%s,false)",(str(owner),));assert db.execute('select count(*) from rkb_entity_mentions where rkb_graph_active(document_id,revision)').fetchone()[0]==0
  result={'migration_sha256':hashlib.sha256(migration.encode()).hexdigest(),'migration_twice':True,'owner_write_read':True,'acl_denied':True,'forged_evidence_rejected':True,'idempotent_mentions':True,'revision_enqueue_idempotent':True,'stale_mentions_hidden':True}
+ result.update(finalize_guard_sha256=hashlib.sha256(finalize_guard.encode()).hexdigest(),finalize_guard_twice=True)
  a.output.write_text(json.dumps(result,indent=2));print(json.dumps(result))
 if __name__=='__main__':main()

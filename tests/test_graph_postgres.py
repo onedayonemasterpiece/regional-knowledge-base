@@ -125,7 +125,19 @@ async def test_chatgpt_staging_finalize_with_poi_outage_and_replay(graph_db,tmp_
         kwargs={'principal':actor,'file':None,'ingestion_id':start.ingestion_id,'cursor':None}
         await b.book_ingest(command='stage',payload=payload,**kwargs);await b.book_ingest(command='stage',payload=payload,**kwargs)
         checked=await b.book_ingest(command='validate',payload=None,**kwargs);assert checked.state=='ready'
-        result=await finalize_ingestion(b,principal=actor,ingestion_id=start.ingestion_id);assert result.state=='finalized'
+        # Processing is allowed ONLY for a validated async finalize, never an
+        # ordinary parse/NULL cursor. Exercise actual SQL guards, not a copy.
+        for cursor in (None,'stage','0'):
+            async with b.data_client._connection(b._headers(actor)) as db:
+                await db.execute("update rkb_ingestion_jobs set state='processing',cursor=%s where id=%s",(cursor,UUID(start.ingestion_id)))
+            with pytest.raises(psycopg.errors.RaiseException,match='ingestion must be ready'):
+                async with b.data_client._connection(b._headers(actor)) as db:
+                    await db.execute("select rkb_insert_chunks(%s,%s,1,%s,'[]'::jsonb)",(doc,UUID(start.ingestion_id),uuid4()))
+        async with b.data_client._connection(b._headers(actor)) as db:
+            await db.execute("update rkb_ingestion_jobs set state='ready',cursor=null where id=%s",(UUID(start.ingestion_id),))
+        accepted=await b.book_ingest(command='finalize',payload=None,**kwargs);assert accepted.state=='processing'
+        await b._finalize_tasks[start.ingestion_id]
+        result=await b.book_ingest(command='status',payload=None,**kwargs);assert result.state=='finalized'
         assert (await finalize_ingestion(b,principal=actor,ingestion_id=start.ingestion_id)).state=='finalized'
         async with b.data_client._connection(b._headers(actor)) as db:
             assert (await(await db.execute('select count(*) n from rkb_entities where document_id=%s',(doc,))).fetchone())['n']==2

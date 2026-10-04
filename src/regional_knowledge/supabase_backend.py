@@ -467,11 +467,13 @@ class SupabaseRestBackend(KnowledgeBackend):
                 principal=principal,
                 ingestion_id=ingestion_id,
             )
+            logger.info(json.dumps({'event':'ingestion_finalize_complete','ingestion_id':ingestion_id}))
         except asyncio.CancelledError:
             # Keep state=processing/cursor=finalize so a later finalize call can
             # resume after a normal service restart.
             raise
         except Exception as exc:
+            logger.error(json.dumps({'event':'ingestion_finalize_failed','ingestion_id':ingestion_id,'error_type':type(exc).__name__,'sqlstate':getattr(exc,'sqlstate',None)}))
             # Finalize is retryable: it resets the inactive revision before
             # materializing rows, while object writes are content-addressed.
             # Return the ingestion to ready instead of leaving a dead
