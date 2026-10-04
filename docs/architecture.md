@@ -58,3 +58,26 @@ Ingestion never competes with Live search for mandatory CPU. Concurrency is boun
 Initial target: one lightweight MCP/gateway process on DevCoveer plus managed Supabase and S3-compatible object storage. The MCP Python SDK 2.x stateless HTTP mode is preferred so no user session is pinned to one worker.
 
 Do not add Redis, Kafka, a local Postgres, a local vector database or a second OCR service until measurements justify them.
+
+## Accumulative semantic graph
+
+The document graph and the regional knowledge graph are different layers.
+
+The document graph preserves source structure:
+
+`Document -> Page -> Region -> layout/evidence relations`.
+
+The accumulative semantic graph is a small evidence-backed projection over sources:
+
+`person <-> event <-> poi_ref`, grouped where useful into `historical_thread`.
+
+MVP uses the existing Postgres data plane, not a separate graph database. Every
+semantic node/edge returned to a user must remain traceable to authorized
+page/region/chunk evidence.
+
+Street Story remains canonical owner of POI identity, aliases, lifecycle and
+POI-to-POI relations. Regional Knowledge references stable POI IDs rather than
+creating a second POI catalogue.
+
+See
+[accumulative knowledge graph decision](reports/accumulative-knowledge-graph-decision-20261004.md).

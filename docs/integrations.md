@@ -16,11 +16,19 @@ Wonderful Lections already has a verified VibePublish asset bridge. For media mi
 ## Street Story
 
 Street Story is the canonical owner of the regional POI graph, POI aliases,
-atomic POI claims, contradiction ledger and expert arbitration state.
+POI lifecycle/location identity, atomic POI claims, contradiction ledger and
+expert arbitration state.
 
 Knowledge Base remains the authority for book/journal provenance and exact
-page/region evidence. During book ingestion it may extract evidence-backed POI
-fact candidates and deliver them asynchronously after a successful finalize.
+page/region evidence. It also owns the small accumulative knowledge projection for
+non-POI historical entities: people, events and reusable historical threads, with
+stable references to Street Story POIs. During book ingestion it may extract
+evidence-backed POI fact candidates and evidence-backed person/event relations and
+deliver POI evidence asynchronously after a successful finalize.
+
+The two graphs are not competing copies: Street Story owns POI identity; Regional
+Knowledge owns cross-source historical evidence/navigation and references POIs by
+stable external identity.
 
 Never copy the whole corpus into Street Story. Deliver only typed evidence events
 with stable knowledge:// references and inherited access scope.
@@ -81,3 +89,5 @@ Regional Knowledge MCP/API
 
 This makes cross-product synergy explicit and revocable. A service identity is
 not a substitute for the user's grant.
+
+See also [accumulative knowledge graph decision](reports/accumulative-knowledge-graph-decision-20261004.md).
