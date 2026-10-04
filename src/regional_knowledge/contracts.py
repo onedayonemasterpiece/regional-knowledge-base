@@ -152,6 +152,8 @@ class StageIllustrationInput(BaseModel):
 
 
 class StagePageInput(BaseModel):
+    source_material: Literal["unreviewed", "preview", "full_native", "visual_reviewed"] = "unreviewed"
+    source_review_note: str | None = Field(default=None, min_length=1, max_length=500)
     page_id: str = Field(min_length=36, max_length=36)
     physical_page_index: int = Field(ge=0)
     printed_page_number: str | None = Field(default=None, max_length=40)
