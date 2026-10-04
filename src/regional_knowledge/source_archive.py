@@ -44,6 +44,9 @@ async def download_source(backend, principal, document_id, obj, path, *, require
         data=await archive_bytes(client,doc['source_archive_ref'])
         if hashlib.sha256(data).hexdigest()!=obj['sha256']:raise ValueError('archived_source_integrity_mismatch')
         path.write_bytes(data)
+        log.info(json.dumps({'event':'source_archive_download_verified',
+            'document_id':str(document_id),'source_archive_ref':doc['source_archive_ref'],
+            'sha256':obj['sha256'],'size_bytes':len(data),'require_archive':require_archive}))
     finally:await client.close()
 
 

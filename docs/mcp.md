@@ -70,7 +70,9 @@ first calls `book_find`; if one plausible match remains it calls
 source to be present in the verified Telegram source archive and creates/resumes the
 next staged revision on the same logical document. A re-upload is requested only when
 that verified archive is genuinely unavailable. Multiple plausible catalog matches are
-a user-facing disambiguation case; hidden IDs are never a user requirement.
+a user-facing disambiguation case: show title, author and year; hidden IDs are never
+a user requirement. A pending archive is a recovery/wait blocker, not an immediate
+request to upload the book again.
 
 ### Internal resumable workflow
 
@@ -88,7 +90,9 @@ status(ingestion_id)
 
 Every ingestion result includes a compact `next_action` so the model can distinguish
 continue-pages/staging, validate, finalize, wait for server work, resume interrupted
-finalization, completion and a real blocker. The model performs semantic
+finalization, completion and a real blocker. Complete staged page coverage persists
+the validate action for later status/restart; it does not replace semantic validation.
+The model performs semantic
 reading/recognition; the MCP does not run OCR, VLM, LLM parsing or semantic extraction.
 
 The OpenAI tool descriptor marks only the top-level new-source `file` parameter with

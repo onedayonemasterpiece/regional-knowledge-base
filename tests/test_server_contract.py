@@ -1,4 +1,5 @@
 import os
+import pytest
 
 from regional_knowledge.server import _transport_security, build_server
 
@@ -40,6 +41,30 @@ def test_live_profile_exposes_one_low_latency_knowledge_tool(monkeypatch):
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
     assert set(tools) == {"knowledge_search"}
     assert tools["knowledge_search"].annotations.read_only_hint is True
+
+
+@pytest.mark.asyncio
+async def test_actual_mcp_declarations_teach_both_user_flows(monkeypatch):
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    server = build_server()
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    find, ingest = tools["book_find"], tools["book_ingest"]
+    assert find.input_schema["properties"]["limit"]["maximum"] == 8
+    assert "reprocess" in ingest.input_schema["properties"]["command"]["enum"]
+    assert "document_id" in ingest.input_schema["properties"]
+    assert "document_id" not in ingest.input_schema["required"]
+    actions = ingest.output_schema["properties"]["next_action"]["anyOf"][0]["enum"]
+    assert set(actions) == {"continue_pages", "validate", "finalize", "wait", "resume_finalize", "done", "blocker"}
+    assert "book_find first" in ingest.description
+    assert "new attached PDF/DjVu use start" in ingest.description
+    assert "model-authored stage" in ingest.description
+    assert "same logical document" in ingest.description
+    assert "title, author and year" in find.description
+    assert "never UUIDs" in server.instructions
+    assert "book_pages" in server.instructions and "book_ingest(reprocess)" in server.instructions
+    assert "model performs semantic reading" in server.instructions
+    live = {tool.name for tool in await build_server(profile="live").list_tools()}
+    assert "book_find" not in live and "book_ingest" not in live
 
 
 

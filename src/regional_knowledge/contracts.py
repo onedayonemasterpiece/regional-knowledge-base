@@ -381,7 +381,7 @@ class BookFindResult(BaseModel):
 
 class BookFindOutput(BaseModel):
     query: str
-    results: list[BookFindResult] = Field(default_factory=list)
+    results: list[BookFindResult] = Field(default_factory=list, max_length=8)
 
 
 class BookIngestOutput(BaseModel):

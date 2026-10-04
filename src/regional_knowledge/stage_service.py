@@ -247,12 +247,21 @@ async def stage_ingestion(
         validate_staged_bundle(entity_candidates,merged)
         if digest(entity_candidates.model_dump(mode="json")) not in {digest(b.model_dump(mode="json")) for b in merged.entity_candidates}:
             merged = StagedGraph.model_validate({**merged.model_dump(mode="json"),"entity_candidates":[*[b.model_dump(mode="json") for b in merged.entity_candidates],entity_candidates.model_dump(mode="json")]})
+    document = await _document_row(service, principal, str(row["document_id"]))
+    page_count = int(document.get("page_count") or 0)
+    reviewed = {page.physical_page_index for page in merged.pages}
+    missing = next((index for index in range(page_count) if index not in reviewed), None)
+    # Persist the next model action, including across status/restart. Complete
+    # page transport is not semantic validation; validate remains a separate step.
+    progress_cursor = "" if page_count and missing is None else cursor
+    if progress_cursor is None and missing is not None:
+        progress_cursor = str(missing)
     updated = await _store_graph(
         service,
         principal,
         row,
         merged,
-        cursor=cursor,
+        cursor=progress_cursor,
     )
     return service._ingestion_output(
         updated,
@@ -958,6 +967,7 @@ async def finalize_ingestion(
     activation.raise_for_status()
 
     return BookIngestOutput(
+        next_action="done",
         ingestion_id=ingestion_id,
         document_id=document_id,
         state="finalized",

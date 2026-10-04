@@ -200,20 +200,6 @@ class SupabaseRestBackend(KnowledgeBackend):
                     )
                 ).fetchall()
         else:
-            response = await self.client.get(
-                f"{self.config.url.rstrip('/')}/rest/v1/rkb_documents",
-                headers=self._headers(principal),
-                params={
-                    "select": (
-                        "id,title,authors,publication_year,active_revision,"
-                        "source_format,source_archive_status"
-                    ),
-                    "order": "title.asc",
-                    "limit": "512",
-                },
-            )
-            response.raise_for_status()
-            candidates = [dict(row) for row in response.json()]
             needle = query.casefold()
 
             def score(row: dict[str, Any]) -> tuple[int, int, str, str]:
@@ -232,9 +218,33 @@ class SupabaseRestBackend(KnowledgeBackend):
                     rank = 9
                 return rank, len(title), folded_title, str(row.get("id") or "")
 
-            rows = [row for row in candidates if score(row)[0] < 9]
-            rows.sort(key=score)
-            rows = rows[:limit]
+            rows = []
+            offset = 0
+            # Transitional REST deployments must not silently miss books beyond
+            # the first catalog page. RLS applies to every page; retain only the
+            # best bounded matches rather than materializing the whole catalog.
+            while True:
+                response = await self.client.get(
+                    f"{self.config.url.rstrip('/')}/rest/v1/rkb_documents",
+                    headers=self._headers(principal),
+                    params={
+                        "select": (
+                            "id,title,authors,publication_year,active_revision,"
+                            "source_format,source_archive_status"
+                        ),
+                        "order": "title.asc,id.asc",
+                        "limit": "512",
+                        "offset": str(offset),
+                    },
+                )
+                response.raise_for_status()
+                page = response.json()
+                rows.extend(dict(row) for row in page if score(row)[0] < 9)
+                rows.sort(key=score)
+                rows = rows[:limit]
+                if len(page) < 512:
+                    break
+                offset += len(page)
 
         return BookFindOutput(
             query=query,
@@ -532,7 +542,7 @@ class SupabaseRestBackend(KnowledgeBackend):
             next_action = "blocker"
         elif state == "processing" and cursor == "finalize":
             next_action = "wait"
-        elif state == "staged" and cursor in (None, ""):
+        elif state in {"staged", "processing"} and cursor in (None, ""):
             next_action = "validate"
         else:
             next_action = "continue_pages"
@@ -541,7 +551,7 @@ class SupabaseRestBackend(KnowledgeBackend):
             document_id=str(row["document_id"]) if row.get("document_id") else None,
             state=state,
             message=message,
-            next_cursor=cursor,
+            next_cursor=cursor or None,
             next_action=next_action,
             warnings=[str(value) for value in (row.get("warnings") or [])],
         )
@@ -799,7 +809,8 @@ class SupabaseRestBackend(KnowledgeBackend):
             or not document.get("source_archive_ref")
         ):
             raise RuntimeError(
-                "archived source is unavailable; ask the user to attach the original PDF/DjVu again"
+                "source archive is not verified yet; wait for archival recovery and retry. "
+                "Ask the user to attach the original PDF/DjVu again only if the archive cannot be recovered"
             )
         source_sha256 = str(document.get("source_sha256") or "")
         if not source_sha256:
