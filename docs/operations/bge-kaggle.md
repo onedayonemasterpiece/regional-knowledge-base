@@ -89,3 +89,12 @@ Acceptance tooling: `multilingual_benchmark.py` for parallel query encodings and
 seven ablations; `accept_bge.py` for actual 1/5/10 search/fetch concurrency. Write
 all private outputs to a managed retained directory. Public reports contain
 aggregates and evidence checksums, not texts, source IDs or vectors.
+
+`smoke_bge_http.py` verifies public OAuth MCP search/fetch and revokes its temporary
+operator test token family. `verify_bge_lifecycle.py --execute` performs controlled
+tests on this project's real queue/notebooks: timestamp acceleration for idle/
+lifetime boundaries, claimed-job fencing and temporary controller suspension for
+provider/start-failure injection. Run only with a ready empty queue during an
+operator acceptance window; it intentionally rotates the current worker. It
+always restores the controller. These are injected failures, not measurements of
+a natural provider outage or an eleven-hour wall-clock soak.

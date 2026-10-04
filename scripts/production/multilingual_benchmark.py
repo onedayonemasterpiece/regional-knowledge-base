@@ -45,6 +45,7 @@ async def ablate(backend,actor,fixture,vectors,output):
     literal=lambda vector:'['+','.join(format(value,'.9g') for value in vector)+']'
     for case in fixture['cases']:
         started=time.monotonic();vector=vectors[case['id']]
+        if vector['query_sha256']!=hashlib.sha256(case['query'].encode()).hexdigest():raise ValueError('stale benchmark query encoding')
         response=await backend.client.post(f'{backend.config.url.rstrip("/")}/rest/v1/rpc/rkb_multilingual_rankings',headers=backend._headers(actor),json={'query_text':case['query'],'bge_vector':literal(vector['bge']),'bge_space':BGE_SPACE,'e5_vector':literal(vector['e5']),'e5_space':E5_SPACE,'aliases':fixture.get('aliases',[]) if any('name' in name or 'poi' in name for name in case['classes']) else [],'depth':100})
         response.raise_for_status();rows=response.json();result['database_seconds'].append(time.monotonic()-started)
         branch_counts[case['id']]={branch:sum(row['branch']==branch for row in rows) for branch in ('e5','bge','lexical','exact_current_alias','exact_historical_alias','exact_alias')}
@@ -54,6 +55,7 @@ async def ablate(backend,actor,fixture,vectors,output):
         result['per_case'][case['id']]={'rankings':{mode:rankings[mode][case['id']] for mode in MODES},'branch_counts':branch_counts[case['id']],'bge_alias_diagnostics':alias_signals}
     for mode,ranking in rankings.items():
         result['modes'][mode]={'all':metrics(fixture['cases'],ranking),'languages':{language:metrics([case for case in fixture['cases'] if case['query_language']==language],ranking) for language in ('de','ru')},'graph_cases':metrics([case for case in fixture['cases'] if any('person' in label or 'participant' in label for label in case['classes'])],ranking)}
+        result['modes'][mode]['families']={name:metrics([case for case in fixture['cases'] if ('short_entity_query' in case['classes'])==short],ranking) for name,short in [('natural_questions',False),('short_entity_queries',True)]}
     result['alias_fusion']=metrics(fixture['cases'],alias_rankings)
     result['top10_overlap']={mode:sum(len(set(ranking[case['id']][:10])&set(rankings['bge'][case['id']][:10]))/10 for case in fixture['cases'])/len(fixture['cases']) for mode,ranking in rankings.items()}
     paired=[case for case in fixture['cases'] if case.get('pair') and case['query_language']=='de' and not case['unanswerable']]
@@ -63,6 +65,10 @@ async def ablate(backend,actor,fixture,vectors,output):
         ru_cases=[next(other for other in fixture['cases'] if other.get('pair')==case['pair'] and other['query_language']=='ru') for case in paired]
         ru=metrics(ru_cases,ranking)
         result['paired_language_gap'][mode]={'needs':len(paired),'de':de,'ru':ru,'recall10_de_minus_ru':de['recall']['10']-ru['recall']['10'],'mrr_de_minus_ru':de['mrr']-ru['mrr']}
+        natural_de=[case for case in paired if 'short_entity_query' not in case['classes']]
+        natural_ru=[next(other for other in fixture['cases'] if other.get('pair')==case['pair'] and other['query_language']=='ru') for case in natural_de]
+        natural_de_score=metrics(natural_de,ranking);natural_ru_score=metrics(natural_ru,ranking)
+        result['paired_language_gap'][mode]['natural_question_pairs']={'needs':len(natural_de),'de':natural_de_score,'ru':natural_ru_score,'recall10_de_minus_ru':natural_de_score['recall']['10']-natural_ru_score['recall']['10'],'mrr_de_minus_ru':natural_de_score['mrr']-natural_ru_score['mrr']}
     result['database_distribution_seconds']=distribution(result['database_seconds']);output.write_text(json.dumps(result,indent=2));print(json.dumps({mode:values['all'] for mode,values in result['modes'].items()}))
 
 async def run(args):

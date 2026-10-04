@@ -225,9 +225,11 @@ def build_server(
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
-    async def search(query: str, main_job_id: str | None = None) -> SearchOutput:
-        if main_job_id is None:return await backend.search(query.strip(), _principal())
-        return await backend.search(query.strip(), _principal(),main_job_id=main_job_id)
+    async def search(query: str, main_job_id: str | None = None, aliases: list[dict[str,str]] | None = None) -> SearchOutput:
+        options={}
+        if main_job_id:options['main_job_id']=main_job_id
+        if aliases:options['aliases']=aliases
+        return await backend.search(query.strip(), _principal(),**options)
 
     @mcp.tool(
         title="Fetch regional evidence",

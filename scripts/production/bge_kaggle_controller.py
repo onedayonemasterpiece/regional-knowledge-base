@@ -11,6 +11,10 @@ import shlex
 import time
 from regional_knowledge.bge_queue import BgeQueue
 
+def provider_phase(status):
+    phase=status.get('status') if isinstance(status,dict) else getattr(status,'status',None)
+    return str(getattr(phase,'name',phase)).rsplit('.',1)[-1].upper()
+
 def main():
     logging.basicConfig(level=logging.INFO)
     for line in Path('/home/dev/.env').read_text().splitlines():
@@ -51,8 +55,8 @@ def main():
                     if status:queue.launch_record(run_id,ref)
                 elif run['status']=='starting' and run['launch_state']=='dispatched' and time.monotonic()-probed.get(run_id,0)>30:
                     probed[run_id]=time.monotonic();status=api.kernels_status(ref)
-                    phase=status.get('status') if isinstance(status,dict) else getattr(status,'status',None)
-                    if str(phase).upper() in ('ERROR','FAILED','CANCELED','CANCELLED','COMPLETE'):
+                    phase=provider_phase(status)
+                    if phase in ('ERROR','FAILED','CANCELED','CANCELLED','COMPLETE'):
                         queue.launch_record(run_id,ref,failed=True)
                         logging.warning(json.dumps({'event':'bge_startup_failed','run_id':run_id,'provider_status':str(phase)}))
                 elif run['status']=='expired' and run['launch_state']=='dispatched':
