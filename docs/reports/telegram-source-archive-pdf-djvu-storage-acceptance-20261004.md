@@ -135,3 +135,45 @@ Retained evidence directory:
 `ordinary-connection-readback.json`, `public-post-gc.json`, `corpus-after-gc.json`,
 `gc-dry-run.json`, `gc-applied.json`, `s3-before-gc.json`, `s3-after-gc.json`,
 `canonical-runtime-readback.json`. Provider originals were not copied into reports.
+
+## Final replay and stable Kaggle versions follow-up
+
+Final public binary-ingress replay exposed a legacy in-flight admission without
+`document_receipt`: after verified source purge, the old PDF/DjVu upload keys
+returned `422 asset_not_available`. Vibe
+[PR #35](https://github.com/onedayonemasterpiece/vibepublish/pull/35) now reconstructs
+only the scalar receipt from the complete immutable owner-scoped ingress intent.
+Actual PDF and DjVu HTTP replay returned the original asset identities after
+purge; subsequent archive put replays added **zero publications**. All eight
+source operations were verified/replayed; Gause's fresh provider original still
+matched its exact source SHA. No image equality gate was introduced.
+
+The former BGE controller derived the notebook slug from the run UUID, creating
+separate version-1 notebooks. RKB
+[PR #36](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/36)
+uses one private CPU notebook, `zigomaro/rkb-bge-m3-cpu`. Run UUID and provider
+version remain separate durable identities. Recovery reads the exact run identity
+from provider source without executing it; an old latest version cannot verify
+an ambiguous newer save. Existing pre-upgrade provider refs remain valid.
+
+Production acceptance used the existing planned-rotation path with an explicitly
+accelerated 10h45m age, not a new launch path. Two successive real workers became
+ready as **versions 1 and 2 of the same notebook**. Each completed its own
+synthetic query with a 1024-dimensional vector, attributed to that exact run.
+Final queue: ready, depth 0, no warming successor. Original model, CPU runtime,
+vector space and corpus were unchanged. Safe receipts are retained in
+`stable-kaggle-acceptance.json`; private generated credential-bearing source
+remains solely in the protected runtime launch directory.
+
+RKB full PostgreSQL suite: **130 tests passed**; supported Python 3.12/3.13
+[implementation CI](https://github.com/onedayonemasterpiece/regional-knowledge-base/actions/runs/37218402728)
+passed. Vibe's legacy replay change passed 30 focused media/HTTP tests; its full
+supported-version CI and exact final canonical runtime are checked before closing
+this work.
+
+Automatic grace-based GC subsequently removed the owned control caches. Actual
+final bucket inventory: **8 objects, 24,164,398 bytes**, compared with the original
+719 objects / 355,339,601 bytes. The remaining active ingestion graph/source,
+unverified crop and another owner's pending source are protected. Final receipts
+are `s3-final-inventory.json`, `archive-source-audit.json` and
+`canonical-runtime-readback.json` in the retained task directory.
