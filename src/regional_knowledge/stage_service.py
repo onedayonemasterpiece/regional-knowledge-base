@@ -372,7 +372,7 @@ async def _embeddings(
 ) -> tuple[list[list[float] | None], list[str]]:
     from .e5_contract import SPACE
     if getattr(service.embedder, "embedding_space", "") == SPACE:
-        return [None] * len(texts), ["fast_e5_backfill_required"]
+        return [None] * len(texts), ["automatic_indexing_pending" if os.getenv('RKB_AUTO_INDEX_ENABLED')=='1' else "fast_e5_backfill_required"]
     semaphore = asyncio.Semaphore(4)
     warnings: list[str] = []
 

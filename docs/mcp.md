@@ -175,3 +175,15 @@ cannot inject a new canonical alias. `graph_fetch(discovery_job_id=...)` returns
 at most 20 still-authorized source candidates for the requesting actor. No
 entity/fact is automatically materialized from these hits. A later ChatGPT
 review may stage their exact evidence through the normal contract.
+
+## Automatic indexing readiness
+
+A finalized active revision is indexed automatically in E5 and BGE; source
+activation does not wait for Kaggle. Normal imports require no backfill command.
+`book_ingest(status)` on a finalized ingestion and search/Live evidence outputs
+include actor-scoped `indexing` counts/state. Regular MCP `indexing_status` accepts
+an optional authorized document ID and returns active/ready/missing counts,
+worker state and effective mode; it exposes no titles, text or foreign inventory.
+During incomplete BGE coverage search uses complete E5, otherwise lexical, with
+main pending. Repeat status in a later turn; do not hold an interactive turn open
+waiting for remote indexing. See [operations](operations/automatic-indexing.md).

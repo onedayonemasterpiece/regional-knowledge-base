@@ -105,3 +105,9 @@ Entity seeds prepared for a replacement revision become visible only with the
 same successful document activation transaction. The current active graph remains
 readable during retryable finalization. Source-owner staging rows may be inspected
 under owner RLS; public graph APIs always filter the active source revision.
+
+Automatic post-activation indexing uses the small `indexing` process: payload-free
+Postgres activation wakeup plus missing-vector reconciliation, local E5 batch4
+and existing priority BGE document jobs. It introduces no durable scheduler/table.
+Readiness and SQL snapshot guards use actor-authorized active source/hash/revision
+coverage; incomplete spaces safely degrade. See [automatic indexing](operations/automatic-indexing.md).

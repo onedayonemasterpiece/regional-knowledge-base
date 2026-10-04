@@ -104,7 +104,7 @@ class BgeQueue:
         return run_id
 
     def enqueue(self, actor, idempotency, texts, *, kind='query', identity=None):
-        if kind not in ('query','document') or len(texts)!=1 or not isinstance(texts[0],str) or not texts[0].strip() or len(texts[0])>16000:
+        if kind not in ('query','document') or len(texts)!=1 or not isinstance(texts[0],str) or not texts[0].strip() or len(texts[0])>(16000 if kind=='query' else 40000):
             raise ValueError('BGE job contract')
         identity=identity or {};now=self.clock()
         with self.connect() as db:
@@ -120,6 +120,17 @@ class BgeQueue:
             db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)',
                        (job_id,actor,idempotency,kind,json.dumps(texts),json.dumps(identity),'pending',now,now))
             return job_id
+
+    def lookup(self,actor,idempotency):
+        with self.connect() as db:
+            self._expire(db,self.clock())
+            row=db.execute('select id,state,result,identity,kind from jobs where actor=? and idempotency=?',(actor,idempotency)).fetchone()
+            if not row:return None
+            return {'id':row['id'],'state':row['state'],'result':json.loads(row['result']) if row['result'] else None,'identity':json.loads(row['identity']),'kind':row['kind']}
+
+    def document_pending(self):
+        with self.connect() as db:
+            return db.execute("select count(*) from jobs where kind='document' and state!='done'").fetchone()[0]
 
     def _authorize(self, db, run_id, token, now):
         run=db.execute('select * from runs where id=?',(run_id,)).fetchone()

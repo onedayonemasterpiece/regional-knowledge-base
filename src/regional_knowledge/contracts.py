@@ -302,12 +302,25 @@ class SearchResult(BaseModel):
     ranking_signals: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class IndexingStatus(BaseModel):
+    active_chunks: int = Field(ge=0)
+    e5_ready: int = Field(ge=0)
+    e5_missing: int = Field(ge=0)
+    bge_ready: int = Field(ge=0)
+    bge_missing: int = Field(ge=0)
+    indexing_state: Literal['pending','running','ready','degraded']
+    bge_worker_state: str
+    indexing_owner_state: Literal['disabled','unavailable','running','ready','degraded']
+    effective_retrieval_mode: Literal['bge_lexical','fast_e5','lexical_only']
+
+
 class SearchOutput(BaseModel):
     results: list[SearchResult]
     mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
     retrieval_mode: Literal["fast_e5", "lexical_only", "bge_lexical", "e5_bge_lexical", "bge", "e5_bge"] = "lexical_only"
     main_state: Literal['disabled','starting','pending','ready','unavailable'] = 'disabled'
     main_job_id: str | None = None
+    indexing: IndexingStatus | None = None
     timings: dict[str, float] = Field(default_factory=dict, exclude=True)
 
 
@@ -325,6 +338,7 @@ class EvidenceSearchOutput(BaseModel):
     retrieval_mode: Literal["fast_e5", "lexical_only", "bge_lexical", "e5_bge_lexical", "bge", "e5_bge"] = "lexical_only"
     main_state: Literal['disabled','starting','pending','ready','unavailable'] = 'disabled'
     main_job_id: str | None = None
+    indexing: IndexingStatus | None = None
     timings: dict[str, float] = Field(default_factory=dict, exclude=True)
 
 
@@ -354,6 +368,7 @@ class BookIngestOutput(BaseModel):
     document_id: str | None = None
     next_cursor: str | None = None
     warnings: list[str] = Field(default_factory=list)
+    indexing: IndexingStatus | None = None
 
 
 class DocumentAccessOutput(BaseModel):
