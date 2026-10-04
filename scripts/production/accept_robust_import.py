@@ -67,7 +67,7 @@ async def run(args):
                     return await(await db.execute('''select
                      (select md5(string_agg(c.id::text||coalesce(c.embedding::text,''),',' order by c.id)) from rkb_chunks c where not(c.document_id=any(%s::uuid[]))) legacy,
                      (select md5(string_agg(e.chunk_id::text||e.embedding::text||e.updated_at::text,',' order by e.chunk_id)) from rkb_chunk_embeddings_e5 e join rkb_chunks c on c.id=e.chunk_id where not(c.document_id=any(%s::uuid[]))) e5,
-                     (select md5(string_agg(e.chunk_id::text||e.embedding::text||e.updated_at::text,',' order by e.chunk_id)) from rkb_chunk_embeddings_bge e join rkb_chunks c on c.id=e.chunk_id where not(c.document_id=any(%s::uuid[]))) bge''',(list(excluded),)*3))).fetchone()
+                     (select md5(string_agg(e.chunk_id::text||e.embedding::text||e.updated_at::text,',' order by e.chunk_id)) from rkb_chunk_embeddings_bge e join rkb_chunks c on c.id=e.chunk_id where not(c.document_id=any(%s::uuid[]))) bge''',(list(excluded),)*3)).fetchone()
             if args.prepare:
                 if fixture:raise RuntimeError('Fixture already prepared; resume execute/readback')
                 save(root/'visual-baseline.json',{'corpus':await digest(),'readiness':await call('indexing_status',{})})
