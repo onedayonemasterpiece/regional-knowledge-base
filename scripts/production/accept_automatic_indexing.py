@@ -81,7 +81,11 @@ async def run(args):
             else:
                 fixture=json.loads((root/'control-fixture.json').read_text());assert fixture['file_id']==args.file_id;document=UUID(fixture['document_id']);assert hashlib.sha256((root/'synthetic-index-control.pdf').read_bytes()).hexdigest()==fixture['source_sha256']
                 for page in fixture['pages']:page.update(source_material='visual_reviewed',source_review_note='Model reviewed the operator-created synthetic control render: complete heading and repeated test text, no historical content.')
-                ingestion=fixture['ingestion_id'];stage={'command':'stage','ingestion_id':ingestion,'pages':fixture['pages'],'chunks':fixture['chunks']};await call('book_ingest',stage);await call('book_ingest',stage);assert (await call('book_ingest',{'command':'validate','ingestion_id':ingestion}))['state']=='ready'
+                ingestion=fixture['ingestion_id']
+                for offset in range(0,len(fixture['pages']),4):
+                    stage={'command':'stage','ingestion_id':ingestion,'pages':fixture['pages'][offset:offset+4],'chunks':fixture['chunks'][offset:offset+4]}
+                    await call('book_ingest',stage);await call('book_ingest',stage)
+                assert (await call('book_ingest',{'command':'validate','ingestion_id':ingestion}))['state']=='ready'
                 initial=await call('indexing_status',{'document_id':str(document)});assert initial['active_chunks']==0
                 await call('book_ingest',{'command':'finalize','ingestion_id':ingestion});observations=[];marks={};restart=False;interrupt=False;started=time.monotonic();activation=None;fast_tested=False;lex_tested=False
                 old_pid=subprocess.check_output(['systemctl','--user','show','regional-knowledge-indexing','-p','MainPID','--value']).decode().strip()
