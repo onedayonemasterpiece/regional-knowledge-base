@@ -128,6 +128,25 @@ The benchmark must explicitly answer:
 - Does E5+BGE rank fusion improve over BGE alone enough to justify the extra E5
   query work?
 
+## Graph-readiness retrieval cases
+
+The IdeaHub voice requirement now includes an accumulative graph of people,
+events, historical threads and POI references. Do **not** implement that graph in
+this task, but make the retrieval acceptance representative of its future
+discovery needs.
+
+Add source-verified cases for:
+
+- the same historical person appearing in multiple passages/events;
+- a German personal-name spelling queried in Russian;
+- an event queried through a participant name rather than the event wording;
+- a current Russian POI name locating German historical source text;
+- one information need involving person + event + place.
+
+Report whether BGE, E5 or their fused ranking is most useful for these cases.
+Keep exact alias matching as a separate signal rather than hiding it inside model
+scores.
+
 ## Named entities and future POI use
 
 Include historical/current-name retrieval tests because this stack will later back
@@ -198,5 +217,4 @@ Done only when:
 14. deployed behavior is verified, not merely committed;
 15. final acceptance report with actual numbers is committed.
 
-At the end return a short verdict and one next-step prompt for the bidirectional
-POI discovery implementation, using the accepted multilingual retrieval stack.
+At the end return a short verdict and one next-step prompt for the **minimal accumulative knowledge graph + bidirectional entity/POI discovery** implementation, using the accepted multilingual retrieval stack. Do not propose a separate graph database.
