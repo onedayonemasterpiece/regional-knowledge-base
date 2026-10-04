@@ -12,6 +12,26 @@ Run this **only after**:
 If PR #27/#28 are still open/stacked or production is ahead of main, stop and run:
 `docs/prompts/reconcile-e5-bge-main-before-graph-20261004.md`.
 
+## Prerequisite status — satisfied
+
+As of canonical main `db309a0ad2e01e5143ac1c20735bb214c30dc9ef`:
+
+- PR #27 E5 is merged;
+- PR #28 BGE/Kaggle is merged;
+- PR #29 contains the narrow source-completeness transport/provenance fix;
+- PR #30 records final exact-main reconciliation/readback;
+- production runtime and canonical main were verified byte-identical;
+- E5/BGE are healthy, migrations 010/011 are present, paid fallback is absent;
+- PR #26 is superseded with its benchmark/audit evidence preserved.
+
+Therefore **do not rerun reconciliation**. Start the graph implementation directly.
+
+Important source limitation: the active Gause revision remains historically incomplete
+(known clipped text in the old projection and image-only pages without chunks).
+The transport is fixed for correct future review/reimport, but this graph task must
+not pretend the existing active projection is complete. Use source-verified evidence
+for graph acceptance and keep source-gap status explicit.
+
 Read first:
 
 - docs/reports/accumulative-knowledge-graph-decision-20261004.md
