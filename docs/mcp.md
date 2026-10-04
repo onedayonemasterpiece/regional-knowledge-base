@@ -6,15 +6,19 @@ Keep the public model-facing API small and goal-oriented:
 
 1. `search(query)` — standard read-only search compatible with ChatGPT company knowledge/deep research.
 2. `fetch(id)` — standard read-only fetch with full evidence, provenance and illustration descriptors.
-3. `book_ingest(...)` — resumable ingestion state/write workflow and file-aware start.
-4. `book_pages(...)` — read-only staged page batches returned as model-visible MCP image content.
-5. `document_access(...)` — inspect/change visibility and sharing, subject to rights and role checks.
-6. `profile()` — tiny identity/profile read for clients that display connected account identity.
-7. `illustration_fetch(id)` — authorized canonical crop as ImageContent, with
+3. `book_find(query, limit<=8)` — bounded deterministic title/author lookup over books the caller may read.
+4. `book_ingest(...)` — resumable ingestion workflow for a new attachment or a new revision of an archived source.
+5. `book_pages(...)` — read-only staged page batches returned as model-visible MCP image content.
+6. `document_access(...)` — inspect/change visibility and sharing, subject to rights and role checks.
+7. `profile()` — tiny identity/profile read for clients that display connected account identity.
+8. `illustration_fetch(id)` — authorized canonical crop as ImageContent, with
    printed caption and explicitly labelled model observation metadata. Available
    in the full profile; Live retains its existing bounded evidence surface.
 
-`book_ingest` start metadata accepts `duplicate_policy=reuse|new_revision`.
+The normal user does not supply `duplicate_policy`, document UUIDs, cursors or lifecycle commands.
+For an attached new source the model uses `start`; for a named existing book it resolves
+the book with `book_find` and uses `reprocess(document_id)`. Internal attached-source
+metadata still supports `duplicate_policy=reuse|new_revision` for compatibility and tests.
 See [ingestion](ingestion.md) for source identity and visual review requirements.
 Chunk `fetch` includes illustration URI, source page/bbox, caption, observation,
 crop provenance, visibility/rights and a verified private mirror reference when
@@ -50,10 +54,31 @@ URLs must be stable, user-openable evidence pages, not expiring object-store URL
 
 ## Ingestion
 
-`book_ingest` is resumable and command-oriented because ingestion is one user goal with shared state:
+### User-level contract
+
+The expected user requests are intentionally simple:
 
 ```text
-start(file) -> ingestion_id
+"Добавь эту книгу в базу знаний региона" + attached PDF/DjVu
+"Переимпортируй Гаузе, прошлый импорт был неполный"
+```
+
+The model owns orchestration. For a new attachment it starts ingestion and carries it
+through page review, staging, validation and finalization. For an existing source it
+first calls `book_find`; if one plausible match remains it calls
+`book_ingest(command="reprocess", document_id=...)`. The server requires the exact
+source to be present in the verified Telegram source archive and creates/resumes the
+next staged revision on the same logical document. A re-upload is requested only when
+that verified archive is genuinely unavailable. Multiple plausible catalog matches are
+a user-facing disambiguation case; hidden IDs are never a user requirement.
+
+### Internal resumable workflow
+
+`book_ingest` remains command-oriented because ingestion is one resumable state machine:
+
+```text
+new source: start(file) -> ingestion_id
+existing source: book_find(query) -> reprocess(document_id) -> ingestion_id
 book_pages(ingestion_id) -> mixed text metadata + MCP ImageContent blocks
 stage(ingestion_id, pages, semantic chunks)
 validate(ingestion_id)
@@ -61,30 +86,42 @@ finalize(ingestion_id)
 status(ingestion_id)
 ```
 
-The OpenAI tool descriptor marks the top-level file parameter with `_meta["openai/fileParams"]`.
+Every ingestion result includes a compact `next_action` so the model can distinguish
+continue-pages/staging, validate, finalize, wait for server work, resume interrupted
+finalization, completion and a real blocker. The model performs semantic
+reading/recognition; the MCP does not run OCR, VLM, LLM parsing or semantic extraction.
+
+The OpenAI tool descriptor marks only the top-level new-source `file` parameter with
+`_meta["openai/fileParams"]`.
 
 `book_pages` returns page renders through MCP image content blocks, not JSON URLs that
 the model would need to fetch separately. Each batch is deliberately small (default
 4, maximum 8 pages) so vision context is bounded.
 
 Current implementation checkpoint:
+- `book_find`: bounded RLS-filtered title/author lookup with deterministic ranking;
 - `start(file)`: bounded HTTPS file-parameter download, exact SHA-256, PDF/DjVu
-  inspection, private Object Storage persistence and private document/job creation;
+  inspection, private source staging and private document/job creation;
+- `reprocess(document_id)`: owner-authorized verified Telegram-source-archive read,
+  exact SHA verification and an idempotent `new_revision` start on the same
+  `document_id`, without asking the user to upload the book again;
 - `book_pages`: small deterministic JPEG page renders plus bounded native/embedded source
   text blocks/bboxes, maximum 8 pages per call;
 - `stage`: the model submits page-local short keys (`region_key`,
   `illustration_key`) and semantic chunk references; the server creates stable
   UUIDv5 identities and derives chunk text from referenced regions;
-- the full staged graph is an immutable hashed JSON object in Object Storage,
-  not a partially materialized Postgres graph;
+- canonical searchable text and graph material are persisted in Postgres; transient
+  staged graph/source objects remain replaceable implementation artifacts rather than
+  the user-facing source of truth;
 - `validate`: requires complete page coverage, valid relations/illustrations,
   retrieval coverage and no unresolved `needs_review` regions;
-- `finalize`: builds the UTF-8 text projection, embeddings/FTS, exact source
-  crops, pages/regions/relations/illustrations/chunks and then asks the database
+- `finalize`: builds the Postgres text/search projection, embeddings/FTS, exact
+  source crops, pages/regions/relations/illustrations/chunks and then asks the database
   to revalidate the materialized revision before atomically switching
   `active_revision`;
 - retries of the same ChatGPT `file_id` are idempotent at the SQL boundary,
-  including concurrent starts.
+  including concurrent starts; archived reprocess uses a stable per-active-revision
+  source identity so lost responses resume the same staged revision.
 
 Staged books remain invisible to retrieval until the final activation RPC.
 

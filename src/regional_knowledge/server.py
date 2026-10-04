@@ -24,6 +24,7 @@ from .local_e5 import LocalE5Embedder
 from .auth import JwtResourceVerifier
 from .backend import KnowledgeBackend
 from .contracts import (
+    BookFindOutput,
     BookIngestOutput,
     ChatFile,
     DocumentAccessOutput,
@@ -174,7 +175,16 @@ def build_server(
         "Regional Knowledge Base",
         instructions=(
             "Search and retrieve sourced regional knowledge. Use search before fetch. "
-            "Ingestion is explicit and resumable; never infer that a source is public."
+            "When a user asks to add an attached PDF/DjVu book, start ingestion and carry "
+            "it through book_pages, model review/stage, validate and finalize by following "
+            "next_action/status. When a user asks to reimport an existing book without an "
+            "attachment, use book_find by title/author, disambiguate only when needed, then "
+            "book_ingest(reprocess) from its verified archived source; ask for a re-upload "
+            "only when that archive is genuinely unavailable. Resume existing ingestion "
+            "state after interruptions. The model performs semantic reading/recognition; "
+            "the MCP only transports and stores deterministic source material. Hide internal "
+            "workflow terms unless they are useful to explain a real blocker. Never infer "
+            "that a source is public."
         ),
         **kwargs,
     )
@@ -253,14 +263,33 @@ def build_server(
                 ImageContent(type='image', data=base64.b64encode(data).decode(), mimeType=mime)]
 
     @mcp.tool(
-        title="Add or continue a book",
+        name="book_find",
+        title="Find an existing book",
         description=(
-            "Start or continue a resumable book/journal ingestion. Use start with an "
-            "attached PDF or DjVu source, then book_pages plus stage/validate/finalize/status as needed. "
-            "Finalization is the only step that makes an indexed revision active. "
-            "For large books finalize starts or resumes server-side work and returns "
-            "processing promptly; do not poll in a tight loop or keep the same ChatGPT "
-            "turn open waiting. Check status in a later turn."
+            "Deterministically find accessible books by title or author before reprocessing. "
+            "Returns compact document metadata only. If several plausible matches remain, "
+            "ask the user which book they mean; do not ask for document UUIDs."
+        ),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+    )
+    async def book_find(query: str, limit: int = 8) -> BookFindOutput:
+        return await backend.book_find(
+            query.strip(),
+            _principal(),
+            limit=max(1, min(int(limit), 8)),
+        )
+
+    @mcp.tool(
+        title="Add, reprocess or continue a book",
+        description=(
+            "Carry one book/journal ingestion goal. For a new attached PDF/DjVu use start, "
+            "then book_pages plus model-authored stage, validate and finalize while following "
+            "next_action. For an existing book named by the user, call book_find first and "
+            "use reprocess with its document_id; reprocess opens the verified archived source "
+            "and creates/resumes the next revision on the same logical document without a "
+            "re-upload. Resume existing state after interruptions. Finalization alone activates "
+            "the revision. If next_action is wait, return control to the user and check status "
+            "later instead of tight polling."
         ),
         annotations=ToolAnnotations(
             read_only_hint=False,
@@ -271,8 +300,9 @@ def build_server(
         meta={"openai/fileParams": ["file"]},
     )
     async def book_ingest(
-        command: Literal["start", "stage", "validate", "finalize", "status"],
+        command: Literal["start", "reprocess", "stage", "validate", "finalize", "status"],
         file: ChatFile | None = None,
+        document_id: str | None = None,
         ingestion_id: str | None = None,
         cursor: str | None = None,
         metadata: StartMetadataInput | None = None,
@@ -318,6 +348,7 @@ def build_server(
             ingestion_id=ingestion_id,
             cursor=cursor,
             payload=payload,
+            document_id=document_id,
         )
 
     @mcp.tool(title="Stage evidence-backed entity graph", description="Submit bounded model-authored graph candidates on an owned active document, or add a sourced alias to one owned entity. No automatic identity merge. Exact source chunk/page/region evidence required.", annotations=ToolAnnotations(read_only_hint=False,open_world_hint=False))

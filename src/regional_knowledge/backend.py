@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .contracts import (
+    BookFindOutput,
     BookIngestOutput,
     ChatFile,
     DocumentAccessOutput,
@@ -38,6 +39,14 @@ class KnowledgeBackend(Protocol):
 
     async def fetch(self, item_id: str, principal: Principal) -> FetchOutput: ...
 
+    async def book_find(
+        self,
+        query: str,
+        principal: Principal,
+        *,
+        limit: int = 8,
+    ) -> BookFindOutput: ...
+
     async def search_evidence(
         self,
         query: str,
@@ -64,6 +73,7 @@ class KnowledgeBackend(Protocol):
         ingestion_id: str | None,
         cursor: str | None,
         payload: dict[str, Any] | None,
+        document_id: str | None = None,
     ) -> BookIngestOutput: ...
 
     async def document_access(
@@ -83,6 +93,9 @@ class UnavailableBackend:
         raise RuntimeError("knowledge backend is not configured")
 
     async def fetch(self, item_id: str, principal: Principal) -> FetchOutput:
+        raise RuntimeError("knowledge backend is not configured")
+
+    async def book_find(self, *args: Any, **kwargs: Any) -> BookFindOutput:
         raise RuntimeError("knowledge backend is not configured")
 
     async def search_evidence(self, *args: Any, **kwargs: Any) -> EvidenceSearchOutput:

@@ -369,12 +369,28 @@ class ProfileOutput(BaseModel):
     service: Literal["regional_knowledge"] = "regional_knowledge"
 
 
+class BookFindResult(BaseModel):
+    document_id: str
+    title: str
+    authors: list[str] = Field(default_factory=list)
+    publication_year: int | None = None
+    active_revision: int = Field(default=0, ge=0)
+    source_format: str | None = None
+    source_archive_status: Literal["pending", "verified"] | None = None
+
+
+class BookFindOutput(BaseModel):
+    query: str
+    results: list[BookFindResult] = Field(default_factory=list)
+
+
 class BookIngestOutput(BaseModel):
     ingestion_id: str
     state: Literal["staged", "processing", "needs_review", "ready", "finalized", "failed"]
     message: str
     document_id: str | None = None
     next_cursor: str | None = None
+    next_action: Literal["continue_pages", "validate", "finalize", "wait", "resume_finalize", "done", "blocker"] | None = None
     warnings: list[str] = Field(default_factory=list)
     indexing: IndexingStatus | None = None
     source_archive_status: Literal["pending", "verified"] | None = None

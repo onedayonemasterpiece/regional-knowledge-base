@@ -22,9 +22,13 @@ def test_model_surface_stays_small_and_goal_oriented(monkeypatch):
     monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
     server = build_server()
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
-    assert set(tools) == {"search", "fetch", "illustration_fetch", "book_ingest", "book_pages", "document_access", "profile", "graph_stage", "graph_fetch", "graph_related", "indexing_status"}
+    assert set(tools) == {"search", "fetch", "illustration_fetch", "book_find", "book_ingest", "book_pages", "document_access", "profile", "graph_stage", "graph_fetch", "graph_related", "indexing_status"}
     assert tools['illustration_fetch'].annotations.read_only_hint is True
+    assert tools["book_find"].annotations.read_only_hint is True
+    assert "do not ask for document UUIDs" in tools["book_find"].description
     assert tools["book_ingest"].meta["openai/fileParams"] == ["file"]
+    assert "verified archived source" in tools["book_ingest"].description
+    assert "reprocess" in tools["book_ingest"].description
     assert tools["book_pages"].annotations.read_only_hint is True
     assert tools["profile"].meta["openai/profile"] is True
     assert tools["search"].annotations.read_only_hint is True

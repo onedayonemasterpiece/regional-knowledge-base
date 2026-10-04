@@ -17,6 +17,8 @@ import httpx
 
 from .backend import KnowledgeBackend, RenderedPage, RenderedPageBatch, UnavailableBackend
 from .contracts import (
+    BookFindOutput,
+    BookFindResult,
     BookIngestOutput,
     ChatFile,
     DocumentAccessOutput,
@@ -161,6 +163,96 @@ class SupabaseRestBackend(KnowledgeBackend):
         if self.config.public_base_url:
             return f"{self.config.public_base_url.rstrip('/')}/evidence/{encoded}"
         return f"knowledge://evidence/{encoded}"
+
+    async def book_find(
+        self,
+        query: str,
+        principal: Principal,
+        *,
+        limit: int = 8,
+    ) -> BookFindOutput:
+        query = query.strip()
+        limit = max(1, min(int(limit), 8))
+        if not query:
+            return BookFindOutput(query=query, results=[])
+
+        if hasattr(self, "data_client"):
+            async with self.data_client._connection(self._headers(principal)) as db:
+                rows = await (
+                    await db.execute(
+                        """
+                        select id,title,authors,publication_year,active_revision,
+                               source_format,source_archive_status
+                          from rkb_documents
+                         where strpos(lower(title), lower(%s)) > 0
+                            or strpos(lower(coalesce(authors::text, '')), lower(%s)) > 0
+                         order by
+                           case
+                             when lower(title)=lower(%s) then 0
+                             when strpos(lower(title), lower(%s))=1 then 1
+                             when strpos(lower(title), lower(%s))>0 then 2
+                             else 3
+                           end,
+                           char_length(title), lower(title), id
+                         limit %s
+                        """,
+                        (query, query, query, query, query, limit),
+                    )
+                ).fetchall()
+        else:
+            response = await self.client.get(
+                f"{self.config.url.rstrip('/')}/rest/v1/rkb_documents",
+                headers=self._headers(principal),
+                params={
+                    "select": (
+                        "id,title,authors,publication_year,active_revision,"
+                        "source_format,source_archive_status"
+                    ),
+                    "order": "title.asc",
+                    "limit": "512",
+                },
+            )
+            response.raise_for_status()
+            candidates = [dict(row) for row in response.json()]
+            needle = query.casefold()
+
+            def score(row: dict[str, Any]) -> tuple[int, int, str, str]:
+                title = str(row.get("title") or "")
+                authors = " ".join(str(value) for value in (row.get("authors") or []))
+                folded_title = title.casefold()
+                if folded_title == needle:
+                    rank = 0
+                elif folded_title.startswith(needle):
+                    rank = 1
+                elif needle in folded_title:
+                    rank = 2
+                elif needle in authors.casefold():
+                    rank = 3
+                else:
+                    rank = 9
+                return rank, len(title), folded_title, str(row.get("id") or "")
+
+            rows = [row for row in candidates if score(row)[0] < 9]
+            rows.sort(key=score)
+            rows = rows[:limit]
+
+        return BookFindOutput(
+            query=query,
+            results=[
+                BookFindResult(
+                    document_id=str(row["id"]),
+                    title=str(row.get("title") or ""),
+                    authors=[str(value) for value in (row.get("authors") or [])],
+                    publication_year=row.get("publication_year"),
+                    active_revision=int(row.get("active_revision") or 0),
+                    source_format=(
+                        str(row["source_format"]) if row.get("source_format") else None
+                    ),
+                    source_archive_status=row.get("source_archive_status"),
+                )
+                for row in rows
+            ],
+        )
 
     async def search(self, query: str, principal: Principal, *, match_count: int = 8, main_job_id: str | None = None, aliases: list | None = None, _fast_only: bool = False) -> SearchOutput:
         started = time.monotonic()
@@ -430,12 +522,27 @@ class SupabaseRestBackend(KnowledgeBackend):
 
     @staticmethod
     def _ingestion_output(row: dict[str, Any], message: str) -> BookIngestOutput:
+        state = str(row["state"])
+        cursor = row.get("cursor")
+        if state == "ready":
+            next_action = "finalize"
+        elif state == "finalized":
+            next_action = "done"
+        elif state == "failed":
+            next_action = "blocker"
+        elif state == "processing" and cursor == "finalize":
+            next_action = "wait"
+        elif state == "staged" and cursor in (None, ""):
+            next_action = "validate"
+        else:
+            next_action = "continue_pages"
         return BookIngestOutput(
             ingestion_id=str(row["id"]),
             document_id=str(row["document_id"]) if row.get("document_id") else None,
-            state=str(row["state"]),
+            state=state,
             message=message,
-            next_cursor=row.get("cursor"),
+            next_cursor=cursor,
+            next_action=next_action,
             warnings=[str(value) for value in (row.get("warnings") or [])],
         )
 
@@ -598,6 +705,7 @@ class SupabaseRestBackend(KnowledgeBackend):
         object_key: str | None = None,
         object_id: str | None = None,
         kind: str | None = None,
+        sha256: str | None = None,
     ) -> dict[str, Any] | None:
         params = {
             "document_id": f"eq.{document_id}",
@@ -610,6 +718,8 @@ class SupabaseRestBackend(KnowledgeBackend):
             params["id"] = f"eq.{object_id}"
         if kind is not None:
             params["kind"] = f"eq.{kind}"
+        if sha256 is not None:
+            params["sha256"] = f"eq.{sha256}"
         response = await self.client.get(
             f"{self.config.url.rstrip('/')}/rest/v1/rkb_objects",
             headers=self._service_headers(),
@@ -651,8 +761,162 @@ class SupabaseRestBackend(KnowledgeBackend):
         if not enabled() or output.state!='finalized' or not output.document_id:return output
         readiness=await status(self,principal,output.document_id)
         warnings=[w for w in output.warnings if w not in ('fast_e5_backfill_required','automatic_indexing_pending')]
-        if readiness.e5_missing or readiness.bge_missing:warnings.append('automatic_indexing_pending')
-        return output.model_copy(update={'indexing':readiness,'warnings':warnings})
+        if readiness.e5_missing or readiness.bge_missing:
+            warnings.append('automatic_indexing_pending')
+            next_action='wait'
+        else:
+            next_action=output.next_action
+        return output.model_copy(update={'indexing':readiness,'warnings':warnings,'next_action':next_action})
+
+    async def _reprocess_existing_source(
+        self,
+        *,
+        principal: Principal,
+        document_id: str,
+    ) -> BookIngestOutput:
+        response = await self.client.get(
+            f"{self.config.url.rstrip('/')}/rest/v1/rkb_documents",
+            headers=self._headers(principal),
+            params={
+                "id": f"eq.{document_id}",
+                "select": (
+                    "id,owner_user_id,title,authors,publication_year,language,"
+                    "source_sha256,page_count,active_revision,source_format,"
+                    "source_filename,source_archive_status,source_archive_ref"
+                ),
+                "limit": "1",
+            },
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if not rows:
+            raise LookupError("book_not_found_or_not_accessible")
+        document = dict(rows[0])
+        if str(document.get("owner_user_id")) != principal.subject:
+            raise PermissionError("book_reprocess_owner_required")
+        if (
+            document.get("source_archive_status") != "verified"
+            or not document.get("source_archive_ref")
+        ):
+            raise RuntimeError(
+                "archived source is unavailable; ask the user to attach the original PDF/DjVu again"
+            )
+        source_sha256 = str(document.get("source_sha256") or "")
+        if not source_sha256:
+            raise RuntimeError("archived source metadata is incomplete")
+
+        source_object = await self._server_object(
+            document_id=document_id,
+            kind="source_pdf",
+            sha256=source_sha256,
+        )
+        if not source_object:
+            raise RuntimeError("archived source object metadata is missing")
+
+        active_revision = int(document.get("active_revision") or 0)
+        source_file_id = f"archive-reprocess:{document_id}:after:{active_revision}"
+
+        previous = await self._ingestion_row(
+            principal=principal,
+            source_file_id=source_file_id,
+        )
+        if previous and previous.get("state") != "failed" and previous.get("source_object_id"):
+            return await self._ingestion_with_indexing(
+                self._ingestion_output(
+                    previous,
+                    "Existing archived-source reprocess resumed",
+                ),
+                principal,
+            )
+
+        work_root = os.getenv("RKB_WORK_DIR") or None
+        format_name = str(document.get("source_format") or "pdf").lower()
+        suffix = "djvu" if format_name == "djvu" else "pdf"
+        with tempfile.TemporaryDirectory(prefix="rkb-reprocess-", dir=work_root) as temp_dir:
+            source_path = Path(temp_dir) / f"source.{suffix}"
+            from .source_archive import download_source
+
+            await download_source(
+                self,
+                principal,
+                document_id,
+                source_object,
+                source_path,
+                require_archive=True,
+            )
+            actual_sha256, _ = await asyncio.to_thread(sha256_file, source_path)
+            if actual_sha256 != source_sha256:
+                raise RuntimeError("archived source integrity mismatch")
+            source_info = await self.pdf_processor.inspect_file(source_path)
+
+        stored_page_count = int(document.get("page_count") or 0)
+        if stored_page_count and source_info.page_count != stored_page_count:
+            raise RuntimeError("archived source page count mismatch")
+
+        new_ingestion_id = str(uuid4())
+        start = await self.client.post(
+            f"{self.config.url.rstrip('/')}/rest/v1/rpc/rkb_start_ingestion",
+            headers=self._headers(principal),
+            json={
+                "p_ingestion_id": new_ingestion_id,
+                "p_document_id": document_id,
+                "p_title": str(document.get("title") or "Untitled source"),
+                "p_authors": document.get("authors") or [],
+                "p_publication_year": document.get("publication_year"),
+                "p_language": document.get("language"),
+                "p_source_sha256": source_sha256,
+                "p_source_file_id": source_file_id,
+                "p_page_count": source_info.page_count,
+                "p_duplicate_policy": "new_revision",
+            },
+        )
+        start.raise_for_status()
+        identities = start.json()
+        if not identities:
+            raise RuntimeError("reprocess_start_failed")
+        new_ingestion_id = str(identities[0]["ingestion_id"])
+        resolved_document_id = str(identities[0]["document_id"])
+        if resolved_document_id != document_id:
+            raise RuntimeError("reprocess_document_identity_mismatch")
+
+        existing = await self._ingestion_row(
+            principal=principal,
+            ingestion_id=new_ingestion_id,
+        )
+        if existing and existing.get("state") != "failed" and existing.get("source_object_id"):
+            return await self._ingestion_with_indexing(
+                self._ingestion_output(
+                    existing,
+                    "Existing archived-source reprocess resumed",
+                ),
+                principal,
+            )
+
+        rows = await self._patch_ingestion(
+            new_ingestion_id,
+            principal,
+            {
+                "source_object_id": str(source_object["id"]),
+                "state": "staged",
+                "cursor": "0",
+                "error_code": None,
+            },
+            representation=True,
+        )
+        row = rows[0] if rows else {
+            "id": new_ingestion_id,
+            "document_id": document_id,
+            "state": "staged",
+            "cursor": "0",
+            "warnings": [],
+        }
+        return await self._ingestion_with_indexing(
+            self._ingestion_output(
+                row,
+                "Verified archived source opened; continue with book_pages and stage",
+            ),
+            principal,
+        )
 
     async def book_ingest(
         self,
@@ -663,6 +927,7 @@ class SupabaseRestBackend(KnowledgeBackend):
         ingestion_id: str | None,
         cursor: str | None,
         payload: dict[str, Any] | None,
+        document_id: str | None = None,
     ) -> BookIngestOutput:
         if command == "status":
             if not ingestion_id:
@@ -683,7 +948,19 @@ class SupabaseRestBackend(KnowledgeBackend):
                         "Finalization is paused after an interruption or service "
                         "restart; call finalize once to resume."
                     )
-            return await self._ingestion_with_indexing(self._ingestion_output(row, message),principal)
+            output = self._ingestion_output(row, message)
+            if row["state"] == "processing" and row.get("cursor") == "finalize":
+                task = self._finalize_tasks.get(ingestion_id)
+                output = output.model_copy(
+                    update={
+                        "next_action": (
+                            "wait"
+                            if task is not None and not task.done()
+                            else "resume_finalize"
+                        )
+                    }
+                )
+            return await self._ingestion_with_indexing(output,principal)
 
         if command in {"stage", "validate", "finalize"}:
             if not ingestion_id:
@@ -708,6 +985,16 @@ class SupabaseRestBackend(KnowledgeBackend):
                 self,
                 principal=principal,
                 ingestion_id=ingestion_id,
+            )
+
+        if command == "reprocess":
+            if file is not None:
+                raise ValueError("reprocess uses the verified archived source; do not attach a file")
+            if not document_id:
+                raise ValueError("document_id is required for reprocess")
+            return await self._reprocess_existing_source(
+                principal=principal,
+                document_id=document_id,
             )
 
         if command != "start":
