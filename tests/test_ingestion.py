@@ -267,8 +267,9 @@ async def test_failed_start_reuses_same_ingestion_and_existing_source_object():
     assert ("POST", "/rest/v1/rkb_objects") not in calls
 
 
+@pytest.mark.parametrize("cursor", ["0", "text:0:0:1000"])
 @pytest.mark.asyncio
-async def test_book_pages_downloads_to_file_after_user_job_authorization():
+async def test_book_pages_downloads_to_file_after_user_job_authorization(cursor):
     source = b"%PDF-fake"
     source_hash = hashlib.sha256(source).hexdigest()
     document_id = "22222222-2222-2222-2222-222222222222"
@@ -302,26 +303,38 @@ async def test_book_pages_downloads_to_file_after_user_job_authorization():
             }])
         raise AssertionError((request.method, request.url))
 
+    class CursorProcessor(FakePdfProcessor):
+        async def render_file(self, path, *, start, count, text_part=None):
+            if text_part is None:
+                return await super().render_file(path, start=start, count=count)
+            assert start == 0 and count == 1 and text_part == (0, 1000)
+            total, pages = await super().render_file(path, start=0, count=2)
+            from dataclasses import replace
+            return total, (replace(pages[0], native_text_info={"original_length": 2001, "truncated": True}),)
+
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     backend = SupabaseRestBackend(
         config(),
         client=client,
         object_store=FakeStore(source),
-        pdf_processor=FakePdfProcessor(),
+        pdf_processor=CursorProcessor(),
     )
     batch = await backend.book_pages(
         ingestion_id="44444444-4444-4444-4444-444444444444",
         principal=principal(),
-        cursor="0",
+        cursor=cursor,
         batch_size=2,
     )
     await client.aclose()
 
-    assert batch.next_cursor is None
-    assert [page.physical_page_index for page in batch.pages] == [0, 1]
+    assert batch.next_cursor == (None if cursor == "0" else "1")
+    assert [page.physical_page_index for page in batch.pages] == ([0, 1] if cursor == "0" else [0])
     assert batch.pages[0].native_text == "Первая страница"
     assert batch.pages[0].native_blocks[0]["bbox"]["left"] == 10
-    assert batch.pages[0].page_id != batch.pages[1].page_id
+    if cursor == "0":
+        assert batch.pages[0].page_id != batch.pages[1].page_id
+    else:
+        assert batch.pages[0].native_text_info["original_length"] == 2001
 
 
 @pytest.mark.asyncio
@@ -346,3 +359,80 @@ async def test_real_pymupdf_processor_returns_text_blocks_and_jpeg(tmp_path):
     assert pages[0].data.startswith(b"\xff\xd8")
     assert "Koenigsberg 1930" in (pages[0].native_text or "")
     assert pages[0].native_blocks
+
+
+@pytest.mark.asyncio
+async def test_native_block_preview_continuations_are_bounded_and_repeatable(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=2000)
+    page.insert_text((50, 50), "\n".join(f"Line {i:03} " + "material " * 5 for i in range(80)), fontsize=10)
+    expected = page.get_text("blocks")[0][4].strip()
+    assert len(expected) > 2000
+    path = tmp_path / "long-block.pdf"
+    doc.save(path)
+    doc.close()
+    processor = PyMuPdfProcessor()
+    _, pages = await processor.render_file(path, start=0, count=1)
+    block = pages[0].native_blocks[0]
+    assert block["original_length"] == len(expected)
+    assert len(block["text"]) == 1000
+    assert block["truncated"] and block["material"] == "preview"
+    pieces = [block["text"]]
+    while block["continuation"]:
+        _, index, number, offset = block["continuation"].split(":")
+        _, continued = await processor.render_file(path, start=int(index), count=1, text_part=(int(number), int(offset)))
+        _, repeated = await processor.render_file(path, start=int(index), count=1, text_part=(int(number), int(offset)))
+        block = continued[0].native_blocks[0]
+        assert repeated[0].native_blocks == continued[0].native_blocks
+        assert 0 < len(block["text"]) <= 1000
+        pieces.append(block["text"])
+    assert "".join(pieces) == expected
+    assert block["end"] == len(expected)
+    assert pages[0].native_text_info["requires_visual_review"]
+    with pytest.raises(ValueError):
+        await processor.render_file(path, start=0, count=1, text_part=(0, len(expected)))
+
+
+@pytest.mark.asyncio
+async def test_textless_image_page_requires_visual_review(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    page = doc.new_page(width=100, height=100)
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 10, 10))
+    pix.clear_with(100)
+    page.insert_image(page.rect, stream=pix.tobytes("png"))
+    path = tmp_path / "image-only.pdf"
+    doc.save(path)
+    doc.close()
+    _, pages = await PyMuPdfProcessor().render_file(path, start=0, count=1)
+    assert pages[0].data.startswith(b"\xff\xd8")
+    assert pages[0].native_text is None
+    assert pages[0].native_blocks == ()
+    assert pages[0].native_text_info["original_length"] == 0
+    assert pages[0].native_text_info["requires_visual_review"] is True
+
+
+@pytest.mark.asyncio
+async def test_native_blocks_beyond_preview_cap_remain_addressable(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=9000)
+    for i in range(82):
+        page.insert_text((20, 50+i*100), f"Native block {i}", fontsize=10)
+    assert len(page.get_text("blocks")) == 82
+    path = tmp_path / "many-blocks.pdf"
+    doc.save(path)
+    doc.close()
+    processor = PyMuPdfProcessor()
+    _, initial = await processor.render_file(path, start=0, count=1)
+    info = initial[0].native_text_info
+    assert len(initial[0].native_blocks) == 80
+    assert info["blocks_truncated"] and info["block_count"] == 82
+    assert info["blocks_continuation"] == "text:0:80:0"
+    _, continued = await processor.render_file(path, start=0, count=1, text_part=(80,0))
+    assert continued[0].native_blocks[0]["text"] == "Native block 80"
+    assert continued[0].native_text_info["blocks_continuation"] == "text:0:81:0"
+    _, last = await processor.render_file(path, start=0, count=1, text_part=(81,0))
+    assert last[0].native_blocks[0]["text"] == "Native block 81"
+    assert last[0].native_text_info["blocks_continuation"] is None

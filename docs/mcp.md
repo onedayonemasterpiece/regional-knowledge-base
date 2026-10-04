@@ -118,3 +118,29 @@ for weak/fast Live models.
 ## Public and private search
 
 Anonymous/public-only search may be exposed separately later. Authenticated search always applies row-level ACL before ranking candidates. Never retrieve private rows and filter them only after vector search.
+### Native previews and source completeness
+
+Native extraction is a transport aid, never a certificate of page completeness.
+Each `native_blocks` entry reports `original_length`, `offset`, `end`,
+`truncated`, and an optional `continuation` cursor. Read that cursor with the
+same authorized `book_pages(ingestion_id, cursor)` call: it returns at most
+1000 characters of one block and the source page image. Repeating a cursor
+returns the same portion; concatenate by offset, without duplicating retries.
+A page's `native_text_info.blocks_continuation` exposes blocks beyond the
+80-block preview cap, and then subsequent blocks during a continuation read.
+Finish a block's own continuation before advancing to the next block. The
+ordinary numeric page cursor remains the next *page*, not a completeness claim.
+Page text remains capped at 24000 characters; use block portions for complete
+native material. Empty native text can still accompany a meaningful scanned
+image or caption and always requires model visual review.
+
+`StagePageInput.source_material` defaults to `unreviewed`; `preview` and
+`full_native` alone cannot pass validation. Every page, including an image-only
+page, needs `visual_reviewed` plus a concise `source_review_note` describing the
+model's source review. The server validates this explicit attestation and graph
+coverage; it cannot certify the truth of a semantic review. Old staged graphs
+lack the attestation and must be reviewed/restaged before finalization. This
+contract does not alter already active revisions or reimport their source.
+Split long source material into bounded regions (maximum 8000 characters each)
+with correct reading order; continuation portions are not automatically new
+semantic regions. Parsing/recognizing scans remains ChatGPT's work.

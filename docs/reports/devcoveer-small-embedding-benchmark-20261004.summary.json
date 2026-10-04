@@ -1,0 +1,2094 @@
+{
+  "schema_version": 1,
+  "host": {
+    "platform": "Linux-7.0.0-28-generic-x86_64-with-glibc2.43",
+    "cpu_count": 2,
+    "cpu_affinity": [
+      0,
+      1
+    ],
+    "cpuinfo": "Intel(R) Xeon(R) Gold 6248R CPU @ 3.00GHz",
+    "base_commit": "4faa1f68f6bfc56bc610cb59c3a50a898c8cca91"
+  },
+  "questions": {
+    "count": 30,
+    "natural_answerable": 24,
+    "keyword_controls": 4,
+    "negative_controls": 2,
+    "fixture_sha256": "b06c6ee0a1b44bd9a246009432deaed28e87c992989d294ff59ba1cd90b2cbd0"
+  },
+  "fusion": {
+    "method": "RRF",
+    "k": 60,
+    "branch_depth": 100,
+    "weights": [
+      1,
+      1
+    ],
+    "tie_break": "chunk_id ascending"
+  },
+  "lexical": {
+    "quality": {
+      "all": {
+        "answerable_count": 28,
+        "recall_at_1": 0.03571428571428571,
+        "hit_at_1": 0.03571428571428571,
+        "recall_at_5": 0.10714285714285714,
+        "hit_at_5": 0.10714285714285714,
+        "recall_at_10": 0.14285714285714285,
+        "hit_at_10": 0.14285714285714285,
+        "mrr": 0.07142857142857142,
+        "multi_count": 5,
+        "all_evidence_at_10": 0.0,
+        "unanswerable": {
+          "q25": {
+            "returned_count": 0,
+            "top_ids": []
+          },
+          "q26": {
+            "returned_count": 0,
+            "top_ids": []
+          }
+        },
+        "by_class": {
+          "cause": {
+            "n": 13,
+            "hit_at_10": 0.0
+          },
+          "date": {
+            "n": 13,
+            "hit_at_10": 0.0
+          },
+          "fact": {
+            "n": 4,
+            "hit_at_10": 0.0
+          },
+          "keyword_control": {
+            "n": 4,
+            "hit_at_10": 1.0
+          },
+          "multi": {
+            "n": 5,
+            "hit_at_10": 0.0
+          },
+          "name": {
+            "n": 12,
+            "hit_at_10": 0.0
+          },
+          "paraphrase": {
+            "n": 4,
+            "hit_at_10": 0.0
+          }
+        }
+      },
+      "natural": {
+        "answerable_count": 24,
+        "recall_at_1": 0.0,
+        "hit_at_1": 0.0,
+        "recall_at_5": 0.0,
+        "hit_at_5": 0.0,
+        "recall_at_10": 0.0,
+        "hit_at_10": 0.0,
+        "mrr": 0.0,
+        "multi_count": 5,
+        "all_evidence_at_10": 0.0,
+        "unanswerable": {
+          "q25": {
+            "returned_count": 0,
+            "top_ids": []
+          },
+          "q26": {
+            "returned_count": 0,
+            "top_ids": []
+          }
+        },
+        "by_class": {
+          "cause": {
+            "n": 13,
+            "hit_at_10": 0.0
+          },
+          "date": {
+            "n": 13,
+            "hit_at_10": 0.0
+          },
+          "fact": {
+            "n": 4,
+            "hit_at_10": 0.0
+          },
+          "multi": {
+            "n": 5,
+            "hit_at_10": 0.0
+          },
+          "name": {
+            "n": 12,
+            "hit_at_10": 0.0
+          },
+          "paraphrase": {
+            "n": 4,
+            "hit_at_10": 0.0
+          }
+        }
+      },
+      "keyword_controls": {
+        "answerable_count": 4,
+        "recall_at_1": 0.25,
+        "hit_at_1": 0.25,
+        "recall_at_5": 0.75,
+        "hit_at_5": 0.75,
+        "recall_at_10": 1.0,
+        "hit_at_10": 1.0,
+        "mrr": 0.5,
+        "multi_count": 0,
+        "all_evidence_at_10": null,
+        "unanswerable": {},
+        "by_class": {
+          "keyword_control": {
+            "n": 4,
+            "hit_at_10": 1.0
+          }
+        }
+      }
+    },
+    "latency": {
+      "n": 104,
+      "p50_seconds": 0.009978437000029317,
+      "p95_seconds": 0.011077807600000255,
+      "max_seconds": 0.0365266719999795
+    },
+    "empty_count": 26
+  },
+  "corpus": {
+    "document_id": "7ce738b0-d3d3-4fc2-9a61-aa58b537a0e9",
+    "revision": 1,
+    "chunks": 712,
+    "physical_pages": 174,
+    "sha256": "f1b3a74797e2cc11b82fbcdcb4611e5b8db871491244e9b3b584c91459d5171f"
+  },
+  "recommendation": "E5-small INT8 with lexical RRF; recommendation only, production unchanged",
+  "candidates": {
+    "e5": {
+      "candidate": "e5",
+      "model": {
+        "repo": "Xenova/multilingual-e5-small",
+        "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+        "files": [
+          {
+            "path": "onnx/model_quantized.onnx",
+            "bytes": 118308185,
+            "sha256": "f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193"
+          },
+          {
+            "path": "tokenizer.json",
+            "bytes": 17082730,
+            "sha256": "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39"
+          },
+          {
+            "path": "tokenizer_config.json",
+            "bytes": 443,
+            "sha256": "a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b"
+          },
+          {
+            "path": "special_tokens_map.json",
+            "bytes": 167,
+            "sha256": "d05497f1da52c5e09554c0cd874037a083e1dc1b9cfd48034d1c717f1afc07a7"
+          },
+          {
+            "path": "config.json",
+            "bytes": 658,
+            "sha256": "cb99455288675345e1a4f411438d5d0adbba5fbd3a67ea4fb03c015433b996c1"
+          },
+          {
+            "path": "README.md",
+            "bytes": 1077,
+            "sha256": "561a19594636657fe033f8b4427a7743b5f6f3a12f16cecc5f286feca0453245"
+          }
+        ],
+        "anonymous": true,
+        "status": "downloaded",
+        "download_seconds": 27.789710909999997
+      },
+      "runtime": {
+        "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "package_versions": {
+          "numpy": "2.5.3",
+          "tokenizers": "0.23.2",
+          "onnxruntime": "1.30.0",
+          "model2vec": "0.9.0",
+          "psutil": "7.2.2",
+          "psycopg": "3.2.13"
+        }
+      },
+      "contract": {
+        "prefix_query": "query: ",
+        "prefix_document": "passage: ",
+        "pooling": "attention-mask mean over last_hidden_state",
+        "normalization": "L2 float32 after pooling",
+        "max_tokens": 512,
+        "dimension": 384,
+        "inputs": [
+          {
+            "name": "input_ids",
+            "type": "tensor(int64)",
+            "shape": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "attention_mask",
+            "type": "tensor(int64)",
+            "shape": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "token_type_ids",
+            "type": "tensor(int64)",
+            "shape": [
+              "batch_size",
+              "sequence_length"
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "last_hidden_state",
+            "shape": [
+              "batch_size",
+              "sequence_length",
+              384
+            ]
+          }
+        ]
+      },
+      "load_seconds": 1.3935844839999731,
+      "loaded_memory": {
+        "rss_bytes": 490401792,
+        "pss_bytes": 481932288
+      },
+      "first_embedding_seconds": 0.014209574000005887,
+      "launch_to_first_embedding_seconds": 1.6713500640000234,
+      "throughput": [
+        {
+          "batch_size": 1,
+          "chunks": 712,
+          "seconds": 80.06898225799995,
+          "chunks_per_second": 8.892332335457677,
+          "memory": {
+            "peak_rss_bytes": 532451328,
+            "peak_pss_bytes": 523510784,
+            "sample_count": 1542
+          }
+        },
+        {
+          "batch_size": 4,
+          "chunks": 712,
+          "seconds": 153.889051699,
+          "chunks_per_second": 4.626709906515245,
+          "memory": {
+            "peak_rss_bytes": 624410624,
+            "peak_pss_bytes": 615342080,
+            "sample_count": 2823
+          }
+        }
+      ],
+      "query_latency": {
+        "n": 104,
+        "p50_seconds": 0.017249124999977994,
+        "p95_seconds": 0.025050254250021452,
+        "max_seconds": 0.056312918000003265
+      },
+      "local_retrieval_latency": {
+        "n": 104,
+        "p50_seconds": 0.017978616999982933,
+        "p95_seconds": 0.027755764750003208,
+        "max_seconds": 0.05707489400003851
+      },
+      "quality": {
+        "vector": {
+          "answerable_count": 28,
+          "recall_at_1": 0.6785714285714286,
+          "hit_at_1": 0.7142857142857143,
+          "recall_at_5": 0.8392857142857143,
+          "hit_at_5": 0.8571428571428571,
+          "recall_at_10": 0.8928571428571429,
+          "hit_at_10": 0.8928571428571429,
+          "mrr": 0.7800524037366142,
+          "multi_count": 5,
+          "all_evidence_at_10": 1.0,
+          "unanswerable": {
+            "q25": {
+              "returned_count": 10,
+              "top_ids": [
+                "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71",
+                "7fc0ad14-78a1-5fd0-ba9e-6fe68c103b84"
+              ]
+            },
+            "q26": {
+              "returned_count": 10,
+              "top_ids": [
+                "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                "7fc0ad14-78a1-5fd0-ba9e-6fe68c103b84",
+                "2c4c9943-18aa-510d-b01d-df3639effe4f"
+              ]
+            }
+          },
+          "by_class": {
+            "cause": {
+              "n": 13,
+              "hit_at_10": 0.9230769230769231
+            },
+            "date": {
+              "n": 13,
+              "hit_at_10": 1.0
+            },
+            "fact": {
+              "n": 4,
+              "hit_at_10": 1.0
+            },
+            "keyword_control": {
+              "n": 4,
+              "hit_at_10": 0.5
+            },
+            "multi": {
+              "n": 5,
+              "hit_at_10": 1.0
+            },
+            "name": {
+              "n": 12,
+              "hit_at_10": 1.0
+            },
+            "paraphrase": {
+              "n": 4,
+              "hit_at_10": 0.75
+            }
+          }
+        },
+        "lexical": {
+          "answerable_count": 28,
+          "recall_at_1": 0.03571428571428571,
+          "hit_at_1": 0.03571428571428571,
+          "recall_at_5": 0.10714285714285714,
+          "hit_at_5": 0.10714285714285714,
+          "recall_at_10": 0.14285714285714285,
+          "hit_at_10": 0.14285714285714285,
+          "mrr": 0.07142857142857142,
+          "multi_count": 5,
+          "all_evidence_at_10": 0.0,
+          "unanswerable": {
+            "q25": {
+              "returned_count": 0,
+              "top_ids": []
+            },
+            "q26": {
+              "returned_count": 0,
+              "top_ids": []
+            }
+          },
+          "by_class": {
+            "cause": {
+              "n": 13,
+              "hit_at_10": 0.0
+            },
+            "date": {
+              "n": 13,
+              "hit_at_10": 0.0
+            },
+            "fact": {
+              "n": 4,
+              "hit_at_10": 0.0
+            },
+            "keyword_control": {
+              "n": 4,
+              "hit_at_10": 1.0
+            },
+            "multi": {
+              "n": 5,
+              "hit_at_10": 0.0
+            },
+            "name": {
+              "n": 12,
+              "hit_at_10": 0.0
+            },
+            "paraphrase": {
+              "n": 4,
+              "hit_at_10": 0.0
+            }
+          }
+        },
+        "fused": {
+          "answerable_count": 28,
+          "recall_at_1": 0.6785714285714286,
+          "hit_at_1": 0.7142857142857143,
+          "recall_at_5": 0.9107142857142857,
+          "hit_at_5": 0.9285714285714286,
+          "recall_at_10": 0.9642857142857143,
+          "hit_at_10": 0.9642857142857143,
+          "mrr": 0.7920112781954887,
+          "multi_count": 5,
+          "all_evidence_at_10": 1.0,
+          "unanswerable": {
+            "q25": {
+              "returned_count": 10,
+              "top_ids": [
+                "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71",
+                "7fc0ad14-78a1-5fd0-ba9e-6fe68c103b84"
+              ]
+            },
+            "q26": {
+              "returned_count": 10,
+              "top_ids": [
+                "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                "7fc0ad14-78a1-5fd0-ba9e-6fe68c103b84",
+                "2c4c9943-18aa-510d-b01d-df3639effe4f"
+              ]
+            }
+          },
+          "by_class": {
+            "cause": {
+              "n": 13,
+              "hit_at_10": 0.9230769230769231
+            },
+            "date": {
+              "n": 13,
+              "hit_at_10": 1.0
+            },
+            "fact": {
+              "n": 4,
+              "hit_at_10": 1.0
+            },
+            "keyword_control": {
+              "n": 4,
+              "hit_at_10": 1.0
+            },
+            "multi": {
+              "n": 5,
+              "hit_at_10": 1.0
+            },
+            "name": {
+              "n": 12,
+              "hit_at_10": 1.0
+            },
+            "paraphrase": {
+              "n": 4,
+              "hit_at_10": 0.75
+            }
+          }
+        }
+      },
+      "quality_groups": {
+        "vector": {
+          "all": {
+            "answerable_count": 28,
+            "recall_at_1": 0.6785714285714286,
+            "hit_at_1": 0.7142857142857143,
+            "recall_at_5": 0.8392857142857143,
+            "hit_at_5": 0.8571428571428571,
+            "recall_at_10": 0.8928571428571429,
+            "hit_at_10": 0.8928571428571429,
+            "mrr": 0.7800524037366142,
+            "multi_count": 5,
+            "all_evidence_at_10": 1.0,
+            "unanswerable": {
+              "q25": {
+                "returned_count": 10,
+                "top_ids": [
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                  "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71",
+                  "7fc0ad14-78a1-5fd0-ba9e-6fe68c103b84"
+                ]
+              },
+              "q26": {
+                "returned_count": 10,
+                "top_ids": [
+                  "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                  "7fc0ad14-78a1-5fd0-ba9e-6fe68c103b84",
+                  "2c4c9943-18aa-510d-b01d-df3639effe4f"
+                ]
+              }
+            },
+            "by_class": {
+              "cause": {
+                "n": 13,
+                "hit_at_10": 0.9230769230769231
+              },
+              "date": {
+                "n": 13,
+                "hit_at_10": 1.0
+              },
+              "fact": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "keyword_control": {
+                "n": 4,
+                "hit_at_10": 0.5
+              },
+              "multi": {
+                "n": 5,
+                "hit_at_10": 1.0
+              },
+              "name": {
+                "n": 12,
+                "hit_at_10": 1.0
+              },
+              "paraphrase": {
+                "n": 4,
+                "hit_at_10": 0.75
+              }
+            }
+          },
+          "natural": {
+            "answerable_count": 24,
+            "recall_at_1": 0.7083333333333334,
+            "hit_at_1": 0.75,
+            "recall_at_5": 0.8958333333333334,
+            "hit_at_5": 0.9166666666666666,
+            "recall_at_10": 0.9583333333333334,
+            "hit_at_10": 0.9583333333333334,
+            "mrr": 0.8240131578947368,
+            "multi_count": 5,
+            "all_evidence_at_10": 1.0,
+            "unanswerable": {
+              "q25": {
+                "returned_count": 10,
+                "top_ids": [
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                  "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71",
+                  "7fc0ad14-78a1-5fd0-ba9e-6fe68c103b84"
+                ]
+              },
+              "q26": {
+                "returned_count": 10,
+                "top_ids": [
+                  "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                  "7fc0ad14-78a1-5fd0-ba9e-6fe68c103b84",
+                  "2c4c9943-18aa-510d-b01d-df3639effe4f"
+                ]
+              }
+            },
+            "by_class": {
+              "cause": {
+                "n": 13,
+                "hit_at_10": 0.9230769230769231
+              },
+              "date": {
+                "n": 13,
+                "hit_at_10": 1.0
+              },
+              "fact": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "multi": {
+                "n": 5,
+                "hit_at_10": 1.0
+              },
+              "name": {
+                "n": 12,
+                "hit_at_10": 1.0
+              },
+              "paraphrase": {
+                "n": 4,
+                "hit_at_10": 0.75
+              }
+            }
+          },
+          "keyword_controls": {
+            "answerable_count": 4,
+            "recall_at_1": 0.5,
+            "hit_at_1": 0.5,
+            "recall_at_5": 0.5,
+            "hit_at_5": 0.5,
+            "recall_at_10": 0.5,
+            "hit_at_10": 0.5,
+            "mrr": 0.5162878787878787,
+            "multi_count": 0,
+            "all_evidence_at_10": null,
+            "unanswerable": {},
+            "by_class": {
+              "keyword_control": {
+                "n": 4,
+                "hit_at_10": 0.5
+              }
+            }
+          }
+        },
+        "fused": {
+          "all": {
+            "answerable_count": 28,
+            "recall_at_1": 0.6785714285714286,
+            "hit_at_1": 0.7142857142857143,
+            "recall_at_5": 0.9107142857142857,
+            "hit_at_5": 0.9285714285714286,
+            "recall_at_10": 0.9642857142857143,
+            "hit_at_10": 0.9642857142857143,
+            "mrr": 0.7920112781954887,
+            "multi_count": 5,
+            "all_evidence_at_10": 1.0,
+            "unanswerable": {
+              "q25": {
+                "returned_count": 10,
+                "top_ids": [
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                  "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71",
+                  "7fc0ad14-78a1-5fd0-ba9e-6fe68c103b84"
+                ]
+              },
+              "q26": {
+                "returned_count": 10,
+                "top_ids": [
+                  "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                  "7fc0ad14-78a1-5fd0-ba9e-6fe68c103b84",
+                  "2c4c9943-18aa-510d-b01d-df3639effe4f"
+                ]
+              }
+            },
+            "by_class": {
+              "cause": {
+                "n": 13,
+                "hit_at_10": 0.9230769230769231
+              },
+              "date": {
+                "n": 13,
+                "hit_at_10": 1.0
+              },
+              "fact": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "keyword_control": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "multi": {
+                "n": 5,
+                "hit_at_10": 1.0
+              },
+              "name": {
+                "n": 12,
+                "hit_at_10": 1.0
+              },
+              "paraphrase": {
+                "n": 4,
+                "hit_at_10": 0.75
+              }
+            }
+          },
+          "natural": {
+            "answerable_count": 24,
+            "recall_at_1": 0.7083333333333334,
+            "hit_at_1": 0.75,
+            "recall_at_5": 0.8958333333333334,
+            "hit_at_5": 0.9166666666666666,
+            "recall_at_10": 0.9583333333333334,
+            "hit_at_10": 0.9583333333333334,
+            "mrr": 0.8240131578947368,
+            "multi_count": 5,
+            "all_evidence_at_10": 1.0,
+            "unanswerable": {
+              "q25": {
+                "returned_count": 10,
+                "top_ids": [
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                  "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71",
+                  "7fc0ad14-78a1-5fd0-ba9e-6fe68c103b84"
+                ]
+              },
+              "q26": {
+                "returned_count": 10,
+                "top_ids": [
+                  "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                  "7fc0ad14-78a1-5fd0-ba9e-6fe68c103b84",
+                  "2c4c9943-18aa-510d-b01d-df3639effe4f"
+                ]
+              }
+            },
+            "by_class": {
+              "cause": {
+                "n": 13,
+                "hit_at_10": 0.9230769230769231
+              },
+              "date": {
+                "n": 13,
+                "hit_at_10": 1.0
+              },
+              "fact": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "multi": {
+                "n": 5,
+                "hit_at_10": 1.0
+              },
+              "name": {
+                "n": 12,
+                "hit_at_10": 1.0
+              },
+              "paraphrase": {
+                "n": 4,
+                "hit_at_10": 0.75
+              }
+            }
+          },
+          "keyword_controls": {
+            "answerable_count": 4,
+            "recall_at_1": 0.5,
+            "hit_at_1": 0.5,
+            "recall_at_5": 1.0,
+            "hit_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "hit_at_10": 1.0,
+            "mrr": 0.6,
+            "multi_count": 0,
+            "all_evidence_at_10": null,
+            "unanswerable": {},
+            "by_class": {
+              "keyword_control": {
+                "n": 4,
+                "hit_at_10": 1.0
+              }
+            }
+          }
+        }
+      },
+      "observed_peak_rss_bytes": 625872896,
+      "observed_cgroup_peak_bytes": 794284032,
+      "model_files_bytes": 135393260,
+      "token_lengths": {
+        "min_tokens": 7,
+        "p50_tokens": 194.0,
+        "p95_tokens": 294.0,
+        "max_tokens": 315,
+        "over_context_limit": 0,
+        "max_context_tokens": 512
+      },
+      "best_safe_batch_size": 1,
+      "quality_document_batch_size": 4,
+      "gates": {
+        "hard_memory_1GiB": true,
+        "observed_rss_1GiB": true,
+        "loaded_rss_under_800MiB": true,
+        "warm_query_p95_under_1s": true,
+        "full_retrieval_p95_under_2s": true,
+        "crash_free_measured_successful_loader": true
+      },
+      "cgroup": {
+        "memory.max": "1073741824",
+        "memory.swap.max": "0",
+        "cpu.max": "100000 100000",
+        "memory_peak_bytes": 794284032
+      },
+      "final_query_pass": {
+        "load_seconds": 1.3474709900001471,
+        "first_embedding_seconds": 0.019298837999940588,
+        "launch_to_first_embedding_seconds": 1.6224061729999448,
+        "query_latency": {
+          "n": 104,
+          "p50_seconds": 0.015062920000218583,
+          "p95_seconds": 0.023101203000078386,
+          "max_seconds": 0.025325940000129776
+        },
+        "local_retrieval_latency": {
+          "n": 104,
+          "p50_seconds": 0.015972676999808755,
+          "p95_seconds": 0.023917495950195187,
+          "max_seconds": 0.026025948000096832
+        },
+        "full_retrieval_latency": {
+          "n": 104,
+          "p50_seconds": 0.026360136999983297,
+          "p95_seconds": 0.035011435000092204,
+          "max_seconds": 0.035886597000171605
+        },
+        "concurrent_4_latency": {
+          "n": 104,
+          "p50_seconds": 0.03768886450006903,
+          "p95_seconds": 0.06920598819990573,
+          "max_seconds": 0.10724293100020077
+        }
+      }
+    },
+    "gemma": {
+      "candidate": "gemma",
+      "model": {
+        "repo": "onnx-community/embeddinggemma-300m-ONNX",
+        "revision": "5090578d9565bb06545b4552f76e6bc2c93e4a66",
+        "files": [
+          {
+            "path": "onnx/model_q4.onnx",
+            "bytes": 519322,
+            "sha256": "ad1dfee81a70f7944b9b9d1cc6e48075b832881cf33fab2f2b248be78f3f0043"
+          },
+          {
+            "path": "onnx/model_q4.onnx_data",
+            "bytes": 196725760,
+            "sha256": "599962c3143b040de2dd05e5975be3e9091dd067cacc6a8f7186e3203bab9e02"
+          },
+          {
+            "path": "tokenizer.json",
+            "bytes": 20323312,
+            "sha256": "4dda02faaf32bc91031dc8c88457ac272b00c1016cc679757d1c441b248b9c47"
+          },
+          {
+            "path": "tokenizer_config.json",
+            "bytes": 1156830,
+            "sha256": "3ca953eea6c3c9fcda9cf3df22949ff18b216f7c74bd6459230f3f1013953f3a"
+          },
+          {
+            "path": "special_tokens_map.json",
+            "bytes": 662,
+            "sha256": "2f7b0adf4fb469770bb1490e3e35df87b1dc578246c5e7e6fc76ecf33213a397"
+          },
+          {
+            "path": "config.json",
+            "bytes": 1765,
+            "sha256": "6e1f06404b7163e0325ed2ea3e6781cde50f4a50b31780a95ad0d30e8404d77b"
+          },
+          {
+            "path": "README.md",
+            "bytes": 18721,
+            "sha256": "fa2c412692dbd5b7ccba2cf6d316b3b58c2642c64e50fa4eee1fc75d95629f0e"
+          }
+        ],
+        "anonymous": true,
+        "status": "downloaded",
+        "download_seconds": 44.60662079400001
+      },
+      "runtime": {
+        "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "package_versions": {
+          "numpy": "2.5.3",
+          "tokenizers": "0.23.2",
+          "onnxruntime": "1.30.0",
+          "model2vec": "0.9.0",
+          "psutil": "7.2.2",
+          "psycopg": "3.2.13"
+        }
+      },
+      "contract": {
+        "prefix_query": "task: search result | query: ",
+        "prefix_document": "title: {title or none} | text: ",
+        "pooling": "export sentence_embedding",
+        "normalization": "L2 float32 after pooling",
+        "max_tokens": 2048,
+        "dimension": 768,
+        "inputs": [
+          {
+            "name": "input_ids",
+            "type": "tensor(int64)",
+            "shape": [
+              "batch_size",
+              "sequence_length"
+            ]
+          },
+          {
+            "name": "attention_mask",
+            "type": "tensor(int64)",
+            "shape": [
+              "batch_size",
+              "total_sequence_length"
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "last_hidden_state",
+            "shape": [
+              "batch_size",
+              "sequence_length",
+              768
+            ]
+          },
+          {
+            "name": "sentence_embedding",
+            "shape": [
+              "batch_size",
+              768
+            ]
+          }
+        ]
+      },
+      "load_seconds": 2.4408053889999337,
+      "loaded_memory": {
+        "rss_bytes": 480100352,
+        "pss_bytes": 470010880
+      },
+      "first_embedding_seconds": 0.14663268499998594,
+      "launch_to_first_embedding_seconds": 2.828605520999986,
+      "throughput": [
+        {
+          "batch_size": 1,
+          "chunks": 712,
+          "seconds": 835.6995757370001,
+          "chunks_per_second": 0.8519808082612582,
+          "memory": {
+            "peak_rss_bytes": 595021824,
+            "peak_pss_bytes": 585769984,
+            "sample_count": 14337
+          }
+        },
+        {
+          "batch_size": 4,
+          "chunks": 712,
+          "seconds": 1255.591257438,
+          "chunks_per_second": 0.5670635214941021,
+          "memory": {
+            "peak_rss_bytes": 573161472,
+            "peak_pss_bytes": 563388416,
+            "sample_count": 21283
+          }
+        }
+      ],
+      "query_latency": {
+        "n": 104,
+        "p50_seconds": 0.15015429800018865,
+        "p95_seconds": 0.18765099574980013,
+        "max_seconds": 0.20820555699992838
+      },
+      "local_retrieval_latency": {
+        "n": 104,
+        "p50_seconds": 0.1523077125002601,
+        "p95_seconds": 0.18856034714976885,
+        "max_seconds": 0.2091205489996355
+      },
+      "quality": {
+        "vector": {
+          "answerable_count": 28,
+          "recall_at_1": 0.6964285714285714,
+          "hit_at_1": 0.75,
+          "recall_at_5": 0.875,
+          "hit_at_5": 0.9285714285714286,
+          "recall_at_10": 0.9821428571428571,
+          "hit_at_10": 1.0,
+          "mrr": 0.8336734693877551,
+          "multi_count": 5,
+          "all_evidence_at_10": 0.8,
+          "unanswerable": {
+            "q25": {
+              "returned_count": 10,
+              "top_ids": [
+                "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                "b3289f52-9a32-5c5f-935f-5ca626149f41",
+                "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71"
+              ]
+            },
+            "q26": {
+              "returned_count": 10,
+              "top_ids": [
+                "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                "2c4c9943-18aa-510d-b01d-df3639effe4f",
+                "2280b1a3-4de0-59d7-b17e-df0d705b78a0"
+              ]
+            }
+          },
+          "by_class": {
+            "cause": {
+              "n": 13,
+              "hit_at_10": 1.0
+            },
+            "date": {
+              "n": 13,
+              "hit_at_10": 1.0
+            },
+            "fact": {
+              "n": 4,
+              "hit_at_10": 1.0
+            },
+            "keyword_control": {
+              "n": 4,
+              "hit_at_10": 1.0
+            },
+            "multi": {
+              "n": 5,
+              "hit_at_10": 1.0
+            },
+            "name": {
+              "n": 12,
+              "hit_at_10": 1.0
+            },
+            "paraphrase": {
+              "n": 4,
+              "hit_at_10": 1.0
+            }
+          }
+        },
+        "lexical": {
+          "answerable_count": 28,
+          "recall_at_1": 0.03571428571428571,
+          "hit_at_1": 0.03571428571428571,
+          "recall_at_5": 0.10714285714285714,
+          "hit_at_5": 0.10714285714285714,
+          "recall_at_10": 0.14285714285714285,
+          "hit_at_10": 0.14285714285714285,
+          "mrr": 0.07142857142857142,
+          "multi_count": 5,
+          "all_evidence_at_10": 0.0,
+          "unanswerable": {
+            "q25": {
+              "returned_count": 0,
+              "top_ids": []
+            },
+            "q26": {
+              "returned_count": 0,
+              "top_ids": []
+            }
+          },
+          "by_class": {
+            "cause": {
+              "n": 13,
+              "hit_at_10": 0.0
+            },
+            "date": {
+              "n": 13,
+              "hit_at_10": 0.0
+            },
+            "fact": {
+              "n": 4,
+              "hit_at_10": 0.0
+            },
+            "keyword_control": {
+              "n": 4,
+              "hit_at_10": 1.0
+            },
+            "multi": {
+              "n": 5,
+              "hit_at_10": 0.0
+            },
+            "name": {
+              "n": 12,
+              "hit_at_10": 0.0
+            },
+            "paraphrase": {
+              "n": 4,
+              "hit_at_10": 0.0
+            }
+          }
+        },
+        "fused": {
+          "answerable_count": 28,
+          "recall_at_1": 0.6964285714285714,
+          "hit_at_1": 0.75,
+          "recall_at_5": 0.9107142857142857,
+          "hit_at_5": 0.9642857142857143,
+          "recall_at_10": 0.9821428571428571,
+          "hit_at_10": 1.0,
+          "mrr": 0.8357142857142856,
+          "multi_count": 5,
+          "all_evidence_at_10": 0.8,
+          "unanswerable": {
+            "q25": {
+              "returned_count": 10,
+              "top_ids": [
+                "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                "b3289f52-9a32-5c5f-935f-5ca626149f41",
+                "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71"
+              ]
+            },
+            "q26": {
+              "returned_count": 10,
+              "top_ids": [
+                "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                "2c4c9943-18aa-510d-b01d-df3639effe4f",
+                "2280b1a3-4de0-59d7-b17e-df0d705b78a0"
+              ]
+            }
+          },
+          "by_class": {
+            "cause": {
+              "n": 13,
+              "hit_at_10": 1.0
+            },
+            "date": {
+              "n": 13,
+              "hit_at_10": 1.0
+            },
+            "fact": {
+              "n": 4,
+              "hit_at_10": 1.0
+            },
+            "keyword_control": {
+              "n": 4,
+              "hit_at_10": 1.0
+            },
+            "multi": {
+              "n": 5,
+              "hit_at_10": 1.0
+            },
+            "name": {
+              "n": 12,
+              "hit_at_10": 1.0
+            },
+            "paraphrase": {
+              "n": 4,
+              "hit_at_10": 1.0
+            }
+          }
+        }
+      },
+      "quality_groups": {
+        "vector": {
+          "all": {
+            "answerable_count": 28,
+            "recall_at_1": 0.6964285714285714,
+            "hit_at_1": 0.75,
+            "recall_at_5": 0.875,
+            "hit_at_5": 0.9285714285714286,
+            "recall_at_10": 0.9821428571428571,
+            "hit_at_10": 1.0,
+            "mrr": 0.8336734693877551,
+            "multi_count": 5,
+            "all_evidence_at_10": 0.8,
+            "unanswerable": {
+              "q25": {
+                "returned_count": 10,
+                "top_ids": [
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                  "b3289f52-9a32-5c5f-935f-5ca626149f41",
+                  "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71"
+                ]
+              },
+              "q26": {
+                "returned_count": 10,
+                "top_ids": [
+                  "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                  "2c4c9943-18aa-510d-b01d-df3639effe4f",
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0"
+                ]
+              }
+            },
+            "by_class": {
+              "cause": {
+                "n": 13,
+                "hit_at_10": 1.0
+              },
+              "date": {
+                "n": 13,
+                "hit_at_10": 1.0
+              },
+              "fact": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "keyword_control": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "multi": {
+                "n": 5,
+                "hit_at_10": 1.0
+              },
+              "name": {
+                "n": 12,
+                "hit_at_10": 1.0
+              },
+              "paraphrase": {
+                "n": 4,
+                "hit_at_10": 1.0
+              }
+            }
+          },
+          "natural": {
+            "answerable_count": 24,
+            "recall_at_1": 0.6875,
+            "hit_at_1": 0.75,
+            "recall_at_5": 0.8958333333333334,
+            "hit_at_5": 0.9583333333333334,
+            "recall_at_10": 0.9791666666666666,
+            "hit_at_10": 1.0,
+            "mrr": 0.8416666666666667,
+            "multi_count": 5,
+            "all_evidence_at_10": 0.8,
+            "unanswerable": {
+              "q25": {
+                "returned_count": 10,
+                "top_ids": [
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                  "b3289f52-9a32-5c5f-935f-5ca626149f41",
+                  "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71"
+                ]
+              },
+              "q26": {
+                "returned_count": 10,
+                "top_ids": [
+                  "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                  "2c4c9943-18aa-510d-b01d-df3639effe4f",
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0"
+                ]
+              }
+            },
+            "by_class": {
+              "cause": {
+                "n": 13,
+                "hit_at_10": 1.0
+              },
+              "date": {
+                "n": 13,
+                "hit_at_10": 1.0
+              },
+              "fact": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "multi": {
+                "n": 5,
+                "hit_at_10": 1.0
+              },
+              "name": {
+                "n": 12,
+                "hit_at_10": 1.0
+              },
+              "paraphrase": {
+                "n": 4,
+                "hit_at_10": 1.0
+              }
+            }
+          },
+          "keyword_controls": {
+            "answerable_count": 4,
+            "recall_at_1": 0.75,
+            "hit_at_1": 0.75,
+            "recall_at_5": 0.75,
+            "hit_at_5": 0.75,
+            "recall_at_10": 1.0,
+            "hit_at_10": 1.0,
+            "mrr": 0.7857142857142857,
+            "multi_count": 0,
+            "all_evidence_at_10": null,
+            "unanswerable": {},
+            "by_class": {
+              "keyword_control": {
+                "n": 4,
+                "hit_at_10": 1.0
+              }
+            }
+          }
+        },
+        "fused": {
+          "all": {
+            "answerable_count": 28,
+            "recall_at_1": 0.6964285714285714,
+            "hit_at_1": 0.75,
+            "recall_at_5": 0.9107142857142857,
+            "hit_at_5": 0.9642857142857143,
+            "recall_at_10": 0.9821428571428571,
+            "hit_at_10": 1.0,
+            "mrr": 0.8357142857142856,
+            "multi_count": 5,
+            "all_evidence_at_10": 0.8,
+            "unanswerable": {
+              "q25": {
+                "returned_count": 10,
+                "top_ids": [
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                  "b3289f52-9a32-5c5f-935f-5ca626149f41",
+                  "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71"
+                ]
+              },
+              "q26": {
+                "returned_count": 10,
+                "top_ids": [
+                  "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                  "2c4c9943-18aa-510d-b01d-df3639effe4f",
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0"
+                ]
+              }
+            },
+            "by_class": {
+              "cause": {
+                "n": 13,
+                "hit_at_10": 1.0
+              },
+              "date": {
+                "n": 13,
+                "hit_at_10": 1.0
+              },
+              "fact": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "keyword_control": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "multi": {
+                "n": 5,
+                "hit_at_10": 1.0
+              },
+              "name": {
+                "n": 12,
+                "hit_at_10": 1.0
+              },
+              "paraphrase": {
+                "n": 4,
+                "hit_at_10": 1.0
+              }
+            }
+          },
+          "natural": {
+            "answerable_count": 24,
+            "recall_at_1": 0.6875,
+            "hit_at_1": 0.75,
+            "recall_at_5": 0.8958333333333334,
+            "hit_at_5": 0.9583333333333334,
+            "recall_at_10": 0.9791666666666666,
+            "hit_at_10": 1.0,
+            "mrr": 0.8416666666666667,
+            "multi_count": 5,
+            "all_evidence_at_10": 0.8,
+            "unanswerable": {
+              "q25": {
+                "returned_count": 10,
+                "top_ids": [
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                  "b3289f52-9a32-5c5f-935f-5ca626149f41",
+                  "128571ac-d1f6-5cb9-9b7e-e754a7ee3d71"
+                ]
+              },
+              "q26": {
+                "returned_count": 10,
+                "top_ids": [
+                  "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                  "2c4c9943-18aa-510d-b01d-df3639effe4f",
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0"
+                ]
+              }
+            },
+            "by_class": {
+              "cause": {
+                "n": 13,
+                "hit_at_10": 1.0
+              },
+              "date": {
+                "n": 13,
+                "hit_at_10": 1.0
+              },
+              "fact": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "multi": {
+                "n": 5,
+                "hit_at_10": 1.0
+              },
+              "name": {
+                "n": 12,
+                "hit_at_10": 1.0
+              },
+              "paraphrase": {
+                "n": 4,
+                "hit_at_10": 1.0
+              }
+            }
+          },
+          "keyword_controls": {
+            "answerable_count": 4,
+            "recall_at_1": 0.75,
+            "hit_at_1": 0.75,
+            "recall_at_5": 1.0,
+            "hit_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "hit_at_10": 1.0,
+            "mrr": 0.8,
+            "multi_count": 0,
+            "all_evidence_at_10": null,
+            "unanswerable": {},
+            "by_class": {
+              "keyword_control": {
+                "n": 4,
+                "hit_at_10": 1.0
+              }
+            }
+          }
+        }
+      },
+      "observed_peak_rss_bytes": 595124224,
+      "observed_cgroup_peak_bytes": 669659136,
+      "model_files_bytes": 218746372,
+      "token_lengths": {
+        "min_tokens": 15,
+        "p50_tokens": 252.0,
+        "p95_tokens": 369.44999999999993,
+        "max_tokens": 450,
+        "over_context_limit": 0,
+        "max_context_tokens": 2048
+      },
+      "best_safe_batch_size": 1,
+      "quality_document_batch_size": 4,
+      "gates": {
+        "hard_memory_1GiB": true,
+        "observed_rss_1GiB": true,
+        "loaded_rss_under_800MiB": true,
+        "warm_query_p95_under_1s": true,
+        "full_retrieval_p95_under_2s": true,
+        "crash_free_measured_successful_loader": true
+      },
+      "cgroup": {
+        "memory.max": "1073741824",
+        "memory.swap.max": "0",
+        "cpu.max": "100000 100000",
+        "memory_peak_bytes": 669659136
+      },
+      "final_query_pass": {
+        "load_seconds": 2.3713089269999728,
+        "first_embedding_seconds": 0.10491434100003971,
+        "launch_to_first_embedding_seconds": 2.7177022750001925,
+        "query_latency": {
+          "n": 104,
+          "p50_seconds": 0.14058854600011728,
+          "p95_seconds": 0.1773148827999421,
+          "max_seconds": 0.1920097510001142
+        },
+        "local_retrieval_latency": {
+          "n": 104,
+          "p50_seconds": 0.14150051149999854,
+          "p95_seconds": 0.17818826095003715,
+          "max_seconds": 0.1930889790000947
+        },
+        "full_retrieval_latency": {
+          "n": 104,
+          "p50_seconds": 0.1600497389999873,
+          "p95_seconds": 0.19498623660001613,
+          "max_seconds": 0.24203203099978055
+        },
+        "concurrent_4_latency": {
+          "n": 104,
+          "p50_seconds": 0.3208440435000739,
+          "p95_seconds": 0.6147682524497441,
+          "max_seconds": 0.742060679000133
+        }
+      }
+    },
+    "potion": {
+      "candidate": "potion",
+      "model": {
+        "repo": "minishlab/potion-multilingual-128M",
+        "revision": "73908c3438cf03b6a01bcb9611d62b23d0726f08",
+        "files": [
+          {
+            "path": "model.safetensors",
+            "bytes": 512361560,
+            "sha256": "14b5eb39cb4ce5666da8ad1f3dc6be4346e9b2d601c073302fa0a31bf7943397"
+          },
+          {
+            "path": "tokenizer.json",
+            "bytes": 18616131,
+            "sha256": "19f1909063da3cfe3bd83a782381f040dccea475f4816de11116444a73e1b6a1"
+          },
+          {
+            "path": "tokenizer_config.json",
+            "bytes": 1898,
+            "sha256": "bd0e8c3a56aeac5078a6445e6b04425cd17b41bcc8d382ae925b5dbca287f8eb"
+          },
+          {
+            "path": "special_tokens_map.json",
+            "bytes": 167,
+            "sha256": "d05497f1da52c5e09554c0cd874037a083e1dc1b9cfd48034d1c717f1afc07a7"
+          },
+          {
+            "path": "config.json",
+            "bytes": 271,
+            "sha256": "595e4cab2093732efd5dbe084fd5c1826b5eea693b73b4c1fd971672867d2e54"
+          },
+          {
+            "path": "README.md",
+            "bytes": 5575,
+            "sha256": "9505454b6a3efbb25257124de875cb73e02bd663a822528525a3c29b1c4d91ac"
+          }
+        ],
+        "anonymous": true,
+        "status": "downloaded",
+        "download_seconds": 107.00343696300001
+      },
+      "runtime": {
+        "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "packages": {
+          "numpy": "2.5.3",
+          "tokenizers": "0.23.2",
+          "onnxruntime": "1.30.0",
+          "model2vec": "0.9.0",
+          "psutil": "7.2.2",
+          "psycopg": "3.2.13"
+        },
+        "package_versions": {
+          "numpy": "2.5.3",
+          "tokenizers": "0.23.2",
+          "onnxruntime": "1.30.0",
+          "model2vec": "0.9.0",
+          "psutil": "7.2.2",
+          "psycopg": "3.2.13"
+        }
+      },
+      "contract": {
+        "prefix_query": "",
+        "prefix_document": "",
+        "pooling": "official Model2Vec StaticModel.encode, normalize=True",
+        "max_tokens": 512,
+        "dimension": 256,
+        "normalization": "L2 float32",
+        "loader": "FP32 numpy.memmap + official StaticModel constructor"
+      },
+      "load_seconds": 4.061182147000181,
+      "loaded_memory": {
+        "rss_bytes": 741367808,
+        "pss_bytes": 731954176
+      },
+      "first_embedding_seconds": 0.06976006299964865,
+      "launch_to_first_embedding_seconds": 4.3959466729997985,
+      "throughput": [
+        {
+          "batch_size": 1,
+          "chunks": 712,
+          "seconds": 46.05245941600015,
+          "chunks_per_second": 15.460629226517003,
+          "memory": {
+            "peak_rss_bytes": 793739264,
+            "peak_pss_bytes": 775809024,
+            "sample_count": 802
+          }
+        },
+        {
+          "batch_size": 4,
+          "chunks": 712,
+          "seconds": 46.262910492000174,
+          "chunks_per_second": 15.39029845783524,
+          "memory": {
+            "peak_rss_bytes": 797085696,
+            "peak_pss_bytes": 779204608,
+            "sample_count": 805
+          }
+        }
+      ],
+      "query_latency": {
+        "n": 104,
+        "p50_seconds": 0.0003349570001773827,
+        "p95_seconds": 0.0031794649003131776,
+        "max_seconds": 0.01240489699966929
+      },
+      "local_retrieval_latency": {
+        "n": 104,
+        "p50_seconds": 0.0008651535001718003,
+        "p95_seconds": 0.003787591249897559,
+        "max_seconds": 0.013355949000015244
+      },
+      "quality": {
+        "vector": {
+          "answerable_count": 28,
+          "recall_at_1": 0.42857142857142855,
+          "hit_at_1": 0.42857142857142855,
+          "recall_at_5": 0.6964285714285714,
+          "hit_at_5": 0.75,
+          "recall_at_10": 0.7142857142857143,
+          "hit_at_10": 0.75,
+          "mrr": 0.568976056180805,
+          "multi_count": 5,
+          "all_evidence_at_10": 0.2,
+          "unanswerable": {
+            "q25": {
+              "returned_count": 10,
+              "top_ids": [
+                "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                "b3289f52-9a32-5c5f-935f-5ca626149f41",
+                "662b6893-8608-5885-bc4a-9b8b65cc0ffc"
+              ]
+            },
+            "q26": {
+              "returned_count": 10,
+              "top_ids": [
+                "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                "662b6893-8608-5885-bc4a-9b8b65cc0ffc",
+                "9b4214d1-cc62-5fbb-b2fa-49a85a14f458"
+              ]
+            }
+          },
+          "by_class": {
+            "cause": {
+              "n": 13,
+              "hit_at_10": 0.7692307692307693
+            },
+            "date": {
+              "n": 13,
+              "hit_at_10": 0.7692307692307693
+            },
+            "fact": {
+              "n": 4,
+              "hit_at_10": 1.0
+            },
+            "keyword_control": {
+              "n": 4,
+              "hit_at_10": 0.25
+            },
+            "multi": {
+              "n": 5,
+              "hit_at_10": 0.6
+            },
+            "name": {
+              "n": 12,
+              "hit_at_10": 0.8333333333333334
+            },
+            "paraphrase": {
+              "n": 4,
+              "hit_at_10": 1.0
+            }
+          }
+        },
+        "lexical": {
+          "answerable_count": 28,
+          "recall_at_1": 0.03571428571428571,
+          "hit_at_1": 0.03571428571428571,
+          "recall_at_5": 0.10714285714285714,
+          "hit_at_5": 0.10714285714285714,
+          "recall_at_10": 0.14285714285714285,
+          "hit_at_10": 0.14285714285714285,
+          "mrr": 0.07142857142857142,
+          "multi_count": 5,
+          "all_evidence_at_10": 0.0,
+          "unanswerable": {
+            "q25": {
+              "returned_count": 0,
+              "top_ids": []
+            },
+            "q26": {
+              "returned_count": 0,
+              "top_ids": []
+            }
+          },
+          "by_class": {
+            "cause": {
+              "n": 13,
+              "hit_at_10": 0.0
+            },
+            "date": {
+              "n": 13,
+              "hit_at_10": 0.0
+            },
+            "fact": {
+              "n": 4,
+              "hit_at_10": 0.0
+            },
+            "keyword_control": {
+              "n": 4,
+              "hit_at_10": 1.0
+            },
+            "multi": {
+              "n": 5,
+              "hit_at_10": 0.0
+            },
+            "name": {
+              "n": 12,
+              "hit_at_10": 0.0
+            },
+            "paraphrase": {
+              "n": 4,
+              "hit_at_10": 0.0
+            }
+          }
+        },
+        "fused": {
+          "answerable_count": 28,
+          "recall_at_1": 0.4642857142857143,
+          "hit_at_1": 0.4642857142857143,
+          "recall_at_5": 0.7321428571428571,
+          "hit_at_5": 0.7857142857142857,
+          "recall_at_10": 0.75,
+          "hit_at_10": 0.7857142857142857,
+          "mrr": 0.6081692543441177,
+          "multi_count": 5,
+          "all_evidence_at_10": 0.2,
+          "unanswerable": {
+            "q25": {
+              "returned_count": 10,
+              "top_ids": [
+                "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                "b3289f52-9a32-5c5f-935f-5ca626149f41",
+                "662b6893-8608-5885-bc4a-9b8b65cc0ffc"
+              ]
+            },
+            "q26": {
+              "returned_count": 10,
+              "top_ids": [
+                "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                "662b6893-8608-5885-bc4a-9b8b65cc0ffc",
+                "9b4214d1-cc62-5fbb-b2fa-49a85a14f458"
+              ]
+            }
+          },
+          "by_class": {
+            "cause": {
+              "n": 13,
+              "hit_at_10": 0.7692307692307693
+            },
+            "date": {
+              "n": 13,
+              "hit_at_10": 0.7692307692307693
+            },
+            "fact": {
+              "n": 4,
+              "hit_at_10": 1.0
+            },
+            "keyword_control": {
+              "n": 4,
+              "hit_at_10": 0.5
+            },
+            "multi": {
+              "n": 5,
+              "hit_at_10": 0.6
+            },
+            "name": {
+              "n": 12,
+              "hit_at_10": 0.8333333333333334
+            },
+            "paraphrase": {
+              "n": 4,
+              "hit_at_10": 1.0
+            }
+          }
+        }
+      },
+      "quality_groups": {
+        "vector": {
+          "all": {
+            "answerable_count": 28,
+            "recall_at_1": 0.42857142857142855,
+            "hit_at_1": 0.42857142857142855,
+            "recall_at_5": 0.6964285714285714,
+            "hit_at_5": 0.75,
+            "recall_at_10": 0.7142857142857143,
+            "hit_at_10": 0.75,
+            "mrr": 0.568976056180805,
+            "multi_count": 5,
+            "all_evidence_at_10": 0.2,
+            "unanswerable": {
+              "q25": {
+                "returned_count": 10,
+                "top_ids": [
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                  "b3289f52-9a32-5c5f-935f-5ca626149f41",
+                  "662b6893-8608-5885-bc4a-9b8b65cc0ffc"
+                ]
+              },
+              "q26": {
+                "returned_count": 10,
+                "top_ids": [
+                  "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                  "662b6893-8608-5885-bc4a-9b8b65cc0ffc",
+                  "9b4214d1-cc62-5fbb-b2fa-49a85a14f458"
+                ]
+              }
+            },
+            "by_class": {
+              "cause": {
+                "n": 13,
+                "hit_at_10": 0.7692307692307693
+              },
+              "date": {
+                "n": 13,
+                "hit_at_10": 0.7692307692307693
+              },
+              "fact": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "keyword_control": {
+                "n": 4,
+                "hit_at_10": 0.25
+              },
+              "multi": {
+                "n": 5,
+                "hit_at_10": 0.6
+              },
+              "name": {
+                "n": 12,
+                "hit_at_10": 0.8333333333333334
+              },
+              "paraphrase": {
+                "n": 4,
+                "hit_at_10": 1.0
+              }
+            }
+          },
+          "natural": {
+            "answerable_count": 24,
+            "recall_at_1": 0.4583333333333333,
+            "hit_at_1": 0.4583333333333333,
+            "recall_at_5": 0.7708333333333334,
+            "hit_at_5": 0.8333333333333334,
+            "recall_at_10": 0.7916666666666666,
+            "hit_at_10": 0.8333333333333334,
+            "mrr": 0.61970673290394,
+            "multi_count": 5,
+            "all_evidence_at_10": 0.2,
+            "unanswerable": {
+              "q25": {
+                "returned_count": 10,
+                "top_ids": [
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                  "b3289f52-9a32-5c5f-935f-5ca626149f41",
+                  "662b6893-8608-5885-bc4a-9b8b65cc0ffc"
+                ]
+              },
+              "q26": {
+                "returned_count": 10,
+                "top_ids": [
+                  "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                  "662b6893-8608-5885-bc4a-9b8b65cc0ffc",
+                  "9b4214d1-cc62-5fbb-b2fa-49a85a14f458"
+                ]
+              }
+            },
+            "by_class": {
+              "cause": {
+                "n": 13,
+                "hit_at_10": 0.7692307692307693
+              },
+              "date": {
+                "n": 13,
+                "hit_at_10": 0.7692307692307693
+              },
+              "fact": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "multi": {
+                "n": 5,
+                "hit_at_10": 0.6
+              },
+              "name": {
+                "n": 12,
+                "hit_at_10": 0.8333333333333334
+              },
+              "paraphrase": {
+                "n": 4,
+                "hit_at_10": 1.0
+              }
+            }
+          },
+          "keyword_controls": {
+            "answerable_count": 4,
+            "recall_at_1": 0.25,
+            "hit_at_1": 0.25,
+            "recall_at_5": 0.25,
+            "hit_at_5": 0.25,
+            "recall_at_10": 0.25,
+            "hit_at_10": 0.25,
+            "mrr": 0.26459199584199583,
+            "multi_count": 0,
+            "all_evidence_at_10": null,
+            "unanswerable": {},
+            "by_class": {
+              "keyword_control": {
+                "n": 4,
+                "hit_at_10": 0.25
+              }
+            }
+          }
+        },
+        "fused": {
+          "all": {
+            "answerable_count": 28,
+            "recall_at_1": 0.4642857142857143,
+            "hit_at_1": 0.4642857142857143,
+            "recall_at_5": 0.7321428571428571,
+            "hit_at_5": 0.7857142857142857,
+            "recall_at_10": 0.75,
+            "hit_at_10": 0.7857142857142857,
+            "mrr": 0.6081692543441177,
+            "multi_count": 5,
+            "all_evidence_at_10": 0.2,
+            "unanswerable": {
+              "q25": {
+                "returned_count": 10,
+                "top_ids": [
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                  "b3289f52-9a32-5c5f-935f-5ca626149f41",
+                  "662b6893-8608-5885-bc4a-9b8b65cc0ffc"
+                ]
+              },
+              "q26": {
+                "returned_count": 10,
+                "top_ids": [
+                  "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                  "662b6893-8608-5885-bc4a-9b8b65cc0ffc",
+                  "9b4214d1-cc62-5fbb-b2fa-49a85a14f458"
+                ]
+              }
+            },
+            "by_class": {
+              "cause": {
+                "n": 13,
+                "hit_at_10": 0.7692307692307693
+              },
+              "date": {
+                "n": 13,
+                "hit_at_10": 0.7692307692307693
+              },
+              "fact": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "keyword_control": {
+                "n": 4,
+                "hit_at_10": 0.5
+              },
+              "multi": {
+                "n": 5,
+                "hit_at_10": 0.6
+              },
+              "name": {
+                "n": 12,
+                "hit_at_10": 0.8333333333333334
+              },
+              "paraphrase": {
+                "n": 4,
+                "hit_at_10": 1.0
+              }
+            }
+          },
+          "natural": {
+            "answerable_count": 24,
+            "recall_at_1": 0.4583333333333333,
+            "hit_at_1": 0.4583333333333333,
+            "recall_at_5": 0.7708333333333334,
+            "hit_at_5": 0.8333333333333334,
+            "recall_at_10": 0.7916666666666666,
+            "hit_at_10": 0.8333333333333334,
+            "mrr": 0.6192530189570262,
+            "multi_count": 5,
+            "all_evidence_at_10": 0.2,
+            "unanswerable": {
+              "q25": {
+                "returned_count": 10,
+                "top_ids": [
+                  "2280b1a3-4de0-59d7-b17e-df0d705b78a0",
+                  "b3289f52-9a32-5c5f-935f-5ca626149f41",
+                  "662b6893-8608-5885-bc4a-9b8b65cc0ffc"
+                ]
+              },
+              "q26": {
+                "returned_count": 10,
+                "top_ids": [
+                  "599d0fc3-aafe-5953-9b2b-80946b5a2b93",
+                  "662b6893-8608-5885-bc4a-9b8b65cc0ffc",
+                  "9b4214d1-cc62-5fbb-b2fa-49a85a14f458"
+                ]
+              }
+            },
+            "by_class": {
+              "cause": {
+                "n": 13,
+                "hit_at_10": 0.7692307692307693
+              },
+              "date": {
+                "n": 13,
+                "hit_at_10": 0.7692307692307693
+              },
+              "fact": {
+                "n": 4,
+                "hit_at_10": 1.0
+              },
+              "multi": {
+                "n": 5,
+                "hit_at_10": 0.6
+              },
+              "name": {
+                "n": 12,
+                "hit_at_10": 0.8333333333333334
+              },
+              "paraphrase": {
+                "n": 4,
+                "hit_at_10": 1.0
+              }
+            }
+          },
+          "keyword_controls": {
+            "answerable_count": 4,
+            "recall_at_1": 0.5,
+            "hit_at_1": 0.5,
+            "recall_at_5": 0.5,
+            "hit_at_5": 0.5,
+            "recall_at_10": 0.5,
+            "hit_at_10": 0.5,
+            "mrr": 0.5416666666666666,
+            "multi_count": 0,
+            "all_evidence_at_10": null,
+            "unanswerable": {},
+            "by_class": {
+              "keyword_control": {
+                "n": 4,
+                "hit_at_10": 0.5
+              }
+            }
+          }
+        }
+      },
+      "observed_peak_rss_bytes": 797085696,
+      "observed_cgroup_peak_bytes": 1073741824,
+      "model_files_bytes": 530985602,
+      "token_lengths": {
+        "min_tokens": 3,
+        "p50_tokens": 189.5,
+        "p95_tokens": 290.0,
+        "max_tokens": 323,
+        "over_context_limit": 0,
+        "max_context_tokens": 512
+      },
+      "best_safe_batch_size": 1,
+      "quality_document_batch_size": 4,
+      "gates": {
+        "hard_memory_1GiB": false,
+        "observed_rss_1GiB": true,
+        "loaded_rss_under_800MiB": true,
+        "warm_query_p95_under_1s": true,
+        "full_retrieval_p95_under_2s": true,
+        "crash_free_measured_successful_loader": true
+      },
+      "cgroup": {
+        "memory.max": "1073741824",
+        "memory.swap.max": "0",
+        "cpu.max": "100000 100000",
+        "memory_peak_bytes": 1073741824
+      },
+      "final_query_pass": {
+        "load_seconds": 4.061182147000181,
+        "first_embedding_seconds": 0.06976006299964865,
+        "launch_to_first_embedding_seconds": 4.3959466729997985,
+        "query_latency": {
+          "n": 104,
+          "p50_seconds": 0.0003349570001773827,
+          "p95_seconds": 0.0031794649003131776,
+          "max_seconds": 0.01240489699966929
+        },
+        "local_retrieval_latency": {
+          "n": 104,
+          "p50_seconds": 0.0008651535001718003,
+          "p95_seconds": 0.003787591249897559,
+          "max_seconds": 0.013355949000015244
+        },
+        "full_retrieval_latency": {
+          "n": 104,
+          "p50_seconds": 0.013694633499881093,
+          "p95_seconds": 0.016848881099872415,
+          "max_seconds": 0.02451957700031926
+        },
+        "concurrent_4_latency": {
+          "n": 104,
+          "p50_seconds": 0.0008009379998838995,
+          "p95_seconds": 0.002040470399833793,
+          "max_seconds": 0.012849429000198143
+        }
+      },
+      "default_loader_failure": {
+        "systemd_unit": "rkb-bench-potion-1791073460",
+        "result": "oom-kill",
+        "exit_signal": 9,
+        "journal_memory_peak": "1G",
+        "memory_peak_bytes": 1073741824,
+        "cpu_seconds": 17.080359,
+        "status": "failed; mmap variant measured separately"
+      }
+    }
+  }
+}

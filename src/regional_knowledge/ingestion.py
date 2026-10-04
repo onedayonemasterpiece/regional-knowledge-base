@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import json
+import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -10,6 +12,7 @@ MAX_NATIVE_TEXT_CHARS = 24_000
 MAX_NATIVE_BLOCKS = 80
 MAX_NATIVE_BLOCK_TEXT = 1_000
 PAGE_MAX_EDGE = 1600
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +28,7 @@ class PdfRenderedPage:
     data: bytes
     native_text: str | None
     native_blocks: tuple[dict[str, Any], ...]
+    native_text_info: dict[str, Any] = field(default_factory=dict)
 
 
 class PdfProcessor(Protocol):
@@ -36,6 +40,7 @@ class PdfProcessor(Protocol):
         *,
         start: int,
         count: int,
+        text_part: tuple[int, int] | None = None,
     ) -> tuple[int, tuple[PdfRenderedPage, ...]]: ...
 
 
@@ -51,10 +56,11 @@ class PyMuPdfProcessor:
         *,
         start: int,
         count: int,
+        text_part: tuple[int, int] | None = None,
     ) -> tuple[int, tuple[PdfRenderedPage, ...]]:
         if start < 0 or count < 1 or count > 8:
             raise ValueError("invalid page batch")
-        return await asyncio.to_thread(self._render_sync, path, start, count)
+        return await asyncio.to_thread(self._render_sync, path, start, count, text_part)
 
     @staticmethod
     def _fitz():
@@ -81,6 +87,7 @@ class PyMuPdfProcessor:
         path: Path,
         start: int,
         count: int,
+        text_part: tuple[int, int] | None = None,
     ) -> tuple[int, tuple[PdfRenderedPage, ...]]:
         fitz = cls._fitz()
         output: list[PdfRenderedPage] = []
@@ -104,20 +111,32 @@ class PyMuPdfProcessor:
                 image = pixmap.tobytes("jpeg", jpg_quality=82)
 
                 native_text = page.get_text("text", sort=False).strip()
+                native_length = len(native_text)
                 if native_text:
                     native_text = native_text[:MAX_NATIVE_TEXT_CHARS]
                 else:
                     native_text = None
 
                 blocks: list[dict[str, Any]] = []
-                for raw in page.get_text("blocks", sort=False):
-                    if len(blocks) >= MAX_NATIVE_BLOCKS:
-                        break
+                raw_blocks = [raw for raw in page.get_text("blocks", sort=False)
+                              if len(raw) >= 7 and int(raw[6]) == 0 and str(raw[4]).strip()]
+                if text_part is not None:
+                    block_index, offset = text_part
+                    if count != 1 or block_index < 0 or block_index >= len(raw_blocks):
+                        raise ValueError("invalid native block cursor")
+                    selected = [(block_index, raw_blocks[block_index])]
+                else:
+                    offset = 0
+                    selected = list(enumerate(raw_blocks[:MAX_NATIVE_BLOCKS]))
+                for block_index, raw in selected:
                     if len(raw) < 7 or int(raw[6]) != 0:
                         continue
                     text = str(raw[4]).strip()
                     if not text:
                         continue
+                    if offset < 0 or offset >= len(text):
+                        raise ValueError("invalid native text offset")
+                    end = min(offset + MAX_NATIVE_BLOCK_TEXT, len(text))
                     x0, y0, x1, y1 = map(float, raw[:4])
                     width = max(float(rect.width), 1.0)
                     height = max(float(rect.height), 1.0)
@@ -132,10 +151,18 @@ class PyMuPdfProcessor:
                     blocks.append(
                         {
                             "bbox": bbox,
-                            "text": text[:MAX_NATIVE_BLOCK_TEXT],
+                            "text": text[offset:end],
+                            "block_index": block_index,
+                            "original_length": len(text),
+                            "offset": offset,
+                            "end": end,
+                            "truncated": end < len(text),
+                            "material": "preview" if end < len(text) or offset else "full_native_block",
+                            "continuation": f"text:{index}:{block_index}:{end}" if end < len(text) else None,
                         }
                     )
 
+                logger.info(json.dumps({"event": "native_page_material", "physical_page_index": index, "original_length": native_length, "returned_blocks": len(blocks), "clipped_blocks": sum(b["truncated"] for b in blocks), "continuation_read": text_part is not None}))
                 output.append(
                     PdfRenderedPage(
                         physical_page_index=index,
@@ -143,6 +170,15 @@ class PyMuPdfProcessor:
                         data=image,
                         native_text=native_text,
                         native_blocks=tuple(blocks),
+                        native_text_info={
+                            "original_length": native_length,
+                            "truncated": native_length > MAX_NATIVE_TEXT_CHARS,
+                            "material": "native_preview; visual review still required",
+                            "block_count": len(raw_blocks),
+                            "blocks_truncated": text_part is None and len(raw_blocks) > MAX_NATIVE_BLOCKS,
+                            "blocks_continuation": f"text:{index}:{MAX_NATIVE_BLOCKS}:0" if text_part is None and len(raw_blocks) > MAX_NATIVE_BLOCKS else (f"text:{index}:{block_index + 1}:0" if text_part is not None and block_index + 1 < len(raw_blocks) else None),
+                            "requires_visual_review": True,
+                        },
                     )
                 )
 

@@ -1,4 +1,5 @@
 from uuid import UUID, uuid5
+import pytest
 
 from regional_knowledge.contracts import (
     StageChunkInput,
@@ -24,6 +25,8 @@ def page_input(index: int, *, needs_review: bool = False) -> StagePageInput:
     return StagePageInput(
         page_id=page_id(index),
         physical_page_index=index,
+        source_material="visual_reviewed",
+        source_review_note="Synthetic fixture visually checked against its source page",
         layout_kind="single_column",
         regions=[
             {
@@ -231,3 +234,20 @@ def test_illustration_uses_figure_bbox_and_chunk_reference():
     assert illustration.bbox.left == 100
     assert illustration.bbox.bottom == 800
     assert compiled.chunks[0].illustration_ids == [illustration.illustration_id]
+
+
+@pytest.mark.parametrize("missing_note", [None, "   "])
+def test_page_ids_and_preview_do_not_prove_source_completeness(missing_note):
+    for material in ("unreviewed", "preview", "full_native"):
+        page = page_input(0).model_copy(update={"source_material": material})
+        graph = merge_stage(StagedGraph(revision=1), compile_model_stage(
+            StagedGraph(revision=1), document_id=DOCUMENT_ID, revision=1,
+            pages=[page], chunks=[chunk_input(0)],
+        ))
+        assert any("source completeness unreviewed" in e for e in validate_graph(graph, expected_page_count=1).errors)
+    page = page_input(0).model_copy(update={"source_review_note": missing_note})
+    graph = merge_stage(StagedGraph(revision=1), compile_model_stage(
+        StagedGraph(revision=1), document_id=DOCUMENT_ID, revision=1,
+        pages=[page], chunks=[chunk_input(0)],
+    ))
+    assert not validate_graph(graph, expected_page_count=1).ready
