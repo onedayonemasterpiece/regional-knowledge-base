@@ -72,7 +72,7 @@ async def run(args):
                     response=await call('book_pages',{'ingestion_id':ingestion,'batch_size':4,**({'cursor':cursor} if cursor else {})},raw=True);manifest=json.loads(response['content'][0]['text']);images=[c for c in response['content'] if c['type']=='image']
                     for item,img in zip(manifest['pages'],images,strict=True):
                         render=root/f"control-page-{item['physical_page_index']+1}.jpg";render.write_bytes(base64.b64decode(img['data']));render.chmod(0o600)
-                        native=item['native_text'];assert 'NOT HISTORICAL EVIDENCE' in native and len(native)>1000
+                        native=item['native_text'];assert not item['native_text_info']['truncated'];assert 'NOT HISTORICAL EVIDENCE' in native and len(native)>1000
                         pages.append({'page_id':item['page_id'],'physical_page_index':item['physical_page_index'],'source_material':'full_native','regions':[{'region_key':'body','kind':'body','bbox':{'left':0,'top':0,'right':1000,'bottom':1000},'reading_order':0,'source_text':native,'normalized_text':native}]})
                         chunks.append({'chunk_key':f"control-{item['physical_page_index']}",'title':'Synthetic transport control','region_refs':[{'page_id':item['page_id'],'region_key':'body'}]})
                     cursor=manifest.get('next_cursor')
@@ -99,8 +99,11 @@ async def run(args):
                         if not restart and 0<c['e5_ready']<c['active_chunks']:
                             # Deliberate indexing-owner restart while missing work
                             # remains. E5 and queue state stay independently alive.
-                            subprocess.run(['systemctl','--user','restart','regional-knowledge-indexing'],check=True);restart=True;out['owner_restart_partial_counts']=c
-                            lexical=await call('search',{'query':'indexprobe purple compass'});lex_tested=lexical['retrieval_mode']=='lexical_only';out['lexical_during_partial']=lex_tested
+                            subprocess.run(['systemctl','--user','stop','regional-knowledge-indexing'],check=True)
+                            try:
+                                lexical=await call('search',{'query':'indexprobe purple compass'});lex_tested=lexical['retrieval_mode']=='lexical_only';assert lex_tested;out['lexical_during_partial']=lex_tested
+                            finally:subprocess.run(['systemctl','--user','start','regional-knowledge-indexing'],check=True)
+                            restart=True;out['owner_restart_partial_counts']=c
                         if c['e5_ready']==c['active_chunks']:marks.setdefault('e5_complete',times['last_e5'].timestamp()-activation)
                         jobs=control_jobs()
                         if jobs:marks.setdefault('bge_job_visible',min(j['created'] for j in jobs)-activation)
@@ -114,7 +117,7 @@ async def run(args):
                         if c['bge_ready']==c['active_chunks']:
                             marks.setdefault('bge_complete',times['last_bge'].timestamp()-activation);break
                     await asyncio.sleep(.1)
-                assert c and c['active_chunks']==12 and c['e5_ready']==c['bge_ready']==12;assert restart and fast_tested
+                assert c and c['active_chunks']==12 and c['e5_ready']==c['bge_ready']==12;assert restart and fast_tested and lex_tested
                 if args.interrupt_bge:assert interrupt
                 out['timings_seconds']=marks;out['partial_progress']=observations;out['new_e5_vectors']=c['e5_ready'];out['new_bge_vectors']=c['bge_ready'];out['bge_jobs']=len(control_jobs());assert out['bge_jobs']==12
                 if interrupt:assert next(j for j in control_jobs() if j['id']==out['interrupted_document_job'])['attempt']>=2;out['claimed_bge_job_recovered']=True
@@ -131,6 +134,9 @@ async def run(args):
                  and id in(select document_id from rkb_ingestion_jobs where source_file_id=%s)''',(document,fixture['source_sha256'],args.file_id));out['control_archived']=result.rowcount==1
             if out.get('new_bge_vectors')==12:
                 after=await digest(document);before=json.loads((root/'baseline.json').read_text())['corpus'];assert after==before;out['existing_corpus_vector_digests_unchanged']=True
+                from regional_knowledge.index_readiness import status
+                restored=(await status(b,p)).model_dump(mode='json');out['post_archive_readiness']=restored
+                expected=json.loads((root/'baseline.json').read_text())['actor_readiness'];assert all(restored[k]==expected[k] for k in ('active_chunks','e5_ready','bge_ready','e5_missing','bge_missing'))
         for t in tokens:
             access=await provider.load_access_token(t.access_token)
             if access:await provider.revoke_token(access)
