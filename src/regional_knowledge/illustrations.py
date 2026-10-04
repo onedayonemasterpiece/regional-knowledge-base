@@ -1,5 +1,7 @@
 """Narrow authorized crop read. Resource identity never conveys access."""
 import hashlib
+import json
+import logging
 from uuid import UUID
 
 
@@ -35,6 +37,9 @@ async def descriptor(backend, principal, illustration_id, document_id=None):
     output = {k:item.get(k) for k in ('kind','caption_text','caption_region_ids','visual_description',
               'visual_description_provenance','visual_description_language','source_crop_sha256',
               'visibility','rights_status','vibepublish_entry_ref')}
+    # psycopg returns UUID[] as native UUID objects. The descriptor is also used
+    # by the direct ImageContent tool, outside Pydantic's fetch serialization.
+    output['caption_region_ids']=[str(value) for value in item.get('caption_region_ids') or []]
     output.update(illustration_id=str(item['id']), uri='knowledge://illustrations/'+str(item['id']),
                   page_id=str(page['id']), physical_page_index=page['physical_page_index'],
                   bbox=region['bbox'], revision=page['revision'])
@@ -51,4 +56,5 @@ async def fetch_crop(backend, principal, illustration_id):
     data = await backend.object_store.get_bytes(obj['object_key'])
     if hashlib.sha256(data).hexdigest() != obj['sha256']:
         raise ValueError('stored crop integrity mismatch')
+    logging.getLogger(__name__).info(json.dumps({'event':'illustration_crop_read','illustration_id':str(item['id']),'bytes':len(data),'mime_type':obj['mime_type']}))
     return await descriptor(backend, principal, str(item['id'])), data, obj['mime_type']

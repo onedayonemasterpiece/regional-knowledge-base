@@ -47,6 +47,12 @@ returns model-visible ImageContent from the authorized canonical crop. Its bytes
 match the stored crop digest; a different actor's read is denied. Image-only
 source fetch remains empty rather than presenting its description as a quote.
 
+The first exact-main readback found a captioned-crop serialization defect: native
+PostgreSQL UUID caption references reached the direct ImageContent tool's JSON
+metadata. The descriptor now normalizes that UUID array to strings; regression
+calls the actual MCP tool for both captioned and image-only crops. Final delivery
+requires both real public crop calls to pass, beyond the initial image-only read.
+
 All three queries found the appropriate control chunk in actual `bge_lexical`
 retrieval: printed `Blauer Leuchtturm am Meer`, visual `Fahrrad mit zwei roten
 Raedern`, and Russian `Красный велосипед с двумя колёсами и зелёной рамой` against
