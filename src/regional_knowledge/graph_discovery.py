@@ -45,11 +45,12 @@ class GraphDiscoveryWorker:
         if result.main_job_id:
             async with self.graph.connection(actor) as db:
                 await db.execute('update rkb_graph_discovery_jobs set payload=%s where id=%s and claim=%s',(Jsonb({**job['payload'],'main_job_id':result.main_job_id}),job['id'],job['claim']))
-        # Poll the SAME durable main encoding, rather than issuing duplicate jobs.
-        for _ in range(60):
-            if result.main_state=='ready' or not result.main_job_id:break
-            await asyncio.sleep(1)
-            result=await self.backend.search(names[0],actor,match_count=20,aliases=aliases,main_job_id=result.main_job_id)
+        # Poll the SAME durable main encoding without repeated fast-tier inference/SQL.
+        if result.main_state!='ready' and result.main_job_id:
+            from .bge_queue import BgeQueue
+            from .multilingual_retrieval import wait_result
+            ready=await wait_result(BgeQueue(os.environ['RKB_BGE_QUEUE_PATH']),actor.subject,result.main_job_id,90)
+            if ready:result=await self.backend.search(names[0],actor,match_count=20,aliases=aliases,main_job_id=result.main_job_id)
         for item in result.results:signals.setdefault(item.id,[]).extend([s.model_dump(mode='json') if hasattr(s,'model_dump') else s for s in item.ranking_signals])
         # Exact alias candidates precede vector-only neighbors; never semantic merge.
         ids=list(signals)[:40]
@@ -71,16 +72,16 @@ class GraphDiscoveryWorker:
                 options.append((bool(matches),pair,region,matches))
             if not options:continue
             _,pair,region,matching=max(options,key=lambda p:p[0])
-            spelling='';quote=region[:1000]
+            spelling='';quote=region[:1000].strip()
             if matching:
                 import re
-                m=re.search(re.escape(matching[0]),region,re.I)
-                if m:spelling=m.group();quote=region[max(0,m.start()-100):min(len(region),m.end()+500)]
+                m=re.search(r'\s+'.join(re.escape(part) for part in matching[0].split()),region,re.I)
+                if m:spelling=m.group();quote=region[max(0,m.start()-100):min(len(region),m.end()+500)].strip()
             if not quote or quote not in text:continue
             async with self.graph.connection(actor) as db:
                 e=GraphEvidence(chunk_id=row['id'],page_id=pair['page_id'],region_id=pair['region_id'],exact_quote=quote)
                 mid=uuid5(job['entity_id'],f"discovery:{row['id']}:{row['revision']}:{digest(names)}")
-                await db.execute('insert into rkb_entity_mentions(id,entity_id,document_id,revision,chunk_id,page_id,region_id,exact_source_spelling,evidence,state,signals) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,\'candidate\',%s) on conflict(id) do nothing',(mid,job['entity_id'],row['document_id'],row['revision'],row['id'],pair['page_id'],pair['region_id'],spelling,Jsonb(locator(e)),Jsonb({'ranking':signals[str(row['id'])],'exact_alias_match':bool(matching),'identity_unresolved':True,'retrieval_mode':result.retrieval_mode})))
+                await db.execute('insert into rkb_entity_mentions(id,entity_id,document_id,revision,chunk_id,page_id,region_id,exact_source_spelling,evidence,state,signals) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,\'candidate\',%s) on conflict(id) do nothing',(mid,job['entity_id'],row['document_id'],row['revision'],row['id'],pair['page_id'],pair['region_id'],spelling,Jsonb(locator(e)),Jsonb({'ranking':signals[str(row['id'])],'exact_alias_match':bool(spelling),'normalized_alias_match':bool(matching),'identity_unresolved':True,'retrieval_mode':result.retrieval_mode})))
                 written+=1
         log.info(json.dumps({'event':'graph_discovery_complete','job_id':str(job['id']),'candidates':written,'retrieval_mode':result.retrieval_mode,'automatic_merges':0}))
 

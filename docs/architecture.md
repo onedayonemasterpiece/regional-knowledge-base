@@ -100,3 +100,8 @@ It reuses accepted E5/BGE/lexical retrieval and exact alias branches. Candidates
 retain retrieval signals and never become facts or identity merges automatically.
 New revisions enqueue one paging job; alias versions enqueue idempotent jobs.
 Existing incomplete source projections remain incomplete.
+
+Entity seeds prepared for a replacement revision become visible only with the
+same successful document activation transaction. The current active graph remains
+readable during retryable finalization. Source-owner staging rows may be inspected
+under owner RLS; public graph APIs always filter the active source revision.

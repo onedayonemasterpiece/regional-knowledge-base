@@ -122,6 +122,13 @@ create or replace function public.rkb_graph_document_finalized() returns trigger
 language plpgsql security definer set search_path=public as $$
 begin
  if NEW.active_revision is distinct from OLD.active_revision and NEW.active_revision>0 then
+  -- Move an existing identity seed only with successful source activation.
+  update rkb_entities n set revision=NEW.active_revision,
+   state=coalesce(n.metadata->>'_next_state',n.state),
+   external_ref=coalesce(n.metadata->>'_next_external_ref',n.external_ref),
+   metadata=coalesce(n.metadata->'_next_metadata',n.metadata)
+   where n.document_id=NEW.id and (n.metadata->>'_next_revision')::bigint=NEW.active_revision
+   and exists(select 1 from rkb_entity_mentions m where m.entity_id=n.id and m.document_id=NEW.id and m.revision=NEW.active_revision);
   insert into rkb_graph_discovery_jobs(id,actor_id,document_id,revision,job_key,payload)
    values(gen_random_uuid(),NEW.owner_user_id,NEW.id,NEW.active_revision,'document:'||NEW.id||':'||NEW.active_revision,'{"kind":"document","offset":0}'::jsonb) on conflict(job_key) do nothing;
  end if;return NEW;

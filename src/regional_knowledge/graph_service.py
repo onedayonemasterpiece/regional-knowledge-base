@@ -54,8 +54,9 @@ class GraphService:
     async def stage(self,principal,document_id,revision,bundle,*,staged_texts=None):
         bundle=GraphBundle.model_validate(bundle) if not isinstance(bundle,GraphBundle) else bundle
         async with self.connection(principal) as db:
-            row=await(await db.execute('select id from rkb_documents where id=%s and owner_user_id=rkb_current_actor_id() for update',(UUID(str(document_id)),))).fetchone()
+            row=await(await db.execute('select id,active_revision from rkb_documents where id=%s and owner_user_id=rkb_current_actor_id() for update',(UUID(str(document_id)),))).fetchone()
             if not row:raise PermissionError('graph writes require source ownership')
+            if revision<1 or (staged_texts is None and row['active_revision']!=revision):raise ValueError('active revision required')
         evidence={digest(e.model_dump(mode='json')):e for n in bundle.entities for e in [n.evidence,*[a.evidence for a in n.aliases]]}
         evidence.update({digest(e.model_dump(mode='json')):e for r in bundle.relations for e in r.evidence})
         for e in evidence.values():await self.evidence(principal,document_id,revision,e,staged_texts=staged_texts)
@@ -71,10 +72,11 @@ class GraphService:
                     log.info(json.dumps({'event':'graph_poi_resolution_deferred','error_type':type(error).__name__}))
         async with self.connection(principal) as db:
             # Recheck exact locators and owner inside the committing transaction.
-            await db.execute('select id from rkb_documents where id=%s and owner_user_id=rkb_current_actor_id() for update',(UUID(str(document_id)),))
+            doc=await(await db.execute('select id,active_revision from rkb_documents where id=%s and owner_user_id=rkb_current_actor_id() for update',(UUID(str(document_id)),))).fetchone()
+            if not doc or (staged_texts is None and doc['active_revision']!=revision):raise ValueError('document revision changed')
             for n in bundle.entities:
                 nid=ids[n.key];old=await(await db.execute('select * from rkb_entities where id=%s',(nid,))).fetchone()
-                if old and (str(old['owner_user_id'])!=principal.subject or old['kind']!=n.kind):raise PermissionError('explicit identity reuse requires same owner/kind')
+                if old and (old['owner_user_id']!=UUID(principal.subject) or old['kind']!=n.kind):raise PermissionError('explicit identity reuse requires same owner/kind')
                 if n.entity_id and not old:raise LookupError('entity not found')
                 result=resolved.get(n.key,{});ref=result.get('external_ref');state='unresolved' if n.kind=='poi_ref' and not ref else n.state
                 metadata={'review_note':n.review_note,'poi_locator':n.poi_locator.model_dump(mode='json') if n.poi_locator else None,'resolution':result.get('state')}
@@ -83,7 +85,11 @@ class GraphService:
                 elif not n.entity_id:
                     if old['canonical_label']!=n.canonical_label or old['document_id']!=UUID(str(document_id)):raise ValueError('entity key payload conflict')
                     if old['revision']!=revision:
-                        await db.execute('update rkb_entities set revision=%s,external_ref=%s,state=%s,metadata=%s where id=%s',(revision,ref,state,Jsonb(metadata),nid))
+                        if staged_texts is not None:
+                            pending={**old['metadata'],'_next_revision':revision,'_next_metadata':metadata,'_next_state':state,'_next_external_ref':ref or old['external_ref']}
+                            await db.execute('update rkb_entities set metadata=%s where id=%s',(Jsonb(pending),nid))
+                        else:
+                            await db.execute('update rkb_entities set revision=%s,external_ref=%s,state=%s,metadata=%s where id=%s',(revision,ref,state,Jsonb(metadata),nid))
                 # Explicit reuse does not overwrite seed identity/metadata from another book.
                 mid=uuid5(nid,f'mention:{document_id}:{revision}:{digest(locator(n.evidence))}')
                 await db.execute('insert into rkb_entity_mentions(id,entity_id,document_id,revision,chunk_id,page_id,region_id,exact_source_spelling,evidence,state) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) on conflict(id) do nothing',(mid,nid,UUID(str(document_id)),revision,n.evidence.chunk_id,n.evidence.page_id,n.evidence.region_id,n.exact_source_spelling,Jsonb(locator(n.evidence)),n.state))
@@ -128,12 +134,13 @@ class GraphService:
             if not node:raise LookupError('entity not found')
             aliases=await(await db.execute('select value,language,alias_type,time_scope,evidence from rkb_entity_aliases where entity_id=%s and rkb_graph_active(document_id,revision) order by id limit %s',(nid,limit))).fetchall()
             mentions=await(await db.execute('select state,exact_source_spelling,evidence,signals from rkb_entity_mentions where entity_id=%s and rkb_graph_active(document_id,revision) order by id limit %s',(nid,limit))).fetchall()
+            jobs=await(await db.execute('select id,state,attempts,error_code from rkb_graph_discovery_jobs where entity_id=%s order by created_at desc limit 5',(nid,))).fetchall()
             edges=await(await db.execute('''select e.id,e.source_id,e.target_id,e.kind,e.state,e.time_scope,e.evidence,
              n.id neighbor_id,n.kind neighbor_kind,n.canonical_label neighbor_label,n.external_ref
              from rkb_entity_relations e join rkb_entities n on n.id=case when e.source_id=%s then e.target_id else e.source_id end
              where (e.source_id=%s or e.target_id=%s) and rkb_graph_active(e.document_id,e.revision) and rkb_graph_active(n.document_id,n.revision)
              order by e.id limit %s''',(nid,nid,nid,limit+1))).fetchall()
-        return {'entity':node,'aliases':[{**a,'state':'candidate'} for a in aliases],'mentions':mentions,'neighbors':edges[:limit],'truncated':len(edges)>limit,'max_hops':1}
+        return {'entity':node,'aliases':[{**a,'state':'candidate'} for a in aliases],'mentions':mentions,'neighbors':edges[:limit],'truncated':len(edges)>limit,'max_hops':1,'discovery_jobs':jobs}
 
     async def related(self,principal,nid,query=None,limit=8):
         graph=await self.read(principal,nid,20)

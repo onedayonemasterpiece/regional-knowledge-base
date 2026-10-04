@@ -132,3 +132,24 @@ async def test_chatgpt_staging_finalize_with_poi_outage_and_replay(graph_db,tmp_
             assert (await(await db.execute("select state from rkb_entities where document_id=%s and kind='poi_ref'",(doc,))).fetchone())['state']=='unresolved'
             assert (await(await db.execute("select count(*) n from rkb_graph_discovery_jobs where document_id=%s and job_key like 'document:%%'",(doc,))).fetchone())['n']==1
     finally:await b.aclose()
+
+@pytest.mark.asyncio
+async def test_new_revision_does_not_hide_active_graph_before_activation(graph_db):
+    doc,owner,other,e,bundle,texts=fixture(graph_db);b=Backend(graph_db,texts);g=GraphService(b)
+    try:
+        first=await g.stage(owner,doc,1,bundle);nid=first['entities']['ada'];await g.read(owner,nid)
+        page,region,chunk=[uuid4() for _ in range(3)];text=texts[e['chunk_id']];hash_=hashlib.sha256(text.encode()).hexdigest()
+        with psycopg.connect(graph_db,autocommit=True) as db:
+            obj=db.execute('select text_object_id from rkb_chunks where id=%s',(UUID(e['chunk_id']),)).fetchone()[0]
+            db.execute('insert into rkb_pages(id,document_id,physical_page_index,width,height,revision) values(%s,%s,0,1000,1000,2)',(page,doc))
+            db.execute("insert into rkb_regions(id,page_id,kind,bbox,reading_order,text_sha256) values(%s,%s,'body','{\"left\":0,\"top\":0,\"right\":1000,\"bottom\":1000}',0,%s)",(region,page,hash_))
+            db.execute("insert into rkb_chunks(id,document_id,text_object_id,title,text_start,text_end,text_sha256,fts,page_ids,region_ids,revision) values(%s,%s,%s,'Synthetic new revision',0,32,%s,to_tsvector('simple',%s),%s,%s,2)",(chunk,doc,obj,hash_,text,[page],[region]))
+        newe={**e,'chunk_id':str(chunk),'page_id':str(page),'region_id':str(region)};newbundle=json.loads(json.dumps(bundle))
+        for n in newbundle['entities']:n['evidence']=newe
+        for r in newbundle['relations']:r['evidence']=[newe]
+        with pytest.raises(ValueError):await g.stage(owner,doc,2,newbundle)
+        for _ in range(2):await g.stage(owner,doc,2,newbundle,staged_texts={str(chunk):text})
+        still=await g.read(owner,nid);assert still['mentions'][0]['evidence']['chunk_id']==e['chunk_id']
+        with psycopg.connect(graph_db,autocommit=True) as db:db.execute('update rkb_documents set active_revision=2 where id=%s',(doc,))
+        new=await g.read(owner,nid);assert new['mentions'][0]['evidence']['chunk_id']==str(chunk)
+    finally:await b.data_client.aclose()
