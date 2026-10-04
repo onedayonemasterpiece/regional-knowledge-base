@@ -22,7 +22,10 @@ async def test_unavailable_mirror_grant_does_not_block_automatic_vectors(graph_d
     try:
         result=await IndexReconciler(b,q).tick()
         assert result['e5_written']==result['bge_submitted']==1 and result['errors']==[]
-    finally:await b.aclose()
+    finally:
+        async with b.data_client._connection({'x-rkb-service':'1'}) as db:
+            await db.execute('update rkb_documents set active_revision=0 where id=%s',(doc,))
+        await b.aclose()
 
 def source_fixture(dsn,tmp_path,n=10,active=True):
     actor=Principal(subject=str(uuid4()),client_id='test',issuer='test',access_token='not-token');doc,obj,page=uuid4(),uuid4(),uuid4();raw=bytearray();chunks=[]
