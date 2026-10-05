@@ -76,6 +76,8 @@ source. Provider refusal, repeated phrase or mismatch yields an honest refusal.
 `RKB_SCAN_PROOF_ENABLED` and source ownership are rechecked for warm model hits. Both scan readers receive
 only the mapped region union; boxes are transformed to physical coordinates and
 rejected if they escape that union, including gaps between disjoint regions.
+Crop coordinates include the last authorized pixel; PIL half-open bounds are
+converted accordingly, so padding at a crop edge does not select an outside pixel.
 No page archive, spool, new topic or whole-book readiness gate exists.
 
 ## Reproducible acceptance
