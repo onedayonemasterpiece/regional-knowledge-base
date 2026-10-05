@@ -168,6 +168,59 @@ def test_validation_accepts_complete_small_graph():
     assert result.ready is True
 
 
+def test_multi_page_chunks_and_quality_diagnostics_are_supported():
+    pages = [page_input(i) for i in range(6)]
+    pages[5] = pages[5].model_copy(update={
+        "regions": [pages[5].regions[0].model_copy(update={
+            "source_text": "Long source passage " + ("material " * 310),
+            "normalized_text": "Long source passage " + ("material " * 310),
+        })]
+    })
+    chunks = [
+        StageChunkInput(
+            chunk_key="continuation-0-1",
+            title="Cross-page continuation",
+            region_refs=[
+                {"page_id": page_id(0), "region_key": "body-1"},
+                {"page_id": page_id(1), "region_key": "body-1"},
+            ],
+        ),
+        *[chunk_input(i) for i in range(2, 6)],
+    ]
+    graph = merge_stage(StagedGraph(revision=REVISION), compile_model_stage(
+        StagedGraph(revision=REVISION), document_id=DOCUMENT_ID, revision=REVISION,
+        pages=pages, chunks=chunks,
+    ))
+    assert graph.chunks[0].page_ids == [UUID(page_id(0)), UUID(page_id(1))]
+    result = validate_graph(graph, expected_page_count=6)
+    assert result.errors == []
+    assert "retrieval_quality:fragmented_body_chunks" in result.warnings
+    assert any(item.startswith("retrieval_quality:encoder_budget_risk:") for item in result.warnings)
+
+
+def test_encoder_budget_diagnostic_counts_visual_augmentation():
+    page = StagePageInput(
+        page_id=page_id(0), physical_page_index=0,
+        source_material="visual_reviewed", source_review_note="checked",
+        regions=[
+            {"region_key":"body","kind":"body","bbox":{"left":0,"top":0,"right":1000,"bottom":400},"reading_order":0,"source_text":"Body "+("x"*1790)},
+            {"region_key":"figure","kind":"figure","bbox":{"left":0,"top":400,"right":1000,"bottom":1000},"reading_order":1},
+        ],
+        illustrations=[{"illustration_key":"i","source_region_key":"figure","kind":"drawing","visual_description":"visual "+("y"*900)}],
+    )
+    chunk=StageChunkInput(
+        chunk_key="augmented",title="Augmented",
+        region_refs=[{"page_id":page_id(0),"region_key":"body"}],
+        illustration_refs=[{"page_id":page_id(0),"illustration_key":"i"}],
+    )
+    graph=merge_stage(StagedGraph(revision=REVISION),compile_model_stage(
+        StagedGraph(revision=REVISION),document_id=DOCUMENT_ID,revision=REVISION,pages=[page],chunks=[chunk]
+    ))
+    result=validate_graph(graph,expected_page_count=1)
+    assert result.errors==[]
+    assert any(value.startswith("retrieval_quality:encoder_budget_risk:") for value in result.warnings)
+
+
 def test_illustration_uses_figure_bbox_and_chunk_reference():
     page = StagePageInput(
         page_id=page_id(0),
@@ -206,6 +259,7 @@ def test_illustration_uses_figure_bbox_and_chunk_reference():
                 "illustration_key": "image-1",
                 "source_region_key": "figure-1",
                 "kind": "photo",
+                "display_rotation_degrees": 90,
                 "caption_region_keys": ["caption-1"],
                 "nearby_region_keys": ["body-1"],
             }
@@ -233,6 +287,7 @@ def test_illustration_uses_figure_bbox_and_chunk_reference():
     illustration = compiled.illustrations[0]
     assert illustration.bbox.left == 100
     assert illustration.bbox.bottom == 800
+    assert illustration.display_rotation_degrees == 90
     assert compiled.chunks[0].illustration_ids == [illustration.illustration_id]
 
 

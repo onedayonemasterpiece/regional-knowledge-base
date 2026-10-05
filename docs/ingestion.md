@@ -28,6 +28,23 @@ real figure regions and illustration entries, or a reason in
 must be source caption regions on the same page. Image-only pages may form chunks
 with empty printed text when linked to a searchable illustration.
 
+Build retrieval chunks as coherent semantic passages, not as a mechanical copy of
+native PDF text blocks. The existing chunk contract may reference ordered regions
+from several pages. When practical, target roughly **800–1,800 characters** of
+printed source material, attach short body fragments to their surrounding passage,
+and keep a genuine sentence/paragraph continuation together across a page boundary.
+Headings, captions and image-only evidence may be shorter. Use bounded overlap only
+when it represents a real semantic boundary; do not duplicate every neighboring
+chunk. Both current encoders cap input at 512 tokens, so avoid passages that are
+conservatively likely to exceed that budget. Character thresholds emitted by
+validation are diagnostics only, not token counts.
+
+If a source illustration is printed sideways, `display_rotation_degrees` may be
+set to a model-reviewed cardinal **clockwise** turn (0/90/180/270). This affects
+only the delivered/display rendition. The reviewed source bbox and source-crop
+digest remain in the source-page coordinate frame and are preserved separately
+from the display-crop digest.
+
 An illustration optionally carries `visual_description` (up to 2,000 characters),
 fixed `visual_description_provenance=model_observation` and an optional language.
 This is model-authored retrieval context, never a quotation or historical fact.

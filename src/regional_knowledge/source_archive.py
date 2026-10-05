@@ -9,7 +9,36 @@ from .illustration_mirror import VibePublishClient
 log=logging.getLogger(__name__)
 
 
-async def archive_bytes(client, entry_ref):
+def _source_display_metadata(document, uri=None):
+    source_format=(document.get('source_format') or ('djvu' if document.get('mime_type')=='image/vnd.djvu' else 'pdf')).lower()
+    extension='.djvu' if source_format=='djvu' else '.pdf'
+    raw_name=(document.get('source_filename') or '').strip()
+    if raw_name:
+        filename=Path(raw_name).name
+    else:
+        title=(document.get('title') or 'regional-knowledge-source').strip()
+        stem=''.join(ch if ch.isalnum() or ch in ' ._()-' else '_' for ch in title).strip(' ._')
+        filename=(stem[:120] or 'regional-knowledge-source')+extension
+    authors=document.get('authors') or []
+    if isinstance(authors,str):
+        authors=[authors]
+    lines=[str(document.get('title') or filename).strip()]
+    if authors:
+        lines.append('Автор: '+', '.join(str(value).strip() for value in authors if str(value).strip())[:300])
+    if document.get('publication_year'):
+        lines.append('Год: '+str(document['publication_year']))
+    lines.append('Файл: '+filename)
+    body='\n'.join(lines)
+    if uri:
+        suffix='\nИсточник: '+uri
+        # Preserve the complete immutable discovery URI even when human metadata
+        # is unusually long. Truncate only the human-readable prefix.
+        budget=max(0,1000-len(suffix))
+        body=body[:budget].rstrip()+suffix
+    return filename, body[:1000]
+
+
+async def archive_payload(client, entry_ref):
     read=await client.call('vibepublish_media_store',{'command':{'kind':'get','entry_ref':entry_ref}})
     for _ in range(60):
         receipt=await client.receipt(read['operation_id'])
@@ -17,9 +46,18 @@ async def archive_bytes(client, entry_ref):
         await asyncio.sleep(.5)
     if receipt['state']!='verified':raise RuntimeError('archive_source_unavailable')
     assets=[m for item in receipt.get('items',[]) for m in item.get('media',[]) if m.get('source',{}).get('kind')=='asset']
-    if len(assets)!=1:raise RuntimeError('archive_download_binding_missing')
+    evidence=[e for item in receipt.get('items',[]) for e in item.get('media_evidence',[]) if e.get('media_kind')=='document']
+    if len(assets)!=1 or len(evidence)!=1:raise RuntimeError('archive_download_binding_missing')
     response=await client.request('GET',client.issuer+'/v1/assets/'+assets[0]['source']['id'])
-    return response.content
+    data=response.content
+    actual_sha=hashlib.sha256(data).hexdigest()
+    provider_sha=evidence[0].get('sha256')
+    if provider_sha and provider_sha!=actual_sha:raise RuntimeError('archive_provider_digest_mismatch')
+    return data,provider_sha or actual_sha
+
+
+async def archive_bytes(client, entry_ref):
+    return (await archive_payload(client,entry_ref))[0]
 
 
 async def download_source(backend, principal, document_id, obj, path, *, require_archive=False):
@@ -69,6 +107,7 @@ class SourceArchive:
         count=0
         for doc in docs:
             try:
+                previous_attempt = doc.get('source_archive_attempt_at') is not None
                 # System selection contains metadata only; source bytes require actor authorization.
                 async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
                     authorized=await(await db.execute('select id from rkb_documents where id=%s and owner_user_id=rkb_current_actor_id()', (doc['id'],))).fetchone()
@@ -85,11 +124,52 @@ class SourceArchive:
                     key="rkb:source:"+hashlib.sha256(f"{self.client.owner}:{doc['id']}:{doc['source_sha256']}".encode()).hexdigest()
                     upload=await self.client.request('POST',self.client.issuer+'/v1/assets',
                         headers={'Content-Type':doc['mime_type'],'Idempotency-Key':key+':asset'},content=data)
-                    receipt=await self.client.call('vibepublish_media_store',{'request_key':key,'command':{
+                    filename=doc.get('source_archive_filename')
+                    caption=doc.get('source_archive_caption')
+                    legacy_alternate_filename=None
+                    legacy_caption='Regional Knowledge source '+uri
+                    if not filename or not caption:
+                        if previous_attempt:
+                            # Reconstruct the old implementation's payload exactly.
+                            # A historical DjVu attempt is ambiguous only when an
+                            # earlier pass persisted source_format before the lost
+                            # response; probe the current old-style filename first
+                            # and retry source.pdf only after a proven idempotency
+                            # conflict (which has no publication side effect).
+                            source_format=(doc.get('source_format') or 'pdf').lower()
+                            filename=doc.get('source_filename') or 'source.'+source_format
+                            if not doc.get('source_filename') and source_format=='djvu':
+                                legacy_alternate_filename='source.pdf'
+                            caption=legacy_caption
+                        else:
+                            filename,caption=_source_display_metadata(doc,uri)
+                        await self.update(doc,source_archive_filename=filename,source_archive_caption=caption)
+                    elif (
+                        previous_attempt
+                        and not doc.get('source_filename')
+                        and (doc.get('source_format') or '').lower()=='djvu'
+                        and caption==legacy_caption
+                        and filename=='source.djvu'
+                    ):
+                        # The prior probe may itself have lost its response after
+                        # freezing source.djvu. Preserve the unresolved legacy
+                        # ambiguity across ticks/restarts until Vibe proves which
+                        # payload was admitted under the immutable request key.
+                        legacy_alternate_filename='source.pdf'
+                    command={
                         'kind':'put','to':self.client.grant['destination_alias'],'thread_ref':self.client.grant['source_thread_ref'],
-                        'content':{'text':'Regional Knowledge source '+uri},'origin':origin,
+                        'content':{'text':caption},'origin':origin,
                         'media':[{'source':{'kind':'asset','id':upload.json()['asset_id']},'role':'document',
-                                  'alt_text':doc.get('source_filename') or 'source.'+(doc.get('source_format') or 'pdf')}]}})
+                                  'alt_text':filename}]}
+                    try:
+                        receipt=await self.client.call('vibepublish_media_store',{'request_key':key,'command':command})
+                    except RuntimeError as error:
+                        if not legacy_alternate_filename or 'idempotency_conflict' not in str(error):
+                            raise
+                        filename=legacy_alternate_filename
+                        command['media'][0]['alt_text']=filename
+                        await self.update(doc,source_archive_filename=filename,source_archive_caption=caption)
+                        receipt=await self.client.call('vibepublish_media_store',{'request_key':key,'command':command})
                     operation=receipt['operation_id'];await self.update(doc,source_archive_operation_id=operation)
                 receipt=await self.client.receipt(operation)
                 if not receipt['operation_complete']:continue

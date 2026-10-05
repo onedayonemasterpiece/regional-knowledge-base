@@ -116,7 +116,14 @@ Current implementation checkpoint:
   text blocks/bboxes, maximum 8 pages per call;
 - `stage`: the model submits page-local short keys (`region_key`,
   `illustration_key`) and semantic chunk references; the server creates stable
-  UUIDv5 identities and derives chunk text from referenced regions;
+  UUIDv5 identities and derives chunk text from referenced regions. Chunks are
+  coherent retrieval passages rather than native PDF blocks: prefer about
+  800–1,800 characters when practical, join genuine continuations across pages,
+  attach fragmentary body text to context, and avoid material conservatively at
+  risk of exceeding the current 512-token encoder cap. Validation reports
+  non-blocking fragmentation/size diagnostics. Figures may also carry an explicit
+  clockwise `display_rotation_degrees` of 0/90/180/270; source geometry remains
+  unchanged;
 - canonical searchable text and graph material are persisted in Postgres; transient
   staged graph/source objects remain replaceable implementation artifacts rather than
   the user-facing source of truth;

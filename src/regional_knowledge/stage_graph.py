@@ -63,6 +63,9 @@ class StagedIllustration(BaseModel):
     visual_description: str | None = Field(default=None, min_length=1, max_length=2000)
     visual_description_provenance: Literal['model_observation'] = 'model_observation'
     visual_description_language: str | None = Field(default=None, max_length=80)
+    # Clockwise presentation turn applied only to the delivered rendition.
+    # Source bbox/crop coordinates remain in the reviewed source-page frame.
+    display_rotation_degrees: Literal[0, 90, 180, 270] = 0
     illustration_key: str
     illustration_id: UUID
     page_id: UUID
@@ -246,6 +249,7 @@ def compile_model_stage(
                     visual_description=item.visual_description,
                     visual_description_provenance=item.visual_description_provenance,
                     visual_description_language=item.visual_description_language,
+                    display_rotation_degrees=item.display_rotation_degrees,
                     caption_region_ids=[
                         region_ids[key] for key in item.caption_region_keys
                     ],
@@ -701,9 +705,33 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
     if not graph.chunks:
         errors.append("no retrieval chunks staged")
     from .search_material import graph_material
+    body_chunk_count=0
+    short_body_chunks=0
+    encoder_budget_risk=0
     for chunk in graph.chunks:
-        try:graph_material(graph,chunk)
+        search_text=None
+        try:search_text,_=graph_material(graph,chunk)
         except (ValueError,KeyError):errors.append(f'chunk has missing or invalid visual search material: {chunk.chunk_id}')
+        member_regions=[regions.get(str(region_id)) for region_id in chunk.region_ids]
+        has_body=any(region is not None and region.kind in {RegionKind.BODY,RegionKind.TABLE,RegionKind.MARGINALIA} for region in member_regions)
+        source_length=len((chunk.normalized_text or chunk.text).strip())
+        if has_body:
+            body_chunk_count+=1
+            if source_length < 350:
+                short_body_chunks+=1
+        # Character count is only a conservative risk proxy. Both current
+        # encoders cap at 512 tokens; never claim this is an exact token count.
+        augmented_length=len(search_text or (chunk.normalized_text or chunk.text).strip())
+        if augmented_length > 2400:
+            encoder_budget_risk+=1
+    # Avoid noisy diagnostics on tiny fixtures/documents; fragmentation is a
+    # corpus-shape signal and becomes useful only with a meaningful sample.
+    if body_chunk_count >= 5 and short_body_chunks:
+        warnings.append(f"retrieval_quality:short_body_chunks:{short_body_chunks}/{body_chunk_count}")
+        if short_body_chunks * 5 >= body_chunk_count:
+            warnings.append("retrieval_quality:fragmented_body_chunks")
+    if encoder_budget_risk:
+        warnings.append(f"retrieval_quality:encoder_budget_risk:{encoder_budget_risk}/{len(graph.chunks)}")
 
     required_coverage = {
         region_id

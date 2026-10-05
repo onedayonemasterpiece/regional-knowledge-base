@@ -144,6 +144,7 @@ class StageIllustrationInput(BaseModel):
     visual_description: str | None = Field(default=None, min_length=1, max_length=2000)
     visual_description_provenance: Literal['model_observation'] = 'model_observation'
     visual_description_language: str | None = Field(default=None, max_length=80)
+    display_rotation_degrees: Literal[0, 90, 180, 270] = 0
     illustration_key: str = Field(
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$"
     )

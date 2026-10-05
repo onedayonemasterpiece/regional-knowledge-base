@@ -128,3 +128,53 @@ def test_unrepresented_figure_and_forged_description_provenance():
     assert any('figure must be staged' in e for e in validate_graph(merged,expected_page_count=1).errors)
     page['illustrations']=[{'illustration_key':'i','source_region_key':'figure','kind':'other','visual_description':'invented','visual_description_provenance':'printed_source'}]
     with pytest.raises(ValueError):StagePageInput.model_validate(page)
+
+
+@pytest.mark.asyncio
+async def test_archived_crop_bytes_use_provider_rendition_digest(monkeypatch):
+    import regional_knowledge.illustrations as illustrations_module
+    import regional_knowledge.source_archive as source_archive_module
+    import regional_knowledge.illustration_mirror as mirror_module
+
+    provider_bytes=b"provider-sanitized-rendition"
+    provider_sha=hashlib.sha256(provider_bytes).hexdigest()
+    canonical_sha=hashlib.sha256(b"canonical-display-rendition").hexdigest()
+    state={"provider_sha":provider_sha}
+
+    async def fake_row(*args,**kwargs):
+        return {
+            "id": uuid4(), "document_id": uuid4(), "crop_object_id": None,
+            "vibepublish_entry_ref": "entry", "display_crop_sha256": canonical_sha,
+            "provider_crop_sha256": state["provider_sha"], "source_crop_sha256": "a"*64,
+        }
+    async def fake_descriptor(*args,**kwargs):
+        return {"illustration_id":"synthetic","display_crop_sha256":canonical_sha,
+                "provider_crop_sha256":state["provider_sha"]}
+    class Backend:
+        async def _server_object(self,**kwargs): return None
+    class Client:
+        def __init__(self,*args,**kwargs): pass
+        async def close(self): pass
+
+    monkeypatch.setattr(illustrations_module,"row",fake_row)
+    monkeypatch.setattr(illustrations_module,"descriptor",fake_descriptor)
+    monkeypatch.setattr(mirror_module,"VibePublishClient",Client)
+    monkeypatch.setenv("RKB_VIBEPUBLISH_GRANT_FILE","/unused")
+
+    async def archived(*args,**kwargs): return provider_bytes,provider_sha
+    monkeypatch.setattr(source_archive_module,"archive_payload",archived)
+    principal=Principal(subject=str(uuid4()),client_id="t",issuer="t",access_token="x")
+
+    metadata,data,mime=await illustrations_module.fetch_crop(
+        Backend(),principal,"00000000-0000-0000-0000-000000000001"
+    )
+    assert data==provider_bytes and mime=="image/png"
+    assert metadata["delivered_crop_sha256"]==provider_sha
+    assert metadata["delivered_crop_sha256"]!=canonical_sha
+    assert metadata["delivered_crop_origin"]=="telegram_archive"
+
+    state["provider_sha"]="b"*64
+    with pytest.raises(ValueError,match="provider crop integrity mismatch"):
+        await illustrations_module.fetch_crop(
+            Backend(),principal,"00000000-0000-0000-0000-000000000001"
+        )

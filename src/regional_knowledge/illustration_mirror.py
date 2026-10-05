@@ -99,7 +99,7 @@ class IllustrationMirror:
         from .contracts import Principal
         actor=Principal(subject=self.client.owner,client_id='private-mirror',issuer='internal-actor-bridge',access_token='internal-actor-bridge')
         async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
-            items=await(await db.execute("""select i.id,i.document_id,p.revision,i.mirror_operation_id,i.mirror_read_operation_id from rkb_illustrations i
+            items=await(await db.execute("""select i.id,i.document_id,p.revision,i.mirror_operation_id,i.mirror_read_operation_id,i.display_crop_sha256,i.source_crop_sha256,i.provider_crop_sha256 from rkb_illustrations i
              join rkb_pages p on p.id=i.page_id join rkb_documents d on d.id=i.document_id
              where d.owner_user_id=%s and p.revision=d.active_revision and i.visibility='private'
               and i.vibepublish_entry_ref is null and i.crop_object_id is not null order by i.mirror_attempt_at nulls first,i.id limit 4""",(UUID(self.client.owner),))).fetchall()
@@ -132,10 +132,15 @@ class IllustrationMirror:
                 if not read['operation_complete']:
                     continue
                 entries=read.get('media_store_items') or []
-                evidence=[e for r in read.get('items',[]) for e in r.get('media_evidence',[])]
-                if read['state']!='verified' or len(entries)!=1 or entries[0]['thread_ref']!=self.client.grant['thread_ref'] or entries[0].get('origin')!={'system':'regional_knowledge','ref':'knowledge://illustrations/'+str(item['id'])} or not evidence or any(e['media_kind']!='document' for e in evidence):
+                evidence=[e for r in read.get('items',[]) for e in r.get('media_evidence',[]) if e.get('media_kind')=='document']
+                provider_shas={e.get('sha256') for e in evidence if e.get('sha256')}
+                if read['state']!='verified' or len(entries)!=1 or entries[0]['thread_ref']!=self.client.grant['thread_ref'] or entries[0].get('origin')!={'system':'regional_knowledge','ref':'knowledge://illustrations/'+str(item['id'])} or len(evidence)!=1 or len(provider_shas)!=1:
                     raise RuntimeError('mirror native document/topic readback mismatch')
-                await self.update(item,vibepublish_entry_ref=entries[0]['entry_ref'],mirror_error_type=None)
+                provider_sha=next(iter(provider_shas))
+                persisted=item.get('provider_crop_sha256')
+                if persisted and persisted!=provider_sha:
+                    raise RuntimeError('mirror provider digest changed')
+                await self.update(item,vibepublish_entry_ref=entries[0]['entry_ref'],provider_crop_sha256=provider_sha,mirror_error_type=None)
                 verified+=1
             except Exception as error:
                 await self.update(item,mirror_error_type=type(error).__name__)

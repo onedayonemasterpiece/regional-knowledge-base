@@ -36,6 +36,7 @@ async def descriptor(backend, principal, illustration_id, document_id=None):
         raise ValueError('illustration source binding mismatch')
     output = {k:item.get(k) for k in ('kind','caption_text','caption_region_ids','visual_description',
               'visual_description_provenance','visual_description_language','source_crop_sha256',
+              'display_rotation_degrees','display_crop_sha256','provider_crop_sha256',
               'visibility','rights_status','vibepublish_entry_ref')}
     # psycopg returns UUID[] as native UUID objects. The descriptor is also used
     # by the direct ImageContent tool, outside Pydantic's fetch serialization.
@@ -55,6 +56,7 @@ async def fetch_crop(backend, principal, illustration_id):
         if not item.get('vibepublish_entry_ref'):raise LookupError('illustration_crop_missing')
         obj={'deleted_at':True,'mime_type':'image/png'}
     data=None
+    delivered_origin='object_store'
     if not obj.get('deleted_at'):
         try:
             data=await backend.object_store.get_bytes(obj['object_key'])
@@ -63,14 +65,26 @@ async def fetch_crop(backend, principal, illustration_id):
     if data is not None and hashlib.sha256(data).hexdigest()!=obj['sha256']:
         raise ValueError('stored crop integrity mismatch')
     if data is None:
-        from .source_archive import archive_bytes
+        delivered_origin='telegram_archive'
+        from .source_archive import archive_payload
         from .illustration_mirror import VibePublishClient
         import os
         client=VibePublishClient(os.environ['RKB_VIBEPUBLISH_GRANT_FILE'])
         try:
             # Actor authorized the illustration above; grant never widens that ACL.
-            data=await archive_bytes(client,item['vibepublish_entry_ref'])
+            data,provider_sha=await archive_payload(client,item['vibepublish_entry_ref'])
         finally:
             await client.close()
-    logging.getLogger(__name__).info(json.dumps({'event':'illustration_crop_read','illustration_id':str(item['id']),'bytes':len(data),'mime_type':obj['mime_type']}))
-    return await descriptor(backend, principal, str(item['id'])), data, obj['mime_type']
+        persisted_provider_sha=item.get('provider_crop_sha256')
+        if persisted_provider_sha and provider_sha!=persisted_provider_sha:
+            raise ValueError('provider crop integrity mismatch')
+    delivered_sha=hashlib.sha256(data).hexdigest()
+    if delivered_origin=='object_store':
+        expected_display=item.get('display_crop_sha256') or item.get('source_crop_sha256')
+        if expected_display and delivered_sha!=expected_display:
+            raise ValueError('delivered crop integrity mismatch')
+    metadata=await descriptor(backend, principal, str(item['id']))
+    metadata['delivered_crop_sha256']=delivered_sha
+    metadata['delivered_crop_origin']=delivered_origin
+    logging.getLogger(__name__).info(json.dumps({'event':'illustration_crop_read','illustration_id':str(item['id']),'bytes':len(data),'mime_type':obj['mime_type'],'origin':delivered_origin,'sha256':delivered_sha}))
+    return metadata, data, obj['mime_type']

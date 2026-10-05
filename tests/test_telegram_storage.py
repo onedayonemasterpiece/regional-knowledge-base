@@ -99,10 +99,15 @@ async def test_source_archive_lost_response_exact_replay_and_historical_roots(gr
             cmd=args['command']
             if cmd['kind']=='put':
                 assert len(args['request_key'])<=128
-                self.puts[args['request_key']]=cmd;self.origin=cmd['origin']
+                previous=self.puts.get(args['request_key'])
+                if previous is not None and previous!=cmd:
+                    raise RuntimeError('idempotency_conflict')
+                self.puts.setdefault(args['request_key'],cmd);self.origin=cmd['origin']
                 if self.lost:self.lost=False;raise TimeoutError('lost receipt after durable admission')
                 return {'operation_id':'op_source'}
-            if cmd['kind']=='search':return {'media_store_items':[self.entry()]}
+            if cmd['kind']=='search':
+                values=list(self.puts.values())
+                return {'media_store_items':[self.entry()] if any(cmd['text'] in value['content']['text'] for value in values) else []}
             return {'operation_id':'op_read'}
         def entry(self):return {'entry_ref':'entry_source','origin':self.origin,'thread_ref':self.grant['source_thread_ref']}
         async def receipt(self,op):
@@ -122,8 +127,148 @@ async def test_source_archive_lost_response_exact_replay_and_historical_roots(gr
             db.execute("update rkb_documents set source_archive_attempt_at=now()-interval '1 minute' where id=%s",(canonical,))
         assert await archive.tick()==1
         assert await archive.tick()==0 and len(client.puts)==1
+        put=next(iter(client.puts.values()))
+        with psycopg.connect(graph_db) as db:
+            display_title=db.execute("select title from rkb_documents where id=%s",(canonical,)).fetchone()[0]
+        assert put["content"]["text"].startswith(display_title)
+        assert 'knowledge://documents/'+str(canonical)+'/source' in put["content"]["text"]
+        assert put["media"][0]["alt_text"].endswith(".pdf")
+        assert put["media"][0]["alt_text"] != "source.pdf"
         with psycopg.connect(graph_db) as db:
             rows=db.execute('select id,source_archive_ref,source_archive_origin_ref,source_archive_status from rkb_documents where id=any(%s)',([doc,duplicate],)).fetchall()
             assert len(rows)==2
             assert all(r[1]=='entry_source' and r[2]=='knowledge://documents/'+str(canonical)+'/source' and r[3]=='verified' for r in rows)
+    finally:await b.aclose()
+
+
+def test_source_display_metadata_uses_human_title_when_filename_missing():
+    from regional_knowledge.source_archive import _source_display_metadata
+    uri="knowledge://documents/00000000-0000-0000-0000-000000000001/source"
+    filename, caption = _source_display_metadata({
+        "title": "Кёнигсберг в Пруссии. История одного европейского города",
+        "authors": ["Фриц Гаузе"],
+        "publication_year": 1994,
+        "source_filename": None,
+        "source_format": "pdf",
+        "mime_type": "application/pdf",
+    },uri)
+    assert filename.endswith(".pdf") and filename != "source.pdf"
+    assert "Кёнигсберг в Пруссии" in filename
+    assert "Фриц Гаузе" in caption
+    assert "1994" in caption
+    assert filename in caption
+    assert uri in caption
+    long_filename, long_caption = _source_display_metadata({
+        "title": "Очень длинное название " * 120,
+        "authors": ["Автор " * 100],
+        "publication_year": 1994,
+        "source_filename": None,
+        "source_format": "pdf",
+        "mime_type": "application/pdf",
+    },uri)
+    assert len(long_caption) <= 1000
+    assert long_caption.endswith("Источник: "+uri)
+
+
+@pytest.mark.asyncio
+async def test_source_archive_cross_version_uncertain_replay_keeps_legacy_payload(graph_db):
+    from types import SimpleNamespace
+    from regional_knowledge.source_archive import SourceArchive
+    doc,owner,_,_,_,_=fixture(graph_db)
+    data=b'%PDF-1.7\nlegacy uncertain send';sha=hashlib.sha256(data).hexdigest();source=uuid4()
+    with psycopg.connect(graph_db,autocommit=True) as db:
+        db.execute("update rkb_documents set source_sha256=%s,source_archive_status='pending',source_archive_attempt_at=now()-interval '1 minute',source_archive_error='TimeoutError',source_archive_operation_id=null,source_archive_caption=null,source_archive_filename=null where id=%s",(sha,doc))
+        db.execute("insert into rkb_objects(id,document_id,kind,object_key,sha256,mime_type,size_bytes) values(%s,%s,'source_pdf','legacy-source',%s,'application/pdf',%s)",(source,doc,sha,len(data)))
+    class Store:
+        async def get_bytes(self,key): assert key=='legacy-source'; return data
+    class Client:
+        def __init__(self):
+            self.owner=owner.subject;self.issuer='https://vibe.test';self.grant={'destination_alias':'kb','source_thread_ref':'https://t.me/c/4368830579/2'};self.command=None
+        async def request(self,method,url,**kw):
+            assert kw['content']==data;return SimpleNamespace(json=lambda:{'asset_id':'legacy_asset'})
+        async def call(self,name,args):
+            cmd=args['command']
+            if cmd['kind']=='put':
+                self.command=cmd
+                assert cmd['content']['text']=='Regional Knowledge source knowledge://documents/'+str(doc)+'/source'
+                assert cmd['media'][0]['alt_text']=='source.pdf'
+                return {'operation_id':'op'}
+            if cmd['kind']=='search':
+                return {'media_store_items':[{'entry_ref':'entry','origin':self.command['origin'],'thread_ref':self.grant['source_thread_ref']}]}
+            return {'operation_id':'read'}
+        async def receipt(self,op):
+            if op=='op': return {'operation_complete':True,'state':'verified'}
+            return {'operation_complete':True,'state':'verified','media_store_items':[{'entry_ref':'entry','origin':self.command['origin'],'thread_ref':self.grant['source_thread_ref']}],'items':[{'media_evidence':[{'media_kind':'document','sha256':sha}]}]}
+    b=PostgresBackend(graph_db,object_store=Store(),embedder=LexicalOnlyEmbedder());client=Client()
+    try:
+        assert await SourceArchive(b,client).tick()==1
+        with psycopg.connect(graph_db) as db:
+            frozen=db.execute('select source_archive_caption,source_archive_filename,source_archive_status from rkb_documents where id=%s',(doc,)).fetchone()
+        assert frozen==('Regional Knowledge source knowledge://documents/'+str(doc)+'/source','source.pdf','verified')
+    finally:await b.aclose()
+
+
+def test_migration_019_replays_and_backfills_legacy_rows(graph_db):
+    owner,doc,page,region=[uuid4() for _ in range(4)];sha='c'*64
+    with psycopg.connect(graph_db,autocommit=True) as db:
+        db.execute('insert into rkb_users(id) values(%s)',(owner,))
+        db.execute("insert into rkb_documents(id,owner_user_id,title,source_sha256,active_revision,page_count) values(%s,%s,'Migration fixture',%s,1,1)",(doc,owner,'d'*64))
+        db.execute('insert into rkb_pages(id,document_id,physical_page_index,width,height,revision) values(%s,%s,0,1000,1000,1)',(page,doc))
+        db.execute("insert into rkb_regions(id,page_id,kind,bbox,reading_order) values(%s,%s,'figure','{\"left\":0,\"top\":0,\"right\":1000,\"bottom\":1000}',0)",(region,page))
+        iid=uuid4()
+        db.execute("insert into rkb_illustrations(id,document_id,page_id,source_region_id,kind,source_crop_sha256,display_crop_sha256) values(%s,%s,%s,%s,'drawing',%s,null)",(iid,doc,page,region,sha))
+        migration=(Path(__file__).parents[1]/'sql/019_illustration_presentation.sql').read_text()
+        db.execute(migration,prepare=False);db.execute(migration,prepare=False)
+        row=db.execute('select display_rotation_degrees,display_crop_sha256,provider_crop_sha256 from rkb_illustrations where id=%s',(iid,)).fetchone()
+        cols={value[0] for value in db.execute("select column_name from information_schema.columns where table_schema='public' and table_name='rkb_documents' and column_name in ('source_archive_caption','source_archive_filename')").fetchall()}
+    assert row==(0,sha,None)
+    assert cols=={'source_archive_caption','source_archive_filename'}
+
+
+@pytest.mark.asyncio
+async def test_source_archive_cross_version_djvu_filename_ambiguity_is_recovered(graph_db):
+    from types import SimpleNamespace
+    from regional_knowledge.source_archive import SourceArchive
+    doc,owner,_,_,_,_=fixture(graph_db)
+    data=b'AT&TFORMsynthetic-djvu-legacy';sha=hashlib.sha256(data).hexdigest();source=uuid4()
+    with psycopg.connect(graph_db,autocommit=True) as db:
+        db.execute("update rkb_documents set source_sha256=%s,source_format='djvu',source_archive_status='pending',source_archive_attempt_at=now()-interval '1 minute',source_archive_error='TimeoutError',source_archive_operation_id=null,source_archive_caption=null,source_archive_filename=null where id=%s",(sha,doc))
+        db.execute("insert into rkb_objects(id,document_id,kind,object_key,sha256,mime_type,size_bytes) values(%s,%s,'source_pdf','legacy-djvu',%s,'image/vnd.djvu',%s)",(source,doc,sha,len(data)))
+    class Store:
+        async def get_bytes(self,key): assert key=='legacy-djvu'; return data
+    class Client:
+        def __init__(self):
+            self.owner=owner.subject;self.issuer='https://vibe.test';self.grant={'destination_alias':'kb','source_thread_ref':'https://t.me/c/4368830579/2'};self.command=None;self.attempts=[];self.lose_first=True
+        async def request(self,method,url,**kw):
+            assert kw['content']==data;return SimpleNamespace(json=lambda:{'asset_id':'legacy_asset'})
+        async def call(self,name,args):
+            cmd=args['command']
+            if cmd['kind']=='put':
+                filename=cmd['media'][0]['alt_text'];self.attempts.append(filename)
+                if filename=='source.djvu' and self.lose_first:
+                    self.lose_first=False
+                    raise TimeoutError('lost response while probing legacy payload')
+                if filename=='source.djvu':
+                    raise RuntimeError('VibePublish tool error: idempotency_conflict')
+                assert filename=='source.pdf'
+                self.command=cmd;return {'operation_id':'op'}
+            if cmd['kind']=='search':
+                return {'media_store_items':[{'entry_ref':'entry','origin':self.command['origin'],'thread_ref':self.grant['source_thread_ref']}]}
+            return {'operation_id':'read'}
+        async def receipt(self,op):
+            if op=='op': return {'operation_complete':True,'state':'verified'}
+            return {'operation_complete':True,'state':'verified','media_store_items':[{'entry_ref':'entry','origin':self.command['origin'],'thread_ref':self.grant['source_thread_ref']}],'items':[{'media_evidence':[{'media_kind':'document','sha256':sha}]}]}
+    b=PostgresBackend(graph_db,object_store=Store(),embedder=LexicalOnlyEmbedder());client=Client()
+    try:
+        archive=SourceArchive(b,client)
+        assert await archive.tick()==0
+        with psycopg.connect(graph_db,autocommit=True) as db:
+            frozen=db.execute('select source_archive_caption,source_archive_filename,source_archive_status from rkb_documents where id=%s',(doc,)).fetchone()
+            assert frozen==('Regional Knowledge source knowledge://documents/'+str(doc)+'/source','source.djvu','pending')
+            db.execute("update rkb_documents set source_archive_attempt_at=now()-interval '1 minute' where id=%s",(doc,))
+        assert await archive.tick()==1
+        assert client.attempts==['source.djvu','source.djvu','source.pdf']
+        with psycopg.connect(graph_db) as db:
+            frozen=db.execute('select source_archive_filename,source_archive_status from rkb_documents where id=%s',(doc,)).fetchone()
+        assert frozen==('source.pdf','verified')
     finally:await b.aclose()
