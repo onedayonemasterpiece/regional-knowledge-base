@@ -2,6 +2,19 @@
 
 No credentials or environment files belong in Git.
 
+## Database connection budget
+
+Production uses the Supabase Session Pooler. RKB_DB_POOL_MAX bounds the
+per-process direct-PostgreSQL pool and defaults to **4**. The standard runtime has
+three long-lived database users (MCP server, automatic indexing, graph discovery),
+so the default reserves at most 12 of a 15-session pool and leaves capacity for a
+bounded maintenance process. Production/acceptance scripts that open an additional
+backend should set RKB_DB_POOL_MAX=1.
+
+This is a connection-budget limit, not a query concurrency target. Do not raise it
+per process without accounting for all long-lived RKB processes sharing the same
+Session Pooler.
+
 ## Application auth plane
 
 The MCP auth plane is independent from Supabase.

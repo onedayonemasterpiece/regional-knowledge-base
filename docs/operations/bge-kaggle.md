@@ -47,6 +47,18 @@ separate 384/1024-d spaces. Fusion uses RRF with k=60 and independent branch dep
 while investigating BGE. Missing vectors are reconciled automatically; search
 uses E5/lexical until the authorized active BGE coverage is complete.
 
+After either fast-tier or ready main-tier ranking, direct-PostgreSQL search may
+apply one bounded continuation-context post-pass. Only the top two ranked prose
+hits are eligible, at most one adjacent chunk may be added, and the result count
+never exceeds the requested bound. Expansion requires both a strong source-order
+continuation boundary and query evidence that the missing side can add answer
+context; source-only single-fact matches do not qualify. Existing eligible pairs
+already inside the result window are protected before any replacement. Neighbor
+lookup is constrained to the same readable document and active revision through
+the ordinary actor/RLS connection, never service-wide visibility. Inserted
+context carries an inspectable continuation_neighbor ranking signal. Failure of
+this post-pass returns the original ranking rather than failing search.
+
 On cold demand, search returns normal E5 evidence plus `main_state=starting` and
 an actor-bound `main_job_id`. Reissue the same query with that ID to obtain its
 main result. Both full `search` and Live `knowledge_search` accept it. Completed

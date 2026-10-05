@@ -44,6 +44,7 @@ def test_backend_from_env_prefers_session_pooler(
         "postgresql://user:password@127.0.0.1:6543/postgres",
     )
     monkeypatch.delenv("RKB_ALLOW_LEGACY_SUPABASE_USER_JWT", raising=False)
+    monkeypatch.delenv("RKB_DB_POOL_MAX", raising=False)
     for name in (
         "RKB_S3_ENDPOINT",
         "RKB_S3_REGION",
@@ -60,6 +61,33 @@ def test_backend_from_env_prefers_session_pooler(
 
     backend = backend_from_env()
     assert isinstance(backend, PostgresBackend)
+    assert backend.data_client.pool.max_size == 4
+
+
+def test_backend_from_env_respects_bounded_pool_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "KB_SUPABASE_SESSION_CONNECTION",
+        "postgresql://user:password@127.0.0.1:6543/postgres",
+    )
+    monkeypatch.setenv("RKB_DB_POOL_MAX", "2")
+    for name in (
+        "RKB_S3_ENDPOINT",
+        "RKB_S3_REGION",
+        "RKB_S3_BUCKET",
+        "RKB_S3_ACCESS_KEY_ID",
+        "RKB_S3_SECRET_ACCESS_KEY",
+        "RKB_EMBEDDING_ENDPOINT",
+        "RKB_EMBEDDING_API_KEY",
+        "RKB_EMBEDDING_MODEL",
+        "RKB_EMBEDDING_SPACE",
+        "OPENAI_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    backend = backend_from_env()
+    assert isinstance(backend, PostgresBackend)
+    assert backend.data_client.pool.max_size == 2
 
 
 def test_direct_backend_requires_uuid_subject() -> None:

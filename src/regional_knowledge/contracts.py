@@ -320,7 +320,7 @@ class IndexingStatus(BaseModel):
     indexing_state: Literal['pending','running','ready','degraded']
     bge_worker_state: str
     indexing_owner_state: Literal['disabled','unavailable','running','ready','degraded']
-    effective_retrieval_mode: Literal['bge_lexical','fast_e5','lexical_only']
+    effective_retrieval_mode: Literal['bge_lexical','e5_bge_lexical','bge','e5_bge','fast_e5','lexical_only']
 
 
 class SearchOutput(BaseModel):

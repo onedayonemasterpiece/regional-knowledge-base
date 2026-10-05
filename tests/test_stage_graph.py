@@ -306,3 +306,34 @@ def test_page_ids_and_preview_do_not_prove_source_completeness(missing_note):
         pages=[page], chunks=[chunk_input(0)],
     ))
     assert not validate_graph(graph, expected_page_count=1).ready
+
+
+def test_validation_reports_open_continuation_boundaries():
+    pages=[page_input(i) for i in range(5)]
+    texts=[
+        "Кроме замка Унфридт построил сиротский приют, ворота, почтамт и",
+        "Трагхаймскую церковь. Затем он занимался благоустройством.",
+        "Это отдельное законченное предложение.",
+        "Ещё одно самостоятельное предложение.",
+        "Последний самостоятельный фрагмент заканчивается точкой.",
+    ]
+    pages=[
+        page.model_copy(update={
+            "regions":[page.regions[0].model_copy(update={
+                "source_text":texts[i],
+                "normalized_text":texts[i],
+            })]
+        })
+        for i,page in enumerate(pages)
+    ]
+    base=StagedGraph(revision=REVISION)
+    graph=merge_stage(base,compile_model_stage(
+        base,
+        document_id=DOCUMENT_ID,
+        revision=REVISION,
+        pages=pages,
+        chunks=[chunk_input(i) for i in range(5)],
+    ))
+    result=validate_graph(graph,expected_page_count=5)
+    assert result.errors==[]
+    assert "retrieval_quality:open_continuation_boundaries:1" in result.warnings

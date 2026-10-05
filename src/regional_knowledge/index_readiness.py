@@ -30,7 +30,15 @@ async def status(backend,principal,document_id=None):
         worker=q['state']
     except (KeyError,OSError,RuntimeError):worker='unavailable'
     owner=maintenance_state() if enabled() else 'disabled'
-    mode='bge_lexical' if n and b==n and worker=='ready' and os.getenv('RKB_BGE_ENABLED')=='1' else 'fast_e5' if n and e==n and fast['ready'] else 'lexical_only'
+    warm_mode=os.getenv('RKB_BGE_WARM_MODE','bge_lexical')
+    if warm_mode not in ('bge_lexical','e5_bge_lexical','bge','e5_bge'):
+        warm_mode='bge_lexical'
+    needs_e5=warm_mode in ('e5_bge_lexical','e5_bge')
+    main_ready=(
+        n and b==n and worker=='ready' and os.getenv('RKB_BGE_ENABLED')=='1'
+        and (not needs_e5 or (e==n and fast['ready']))
+    )
+    mode=warm_mode if main_ready else 'fast_e5' if n and e==n and fast['ready'] else 'lexical_only'
     missing=e<n or b<n
     state='ready' if not missing else 'degraded' if owner in ('unavailable','degraded','disabled') or (e<n and not fast['ready']) or (b<n and worker in ('failed','unavailable')) else 'running' if owner=='running' or e>0 or b>0 else 'pending'
     return IndexingStatus(**values,e5_missing=n-e,bge_missing=n-b,indexing_state=state,bge_worker_state=worker,indexing_owner_state=owner,effective_retrieval_mode=mode)

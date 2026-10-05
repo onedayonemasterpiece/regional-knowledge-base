@@ -39,6 +39,12 @@ chunk. Both current encoders cap input at 512 tokens, so avoid passages that are
 conservatively likely to exceed that budget. Character thresholds emitted by
 validation are diagnostics only, not token counts.
 
+Validation also reports retrieval_quality:open_continuation_boundaries:N when
+adjacent prose chunks retain strong signs of an unfinished source-order boundary
+(for example an additive connector or split word). This warning is non-blocking:
+it helps future imports keep continuations inside coherent chunks without
+invalidating already accepted historical revisions.
+
 If a source illustration is printed sideways, `display_rotation_degrees` may be
 set to a model-reviewed cardinal **clockwise** turn (0/90/180/270). This affects
 only the delivered/display rendition. The reviewed source bbox and source-crop
