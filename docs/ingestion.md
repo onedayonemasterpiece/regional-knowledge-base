@@ -41,6 +41,15 @@ real figure regions and illustration entries, or a reason in
 must be source caption regions on the same page. Image-only pages may form chunks
 with empty printed text when linked to a searchable illustration.
 
+For a later re-chunk/reprocess of byte-identical archived source, the server may
+reuse the page-level visual review from a prior revision instead of requiring the
+same scan page to be visually re-reviewed. Reuse is fail-closed: the source SHA-256
+must be identical, the prior revision must already have reached
+`revision_publication`, and the prior staged page must itself be
+`visual_reviewed` with a non-empty review note. Only review completeness is
+reused; current regions, chunks, captions, figures and token budgets are still
+validated from the new staged revision.
+
 Build retrieval chunks as coherent semantic passages, not as a mechanical copy of
 native PDF text blocks. The existing chunk contract may reference ordered regions
 from several pages. The measured operating target is about **256 encoder tokens**

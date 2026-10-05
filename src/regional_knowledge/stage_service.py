@@ -205,6 +205,92 @@ async def _load_graph(service, row: dict[str, Any]) -> StagedGraph:
     return graph
 
 
+async def _reuse_prior_visual_reviews(
+    service,
+    row: dict[str, Any],
+    graph: StagedGraph,
+) -> tuple[StagedGraph, int, int | None]:
+    """Reuse page-level visual review only from a validated same-source revision.
+
+    The source SHA and physical page index are the identity boundary. A prior
+    revision is eligible only after it reached revision_publication, which means
+    its staged graph passed source-completeness validation before vector
+    publication. Current explicit visual reviews always win.
+    """
+    corpus = getattr(service, "corpus", None)
+    document_id = str(row.get("document_id") or "")
+    source_sha256 = str(row.get("source_sha256") or "")
+    revision = int(row.get("staged_revision") or graph.revision or 0)
+    if corpus is None or not document_id or not source_sha256 or revision <= 1:
+        return graph, 0, None
+
+    with corpus.connect() as db:
+        publications = [
+            dict(item)
+            for item in db.execute(
+                """
+                select revision, ingestion_id
+                from revision_publication
+                where document_id=? and revision<? and source_sha256=?
+                  and state in ('pending','ready','superseded')
+                order by revision desc
+                """,
+                (document_id, revision, source_sha256),
+            ).fetchall()
+        ]
+
+    reviewed: dict[int, Any] = {}
+    source_revision: int | None = None
+    for publication in publications:
+        prior_row = corpus.one("rkb_ingestion_jobs", publication["ingestion_id"])
+        if (
+            not prior_row
+            or str(prior_row.get("document_id")) != document_id
+            or str(prior_row.get("source_sha256") or "") != source_sha256
+            or not prior_row.get("staged_graph_object_id")
+        ):
+            continue
+        prior_graph = await _load_graph(service, prior_row)
+        candidate = {
+            page.physical_page_index: page
+            for page in prior_graph.pages
+            if page.source_material == "visual_reviewed"
+            and (page.source_review_note or "").strip()
+        }
+        if not candidate:
+            continue
+        reviewed = candidate
+        source_revision = int(publication["revision"])
+        break
+
+    if not reviewed:
+        return graph, 0, None
+
+    pages = []
+    reused = 0
+    for page in graph.pages:
+        prior = reviewed.get(page.physical_page_index)
+        if page.source_material == "visual_reviewed" or prior is None:
+            pages.append(page)
+            continue
+        note = (
+            f"Reused visual source review from same-source revision "
+            f"{source_revision}: {prior.source_review_note}"
+        )[:500]
+        pages.append(
+            page.model_copy(
+                update={
+                    "source_material": "visual_reviewed",
+                    "source_review_note": note,
+                }
+            )
+        )
+        reused += 1
+    if not reused:
+        return graph, 0, source_revision
+    return graph.model_copy(update={"pages": pages}), reused, source_revision
+
+
 async def _store_graph(
     service,
     principal: Principal,
@@ -359,6 +445,11 @@ async def validate_ingestion(
         raise RuntimeError("ingestion_document_not_ready")
 
     graph = await _load_graph(service, row)
+    graph, reused_reviews, review_revision = await _reuse_prior_visual_reviews(
+        service,
+        row,
+        graph,
+    )
     document = await _document_row(service, principal, str(row["document_id"]))
     page_count = int(document.get("page_count") or 0)
     result = await _validate_with_token_budget(
@@ -366,6 +457,17 @@ async def validate_ingestion(
         graph,
         expected_page_count=page_count,
     )
+    if reused_reviews:
+        result = GraphValidation(
+            errors=result.errors,
+            warnings=[
+                *result.warnings,
+                (
+                    "source_completeness:reused_visual_review:"
+                    f"{reused_reviews}:revision={review_revision}"
+                ),
+            ],
+        )
     warnings = [
         *[f"error:{item}" for item in result.errors],
         *result.warnings,
@@ -795,12 +897,28 @@ async def finalize_ingestion(
     document_id = str(row["document_id"])
     revision = int(row.get("staged_revision") or 1)
     graph = await _load_graph(service, row)
+    graph, reused_reviews, review_revision = await _reuse_prior_visual_reviews(
+        service,
+        row,
+        graph,
+    )
     document = await _document_row(service, principal, document_id)
     validation = await _validate_with_token_budget(
         service,
         graph,
         expected_page_count=int(document.get("page_count") or 0),
     )
+    if reused_reviews:
+        validation = GraphValidation(
+            errors=validation.errors,
+            warnings=[
+                *validation.warnings,
+                (
+                    "source_completeness:reused_visual_review:"
+                    f"{reused_reviews}:revision={review_revision}"
+                ),
+            ],
+        )
     if not validation.ready:
         return await validate_ingestion(
             service,

@@ -148,7 +148,11 @@ Current implementation checkpoint:
   staged graph/source objects remain replaceable implementation artifacts rather than
   the user-facing source of truth;
 - `validate`: requires complete page coverage, valid relations/illustrations,
-  retrieval coverage and no unresolved `needs_review` regions;
+  retrieval coverage and no unresolved `needs_review` regions. A new revision of
+  the **same archived source SHA-256** may reuse page-level visual-review status
+  from an older revision only when that older revision already reached the
+  publication gate and the stored page itself was `visual_reviewed` with a note;
+  this reuses source review, not old chunking or semantic structure;
 - `finalize`: builds the SQLite text/FTS projection and pending vector publication, exact
   source crops, pages/regions/relations/illustrations/chunks and then asks the database
   to revalidate the materialized revision before atomically switching
