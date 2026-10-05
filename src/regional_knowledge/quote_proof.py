@@ -28,6 +28,15 @@ def normalize(text):
     return ' '.join(text.split())
 
 
+def native_quote_matches(visible,quote):
+    """Allow native word boxes to include only adjacent terminal punctuation."""
+    visible=normalize(visible);quote=normalize(quote)
+    if visible==quote:return True
+    if not visible.startswith(quote):return False
+    suffix=visible[len(quote):]
+    return 1<=len(suffix)<=3 and all(unicodedata.category(ch).startswith('P') for ch in suffix)
+
+
 def validate_localization(payload,quote,*,max_area=150000):
     if not isinstance(payload,dict) or set(payload)!={'lines'}:raise ValueError('invalid localization JSON')
     lines=payload['lines']
@@ -209,7 +218,7 @@ def native_page(path,page_index,quote,*,region=None):
             quads=[fitz.Rect(*w[:4]).quad for w in selected]
         # Extract visible words in the actual quads. Reject broad/incorrect hits.
         found='\n'.join(page.get_textbox(q.rect).strip() for q in quads)
-        if normalize(found)!=needle:return None,'highlight_unavailable'
+        if not native_quote_matches(found,quote):return None,'highlight_unavailable'
         polygons=[]
         for q in quads:
             pts=[p*page.rotation_matrix for p in (q.ul,q.ur,q.lr,q.ll)]

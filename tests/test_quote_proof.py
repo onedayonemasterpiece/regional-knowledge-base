@@ -24,6 +24,8 @@ def test_native_real_pdf_negative_and_repetition(tmp_path):
         page=doc.new_page();page.insert_text((40,60),'Exact printed citation.');doc.save(path)
     hit,status=native_page(path,0,'Exact printed citation.')
     assert status=='ok';assert hit[2]=='Exact printed citation.';assert len(hit[1])==1
+    hit,status=native_page(path,0,'Exact printed citation')
+    assert status=='ok';assert normalize(hit[2]).rstrip('.')=='Exact printed citation'
     assert native_page(path,0,'Wrong citation')[1]=='quote_not_found'
     with fitz.open() as doc:
         page=doc.new_page();page.insert_text((40,60),'Repeated phrase.');page.insert_text((40,100),'Repeated phrase.');doc.save(path)
