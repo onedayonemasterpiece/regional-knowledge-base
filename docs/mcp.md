@@ -131,11 +131,13 @@ Current implementation checkpoint:
 - `stage`: the model submits page-local short keys (`region_key`,
   `illustration_key`) and semantic chunk references; the server creates stable
   UUIDv5 identities and derives chunk text from referenced regions. Chunks are
-  coherent retrieval passages rather than native PDF blocks: prefer about
-  800–1,800 characters when practical, join genuine continuations across pages,
-  attach fragmentary body text to context, and avoid material conservatively at
-  risk of exceeding the current 512-token encoder cap. Validation reports
-  non-blocking fragmentation/size diagnostics. Figures may also carry an explicit
+  coherent retrieval passages rather than native PDF blocks or page-sized units:
+  target about 256 encoder tokens (typically 800–1,000 characters, broadly
+  700–1,100 on the measured books), join genuine continuations across pages, and
+  attach fragmentary body text to context. Validation counts the **final augmented
+  search material** with both pinned tokenizers; exceeding either deployed
+  512-token hard limit blocks finalization instead of silently truncating.
+  Figures may also carry an explicit
   clockwise `display_rotation_degrees` of 0/90/180/270; source geometry remains
   unchanged;
 - canonical searchable text and graph material are persisted in SQLite; transient
@@ -167,7 +169,8 @@ Fast path:
 ```text
 Live
   -> knowledge_search
-      -> SQLite lexical + Supabase vectors + existing RRF
+      -> BGE-first semantic retrieval in a compact authorized document scope
+      -> optional bounded lexical/alias branch when explicitly selected
       -> parallel exact evidence range fetches from object storage
   -> compact evidence pack
   -> Live answer
@@ -191,7 +194,12 @@ for weak/fast Live models.
 
 ## Public and private search
 
-Anonymous/public-only search may be exposed separately later. Authenticated search always applies row-level ACL before ranking candidates. Never retrieve private rows and filter them only after vector search.
+Anonymous/public-only search may be exposed separately later. Authenticated search
+always computes an authorized document/revision scope locally before vector
+ranking. The remote vector plane receives only that compact document scope, not a
+full list of active chunk IDs. Returned candidate IDs/revisions/hashes are then
+validated against local SQLite authority before hydration. Never retrieve private
+rows and filter them only after vector search.
 ### Native previews and source completeness
 
 Native extraction is a transport aid, never a certificate of page completeness.
@@ -259,8 +267,16 @@ include actor-scoped `indexing` counts/state. Regular MCP `indexing_status` acce
 an optional authorized document ID and returns active/ready/missing counts,
 worker state and effective mode; it exposes no titles, text or foreign inventory.
 During incomplete BGE coverage search uses complete E5, otherwise lexical, with
-main pending. Repeat status in a later turn; do not hold an interactive turn open
-waiting for remote indexing. See [operations](operations/automatic-indexing.md).
+main pending. When BGE is ready it is the default main semantic branch; E5+BGE
+equal-weight fusion remains an explicit diagnostic/compatibility mode rather than
+the default because the measured multilingual fixture showed lower recall than
+BGE alone. Interactive BGE query waiting is bounded by
+`RKB_BGE_QUERY_WAIT_SECONDS` (0.8 s by default); a missed deadline returns the
+fast fallback with a truthful pending state and resumable main job. General FTS
+is optional and separately bounded by `RKB_LEXICAL_BUDGET_MS`; exact caller
+aliases remain independent signals. Repeat status in a later turn; do not hold an
+interactive turn open waiting for remote indexing. See
+[operations](operations/automatic-indexing.md).
 
 
 ## v2 corpus and proof tools

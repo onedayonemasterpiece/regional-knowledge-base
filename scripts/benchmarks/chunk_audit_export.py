@@ -39,10 +39,10 @@ def anonymized(lab: Path) -> dict:
         r=load(lab/'diagnostic-judgments.json');result['diagnostic_judgments']={'pairs':len(r['rows']),'cases':len({x['case'] for x in r['rows']}),'grade_counts':dict(collections.Counter(x['grade'] for x in r['rows'])),'method':r['method']}
     for key,name in [('bootstrap','bootstrap.json'),('hybrid_ablation','hybrid-ablation.json')]:
         if (lab/name).exists():result[key]=load(lab/name)
-    matrix_files=[f'{v}-e5.npy' for v in m['variants']]+['queries-e5.npy','current-bge.npy','queries-bge.npy']
+    matrix_files=[f'{v}-e5.npy' for v in m['variants']]+['queries-e5.npy','current-bge.npy','t256-bge.npy','queries-bge.npy']
     result['matrix_files']={name:{'bytes':(lab/name).stat().st_size,'sha256':hashlib.sha256((lab/name).read_bytes()).hexdigest()} for name in matrix_files if (lab/name).exists()}
     result['complete_selected_experiment']=all((lab/name).exists() for name in matrix_files) and all(s in result['scores'] for s in ('dev','test','all'))
-    result['bge_size_grid_tested']=False
+    result['bge_size_grid_tested']=(lab/'t256-bge.npy').exists()
     encoded=json.dumps(result,ensure_ascii=False)
     if re.search(r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',encoded):raise ValueError('private UUID in export')
     for d in docs:

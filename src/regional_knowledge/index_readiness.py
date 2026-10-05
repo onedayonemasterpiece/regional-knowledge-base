@@ -30,9 +30,9 @@ async def status(backend,principal,document_id=None):
         worker=q['state']
     except (KeyError,OSError,RuntimeError):worker='unavailable'
     owner=maintenance_state() if enabled() else 'disabled'
-    warm_mode=os.getenv('RKB_BGE_WARM_MODE','bge_lexical')
+    warm_mode=os.getenv('RKB_BGE_WARM_MODE','bge')
     if warm_mode not in ('bge_lexical','e5_bge_lexical','bge','e5_bge'):
-        warm_mode='bge_lexical'
+        warm_mode='bge'
     needs_e5=warm_mode in ('e5_bge_lexical','e5_bge')
     main_ready=(
         n and b==n and worker=='ready' and os.getenv('RKB_BGE_ENABLED')=='1'

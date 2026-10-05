@@ -1,6 +1,6 @@
 # Vector-only retrieval and chunk-size audit — 2026-10-05
 
-Status: completed seven-variant E5 audit, complete BGE current-corpus ablation, held-out evaluation and a measured small-passage operating recommendation. No production rollout or full BGE size-grid validation is claimed. The machine summary is generated only from saved completed measurements.
+Status: completed seven-variant E5 audit, complete BGE current-corpus and selected t256-passage validation, held-out evaluation and a measured small-passage operating recommendation. No production rollout is claimed by this audit. The machine summary is generated only from saved completed measurements.
 
 ## Scope and evidence boundary
 
@@ -79,7 +79,7 @@ The 256-token choice and the 1,000-character variant tie on held-out top-five/to
 
 The selected E5 variant improves held-out Hit@10 from 16/32 to 18/32 and top-five evidence volume from an average 6,770 to 4,106 characters. The paired 16-family bootstrap gives Hit@10 difference +6.25 percentage points, 95% interval [-6.25, +18.75]; MRR difference +0.0732, interval [-0.0333, +0.1953]. The small fixture does **not** statistically establish a general quality gain. The reduction in input size and elimination of observed truncation are directly measured.
 
-**Important BGE limitation:** the complete BGE experiment tests the current 1,449-passage corpus, not the rebuilt size grid. The target above is selected from the E5 grid and checked against both tokenizers. BGE quality for a mass 256-token re-chunking remains to be tested before a production corpus migration. No such migration is claimed or performed.
+**BGE size follow-up completed before production re-chunking.** The complete 2,410-passage t256 BGE matrix was subsequently generated with the same pinned BGE space and the already-frozen fixture. On the 32 held-out questions, current BGE versus t256 BGE changed Hit@1 from **53.12% to 59.38%**, Hit@5 from **75.00% to 87.50%**, Hit@10 from **84.38% to 90.62%**, MRR@10 from **0.6311 to 0.7266**, and fixed 5,000-character evidence coverage from **68.75% to 90.62%**. Mean top-five text volume fell from **7,313 to 4,110 characters**. Across all 64 questions, Hit@10 moved from **54/64 to 57/64**; Russian-query/German-source Hit@10 moved from **20/24 to 21/24**. This supports the measured small-passage target for BGE as well as E5. It still does not justify blind fixed-width cutting: the benchmark size variants preserve page source spans but are not a substitute for semantic paragraph/sentence boundaries during reimport.
 
 ### Dense-only encoder/fusion comparison on unchanged current chunks
 
@@ -110,7 +110,7 @@ The no-alias full-question FTS ablation returns any result for **1/64** question
 
 ### Run completion and test status
 
-All seven E5 size/control matrices, all 64 E5 query vectors, the complete 1,449-row BGE current matrix and all 64 BGE query vectors were completed and hash-recorded before their quality metrics were used. The first E5 sweep reached its one-hour execution bound after saving six complete matrices; only the remaining 256-token variant was resumed. A mixed BGE size job was stopped to finish the current corpus first, reusing same-owner byte-identical cached jobs. BGE document demand was bounded to eight outstanding audit jobs; the final audit queue was empty. No production vector installation occurred.
+All seven E5 size/control matrices, all 64 E5 query vectors, the complete 1,449-row BGE current matrix, the complete **2,410-row t256 BGE matrix**, and all 64 BGE query vectors were completed and hash-recorded before their quality metrics were used. The first E5 sweep reached its one-hour execution bound after saving six complete matrices; only the remaining 256-token variant was resumed. The BGE t256 run was likewise resumed from deterministic same-owner cached jobs after a bounded run ended; only complete matrices were scored. BGE document demand was bounded to eight outstanding audit jobs; the final audit queue was empty. No production vector installation occurred.
 
 Focused synthetic audit tests: **16 passed**. Full local suite: **186 passed, 26 skipped**, one existing Starlette deprecation warning. Skipped integration tests were not run and are not claimed. The private evidence remains retained. Source B was still awaiting vector publication at the read-only runtime capture; completing these independent lab vectors does not publish it.
 

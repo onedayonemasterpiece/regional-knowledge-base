@@ -53,7 +53,7 @@ async def run(a):
             rows=await(await db.execute('select id,active_revision from rkb_documents')).fetchall()
         result['timings']['adapter_visible_documents_seconds']=time.monotonic()-t
         result['adapter_visible_documents_count']=len(rows)
-        headers={'x-rkb-actor':actor,'x-rkb-vector-documents':json.dumps(list(allowed))}
+        headers={'x-rkb-actor':actor,'x-rkb-vector-revisions':json.dumps(allowed)}
         installed={}
         async with backend.vector_client._connection(headers) as db:
             t=time.monotonic()
@@ -74,7 +74,7 @@ async def run(a):
             t=time.monotonic();vector=await backend.embedder.embed(c['query']);encode=time.monotonic()-t
             literal='['+','.join(format(x,'.9g') for x in vector)+']';times=[];rows=[]
             for _ in range(2):
-                t=time.monotonic();rows=await backend.vector_client.candidates(actor,list(allowed),selected,literal,SPACE,None,None,100);times.append(time.monotonic()-t)
+                t=time.monotonic();rows=await backend.vector_client.candidates(actor,allowed,literal,SPACE,None,None,100);times.append(time.monotonic()-t)
             result['queries'].append({'id':c['id'],'query_encoding_seconds':encode,'pure_vector_rpc_seconds':summary(times),'returned':len(rows),'lexical_called_in_dense_path':False})
         if cases:
             async with backend.vector_client._connection(headers) as db:

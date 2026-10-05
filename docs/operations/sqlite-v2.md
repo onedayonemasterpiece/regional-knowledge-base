@@ -48,9 +48,13 @@ an unfinished replacement leaves the previous revision selected. Replays are
 idempotent. Graph/POI durable rows remain local and private outbox events require
 existing recipient authorization.
 
-UUID fetch uses `(table_name,row_key)`. Vector candidate filtering uses indexed
-metadata only. Indexed source positions select bounded previous/current/next
-chunks, with semantic article boundaries and the original continuation gate.
+UUID fetch uses `(table_name,row_key)`. Vector search sends only the locally
+authorized document/revision scope to the remote RLS bridge; it does **not**
+serialize the entire active chunk-ID set per query. Supabase ranks within that
+scope, then SQLite validates only the bounded returned candidate IDs against the
+active revision plus text/search-material hashes before hydration. Indexed source
+positions select bounded previous/current/next chunks, with semantic article
+boundaries and the original continuation gate.
 Ordinary readers use WAL without a writer transaction. Worker mutations are short
 serialized transactions; SQLite busy waits run outside the event loop.
 
@@ -88,6 +92,10 @@ RKB_FROZEN_CASES="$RKB_EVIDENCE/hard6-inputs.json" \
 RKB_FROZEN_BASELINE="$RKB_EVIDENCE/hard6.json" \
 RKB_ACCEPTANCE_DIR="$RKB_EVIDENCE/postrollout-hard6" \
   .venv/bin/python scripts/production/accept_frozen_hard6.py
+.venv/bin/python scripts/production/verify_retrieval_release_gate.py \
+  --cases "$RKB_EVIDENCE/retrieval-gate-inputs.json" \
+  --output "$RKB_EVIDENCE/retrieval-gate.json"
+# The private fixture contains explicit BGE/E5/lexical thresholds and RU->DE cases.
 .venv/bin/python scripts/production/verify_product_mcp.py \
   --evidence "$RKB_EVIDENCE/product-mcp" --verify-only
 .venv/bin/python scripts/production/verify_product_proofs.py \
@@ -111,8 +119,3 @@ The old-writer stop barrier produced a final restored snapshot of 24,929 rows
 Corpus detail delta was zero; local imports/catalog components were preserved.
 Remote RESTRICT caught the vector hash-default trigger; its independent function
 was retained and the transaction retried after verified rollback. All twenty-one
-remote corpus tables were then removed, preserving 2,376 E5 rows, 2,226 BGE rows
-and 2,638 minimal anchors. Whole-database allocation fell from 88,774,323 to
-49,411,763 bytes; vector-plane logical rows measured 14,939,334 bytes. These are
-point-in-time measurements including retained evidence revisions, not just active
-chunks. No VACUUM FULL or vector deletion was performed.

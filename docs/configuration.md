@@ -91,6 +91,23 @@ from different models are never compared even when their dimensions are equal.
 Lexical-only degradation is allowed as a failure mode, not as the final hybrid
 beta acceptance.
 
+### Current local semantic retrieval controls
+
+| Name | Purpose |
+|---|---|
+| `RKB_FAST_E5_ENABLED` | enable the pinned local E5 sidecar |
+| `RKB_BGE_ENABLED` | enable the durable BGE main tier |
+| `RKB_BGE_WARM_MODE` | `bge` is the measured default; diagnostic alternatives are `bge_lexical`, `e5_bge`, `e5_bge_lexical` |
+| `RKB_BGE_QUERY_WAIT_SECONDS` | maximum interactive wait for a ready-worker BGE query before truthful fast fallback; default 0.8, hard maximum 3 |
+| `RKB_LEXICAL_BUDGET_MS` | bounded ordinary SQLite FTS branch budget; default 100 ms |
+| `RKB_BGE_TOKENIZER_PATH` | optional override for the SHA-pinned BGE tokenizer used only by local ingestion token-count validation |
+
+The default BGE tokenizer path is
+`~/.local/share/regional-knowledge-base/fast-e5/bge-m3-tokenizer.json`. It is
+public model metadata, not a credential, but it is provisioned outside Git to keep
+the repository small. New ingestion validation fails closed if exact E5/BGE token
+counts cannot be obtained.
+
 ## Database-size invariant
 
 Corpus body text is not stored in Postgres. Region/chunk text lives in private

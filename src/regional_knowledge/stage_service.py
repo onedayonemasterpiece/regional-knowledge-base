@@ -25,11 +25,14 @@ from .contracts import (
 )
 from .file_ingress import sha256_file
 from .stage_graph import (
+    GraphValidation,
     StagedGraph,
     compile_model_stage,
     merge_stage,
     validate_graph,
 )
+from .e5_contract import MAX_TOKENS as E5_MAX_TOKENS, TARGET_PASSAGE_TOKENS
+from .bge_contract import MAX_TOKENS as BGE_MAX_TOKENS
 
 
 def _canonical_json_bytes(value: Any) -> bytes:
@@ -47,6 +50,73 @@ def _vector_literal(values: list[float] | None) -> str | None:
     if len(values) != 768:
         raise ValueError("chunk embedding must have exactly 768 dimensions")
     return "[" + ",".join(format(float(value), ".9g") for value in values) + "]"
+
+
+async def _validate_with_token_budget(
+    service,
+    graph: StagedGraph,
+    *,
+    expected_page_count: int,
+) -> GraphValidation:
+    result = validate_graph(graph, expected_page_count=expected_page_count)
+    from .local_e5 import LocalE5Embedder
+    if not isinstance(getattr(service, "embedder", None), LocalE5Embedder):
+        if os.getenv("RKB_AUTO_INDEX_ENABLED") == "1":
+            return GraphValidation(
+                errors=[*result.errors, "token_budget_unavailable:local_e5_required"],
+                warnings=result.warnings,
+            )
+        return result
+
+    from .search_material import graph_material
+    materials: list[str] = []
+    for chunk in graph.chunks:
+        try:
+            text, _ = graph_material(graph, chunk)
+        except (KeyError, ValueError):
+            continue
+        materials.append(text)
+    if not materials:
+        return result
+
+    try:
+        counts = await service.embedder.passage_token_counts(materials)
+    except (httpx.HTTPError, TimeoutError, RuntimeError, ValueError) as exc:
+        return GraphValidation(
+            errors=[*result.errors, f"token_budget_unavailable:{type(exc).__name__}"],
+            warnings=result.warnings,
+        )
+
+    e5_counts = [row["e5"] for row in counts]
+    bge_counts = [row["bge"] for row in counts]
+    errors = list(result.errors)
+    warnings = list(result.warnings)
+    e5_over = sum(value > E5_MAX_TOKENS for value in e5_counts)
+    bge_over = sum(value > BGE_MAX_TOKENS for value in bge_counts)
+    if e5_over:
+        errors.append(
+            f"retrieval_quality:encoder_token_limit_exceeded:e5:"
+            f"{e5_over}/{len(counts)}:max={max(e5_counts)}"
+        )
+    if bge_over:
+        errors.append(
+            f"retrieval_quality:encoder_token_limit_exceeded:bge:"
+            f"{bge_over}/{len(counts)}:max={max(bge_counts)}"
+        )
+    over_target = sum(
+        max(e5, bge) > TARGET_PASSAGE_TOKENS
+        for e5, bge in zip(e5_counts, bge_counts, strict=True)
+    )
+    if over_target:
+        warnings.append(
+            f"retrieval_quality:passages_over_{TARGET_PASSAGE_TOKENS}_token_target:"
+            f"{over_target}/{len(counts)}:max_e5={max(e5_counts)}:"
+            f"max_bge={max(bge_counts)}"
+        )
+    return GraphValidation(
+        errors=list(dict.fromkeys(errors)),
+        warnings=list(dict.fromkeys(warnings)),
+    )
 
 
 async def _ensure_object(
@@ -291,7 +361,11 @@ async def validate_ingestion(
     graph = await _load_graph(service, row)
     document = await _document_row(service, principal, str(row["document_id"]))
     page_count = int(document.get("page_count") or 0)
-    result = validate_graph(graph, expected_page_count=page_count)
+    result = await _validate_with_token_budget(
+        service,
+        graph,
+        expected_page_count=page_count,
+    )
     warnings = [
         *[f"error:{item}" for item in result.errors],
         *result.warnings,
@@ -722,7 +796,8 @@ async def finalize_ingestion(
     revision = int(row.get("staged_revision") or 1)
     graph = await _load_graph(service, row)
     document = await _document_row(service, principal, document_id)
-    validation = validate_graph(
+    validation = await _validate_with_token_budget(
+        service,
         graph,
         expected_page_count=int(document.get("page_count") or 0),
     )

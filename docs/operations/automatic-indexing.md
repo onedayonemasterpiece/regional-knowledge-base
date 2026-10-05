@@ -38,12 +38,27 @@ retrieval mode. All corpus counts use caller RLS. Foreign document scope is deni
 zero authorized chunks remains zero, regardless of another owner's inventory.
 No titles, text, worker credentials or global queue count are exposed.
 
-Search selects complete active BGE + lexical when available, otherwise complete
-ready E5 + lexical, otherwise lexical. SQL guards use the same active/RLS snapshot
-as ranking, so activation cannot silently mix stale/partial semantic vectors.
-Missing BGE reports pending rather than main ready. An actor with complete BGE
-may use main even if E5 still needs repair. Readiness is a snapshot, not a guarantee
-that an external worker will complete a new query within its wait budget.
+Search selects complete active **BGE semantic retrieval first** when available.
+The measured default warm mode is `bge`; `bge_lexical`, `e5_bge` and
+`e5_bge_lexical` remain explicit modes for bounded experiments/compatibility,
+not automatic equal-weight defaults. When BGE is incomplete, search falls back to
+complete ready E5 plus bounded lexical, otherwise lexical. SQL guards use the same
+active/RLS snapshot as ranking, so activation cannot silently mix stale/partial
+semantic vectors. Missing BGE reports pending rather than main ready. An actor with
+complete BGE may use main even if E5 still needs repair.
+
+Interactive BGE query wait is bounded by `RKB_BGE_QUERY_WAIT_SECONDS` (0.8 s by
+default, hard-clamped to 3 s). A missed deadline returns the fast fallback with
+`main_state=pending` and the resumable BGE job ID. General FTS work is bounded by
+`RKB_LEXICAL_BUDGET_MS` (100 ms by default); it is omitted entirely from modes
+without a lexical branch. Exact aliases remain separately bounded phrase signals.
+Readiness is a snapshot, not a guarantee that an external worker will complete a
+new query within its wait budget.
+
+The remote vector call uses the locally authorized document/revision set as its
+compact RLS scope. It no longer serializes every active chunk UUID on each query.
+Only the bounded returned vector candidates are matched back to local
+chunk/revision/text/search-material hashes before they can be exposed.
 
 The private runtime `RKB_INDEXING_HEALTH_PATH` is an atomic coarse heartbeat file,
 not recovery state. Logs record activation wakeups, vector writes, enqueue counts,
@@ -59,3 +74,20 @@ credentials, native E5 runtime and model files across releases. A unit restart
 resumes the missing vectors; do not reset queues. Rollback stops/disables this
 unit and removes the flag while retaining vectors/jobs and SQL safety guards.
 Manual backfill scripts remain exceptional operator recovery tools.
+## Retrieval quality release gate
+
+Do not infer semantic quality from vector readiness counts. Before changing the
+default retrieval mode or mass-rechunking accepted books, run the private frozen
+retrieval gate:
+
+```bash
+.venv/bin/python scripts/production/verify_retrieval_release_gate.py \
+  --cases "$RKB_EVIDENCE/retrieval-gate/cases.json" \
+  --output "$RKB_EVIDENCE/retrieval-gate/result.json"
+```
+
+The private fixture supplies source-grounded target evidence IDs, explicit
+thresholds and query/source language labels. It must include Russian queries over
+German sources. The gate measures `bge`, `e5`, `lexical` and `e5_bge` independently;
+a failed mode cannot be hidden by another branch. Fixture text and evidence IDs
+remain outside Git.

@@ -1,12 +1,12 @@
 {
   "bge": {
     "document_encoder_seconds": {
-      "max": 10.838445233000016,
-      "mean": 2.167670851046929,
-      "min": 0.1653944600000159,
-      "n": 1449,
-      "p50": 2.1743889350000245,
-      "p95": 3.1620048885997676
+      "max": 2.526644471000509,
+      "mean": 1.3744958101713645,
+      "min": 0.15304802500031656,
+      "n": 2410,
+      "p50": 1.4885255025001243,
+      "p95": 1.7147546624504684
     },
     "query_encoder_seconds": {
       "max": 0.4045186569996986,
@@ -18,18 +18,18 @@
     },
     "space": "bge-m3:5617a9f:t211-tr5161:cls-l2-512:q1-d1:v1",
     "variants": {
-      "current": {
-        "matrix_sha256": "240bddbc5c0990b64a675c251bf0a118b94e4dd74080af1e7d92244604884713",
-        "ready": 1449,
-        "required": 1449
-      },
       "queries": {
         "ready": 64,
         "required": 64
+      },
+      "t256": {
+        "matrix_sha256": "c6d3078fad41e3c1f38928721a38ddfeadc7677920ffe725ef7935ef63c422f7",
+        "ready": 2410,
+        "required": 2410
       }
     }
   },
-  "bge_size_grid_tested": false,
+  "bge_size_grid_tested": true,
   "bootstrap": {
     "comparisons": {
       "current:bge:mrr10": {
@@ -1067,6 +1067,10 @@
       "bytes": 98432,
       "sha256": "79cf4643f97f5a1c18d11c333856ba5ac004e21819e518359d885005239fcad4"
     },
+    "t256-bge.npy": {
+      "bytes": 9871488,
+      "sha256": "c6d3078fad41e3c1f38928721a38ddfeadc7677920ffe725ef7935ef63c422f7"
+    },
     "t256-e5.npy": {
       "bytes": 3701888,
       "sha256": "c13f9401a46c76004b19acc47d7c41c031de052072ca9dd0add0c909b55ea3f8"
@@ -1362,338 +1366,6 @@
   },
   "scores": {
     "all": {
-      "c1000:e5": {
-        "aggregate": {
-          "families": 32,
-          "mean_top5_chars": 4298.296875,
-          "mrr10": 0.37491319444444443,
-          "n": 64,
-          "single_hit1": 0.328125,
-          "single_hit10": 0.484375,
-          "single_hit5": 0.453125,
-          "single_proof_exists": 1.0,
-          "span_hit1": 0.328125,
-          "span_hit10": 0.484375,
-          "span_hit5": 0.453125,
-          "span_hit5000chars": 0.453125
-        },
-        "by_source_and_query_language": {
-          "source_A:query_de": {
-            "families": 8,
-            "mean_top5_chars": 4199.875,
-            "mrr10": 0.1375,
-            "n": 8,
-            "single_hit1": 0.125,
-            "single_hit10": 0.25,
-            "single_hit5": 0.125,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.125,
-            "span_hit10": 0.25,
-            "span_hit5": 0.125,
-            "span_hit5000chars": 0.125
-          },
-          "source_A:query_ru": {
-            "families": 8,
-            "mean_top5_chars": 3895.125,
-            "mrr10": 0.5,
-            "n": 8,
-            "single_hit1": 0.5,
-            "single_hit10": 0.5,
-            "single_hit5": 0.5,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.5,
-            "span_hit10": 0.5,
-            "span_hit5": 0.5,
-            "span_hit5000chars": 0.5
-          },
-          "source_B:query_de": {
-            "families": 24,
-            "mean_top5_chars": 4341.208333333333,
-            "mrr10": 0.6993055555555556,
-            "n": 24,
-            "single_hit1": 0.5833333333333334,
-            "single_hit10": 0.9166666666666666,
-            "single_hit5": 0.9166666666666666,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.5833333333333334,
-            "span_hit10": 0.9166666666666666,
-            "span_hit5": 0.9166666666666666,
-            "span_hit5000chars": 0.9166666666666666
-          },
-          "source_B:query_ru": {
-            "families": 24,
-            "mean_top5_chars": 4422.583333333333,
-            "mrr10": 0.08796296296296297,
-            "n": 24,
-            "single_hit1": 0.08333333333333333,
-            "single_hit10": 0.125,
-            "single_hit5": 0.08333333333333333,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.08333333333333333,
-            "span_hit10": 0.125,
-            "span_hit5": 0.08333333333333333,
-            "span_hit5000chars": 0.08333333333333333
-          }
-        },
-        "chunks": 2250,
-        "ranking_seconds": {
-          "max": 0.00043796499812742695,
-          "mean": 0.0003058563122522173,
-          "min": 0.00026762000197777525,
-          "n": 64,
-          "p50": 0.00028846699569839984,
-          "p95": 0.00040384810017712875
-        }
-      },
-      "c1400:e5": {
-        "aggregate": {
-          "families": 32,
-          "mean_top5_chars": 5914.515625,
-          "mrr10": 0.33348214285714284,
-          "n": 64,
-          "single_hit1": 0.265625,
-          "single_hit10": 0.453125,
-          "single_hit5": 0.40625,
-          "single_proof_exists": 1.0,
-          "span_hit1": 0.265625,
-          "span_hit10": 0.453125,
-          "span_hit5": 0.40625,
-          "span_hit5000chars": 0.375
-        },
-        "by_source_and_query_language": {
-          "source_A:query_de": {
-            "families": 8,
-            "mean_top5_chars": 5916.75,
-            "mrr10": 0.125,
-            "n": 8,
-            "single_hit1": 0.125,
-            "single_hit10": 0.125,
-            "single_hit5": 0.125,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.125,
-            "span_hit10": 0.125,
-            "span_hit5": 0.125,
-            "span_hit5000chars": 0.125
-          },
-          "source_A:query_ru": {
-            "families": 8,
-            "mean_top5_chars": 4779.75,
-            "mrr10": 0.5,
-            "n": 8,
-            "single_hit1": 0.25,
-            "single_hit10": 0.75,
-            "single_hit5": 0.75,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.25,
-            "span_hit10": 0.75,
-            "span_hit5": 0.75,
-            "span_hit5000chars": 0.75
-          },
-          "source_B:query_de": {
-            "families": 24,
-            "mean_top5_chars": 6085.041666666667,
-            "mrr10": 0.634077380952381,
-            "n": 24,
-            "single_hit1": 0.5416666666666666,
-            "single_hit10": 0.8333333333333334,
-            "single_hit5": 0.75,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.5416666666666666,
-            "span_hit10": 0.8333333333333334,
-            "span_hit5": 0.75,
-            "span_hit5000chars": 0.6666666666666666
-          },
-          "source_B:query_ru": {
-            "families": 24,
-            "mean_top5_chars": 6121.5,
-            "mrr10": 0.046875,
-            "n": 24,
-            "single_hit1": 0.041666666666666664,
-            "single_hit10": 0.08333333333333333,
-            "single_hit5": 0.041666666666666664,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.041666666666666664,
-            "span_hit10": 0.08333333333333333,
-            "span_hit5": 0.041666666666666664,
-            "span_hit5000chars": 0.041666666666666664
-          }
-        },
-        "chunks": 1637,
-        "ranking_seconds": {
-          "max": 0.0013509659984265454,
-          "mean": 0.00021895173460961814,
-          "min": 0.0001731550000840798,
-          "n": 64,
-          "p50": 0.00019445550060481764,
-          "p95": 0.00026254369731759647
-        }
-      },
-      "c1800:e5": {
-        "aggregate": {
-          "families": 32,
-          "mean_top5_chars": 7087.0625,
-          "mrr10": 0.27630208333333334,
-          "n": 64,
-          "single_hit1": 0.171875,
-          "single_hit10": 0.453125,
-          "single_hit5": 0.453125,
-          "single_proof_exists": 1.0,
-          "span_hit1": 0.171875,
-          "span_hit10": 0.453125,
-          "span_hit5": 0.453125,
-          "span_hit5000chars": 0.375
-        },
-        "by_source_and_query_language": {
-          "source_A:query_de": {
-            "families": 8,
-            "mean_top5_chars": 6019.25,
-            "mrr10": 0.041666666666666664,
-            "n": 8,
-            "single_hit1": 0.0,
-            "single_hit10": 0.125,
-            "single_hit5": 0.125,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.0,
-            "span_hit10": 0.125,
-            "span_hit5": 0.125,
-            "span_hit5000chars": 0.125
-          },
-          "source_A:query_ru": {
-            "families": 8,
-            "mean_top5_chars": 5928.75,
-            "mrr10": 0.4375,
-            "n": 8,
-            "single_hit1": 0.25,
-            "single_hit10": 0.625,
-            "single_hit5": 0.625,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.25,
-            "span_hit10": 0.625,
-            "span_hit5": 0.625,
-            "span_hit5000chars": 0.625
-          },
-          "source_B:query_de": {
-            "families": 24,
-            "mean_top5_chars": 6923.291666666667,
-            "mrr10": 0.5604166666666667,
-            "n": 24,
-            "single_hit1": 0.375,
-            "single_hit10": 0.875,
-            "single_hit5": 0.875,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.375,
-            "span_hit10": 0.875,
-            "span_hit5": 0.875,
-            "span_hit5000chars": 0.75
-          },
-          "source_B:query_ru": {
-            "families": 24,
-            "mean_top5_chars": 7992.875,
-            "mrr10": 0.016666666666666666,
-            "n": 24,
-            "single_hit1": 0.0,
-            "single_hit10": 0.08333333333333333,
-            "single_hit5": 0.08333333333333333,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.0,
-            "span_hit10": 0.08333333333333333,
-            "span_hit5": 0.08333333333333333,
-            "span_hit5000chars": 0.0
-          }
-        },
-        "chunks": 1380,
-        "ranking_seconds": {
-          "max": 0.0005227149958955124,
-          "mean": 0.00019876640612892515,
-          "min": 0.00016089300333987921,
-          "n": 64,
-          "p50": 0.0001803560007829219,
-          "p95": 0.0002629806484037544
-        }
-      },
-      "c700:e5": {
-        "aggregate": {
-          "families": 32,
-          "mean_top5_chars": 2966.3125,
-          "mrr10": 0.2962673611111111,
-          "n": 64,
-          "single_hit1": 0.234375,
-          "single_hit10": 0.4375,
-          "single_hit5": 0.375,
-          "single_proof_exists": 0.96875,
-          "span_hit1": 0.234375,
-          "span_hit10": 0.4375,
-          "span_hit5": 0.375,
-          "span_hit5000chars": 0.40625
-        },
-        "by_source_and_query_language": {
-          "source_A:query_de": {
-            "families": 8,
-            "mean_top5_chars": 3074.625,
-            "mrr10": 0.125,
-            "n": 8,
-            "single_hit1": 0.125,
-            "single_hit10": 0.125,
-            "single_hit5": 0.125,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.125,
-            "span_hit10": 0.125,
-            "span_hit5": 0.125,
-            "span_hit5000chars": 0.125
-          },
-          "source_A:query_ru": {
-            "families": 8,
-            "mean_top5_chars": 2529.875,
-            "mrr10": 0.3541666666666667,
-            "n": 8,
-            "single_hit1": 0.25,
-            "single_hit10": 0.5,
-            "single_hit5": 0.5,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.25,
-            "span_hit10": 0.5,
-            "span_hit5": 0.5,
-            "span_hit5000chars": 0.5
-          },
-          "source_B:query_de": {
-            "families": 24,
-            "mean_top5_chars": 3025.625,
-            "mrr10": 0.5539351851851851,
-            "n": 24,
-            "single_hit1": 0.4583333333333333,
-            "single_hit10": 0.8333333333333334,
-            "single_hit5": 0.6666666666666666,
-            "single_proof_exists": 0.9583333333333334,
-            "span_hit1": 0.4583333333333333,
-            "span_hit10": 0.8333333333333334,
-            "span_hit5": 0.6666666666666666,
-            "span_hit5000chars": 0.75
-          },
-          "source_B:query_ru": {
-            "families": 24,
-            "mean_top5_chars": 3016.375,
-            "mrr10": 0.07638888888888888,
-            "n": 24,
-            "single_hit1": 0.041666666666666664,
-            "single_hit10": 0.125,
-            "single_hit5": 0.125,
-            "single_proof_exists": 0.9583333333333334,
-            "span_hit1": 0.041666666666666664,
-            "span_hit10": 0.125,
-            "span_hit5": 0.125,
-            "span_hit5000chars": 0.125
-          }
-        },
-        "chunks": 3214,
-        "ranking_seconds": {
-          "max": 0.0019741140058613382,
-          "mean": 0.0004575298119107174,
-          "min": 0.0003892290042131208,
-          "n": 64,
-          "p50": 0.00041291849993285723,
-          "p95": 0.0006203869499586289
-        }
-      },
       "current:bge": {
         "aggregate": {
           "families": 32,
@@ -1769,12 +1441,12 @@
         },
         "chunks": 1449,
         "ranking_seconds": {
-          "max": 0.0024007920001167804,
-          "mean": 0.0003903697030409603,
-          "min": 0.00031745900196256116,
+          "max": 0.0007619730022270232,
+          "mean": 0.00036969787515772623,
+          "min": 0.00032607399771222845,
           "n": 64,
-          "p50": 0.0003388734985492192,
-          "p95": 0.0005466706985316703
+          "p50": 0.0003427839983487502,
+          "p95": 0.0005394026047724765
         }
       },
       "current:e5": {
@@ -1852,12 +1524,12 @@
         },
         "chunks": 1449,
         "ranking_seconds": {
-          "max": 0.00035190900234738365,
-          "mean": 0.0001799126248442917,
-          "min": 0.00016614800551906228,
+          "max": 0.0013135070039425045,
+          "mean": 0.0002031429371527338,
+          "min": 0.0001644589938223362,
           "n": 64,
-          "p50": 0.000174374996277038,
-          "p95": 0.00019481219933368266
+          "p50": 0.00017740149996825494,
+          "p95": 0.00021622164967993737
         }
       },
       "current:e5_bge": {
@@ -1936,87 +1608,87 @@
         "chunks": 1449,
         "ranking_seconds": null
       },
-      "current_norm:e5": {
+      "t256:bge": {
         "aggregate": {
           "families": 32,
-          "mean_top5_chars": 6492.890625,
-          "mrr10": 0.2923363095238095,
+          "mean_top5_chars": 4127.34375,
+          "mrr10": 0.7023623511904762,
           "n": 64,
-          "single_hit1": 0.203125,
-          "single_hit10": 0.46875,
-          "single_hit5": 0.421875,
+          "single_hit1": 0.59375,
+          "single_hit10": 0.890625,
+          "single_hit5": 0.8125,
           "single_proof_exists": 1.0,
-          "span_hit1": 0.203125,
-          "span_hit10": 0.46875,
-          "span_hit5": 0.421875,
-          "span_hit5000chars": 0.359375
+          "span_hit1": 0.59375,
+          "span_hit10": 0.890625,
+          "span_hit5": 0.8125,
+          "span_hit5000chars": 0.84375
         },
         "by_source_and_query_language": {
           "source_A:query_de": {
             "families": 8,
-            "mean_top5_chars": 6100.125,
-            "mrr10": 0.125,
+            "mean_top5_chars": 3857.875,
+            "mrr10": 0.6875,
             "n": 8,
-            "single_hit1": 0.125,
-            "single_hit10": 0.125,
-            "single_hit5": 0.125,
+            "single_hit1": 0.625,
+            "single_hit10": 0.75,
+            "single_hit5": 0.75,
             "single_proof_exists": 1.0,
-            "span_hit1": 0.125,
-            "span_hit10": 0.125,
-            "span_hit5": 0.125,
-            "span_hit5000chars": 0.125
+            "span_hit1": 0.625,
+            "span_hit10": 0.75,
+            "span_hit5": 0.75,
+            "span_hit5000chars": 0.75
           },
           "source_A:query_ru": {
             "families": 8,
-            "mean_top5_chars": 5477.625,
-            "mrr10": 0.5416666666666666,
+            "mean_top5_chars": 3953.125,
+            "mrr10": 0.75,
             "n": 8,
-            "single_hit1": 0.5,
-            "single_hit10": 0.625,
-            "single_hit5": 0.625,
+            "single_hit1": 0.75,
+            "single_hit10": 0.75,
+            "single_hit5": 0.75,
             "single_proof_exists": 1.0,
-            "span_hit1": 0.5,
-            "span_hit10": 0.625,
-            "span_hit5": 0.625,
-            "span_hit5000chars": 0.625
+            "span_hit1": 0.75,
+            "span_hit10": 0.75,
+            "span_hit5": 0.75,
+            "span_hit5000chars": 0.75
           },
           "source_B:query_de": {
             "families": 24,
-            "mean_top5_chars": 6807.75,
-            "mrr10": 0.5326388888888889,
+            "mean_top5_chars": 4255.916666666667,
+            "mrr10": 0.7941468253968255,
             "n": 24,
-            "single_hit1": 0.3333333333333333,
-            "single_hit10": 0.875,
-            "single_hit5": 0.7916666666666666,
+            "single_hit1": 0.6666666666666666,
+            "single_hit10": 1.0,
+            "single_hit5": 0.9166666666666666,
             "single_proof_exists": 1.0,
-            "span_hit1": 0.3333333333333333,
-            "span_hit10": 0.875,
-            "span_hit5": 0.7916666666666666,
-            "span_hit5000chars": 0.7083333333333334
+            "span_hit1": 0.6666666666666666,
+            "span_hit10": 1.0,
+            "span_hit5": 0.9166666666666666,
+            "span_hit5000chars": 0.9583333333333334
           },
           "source_B:query_ru": {
             "families": 24,
-            "mean_top5_chars": 6647.375,
-            "mrr10": 0.02470238095238095,
+            "mean_top5_chars": 4146.666666666667,
+            "mrr10": 0.5996527777777777,
             "n": 24,
-            "single_hit1": 0.0,
-            "single_hit10": 0.125,
-            "single_hit5": 0.08333333333333333,
+            "single_hit1": 0.4583333333333333,
+            "single_hit10": 0.875,
+            "single_hit5": 0.75,
             "single_proof_exists": 1.0,
-            "span_hit1": 0.0,
-            "span_hit10": 0.125,
-            "span_hit5": 0.08333333333333333,
-            "span_hit5000chars": 0.0
+            "span_hit1": 0.4583333333333333,
+            "span_hit10": 0.875,
+            "span_hit5": 0.75,
+            "span_hit5000chars": 0.7916666666666666
           }
         },
-        "chunks": 1449,
+        "chunks": 2410,
         "ranking_seconds": {
-          "max": 0.00037886299833189696,
-          "mean": 0.00018222029677872342,
-          "min": 0.00016423300257883966,
+          "max": 0.01688179199845763,
+          "mean": 0.0035755645623112287,
+          "min": 0.0006981460028328001,
           "n": 64,
-          "p50": 0.0001743239990901202,
-          "p95": 0.0002226181990408803
+          "p50": 0.0023576900020998437,
+          "p95": 0.013528464494811468
         }
       },
       "t256:e5": {
@@ -2094,13 +1766,89 @@
         },
         "chunks": 2410,
         "ranking_seconds": {
-          "max": 0.0024193610006477684,
-          "mean": 0.000442814171833561,
-          "min": 0.0002860360036720522,
+          "max": 0.0004794709966517985,
+          "mean": 0.000312130546831213,
+          "min": 0.00028883200138807297,
           "n": 64,
-          "p50": 0.00031375649996334687,
-          "p95": 0.0012679154995566889
+          "p50": 0.000304726003378164,
+          "p95": 0.0003350097511429339
         }
+      },
+      "t256:e5_bge": {
+        "aggregate": {
+          "families": 32,
+          "mean_top5_chars": 4110.125,
+          "mrr10": 0.5259734623015873,
+          "n": 64,
+          "single_hit1": 0.421875,
+          "single_hit10": 0.75,
+          "single_hit5": 0.671875,
+          "single_proof_exists": 1.0,
+          "span_hit1": 0.421875,
+          "span_hit10": 0.75,
+          "span_hit5": 0.671875,
+          "span_hit5000chars": 0.6875
+        },
+        "by_source_and_query_language": {
+          "source_A:query_de": {
+            "families": 8,
+            "mean_top5_chars": 3923.25,
+            "mrr10": 0.32708333333333334,
+            "n": 8,
+            "single_hit1": 0.25,
+            "single_hit10": 0.625,
+            "single_hit5": 0.5,
+            "single_proof_exists": 1.0,
+            "span_hit1": 0.25,
+            "span_hit10": 0.625,
+            "span_hit5": 0.5,
+            "span_hit5000chars": 0.5
+          },
+          "source_A:query_ru": {
+            "families": 8,
+            "mean_top5_chars": 3685.25,
+            "mrr10": 0.6388888888888888,
+            "n": 8,
+            "single_hit1": 0.625,
+            "single_hit10": 0.75,
+            "single_hit5": 0.625,
+            "single_proof_exists": 1.0,
+            "span_hit1": 0.625,
+            "span_hit10": 0.75,
+            "span_hit5": 0.625,
+            "span_hit5000chars": 0.625
+          },
+          "source_B:query_de": {
+            "families": 24,
+            "mean_top5_chars": 4276.333333333333,
+            "mrr10": 0.7881944444444445,
+            "n": 24,
+            "single_hit1": 0.6666666666666666,
+            "single_hit10": 0.9583333333333334,
+            "single_hit5": 0.9166666666666666,
+            "single_proof_exists": 1.0,
+            "span_hit1": 0.6666666666666666,
+            "span_hit10": 0.9583333333333334,
+            "span_hit5": 0.9166666666666666,
+            "span_hit5000chars": 0.9583333333333334
+          },
+          "source_B:query_ru": {
+            "families": 24,
+            "mean_top5_chars": 4147.833333333333,
+            "mrr10": 0.29241071428571425,
+            "n": 24,
+            "single_hit1": 0.16666666666666666,
+            "single_hit10": 0.5833333333333334,
+            "single_hit5": 0.5,
+            "single_proof_exists": 1.0,
+            "span_hit1": 0.16666666666666666,
+            "span_hit10": 0.5833333333333334,
+            "span_hit5": 0.5,
+            "span_hit5000chars": 0.5
+          }
+        },
+        "chunks": 2410,
+        "ranking_seconds": null
       }
     },
     "dev": {
@@ -2846,338 +2594,6 @@
       }
     },
     "test": {
-      "c1000:e5": {
-        "aggregate": {
-          "families": 16,
-          "mean_top5_chars": 4288.53125,
-          "mrr10": 0.45243055555555556,
-          "n": 32,
-          "single_hit1": 0.40625,
-          "single_hit10": 0.5625,
-          "single_hit5": 0.53125,
-          "single_proof_exists": 1.0,
-          "span_hit1": 0.40625,
-          "span_hit10": 0.5625,
-          "span_hit5": 0.53125,
-          "span_hit5000chars": 0.53125
-        },
-        "by_source_and_query_language": {
-          "source_A:query_de": {
-            "families": 4,
-            "mean_top5_chars": 4254.75,
-            "mrr10": 0.25,
-            "n": 4,
-            "single_hit1": 0.25,
-            "single_hit10": 0.25,
-            "single_hit5": 0.25,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.25,
-            "span_hit10": 0.25,
-            "span_hit5": 0.25,
-            "span_hit5000chars": 0.25
-          },
-          "source_A:query_ru": {
-            "families": 4,
-            "mean_top5_chars": 4282.5,
-            "mrr10": 0.75,
-            "n": 4,
-            "single_hit1": 0.75,
-            "single_hit10": 0.75,
-            "single_hit5": 0.75,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.75,
-            "span_hit10": 0.75,
-            "span_hit5": 0.75,
-            "span_hit5000chars": 0.75
-          },
-          "source_B:query_de": {
-            "families": 12,
-            "mean_top5_chars": 4272.916666666667,
-            "mrr10": 0.6972222222222223,
-            "n": 12,
-            "single_hit1": 0.5833333333333334,
-            "single_hit10": 0.9166666666666666,
-            "single_hit5": 0.9166666666666666,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.5833333333333334,
-            "span_hit10": 0.9166666666666666,
-            "span_hit5": 0.9166666666666666,
-            "span_hit5000chars": 0.9166666666666666
-          },
-          "source_B:query_ru": {
-            "families": 12,
-            "mean_top5_chars": 4317.416666666667,
-            "mrr10": 0.17592592592592593,
-            "n": 12,
-            "single_hit1": 0.16666666666666666,
-            "single_hit10": 0.25,
-            "single_hit5": 0.16666666666666666,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.16666666666666666,
-            "span_hit10": 0.25,
-            "span_hit5": 0.16666666666666666,
-            "span_hit5000chars": 0.16666666666666666
-          }
-        },
-        "chunks": 2250,
-        "ranking_seconds": {
-          "max": 0.00041126299765892327,
-          "mean": 0.00029067346895317314,
-          "min": 0.000265994000073988,
-          "n": 32,
-          "p50": 0.00028015449788654223,
-          "p95": 0.0003346857032738626
-        }
-      },
-      "c1400:e5": {
-        "aggregate": {
-          "families": 16,
-          "mean_top5_chars": 5994.0625,
-          "mrr10": 0.4375,
-          "n": 32,
-          "single_hit1": 0.375,
-          "single_hit10": 0.5,
-          "single_hit5": 0.5,
-          "single_proof_exists": 1.0,
-          "span_hit1": 0.375,
-          "span_hit10": 0.5,
-          "span_hit5": 0.5,
-          "span_hit5000chars": 0.5
-        },
-        "by_source_and_query_language": {
-          "source_A:query_de": {
-            "families": 4,
-            "mean_top5_chars": 6053.0,
-            "mrr10": 0.25,
-            "n": 4,
-            "single_hit1": 0.25,
-            "single_hit10": 0.25,
-            "single_hit5": 0.25,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.25,
-            "span_hit10": 0.25,
-            "span_hit5": 0.25,
-            "span_hit5000chars": 0.25
-          },
-          "source_A:query_ru": {
-            "families": 4,
-            "mean_top5_chars": 5476.5,
-            "mrr10": 0.625,
-            "n": 4,
-            "single_hit1": 0.25,
-            "single_hit10": 1.0,
-            "single_hit5": 1.0,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.25,
-            "span_hit10": 1.0,
-            "span_hit5": 1.0,
-            "span_hit5000chars": 1.0
-          },
-          "source_B:query_de": {
-            "families": 12,
-            "mean_top5_chars": 6125.416666666667,
-            "mrr10": 0.7916666666666666,
-            "n": 12,
-            "single_hit1": 0.75,
-            "single_hit10": 0.8333333333333334,
-            "single_hit5": 0.8333333333333334,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.75,
-            "span_hit10": 0.8333333333333334,
-            "span_hit5": 0.8333333333333334,
-            "span_hit5000chars": 0.8333333333333334
-          },
-          "source_B:query_ru": {
-            "families": 12,
-            "mean_top5_chars": 6015.583333333333,
-            "mrr10": 0.08333333333333333,
-            "n": 12,
-            "single_hit1": 0.08333333333333333,
-            "single_hit10": 0.08333333333333333,
-            "single_hit5": 0.08333333333333333,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.08333333333333333,
-            "span_hit10": 0.08333333333333333,
-            "span_hit5": 0.08333333333333333,
-            "span_hit5000chars": 0.08333333333333333
-          }
-        },
-        "chunks": 1637,
-        "ranking_seconds": {
-          "max": 0.00027292699815006927,
-          "mean": 0.00020083518757019192,
-          "min": 0.00018787400040309876,
-          "n": 32,
-          "p50": 0.0001948099998116959,
-          "p95": 0.00022264404833549634
-        }
-      },
-      "c1800:e5": {
-        "aggregate": {
-          "families": 16,
-          "mean_top5_chars": 7236.6875,
-          "mrr10": 0.34739583333333335,
-          "n": 32,
-          "single_hit1": 0.25,
-          "single_hit10": 0.5,
-          "single_hit5": 0.5,
-          "single_proof_exists": 1.0,
-          "span_hit1": 0.25,
-          "span_hit10": 0.5,
-          "span_hit5": 0.5,
-          "span_hit5000chars": 0.4375
-        },
-        "by_source_and_query_language": {
-          "source_A:query_de": {
-            "families": 4,
-            "mean_top5_chars": 6512.25,
-            "mrr10": 0.08333333333333333,
-            "n": 4,
-            "single_hit1": 0.0,
-            "single_hit10": 0.25,
-            "single_hit5": 0.25,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.0,
-            "span_hit10": 0.25,
-            "span_hit5": 0.25,
-            "span_hit5000chars": 0.25
-          },
-          "source_A:query_ru": {
-            "families": 4,
-            "mean_top5_chars": 7185.5,
-            "mrr10": 0.5,
-            "n": 4,
-            "single_hit1": 0.25,
-            "single_hit10": 0.75,
-            "single_hit5": 0.75,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.25,
-            "span_hit10": 0.75,
-            "span_hit5": 0.75,
-            "span_hit5000chars": 0.75
-          },
-          "source_B:query_de": {
-            "families": 12,
-            "mean_top5_chars": 6981.416666666667,
-            "mrr10": 0.7152777777777778,
-            "n": 12,
-            "single_hit1": 0.5833333333333334,
-            "single_hit10": 0.9166666666666666,
-            "single_hit5": 0.9166666666666666,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.5833333333333334,
-            "span_hit10": 0.9166666666666666,
-            "span_hit5": 0.9166666666666666,
-            "span_hit5000chars": 0.8333333333333334
-          },
-          "source_B:query_ru": {
-            "families": 12,
-            "mean_top5_chars": 7750.5,
-            "mrr10": 0.016666666666666666,
-            "n": 12,
-            "single_hit1": 0.0,
-            "single_hit10": 0.08333333333333333,
-            "single_hit5": 0.08333333333333333,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.0,
-            "span_hit10": 0.08333333333333333,
-            "span_hit5": 0.08333333333333333,
-            "span_hit5000chars": 0.0
-          }
-        },
-        "chunks": 1380,
-        "ranking_seconds": {
-          "max": 0.00025145200197584927,
-          "mean": 0.00017019303140841657,
-          "min": 0.0001568570005474612,
-          "n": 32,
-          "p50": 0.00016262799908872694,
-          "p95": 0.0002030914976785425
-        }
-      },
-      "c700:e5": {
-        "aggregate": {
-          "families": 16,
-          "mean_top5_chars": 2976.84375,
-          "mrr10": 0.39852430555555557,
-          "n": 32,
-          "single_hit1": 0.34375,
-          "single_hit10": 0.5625,
-          "single_hit5": 0.46875,
-          "single_proof_exists": 1.0,
-          "span_hit1": 0.34375,
-          "span_hit10": 0.5625,
-          "span_hit5": 0.46875,
-          "span_hit5000chars": 0.5
-        },
-        "by_source_and_query_language": {
-          "source_A:query_de": {
-            "families": 4,
-            "mean_top5_chars": 3099.0,
-            "mrr10": 0.25,
-            "n": 4,
-            "single_hit1": 0.25,
-            "single_hit10": 0.25,
-            "single_hit5": 0.25,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.25,
-            "span_hit10": 0.25,
-            "span_hit5": 0.25,
-            "span_hit5000chars": 0.25
-          },
-          "source_A:query_ru": {
-            "families": 4,
-            "mean_top5_chars": 2804.0,
-            "mrr10": 0.5833333333333334,
-            "n": 4,
-            "single_hit1": 0.5,
-            "single_hit10": 0.75,
-            "single_hit5": 0.75,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.5,
-            "span_hit10": 0.75,
-            "span_hit5": 0.75,
-            "span_hit5000chars": 0.75
-          },
-          "source_B:query_de": {
-            "families": 12,
-            "mean_top5_chars": 3044.5833333333335,
-            "mrr10": 0.6599537037037037,
-            "n": 12,
-            "single_hit1": 0.5833333333333334,
-            "single_hit10": 1.0,
-            "single_hit5": 0.75,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.5833333333333334,
-            "span_hit10": 1.0,
-            "span_hit5": 0.75,
-            "span_hit5000chars": 0.8333333333333334
-          },
-          "source_B:query_ru": {
-            "families": 12,
-            "mean_top5_chars": 2926.0,
-            "mrr10": 0.125,
-            "n": 12,
-            "single_hit1": 0.08333333333333333,
-            "single_hit10": 0.16666666666666666,
-            "single_hit5": 0.16666666666666666,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.08333333333333333,
-            "span_hit10": 0.16666666666666666,
-            "span_hit5": 0.16666666666666666,
-            "span_hit5000chars": 0.16666666666666666
-          }
-        },
-        "chunks": 3214,
-        "ranking_seconds": {
-          "max": 0.0019016449950868264,
-          "mean": 0.000506089062355386,
-          "min": 0.00038306100032059476,
-          "n": 32,
-          "p50": 0.0004192500018689316,
-          "p95": 0.0008152076970873166
-        }
-      },
       "current:bge": {
         "aggregate": {
           "families": 16,
@@ -3253,12 +2669,12 @@
         },
         "chunks": 1449,
         "ranking_seconds": {
-          "max": 0.0005782680018455721,
-          "mean": 0.00035521318704923033,
-          "min": 0.0002998290001414716,
+          "max": 0.002816226005961653,
+          "mean": 0.00048377146868006093,
+          "min": 0.00032080399978440255,
           "n": 32,
-          "p50": 0.0003346905032231007,
-          "p95": 0.0004651311493944376
+          "p50": 0.0003477514983387664,
+          "p95": 0.0011365381491486907
         }
       },
       "current:e5": {
@@ -3336,12 +2752,12 @@
         },
         "chunks": 1449,
         "ranking_seconds": {
-          "max": 0.004209771002933849,
-          "mean": 0.00041745809426174674,
-          "min": 0.00016395199781982228,
+          "max": 0.000396210998587776,
+          "mean": 0.00018517828107178502,
+          "min": 0.00016227099695242941,
           "n": 32,
-          "p50": 0.00017434450273867697,
-          "p95": 0.0018363946510362435
+          "p50": 0.00017212300008395687,
+          "p95": 0.00023072159783623646
         }
       },
       "current:e5_bge": {
@@ -3420,39 +2836,39 @@
         "chunks": 1449,
         "ranking_seconds": null
       },
-      "current_norm:e5": {
+      "t256:bge": {
         "aggregate": {
           "families": 16,
-          "mean_top5_chars": 6668.21875,
-          "mrr10": 0.38645833333333335,
+          "mean_top5_chars": 4110.375,
+          "mrr10": 0.7265625,
           "n": 32,
-          "single_hit1": 0.3125,
-          "single_hit10": 0.53125,
-          "single_hit5": 0.53125,
+          "single_hit1": 0.59375,
+          "single_hit10": 0.90625,
+          "single_hit5": 0.875,
           "single_proof_exists": 1.0,
-          "span_hit1": 0.3125,
-          "span_hit10": 0.53125,
-          "span_hit5": 0.53125,
-          "span_hit5000chars": 0.4375
+          "span_hit1": 0.59375,
+          "span_hit10": 0.90625,
+          "span_hit5": 0.875,
+          "span_hit5000chars": 0.90625
         },
         "by_source_and_query_language": {
           "source_A:query_de": {
             "families": 4,
-            "mean_top5_chars": 6667.25,
-            "mrr10": 0.25,
+            "mean_top5_chars": 3997.75,
+            "mrr10": 0.75,
             "n": 4,
-            "single_hit1": 0.25,
-            "single_hit10": 0.25,
-            "single_hit5": 0.25,
+            "single_hit1": 0.75,
+            "single_hit10": 0.75,
+            "single_hit5": 0.75,
             "single_proof_exists": 1.0,
-            "span_hit1": 0.25,
-            "span_hit10": 0.25,
-            "span_hit5": 0.25,
-            "span_hit5000chars": 0.25
+            "span_hit1": 0.75,
+            "span_hit10": 0.75,
+            "span_hit5": 0.75,
+            "span_hit5000chars": 0.75
           },
           "source_A:query_ru": {
             "families": 4,
-            "mean_top5_chars": 5834.75,
+            "mean_top5_chars": 4042.25,
             "mrr10": 0.75,
             "n": 4,
             "single_hit1": 0.75,
@@ -3466,8 +2882,22 @@
           },
           "source_B:query_de": {
             "families": 12,
-            "mean_top5_chars": 6812.416666666667,
-            "mrr10": 0.6597222222222222,
+            "mean_top5_chars": 4235.333333333333,
+            "mrr10": 0.7430555555555555,
+            "n": 12,
+            "single_hit1": 0.5833333333333334,
+            "single_hit10": 1.0,
+            "single_hit5": 0.9166666666666666,
+            "single_proof_exists": 1.0,
+            "span_hit1": 0.5833333333333334,
+            "span_hit10": 1.0,
+            "span_hit5": 0.9166666666666666,
+            "span_hit5000chars": 1.0
+          },
+          "source_B:query_ru": {
+            "families": 12,
+            "mean_top5_chars": 4045.6666666666665,
+            "mrr10": 0.6944444444444445,
             "n": 12,
             "single_hit1": 0.5,
             "single_hit10": 0.9166666666666666,
@@ -3476,31 +2906,17 @@
             "span_hit1": 0.5,
             "span_hit10": 0.9166666666666666,
             "span_hit5": 0.9166666666666666,
-            "span_hit5000chars": 0.8333333333333334
-          },
-          "source_B:query_ru": {
-            "families": 12,
-            "mean_top5_chars": 6802.166666666667,
-            "mrr10": 0.0375,
-            "n": 12,
-            "single_hit1": 0.0,
-            "single_hit10": 0.16666666666666666,
-            "single_hit5": 0.16666666666666666,
-            "single_proof_exists": 1.0,
-            "span_hit1": 0.0,
-            "span_hit10": 0.16666666666666666,
-            "span_hit5": 0.16666666666666666,
-            "span_hit5000chars": 0.0
+            "span_hit5000chars": 0.9166666666666666
           }
         },
-        "chunks": 1449,
+        "chunks": 2410,
         "ranking_seconds": {
-          "max": 0.00024229799601016566,
-          "mean": 0.0001779600306690554,
-          "min": 0.00016393300029449165,
+          "max": 0.002719144002185203,
+          "mean": 0.0007655585936845455,
+          "min": 0.0005761520005762577,
           "n": 32,
-          "p50": 0.00017143600052804686,
-          "p95": 0.0002062884475890314
+          "p50": 0.0006208169979800005,
+          "p95": 0.0014985729507316133
         }
       },
       "t256:e5": {
@@ -3578,13 +2994,89 @@
         },
         "chunks": 2410,
         "ranking_seconds": {
-          "max": 0.000500567999552004,
-          "mean": 0.00031610118753633287,
-          "min": 0.00028663900593528524,
+          "max": 0.00041987800068454817,
+          "mean": 0.00031535831294604577,
+          "min": 0.0002939159967354499,
           "n": 32,
-          "p50": 0.00029930699747637846,
-          "p95": 0.000399076747635263
+          "p50": 0.00030904800223652273,
+          "p95": 0.0003584069501812337
         }
+      },
+      "t256:e5_bge": {
+        "aggregate": {
+          "families": 16,
+          "mean_top5_chars": 4095.46875,
+          "mrr10": 0.6184895833333334,
+          "n": 32,
+          "single_hit1": 0.5,
+          "single_hit10": 0.875,
+          "single_hit5": 0.78125,
+          "single_proof_exists": 1.0,
+          "span_hit1": 0.5,
+          "span_hit10": 0.875,
+          "span_hit5": 0.78125,
+          "span_hit5000chars": 0.8125
+        },
+        "by_source_and_query_language": {
+          "source_A:query_de": {
+            "families": 4,
+            "mean_top5_chars": 4204.25,
+            "mrr10": 0.3541666666666667,
+            "n": 4,
+            "single_hit1": 0.25,
+            "single_hit10": 0.75,
+            "single_hit5": 0.5,
+            "single_proof_exists": 1.0,
+            "span_hit1": 0.25,
+            "span_hit10": 0.75,
+            "span_hit5": 0.5,
+            "span_hit5000chars": 0.5
+          },
+          "source_A:query_ru": {
+            "families": 4,
+            "mean_top5_chars": 3778.5,
+            "mrr10": 0.75,
+            "n": 4,
+            "single_hit1": 0.75,
+            "single_hit10": 0.75,
+            "single_hit5": 0.75,
+            "single_proof_exists": 1.0,
+            "span_hit1": 0.75,
+            "span_hit10": 0.75,
+            "span_hit5": 0.75,
+            "span_hit5000chars": 0.75
+          },
+          "source_B:query_de": {
+            "families": 12,
+            "mean_top5_chars": 4262.75,
+            "mrr10": 0.7847222222222222,
+            "n": 12,
+            "single_hit1": 0.6666666666666666,
+            "single_hit10": 1.0,
+            "single_hit5": 0.9166666666666666,
+            "single_proof_exists": 1.0,
+            "span_hit1": 0.6666666666666666,
+            "span_hit10": 1.0,
+            "span_hit5": 0.9166666666666666,
+            "span_hit5000chars": 1.0
+          },
+          "source_B:query_ru": {
+            "families": 12,
+            "mean_top5_chars": 3997.5833333333335,
+            "mrr10": 0.49652777777777773,
+            "n": 12,
+            "single_hit1": 0.3333333333333333,
+            "single_hit10": 0.8333333333333334,
+            "single_hit5": 0.75,
+            "single_proof_exists": 1.0,
+            "span_hit1": 0.3333333333333333,
+            "span_hit10": 0.8333333333333334,
+            "span_hit5": 0.75,
+            "span_hit5000chars": 0.75
+          }
+        },
+        "chunks": 2410,
+        "ranking_seconds": null
       }
     }
   },

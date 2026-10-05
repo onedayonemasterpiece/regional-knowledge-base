@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID
@@ -161,21 +162,43 @@ class SQLiteCorpus:
             result.append(doc)
         return result
 
-    def lexical(self,actor,query,*,depth=100,phrase=False,allowed=None):
+    def lexical(self,actor,query,*,depth=100,phrase=False,allowed=None,timeout_ms=150):
         # No SQL or FTS syntax from user input is executed. Literal terms only.
         terms=re.findall(r'[^\W_]+',query,flags=re.UNICODE)[:64]
         if not terms:return []
-        expression='"'+' '.join(terms)+'"' if phrase else ' AND '.join('"'+t+'"' for t in terms)
+        if phrase:
+            expression='"'+' '.join(terms)+'"'
+        else:
+            stop={
+                'а','без','бы','был','была','были','в','во','где','для','до','и','из','или','как','когда','на','не','о','об','от','по','почему','при','с','со','что',
+                'aber','als','am','an','auf','aus','bei','das','dem','den','der','des','die','ein','eine','für','im','in','ist','mit','nach','oder','und','von','wann','war','was','wie','zu',
+                'a','an','and','are','as','at','by','for','from','how','in','is','of','on','or','the','to','was','what','when','where','why','with',
+            }
+            useful=[];seen=set()
+            for term in terms:
+                folded=term.casefold()
+                if folded in stop or len(folded)<3 or folded in seen:continue
+                seen.add(folded);useful.append(term)
+            useful=(useful or terms)[:10]
+            expression=' OR '.join('"'+t+'"' for t in useful)
         docs=allowed if allowed is not None else {d['id']:d['active_revision'] for d in self.visible_documents(actor)}
         if not docs:return []
         with self.connect() as db:
             db.execute('create temp table allowed(document_id text primary key,revision integer)')
             db.executemany('insert into allowed values(?,?)',docs.items())
-            rows=db.execute('''select t.chunk_id,t.revision,t.text_sha256,t.search_material_sha256
-              from chunk_fts join chunk_text t on t.rowid=chunk_fts.rowid
-              join allowed a on a.document_id=t.document_id and a.revision=t.revision
-              where chunk_fts match ? order by bm25(chunk_fts),t.chunk_id limit ?''',
-              (expression,max(1,min(depth,100)))).fetchall()
+            deadline=time.monotonic()+max(10,min(int(timeout_ms),1000))/1000
+            db.set_progress_handler(lambda: 1 if time.monotonic()>=deadline else 0,1000)
+            try:
+                rows=db.execute('''select t.chunk_id,t.revision,t.text_sha256,t.search_material_sha256
+                  from chunk_fts join chunk_text t on t.rowid=chunk_fts.rowid
+                  join allowed a on a.document_id=t.document_id and a.revision=t.revision
+                  where chunk_fts match ? order by bm25(chunk_fts),t.chunk_id limit ?''',
+                  (expression,max(1,min(depth,100)))).fetchall()
+            except sqlite3.OperationalError as exc:
+                if 'interrupted' not in str(exc).casefold():raise
+                rows=[]
+            finally:
+                db.set_progress_handler(None,0)
         return [{'chunk_id':r['chunk_id'],'branch':'lexical','rank':i+1,**dict(r)} for i,r in enumerate(rows)]
 
     def catalog(self,actor,query='',*,offset=0,limit=20,kind=None,allowed=None):
@@ -222,6 +245,19 @@ class SQLiteCorpus:
             db.execute('create temp table selected_docs(document_id text primary key,revision integer)')
             db.executemany('insert into selected_docs values(?,?)',allowed.items())
             return [dict(r) for r in db.execute('select t.chunk_id,t.document_id,t.revision,t.text_sha256,t.search_material_sha256 from selected_docs a cross join chunk_text t on t.document_id=a.document_id and t.revision=a.revision')]
+
+    def candidate_metadata_ids(self,chunk_ids,allowed):
+        """Validate only returned vector candidates against local actor scope."""
+        ids=list(dict.fromkeys(str(value) for value in chunk_ids))[:200]
+        if not ids or not allowed:return []
+        with self.connect() as db:
+            db.execute('create temp table selected_docs(document_id text primary key,revision integer)')
+            db.executemany('insert into selected_docs values(?,?)',allowed.items())
+            db.execute('create temp table selected_chunks(chunk_id text primary key)')
+            db.executemany('insert into selected_chunks values(?)',((value,) for value in ids))
+            return [dict(r) for r in db.execute('''select t.chunk_id,t.document_id,t.revision,t.text_sha256,t.search_material_sha256
+              from selected_chunks s join chunk_text t on t.chunk_id=s.chunk_id
+              join selected_docs a on a.document_id=t.document_id and a.revision=t.revision''')]
 
     def neighbors(self,actor,selected):
         output=[]

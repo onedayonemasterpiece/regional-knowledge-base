@@ -9,6 +9,13 @@ language sql stable security invoker set search_path='' as $$
 $$;
 revoke all on function public.rkb_vector_scope(uuid) from public;
 grant execute on function public.rkb_vector_scope(uuid) to rkb_app;
+create or replace function public.rkb_vector_revision_scope(document uuid, revision bigint) returns boolean
+language sql stable security invoker set search_path='' as $rkb_scope$
+ select public.rkb_vector_scope(document)
+   and (nullif(current_setting('rkb.vector_revisions',true),'')::jsonb ->> document::text)::bigint = revision
+$rkb_scope$;
+revoke all on function public.rkb_vector_revision_scope(uuid,bigint) from public;
+grant execute on function public.rkb_vector_revision_scope(uuid,bigint) to rkb_app;
 drop policy if exists rkb_vector_items_read on public.rkb_vector_items;
 create policy rkb_vector_items_read on public.rkb_vector_items for select to rkb_app using(public.rkb_vector_scope(document_id));
 -- Independent foreign keys and read policies: no reference to corpus detail rows.
@@ -45,4 +52,37 @@ begin
 end $$;
 revoke all on function public.rkb_vector_candidates_v2(text,text,text,text,integer,uuid[]) from public;
 grant execute on function public.rkb_vector_candidates_v2(text,text,text,text,integer,uuid[]) to rkb_app;
+
+-- Compact actor/document+revision scope. Unlike v2, this does not receive every
+-- active chunk UUID on each request. RLS admits only server-authorized documents,
+-- this function restricts ranking to their active revisions, and SQLite validates
+-- every bounded returned candidate hash/revision before hydration.
+create or replace function public.rkb_vector_candidates_v3(
+  e5_query text,e5_space text,bge_query text,bge_space text,depth integer
+)
+returns table(chunk_id uuid,branch text,rank bigint,revision bigint,text_sha256 text,search_material_sha256 text)
+language plpgsql stable security invoker set search_path=public as $rkb_v3$
+begin
+ if e5_query is not null and e5_space is distinct from 'e5-small-int8:761b726:model-f80102d3:tok-0b44a9d7:mean-l2-512:q1-d4:v1' then raise exception 'E5 space mismatch';end if;
+ if bge_query is not null and bge_space is distinct from 'bge-m3:5617a9f:t211-tr5161:cls-l2-512:q1-d1:v1' then raise exception 'BGE space mismatch';end if;
+ if e5_query is not null then
+ return query select a.chunk_id,'e5'::text,row_number() over(order by e.embedding <=> e5_query::vector(384),a.chunk_id),a.revision,a.text_sha256,a.search_material_sha256
+ from rkb_chunk_embeddings_e5 e join rkb_vector_items a on a.chunk_id=e.chunk_id
+ where public.rkb_vector_revision_scope(a.document_id,a.revision)
+   and e.embedding_space=e5_space and e.revision=a.revision
+   and e.text_sha256=a.text_sha256 and e.search_material_sha256=a.search_material_sha256
+ order by e.embedding <=> e5_query::vector(384),a.chunk_id limit least(greatest(depth,1),100);
+ end if;
+ if bge_query is not null then
+ return query select a.chunk_id,'bge'::text,row_number() over(order by e.embedding <=> bge_query::vector(1024),a.chunk_id),a.revision,a.text_sha256,a.search_material_sha256
+ from rkb_chunk_embeddings_bge e join rkb_vector_items a on a.chunk_id=e.chunk_id
+ where public.rkb_vector_revision_scope(a.document_id,a.revision)
+   and e.model_revision='5617a9f61b028005a4858fdac845db406aefb181'
+   and e.embedding_space=bge_space and e.revision=a.revision
+   and e.text_sha256=a.text_sha256 and e.search_material_sha256=a.search_material_sha256
+ order by e.embedding <=> bge_query::vector(1024),a.chunk_id limit least(greatest(depth,1),100);
+ end if;
+end $rkb_v3$;
+revoke all on function public.rkb_vector_candidates_v3(text,text,text,text,integer) from public;
+grant execute on function public.rkb_vector_candidates_v3(text,text,text,text,integer) to rkb_app;
 commit;

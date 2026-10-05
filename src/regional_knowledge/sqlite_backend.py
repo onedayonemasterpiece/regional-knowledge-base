@@ -54,26 +54,47 @@ class SQLiteBackend(PostgresBackend):
         allowed={str(d['id']):d['active_revision'] for d in docs}
         depth=max(1,min(int(payload.get('depth',100)),100)) if name=='rkb_multilingual_rankings' else max(20,max(1,min(int(payload.get('match_count',8)),20))*5)
         query=payload.get('query_text','')
-        lexical=await asyncio.to_thread(self.corpus.lexical,str(actor),query,depth=depth,allowed=allowed)
-        rows=list(lexical)
+        include_lexical=bool(payload.get('include_lexical',True))
+        timeout_ms=max(10,min(int(payload.get('lexical_timeout_ms',os.getenv('RKB_LEXICAL_BUDGET_MS','100'))),1000))
+        rows=[]
+        if include_lexical:
+            rows.extend(await asyncio.to_thread(
+                self.corpus.lexical,str(actor),query,depth=depth,allowed=allowed,timeout_ms=timeout_ms
+            ))
         for alias in (payload.get('aliases') or [])[:20]:
-            for row in await asyncio.to_thread(self.corpus.lexical,str(actor),alias['name'],depth=depth,phrase=True,allowed=allowed):
+            for row in await asyncio.to_thread(
+                self.corpus.lexical,str(actor),alias['name'],depth=depth,phrase=True,
+                allowed=allowed,timeout_ms=timeout_ms
+            ):
                 rows.append({**row,'branch':'exact_current_alias' if alias.get('kind')=='current' else 'exact_historical_alias' if alias.get('kind')=='historical' else 'exact_alias','matched_alias':alias['name']})
         e5=payload.get('e5_vector') if name=='rkb_multilingual_rankings' else payload.get('query_embedding')
         es=payload.get('e5_space') if name=='rkb_multilingual_rankings' else payload.get('query_embedding_space')
         try:
-            if e5 or payload.get('bge_vector'):
-                metadata=await asyncio.to_thread(self.corpus.candidate_metadata,allowed)
-                by_id={c['chunk_id']:c for c in metadata};selected=list(by_id)
-                candidates=await self.vector_client.candidates(str(actor),list(allowed),selected,e5,es,payload.get('bge_vector'),payload.get('bge_space'),depth) if self.vector_client else []
+            if (e5 or payload.get('bge_vector')) and self.vector_client:
+                candidates=await self.vector_client.candidates(
+                    str(actor),allowed,e5,es,
+                    payload.get('bge_vector'),payload.get('bge_space'),depth
+                )
+                metadata=await asyncio.to_thread(
+                    self.corpus.candidate_metadata_ids,
+                    [candidate['chunk_id'] for candidate in candidates],
+                    allowed,
+                )
+                by_id={c['chunk_id']:c for c in metadata}
                 for candidate in candidates:
                     c=by_id.get(str(candidate['chunk_id']))
-                    if c and allowed.get(c['document_id'])==c['revision'] and all(c[k]==candidate[k] for k in ('revision','text_sha256','search_material_sha256')):rows.append(dict(candidate))
+                    if c and allowed.get(c['document_id'])==c['revision'] and all(
+                        c[k]==candidate[k] for k in ('revision','text_sha256','search_material_sha256')
+                    ):
+                        rows.append(dict(candidate))
         except Exception as error:
             import logging
-            logging.getLogger(__name__).warning("vector_candidates_unavailable error_type=%s",type(error).__name__)
-        if name=='rkb_multilingual_rankings':return _DbResponse([{**r,'matched_alias':r.get('matched_alias')} for r in rows])
-        ids,_=fuse(rows,['e5','lexical'],limit=max(1,min(int(payload.get('match_count',8)),20)))
+            logging.getLogger(__name__).warning(
+                "vector_candidates_unavailable error_type=%s",type(error).__name__
+            )
+        if name=='rkb_multilingual_rankings':
+            return _DbResponse([{**r,'matched_alias':r.get('matched_alias')} for r in rows])
+        ids,_=fuse(rows,['e5',*(['lexical'] if include_lexical else [])],limit=max(1,min(int(payload.get('match_count',8)),20)))
         mode='fast_e5' if any(r['branch']=='e5' for r in rows) else 'lexical_only'
         return _DbResponse([{'chunk_id':ident,'title':self.corpus.one('rkb_chunks',ident)['title'],'retrieval_mode':mode} for ident in ids],retrieval_mode=mode)
 
