@@ -104,7 +104,41 @@ class Illustration(BaseModel):
     visibility: Visibility = Visibility.PRIVATE
 
 
+class CatalogMetadata(BaseModel):
+    kind: Literal['book','journal_issue','article'] = 'book'
+    parent_id: str | None = None
+    region_ids: list[str] = Field(default_factory=list,max_length=2000)
+    subtitle: str | None = Field(default=None,max_length=500)
+    editors: list[str] = Field(default_factory=list,max_length=50)
+    translators: list[str] = Field(default_factory=list,max_length=50)
+    compilers: list[str] = Field(default_factory=list,max_length=50)
+    publisher: str | None = Field(default=None,max_length=500)
+    date: str | None = Field(default=None,max_length=80)
+    edition: str | None = Field(default=None,max_length=100)
+    volume: str | None = Field(default=None,max_length=100)
+    issue: str | None = Field(default=None,max_length=100)
+    identifiers: list[dict[str,str]] = Field(default_factory=list,max_length=30)
+    form: str | None = Field(default=None,max_length=100)
+    purpose: str | None = Field(default=None,max_length=100)
+    topics: list[str] = Field(default_factory=list,max_length=50)
+    annotation: str | None = Field(default=None,max_length=4000)
+    annotation_origin: Literal['source','user','model'] | None = None
+    annotation_page: int | None = Field(default=None,ge=0)
+    cover_page: int | None = Field(default=None,ge=0)
+    cover_kind: Literal['cover','title_page','issue_cover'] | None = None
+    physical_page_start: int | None = Field(default=None,ge=0)
+    physical_page_end: int | None = Field(default=None,ge=0)
+
+    @model_validator(mode='after')
+    def provenance(self):
+        if self.annotation and not self.annotation_origin:raise ValueError('annotation provenance required')
+        if self.cover_page is not None and not self.cover_kind:raise ValueError('cover kind required')
+        if self.physical_page_start is not None and self.physical_page_end is not None and self.physical_page_end<self.physical_page_start:raise ValueError('ordered article range required')
+        return self
+
+
 class StartMetadataInput(BaseModel):
+    catalog: CatalogMetadata | None = None
     duplicate_policy: Literal['reuse', 'new_revision'] = 'reuse'
     title: str | None = Field(default=None, max_length=500)
     authors: list[str] = Field(default_factory=list, max_length=50)
@@ -216,6 +250,7 @@ class StageIllustrationRef(BaseModel):
 
 
 class StageChunkInput(BaseModel):
+    article_id: str | None = Field(default=None,max_length=100)
     chunk_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
     title: str = Field(min_length=1, max_length=500)
     region_refs: list[StageRegionRef] = Field(min_length=1, max_length=100)
@@ -386,7 +421,7 @@ class BookFindOutput(BaseModel):
 
 
 class BookIngestOutput(BaseModel):
-    ingestion_id: str
+    ingestion_id: str | None = None
     state: Literal["staged", "processing", "needs_review", "ready", "finalized", "failed"]
     message: str
     document_id: str | None = None

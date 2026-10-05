@@ -25,6 +25,7 @@ from .supabase_backend import (
 @dataclass(slots=True)
 class _DbResponse:
     payload: Any = None
+    retrieval_mode: str | None = None
 
     @property
     def content(self) -> bytes:
@@ -195,6 +196,11 @@ class PostgresDataClient:
                         "select set_config('rkb.actor_id', %s, true)",
                         (str(actor),),
                     )
+                    # Legacy PG corpus compatibility during migration/CI. The
+                    # SQLite authority uses RemoteVectorClient with local scope.
+                    visible = await (await connection.execute("select id from public.rkb_documents")).fetchall()
+                    await connection.execute("select set_config('rkb.vector_documents', %s, true)",
+                                             (','.join(str(d['id']) for d in visible),))
                 yield connection
 
     @staticmethod
@@ -224,6 +230,8 @@ class PostgresDataClient:
         columns = _split_select(params.pop("select", None))
         order = params.pop("order", None)
         limit_raw = params.pop("limit", None)
+        offset = int(params.pop("offset", "0"))
+        if offset < 0:raise ValueError("invalid offset")
         limit = int(limit_raw) if limit_raw else None
 
         where_parts: list[Any] = []
@@ -259,6 +267,9 @@ class PostgresDataClient:
             query += sql.SQL(" limit %s")
             values.append(limit)
 
+        if offset:
+            query += sql.SQL(" offset %s")
+            values.append(offset)
         async with self._connection(headers) as connection:
             cursor = await connection.execute(query, tuple(values))
             rows = await cursor.fetchall()

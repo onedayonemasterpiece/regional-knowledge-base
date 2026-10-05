@@ -276,8 +276,9 @@ class SupabaseRestBackend(KnowledgeBackend):
         limit=max(1,min(int(match_count),20))
         if limit < 2 or not output.results:
             return output
+        corpus=getattr(self,"corpus",None)
         connection_factory=getattr(self.client,"_connection",None)
-        if connection_factory is None:
+        if connection_factory is None and corpus is None:
             # Legacy PostgREST is transitional/test-only. Production direct
             # Postgres owns the RLS-safe ordered-neighbor lookup.
             return output
@@ -340,8 +341,11 @@ class SupabaseRestBackend(KnowledgeBackend):
         ) nxt on true
         where s.id=any(%s::uuid[])"""
         try:
-            async with connection_factory(self._headers(principal)) as connection:
-                rows=await(await connection.execute(statement,(selected,selected))).fetchall()
+            if corpus is not None:
+                rows=await asyncio.to_thread(corpus.neighbors,principal.subject,selected)
+            else:
+                async with connection_factory(self._headers(principal)) as connection:
+                    rows=await(await connection.execute(statement,(selected,selected))).fetchall()
         except Exception as error:
             logger.warning(json.dumps({
                 "event":"continuation_neighbor_lookup_degraded",
@@ -545,6 +549,7 @@ class SupabaseRestBackend(KnowledgeBackend):
         rows = response.json()
         timings = {**(encoding_timings.get() if is_e5 else {}), "database_seconds": time.monotonic()-database_start, "search_seconds": time.monotonic()-started}
         retrieval_mode = rows[0].get("retrieval_mode", "fast_e5" if is_e5 and vector is not None else "lexical_only") if rows else ("fast_e5" if is_e5 and vector is not None else "lexical_only")
+        retrieval_mode=getattr(response,"retrieval_mode",None) or retrieval_mode
         readiness=await status(self,principal) if enabled() else None
         if readiness and readiness.e5_missing:
             retrieval_mode='lexical_only';vector=None
@@ -559,7 +564,7 @@ class SupabaseRestBackend(KnowledgeBackend):
                 )
                 for row in rows
             ],
-            mode="hybrid" if vector is not None else "lexical_degraded",
+            mode="hybrid" if (retrieval_mode!="lexical_only" if hasattr(self,"corpus") else vector is not None) else "lexical_degraded",
         )
         return await self._expand_continuation_results(
             output,principal,query=query,match_count=match_count
@@ -811,7 +816,7 @@ class SupabaseRestBackend(KnowledgeBackend):
             next_action = "done"
         elif state == "failed":
             next_action = "blocker"
-        elif state == "processing" and cursor == "finalize":
+        elif state == "processing" and cursor in ("finalize","vectors"):
             next_action = "wait"
         elif state in {"staged", "processing"} and cursor in (None, ""):
             next_action = "validate"
@@ -1595,20 +1600,24 @@ def backend_from_env() -> KnowledgeBackend:
     # Production path: Session Pooler + transaction-local application actor.
     # This path never forwards an MCP bearer to Supabase/PostgREST.
     session_dsn = _first_env("KB_SUPABASE_SESSION_CONNECTION")
-    if session_dsn:
+    if session_dsn or os.getenv("RKB_SQLITE_CORPUS_PATH"):
         from .postgres_backend import PostgresBackend
+        from .sqlite_backend import SQLiteBackend
 
         try:
             pool_max = max(1, min(int(os.getenv("RKB_DB_POOL_MAX", "4")), 32))
         except ValueError as exc:
             raise RuntimeError("RKB_DB_POOL_MAX must be an integer") from exc
-        return PostgresBackend(
+        backend_class=SQLiteBackend if os.getenv("RKB_SQLITE_CORPUS_PATH") else PostgresBackend
+        corpus_options={"corpus_path":os.environ["RKB_SQLITE_CORPUS_PATH"]} if backend_class is SQLiteBackend else {}
+        return backend_class(
             session_dsn,
             embedder=embedder,
             object_store=object_store,
             pool_min_size=1,
             pool_max_size=pool_max,
             public_base_url=public_base,
+            **corpus_options,
         )
 
     # Transitional test-only PostgREST adapter. It forwards the caller bearer

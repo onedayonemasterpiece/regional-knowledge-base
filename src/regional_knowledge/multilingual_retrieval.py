@@ -59,18 +59,24 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
         literal=lambda vector:'['+','.join(format(value,'.9g') for value in vector)+']' if vector is not None else None
         response=await backend.client.post(f'{backend.config.url.rstrip("/")}/rest/v1/rpc/rkb_multilingual_rankings',headers=backend._headers(principal),json={'query_text':query,'bge_vector':literal(bge_vector),'bge_space':BGE_SPACE,'e5_vector':literal(e5_vector),'e5_space':E5_SPACE if e5_vector else None,'aliases':aliases or [],'depth':100})
         response.raise_for_status();rows=response.json();branches=list(MODES[mode])
+        if hasattr(backend,'corpus') and not any(r['branch'] in ('e5','bge') for r in rows):
+            mode='lexical_only';branches=['lexical']
+            if aliases:branches+=['exact_current_alias','exact_historical_alias','exact_alias']
         if aliases:branches+=['exact_current_alias','exact_historical_alias','exact_alias']
         fusion_start=time.monotonic();ids,diagnostics=fuse(rows,branches,limit=match_count)
         results=[]
         # Every row is already RLS-filtered; normal fetch later rechecks ACL and
         # revisions. Metadata lookup also uses the ordinary actor bridge.
-        async with backend.data_client._connection(backend._headers(principal)) as connection:
-            titles=await(await connection.execute('select id,title from public.rkb_chunks where id=any(%s::uuid[])',(ids,))).fetchall()
+        if hasattr(backend,'corpus'):
+            titles=[{'id':ident,'title':backend.corpus.one('rkb_chunks',ident)['title']} for ident in ids if backend.corpus.one('rkb_chunks',ident)]
+        else:
+            async with backend.data_client._connection(backend._headers(principal)) as connection:
+                titles=await(await connection.execute('select id,title from public.rkb_chunks where id=any(%s::uuid[])',(ids,))).fetchall()
         by_id={str(row['id']):row['title'] for row in titles}
         for chunk in ids:
             if chunk in by_id:results.append(SearchResult(id=chunk,title=by_id[chunk],url=backend._evidence_url(chunk),ranking_signals=diagnostics[chunk]))
         logger.info(json.dumps({'event':'main_retrieval_served','job_id':main_job_id,'space':BGE_SPACE,'retrieval_mode':mode,'results':len(results),'seconds':time.monotonic()-started}))
-        return SearchOutput(results=results,mode='hybrid',retrieval_mode=mode,main_state='ready',main_job_id=main_job_id,timings={**e5_times,'bge_queue_seconds':bge['queue_seconds'],'bge_encoder_seconds':bge.get('encoder_seconds',0),'database_seconds':fusion_start-database_start,'fusion_metadata_seconds':time.monotonic()-fusion_start,'search_seconds':time.monotonic()-started})
+        return SearchOutput(results=results,mode='lexical_degraded' if mode=='lexical_only' else 'hybrid',retrieval_mode=mode,main_state='ready',main_job_id=main_job_id,timings={**e5_times,'bge_queue_seconds':bge['queue_seconds'],'bge_encoder_seconds':bge.get('encoder_seconds',0),'database_seconds':fusion_start-database_start,'fusion_metadata_seconds':time.monotonic()-fusion_start,'search_seconds':time.monotonic()-started})
     finally:
         if e5_task and not e5_task.done():
             e5_task.cancel()

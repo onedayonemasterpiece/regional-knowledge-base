@@ -263,6 +263,29 @@ def build_server(
         return [TextContent(type='text', text=json.dumps(metadata, ensure_ascii=False)),
                 ImageContent(type='image', data=base64.b64encode(data).decode(), mimeType=mime)]
 
+    @mcp.tool(title="Browse the source catalog", description="List/find/get accessible books, journal issues and articles; cover returns a registered real cover/title page. Empty query lists sources; cursor paginates. Detailed metadata is stored in SQLite.", annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+    async def catalog(command: Literal['list','find','get','cover'] = 'list', query: str = '', document_id: str | None = None, kind: Literal['book','journal_issue','article'] | None = None, cursor: str | None = None, limit: Annotated[int, Field(ge=1,le=100)] = 20) -> dict[str,Any] | list[TextContent | ImageContent]:
+        method=getattr(backend,'catalog',None)
+        if method is None:raise RuntimeError('SQLite catalog is not enabled')
+        if command in ('get','cover') and not document_id:raise ValueError('document_id required')
+        if command=='cover':
+            import base64
+            from .catalog_components import cover
+            metadata,data=await cover(backend,_principal(),document_id)
+            result=[TextContent(type='text',text=json.dumps(metadata,ensure_ascii=False))]
+            if data:result.append(ImageContent(type='image',data=base64.b64encode(data).decode(),mimeType='image/webp'))
+            return result
+        return await method(_principal(),query,limit=limit,cursor=cursor,kind=kind,document_id=document_id if command=='get' else None)
+
+    @mcp.tool(title="Verify a printed source quote", description="Render only the requested source page with validated yellow stripes. Native text first; optional bounded Flash-Lite scan reader. Original source ownership is required; failure leaves normal fetch available.", annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+    async def source_proof(id: str, quote: Annotated[str,Field(min_length=1,max_length=3000)], physical_page_index: Annotated[int,Field(ge=0)] | None = None) -> list[TextContent | ImageContent]:
+        import base64
+        from .quote_proof import source_proof as prove
+        metadata,data=await prove(backend,_principal(),id,quote,physical_page_index)
+        result=[TextContent(type='text',text=json.dumps(metadata,ensure_ascii=False))]
+        if data:result.append(ImageContent(type='image',data=base64.b64encode(data).decode(),mimeType='image/webp'))
+        return result
+
     @mcp.tool(
         name="book_find",
         title="Find an existing book",

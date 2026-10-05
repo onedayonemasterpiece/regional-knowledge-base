@@ -162,7 +162,7 @@ async def test_start_ingestion_streams_private_source_file_and_activates_staged_
         if request.method=='PATCH' and request.url.path=='/rest/v1/rkb_documents':
             return httpx.Response(204)
         if request.method=='GET' and request.url.path=='/rest/v1/rkb_documents':
-            return httpx.Response(200,json=[{'owner_user_id':principal().subject}])
+            return httpx.Response(200,json=[{'owner_user_id':principal().subject,'source_sha256':hashlib.sha256(source).hexdigest()}])
         raise AssertionError((request.method, request.url))
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -246,7 +246,7 @@ async def test_failed_start_reuses_same_ingestion_and_existing_source_object():
         if request.method=='PATCH' and request.url.path=='/rest/v1/rkb_documents':
             return httpx.Response(204)
         if request.method=='GET' and request.url.path=='/rest/v1/rkb_documents':
-            return httpx.Response(200,json=[{'owner_user_id':principal().subject}])
+            return httpx.Response(200,json=[{'owner_user_id':principal().subject,'source_sha256':hashlib.sha256(source).hexdigest()}])
         raise AssertionError((request.method, request.url))
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -312,7 +312,7 @@ async def test_book_pages_downloads_to_file_after_user_job_authorization(cursor)
         if request.method=='PATCH' and request.url.path=='/rest/v1/rkb_documents':
             return httpx.Response(204)
         if request.method=='GET' and request.url.path=='/rest/v1/rkb_documents':
-            return httpx.Response(200,json=[{'owner_user_id':principal().subject}])
+            return httpx.Response(200,json=[{'owner_user_id':principal().subject,'source_sha256':hashlib.sha256(source).hexdigest()}])
         raise AssertionError((request.method, request.url))
 
     class CursorProcessor(FakePdfProcessor):

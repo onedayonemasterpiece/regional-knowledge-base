@@ -78,6 +78,7 @@ class StagedIllustration(BaseModel):
 
 class StagedChunk(BaseModel):
     chunk_key: str
+    article_id: str | None = None
     chunk_id: UUID
     title: str = Field(min_length=1, max_length=500)
     region_ids: list[UUID] = Field(min_length=1, max_length=100)
@@ -338,6 +339,7 @@ def compile_model_stage(
         staged_chunks.append(
             StagedChunk(
                 chunk_key=chunk.chunk_key,
+                article_id=chunk.article_id,
                 chunk_id=uuid5(
                     document_uuid,
                     f"chunk:{revision}:{chunk.chunk_key}",

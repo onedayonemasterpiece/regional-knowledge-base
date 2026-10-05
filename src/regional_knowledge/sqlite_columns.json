@@ -1,0 +1,1500 @@
+{
+  "rkb_author_authority": [
+    {
+      "column_name": "author_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "geography",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "subject",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "score",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "column_default": null
+    },
+    {
+      "column_name": "policy_version",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "evidence",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": "'[]'::jsonb"
+    },
+    {
+      "column_name": "is_active",
+      "data_type": "boolean",
+      "udt_name": "bool",
+      "column_default": "true"
+    },
+    {
+      "column_name": "verified_by",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "verified_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": null
+    },
+    {
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    }
+  ],
+  "rkb_author_profiles": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "column_name": "canonical_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "aliases",
+      "data_type": "ARRAY",
+      "udt_name": "_text",
+      "column_default": "'{}'::text[]"
+    },
+    {
+      "column_name": "profile_evidence",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": "'[]'::jsonb"
+    },
+    {
+      "column_name": "verification_state",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": "'verified'::text"
+    },
+    {
+      "column_name": "verified_by",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "verified_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": null
+    },
+    {
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    },
+    {
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    }
+  ],
+  "rkb_chunk_embeddings_bge": [
+    {
+      "column_name": "chunk_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "embedding_space",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "model_revision",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "revision",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    },
+    {
+      "column_name": "text_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    },
+    {
+      "column_name": "search_material_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    }
+  ],
+  "rkb_chunk_embeddings_e5": [
+    {
+      "column_name": "chunk_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "embedding_space",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "revision",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    },
+    {
+      "column_name": "text_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "batch_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    },
+    {
+      "column_name": "search_material_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    }
+  ],
+  "rkb_chunks": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "column_name": "document_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "revision",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    },
+    {
+      "column_name": "region_ids",
+      "data_type": "ARRAY",
+      "udt_name": "_uuid",
+      "column_default": "'{}'::uuid[]"
+    },
+    {
+      "column_name": "page_ids",
+      "data_type": "ARRAY",
+      "udt_name": "_uuid",
+      "column_default": "'{}'::uuid[]"
+    },
+    {
+      "column_name": "illustration_ids",
+      "data_type": "ARRAY",
+      "udt_name": "_uuid",
+      "column_default": "'{}'::uuid[]"
+    },
+    {
+      "column_name": "footnote_region_ids",
+      "data_type": "ARRAY",
+      "udt_name": "_uuid",
+      "column_default": "'{}'::uuid[]"
+    },
+    {
+      "column_name": "text_object_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "text_start",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    },
+    {
+      "column_name": "text_end",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    },
+    {
+      "column_name": "text_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "title",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "metadata",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": "'{}'::jsonb"
+    },
+    {
+      "column_name": "search_material",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "search_material_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_text",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    }
+  ],
+  "rkb_document_grants": [
+    {
+      "column_name": "document_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "grantee_user_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "role",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    }
+  ],
+  "rkb_documents": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "column_name": "owner_user_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "title",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "authors",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": "'[]'::jsonb"
+    },
+    {
+      "column_name": "publication_year",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "column_default": null
+    },
+    {
+      "column_name": "language",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_visibility",
+      "data_type": "USER-DEFINED",
+      "udt_name": "rkb_visibility",
+      "column_default": "'private'::rkb_visibility"
+    },
+    {
+      "column_name": "content_visibility",
+      "data_type": "USER-DEFINED",
+      "udt_name": "rkb_visibility",
+      "column_default": "'private'::rkb_visibility"
+    },
+    {
+      "column_name": "rights_status",
+      "data_type": "USER-DEFINED",
+      "udt_name": "rkb_rights_status",
+      "column_default": "'unknown'::rkb_rights_status"
+    },
+    {
+      "column_name": "rights_evidence",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": "'{}'::jsonb"
+    },
+    {
+      "column_name": "rights_policy_version",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "active_revision",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": "0"
+    },
+    {
+      "column_name": "page_count",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "column_default": null
+    },
+    {
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    },
+    {
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    },
+    {
+      "column_name": "source_identity_primary",
+      "data_type": "boolean",
+      "udt_name": "bool",
+      "column_default": "true"
+    },
+    {
+      "column_name": "source_format",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_filename",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_archive_ref",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_archive_origin_ref",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_archive_operation_id",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_archive_read_id",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_archive_status",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": "'pending'::text"
+    },
+    {
+      "column_name": "source_archive_error",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_archive_attempt_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": null
+    },
+    {
+      "column_name": "source_archive_caption",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_archive_filename",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    }
+  ],
+  "rkb_entities": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "owner_user_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "kind",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "canonical_label",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "external_ref",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "document_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "revision",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    },
+    {
+      "column_name": "state",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "metadata",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": "'{}'::jsonb"
+    }
+  ],
+  "rkb_entity_aliases": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "entity_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "value",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "normalized_value",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "language",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "alias_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "time_scope",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "document_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "revision",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    },
+    {
+      "column_name": "evidence",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": null
+    }
+  ],
+  "rkb_entity_mentions": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "entity_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "document_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "revision",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    },
+    {
+      "column_name": "chunk_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "page_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "region_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "exact_source_spelling",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "evidence",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": null
+    },
+    {
+      "column_name": "state",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "signals",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": "'{}'::jsonb"
+    }
+  ],
+  "rkb_entity_relations": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "source_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "target_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "kind",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "document_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "revision",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    },
+    {
+      "column_name": "evidence",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": null
+    },
+    {
+      "column_name": "time_scope",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "state",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "review_note",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    }
+  ],
+  "rkb_graph_discovery_jobs": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "actor_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "entity_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "document_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "revision",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    },
+    {
+      "column_name": "job_key",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "payload",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": "'{}'::jsonb"
+    },
+    {
+      "column_name": "state",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": "'pending'::text"
+    },
+    {
+      "column_name": "attempts",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "column_default": "0"
+    },
+    {
+      "column_name": "available_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    },
+    {
+      "column_name": "lease_until",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": null
+    },
+    {
+      "column_name": "claim",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "error_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    }
+  ],
+  "rkb_illustrations": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "column_name": "document_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "page_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "source_region_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "crop_object_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "kind",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "caption_region_ids",
+      "data_type": "ARRAY",
+      "udt_name": "_uuid",
+      "column_default": "'{}'::uuid[]"
+    },
+    {
+      "column_name": "nearby_region_ids",
+      "data_type": "ARRAY",
+      "udt_name": "_uuid",
+      "column_default": "'{}'::uuid[]"
+    },
+    {
+      "column_name": "visibility",
+      "data_type": "USER-DEFINED",
+      "udt_name": "rkb_visibility",
+      "column_default": "'private'::rkb_visibility"
+    },
+    {
+      "column_name": "rights_status",
+      "data_type": "USER-DEFINED",
+      "udt_name": "rkb_rights_status",
+      "column_default": "'unknown'::rkb_rights_status"
+    },
+    {
+      "column_name": "rights_evidence",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": "'{}'::jsonb"
+    },
+    {
+      "column_name": "rights_policy_version",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "vibepublish_entry_ref",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_crop_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "caption_text",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": "''::text"
+    },
+    {
+      "column_name": "visual_description",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "visual_description_provenance",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": "'model_observation'::text"
+    },
+    {
+      "column_name": "visual_description_language",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "mirror_operation_id",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "mirror_read_operation_id",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "mirror_attempt_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": null
+    },
+    {
+      "column_name": "mirror_error_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "display_rotation_degrees",
+      "data_type": "smallint",
+      "udt_name": "int2",
+      "column_default": "0"
+    },
+    {
+      "column_name": "display_crop_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "provider_crop_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    }
+  ],
+  "rkb_ingestion_jobs": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "column_name": "owner_user_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "document_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "source_file_id",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "source_object_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "source_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "state",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "cursor",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "staged_revision",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": "1"
+    },
+    {
+      "column_name": "warnings",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": "'[]'::jsonb"
+    },
+    {
+      "column_name": "error_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    },
+    {
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    },
+    {
+      "column_name": "staged_graph_object_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "duplicate_policy",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": "'reuse'::text"
+    }
+  ],
+  "rkb_integration_outbox": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "column_name": "owner_user_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "document_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "revision",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    },
+    {
+      "column_name": "target_service",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "event_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "event_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "idempotency_key",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "visibility",
+      "data_type": "USER-DEFINED",
+      "udt_name": "rkb_visibility",
+      "column_default": null
+    },
+    {
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "payload",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": null
+    },
+    {
+      "column_name": "state",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "attempts",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "column_default": "0"
+    },
+    {
+      "column_name": "next_attempt_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": null
+    },
+    {
+      "column_name": "last_error_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "remote_receipt",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": null
+    },
+    {
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    },
+    {
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    }
+  ],
+  "rkb_objects": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "column_name": "document_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "kind",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "object_key",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "mime_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "size_bytes",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    },
+    {
+      "column_name": "access_class",
+      "data_type": "USER-DEFINED",
+      "udt_name": "rkb_visibility",
+      "column_default": "'private'::rkb_visibility"
+    },
+    {
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    },
+    {
+      "column_name": "deleted_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": null
+    }
+  ],
+  "rkb_pages": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "column_name": "document_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "physical_page_index",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "column_default": null
+    },
+    {
+      "column_name": "printed_page_number",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "width",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "column_default": null
+    },
+    {
+      "column_name": "height",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "column_default": null
+    },
+    {
+      "column_name": "layout_kind",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "page_object_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "revision",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "column_default": null
+    }
+  ],
+  "rkb_region_relations": [
+    {
+      "column_name": "source_region_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "target_region_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "kind",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    }
+  ],
+  "rkb_regions": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "column_name": "page_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "kind",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "bbox",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": null
+    },
+    {
+      "column_name": "column_id",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "reading_order",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "column_default": null
+    },
+    {
+      "column_name": "text_sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "confidence",
+      "data_type": "real",
+      "udt_name": "float4",
+      "column_default": null
+    },
+    {
+      "column_name": "needs_review",
+      "data_type": "boolean",
+      "udt_name": "bool",
+      "column_default": "false"
+    },
+    {
+      "column_name": "source_text",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    }
+  ],
+  "rkb_schema_migrations": [
+    {
+      "column_name": "name",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "sha256",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "applied_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    }
+  ],
+  "rkb_users": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "status",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": "'active'::text"
+    },
+    {
+      "column_name": "metadata",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "column_default": "'{}'::jsonb"
+    },
+    {
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    },
+    {
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    }
+  ],
+  "rkb_workspace_members": [
+    {
+      "column_name": "workspace_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "user_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "role",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    }
+  ],
+  "rkb_workspaces": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "column_name": "owner_user_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "column_default": null
+    },
+    {
+      "column_name": "name",
+      "data_type": "text",
+      "udt_name": "text",
+      "column_default": null
+    },
+    {
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "column_default": "now()"
+    }
+  ]
+}

@@ -1,13 +1,18 @@
 # Architecture
 
-## Next target, distinct from current runtime
+## SQLite / Supabase v2 implementation boundary (2026-10-05)
 
-The [catalog, exact proof and 100-source design](design/catalog-evidence-page-archive-v1.md)
-records the 2026-10-05 owner requirements. Current runtime still follows the
-architecture below. Any private query-plane relocation must pass that design's
-capacity, ACL, snapshot consistency and restore gates; it is not a new vector
-engine and is not already deployed. The [implementation task](prompts/catalog-evidence-capacity-implementation-20261005.md)
-contains the delivery scope and D01-D16 acceptance.
+The canonical task is [SQLite corpus + Supabase vectors + on-demand proof](prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md).
+The old v1 page archive and capacity prompt are superseded. No local PostgreSQL,
+page archive/topic/spool, whole-book readiness gate or new IAM is introduced.
+
+The v2 release selects persistent SQLite with `RKB_SQLITE_CORPUS_PATH`.
+SQLite owns corpus text, catalog, rights/ACL, page/region mapping, ingestion,
+graph/POI and publication state. Supabase owns only E5/BGE vectors and minimal
+ID/revision/hash/scope anchors. The existing application actor bridge authorizes
+local reads and writes; MCP bearers never enter the vector plane. Fetch/catalog
+and FTS lexical-only search remain available without Supabase. See the
+[deployment and recovery runbook](operations/sqlite-v2.md).
 
 ## Invariants
 
@@ -15,34 +20,32 @@ Regional Knowledge Base is deliberately split into a cheap online retrieval plan
 
 ```text
 ONLINE / latency-sensitive
-model -> MCP -> E5/BGE + Supabase pgvector/FTS -> authorized evidence
+model -> MCP -> SQLite FTS + E5/BGE Supabase pgvector -> authorized evidence
 
 INGESTION / throughput-insensitive
 PDF/DjVu source -> thin format adapter -> page image/native hints -> ChatGPT vision/reading
-               -> typed staged graph -> validate/finalize -> Supabase text/index state
+               -> typed staged graph -> validate/finalize -> SQLite staged state -> both remote vector acknowledgments -> activation
                -> original source archive through VibePublish Telegram /2
                -> illustration archive through VibePublish Telegram /4
 ```
 
-The runtime server is not the vector engine, full-text engine or permanent binary store.
+The runtime uses SQLite FTS; Supabase runs vector computations. Originals remain in the existing binary archive.
 
 ## Data ownership
 
 | Layer | Owns |
 |---|---|
 | VibePublish / Telegram via dedicated `TELEGRAM_KNOWLEDGE_BASE` connection | durable original source DOCUMENTs in topic /2 and extracted illustration DOCUMENTs in topic /4 |
-| Supabase Postgres | catalog, ACLs, rights state, revisions, source refs/hashes/formats, chunk source text/search material, page/region/graph metadata, embeddings, FTS, ingestion/index state |
+| SQLite | exact corpus, FTS, catalog, ACL/rights, provenance, ingestion, graph, POI and publication state |
+| Supabase Postgres | minimal anchors/scope and E5/BGE embeddings/vector search |
 | S3-compatible object storage | bounded temporary ingestion/cache objects only; not the corpus archive |
 | GitHub | source code, schemas, migrations, tests, public documentation |
-| local disk | bounded disposable cache/work files only |
+| local disk | persistent SQLite/WAL/backups plus bounded originals/proof/work files |
 
 Telegram/provider IDs and object-store keys are never authorization. “Public
 document” is an application authorization state enforced by Regional Knowledge.
 
-Parsed chunk text is compact enough for the current corpus scale and belongs in
-Supabase alongside FTS/pgvector. The 500 MiB database budget is protected by
-keeping large original binaries out of Postgres, not by pushing sub-megabyte book
-text into a permanent S3 corpus.
+Exact accepted text and FTS belong in SQLite. Supabase retains only vector metadata and embeddings; binary originals are archived separately.
 
 ## Canonical document graph
 
@@ -61,8 +64,8 @@ Chunks reference region/page IDs. They are derived, can be rebuilt, and do not o
 Search degrades explicitly:
 - vector + lexical available: hybrid result;
 - embeddings unavailable: lexical-only result with degraded-mode marker;
-- object storage unavailable: search may still return metadata/snippets already stored in the index, while fetch reports source unavailable;
-- Supabase unavailable: private retrieval fails closed; no fallback scans private objects.
+- binary providers unavailable: search/fetch remain local; original reconstruction reports unavailable;
+- Supabase unavailable: authorized local fetch/catalog and FTS remain usable with truthful lexical-only mode.
 
 Ingestion never competes with Live search for mandatory CPU. Concurrency is bounded separately.
 
@@ -94,7 +97,7 @@ The accumulative semantic graph is a small evidence-backed projection over sourc
 
 `person <-> event <-> poi_ref`, grouped where useful into `historical_thread`.
 
-MVP uses the existing Postgres data plane, not a separate graph database. Every
+The graph uses the persistent SQLite data plane, not a separate graph database. Every
 semantic node/edge returned to a user must remain traceable to authorized
 page/region/chunk evidence.
 
@@ -118,7 +121,7 @@ ChatGPT submits bounded typed `entity_candidates` during staging, or
 region attribution, shape and idempotency; it performs no semantic extraction.
 Unresolved POI locators remain reviewable and do not block book activation.
 
-A separate small Postgres discovery queue drives one bounded background worker.
+The migrated SQLite discovery job table drives one bounded background worker.
 It reuses accepted E5/BGE/lexical retrieval and exact alias branches. Candidates
 retain retrieval signals and never become facts or identity merges automatically.
 New revisions enqueue one paging job; alias versions enqueue idempotent jobs.
@@ -130,7 +133,17 @@ readable during retryable finalization. Source-owner staging rows may be inspect
 under owner RLS; public graph APIs always filter the active source revision.
 
 Automatic post-activation indexing uses the small `indexing` process: payload-free
-Postgres activation wakeup plus missing-vector reconciliation, local E5 batch4
+SQLite pending-publication and missing-vector reconciliation, local E5 batch4
 and existing priority BGE document jobs. It introduces no durable scheduler/table.
 Readiness and SQL snapshot guards use actor-authorized active source/hash/revision
 coverage; incomplete spaces safely degrade. See [automatic indexing](operations/automatic-indexing.md).
+
+## Indexed local corpus access
+
+Common UUID fetches use `(table_name,row_key)`; authorized candidate queries
+join indexed chunk metadata and never hydrate the whole corpus. Continuation
+uses indexed source positions, selecting only current/previous/next chunks
+within article boundaries before the existing continuation gate. WAL permits
+ordinary readers alongside a worker transaction. Reads take no writer lock;
+mutations use short serialized transactions and release them before network or
+encoder calls. Graph/discovery and POI durable state use the same local authority.

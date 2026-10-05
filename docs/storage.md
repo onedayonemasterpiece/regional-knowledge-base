@@ -1,17 +1,20 @@
 # Storage, privacy and lifecycle
 
-## Planned capacity and page archive milestone (2026-10-05)
+## SQLite / Supabase v2 implementation boundary (2026-10-05)
 
-The [v1 target design](design/catalog-evidence-page-archive-v1.md) adds a private
-page-archive topic, verified WebP documents, a durable bounded spool and one sealed
-manifest registration instead of per-page Supabase progress writes. Its capacity
-DoD is 100 source equivalents / 100k active chunks / 30k pages with Supabase <=400 MB.
-Heavy-query placement is a measured decision with a private PostgreSQL option;
-no relocation or revision cleanup is implied to have shipped. The sections below
-describe the existing implementation. Use the aggregate-only
-`scripts/production/audit_storage_budget.py` for repeatable read-only measurements.
+The canonical task is [SQLite corpus + Supabase vectors + on-demand proof](prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md).
+The old v1 page archive and capacity prompt are superseded. No local PostgreSQL,
+page archive/topic/spool, whole-book readiness gate or new IAM is introduced.
 
-## Storage boundary — Telegram source archive, Supabase retrieval state, bounded object cache
+The v2 release selects persistent SQLite with `RKB_SQLITE_CORPUS_PATH`.
+SQLite owns corpus text, catalog, rights/ACL, page/region mapping, ingestion,
+graph/POI and publication state. Supabase owns only E5/BGE vectors and minimal
+ID/revision/hash/scope anchors. The existing application actor bridge authorizes
+local reads and writes; MCP bearers never enter the vector plane. Fetch/catalog
+and FTS lexical-only search remain available without Supabase. See the
+[deployment and recovery runbook](operations/sqlite-v2.md).
+
+## Storage boundary — SQLite corpus, Supabase vectors, Telegram originals
 
 The current S3-compatible bucket is capacity-constrained (about 1 GiB) and must
 **not** be treated as the permanent corpus archive.
@@ -23,12 +26,15 @@ VibePublish / Telegram, TELEGRAM_KNOWLEDGE_BASE connection
   topic /2 = exact original source files (PDF, DjVu, ...)
   topic /4 = extracted illustration documents
 
+SQLite (persistent service state, WAL)
+  = catalog / ACL / rights / revisions / graph / POI outbox
+  = exact chunk/region text, search material and FTS5
+  = source SHA/archive ref, page/region/illustration mapping
+  = staged vector publication metadata (no embedding values)
+
 Supabase Postgres
-  = catalog / ACL / rights / revisions
-  = source format + exact source SHA + Telegram source entry ref
-  = chunk source text + search material
-  = page/region/illustration/entity metadata
-  = FTS + pgvector E5/BGE + indexing state
+  = minimal chunk/document/revision/source/text hashes + owner scope anchors
+  = unchanged pgvector E5/BGE embeddings and HNSW indexes
 
 S3-compatible object storage
   = bounded ingestion/cache workspace only
@@ -105,7 +111,7 @@ origin.sha256 = <exact original bytes sha256>
 A verified illustration entry continues to use
 `knowledge://illustrations/<id>`.
 
-Search correctness depends on Supabase text/index state, not on a live Telegram
+Search uses SQLite FTS and Supabase vectors, independently of a live Telegram
 request. Reprocessing a source may require the archived original; if that archive
 is unavailable, the existing parsed revision remains searchable but source
 reconstruction must report unavailable rather than fabricate bytes.
@@ -125,7 +131,7 @@ canonical record.
 
 ## Chunk text and retrieval material
 
-Canonical parsed chunk text belongs in Supabase, not in object storage.
+Canonical accepted text lives only in persistent SQLite. Supabase has no permanent corpus text, catalog, geometry, graph or POI copy.
 
 Keep two separate values:
 
@@ -183,7 +189,7 @@ The downloader:
 Production should additionally use restrictive egress/network policy. The model
 never receives object-store credentials or raw object keys.
 
-Postgres keeps only an opaque `source_object_id`, never the raw S3 key in the
+SQLite keeps only an opaque `source_object_id`, never the raw S3 key in the
 user-readable ingestion row.
 
 A failed start remains private. Retrying the same attached `file_id` and exact
@@ -202,8 +208,7 @@ That decoder is transport, not recognition.
 The returned page image is what ChatGPT reads. Optional native/embedded text is a
 hint only and never proves visual completeness.
 
-No Tesseract, OCR service, VLM, layout model or other semantic recognizer belongs
-inside Regional Knowledge MCP.
+Ingestion still performs no automatic OCR. On-demand scan quote proof may use a bounded Flash-Lite reader (at most two calls/page), independently validate visible text/crop reading, and draw stripes in code. This helper never changes accepted corpus text.
 
 ## Staged graph and finalization
 
@@ -219,15 +224,19 @@ those keys. Semantic chunk text is assembled server-side from referenced source
 regions, so the model does not need to duplicate long text inside a second tool
 argument.
 
-Only `finalize` materializes a revision into Postgres. It creates:
+Only `finalize` materializes a staged revision into SQLite. It creates:
 
-- exact Postgres chunk/region source text with SHA-256 per chunk;
+- exact SQLite chunk/region source text with SHA-256 per chunk;
 - page and region provenance rows without permanent page-render objects;
 - region relations;
 - temporary exact illustration crops derived from source-page bbox coordinates,
   eligible for deletion after verified archive;
 - illustration provenance rows;
-- FTS and vector retrieval rows.
+- local FTS and pending vector-publication metadata.
+
+The existing indexers publish E5/BGE remotely without holding a SQLite writer
+lock. Activation requires both spaces and exact source/revision/ID/text hashes;
+a pending replacement leaves the previous active revision searchable.
 
 The activation RPC independently checks complete page indexes, unresolved review
 flags, textual-region coverage and cross-document provenance before changing
@@ -236,9 +245,33 @@ active revision or mutate an already active materialized revision.
 
 ## Implemented migration and lifecycle
 
-Migration 017 and the guarded exact-hash backfill switch canonical chunk/region
-text to Postgres. New imports omit permanent page renders/text projections.
+Migration 017 is historical. The v2 exact snapshot and verified SQLite backup
+replace remote corpus details; no OCR or embedding regeneration is performed. New imports omit permanent page renders/text projections.
 Verified source/illustration archives replace temporary source/crop objects;
 registered-object GC preserves active-ingestion and unverified-source recovery.
 The [operator procedure](operations/telegram-archive.md) defines capacity bounds,
 one-hour cache grace, exact source readback and opt-in bounded maintenance GC.
+
+
+## Private originals and proof cache
+
+`RKB_ORIGINAL_CACHE_DIR` defaults to the persistent service state directory's
+`originals` subdirectory, outside the checkout. Originals are keyed internally by
+exact source SHA, bounded by `RKB_ORIGINAL_CACHE_MAX_BYTES` (default 512 MiB).
+`RKB_ORIGINAL_CACHE_IDLE_HOURS` defaults to **4 hours**. Each authorized original-byte access
+renews the idle time. An authorized warm proof also renews an already cached original without
+downloading an absent one. Private source ownership is rechecked before warm reads;
+parsed text grants do not imply access to the original.
+
+Cross-process file leases protect installs/read copies and prevent cleanup of
+in-use files. Existing indexing maintenance checks idle originals and proof
+cache every minute, even without MCP requests. Interrupted download partials are
+removed only when no lease is held. Eligible least-recently-used originals are evicted to reserve incoming size,
+even at capacity. A full cache with only leased entries fails closed
+instead of exceeding its installed-original budget. Download working copies and
+SQLite/WAL/backup bytes are separate measured disk consumers.
+
+Proof cache is limited to 64 MiB and requested evidence only. It is keyed by
+source SHA, exact fragment/revision/quote, region, locator/model version. Repeated
+proof reads reauthorize access and return cached WebP without new inference.
+No page images or proof results are automatically published or archived.
