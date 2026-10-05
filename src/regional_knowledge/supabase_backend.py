@@ -264,6 +264,229 @@ class SupabaseRestBackend(KnowledgeBackend):
             ],
         )
 
+    async def _expand_continuation_results(
+        self,
+        output: SearchOutput,
+        principal: Principal,
+        *,
+        query: str,
+        match_count: int,
+    ) -> SearchOutput:
+        """Use at most one result slot for a high-confidence prose continuation."""
+        limit=max(1,min(int(match_count),20))
+        if limit < 2 or not output.results:
+            return output
+        connection_factory=getattr(self.client,"_connection",None)
+        if connection_factory is None:
+            # Legacy PostgREST is transitional/test-only. Production direct
+            # Postgres owns the RLS-safe ordered-neighbor lookup.
+            return output
+        selected=[UUID(item.id) for item in output.results[:limit]]
+        statement="""with selected_docs as (
+          select distinct c.document_id,c.revision
+          from public.rkb_chunks c
+          join public.rkb_documents d on d.id=c.document_id
+          where c.id=any(%s::uuid[]) and c.revision=d.active_revision
+        ), active as (
+          select c.id,c.document_id,c.revision,c.title,c.source_text,
+                 c.illustration_ids,
+                 first_region.physical_page_index as start_page,
+                 first_region.reading_order as start_order,
+                 last_region.physical_page_index as end_page,
+                 last_region.reading_order as end_order
+          from public.rkb_chunks c
+          join selected_docs s on s.document_id=c.document_id and s.revision=c.revision
+          join public.rkb_documents d on d.id=c.document_id
+          join lateral (
+            select p.physical_page_index,r.reading_order
+            from unnest(c.region_ids) rid
+            join public.rkb_regions r on r.id=rid
+            join public.rkb_pages p on p.id=r.page_id
+            order by p.physical_page_index,r.reading_order,r.id
+            limit 1
+          ) first_region on true
+          join lateral (
+            select p.physical_page_index,r.reading_order
+            from unnest(c.region_ids) rid
+            join public.rkb_regions r on r.id=rid
+            join public.rkb_pages p on p.id=r.page_id
+            order by p.physical_page_index desc,r.reading_order desc,r.id desc
+            limit 1
+          ) last_region on true
+          where c.revision=d.active_revision and cardinality(c.region_ids)>0
+        )
+        select s.*,
+          prev.id prev_id,prev.title prev_title,prev.source_text prev_text,
+          prev.illustration_ids prev_illustrations,
+          nxt.id next_id,nxt.title next_title,nxt.source_text next_text,
+          nxt.illustration_ids next_illustrations
+        from active s
+        left join lateral (
+          select p.*
+          from active p
+          where p.document_id=s.document_id and p.revision=s.revision
+            and (p.end_page,p.end_order) < (s.start_page,s.start_order)
+          order by p.end_page desc,p.end_order desc,
+                   p.start_page desc,p.start_order desc,p.id
+          limit 1
+        ) prev on true
+        left join lateral (
+          select n.*
+          from active n
+          where n.document_id=s.document_id and n.revision=s.revision
+            and (n.start_page,n.start_order) > (s.end_page,s.end_order)
+          order by n.start_page,n.start_order,n.end_page,n.end_order,n.id
+          limit 1
+        ) nxt on true
+        where s.id=any(%s::uuid[])"""
+        try:
+            async with connection_factory(self._headers(principal)) as connection:
+                rows=await(await connection.execute(statement,(selected,selected))).fetchall()
+        except Exception as error:
+            logger.warning(json.dumps({
+                "event":"continuation_neighbor_lookup_degraded",
+                "error_type":type(error).__name__,
+            }))
+            return output
+
+        from .continuation_context import (
+            STRONG_THRESHOLD,
+            continuation_signal,
+            query_allows_continuation_expansion,
+            strong_continuation_boundary,
+        )
+        context={str(row["id"]):dict(row) for row in rows}
+        working=list(output.results[:limit])
+        inserted=0
+        # One inherited-context slot is enough to close a split phrase while
+        # preserving low-ranked independent evidence. Only the top two source
+        # hits are eligible; production stress showed broader expansion can
+        # evict a correct rank-7 answer.
+        neighbor_budget=1
+        source_budget=min(2,limit)
+        protected_ids={item.id for item in output.results[:source_budget]}
+
+        def annotated(item: SearchResult, signal: dict[str, Any]) -> SearchResult:
+            if any(
+                value.get("branch")=="continuation_neighbor"
+                and value.get("source_chunk_id")==signal["source_chunk_id"]
+                and value.get("direction")==signal["direction"]
+                for value in item.ranking_signals
+            ):
+                return item
+            return item.model_copy(update={
+                "ranking_signals":[*item.ranking_signals,signal]
+            })
+
+        def candidate_for(source: SearchResult):
+            row=context.get(source.id)
+            if row is None:
+                return None
+            left_visual=bool(row.get("illustration_ids"))
+            choices=[]
+            if row.get("next_id"):
+                strength=strong_continuation_boundary(
+                    row.get("source_text"),row.get("next_text"),
+                    left_has_illustrations=left_visual,
+                    right_has_illustrations=bool(row.get("next_illustrations")),
+                )
+                if (
+                    strength>=STRONG_THRESHOLD
+                    and query_allows_continuation_expansion(
+                        query,row.get("source_text"),row.get("next_text"),
+                        neighbor_side="right",
+                    )
+                ):
+                    choices.append((
+                        strength,1,"next",str(row["next_id"]),
+                        str(row.get("next_title") or ""),
+                    ))
+            if row.get("prev_id"):
+                strength=strong_continuation_boundary(
+                    row.get("prev_text"),row.get("source_text"),
+                    left_has_illustrations=bool(row.get("prev_illustrations")),
+                    right_has_illustrations=left_visual,
+                )
+                if (
+                    strength>=STRONG_THRESHOLD
+                    and query_allows_continuation_expansion(
+                        query,row.get("prev_text"),row.get("source_text"),
+                        neighbor_side="left",
+                    )
+                ):
+                    choices.append((
+                        strength,0,"previous",str(row["prev_id"]),
+                        str(row.get("prev_title") or ""),
+                    ))
+            return max(choices) if choices else None
+
+        ranked_sources=list(output.results[:source_budget])
+        candidates={
+            source.id:candidate_for(source)
+            for source in ranked_sources
+        }
+
+        # Protect complete eligible pairs already present in the result window
+        # before inserting anything for another source. Otherwise a rank-1
+        # insertion could evict rank-8 evidence needed by rank 2.
+        present_ids={item.id for item in working}
+        for source in ranked_sources:
+            candidate=candidates.get(source.id)
+            if candidate is None:
+                continue
+            neighbor_id=candidate[3]
+            if neighbor_id in present_ids:
+                protected_ids.update({source.id,neighbor_id})
+
+        for source in ranked_sources:
+            candidate=candidates.get(source.id)
+            if candidate is None:
+                continue
+            strength,_,direction,neighbor_id,neighbor_title=candidate
+            signal=continuation_signal(
+                direction=direction,source_chunk_id=source.id,strength=strength
+            )
+            source_index=next(
+                (i for i,item in enumerate(working) if item.id==source.id),None
+            )
+            if source_index is None:
+                continue
+            existing_index=next(
+                (i for i,item in enumerate(working) if item.id==neighbor_id),None
+            )
+            if existing_index is not None:
+                # Evidence is already in the requested result window. Preserve
+                # its original rank and attach only an inspectable diagnostic.
+                working[existing_index]=annotated(working[existing_index],signal)
+                continue
+            if inserted>=neighbor_budget:
+                continue
+            neighbor=SearchResult(
+                id=neighbor_id,
+                title=neighbor_title,
+                url=self._evidence_url(neighbor_id),
+                ranking_signals=[signal],
+            )
+            protected_ids.update({source.id,neighbor_id})
+            inserted+=1
+            if len(working)>=limit:
+                # Preserve the ordinary ranking of retained hits: replace only
+                # the lowest-ranked unprotected slot, then append inherited
+                # context at the bottom of the requested window.
+                drop=next(
+                    (
+                        index for index in range(len(working)-1,-1,-1)
+                        if working[index].id not in protected_ids
+                    ),
+                    None,
+                )
+                if drop is None:
+                    continue
+                working.pop(drop)
+            working.append(neighbor)
+
+        return output.model_copy(update={"results":working[:limit]})
+
     async def search(self, query: str, principal: Principal, *, match_count: int = 8, main_job_id: str | None = None, aliases: list | None = None, _fast_only: bool = False) -> SearchOutput:
         started = time.monotonic()
         query = query.strip()
@@ -284,6 +507,10 @@ class SupabaseRestBackend(KnowledgeBackend):
                     fast=await self.search(query,principal,match_count=match_count,_fast_only=True)
                     return fast.model_copy(update={'main_state':'pending'})
                 result=result.model_copy(update={'indexing':readiness})
+            if result.main_state=='ready':
+                result=await self._expand_continuation_results(
+                    result,principal,query=query,match_count=match_count
+                )
             return result
 
         vector: list[float] | None = None
@@ -322,7 +549,7 @@ class SupabaseRestBackend(KnowledgeBackend):
         if readiness and readiness.e5_missing:
             retrieval_mode='lexical_only';vector=None
         logger.info(json.dumps({"event":"retrieval_served","retrieval_mode":retrieval_mode,"results":len(rows),"embedding_space":self.embedder.embedding_space if vector is not None else None,**timings}))
-        return SearchOutput(
+        output=SearchOutput(
             retrieval_mode=retrieval_mode, timings=timings,indexing=readiness,
             results=[
                 SearchResult(
@@ -333,6 +560,9 @@ class SupabaseRestBackend(KnowledgeBackend):
                 for row in rows
             ],
             mode="hybrid" if vector is not None else "lexical_degraded",
+        )
+        return await self._expand_continuation_results(
+            output,principal,query=query,match_count=match_count
         )
 
     async def fetch(self, item_id: str, principal: Principal) -> FetchOutput:
@@ -1369,7 +1599,7 @@ def backend_from_env() -> KnowledgeBackend:
         from .postgres_backend import PostgresBackend
 
         try:
-            pool_max = max(1, min(int(os.getenv("RKB_DB_POOL_MAX", "6")), 32))
+            pool_max = max(1, min(int(os.getenv("RKB_DB_POOL_MAX", "4")), 32))
         except ValueError as exc:
             raise RuntimeError("RKB_DB_POOL_MAX must be an integer") from exc
         return PostgresBackend(

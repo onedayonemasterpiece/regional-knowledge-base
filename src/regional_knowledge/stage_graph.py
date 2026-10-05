@@ -546,6 +546,9 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
         errors.append(f"unexpected page indexes: {extra[:30]}")
 
     page_set = set(page_ids)
+    page_index_by_id = {
+        str(page.page_id): page.physical_page_index for page in graph.pages
+    }
     regions: dict[str, StagedRegion] = {}
     region_page: dict[str, str] = {}
     orders: dict[str, set[int]] = defaultdict(set)
@@ -708,6 +711,7 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
     body_chunk_count=0
     short_body_chunks=0
     encoder_budget_risk=0
+    prose_chunk_positions=[]
     for chunk in graph.chunks:
         search_text=None
         try:search_text,_=graph_material(graph,chunk)
@@ -719,6 +723,17 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
             body_chunk_count+=1
             if source_length < 350:
                 short_body_chunks+=1
+            if not chunk.illustration_ids:
+                positions=[
+                    (
+                        page_index_by_id.get(region_page[str(region_id)],10**9),
+                        regions[str(region_id)].reading_order,
+                    )
+                    for region_id in chunk.region_ids
+                    if str(region_id) in regions
+                ]
+                if positions:
+                    prose_chunk_positions.append((min(positions),max(positions),chunk))
         # Character count is only a conservative risk proxy. Both current
         # encoders cap at 512 tokens; never claim this is an exact token count.
         augmented_length=len(search_text or (chunk.normalized_text or chunk.text).strip())
@@ -732,6 +747,20 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
             warnings.append("retrieval_quality:fragmented_body_chunks")
     if encoder_budget_risk:
         warnings.append(f"retrieval_quality:encoder_budget_risk:{encoder_budget_risk}/{len(graph.chunks)}")
+    if body_chunk_count >= 5:
+        from .continuation_context import STRONG_THRESHOLD,strong_continuation_boundary
+        prose_chunk_positions.sort(key=lambda value:(value[0],value[1],str(value[2].chunk_id)))
+        open_boundaries=0
+        for left,right in zip(prose_chunk_positions,prose_chunk_positions[1:]):
+            # Overlapping/duplicated retrieval windows are not an open boundary.
+            if left[1] >= right[0]:
+                continue
+            if strong_continuation_boundary(left[2].text,right[2].text) >= STRONG_THRESHOLD:
+                open_boundaries+=1
+        if open_boundaries:
+            warnings.append(
+                f"retrieval_quality:open_continuation_boundaries:{open_boundaries}"
+            )
 
     required_coverage = {
         region_id
