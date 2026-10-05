@@ -60,7 +60,7 @@ async def archive_bytes(client, entry_ref):
     return (await archive_payload(client,entry_ref))[0]
 
 
-async def download_source(backend, principal, document_id, obj, path, *, require_archive=False):
+async def _download_source_uncached(backend, principal, document_id, obj, path, *, require_archive=False):
     # Caller already resolves ingestion/illustration under RLS. Recheck source privacy:
     # public parsed text does not confer access to the private original scan.
     response=await backend.client.get(backend.config.url.rstrip('/')+'/rest/v1/rkb_documents',
@@ -86,6 +86,24 @@ async def download_source(backend, principal, document_id, obj, path, *, require
             'document_id':str(document_id),'source_archive_ref':doc['source_archive_ref'],
             'sha256':obj['sha256'],'size_bytes':len(data),'require_archive':require_archive}))
     finally:await client.close()
+
+
+async def download_source(backend, principal, document_id, obj, path, *, require_archive=False):
+    response=await backend.client.get(backend.config.url.rstrip('/')+'/rest/v1/rkb_documents',
+        headers=backend._headers(principal),params={'id':'eq.'+str(document_id),'limit':'1'})
+    response.raise_for_status();rows=response.json()
+    if not rows or str(rows[0]['owner_user_id'])!=principal.subject:
+        raise PermissionError('private_source_owner_required')
+    if rows[0]['source_sha256']!=obj['sha256']:raise ValueError('source_mismatch')
+    if require_archive:
+        return await _download_source_uncached(backend,principal,document_id,obj,path,require_archive=True)
+    from .original_cache import OriginalCache
+    import shutil
+    cache=OriginalCache.from_env()
+    async def loader(target):
+        await _download_source_uncached(backend,principal,document_id,obj,target)
+    async with cache.access(obj['sha256'],loader) as original:
+        await asyncio.to_thread(shutil.copyfile,original,path)
 
 
 class SourceArchive:

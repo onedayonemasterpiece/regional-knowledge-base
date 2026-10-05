@@ -764,7 +764,7 @@ async def finalize_ingestion(
                 "search_material_sha256": material_sha,
                 "title": chunk.title,
                 "normalized_text": normalized,
-                "metadata": {"chunk_key": chunk.chunk_key},
+                "metadata": {"chunk_key": chunk.chunk_key,**({"article_id":chunk.article_id} if chunk.article_id else {})},
             }
         )
 
@@ -988,11 +988,12 @@ async def finalize_ingestion(
     )
     activation.raise_for_status()
 
+    pending=bool(activation.json() and activation.json()[0].get("pending_vectors")) if hasattr(service,"corpus") else False
     return BookIngestOutput(
-        next_action="done",
+        next_action="wait" if pending else "done",
         ingestion_id=ingestion_id,
         document_id=document_id,
-        state="finalized",
-        message=f"Revision {revision} activated with {len(chunk_rows)} chunks",
+        state="processing" if pending else "finalized",
+        message=f"Revision {revision} waiting for vector publication" if pending else f"Revision {revision} activated with {len(chunk_rows)} chunks",
         warnings=[*validation.warnings, *embedding_warnings],
     )

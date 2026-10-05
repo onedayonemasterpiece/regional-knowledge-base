@@ -1,12 +1,18 @@
 # MCP surface and model optimization
 
-## Planned catalog and proof contract (2026-10-05)
+## SQLite / Supabase v2 implementation boundary (2026-10-05)
 
-The [v1 target design](design/catalog-evidence-page-archive-v1.md) specifies a
-paginated publication catalog and entitlement-gated quote/page/cover presentation.
-These are not yet shipped tools. Preserve existing search/fetch/ingestion and
-verify actual client-visible schemas during implementation; server functions alone
-are not acceptance. [Executable task](prompts/catalog-evidence-capacity-implementation-20261005.md).
+The canonical task is [SQLite corpus + Supabase vectors + on-demand proof](prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md).
+The old v1 page archive and capacity prompt are superseded. No local PostgreSQL,
+page archive/topic/spool, whole-book readiness gate or new IAM is introduced.
+
+The v2 release selects persistent SQLite with `RKB_SQLITE_CORPUS_PATH`.
+SQLite owns corpus text, catalog, rights/ACL, page/region mapping, ingestion,
+graph/POI and publication state. Supabase owns only E5/BGE vectors and minimal
+ID/revision/hash/scope anchors. The existing application actor bridge authorizes
+local reads and writes; MCP bearers never enter the vector plane. Fetch/catalog
+and FTS lexical-only search remain available without Supabase. See the
+[deployment and recovery runbook](operations/sqlite-v2.md).
 
 ## Tool surface
 
@@ -132,12 +138,12 @@ Current implementation checkpoint:
   non-blocking fragmentation/size diagnostics. Figures may also carry an explicit
   clockwise `display_rotation_degrees` of 0/90/180/270; source geometry remains
   unchanged;
-- canonical searchable text and graph material are persisted in Postgres; transient
+- canonical searchable text and graph material are persisted in SQLite; transient
   staged graph/source objects remain replaceable implementation artifacts rather than
   the user-facing source of truth;
 - `validate`: requires complete page coverage, valid relations/illustrations,
   retrieval coverage and no unresolved `needs_review` regions;
-- `finalize`: builds the Postgres text/search projection, embeddings/FTS, exact
+- `finalize`: builds the SQLite text/FTS projection and pending vector publication, exact
   source crops, pages/regions/relations/illustrations/chunks and then asks the database
   to revalidate the materialized revision before atomically switching
   `active_revision`;
@@ -161,7 +167,7 @@ Fast path:
 ```text
 Live
   -> knowledge_search
-      -> Supabase vector + lexical + RRF
+      -> SQLite lexical + Supabase vectors + existing RRF
       -> parallel exact evidence range fetches from object storage
   -> compact evidence pack
   -> Live answer
@@ -255,3 +261,36 @@ worker state and effective mode; it exposes no titles, text or foreign inventory
 During incomplete BGE coverage search uses complete E5, otherwise lexical, with
 main pending. Repeat status in a later turn; do not hold an interactive turn open
 waiting for remote indexing. See [operations](operations/automatic-indexing.md).
+
+
+## v2 corpus and proof tools
+
+- `catalog(command=list|find|get, query='', kind?, cursor?, limit<=100)` lists
+  accessible sources with SQLite details. Empty query lists sources. Pagination
+  excludes unauthorized roots before calculating cursors; old revisions do not
+  create duplicate catalog entries. `book_find` remains compatible.
+- `source_proof(id, quote, physical_page_index?)` authorizes the evidence and
+  private original owner, resolves one exact fragment, verifies source hash and
+  renders only the requested page. It returns JSON plus a real WebP image when
+  localization is validated. Native PDF quads come first. Scan proof additionally
+  requires `RKB_SCAN_PROOF_ENABLED=1` and dedicated `RKB_GEMINI_API_KEY`.
+
+`RKB_PROOF_MODEL` accepts only the configured Flash-Lite reader family, including
+`gemini-3.1-flash-lite` and `gemini-2.5-flash-lite`. Pro/image-generation models are
+rejected. Calls use 25-second timeouts, <=4M pixels, 4096 output tokens and <=2
+calls/page. The second call reads proposed strips without the expected quote.
+The server checks text equivalence, convex in-page bounds, order and stripe area,
+then paints transparent yellow polygons. Ambiguity, mismatches and provider
+failures return explicit unavailability; confidence/echo never authorizes exact.
+
+The Live profile retains its existing read-only knowledge search/fetch adapter.
+No ingestion, catalog or proof tools are added to the default Live bundle.
+
+Catalog list/find/get preserve unknown fields and contributor roles. `catalog_cover`
+returns only a registered real source cover/title page. `source_proof` supports
+same-page multi-region quotes and page-by-page multi-page quotes; an explicit
+page requires a quote scoped to that page. Native PDF quads are checked first.
+Scans and DjVu use bounded Flash-Lite localization plus an independent crop read
+without the expected quote. Code applies yellow stripes; ambiguous or mismatched
+results fail closed. Warm model proofs recheck `RKB_SCAN_PROOF_ENABLED` and
+source ownership, so capability revocation also rejects a warm cache hit.

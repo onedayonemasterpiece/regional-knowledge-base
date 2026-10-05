@@ -136,6 +136,7 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
                 json=[{
                     "id": DOCUMENT_ID,
                     "owner_user_id":principal().subject,
+                    "source_sha256":source_sha,
                     "page_count": 1,
                     "active_revision": 0,
                     "title": "Regional history",

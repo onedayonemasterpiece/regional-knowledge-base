@@ -69,11 +69,8 @@ def test_connection_error_does_not_export_connection_details(audit, monkeypatch,
 
 
 def test_target_documents_and_navigation_exist():
-    design = ROOT / 'docs/design/catalog-evidence-page-archive-v1.md'
-    prompt = ROOT / 'docs/prompts/catalog-evidence-capacity-implementation-20261005.md'
-    text = design.read_text(encoding='utf-8')
-    assert prompt.is_file()
-    for number in range(1, 17):
-        assert f'D{number:02d}' in text
-    for name in ('mcp.md', 'ingestion.md', 'storage.md', 'architecture.md'):
-        assert 'catalog-evidence-page-archive-v1.md' in (ROOT/'docs'/name).read_text()
+    prompt=ROOT/'docs/prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md'
+    text=prompt.read_text()
+    for number in range(1,11):assert f'D{number:02d}' in text
+    for name in ('mcp.md','ingestion.md','storage.md','architecture.md'):
+        assert prompt.name in (ROOT/'docs'/name).read_text()

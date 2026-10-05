@@ -1,12 +1,18 @@
 # Book ingestion
 
-## Planned universal-source milestone (2026-10-05)
+## SQLite / Supabase v2 implementation boundary (2026-10-05)
 
-The [catalog/evidence/page-archive design](design/catalog-evidence-page-archive-v1.md)
-is the next implementation target, not shipped behavior. It adds edition/issue/article
-identity, article-safe continuation, exact quote spans and asynchronous page archival.
-Model-authored semantic review remains mandatory; block bboxes alone do not prove
-exact highlighting. See the [implementation prompt](prompts/catalog-evidence-capacity-implementation-20261005.md).
+The canonical task is [SQLite corpus + Supabase vectors + on-demand proof](prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md).
+The old v1 page archive and capacity prompt are superseded. No local PostgreSQL,
+page archive/topic/spool, whole-book readiness gate or new IAM is introduced.
+
+The v2 release selects persistent SQLite with `RKB_SQLITE_CORPUS_PATH`.
+SQLite owns corpus text, catalog, rights/ACL, page/region mapping, ingestion,
+graph/POI and publication state. Supabase owns only E5/BGE vectors and minimal
+ID/revision/hash/scope anchors. The existing application actor bridge authorizes
+local reads and writes; MCP bearers never enter the vector plane. Fetch/catalog
+and FTS lexical-only search remain available without Supabase. See the
+[deployment and recovery runbook](operations/sqlite-v2.md).
 
 Use `book_ingest(start, file, metadata)` with an attached source. Production
 must accept at least **PDF and DjVu**. The exact downloaded source SHA and owner
@@ -18,14 +24,13 @@ as a hint. **ChatGPT itself** visually reads/transcribes pages and supplies the
 semantic page graph, chunks, captions, footnotes, illustrations, people/events/POI
 links and review notes.
 
-No OCR engine, VLM, layout AI or server-side LLM parser is part of the MCP.
+Ingestion uses no OCR engine or automatic semantic parser. The separate on-demand quote-proof helper may use bounded Flash-Lite localization; it never reimports or edits accepted source text.
 
 `metadata.duplicate_policy` is `reuse` by default. Another attachment containing
 the same PDF returns the existing ingestion/document, including an in-progress or
 finalized import, without replacing title/authors. `new_revision` starts the next
 staged revision on that same document. Replaying an attachment/policy resumes its
-job. Different owners retain separate roots. Concurrent starts are serialized in
-the DB and a partial unique index protects new logical roots. Audited historical
+job. Different owners retain separate roots. Concurrent starts are serialized by short SQLite write transactions. Audited historical
 duplicate roots remain separate; ambiguous source identity fails explicitly,
 without silently picking or merging an old book.
 
@@ -100,6 +105,28 @@ alias and private thread. Never commit it. OAuth refresh rotation is atomically
 persisted by the sole existing indexing owner; a revoked/expired grant leaves
 mirrors pending and imports/search independent.
 
-Migration 017 moves exact chunk/region text into Postgres and adds the dedicated
+Migration 017 is historical; v2 migrates exact chunk/region text to SQLite and preserves the dedicated
 source archive. New revisions do not persist page renders or text-projection
 objects. See [deployment, recovery and guarded GC](operations/telegram-archive.md).
+
+`metadata.catalog` accepts book/journal_issue/article, optional parent, publication
+edition/volume/issue/publisher/date, ordered contributor roles, identifiers with
+explicit validity notes, expandable form/purpose/topics, source/user/model
+annotation provenance and actual cover/title-page references. Unknown values
+remain absent. These additions are stored only in SQLite and do not re-embed text.
+Standalone article PDFs use the same start/stage/validate/finalize MCP flow.
+Issue-internal article components share the original and exact semantic ranges;
+activation waits for both unchanged embedding spaces.
+
+## Local activation and issue articles
+
+Finalization stores pages, regions, relations and exact chunks locally. It persists
+a pending publication manifest; the existing E5/BGE workers acknowledge exact
+ID/revision/hash/space matches before selecting the new revision. Retries resume
+the same publication; incomplete vectors leave the previous revision active.
+
+An article inside a journal issue can be registered without another attachment
+using catalog `parent_id`, physical-page range and accepted `region_ids`. It shares
+the issue original and exact semantic chunk ranges, carries its own catalog
+metadata, and creates no duplicate pages or ingestion job. Partial-chunk ranges
+are rejected. Standalone articles use the same attached-source workflow as books.

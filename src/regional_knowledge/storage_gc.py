@@ -36,7 +36,9 @@ async def collect(backend, *, apply=False):
                 await db.execute('update rkb_illustrations set crop_object_id=null where crop_object_id=%s and vibepublish_entry_ref is not null',(obj['id'],))
             elif obj['kind']=='document_graph':
                 await db.execute("update rkb_ingestion_jobs set staged_graph_object_id=null where staged_graph_object_id=%s and state in ('finalized','failed')",(obj['id'],))
-            await backend.object_store.delete(obj['object_key'])
+        # Binary transport never runs while a local writer transaction is held.
+        await backend.object_store.delete(obj['object_key'])
+        async with backend.data_client._connection({'x-rkb-service':'1'}) as db:
             await db.execute('update rkb_objects set deleted_at=now() where id=%s',(obj['id'],))
             result['deleted_objects']+=1;result['deleted_bytes']+=obj['size_bytes']
     logging.getLogger(__name__).info(json.dumps({'event':'storage_gc',**result}))
@@ -51,7 +53,7 @@ async def reserve_source(backend, principal, document_id, key, downloaded, mime)
     maximum=int(os.environ.get('RKB_STAGING_MAX_BYTES',str(800*1024*1024)))
     if not 1<=maximum<=1024*1024*1024:raise ValueError('staging_capacity_config_invalid')
     ident=uuid5(UUID(document_id),'source:'+downloaded.sha256)
-    async with backend.data_client._connection({'x-rkb-service':'1'}) as db:
+    async with backend.data_client._connection({'x-rkb-service':'1'},**({'write':True} if hasattr(backend,'corpus') else {})) as db:
         await db.execute("select pg_advisory_xact_lock(hashtext('rkb-staging-capacity'))")
         await db.execute('select id from rkb_documents where id=%s for update',(UUID(document_id),))
         existing=await(await db.execute('select id,deleted_at from rkb_objects where id=%s',(ident,))).fetchone()

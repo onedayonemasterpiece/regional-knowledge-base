@@ -437,7 +437,7 @@ async def test_require_archive_bypasses_even_available_local_source(tmp_path, mo
             raise AssertionError('local source must not satisfy require_archive')
     async def handler(request):
         return httpx.Response(200, json=[{'owner_user_id': owner.subject,
-            'source_archive_status': 'verified', 'source_archive_ref': 'entry'}])
+            'source_sha256':hashlib.sha256(data).hexdigest(), 'source_archive_status': 'verified', 'source_archive_ref': 'entry'}])
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     backend = SimpleNamespace(client=client, config=SimpleNamespace(url='https://test'),
         _headers=lambda p: {}, object_store=Store())
