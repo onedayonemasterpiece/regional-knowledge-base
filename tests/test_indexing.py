@@ -77,7 +77,7 @@ async def test_missing_vectors_batching_replay_recovery_and_safe_degradation(gra
         # Query priority is retained ahead of all older import jobs.
         interactive=q.enqueue(actor.subject,'interactive',['query']);done=complete_documents(q,actor);assert done[0]['id']==interactive and all(j['kind']=='document' for j in done[1:])
         final=await IndexReconciler(b,q).tick();assert final['e5_written']==0 and final['bge_written']==10 and final['bge_submitted']==0
-        ready=await status(b,actor);assert ready.e5_missing==ready.bge_missing==0 and ready.effective_retrieval_mode=='bge_lexical'
+        ready=await status(b,actor);assert ready.e5_missing==ready.bge_missing==0 and ready.effective_retrieval_mode=='bge'
         monkeypatch.setenv('RKB_BGE_WARM_MODE','e5_bge_lexical')
         fused_ready=await status(b,actor)
         assert fused_ready.e5_missing==fused_ready.bge_missing==0

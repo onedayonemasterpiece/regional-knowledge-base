@@ -21,6 +21,15 @@ batch groups and source hashes are persisted, and affected groups must be refres
 when grouping/input changes. Do not silently use batch1 documents with batch4
 quality expectations. The current incomplete source projection remains incomplete.
 
+The same isolated service also exposes a bounded loopback-only `/token-count`
+operation for ingestion validation. It uses an untruncated copy of the pinned E5
+tokenizer and a separately provisioned BGE tokenizer from the exact BGE revision.
+The BGE tokenizer file is SHA-256 checked before use and lives outside Git at
+`fast-e5/bge-m3-tokenizer.json` by default (or `RKB_BGE_TOKENIZER_PATH`).
+The MCP process still imports no tokenizer/model package. If the exact BGE
+tokenizer is unavailable or mismatched, validation of a new revision fails closed
+instead of allowing silent 512-token truncation.
+
 One process, one native inference thread, one async FIFO queue of capacity10.
 The service binds only loopback, accepts at most64KiB JSON/8000 characters per
 text, query batch1 or passage batch≤4, and fixed model/space/roles only. Queue

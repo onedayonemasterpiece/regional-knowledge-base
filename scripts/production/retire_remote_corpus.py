@@ -12,7 +12,7 @@ from psycopg.rows import dict_row
 from operator_env import load_service_env
 from regional_knowledge.sqlite_corpus import SQLiteCorpus,TABLES,COLUMNS,canonical,row_key
 KEEP={'rkb_vector_items','rkb_chunk_embeddings_e5','rkb_chunk_embeddings_bge'}
-FUNCTIONS={'rkb_current_actor_id','rkb_vector_scope','rkb_vector_candidates_v2','rkb_default_material_identity'}
+FUNCTIONS={'rkb_current_actor_id','rkb_vector_scope','rkb_vector_revision_scope','rkb_vector_candidates_v2','rkb_vector_candidates_v3','rkb_default_material_identity'}
 async def run(args):
  load_service_env();local=SQLiteCorpus(args.database);backup=SQLiteCorpus(args.backup);receipt=json.loads(args.migration_report.read_text())
  if backup.digest()!=receipt['parity'] or not receipt['backup_restored']:raise ValueError('restored migration snapshot digest required')

@@ -9,7 +9,7 @@ from regional_knowledge.supabase_backend import _embedder_from_env,_object_store
 from regional_knowledge.contracts import Principal
 
 async def run():
-    load_service_env();os.environ['RKB_BGE_WARM_MODE']='e5_bge_lexical'
+    load_service_env();os.environ['RKB_BGE_WARM_MODE']='bge'
     inputs=json.loads(Path(os.environ['RKB_FROZEN_CASES']).read_text());cases=inputs['cases']
     baseline=json.loads(Path(os.environ['RKB_FROZEN_BASELINE']).read_text()) if os.getenv('RKB_FROZEN_BASELINE') else None
     old=None if baseline else PostgresBackend(os.environ['KB_SUPABASE_SESSION_CONNECTION'],embedder=_embedder_from_env(),object_store=_object_store_from_env(),pool_max_size=2)
@@ -24,7 +24,7 @@ async def run():
             yield db
     if old:old.data_client._connection=scoped
     doc=new.corpus.one('rkb_documents',inputs['document_id'])
-    actor=Principal(subject=doc['owner_user_id'],client_id='frozen-hard6',issuer='application-actor-bridge',access_token='internal')
+    actor=Principal(subject=doc['owner_user_id'],client_id='frozen-hard6',issuer='application-actor-bridge',access_token=<redacted>
     report={'revision':doc['active_revision'],'source_sha256':doc['source_sha256'],'cases':[]}
     try:
         for case in cases:

@@ -24,6 +24,8 @@ async def main():
             await db.execute(Path('sql/021_vector_only_plane.sql').read_text().strip().removeprefix('begin;').removesuffix('commit;'))
             anchors=await(await db.execute('select count(*) n,count(*) filter(where source_sha256 is null or owner_user_id is null) unbound from rkb_vector_items')).fetchone()
             if anchors['n']!=len(items) or anchors['unbound']:raise ValueError('anchor identity coverage failed')
+            rpc=await(await db.execute("select to_regprocedure('public.rkb_vector_candidates_v3(text,text,text,text,integer)')::text name,to_regprocedure('public.rkb_vector_revision_scope(uuid,bigint)')::text scope")).fetchone()
+            if not rpc or not rpc['name'] or not rpc['scope']:raise ValueError('compact vector candidate scope/RPC missing')
         print(json.dumps(anchors))
     finally:await client.aclose()
 if __name__=='__main__':asyncio.run(main())

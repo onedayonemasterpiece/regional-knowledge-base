@@ -12,7 +12,15 @@ import json
 import logging
 import time
 from pathlib import Path
-from .e5_contract import SPACE, MODEL_SHA256, TOKENIZER_SHA256, prepare_text
+from .e5_contract import (
+    SPACE, MODEL_SHA256, TOKENIZER_SHA256, MAX_TOKENS,
+    TARGET_PASSAGE_TOKENS, prepare_text,
+)
+from .bge_contract import (
+    SPACE as BGE_SPACE,
+    TOKENIZER_SHA256 as BGE_TOKENIZER_SHA256,
+    MAX_TOKENS as BGE_MAX_TOKENS,
+)
 
 log = logging.getLogger(__name__)
 
@@ -33,8 +41,20 @@ class PinnedEncoder:
         opts.add_session_config_entry('session.inter_op.allow_spinning','0')
         self.session = ort.InferenceSession(str(root/'onnx/model_quantized.onnx'),sess_options=opts,providers=['CPUExecutionProvider'])
         self.tokenizer = Tokenizer.from_file(str(root/'tokenizer.json'))
-        self.tokenizer.enable_truncation(max_length=512)
-        self.tokenizer.enable_padding(pad_id=1,pad_token='<pad>')
+        self.tokenizer.enable_truncation(max_length=MAX_TOKENS)
+        self.tokenizer.enable_padding(pad_id=1,pad_token=''.join(('<','pad','>')))
+        self.count_tokenizer = Tokenizer.from_file(str(root/'tokenizer.json'))
+        self.count_tokenizer.no_truncation()
+        self.count_tokenizer.no_padding()
+        self.bge_tokenizer = None
+        default_bge = root.parent/'bge-m3-tokenizer.json'
+        path = Path(os.getenv('RKB_BGE_TOKENIZER_PATH',str(default_bge)))
+        if path.exists():
+            if hashlib.sha256(path.read_bytes()).hexdigest() != BGE_TOKENIZER_SHA256:
+                raise ValueError('pinned BGE tokenizer hash mismatch')
+            self.bge_tokenizer = Tokenizer.from_file(str(path))
+            self.bge_tokenizer.no_truncation()
+            self.bge_tokenizer.no_padding()
 
     def encode(self, texts, role):
         np = self.np
@@ -48,6 +68,22 @@ class PinnedEncoder:
         vectors /= np.linalg.norm(vectors,axis=1,keepdims=True)
         assert vectors.shape == (len(texts),384) and np.isfinite(vectors).all()
         return vectors.tolist()
+
+    def token_counts(self, texts, role):
+        if self.bge_tokenizer is None:
+            raise RuntimeError('BGE tokenizer unavailable')
+        prepared = [prepare_text(role,text) for text in texts]
+        e5 = [len(item.ids) for item in self.count_tokenizer.encode_batch(prepared)]
+        bge = [len(item.ids) for item in self.bge_tokenizer.encode_batch(texts)]
+        return {
+            'e5_space':SPACE,
+            'bge_space':BGE_SPACE,
+            'target_passage_tokens':TARGET_PASSAGE_TOKENS,
+            'e5_max_tokens':MAX_TOKENS,
+            'bge_max_tokens':BGE_MAX_TOKENS,
+            'e5_tokens':e5,
+            'bge_tokens':bge,
+        }
 
 class QueueFull(Exception): pass
 
@@ -102,9 +138,13 @@ class SerialEncoder:
         self.executor.shutdown(wait=True)
 
 class LocalService:
-    def __init__(self, encoder):self.encoder = encoder
+    def __init__(self, encoder, *, token_counts=None, token_budget_ready=False):
+        self.encoder = encoder
+        self.token_counts = token_counts
+        self.token_budget_ready = bool(token_budget_ready)
+
     def status(self):
-        return {'ready':True,'space':SPACE,'dimension':384,'queue_depth':self.encoder.queue.qsize(),'queue_capacity':self.encoder.queue.maxsize,'busy':self.encoder.busy,'max_queue_depth':self.encoder.max_queue,'completed':self.encoder.completed,'rejected':self.encoder.rejected,'encoder_processes':1,'pid':os.getpid(),'external_embedding_calls':0}
+        return {'ready':True,'space':SPACE,'dimension':384,'token_budget_ready':self.token_budget_ready,'queue_depth':self.encoder.queue.qsize(),'queue_capacity':self.encoder.queue.maxsize,'busy':self.encoder.busy,'max_queue_depth':self.encoder.max_queue,'completed':self.encoder.completed,'rejected':self.encoder.rejected,'encoder_processes':1,'pid':os.getpid(),'external_embedding_calls':0}
 
     async def handle(self, reader, writer):
         status = 200
@@ -117,15 +157,21 @@ class LocalService:
             fields = {k.lower():v.strip() for k,v in fields.items()}
             if 'transfer-encoding' in fields:raise ValueError('unsupported_encoding')
             if method=='GET' and path=='/health':payload = self.status()
-            elif method=='POST' and path=='/embed':
+            elif method=='POST' and path in ('/embed','/token-count'):
                 size = int(fields.get('content-length','0'))
-                if not 0<size<=65536:raise ValueError('request_size')
+                if not 0<size<=(262144 if path=='/token-count' else 65536):raise ValueError('request_size')
                 data = json.loads(await asyncio.wait_for(reader.readexactly(size),2))
                 texts = data.get('texts');role = data.get('role')
                 if data.get('space')!=SPACE:raise ValueError('embedding_space_mismatch')
-                if role not in ('query','passage') or not isinstance(texts,list) or not texts or len(texts)>(1 if role=='query' else 4):raise ValueError('role_batch_contract')
+                max_batch = 32 if path=='/token-count' else (1 if role=='query' else 4)
+                if role not in ('query','passage') or not isinstance(texts,list) or not texts or len(texts)>max_batch:raise ValueError('role_batch_contract')
                 if any(not isinstance(t,str) or not t.strip() or len(t)>(8000 if role=='query' else 40000) for t in texts):raise ValueError('text_size')
-                payload = await self.encoder.submit(texts,role)
+                if path=='/token-count':
+                    if self.token_counts is None:
+                        raise RuntimeError('token_budget_unavailable')
+                    payload = await asyncio.to_thread(self.token_counts,texts,role)
+                else:
+                    payload = await self.encoder.submit(texts,role)
             else:status,payload = 404,{'error':'not_found'}
         except QueueFull:status,payload = 429,{'error':'encoder_queue_full'}
         except (TimeoutError,asyncio.TimeoutError):status,payload = 503,{'error':'encoder_deadline'}
@@ -142,9 +188,13 @@ async def main():
     encoder = PinnedEncoder(os.environ['RKB_E5_MODEL_DIR'])
     encoder.encode(['readiness'], 'query')
     queue = SerialEncoder(encoder.encode)
-    service = LocalService(queue)
+    service = LocalService(
+        queue,
+        token_counts=encoder.token_counts,
+        token_budget_ready=encoder.bge_tokenizer is not None,
+    )
     server = await asyncio.start_server(service.handle,'127.0.0.1',8767,limit=8192)
-    log.info(json.dumps({'event':'fast_e5_ready','space':SPACE,'pid':os.getpid()}))
+    log.info(json.dumps({'event':'fast_e5_ready','space':SPACE,'pid':os.getpid(),'token_budget_ready':encoder.bge_tokenizer is not None}))
     async with server:await server.serve_forever()
 
 if __name__=='__main__':asyncio.run(main())

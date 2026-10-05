@@ -26,6 +26,12 @@ no prefixes, batch1, max512 tokens, first-token CLS pooling, FP32 L2 normalizati
 These versions are checked before readiness. Model files are downloaded only in
 Kaggle at the pinned commit; no inference package/model is installed in MCP.
 
+For ingestion validation only, the tokenizer JSON from that exact pinned BGE
+revision is provisioned on the DevCoveer host outside Git and verified against
+SHA-256 `21106b6d7dab2952c1d496fb21d5dc9db75c28ed361a05f5020bbba27810dd08`.
+The isolated E5 sidecar uses it only for untruncated token counting; BGE inference
+and model weights remain in the private worker.
+
 `011_bge_rankings.sql` adds a separate typed vector table and RLS-aware ranking
 RPC. It returns branch/rank diagnostics; fusion never adds raw cross-space cosine
 scores. Alias phrases remain a separate exact lexical signal supplied explicitly

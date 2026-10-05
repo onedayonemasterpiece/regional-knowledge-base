@@ -43,14 +43,23 @@ with empty printed text when linked to a searchable illustration.
 
 Build retrieval chunks as coherent semantic passages, not as a mechanical copy of
 native PDF text blocks. The existing chunk contract may reference ordered regions
-from several pages. When practical, target roughly **800–1,800 characters** of
-printed source material, attach short body fragments to their surrounding passage,
-and keep a genuine sentence/paragraph continuation together across a page boundary.
-Headings, captions and image-only evidence may be shorter. Use bounded overlap only
-when it represents a real semantic boundary; do not duplicate every neighboring
-chunk. Both current encoders cap input at 512 tokens, so avoid passages that are
-conservatively likely to exceed that budget. Character thresholds emitted by
-validation are diagnostics only, not token counts.
+from several pages. The measured operating target is about **256 encoder tokens**
+per semantic passage. On the audited book corpus this was typically about
+**800–1,000 characters**, with a practical observed range around **700–1,100**.
+Those character figures are guidance, not a tokenizer substitute. Attach short body
+fragments to their surrounding passage and keep a genuine sentence/paragraph
+continuation together across a page boundary. Page boundaries are provenance, not
+default embedding boundaries. Headings, captions and image-only evidence may be
+shorter. Use bounded overlap only when it represents a real semantic boundary; do
+not duplicate every neighboring chunk.
+
+Both deployed encoders cap the **final augmented search material** at 512 tokens.
+Validation obtains exact untruncated counts from the pinned E5 and BGE tokenizers,
+including the E5 passage prefix and caption/model-observation augmentation. A chunk
+above either hard limit blocks validation/finalization rather than being silently
+truncated. The 256-token target is a quality diagnostic, not a hard semantic split:
+a self-contained passage may be longer while remaining below both 512-token limits.
+Character thresholds emitted by graph validation remain diagnostics only.
 
 Validation also reports retrieval_quality:open_continuation_boundaries:N when
 adjacent prose chunks retain strong signs of an unfinished source-order boundary

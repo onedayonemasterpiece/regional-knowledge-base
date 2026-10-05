@@ -184,7 +184,11 @@ def build_server(
             "only when that archive is genuinely unavailable. Resume existing ingestion "
             "state after interruptions. The model performs semantic reading/recognition; "
             "the MCP only transports and stores deterministic source material. Hide internal "
-            "workflow terms unless they are useful to explain a real blocker. Never infer "
+            "workflow terms unless they are useful to explain a real blocker. Build coherent "
+            "retrieval passages around roughly 256 encoder tokens, usually about 800-1000 "
+            "characters and generally about 700-1100 for the current book corpus; never use "
+            "page boundaries as chunk boundaries by default. Preserve complete semantic "
+            "sentences/paragraphs and let validation enforce exact final-input token budgets. Never infer "
             "that a source is public."
         ),
         **kwargs,
@@ -313,7 +317,10 @@ def build_server(
             "and creates/resumes the next revision on the same logical document without a "
             "re-upload. Resume existing state after interruptions. Finalization alone activates "
             "the revision. If next_action is wait, return control to the user and check status "
-            "later instead of tight polling."
+            "later instead of tight polling. Stage coherent semantic retrieval passages near "
+            "256 encoder tokens (typically 800-1000 characters, broadly 700-1100 here), not "
+            "mechanical page-sized chunks. Exact E5/BGE token counts are validated over the "
+            "final augmented search material before finalization."
         ),
         annotations=ToolAnnotations(
             read_only_hint=False,

@@ -18,7 +18,7 @@ async def wait_result(queue,actor,job_id,seconds):
 
 async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,aliases=None):
     started=time.monotonic();queue=BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
-    mode=os.environ.get('RKB_BGE_WARM_MODE','bge_lexical')
+    mode=os.environ.get('RKB_BGE_WARM_MODE','bge')
     if mode not in ('bge','bge_lexical','e5_bge','e5_bge_lexical'):raise RuntimeError('invalid BGE warm path')
     query_hash=hashlib.sha256(query.encode()).hexdigest()
     status=await asyncio.to_thread(queue.status)
@@ -40,7 +40,15 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
     if status['state']=='ready' and 'e5' in MODES[mode]:e5_task=asyncio.create_task(encode_e5())
     try:
         if not job or job['state']!='done':
-            job=await wait_result(queue,principal.subject,main_job_id,10 if status['state']=='ready' else 0)
+            try:
+                wait_seconds=float(os.environ.get('RKB_BGE_QUERY_WAIT_SECONDS','0.8'))
+            except ValueError:
+                wait_seconds=.8
+            wait_seconds=max(0.0,min(wait_seconds,3.0))
+            job=await wait_result(
+                queue,principal.subject,main_job_id,
+                wait_seconds if status['state']=='ready' else 0,
+            )
         if job is None:
             fast=await backend.search(query,principal,match_count=match_count,_fast_only=True)
             state='starting' if status['state'] in ('stopped','starting') else 'unavailable' if status['state']=='failed' else 'pending'
@@ -57,11 +65,34 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
             except Exception:e5_vector=None
         database_start=time.monotonic()
         literal=lambda vector:'['+','.join(format(value,'.9g') for value in vector)+']' if vector is not None else None
-        response=await backend.client.post(f'{backend.config.url.rstrip("/")}/rest/v1/rpc/rkb_multilingual_rankings',headers=backend._headers(principal),json={'query_text':query,'bge_vector':literal(bge_vector),'bge_space':BGE_SPACE,'e5_vector':literal(e5_vector),'e5_space':E5_SPACE if e5_vector else None,'aliases':aliases or [],'depth':100})
+        include_lexical='lexical' in MODES[mode]
+        try:
+            lexical_budget_ms=max(10,min(int(os.environ.get('RKB_LEXICAL_BUDGET_MS','100')),1000))
+        except ValueError:
+            lexical_budget_ms=100
+        response=await backend.client.post(
+            f'{backend.config.url.rstrip("/")}/rest/v1/rpc/rkb_multilingual_rankings',
+            headers=backend._headers(principal),
+            json={
+                'query_text':query,
+                'bge_vector':literal(bge_vector),
+                'bge_space':BGE_SPACE,
+                'e5_vector':literal(e5_vector),
+                'e5_space':E5_SPACE if e5_vector else None,
+                'aliases':aliases or [],
+                'depth':100,
+                'include_lexical':include_lexical,
+                'lexical_timeout_ms':lexical_budget_ms,
+            },
+        )
         response.raise_for_status();rows=response.json();branches=list(MODES[mode])
-        if hasattr(backend,'corpus') and not any(r['branch'] in ('e5','bge') for r in rows):
-            mode='lexical_only';branches=['lexical']
-            if aliases:branches+=['exact_current_alias','exact_historical_alias','exact_alias']
+        if not any(r['branch'] in ('e5','bge') for r in rows):
+            fast=await backend.search(query,principal,match_count=match_count,_fast_only=True)
+            logger.info(json.dumps({
+                'event':'main_retrieval_degraded','state':'unavailable',
+                'retrieval_mode':fast.retrieval_mode,'job_id':main_job_id,
+            }))
+            return fast.model_copy(update={'main_state':'unavailable','main_job_id':main_job_id})
         if aliases:branches+=['exact_current_alias','exact_historical_alias','exact_alias']
         fusion_start=time.monotonic();ids,diagnostics=fuse(rows,branches,limit=match_count)
         results=[]

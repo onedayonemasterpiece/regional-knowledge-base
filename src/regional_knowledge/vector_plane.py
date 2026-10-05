@@ -1,7 +1,7 @@
 """Remote Supabase vector-only client. Local actor admission is authoritative.
 
 No end-user bearer or corpus payload enters this client. RLS uses the existing
-application actor bridge plus server-computed document scope, never auth.uid().
+application actor bridge plus server-computed document/revision scope, never auth.uid().
 """
 import asyncio
 import json
@@ -21,17 +21,29 @@ class RemoteVectorClient(PostgresDataClient):
                 await db.execute("set local statement_timeout='5000ms'")
                 actor=(headers or {}).get('x-rkb-actor')
                 if actor:
-                    actor=str(UUID(actor));scope=json.loads(headers.get('x-rkb-vector-documents','[]'))
-                    scope=[str(UUID(value)) for value in scope]
+                    actor=str(UUID(actor))
+                    raw_scope=json.loads(headers.get('x-rkb-vector-revisions','{}'))
+                    if not isinstance(raw_scope,dict):raise PermissionError('vector revision scope required')
+                    scope={str(UUID(key)):int(value) for key,value in raw_scope.items()}
+                    if any(value<0 for value in scope.values()):raise PermissionError('invalid vector revision scope')
                     await db.execute('set local role rkb_app')
-                    await db.execute("select set_config('rkb.actor_id',%s,true),set_config('rkb.vector_documents',%s,true)",(actor,','.join(scope)))
+                    await db.execute(
+                        "select set_config('rkb.actor_id',%s,true),"
+                        "set_config('rkb.vector_documents',%s,true),"
+                        "set_config('rkb.vector_revisions',%s,true)",
+                        (actor,','.join(scope),json.dumps(scope,separators=(',',':'))),
+                    )
                 elif (headers or {}).get('x-rkb-service')!='1':raise PermissionError('vector service context required')
                 yield db
 
-    async def candidates(self,actor,documents,chunks,e5,es,bge,bs,depth):
-        headers={'x-rkb-actor':actor,'x-rkb-vector-documents':json.dumps(documents)}
+    async def candidates(self,actor,revisions,e5,es,bge,bs,depth):
+        """Return candidates inside a compact server-authorized document/revision scope."""
+        headers={'x-rkb-actor':actor,'x-rkb-vector-revisions':json.dumps(revisions)}
         async with self._connection(headers) as db:
-            rows=await(await db.execute('select * from rkb_vector_candidates_v2(%s,%s,%s,%s,%s,%s::uuid[])',(e5,es,bge,bs,depth,chunks))).fetchall()
+            rows=await(await db.execute(
+                'select * from rkb_vector_candidates_v3(%s,%s,%s,%s,%s)',
+                (e5,es,bge,bs,depth),
+            )).fetchall()
             return [dict(row) for row in rows]
 
     async def install(self,items,space):
