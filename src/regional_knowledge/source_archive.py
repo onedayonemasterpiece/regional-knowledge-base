@@ -28,9 +28,14 @@ def _source_display_metadata(document, uri=None):
     if document.get('publication_year'):
         lines.append('Год: '+str(document['publication_year']))
     lines.append('Файл: '+filename)
+    body='\n'.join(lines)
     if uri:
-        lines.append('Источник: '+uri)
-    return filename, '\n'.join(lines)[:1000]
+        suffix='\nИсточник: '+uri
+        # Preserve the complete immutable discovery URI even when human metadata
+        # is unusually long. Truncate only the human-readable prefix.
+        budget=max(0,1000-len(suffix))
+        body=body[:budget].rstrip()+suffix
+    return filename, body[:1000]
 
 
 async def archive_payload(client, entry_ref):
@@ -121,19 +126,37 @@ class SourceArchive:
                         headers={'Content-Type':doc['mime_type'],'Idempotency-Key':key+':asset'},content=data)
                     filename=doc.get('source_archive_filename')
                     caption=doc.get('source_archive_caption')
+                    legacy_alternate_filename=None
                     if not filename or not caption:
                         if previous_attempt:
-                            source_format=(doc.get('source_format') or ('djvu' if doc.get('mime_type')=='image/vnd.djvu' else 'pdf')).lower()
+                            # Reconstruct the old implementation's payload exactly.
+                            # A historical DjVu attempt is ambiguous only when an
+                            # earlier pass persisted source_format before the lost
+                            # response; probe the current old-style filename first
+                            # and retry source.pdf only after a proven idempotency
+                            # conflict (which has no publication side effect).
+                            source_format=(doc.get('source_format') or 'pdf').lower()
                             filename=doc.get('source_filename') or 'source.'+source_format
+                            if not doc.get('source_filename') and source_format=='djvu':
+                                legacy_alternate_filename='source.pdf'
                             caption='Regional Knowledge source '+uri
                         else:
                             filename,caption=_source_display_metadata(doc,uri)
                         await self.update(doc,source_archive_filename=filename,source_archive_caption=caption)
-                    receipt=await self.client.call('vibepublish_media_store',{'request_key':key,'command':{
+                    command={
                         'kind':'put','to':self.client.grant['destination_alias'],'thread_ref':self.client.grant['source_thread_ref'],
                         'content':{'text':caption},'origin':origin,
                         'media':[{'source':{'kind':'asset','id':upload.json()['asset_id']},'role':'document',
-                                  'alt_text':filename}]}})
+                                  'alt_text':filename}]}
+                    try:
+                        receipt=await self.client.call('vibepublish_media_store',{'request_key':key,'command':command})
+                    except RuntimeError as error:
+                        if not legacy_alternate_filename or 'idempotency_conflict' not in str(error):
+                            raise
+                        filename=legacy_alternate_filename
+                        command['media'][0]['alt_text']=filename
+                        await self.update(doc,source_archive_filename=filename,source_archive_caption=caption)
+                        receipt=await self.client.call('vibepublish_media_store',{'request_key':key,'command':command})
                     operation=receipt['operation_id'];await self.update(doc,source_archive_operation_id=operation)
                 receipt=await self.client.receipt(operation)
                 if not receipt['operation_complete']:continue

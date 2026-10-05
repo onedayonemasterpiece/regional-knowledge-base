@@ -158,6 +158,16 @@ def test_source_display_metadata_uses_human_title_when_filename_missing():
     assert "1994" in caption
     assert filename in caption
     assert uri in caption
+    long_filename, long_caption = _source_display_metadata({
+        "title": "Очень длинное название " * 120,
+        "authors": ["Автор " * 100],
+        "publication_year": 1994,
+        "source_filename": None,
+        "source_format": "pdf",
+        "mime_type": "application/pdf",
+    },uri)
+    assert len(long_caption) <= 1000
+    assert long_caption.endswith("Источник: "+uri)
 
 
 @pytest.mark.asyncio
@@ -213,3 +223,43 @@ def test_migration_019_replays_and_backfills_legacy_rows(graph_db):
         cols={value[0] for value in db.execute("select column_name from information_schema.columns where table_schema='public' and table_name='rkb_documents' and column_name in ('source_archive_caption','source_archive_filename')").fetchall()}
     assert row==(0,sha,None)
     assert cols=={'source_archive_caption','source_archive_filename'}
+
+
+@pytest.mark.asyncio
+async def test_source_archive_cross_version_djvu_filename_ambiguity_is_recovered(graph_db):
+    from types import SimpleNamespace
+    from regional_knowledge.source_archive import SourceArchive
+    doc,owner,_,_,_,_=fixture(graph_db)
+    data=b'AT&TFORMsynthetic-djvu-legacy';sha=hashlib.sha256(data).hexdigest();source=uuid4()
+    with psycopg.connect(graph_db,autocommit=True) as db:
+        db.execute("update rkb_documents set source_sha256=%s,source_format='djvu',source_archive_status='pending',source_archive_attempt_at=now()-interval '1 minute',source_archive_error='TimeoutError',source_archive_operation_id=null,source_archive_caption=null,source_archive_filename=null where id=%s",(sha,doc))
+        db.execute("insert into rkb_objects(id,document_id,kind,object_key,sha256,mime_type,size_bytes) values(%s,%s,'source_pdf','legacy-djvu',%s,'image/vnd.djvu',%s)",(source,doc,sha,len(data)))
+    class Store:
+        async def get_bytes(self,key): assert key=='legacy-djvu'; return data
+    class Client:
+        def __init__(self):
+            self.owner=owner.subject;self.issuer='https://vibe.test';self.grant={'destination_alias':'kb','source_thread_ref':'https://t.me/c/4368830579/2'};self.command=None;self.attempts=[]
+        async def request(self,method,url,**kw):
+            assert kw['content']==data;return SimpleNamespace(json=lambda:{'asset_id':'legacy_asset'})
+        async def call(self,name,args):
+            cmd=args['command']
+            if cmd['kind']=='put':
+                filename=cmd['media'][0]['alt_text'];self.attempts.append(filename)
+                if filename=='source.djvu':
+                    raise RuntimeError('VibePublish tool error: idempotency_conflict')
+                assert filename=='source.pdf'
+                self.command=cmd;return {'operation_id':'op'}
+            if cmd['kind']=='search':
+                return {'media_store_items':[{'entry_ref':'entry','origin':self.command['origin'],'thread_ref':self.grant['source_thread_ref']}]}
+            return {'operation_id':'read'}
+        async def receipt(self,op):
+            if op=='op': return {'operation_complete':True,'state':'verified'}
+            return {'operation_complete':True,'state':'verified','media_store_items':[{'entry_ref':'entry','origin':self.command['origin'],'thread_ref':self.grant['source_thread_ref']}],'items':[{'media_evidence':[{'media_kind':'document','sha256':sha}]}]}
+    b=PostgresBackend(graph_db,object_store=Store(),embedder=LexicalOnlyEmbedder());client=Client()
+    try:
+        assert await SourceArchive(b,client).tick()==1
+        assert client.attempts==['source.djvu','source.pdf']
+        with psycopg.connect(graph_db) as db:
+            frozen=db.execute('select source_archive_filename,source_archive_status from rkb_documents where id=%s',(doc,)).fetchone()
+        assert frozen==('source.pdf','verified')
+    finally:await b.aclose()
