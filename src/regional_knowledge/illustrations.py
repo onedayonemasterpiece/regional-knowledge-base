@@ -36,7 +36,7 @@ async def descriptor(backend, principal, illustration_id, document_id=None):
         raise ValueError('illustration source binding mismatch')
     output = {k:item.get(k) for k in ('kind','caption_text','caption_region_ids','visual_description',
               'visual_description_provenance','visual_description_language','source_crop_sha256',
-              'display_rotation_degrees','display_crop_sha256',
+              'display_rotation_degrees','display_crop_sha256','provider_crop_sha256',
               'visibility','rights_status','vibepublish_entry_ref')}
     # psycopg returns UUID[] as native UUID objects. The descriptor is also used
     # by the direct ImageContent tool, outside Pydantic's fetch serialization.
@@ -66,19 +66,23 @@ async def fetch_crop(backend, principal, illustration_id):
         raise ValueError('stored crop integrity mismatch')
     if data is None:
         delivered_origin='telegram_archive'
-        from .source_archive import archive_bytes
+        from .source_archive import archive_payload
         from .illustration_mirror import VibePublishClient
         import os
         client=VibePublishClient(os.environ['RKB_VIBEPUBLISH_GRANT_FILE'])
         try:
             # Actor authorized the illustration above; grant never widens that ACL.
-            data=await archive_bytes(client,item['vibepublish_entry_ref'])
+            data,provider_sha=await archive_payload(client,item['vibepublish_entry_ref'])
         finally:
             await client.close()
+        persisted_provider_sha=item.get('provider_crop_sha256')
+        if persisted_provider_sha and provider_sha!=persisted_provider_sha:
+            raise ValueError('provider crop integrity mismatch')
     delivered_sha=hashlib.sha256(data).hexdigest()
-    expected_display=item.get('display_crop_sha256') or item.get('source_crop_sha256')
-    if expected_display and delivered_sha!=expected_display:
-        raise ValueError('delivered crop integrity mismatch')
+    if delivered_origin=='object_store':
+        expected_display=item.get('display_crop_sha256') or item.get('source_crop_sha256')
+        if expected_display and delivered_sha!=expected_display:
+            raise ValueError('delivered crop integrity mismatch')
     metadata=await descriptor(backend, principal, str(item['id']))
     metadata['delivered_crop_sha256']=delivered_sha
     metadata['delivered_crop_origin']=delivered_origin

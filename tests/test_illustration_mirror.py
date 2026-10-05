@@ -16,20 +16,21 @@ class Vibe:
         self.operations={};self.entries={};self.now=0;self.admissions=[];self.fail=True;self.wrong_topic=False
     async def put(self,key,metadata,crop,mime):
         if self.fail:raise OSError('boundary unavailable')
-        self.operations.setdefault(key,{'operation_id':key,'operation_complete':False,'state':'running','uri':metadata['uri']})
+        provider_sha=hashlib.sha256(b'provider-sanitized:'+crop).hexdigest()
+        self.operations.setdefault(key,{'operation_id':key,'operation_complete':False,'state':'running','uri':metadata['uri'],'provider_sha':provider_sha})
         return self.operations[key]
     def advance(self,now):
         self.now=now
         for key,operation in self.operations.items():
             if operation['operation_complete']:continue
             if sum(t>now-60 for t in self.admissions)>=20:break
-            self.admissions.append(now);self.entries[key]={'entry_ref':key,'thread_ref':self.grant['thread_ref'],'origin':{'system':'regional_knowledge','ref':operation['uri']}}
+            self.admissions.append(now);self.entries[key]={'entry_ref':key,'thread_ref':self.grant['thread_ref'],'origin':{'system':'regional_knowledge','ref':operation['uri']},'provider_sha':operation['provider_sha']}
             operation.update(operation_complete=True,state='verified')
     async def receipt(self,key):
         if key.startswith('read:'):
             entry=dict(self.entries[key[5:]])
             if self.wrong_topic:entry['thread_ref']='https://t.me/c/123456/9'
-            return {'operation_complete':True,'state':'verified','media_store_items':[entry],'items':[{'media_evidence':[{'media_kind':'document'}]}]}
+            return {'operation_complete':True,'state':'verified','media_store_items':[entry],'items':[{'media_evidence':[{'media_kind':'document','sha256':entry['provider_sha']}]}]}
         return self.operations[key]
     async def call(self,name,args):
         command=args['command']
@@ -70,6 +71,7 @@ async def test_27_private_mirrors_outage_restart_replay_topic_and_budget(graph_d
         for _ in range(10):await IllustrationMirror(b,client).tick()
         async with b.data_client._connection({'x-rkb-service':'1'}) as db:
             assert (await(await db.execute('select count(*) n from rkb_illustrations where document_id=%s and vibepublish_entry_ref is not null',(doc,))).fetchone())['n']==27
+            assert (await(await db.execute('select count(*) n from rkb_illustrations where document_id=%s and provider_crop_sha256 is not null',(doc,))).fetchone())['n']==27
             assert (await(await db.execute('select active_revision from rkb_documents where id=%s',(doc,))).fetchone())['active_revision']==1
         assert len(client.operations)==len(client.entries)==len(client.admissions)==27
         assert all(sum(t-60<s<=t for s in client.admissions)<=20 for t in client.admissions)

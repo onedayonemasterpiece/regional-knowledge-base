@@ -101,6 +101,28 @@ contract correctly:
 Character thresholds are quality heuristics only; they are never claimed to be
 token counts.
 
+## PR #39 review follow-up
+
+Independent review caught three release blockers before deployment and they were
+corrected on the branch:
+
+- VibePublish re-encodes image ingress, so provider-rendition SHA-256 is now kept
+  separately from the canonical RKB display-crop digest; archived fallback reads
+  verify the provider rendition rather than incorrectly requiring byte identity
+  with the pre-upload PNG.
+- the readable source caption retains the immutable knowledge source URI, so
+  provider text search/readback still finds the entry;
+- source-archive caption/filename are frozen in durable document state before
+  admission. A pre-upgrade uncertain request with no saved operation ID replays
+  the legacy payload under its existing idempotency key; new requests freeze the
+  new readable payload. This prevents cross-version idempotency conflict without
+  risking a duplicate send.
+
+Migration 019 is the only schema migration changed; the historical 001 migration
+was restored byte-for-byte. Constraint existence checks are relation-scoped.
+Encoder-budget diagnostics now measure the actual augmented search material
+(source plus printed captions/model observations) rather than source text alone.
+
 ## Acceptance target after the follow-up
 
 1. Exact source text/region coverage and evidence hashes remain intact.

@@ -709,18 +709,20 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
     short_body_chunks=0
     encoder_budget_risk=0
     for chunk in graph.chunks:
-        try:graph_material(graph,chunk)
+        search_text=None
+        try:search_text,_=graph_material(graph,chunk)
         except (ValueError,KeyError):errors.append(f'chunk has missing or invalid visual search material: {chunk.chunk_id}')
         member_regions=[regions.get(str(region_id)) for region_id in chunk.region_ids]
         has_body=any(region is not None and region.kind in {RegionKind.BODY,RegionKind.TABLE,RegionKind.MARGINALIA} for region in member_regions)
-        length=len((chunk.normalized_text or chunk.text).strip())
+        source_length=len((chunk.normalized_text or chunk.text).strip())
         if has_body:
             body_chunk_count+=1
-            if length < 350:
+            if source_length < 350:
                 short_body_chunks+=1
         # Character count is only a conservative risk proxy. Both current
         # encoders cap at 512 tokens; never claim this is an exact token count.
-        if length > 2400:
+        augmented_length=len(search_text or (chunk.normalized_text or chunk.text).strip())
+        if augmented_length > 2400:
             encoder_budget_risk+=1
     # Avoid noisy diagnostics on tiny fixtures/documents; fragmentation is a
     # corpus-shape signal and becomes useful only with a meaningful sample.

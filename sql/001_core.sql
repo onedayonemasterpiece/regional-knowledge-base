@@ -137,14 +137,6 @@ create table if not exists public.rkb_illustrations (
   rights_policy_version text,
   vibepublish_entry_ref text,
   source_crop_sha256 text check (source_crop_sha256 is null or source_crop_sha256 ~ '^[a-f0-9]{64}$'),
-  display_rotation_degrees smallint not null default 0,
-  display_crop_sha256 text,
-  constraint rkb_illustrations_display_rotation_cardinal check (
-    display_rotation_degrees in (0,90,180,270)
-  ),
-  constraint rkb_illustrations_display_crop_sha256_format check (
-    display_crop_sha256 is null or display_crop_sha256 ~ '^[a-f0-9]{64}$'
-  ),
   constraint rkb_public_media_requires_rights check (
     visibility <> 'public'
     or (

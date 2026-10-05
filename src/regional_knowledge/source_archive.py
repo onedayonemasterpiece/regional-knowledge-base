@@ -9,7 +9,7 @@ from .illustration_mirror import VibePublishClient
 log=logging.getLogger(__name__)
 
 
-def _source_display_metadata(document):
+def _source_display_metadata(document, uri=None):
     source_format=(document.get('source_format') or ('djvu' if document.get('mime_type')=='image/vnd.djvu' else 'pdf')).lower()
     extension='.djvu' if source_format=='djvu' else '.pdf'
     raw_name=(document.get('source_filename') or '').strip()
@@ -28,10 +28,12 @@ def _source_display_metadata(document):
     if document.get('publication_year'):
         lines.append('Год: '+str(document['publication_year']))
     lines.append('Файл: '+filename)
+    if uri:
+        lines.append('Источник: '+uri)
     return filename, '\n'.join(lines)[:1000]
 
 
-async def archive_bytes(client, entry_ref):
+async def archive_payload(client, entry_ref):
     read=await client.call('vibepublish_media_store',{'command':{'kind':'get','entry_ref':entry_ref}})
     for _ in range(60):
         receipt=await client.receipt(read['operation_id'])
@@ -39,9 +41,18 @@ async def archive_bytes(client, entry_ref):
         await asyncio.sleep(.5)
     if receipt['state']!='verified':raise RuntimeError('archive_source_unavailable')
     assets=[m for item in receipt.get('items',[]) for m in item.get('media',[]) if m.get('source',{}).get('kind')=='asset']
-    if len(assets)!=1:raise RuntimeError('archive_download_binding_missing')
+    evidence=[e for item in receipt.get('items',[]) for e in item.get('media_evidence',[]) if e.get('media_kind')=='document']
+    if len(assets)!=1 or len(evidence)!=1:raise RuntimeError('archive_download_binding_missing')
     response=await client.request('GET',client.issuer+'/v1/assets/'+assets[0]['source']['id'])
-    return response.content
+    data=response.content
+    actual_sha=hashlib.sha256(data).hexdigest()
+    provider_sha=evidence[0].get('sha256')
+    if provider_sha and provider_sha!=actual_sha:raise RuntimeError('archive_provider_digest_mismatch')
+    return data,provider_sha or actual_sha
+
+
+async def archive_bytes(client, entry_ref):
+    return (await archive_payload(client,entry_ref))[0]
 
 
 async def download_source(backend, principal, document_id, obj, path, *, require_archive=False):
@@ -91,6 +102,7 @@ class SourceArchive:
         count=0
         for doc in docs:
             try:
+                previous_attempt = doc.get('source_archive_attempt_at') is not None
                 # System selection contains metadata only; source bytes require actor authorization.
                 async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
                     authorized=await(await db.execute('select id from rkb_documents where id=%s and owner_user_id=rkb_current_actor_id()', (doc['id'],))).fetchone()
@@ -107,7 +119,16 @@ class SourceArchive:
                     key="rkb:source:"+hashlib.sha256(f"{self.client.owner}:{doc['id']}:{doc['source_sha256']}".encode()).hexdigest()
                     upload=await self.client.request('POST',self.client.issuer+'/v1/assets',
                         headers={'Content-Type':doc['mime_type'],'Idempotency-Key':key+':asset'},content=data)
-                    filename,caption=_source_display_metadata(doc)
+                    filename=doc.get('source_archive_filename')
+                    caption=doc.get('source_archive_caption')
+                    if not filename or not caption:
+                        if previous_attempt:
+                            source_format=(doc.get('source_format') or ('djvu' if doc.get('mime_type')=='image/vnd.djvu' else 'pdf')).lower()
+                            filename=doc.get('source_filename') or 'source.'+source_format
+                            caption='Regional Knowledge source '+uri
+                        else:
+                            filename,caption=_source_display_metadata(doc,uri)
+                        await self.update(doc,source_archive_filename=filename,source_archive_caption=caption)
                     receipt=await self.client.call('vibepublish_media_store',{'request_key':key,'command':{
                         'kind':'put','to':self.client.grant['destination_alias'],'thread_ref':self.client.grant['source_thread_ref'],
                         'content':{'text':caption},'origin':origin,
