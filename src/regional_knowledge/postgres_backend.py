@@ -196,6 +196,11 @@ class PostgresDataClient:
                         "select set_config('rkb.actor_id', %s, true)",
                         (str(actor),),
                     )
+                    # Legacy PG corpus compatibility during migration/CI. The
+                    # SQLite authority uses RemoteVectorClient with local scope.
+                    visible = await (await connection.execute("select id from public.rkb_documents")).fetchall()
+                    await connection.execute("select set_config('rkb.vector_documents', %s, true)",
+                                             (','.join(str(d['id']) for d in visible),))
                 yield connection
 
     @staticmethod
