@@ -1,5 +1,14 @@
 # Architecture
 
+## Next target, distinct from current runtime
+
+The [catalog, exact proof and 100-source design](design/catalog-evidence-page-archive-v1.md)
+records the 2026-10-05 owner requirements. Current runtime still follows the
+architecture below. Any private query-plane relocation must pass that design's
+capacity, ACL, snapshot consistency and restore gates; it is not a new vector
+engine and is not already deployed. The [implementation task](prompts/catalog-evidence-capacity-implementation-20261005.md)
+contains the delivery scope and D01-D16 acceptance.
+
 ## Invariants
 
 Regional Knowledge Base is deliberately split into a cheap online retrieval plane and a resumable ingestion plane.

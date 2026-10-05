@@ -1,5 +1,13 @@
 # MCP surface and model optimization
 
+## Planned catalog and proof contract (2026-10-05)
+
+The [v1 target design](design/catalog-evidence-page-archive-v1.md) specifies a
+paginated publication catalog and entitlement-gated quote/page/cover presentation.
+These are not yet shipped tools. Preserve existing search/fetch/ingestion and
+verify actual client-visible schemas during implementation; server functions alone
+are not acceptance. [Executable task](prompts/catalog-evidence-capacity-implementation-20261005.md).
+
 ## Tool surface
 
 Keep the public model-facing API small and goal-oriented:

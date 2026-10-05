@@ -3,7 +3,7 @@
 This repository contains only public source code, schemas, tests and documentation for Regional Knowledge Base.
 
 - Never commit books, magazines, scans, extracted user text, image crops, credentials, access tokens, signed URLs or private metadata.
-- Canonical corpus binaries and derived artifacts live in private S3-compatible object storage; searchable metadata and ACLs live in Supabase.
+- Follow docs/storage.md: exact source/illustration binaries are privately archived through VibePublish/Telegram; S3-compatible storage is a bounded temporary cache, not the permanent corpus. Current searchable state and ACLs live in Supabase. The planned catalog/page-proof/capacity design is in docs/design/catalog-evidence-page-archive-v1.md; do not describe unimplemented placement or proof features as deployed.
 - All private reads and all writes are authorized server-side. Model/tool annotations are hints, never authorization.
 - Keep the MCP surface goal-oriented and small. The Live adapter exposes search/fetch only; ingestion is not part of the default Live capability bundle.
 - Preserve provenance: document -> page -> region -> relation -> illustration. Chunks are derived and replaceable.

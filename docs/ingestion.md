@@ -1,5 +1,13 @@
 # Book ingestion
 
+## Planned universal-source milestone (2026-10-05)
+
+The [catalog/evidence/page-archive design](design/catalog-evidence-page-archive-v1.md)
+is the next implementation target, not shipped behavior. It adds edition/issue/article
+identity, article-safe continuation, exact quote spans and asynchronous page archival.
+Model-authored semantic review remains mandatory; block bboxes alone do not prove
+exact highlighting. See the [implementation prompt](prompts/catalog-evidence-capacity-implementation-20261005.md).
+
 Use `book_ingest(start, file, metadata)` with an attached source. Production
 must accept at least **PDF and DjVu**. The exact downloaded source SHA and owner
 identify one logical document; attachment IDs are resumable request identities.

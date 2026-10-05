@@ -1,5 +1,16 @@
 # Storage, privacy and lifecycle
 
+## Planned capacity and page archive milestone (2026-10-05)
+
+The [v1 target design](design/catalog-evidence-page-archive-v1.md) adds a private
+page-archive topic, verified WebP documents, a durable bounded spool and one sealed
+manifest registration instead of per-page Supabase progress writes. Its capacity
+DoD is 100 source equivalents / 100k active chunks / 30k pages with Supabase <=400 MB.
+Heavy-query placement is a measured decision with a private PostgreSQL option;
+no relocation or revision cleanup is implied to have shipped. The sections below
+describe the existing implementation. Use the aggregate-only
+`scripts/production/audit_storage_budget.py` for repeatable read-only measurements.
+
 ## Storage boundary — Telegram source archive, Supabase retrieval state, bounded object cache
 
 The current S3-compatible bucket is capacity-constrained (about 1 GiB) and must
