@@ -120,6 +120,28 @@ def ready(ctx,c):
     return True
 
 
+def supersede_older_pending(ctx,document_id,revision):
+    rows=ctx.db.execute(
+        "select revision,ingestion_id from revision_publication "
+        "where document_id=? and revision<? and state='pending' order by revision",
+        (document_id,revision),
+    ).fetchall()
+    for row in rows:
+        ctx.db.execute(
+            "update revision_publication set state='superseded' "
+            "where document_id=? and revision=? and state='pending'",
+            (document_id,row['revision']),
+        )
+        old=ctx.one('rkb_ingestion_jobs',row['ingestion_id'])
+        if old and old['state']!='finalized':
+            ctx.corpus.put(
+                'rkb_ingestion_jobs',
+                [{**old,'state':'failed','cursor':None,
+                  'error_code':f"superseded_by_revision_{revision}"}],
+                connection=ctx.db,
+            )
+
+
 def activate(ctx,p):
     existing=ctx.one('rkb_ingestion_jobs',p['p_ingestion_id']);doc=ctx.one('rkb_documents',p['p_document_id'])
     if existing and doc and existing['document_id']==doc['id'] and existing['owner_user_id']==ctx.actor==doc['owner_user_id'] and existing['staged_revision']==p['p_revision'] and existing['state']=='finalized':return [{'document_id':doc['id'],'active_revision':doc['active_revision'],'ingestion_state':'finalized'}]
@@ -128,6 +150,7 @@ def activate(ctx,p):
     previous=ctx.db.execute('select * from revision_publication where document_id=? and revision=?',(d['id'],rev)).fetchone()
     if previous and (previous['manifest']!=frozen or previous['source_sha256']!=d['source_sha256'] or previous['ingestion_id']!=j['id']):raise ValueError('publication identity changed')
     ctx.db.execute('insert into revision_publication values(?,?,?,?,?,?,?) on conflict(document_id,revision) do nothing',(d['id'],rev,j['id'],d['source_sha256'],frozen,canonical(events),'pending'))
+    supersede_older_pending(ctx,d['id'],rev)
     if not all(ready(ctx,c) for c in chunks):
         ctx.corpus.put('rkb_ingestion_jobs',[{**j,'state':'processing','cursor':'vectors'}],connection=ctx.db)
         return [{'document_id':d['id'],'active_revision':d['active_revision'],'ingestion_state':'processing','pending_vectors':True}]

@@ -30,6 +30,11 @@ revision/hash idempotency keys. Completed jobs can be installed after restart
 without submitting or encoding them again. At most64 unfinished document jobs
 are produced; the existing queue claims interactive queries ahead of documents.
 An E5 outage does not block BGE enqueue, source activation or lexical retrieval.
+If a newer replacement revision is finalized while an older replacement is still
+waiting for vectors, the older pending publication is marked `superseded` and
+its ingestion becomes an explicit failed/superseded job. The indexer then selects
+only the newest pending revision; any already-written older vectors remain inert
+and cannot activate that superseded revision.
 
 Readiness appears in finalized book_ingest status, search/Live evidence results
 and the narrow regular-MCP indexing_status tool (optional document scope): active
