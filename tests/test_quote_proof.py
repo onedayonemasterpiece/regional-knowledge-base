@@ -151,3 +151,46 @@ async def test_source_scan_reader_cannot_select_duplicate_in_other_article(tmp_p
     assert result['status']=='ok' and result['method']=='model_localized' and image and calls==[True,False]
     assert max(x for p in result['polygons'] for x,y in p)<450
     await b.aclose()
+
+@pytest.mark.asyncio
+async def test_clipped_final_glyph_padding_and_full_independent_match():
+    from PIL import ImageDraw
+    import json
+    image=Image.new('RGB',(600,300),'white');draw=ImageDraw.Draw(image)
+    # A terminal glyph and punctuation lie beyond the model's clipped right edge.
+    draw.rectangle((80,100,160,120),fill='black')
+    draw.rectangle((172,100,179,120),fill='black')
+    draw.rectangle((183,117,185,120),fill='black')
+    calls=[]
+    class Reader(FlashLiteLocator):
+        async def call(self,source,prompt,*,structured=False):
+            calls.append(structured)
+            if structured:return json.dumps({'lines':[{'text':'Record 1945.','bbox':[130,330,280,410],'order':0}]})
+            # Compare source pixels, not an implementation-mirroring box value:
+            # the independent reader must receive all final glyph and period ink.
+            assert source.getpixel((185-28,119-97))==(0,0,0)
+            assert 'Record 1945.' not in prompt
+            return self.transcript
+    reader=Reader(key='test');reader.transcript='Record 1945.'
+    polygons,visible,count=await reader.locate(image,'Record 1945.')
+    assert count==2 and calls==[True,False]
+    assert max(x for p in polygons for x,y in p)*image.width/1000>=185
+    reader.transcript='Record 194'
+    with pytest.raises(ValueError,match='independent crop text mismatch'):
+        await reader.locate(image,'Record 1945.')
+    reader.transcript='Record 1945. Unrelated'
+    with pytest.raises(ValueError,match='independent crop text mismatch'):
+        await reader.locate(image,'Record 1945.')
+
+
+def test_horizontal_padding_does_not_authorize_region_gap():
+    from PIL import ImageDraw
+    from regional_knowledge.quote_proof import align_ink,scoped_image,scoped_polygons
+    image=Image.new('RGB',(600,300),'white')
+    ImageDraw.Draw(image).rectangle((170,100,210,120),fill='black')
+    crop,bounds,mask=scoped_image(image,[{'left':0,'top':0,'right':300,'bottom':1000},
+                                       {'left':500,'top':0,'right':1000,'bottom':1000}])
+    assert crop.getpixel((200,110))==(255,255,255)
+    expanded=align_ink(crop,[[[260,330],[295,330],[295,410],[260,410]]])
+    with pytest.raises(ValueError,match='escapes mapped'):
+        scoped_polygons(expanded,bounds,image,mask)

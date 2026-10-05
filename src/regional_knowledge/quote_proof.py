@@ -19,7 +19,7 @@ from pathlib import Path
 import httpx
 from PIL import Image,ImageDraw
 log=logging.getLogger(__name__)
-LOCATOR_VERSION='native-quads-flash-lite-v4'
+LOCATOR_VERSION='native-quads-flash-lite-v5'
 
 
 def normalize(text):
@@ -64,14 +64,19 @@ def align_ink(image,polygons):
     """Extend clipped line-height estimates to actual adjacent source ink.
 
     This performs no text recognition. Expansion is tightly bounded, stays
-    within the proposed word span, and still requires the independent reader.
+    within a small glyph-sized margin, and still requires the independent reader.
+    The caller masks unauthorized regions before alignment and checks the final
+    stripe against that same mask; padding never authorizes more source text.
     """
     ink=image.convert('L')
     result=[]
     for polygon in polygons:
         xs=[p[0]*image.width/1000 for p in polygon];ys=[p[1]*image.height/1000 for p in polygon]
-        x0,x1=max(0,int(min(xs))-4),min(image.width,math.ceil(max(xs))+4)
         y0,y1=max(0,int(min(ys))),min(image.height,math.ceil(max(ys)))
+        # Recover clipped final glyphs/periods across small white gaps, without
+        # following arbitrary neighboring ink into another word or column.
+        padding=min(64,max(4,(y1-y0)*2))
+        x0,x1=max(0,int(min(xs))-padding),min(image.width,math.ceil(max(xs))+padding)
         if y1-y0<x1-x0:
             rows=[ink.crop((x0,y,x1,y+1)).getextrema()[0]<170 for y in range(image.height)]
             limit=min(64,max(12,(y1-y0)*3))
