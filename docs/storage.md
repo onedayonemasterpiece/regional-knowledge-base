@@ -259,8 +259,8 @@ one-hour cache grace, exact source readback and opt-in bounded maintenance GC.
 `originals` subdirectory, outside the checkout. Originals are keyed internally by
 exact source SHA, bounded by `RKB_ORIGINAL_CACHE_MAX_BYTES` (default 512 MiB).
 `RKB_ORIGINAL_CACHE_IDLE_HOURS` defaults to **4 hours**. Each authorized original-byte access
-renews the idle time. A warm proof renews only proof-cache access: it does not
-read or retain the original, which can expire after four idle hours. Private source ownership is rechecked before warm reads;
+renews the idle time. An authorized warm proof also renews an already cached original without
+downloading an absent one. Private source ownership is rechecked before warm reads;
 parsed text grants do not imply access to the original.
 
 Cross-process file leases protect installs/read copies and prevent cleanup of

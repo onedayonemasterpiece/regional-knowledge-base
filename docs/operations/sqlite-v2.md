@@ -58,8 +58,8 @@ serialized transactions; SQLite busy waits run outside the event loop.
 
 Originals default to 512 MiB and four idle hours, configurable through
 `RKB_ORIGINAL_CACHE_MAX_BYTES` / `RKB_ORIGINAL_CACHE_IDLE_HOURS`. Actual original
-access renews idle time. Warm proof renews proof-cache access only and does not
-keep an unused original alive. Incoming reservations evict eligible LRU entries;
+access renews idle time. An authorized warm proof renews an existing original without downloading an
+absent one. Incoming reservations evict eligible LRU entries;
 cross-process leases protect live copies. Existing indexing maintenance performs
 periodic idle/partial cleanup even without requests. Proof cache is 64 MiB.
 
@@ -68,7 +68,9 @@ page-by-page multi-page quotes are supported. DjVu/image-only proof uses cheap
 `gemini-2.5-flash-lite` with at most two calls/page and independent crop reading.
 Server code validates visible text/geometry and draws yellow stripes on the real
 source. Provider refusal, repeated phrase or mismatch yields an honest refusal.
-`RKB_SCAN_PROOF_ENABLED` and source ownership are rechecked for warm model hits.
+`RKB_SCAN_PROOF_ENABLED` and source ownership are rechecked for warm model hits. Both scan readers receive
+only the mapped region union; boxes are transformed to physical coordinates and
+rejected if they escape that union, including gaps between disjoint regions.
 No page archive, spool, new topic or whole-book readiness gate exists.
 
 ## Reproducible acceptance

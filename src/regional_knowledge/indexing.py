@@ -89,12 +89,24 @@ class IndexReconciler:
         if hashlib.sha256(text.encode()).hexdigest()!=row.get('search_material_sha256',row['text_sha256']):raise ValueError('search material hash mismatch')
         return text
 
+    async def legacy_anchor(self,db,row):
+        # Compatibility for historical PG fixtures/releases with the v2 FK.
+        # Production SQLite publication uses vector_plane.install instead.
+        await db.execute('''insert into rkb_vector_items(chunk_id,document_id,revision,text_sha256,search_material_sha256,source_sha256,owner_user_id)
+          select c.id,c.document_id,c.revision,c.text_sha256,c.search_material_sha256,d.source_sha256,d.owner_user_id
+          from rkb_chunks c join rkb_documents d on d.id=c.document_id
+          join rkb_users u on u.id=d.owner_user_id and u.status='active'
+          where c.id=%s and c.revision=%s and c.text_sha256=%s and c.search_material_sha256=%s
+          and c.revision=d.active_revision and d.owner_user_id=rkb_current_actor_id()
+          on conflict(chunk_id) do nothing''',(row['id'],row['revision'],row['text_sha256'],row.get('search_material_sha256',row['text_sha256'])))
+
     async def install_e5(self,actor,group,vectors):
         if hasattr(self.backend,'corpus'):return await self.install_local(actor,group,vectors,E5_SPACE,batch_sha256=fingerprint(group))
         batch=fingerprint(group);written=0
         async with self.backend.data_client._connection({'x-rkb-service':'1'}) as db:
             await db.execute("select set_config('rkb.actor_id',%s,true)",(actor.subject,))
             for row,vector in zip(group,vectors,strict=True):
+                await self.legacy_anchor(db,row)
                 result=await db.execute(f'''insert into rkb_chunk_embeddings_e5(chunk_id,embedding_space,revision,text_sha256,batch_sha256,embedding,search_material_sha256)
                  select c.id,%s,c.revision,c.text_sha256,%s,%s::vector(384),c.search_material_sha256 from rkb_chunks c join rkb_documents d on d.id=c.document_id
                  join rkb_users u on u.id=d.owner_user_id and u.status='active'
@@ -119,6 +131,7 @@ class IndexReconciler:
         if hasattr(self.backend,'corpus'):return await self.install_local(actor,[row],[vector],BGE_SPACE,model_revision=REVISION)
         async with self.backend.data_client._connection({'x-rkb-service':'1'}) as db:
             await db.execute("select set_config('rkb.actor_id',%s,true)",(actor.subject,))
+            await self.legacy_anchor(db,row)
             cursor=await db.execute(f'''insert into rkb_chunk_embeddings_bge(chunk_id,embedding_space,model_revision,revision,text_sha256,embedding,search_material_sha256)
              select c.id,%s,%s,c.revision,c.text_sha256,%s::vector(1024),c.search_material_sha256 from rkb_chunks c join rkb_documents d on d.id=c.document_id
              join rkb_users u on u.id=d.owner_user_id and u.status='active'

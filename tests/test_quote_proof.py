@@ -58,10 +58,16 @@ async def test_multiple_regions_and_warm_scan_revocation(tmp_path,monkeypatch):
     actor=Principal(subject=owner,client_id='test',issuer='test',access_token='test')
     result,image=await source_proof(b,actor,chunk,text,0);assert result['status']=='ok' and result['method']=='native_text' and len(result['polygons'])==2 and image
     b.corpus.put('rkb_documents',[{**d,'source_format':'djvu'}]);calls=[]
-    async def locate(self,image,quote):calls.append(quote);return [[[10,10],[200,10],[200,30],[10,30]]],quote,2
+    async def locate(self,image,quote,**kwargs):calls.append(quote);return [[[10,10],[200,10],[200,30],[10,30]]],quote,2
     monkeypatch.setattr(FlashLiteLocator,'locate',locate);monkeypatch.setenv('RKB_SCAN_PROOF_ENABLED','1')
     result,image=await source_proof(b,actor,chunk,'First printed region.',0)
     assert result['status']=='ok' and result['method']=='model_localized' and calls
+    from regional_knowledge.original_cache import OriginalCache
+    cache=OriginalCache.from_env()
+    with cache.db() as db:db.execute('update entries set last_used=0 where sha=?',(source_sha,))
+    warm,wimage=await source_proof(b,actor,chunk,'First printed region.',0)
+    assert warm['cache_hit'] and wimage and len(calls)==1
+    with cache.db() as db:assert db.execute('select last_used from entries where sha=?',(source_sha,)).fetchone()[0]>0
     monkeypatch.setenv('RKB_SCAN_PROOF_ENABLED','0')
     result,image=await source_proof(b,actor,chunk,'First printed region.',0)
     assert result['reason']=='scan_capability_disabled' and image is None and len(calls)==1
@@ -74,3 +80,23 @@ def test_native_hyphen_across_separate_blocks(tmp_path):
     hit,status=native_page(path,0,'Independent archival record.')
     assert status=='ok' and len(hit[1])==4
     assert normalize(hit[2])=='Independent archival record.'
+
+@pytest.mark.asyncio
+async def test_scoped_scan_duplicate_column_and_region_union():
+    from PIL import ImageDraw
+    from regional_knowledge.quote_proof import scoped_image,scoped_polygons
+    image=Image.new('RGB',(1000,500),'white');draw=ImageDraw.Draw(image)
+    draw.text((40,40),'Repeated citation.',fill='black');draw.text((600,40),'Repeated citation.',fill='black')
+    boxes=[{'left':20,'top':50,'right':300,'bottom':150}]
+    crop,bounds,mask=scoped_image(image,boxes)
+    assert crop.width<300 and crop.height<100
+    assert bounds[2]<600 # Another article's duplicate never reaches either reader.
+    inside=[[[100,100],[800,100],[800,700],[100,700]]]
+    result=scoped_polygons(inside,bounds,image,mask)
+    assert all(20<=x<=300 and 50<=y<=150 for p in result for x,y in p)
+    # Disjoint mapped regions must not authorize the bounding-box gap.
+    boxes=[{'left':0,'top':0,'right':200,'bottom':200},{'left':800,'top':800,'right':1000,'bottom':1000}]
+    crop,bounds,mask=scoped_image(image,boxes)
+    assert crop.getpixel((600,40))==(255,255,255)
+    with pytest.raises(ValueError,match='escapes mapped'):
+        scoped_polygons([[[400,400],[600,400],[600,600],[400,600]]],bounds,image,mask)

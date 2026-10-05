@@ -46,6 +46,14 @@ class OriginalCache:
             yield
         finally:os.close(fd)
 
+    def touch_existing(self,sha):
+        """Renew an authorized warm proof's retained original, never download."""
+        if not re.fullmatch('[a-f0-9]{64}',sha):raise ValueError('invalid source hash')
+        with self.lock(sha):
+            if not (self.root/sha).is_file():return False
+            with self.db() as db:
+                return db.execute('update entries set last_used=? where sha=?',(self.clock(),sha)).rowcount==1
+
     def cleanup(self,*,reserve=0):
         deleted=0
         # Crash leftovers are collectible only after their installation/read

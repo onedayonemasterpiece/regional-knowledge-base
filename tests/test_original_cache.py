@@ -42,3 +42,13 @@ def test_crash_partial_cleanup(tmp_path):
     cache=OriginalCache(tmp_path);sha='a'*64;partial=tmp_path/(sha+'.partial-123');partial.write_bytes(b'partial')
     with cache.lock(sha):cache.cleanup();assert partial.exists()
     cache.cleanup();assert not partial.exists()
+
+def test_warm_proof_touch_existing_without_loading_absent(tmp_path):
+    import hashlib
+    from regional_knowledge.original_cache import OriginalCache
+    now=[0.0];cache=OriginalCache(tmp_path,idle_seconds=10,max_bytes=100,clock=lambda:now[0]);raw=b'original';sha=hashlib.sha256(raw).hexdigest();temp=tmp_path/(sha+'.partial-test');temp.write_bytes(raw)
+    with cache.lock(sha,exclusive=True):cache.install(sha,temp,len(raw))
+    now[0]=9;assert cache.touch_existing(sha)
+    now[0]=11;assert cache.cleanup()['deleted']==0
+    assert not cache.touch_existing('a'*64) and not (tmp_path/('a'*64)).exists()
+    now[0]=20;assert cache.cleanup()['deleted']==1
