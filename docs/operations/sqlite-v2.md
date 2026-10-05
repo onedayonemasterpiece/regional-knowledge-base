@@ -67,7 +67,10 @@ Native PDF word/quads are checked first; same-page multi-region and bounded
 page-by-page multi-page quotes are supported. DjVu/image-only proof uses cheap
 allowlisted Flash-Lite (`gemini-2.5-flash-lite` by default; configured
 `gemini-3.1-flash-lite` when available), with at most two calls/page and independent
-crop reading. Short strips retain their original pixels on a padded reader canvas.
+crop reading. Clipped bbox edges receive a bounded horizontal margin (at most
+64 source pixels and twice the proposed line height); independent
+reading must still match the entire quote, and final stripes must stay inside
+the mapped region union. Short strips retain their original pixels on a padded reader canvas.
 Server code validates visible text/geometry and draws yellow stripes on the real
 source. Provider refusal, repeated phrase or mismatch yields an honest refusal.
 `RKB_SCAN_PROOF_ENABLED` and source ownership are rechecked for warm model hits. Both scan readers receive
