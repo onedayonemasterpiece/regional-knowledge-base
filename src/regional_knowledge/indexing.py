@@ -43,13 +43,18 @@ class IndexReconciler:
 
     def actor(self,owner):return Principal(subject=str(owner),client_id='index-maintenance',issuer='internal-actor-bridge',access_token='internal-actor-bridge')
 
+    def selected_revision(self):
+        if hasattr(self.backend,'corpus'):
+            return "(c.revision=d.active_revision or exists(select 1 from revision_publication rp where rp.document_id=d.id and rp.revision=c.revision and rp.state='pending'))"
+        return 'c.revision=d.active_revision'
+
     async def documents(self):
         # System metadata selection only. No source bytes/locators leave this
         # boundary until the owner account and chunk are authorized below.
         async with self.backend.data_client._connection({'x-rkb-service':'1'}) as db:
             rows=await(await db.execute(f'''select distinct d.id,d.owner_user_id from rkb_documents d
              join rkb_users u on u.id=d.owner_user_id and u.status='active'
-             join rkb_chunks c on c.document_id=d.id and (c.revision=d.active_revision or exists(select 1 from revision_publication rp where rp.document_id=d.id and rp.revision=c.revision and rp.state='pending'))
+             join rkb_chunks c on c.document_id=d.id and {self.selected_revision()}
              left join rkb_chunk_embeddings_e5 e on e.chunk_id=c.id
              left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id
              where (not ({VALID_E5}) or not ({VALID_BGE}))
@@ -68,7 +73,7 @@ class IndexReconciler:
               ({VALID_E5}) valid,e.batch_sha256 existing_batch
              from rkb_chunks c join rkb_documents d on d.id=c.document_id
              left join rkb_chunk_embeddings_e5 e on e.chunk_id=c.id
-             where d.id=%s and (c.revision=d.active_revision or exists(select 1 from revision_publication rp where rp.document_id=d.id and rp.revision=c.revision and rp.state='pending'))), missing as (
+             where d.id=%s and {self.selected_revision()}), missing as (
               select distinct revision,batch from ranked where not valid order by revision,batch limit 2)
              select * from ranked where (revision,batch) in(select revision,batch from missing) order by revision,batch,text_start,id''',(E5_SPACE,document))).fetchall()
         groups=[]
@@ -90,10 +95,10 @@ class IndexReconciler:
         async with self.backend.data_client._connection({'x-rkb-service':'1'}) as db:
             await db.execute("select set_config('rkb.actor_id',%s,true)",(actor.subject,))
             for row,vector in zip(group,vectors,strict=True):
-                result=await db.execute('''insert into rkb_chunk_embeddings_e5(chunk_id,embedding_space,revision,text_sha256,batch_sha256,embedding,search_material_sha256)
+                result=await db.execute(f'''insert into rkb_chunk_embeddings_e5(chunk_id,embedding_space,revision,text_sha256,batch_sha256,embedding,search_material_sha256)
                  select c.id,%s,c.revision,c.text_sha256,%s,%s::vector(384),c.search_material_sha256 from rkb_chunks c join rkb_documents d on d.id=c.document_id
                  join rkb_users u on u.id=d.owner_user_id and u.status='active'
-                 where c.id=%s and c.revision=%s and c.text_sha256=%s and c.search_material_sha256=%s and (c.revision=d.active_revision or exists(select 1 from revision_publication rp where rp.document_id=d.id and rp.revision=c.revision and rp.state='pending')) and d.owner_user_id=rkb_current_actor_id() and rkb_can_read_document(c.document_id)
+                 where c.id=%s and c.revision=%s and c.text_sha256=%s and c.search_material_sha256=%s and {self.selected_revision()} and d.owner_user_id=rkb_current_actor_id() and rkb_can_read_document(c.document_id)
                  on conflict(chunk_id) do update set embedding_space=excluded.embedding_space,revision=excluded.revision,text_sha256=excluded.text_sha256,batch_sha256=excluded.batch_sha256,embedding=excluded.embedding,search_material_sha256=excluded.search_material_sha256,updated_at=now()
                  where rkb_chunk_embeddings_e5.embedding_space is distinct from excluded.embedding_space or rkb_chunk_embeddings_e5.revision is distinct from excluded.revision or rkb_chunk_embeddings_e5.text_sha256 is distinct from excluded.text_sha256 or rkb_chunk_embeddings_e5.search_material_sha256 is distinct from excluded.search_material_sha256 or rkb_chunk_embeddings_e5.batch_sha256 is distinct from excluded.batch_sha256''',(E5_SPACE,batch,literal(validate_e5(vector)),row['id'],row['revision'],row['text_sha256'],row.get('search_material_sha256',row['text_sha256'])))
                 written+=result.rowcount
@@ -114,10 +119,10 @@ class IndexReconciler:
         if hasattr(self.backend,'corpus'):return await self.install_local(actor,[row],[vector],BGE_SPACE,model_revision=REVISION)
         async with self.backend.data_client._connection({'x-rkb-service':'1'}) as db:
             await db.execute("select set_config('rkb.actor_id',%s,true)",(actor.subject,))
-            cursor=await db.execute('''insert into rkb_chunk_embeddings_bge(chunk_id,embedding_space,model_revision,revision,text_sha256,embedding,search_material_sha256)
+            cursor=await db.execute(f'''insert into rkb_chunk_embeddings_bge(chunk_id,embedding_space,model_revision,revision,text_sha256,embedding,search_material_sha256)
              select c.id,%s,%s,c.revision,c.text_sha256,%s::vector(1024),c.search_material_sha256 from rkb_chunks c join rkb_documents d on d.id=c.document_id
              join rkb_users u on u.id=d.owner_user_id and u.status='active'
-             where c.id=%s and c.revision=%s and c.text_sha256=%s and c.search_material_sha256=%s and (c.revision=d.active_revision or exists(select 1 from revision_publication rp where rp.document_id=d.id and rp.revision=c.revision and rp.state='pending')) and d.owner_user_id=rkb_current_actor_id() and rkb_can_read_document(c.document_id)
+             where c.id=%s and c.revision=%s and c.text_sha256=%s and c.search_material_sha256=%s and {self.selected_revision()} and d.owner_user_id=rkb_current_actor_id() and rkb_can_read_document(c.document_id)
              on conflict(chunk_id) do update set embedding_space=excluded.embedding_space,model_revision=excluded.model_revision,revision=excluded.revision,text_sha256=excluded.text_sha256,embedding=excluded.embedding,search_material_sha256=excluded.search_material_sha256,updated_at=now()
              where rkb_chunk_embeddings_bge.embedding_space is distinct from excluded.embedding_space or rkb_chunk_embeddings_bge.model_revision is distinct from excluded.model_revision or rkb_chunk_embeddings_bge.text_sha256 is distinct from excluded.text_sha256 or rkb_chunk_embeddings_bge.search_material_sha256 is distinct from excluded.search_material_sha256 or rkb_chunk_embeddings_bge.revision is distinct from excluded.revision''',(BGE_SPACE,REVISION,literal(vector),row['id'],row['revision'],row['text_sha256'],row.get('search_material_sha256',row['text_sha256'])))
             return cursor.rowcount
@@ -125,7 +130,7 @@ class IndexReconciler:
     async def bge(self,actor,document):
         async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
             rows=await(await db.execute(f'''select c.id,c.document_id,c.revision,c.text_sha256,c.search_material,c.search_material_sha256 from rkb_chunks c join rkb_documents d on d.id=c.document_id
-             left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id where d.id=%s and (c.revision=d.active_revision or exists(select 1 from revision_publication rp where rp.document_id=d.id and rp.revision=c.revision and rp.state='pending')) and not ({VALID_BGE})
+             left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id where d.id=%s and {self.selected_revision()} and not ({VALID_BGE})
              order by c.text_start,c.id limit 16''',(document,BGE_SPACE,REVISION))).fetchall()
         submitted=written=0
         for row in rows:
@@ -139,8 +144,8 @@ class IndexReconciler:
             if await asyncio.to_thread(self.queue.document_pending)>=64:break
             text=await self.source(actor,row)
             async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
-                active=await(await db.execute('''select c.id from rkb_chunks c join rkb_documents d on d.id=c.document_id
-                 where c.id=%s and c.revision=%s and c.text_sha256=%s and c.search_material_sha256=%s and (c.revision=d.active_revision or exists(select 1 from revision_publication rp where rp.document_id=d.id and rp.revision=c.revision and rp.state='pending')) and d.owner_user_id=rkb_current_actor_id() for share of d''',(row['id'],row['revision'],row['text_sha256'],row['search_material_sha256']))).fetchone()
+                active=await(await db.execute(f'''select c.id from rkb_chunks c join rkb_documents d on d.id=c.document_id
+                 where c.id=%s and c.revision=%s and c.text_sha256=%s and c.search_material_sha256=%s and {self.selected_revision()} and d.owner_user_id=rkb_current_actor_id() for share of d''',(row['id'],row['revision'],row['text_sha256'],row['search_material_sha256']))).fetchone()
                 if not active:continue
                 await asyncio.to_thread(self.queue.enqueue,actor.subject,key,[text],kind='document',identity=bge_identity(row));submitted+=1
         return submitted,written
@@ -212,6 +217,7 @@ def write_health(stats):
     temp=path.with_name(path.name+'.new');temp.write_text(json.dumps(value));temp.chmod(0o600);temp.replace(path)
 
 async def run_loop(backend,queue):
+    if not hasattr(backend,"corpus"):return await _legacy_run_loop(backend,queue)
     import fcntl
     worker=IndexReconciler(backend,queue)
     lock_path=backend.corpus.path.with_suffix('.indexing.lock')
@@ -229,6 +235,27 @@ async def run_loop(backend,queue):
                 await asyncio.sleep(POLL_SECONDS)
         finally:
             if worker.mirror:await worker.mirror.client.close()
+
+async def _legacy_run_loop(backend,queue):
+    worker=IndexReconciler(backend,queue);await backend.data_client._ensure_open()
+    # One independent connection owns LISTEN and a session advisory mutex.
+    # It never holds source rows, model calls or private queue texts.
+    async with backend.data_client.pool.connection() as listener:
+        await listener.set_autocommit(True)
+        lock=await(await listener.execute("select pg_try_advisory_lock(hashtext('rkb-index-maintenance')) locked")).fetchone()
+        if not lock['locked']:raise RuntimeError('indexing owner already running')
+        try:
+            await listener.execute('listen rkb_index_activation')
+            while True:
+                try:stats=await worker.tick()
+                except Exception as error:
+                    stats={'e5_written':0,'bge_submitted':0,'bge_written':0,'errors':[type(error).__name__]};log.warning(json.dumps({'event':'indexing_pass_failed','error_type':type(error).__name__}))
+                write_health(stats)
+                async for _ in listener.notifies(timeout=POLL_SECONDS,stop_after=1):
+                    log.info(json.dumps({'event':'indexing_activation_wakeup'}))
+        finally:
+            if worker.mirror:await worker.mirror.client.close()
+            await listener.execute('unlisten rkb_index_activation');await listener.execute("select pg_advisory_unlock(hashtext('rkb-index-maintenance'))");await listener.set_autocommit(False)
 
 async def main():
     from .supabase_backend import backend_from_env
