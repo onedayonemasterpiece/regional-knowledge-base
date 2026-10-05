@@ -194,3 +194,19 @@ def test_horizontal_padding_does_not_authorize_region_gap():
     expanded=align_ink(crop,[[[260,330],[295,330],[295,410],[260,410]]])
     with pytest.raises(ValueError,match='escapes mapped'):
         scoped_polygons(expanded,bounds,image,mask)
+
+
+def test_crop_edge_padding_maps_last_authorized_pixel_not_outside():
+    from regional_knowledge.quote_proof import scoped_image,scoped_polygons,align_ink
+    image=Image.new('RGB',(1400,700),'white')
+    crop,bounds,mask=scoped_image(image,[{'left':40,'top':170,'right':310,'bottom':260}])
+    # Exact real failing bbox: horizontal padding reaches both crop edges.
+    padded=align_ink(crop,[[[64,214],[838,214],[838,785],[64,785]]])
+    physical=scoped_polygons(padded,bounds,image,mask)
+    assert max(x for p in physical for x,y in p)*image.width/1000==bounds[2]-1
+    assert min(x for p in physical for x,y in p)*image.width/1000==bounds[0]
+    # Inclusive edges do not permit the crop bounding box's unauthorized gap.
+    crop,bounds,mask=scoped_image(image,[{'left':40,'top':170,'right':310,'bottom':260},
+                                       {'left':600,'top':170,'right':900,'bottom':260}])
+    with pytest.raises(ValueError,match='escapes mapped'):
+        scoped_polygons([[[0,0],[1000,0],[1000,1000],[0,1000]]],bounds,image,mask)

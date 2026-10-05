@@ -19,7 +19,7 @@ from pathlib import Path
 import httpx
 from PIL import Image,ImageDraw
 log=logging.getLogger(__name__)
-LOCATOR_VERSION='native-quads-flash-lite-v5'
+LOCATOR_VERSION='native-quads-flash-lite-v6'
 
 
 def normalize(text):
@@ -111,7 +111,9 @@ def scoped_polygons(polygons,bounds,image,mask,*,crop_coordinates=True):
     x0,y0,x1,y1=bounds
     mapped=[]
     for polygon in polygons:
-        points=[[(x0+x*(x1-x0)/1000)/image.width*1000,(y0+y*(y1-y0)/1000)/image.height*1000] for x,y in polygon] if crop_coordinates else polygon
+        # PIL bounds are half-open; normalized 1000 is the last included
+        # source pixel, not the first pixel outside the authorized crop.
+        points=[[(x0+x*(x1-x0-1)/1000)/image.width*1000,(y0+y*(y1-y0-1)/1000)/image.height*1000] for x,y in polygon] if crop_coordinates else polygon
         stripe=Image.new('L',image.size,0)
         ImageDraw.Draw(stripe).polygon([(x*image.width/1000,y*image.height/1000) for x,y in points],fill=255)
         if ImageChops.subtract(stripe,mask).getbbox():raise ValueError('localization escapes mapped region union')
