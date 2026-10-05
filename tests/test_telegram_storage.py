@@ -238,13 +238,16 @@ async def test_source_archive_cross_version_djvu_filename_ambiguity_is_recovered
         async def get_bytes(self,key): assert key=='legacy-djvu'; return data
     class Client:
         def __init__(self):
-            self.owner=owner.subject;self.issuer='https://vibe.test';self.grant={'destination_alias':'kb','source_thread_ref':'https://t.me/c/4368830579/2'};self.command=None;self.attempts=[]
+            self.owner=owner.subject;self.issuer='https://vibe.test';self.grant={'destination_alias':'kb','source_thread_ref':'https://t.me/c/4368830579/2'};self.command=None;self.attempts=[];self.lose_first=True
         async def request(self,method,url,**kw):
             assert kw['content']==data;return SimpleNamespace(json=lambda:{'asset_id':'legacy_asset'})
         async def call(self,name,args):
             cmd=args['command']
             if cmd['kind']=='put':
                 filename=cmd['media'][0]['alt_text'];self.attempts.append(filename)
+                if filename=='source.djvu' and self.lose_first:
+                    self.lose_first=False
+                    raise TimeoutError('lost response while probing legacy payload')
                 if filename=='source.djvu':
                     raise RuntimeError('VibePublish tool error: idempotency_conflict')
                 assert filename=='source.pdf'
@@ -257,8 +260,14 @@ async def test_source_archive_cross_version_djvu_filename_ambiguity_is_recovered
             return {'operation_complete':True,'state':'verified','media_store_items':[{'entry_ref':'entry','origin':self.command['origin'],'thread_ref':self.grant['source_thread_ref']}],'items':[{'media_evidence':[{'media_kind':'document','sha256':sha}]}]}
     b=PostgresBackend(graph_db,object_store=Store(),embedder=LexicalOnlyEmbedder());client=Client()
     try:
-        assert await SourceArchive(b,client).tick()==1
-        assert client.attempts==['source.djvu','source.pdf']
+        archive=SourceArchive(b,client)
+        assert await archive.tick()==0
+        with psycopg.connect(graph_db,autocommit=True) as db:
+            frozen=db.execute('select source_archive_caption,source_archive_filename,source_archive_status from rkb_documents where id=%s',(doc,)).fetchone()
+            assert frozen==('Regional Knowledge source knowledge://documents/'+str(doc)+'/source','source.djvu','pending')
+            db.execute("update rkb_documents set source_archive_attempt_at=now()-interval '1 minute' where id=%s",(doc,))
+        assert await archive.tick()==1
+        assert client.attempts==['source.djvu','source.djvu','source.pdf']
         with psycopg.connect(graph_db) as db:
             frozen=db.execute('select source_archive_filename,source_archive_status from rkb_documents where id=%s',(doc,)).fetchone()
         assert frozen==('source.pdf','verified')

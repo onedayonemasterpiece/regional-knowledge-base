@@ -127,6 +127,7 @@ class SourceArchive:
                     filename=doc.get('source_archive_filename')
                     caption=doc.get('source_archive_caption')
                     legacy_alternate_filename=None
+                    legacy_caption='Regional Knowledge source '+uri
                     if not filename or not caption:
                         if previous_attempt:
                             # Reconstruct the old implementation's payload exactly.
@@ -139,10 +140,22 @@ class SourceArchive:
                             filename=doc.get('source_filename') or 'source.'+source_format
                             if not doc.get('source_filename') and source_format=='djvu':
                                 legacy_alternate_filename='source.pdf'
-                            caption='Regional Knowledge source '+uri
+                            caption=legacy_caption
                         else:
                             filename,caption=_source_display_metadata(doc,uri)
                         await self.update(doc,source_archive_filename=filename,source_archive_caption=caption)
+                    elif (
+                        previous_attempt
+                        and not doc.get('source_filename')
+                        and (doc.get('source_format') or '').lower()=='djvu'
+                        and caption==legacy_caption
+                        and filename=='source.djvu'
+                    ):
+                        # The prior probe may itself have lost its response after
+                        # freezing source.djvu. Preserve the unresolved legacy
+                        # ambiguity across ticks/restarts until Vibe proves which
+                        # payload was admitted under the immutable request key.
+                        legacy_alternate_filename='source.pdf'
                     command={
                         'kind':'put','to':self.client.grant['destination_alias'],'thread_ref':self.client.grant['source_thread_ref'],
                         'content':{'text':caption},'origin':origin,
