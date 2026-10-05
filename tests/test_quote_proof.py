@@ -100,3 +100,54 @@ async def test_scoped_scan_duplicate_column_and_region_union():
     assert crop.getpixel((600,40))==(255,255,255)
     with pytest.raises(ValueError,match='escapes mapped'):
         scoped_polygons([[[400,400],[600,400],[600,600],[400,600]]],bounds,image,mask)
+
+@pytest.mark.asyncio
+async def test_independent_reader_retains_source_pixels_and_rejects_mismatch():
+    image=Image.new('RGB',(600,400),'white')
+    from PIL import ImageDraw
+    ImageDraw.Draw(image).text((60,50),'Own citation.',fill='black')
+    calls=[]
+    class Reader(FlashLiteLocator):
+        async def call(self,image,prompt,*,structured=False):
+            calls.append((image,prompt,structured))
+            if structured:return '{"lines":[{"text":"Own citation.","bbox":[90,100,230,180],"order":0}]}'
+            assert image.height>=256 and image.width>=512
+            assert 'Own citation.' not in prompt
+            assert image.getextrema()[0][0]<255 # Real source ink survives padding.
+            return 'Different visible words.'
+    with pytest.raises(ValueError,match='independent crop text mismatch'):
+        await Reader(key='test').locate(image,'Own citation.')
+    assert len(calls)==2
+
+@pytest.mark.asyncio
+async def test_source_scan_reader_cannot_select_duplicate_in_other_article(tmp_path,monkeypatch):
+    import hashlib,io,json
+    from uuid import uuid4
+    import fitz
+    from regional_knowledge.sqlite_backend import SQLiteBackend
+    from regional_knowledge.sqlite_data import defaults
+    from regional_knowledge.supabase_backend import LexicalOnlyEmbedder
+    from regional_knowledge.contracts import Principal
+    from regional_knowledge.quote_proof import source_proof
+    quote='Repeated citation.';path=tmp_path/'scan.pdf'
+    with fitz.open() as native:
+        page=native.new_page(width=700,height=350);page.insert_text((40,80),quote,fontsize=16);page.insert_text((380,80),quote,fontsize=16);pix=page.get_pixmap(matrix=fitz.Matrix(2,2))
+        with fitz.open() as scan:
+            p=scan.new_page(width=700,height=350);p.insert_image(p.rect,stream=pix.tobytes('png'));scan.save(path)
+    data=path.read_bytes();source_sha=hashlib.sha256(data).hexdigest();sha=hashlib.sha256(quote.encode()).hexdigest()
+    class Store:
+        async def download_file(self,key,path):__import__('pathlib').Path(path).write_bytes(data)
+    b=SQLiteBackend(corpus_path=tmp_path/'db',embedder=LexicalOnlyEmbedder(),object_store=Store());owner,doc,page,region,chunk,obj=[str(uuid4()) for _ in range(6)]
+    b.corpus.put('rkb_users',[{**defaults('rkb_users'),'id':owner}]);b.corpus.put('rkb_documents',[{**defaults('rkb_documents'),'id':doc,'owner_user_id':owner,'source_sha256':source_sha,'source_format':'pdf','title':'Owned issue','active_revision':1,'page_count':1}]);b.corpus.put('rkb_pages',[{**defaults('rkb_pages'),'id':page,'document_id':doc,'revision':1,'physical_page_index':0}]);b.corpus.put('rkb_regions',[{**defaults('rkb_regions'),'id':region,'page_id':page,'kind':'body','reading_order':0,'source_text':quote,'bbox':{'left':20,'top':50,'right':450,'bottom':400}}]);b.corpus.put('rkb_chunks',[{**defaults('rkb_chunks'),'id':chunk,'document_id':doc,'revision':1,'title':'Article A','metadata':{'article_id':'a'},'region_ids':[region],'page_ids':[page],'source_text':quote,'search_material':quote,'text_sha256':sha,'search_material_sha256':sha}]);b.corpus.put('rkb_objects',[{**defaults('rkb_objects'),'id':obj,'document_id':doc,'kind':'source_pdf','object_key':'own','sha256':source_sha}]);b.corpus.build_fragments();calls=[]
+    async def call(self,image,prompt,*,structured=False):
+        calls.append(structured)
+        if structured:
+            assert image.width<700 # Source render is 1400px; second column is excluded.
+            return json.dumps({'lines':[{'text':quote,'bbox':[50,250,700,700],'order':0}]})
+        assert quote not in prompt
+        return quote
+    monkeypatch.setattr(FlashLiteLocator,'call',call);monkeypatch.setenv('RKB_SCAN_PROOF_ENABLED','1')
+    actor=Principal(subject=owner,client_id='test',issuer='test',access_token='test');result,image=await source_proof(b,actor,chunk,quote,0)
+    assert result['status']=='ok' and result['method']=='model_localized' and image and calls==[True,False]
+    assert max(x for p in result['polygons'] for x,y in p)<450
+    await b.aclose()
