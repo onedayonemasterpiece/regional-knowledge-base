@@ -125,7 +125,11 @@ Current implementation checkpoint:
   inspection, private source staging and private document/job creation;
 - `reprocess(document_id)`: owner-authorized verified Telegram-source-archive read,
   exact SHA verification and an idempotent `new_revision` start on the same
-  `document_id`, without asking the user to upload the book again;
+  `document_id`, without asking the user to upload the book again. Normal replay
+  resumes a still-running archived reprocess. When the user explicitly wants to
+  replace a still-pending reprocess, call the same tool with
+  `metadata.duplicate_policy="new_revision"`; this deliberately allocates one
+  newer staged revision while replay of that explicit restart remains idempotent;
 - `book_pages`: small deterministic JPEG page renders plus bounded native/embedded source
   text blocks/bboxes, maximum 8 pages per call;
 - `stage`: the model submits page-local short keys (`region_key`,

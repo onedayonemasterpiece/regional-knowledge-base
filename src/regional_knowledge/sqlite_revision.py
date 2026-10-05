@@ -12,6 +12,8 @@ def start(ctx,p):
     actor=ctx.actor
     if actor is None:raise PermissionError('actor required')
     policy=p.get('p_duplicate_policy','reuse')
+    force_new=bool(p.get('p_force_new_revision',False))
+    if force_new and policy!='new_revision':raise ValueError('forced revision requires new_revision policy')
     if policy not in ('reuse','new_revision') or p['p_page_count']<1 or not p['p_source_file_id'].strip():raise ValueError('invalid ingestion start')
     jobs=[j for j in ctx.rows('rkb_ingestion_jobs') if j['owner_user_id']==actor]
     same=[j for j in jobs if j['source_file_id']==p['p_source_file_id'] and j['duplicate_policy']==policy]
@@ -25,7 +27,7 @@ def start(ctx,p):
     doc=named or (roots[0] if roots else None)
     if doc:
         previous=sorted([j for j in jobs if j['document_id']==doc['id']],key=lambda j:(j['staged_revision'],j['created_at'],j['id']),reverse=True)
-        if previous and (policy=='reuse' or previous[0]['state']!='finalized'):
+        if previous and (policy=='reuse' or (previous[0]['state']!='finalized' and not force_new)):
             return [{'ingestion_id':previous[0]['id'],'document_id':doc['id']}]
         rev=max([doc['active_revision'],*[j['staged_revision'] for j in previous]])+1
     else:

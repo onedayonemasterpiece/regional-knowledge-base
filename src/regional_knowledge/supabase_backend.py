@@ -1059,6 +1059,7 @@ class SupabaseRestBackend(KnowledgeBackend):
         *,
         principal: Principal,
         document_id: str,
+        force_new_revision: bool = False,
     ) -> BookIngestOutput:
         response = await self.client.get(
             f"{self.config.url.rstrip('/')}/rest/v1/rkb_documents",
@@ -1101,7 +1102,13 @@ class SupabaseRestBackend(KnowledgeBackend):
             raise RuntimeError("archived source object metadata is missing")
 
         active_revision = int(document.get("active_revision") or 0)
-        source_file_id = f"archive-reprocess:{document_id}:after:{active_revision}"
+        if force_new_revision and not hasattr(self, "corpus"):
+            raise RuntimeError("forced archived reprocess requires local revision authority")
+        source_file_id = (
+            f"archive-reprocess:{document_id}:force-after:{active_revision}"
+            if force_new_revision
+            else f"archive-reprocess:{document_id}:after:{active_revision}"
+        )
 
         previous = await self._ingestion_row(
             principal=principal,
@@ -1155,6 +1162,7 @@ class SupabaseRestBackend(KnowledgeBackend):
                 "p_source_file_id": source_file_id,
                 "p_page_count": source_info.page_count,
                 "p_duplicate_policy": "new_revision",
+                **({"p_force_new_revision": True} if force_new_revision else {}),
             },
         )
         start.raise_for_status()
@@ -1279,9 +1287,13 @@ class SupabaseRestBackend(KnowledgeBackend):
                 raise ValueError("reprocess uses the verified archived source; do not attach a file")
             if not document_id:
                 raise ValueError("document_id is required for reprocess")
+            force_new_revision = bool(
+                (payload or {}).get("duplicate_policy") == "new_revision"
+            )
             return await self._reprocess_existing_source(
                 principal=principal,
                 document_id=document_id,
+                force_new_revision=force_new_revision,
             )
 
         if command != "start":
