@@ -108,3 +108,73 @@ async def test_replacement_manifest_and_local_poi_outbox(backend):
     assert b.corpus.one('rkb_documents',doc)['active_revision']==2
     outbox=b.corpus.rows('rkb_integration_outbox');assert len(outbox)==1 and outbox[0]['state']=='pending_authorization' and outbox[0]['payload']['evidence']['source_family_id']=='unknown'
     await b.local_rpc('rkb_activate_revision',p,h);assert len(b.corpus.rows('rkb_integration_outbox'))==1
+
+
+@pytest.mark.asyncio
+async def test_newer_pending_revision_supersedes_older_vector_work(backend):
+    b=backend
+    actor,doc,job1,job2,page1,page2,region1,region2,chunk1,chunk2=[
+        str(uuid4()) for _ in range(10)
+    ]
+    h={'x-rkb-actor':actor}
+    b.corpus.put('rkb_users',[{**defaults('rkb_users'),'id':actor}])
+    b.corpus.put('rkb_documents',[{
+        **defaults('rkb_documents'),'id':doc,'owner_user_id':actor,
+        'title':'Supersession source','source_sha256':'a'*64,
+        'page_count':1,'active_revision':0,
+    }])
+    jobs=[]
+    for job,revision in ((job1,1),(job2,2)):
+        jobs.append({
+            **defaults('rkb_ingestion_jobs'),'id':job,'document_id':doc,
+            'owner_user_id':actor,'source_sha256':'a'*64,
+            'source_file_id':'source','staged_revision':revision,'state':'ready',
+        })
+    b.corpus.put('rkb_ingestion_jobs',jobs)
+    for revision,page,region,chunk,text in (
+        (1,page1,region1,chunk1,'Older pending evidence'),
+        (2,page2,region2,chunk2,'Newer replacement evidence'),
+    ):
+        digest=hashlib.sha256(text.encode()).hexdigest()
+        b.corpus.put('rkb_pages',[{
+            **defaults('rkb_pages'),'id':page,'document_id':doc,
+            'revision':revision,'physical_page_index':0,
+        }])
+        b.corpus.put('rkb_regions',[{
+            **defaults('rkb_regions'),'id':region,'page_id':page,
+            'kind':'body','source_text':text,'text_sha256':digest,
+        }])
+        b.corpus.put('rkb_chunks',[{
+            **defaults('rkb_chunks'),'id':chunk,'document_id':doc,
+            'revision':revision,'region_ids':[region],'page_ids':[page],
+            'source_text':text,'search_material':text,'text_sha256':digest,
+            'search_material_sha256':digest,'title':'Evidence',
+        }])
+
+    first=await b.local_rpc(
+        'rkb_activate_revision',
+        {'p_document_id':doc,'p_ingestion_id':job1,'p_revision':1,'p_poi_events':[]},
+        h,
+    )
+    assert first.json()[0]['pending_vectors'] is True
+    second=await b.local_rpc(
+        'rkb_activate_revision',
+        {'p_document_id':doc,'p_ingestion_id':job2,'p_revision':2,'p_poi_events':[]},
+        h,
+    )
+    assert second.json()[0]['pending_vectors'] is True
+    with b.corpus.connect() as db:
+        publications={
+            row['revision']:row['state']
+            for row in db.execute(
+                'select revision,state from revision_publication where document_id=?',
+                (doc,),
+            )
+        }
+    assert publications=={1:'superseded',2:'pending'}
+    old=b.corpus.one('rkb_ingestion_jobs',job1)
+    current=b.corpus.one('rkb_ingestion_jobs',job2)
+    assert old['state']=='failed' and old['cursor'] is None
+    assert old['error_code']=='superseded_by_revision_2'
+    assert current['state']=='processing' and current['cursor']=='vectors'
+    assert b.corpus.one('rkb_documents',doc)['active_revision']==0
