@@ -290,7 +290,9 @@ Catalog list/find/get preserve unknown fields and contributor roles. `catalog_co
 returns only a registered real source cover/title page. `source_proof` supports
 same-page multi-region quotes and page-by-page multi-page quotes; an explicit
 page requires a quote scoped to that page. Native PDF quads are checked first.
-Scans and DjVu use bounded Flash-Lite localization plus an independent crop read
+Native matching may retain up to three immediately adjacent trailing punctuation
+characters from the source word box when the requested quote omits them; internal
+text still must match exactly. Scans and DjVu use bounded Flash-Lite localization plus an independent crop read
 without the expected quote. Code applies yellow stripes; ambiguous or mismatched
 results fail closed. Warm model proofs recheck `RKB_SCAN_PROOF_ENABLED` and
 source ownership, so capability revocation also rejects a warm cache hit.
