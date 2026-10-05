@@ -7,7 +7,7 @@ import argparse,asyncio,io,json,os,shlex,time
 import httpx
 from pathlib import Path
 import fitz
-from PIL import Image
+from PIL import Image,ImageDraw
 from regional_knowledge.quote_proof import FlashLiteLocator,native_page,paint
 
 async def run(out):
@@ -42,7 +42,10 @@ async def run(out):
             polys,visible,calls=await FlashLiteLocator().locate(image,quote)
             # Compare the actual proposed word area with independent native
             # geometry. A mere yellow pixel test cannot satisfy this check.
-            covered=[]
+            covered=[];ink_coverage=[]
+            stripe=Image.new('L',image.size,0);draw=ImageDraw.Draw(stripe)
+            for poly in polys:draw.polygon([(x*image.width/1000,y*image.height/1000) for x,y in poly],fill=255)
+            gray=image.convert('L')
             for r in reference:
                 x0,y0,x1,y1=r.x0/rect.width*1000,r.y0/rect.height*1000,r.x1/rect.width*1000,r.y1/rect.height*1000
                 best=0
@@ -51,9 +54,13 @@ async def run(out):
                     overlap=max(0,min(x1,max(px))-max(x0,min(px)))*max(0,min(y1,max(py))-max(y0,min(py)))
                     best=max(best,overlap/((x1-x0)*(y1-y0)))
                 covered.append(best)
+                box=(max(0,int(x0*image.width/1000)),max(0,int(y0*image.height/1000)),min(image.width,int(x1*image.width/1000)+1),min(image.height,int(y1*image.height/1000)+1))
+                dark=list(gray.crop(box).getdata());highlight=list(stripe.crop(box).getdata())
+                total=sum(v<170 for v in dark)
+                ink_coverage.append(sum(v<170 and h>0 for v,h in zip(dark,highlight,strict=True))/total if total else 0)
             good=bool(covered) and min(covered)>.65 and not repeat
             (out/(name+'-scan.webp')).write_bytes(paint(image,polys))
-            report.append({'case':name,'path':'flash_lite_scan','status':'ok' if good else 'geometry_miss','reference_word_coverage':covered,'expected':'highlight_unavailable' if repeat else 'ok','calls':calls,'seconds':time.monotonic()-started})
+            report.append({'case':name,'path':'flash_lite_scan','status':'ok' if good else 'geometry_miss','reference_word_coverage':covered,'reference_word_ink_coverage':ink_coverage,'expected':'highlight_unavailable' if repeat else 'ok','calls':calls,'seconds':time.monotonic()-started})
         except (ValueError,RuntimeError,httpx.HTTPError) as error:report.append({'case':name,'path':'flash_lite_scan','status':'highlight_unavailable','reason':type(error).__name__,'seconds':time.monotonic()-started})
     (out/'geometry.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2))
 if __name__=='__main__':

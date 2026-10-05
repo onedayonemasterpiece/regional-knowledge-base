@@ -65,7 +65,9 @@ periodic idle/partial cleanup even without requests. Proof cache is 64 MiB.
 
 Native PDF word/quads are checked first; same-page multi-region and bounded
 page-by-page multi-page quotes are supported. DjVu/image-only proof uses cheap
-`gemini-2.5-flash-lite` with at most two calls/page and independent crop reading.
+allowlisted Flash-Lite (`gemini-2.5-flash-lite` by default; configured
+`gemini-3.1-flash-lite` when available), with at most two calls/page and independent
+crop reading. Short strips retain their original pixels on a padded reader canvas.
 Server code validates visible text/geometry and draws yellow stripes on the real
 source. Provider refusal, repeated phrase or mismatch yields an honest refusal.
 `RKB_SCAN_PROOF_ENABLED` and source ownership are rechecked for warm model hits. Both scan readers receive
@@ -96,3 +98,16 @@ is about 68.6 MB, SQLite about 12.8 MB. This is an example capacity envelope, no
 promise for any 100 books. Quality is checked separately against all six exact
 frozen complete-answer cases and their target evidence IDs. Private receipts hold
 individual D01–D10 results, source hashes, actual sizes and cold/warm timings.
+
+## Observed retirement (2026-10-05)
+
+The old-writer stop barrier produced a final restored snapshot of 24,929 rows
+(the initial 24,917 plus metadata for twelve newly published synthetic vectors).
+Corpus detail delta was zero; local imports/catalog components were preserved.
+Remote RESTRICT caught the vector hash-default trigger; its independent function
+was retained and the transaction retried after verified rollback. All twenty-one
+remote corpus tables were then removed, preserving 2,376 E5 rows, 2,226 BGE rows
+and 2,638 minimal anchors. Whole-database allocation fell from 88,774,323 to
+49,411,763 bytes; vector-plane logical rows measured 14,939,334 bytes. These are
+point-in-time measurements including retained evidence revisions, not just active
+chunks. No VACUUM FULL or vector deletion was performed.

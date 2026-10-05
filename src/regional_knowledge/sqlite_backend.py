@@ -72,7 +72,7 @@ class SQLiteBackend(PostgresBackend):
         except Exception as error:
             import logging
             logging.getLogger(__name__).warning("vector_candidates_unavailable error_type=%s",type(error).__name__)
-        if name=='rkb_multilingual_rankings':return _DbResponse(rows)
+        if name=='rkb_multilingual_rankings':return _DbResponse([{**r,'matched_alias':r.get('matched_alias')} for r in rows])
         ids,_=fuse(rows,['e5','lexical'],limit=max(1,min(int(payload.get('match_count',8)),20)))
         mode='fast_e5' if any(r['branch']=='e5' for r in rows) else 'lexical_only'
         return _DbResponse([{'chunk_id':ident,'title':self.corpus.one('rkb_chunks',ident)['title'],'retrieval_mode':mode} for ident in ids],retrieval_mode=mode)

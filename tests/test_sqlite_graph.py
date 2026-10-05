@@ -25,6 +25,8 @@ async def test_graph_stage_read_discovery_and_revocation(tmp_path):
  async with b.data_client._connection({'x-rkb-service':'1'}) as db:
   await db.execute("update rkb_graph_discovery_jobs set available_at=now()-interval '10 seconds'")
  worker=GraphDiscoveryWorker(b);job=await worker.claim();assert job and job['state']=='pending'
+ await worker.entity(job,actor)
  await worker.finish(job)
+ assert any(m["signals"].get("ranking") for m in b.corpus.rows("rkb_entity_mentions"))
  b.corpus.put('rkb_users',[{**defaults('rkb_users'),'id':owner,'status':'disabled'}])
  with pytest.raises(PermissionError):await g.read(actor,node,20)
