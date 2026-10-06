@@ -12,5 +12,6 @@ This repository contains only public source code, schemas, tests and documentati
 - Supabase is a data plane, never the MCP OAuth authority. Cross-service identity uses a stable application/platform user UUID. Never forward an end-user bearer token to another MCP; use resource-specific grants or a dedicated service identity.
 - New interactive Live work must reuse onedayonemasterpiece/live-interaction.
 - Every behavior change needs focused tests and matching documentation.
+- The protected product contract is `.devcoveer/requirements.json`. Mass-ingestion readiness is a critical product requirement, not an optimization: preserve the capacity, dense-retrieval-quality, latency, per-book acceptance and change-gate thresholds there. The human-readable companion is `docs/mass-ingestion-readiness.md`. Do not claim bulk-ingestion readiness from successful indexing or vector counts alone.
 
 - Do not reintroduce implicit MCP-auth defaults from `KB_SUPABASE_URL`, Supabase JWKS, Supabase OAuth Server or `auth.uid()`. Production RLS must use the application actor bridge.

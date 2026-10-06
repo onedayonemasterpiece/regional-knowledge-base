@@ -1,0 +1,102 @@
+# Mass-ingestion readiness
+
+This is the human-readable companion to the protected requirements contract in
+`.devcoveer/requirements.json`.
+
+## Product outcome
+
+Regional Knowledge Base is being built so the owner can move from one-off book
+experiments to routine **mass ingestion of books**. A technically successful
+import is not enough. The system is ready for mass filling only when all of the
+following remain true together:
+
+1. the vector/search plane fits the applicable Supabase quota with headroom;
+2. dense retrieval finds source-backed evidence with high quality without relying
+   on lexical search to rescue it;
+3. search latency is low and predictable enough for repeated agent tool calls;
+4. each imported book preserves source/provenance and uses retrieval-oriented
+   semantic chunks;
+5. batch import/indexing is resumable, bounded and operationally boring.
+
+These are release gates, not aspirational telemetry.
+
+## Critical acceptance gates
+
+| Gate | Required acceptance |
+| --- | --- |
+| Scale | Minimum engineering benchmark: >=100 book-equivalent sources and >=100,000 active chunks, or a larger real corpus when available. This is not a product limit. |
+| Supabase steady-state | <=80% of the current applicable database quota, including vectors, vector indexes, minimal anchors/scope, ordinary indexes, TOAST and baseline/system overhead. |
+| Largest-source reimport peak | <=90% of the current applicable database quota. |
+| Dense retrieval | BGE-only held-out known-evidence Hit@5 >=85% and Hit@10 >=90%. |
+| Critical language slice | Any product-critical language slice, including RU query -> DE source while German books are in scope, Hit@10 >=85%. |
+| Retrieval benchmark | >=30 held-out source-grounded fact families; BGE-only, E5-only, lexical-only and configured fusion reported separately. |
+| Warm backend retrieval | p95 <=1000 ms on production-like corpus/concurrency. |
+| Public MCP search | p95 <=1500 ms, with a 2000 ms hard evidence-search interaction deadline. |
+| Chunk safety | Semantic target around 256 encoder tokens; exact final E5 and BGE input must remain <=512 tokens. |
+| Per-book acceptance | A newly imported/reprocessed active revision must pass source-grounded natural-query extraction/retrieval checks; paraphrases and relevant cross-language cases are included. |
+
+## Storage boundary
+
+Supabase is the vector/search data plane, not the full corpus archive. Full source
+text, scans/page images and detailed geometry remain outside Supabase. Capacity is
+measured from the actual database, including index and system overhead; raw vector
+math or row counts alone are not sufficient evidence.
+
+If the capacity gate fails, optimize placement/index representation and measure
+again. Do not silently shrink the corpus, discard evidence or weaken retrieval
+quality merely to fit quota.
+
+## Retrieval policy
+
+Dense retrieval must stand on its own. Lexical/FTS search is a useful bounded
+complement for names, exact terminology and other selective queries, but it is not
+allowed to hide a weak vector path in acceptance.
+
+Quality acceptance is source-grounded retrieval acceptance, not generated-answer
+accuracy. A green vector-count/readiness check is not a quality test.
+
+Any change to chunking, embedding model/space, vector index/search, fusion,
+lexical query formulation, authorization scope or storage placement must rerun the
+relevant capacity, retrieval-quality and latency gates before production rollout.
+
+## Per-book import contract
+
+A book is not accepted merely because finalization or indexing completed.
+
+The accepted active revision must:
+
+- exclude scanner/service material that is not part of the book;
+- preserve document -> page -> region evidence provenance;
+- use coherent semantic passages rather than page-sized embeddings;
+- pass exact E5/BGE token-budget validation with no silent truncation;
+- complete both required vector spaces;
+- pass natural-query retrieval checks against **that exact active revision**.
+
+The page review/provenance layer may be reused for a byte-identical archived
+source, but new chunking/retrieval output is evaluated again.
+
+## Operational contract
+
+Mass ingestion must be resumable and idempotent. One failed or superseded
+revision must not block unrelated books. Queues and concurrency are bounded;
+backpressure is explicit; ChatGPT does not need to keep a turn open while indexing
+finishes; only a fully indexed/accepted revision becomes active.
+
+## Current evidence and remaining proof
+
+The 2026-10-05 vector-only benchmark provides strong evidence for the small-passage
+BGE path: on the held-out fixture the selected t256 BGE projection reached Hit@5
+87.5%, Hit@10 90.62%, and RU-query -> German-source Hit@10 21/24 (87.5%). This
+meets the new retrieval-quality floors for that fixture.
+
+That does **not** yet mean the project is mass-ingestion-ready. The remaining
+critical proof includes:
+
+- measured Supabase capacity and reimport peak at the scale benchmark;
+- p95 MCP/backend latency under production-like scale and concurrency;
+- repeatable per-book active-revision retrieval acceptance on real imports,
+  including the current Brünneck reprocess;
+- continued quality after corpus growth, not only on the three-source audit corpus.
+
+Until these gates pass together, treat the system as retrieval-hardening /
+mass-ingestion-preparation rather than approved for unattended bulk filling.

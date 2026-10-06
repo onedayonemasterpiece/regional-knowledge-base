@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "project": "regional-knowledge-base",
+  "requirements": [
+    {
+      "id": "CORE-MASS-BOOK-INGESTION",
+      "statement": "Regional Knowledge Base is intended for routine mass ingestion of books, not isolated successful demos. The system is mass-ingestion-ready only when production-like capacity, retrieval quality, latency, import-quality and operational-reliability gates all pass.",
+      "critical": true,
+      "acceptance": [
+        "The minimum engineering scale benchmark covers at least 100 book-equivalent sources and 100,000 active chunks, or a larger real corpus when available; this is a readiness benchmark, not a product limit.",
+        "Routine imports are resumable and idempotent, use bounded queues/backpressure, do not require keeping a ChatGPT turn open, and one failed/superseded revision cannot block unrelated books.",
+        "A book is not considered accepted merely because text or vectors were written; its active revision must pass the required import and retrieval acceptance."
+      ]
+    },
+    {
+      "id": "CORE-SUPABASE-CAPACITY",
+      "statement": "Mass ingestion must remain within measured Supabase capacity with explicit headroom; Supabase stores the vector/search plane and minimal scope/identity metadata rather than the full corpus.",
+      "critical": true,
+      "acceptance": [
+        "Full source text, scans/page images and detailed corpus geometry remain outside Supabase; Supabase usage includes vectors, vector indexes, minimal scope/identity anchors, Postgres indexes, TOAST and system/baseline overhead.",
+        "At the production-like scale benchmark, steady-state quantified database usage is at most 80% of the current applicable Supabase database quota and the largest-source reimport peak is at most 90%.",
+        "Capacity is established from measured database usage/growth, not row-count or raw-vector arithmetic alone.",
+        "Corpus completeness, evidence provenance and retrieval quality are not silently reduced merely to fit quota; if the gate fails, storage/index representation is optimized and remeasured."
+      ]
+    },
+    {
+      "id": "CORE-DENSE-RETRIEVAL-QUALITY",
+      "statement": "Dense vector retrieval must independently provide high-quality evidence discovery; lexical/FTS retrieval is a bounded complementary signal and must not mask weak vector search.",
+      "critical": true,
+      "acceptance": [
+        "The held-out source-grounded retrieval gate contains at least 30 distinct fact families and reports known-evidence Hit@5, Hit@10 and language slices without using lexical retrieval to prefilter dense candidates.",
+        "BGE-only known-evidence Hit@5 is at least 85% and Hit@10 at least 90% on the accepted held-out benchmark.",
+        "Every critical language slice that is part of the product, including Russian queries over German sources while German books are in scope, reaches at least 85% known-evidence Hit@10.",
+        "Release acceptance always reports BGE-only, E5-only, lexical-only and configured-fusion ablations separately; one branch cannot hide another branch's degradation.",
+        "Retrieval metrics use source-grounded evidence and held-out fact families and are not mislabeled as generated-answer accuracy."
+      ]
+    },
+    {
+      "id": "CORE-AGENT-SEARCH-LATENCY",
+      "statement": "Knowledge search must have predictable low latency suitable for repeated agent tool calls, with bounded degradation rather than hidden long waits.",
+      "critical": true,
+      "acceptance": [
+        "On a production-like corpus and representative concurrency, warm backend ranked-candidate retrieval has p95 <= 1000 ms.",
+        "Public MCP search has p95 <= 1500 ms and a hard interaction deadline of 2000 ms for the evidence-search path.",
+        "No normal retrieval branch introduces an implicit multi-second or 10-second wait; unavailable slow branches either complete inside the same budget or return an explicit degraded state.",
+        "Latency acceptance reports percentiles, not only averages or best-case single queries."
+      ]
+    },
+    {
+      "id": "CORE-BOOK-IMPORT-QUALITY",
+      "statement": "Each imported book must preserve source fidelity and be chunked for retrieval rather than for page layout or transport convenience.",
+      "critical": true,
+      "acceptance": [
+        "Scanner/service material that is not part of the book is excluded while printed book material and document->page->region provenance are preserved.",
+        "Retrieval chunks are coherent semantic passages around the measured approximately 256-token operating target; page boundaries are provenance and are not default embedding boundaries.",
+        "The exact final embedding input is counted with both deployed tokenizers; exceeding either 512-token hard limit blocks acceptance rather than silently truncating.",
+        "Before a newly imported or reprocessed book is considered accepted, source-grounded natural-query retrieval checks run against that exact active revision, including paraphrased queries and cross-language queries when relevant."
+      ]
+    },
+    {
+      "id": "CORE-RETRIEVAL-CHANGE-GATE",
+      "statement": "Changes that can alter search quality, scale or latency must rerun the relevant mass-ingestion gates before production rollout.",
+      "critical": true,
+      "acceptance": [
+        "Changes to chunking, embedding model/space, vector indexes/search, fusion, lexical query formulation, authorization scope or storage placement rerun the applicable capacity, dense-quality and latency acceptance.",
+        "A green unit test suite or vector-readiness count alone is never sufficient evidence of mass-ingestion readiness.",
+        "Acceptance results identify the exact corpus/revision/model/search configuration so improvements cannot be inferred from incomparable benchmarks."
+      ]
+    },
+    {
+      "id": "CORE-REQUIREMENTS-GUARD",
+      "statement": "These mass-ingestion, capacity, retrieval-quality and latency requirements are protected product requirements and must not be silently weakened or reinterpreted by implementation work.",
+      "critical": true,
+      "acceptance": [
+        "DevCoveer exposes this manifest automatically to implementation and review tasks.",
+        "If an implementation conflicts with a critical requirement, the conflict is surfaced instead of normalized into a weaker target.",
+        "Intentional requirement changes use requirements_update with an explicit owner authorization reference."
+      ]
+    }
+  ]
+}
