@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -16,6 +17,9 @@ from mcp.server.auth.settings import (
 from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import AnyHttpUrl, Field
 
+from starlette.routing import Route
+from mcp.server.auth.routes import build_metadata, cors_middleware
+from mcp.server.auth.handlers.metadata import MetadataHandler
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from .entity_graph import GraphBundle,GraphAlias
@@ -97,6 +101,36 @@ def _transport_security(resource_url: str | None = None) -> TransportSecuritySet
     )
 
 
+class KnowledgeMCPServer(MCPServer):
+    """Advertise the public PKCE clients supported by our embedded provider."""
+
+    def streamable_http_app(self, **kwargs):
+        app = super().streamable_http_app(**kwargs)
+        if isinstance(self._auth_server_provider, RegionalOAuthProvider):
+            auth = self.settings.auth
+            metadata = build_metadata(
+                auth.issuer_url, auth.service_documentation_url,
+                auth.client_registration_options, auth.revocation_options,
+            )
+            methods = ["client_secret_post", "client_secret_basic", "none"]
+            metadata.token_endpoint_auth_methods_supported = methods
+            metadata.revocation_endpoint_auth_methods_supported = methods
+            for index, route in enumerate(app.routes):
+                if getattr(route, "path", None) == "/.well-known/oauth-authorization-server":
+                    app.routes[index] = Route(
+                        route.path,
+                        endpoint=cors_middleware(MetadataHandler(metadata).handle, ["GET", "OPTIONS"]),
+                        methods=["GET", "OPTIONS"],
+                    )
+                elif getattr(route, "path", None) == "/revoke":
+                    app.routes[index] = Route(
+                        route.path,
+                        endpoint=cors_middleware(self._auth_server_provider.revoke_endpoint, ["POST", "OPTIONS"]),
+                        methods=["POST", "OPTIONS"],
+                    )
+        return app
+
+
 def build_server(
     backend: KnowledgeBackend | None = None,
     *,
@@ -171,7 +205,7 @@ def build_server(
             "RKB_RESOURCE_URL, or RKB_DEV_NOAUTH=1 for local tests only."
         )
 
-    mcp = MCPServer(
+    mcp = KnowledgeMCPServer(
         "Regional Knowledge Base",
         instructions=(
             "Search and retrieve sourced regional knowledge. Use search before fetch. "
@@ -496,6 +530,8 @@ def build_server(
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    logging.getLogger("regional_knowledge.oauth_provider").setLevel(logging.INFO)
     profile = os.getenv("RKB_MCP_PROFILE", "full").strip().lower()
     if profile not in {"full", "live"}:
         raise RuntimeError("RKB_MCP_PROFILE must be 'full' or 'live'")

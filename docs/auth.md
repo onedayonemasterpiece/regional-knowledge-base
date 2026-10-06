@@ -95,3 +95,19 @@ narrow service identity.
 
 This design keeps the user identity layer replaceable without moving the
 Supabase database or corpus objects.
+
+## Grok connector
+
+Public MCP URL: `https://knowledge.kenigevents.ru/mcp`.
+Add a custom Grok connector with that URL; no manually supplied client secret is
+needed. Dynamic registration accepts public (`none`) PKCE clients as well as
+existing confidential ChatGPT clients. Grok HTTPS callbacks on `grok.com` are
+admitted, then bound to the exact URI registered by that client. Other callback
+origins remain rejected unless explicitly configured by the operator.
+
+Sign in on the Regional Knowledge consent page with the existing private
+`/home/dev/.local/state/regional-knowledge-base/owner-login-secret`, then approve
+access to your knowledge workspace. This is separate from DevCoveer's owner key.
+An omitted OAuth `resource` is bound to this server's sole knowledge resource;
+explicit foreign resources remain rejected. Existing clients, credentials,
+grants, corpus and worker configuration are preserved.
