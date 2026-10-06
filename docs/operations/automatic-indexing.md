@@ -4,10 +4,12 @@ Normal ChatGPT imports use book_ingest start/pages/stage/validate/finalize. Once
 activation succeeds, source evidence is authoritative immediately. Indexing runs
 in the background; the user never needs to run either backfill script.
 
-`RKB_AUTO_INDEX_ENABLED=1` requires local E5. Production enables
+`RKB_AUTO_INDEX_ENABLED=1` enables background vector publication. The measured
+production gate is BGE-only by default: E5 is an optional diagnostic/indexing
+space and is not allowed to block book activation. Production enables
 `regional-knowledge-indexing.service`, with an immutable release working directory
-and the ordinary service environment. Model libraries stay in the accepted E5
-sidecar/Kaggle CPU worker. No paid provider fallback exists in this mode.
+and the ordinary service environment. BGE document inference remains on the
+bounded worker path; no paid provider fallback exists.
 
 Migration014 adds a payload-free activation notification, actor-RLS readiness
 counts and SQL-snapshot semantic coverage guards. No durable queue/table is added.
@@ -15,10 +17,10 @@ The worker owns one PostgreSQL advisory session mutex and LISTEN connection; a
 five-second periodic pass recovers a missed wakeup, process restart or completed
 BGE job. The DB pool has two connections (listener plus ordinary bounded work).
 
-A pass rotates over at most four missing documents. Each document processes at
-most two ordered E5 batch4 groups and sixteen BGE rows. Ready chunks are skipped;
-a missing E5 member is encoded in its original document batch, while unchanged
-rows are not rewritten. Document payload bounds match the existing 40000-character
+A pass rotates over at most four documents missing an enabled indexing space.
+BGE is always attempted first and each document processes at most sixteen BGE
+rows per pass. E5 batch4 work runs only when explicitly enabled as a required or
+diagnostic space. Ready chunks are skipped; unchanged rows are not rewritten. Document payload bounds match the existing 40000-character
 stage chunk bound; query limits, model/space, token cap, prefixes, pooling and
 batch sizes are unchanged.
 
@@ -30,6 +32,9 @@ revision/hash idempotency keys. Completed jobs can be installed after restart
 without submitting or encoding them again. At most64 unfinished document jobs
 are produced; the existing queue claims interactive queries ahead of documents.
 An E5 outage does not block BGE enqueue, source activation or lexical retrieval.
+The default publication/readiness gate is BGE; set `RKB_REQUIRED_VECTOR_SPACES=e5,bge`
+only for an explicit strict dual-space experiment. `RKB_INDEX_E5_DIAGNOSTIC=1`
+may populate E5 without making it a publication requirement.
 If a newer replacement revision is finalized while an older replacement is still
 waiting for vectors, the older pending publication is marked `superseded` and
 its ingestion becomes an explicit failed/superseded job. The indexer then selects
@@ -68,7 +73,8 @@ chunk/revision/text/search-material hashes before they can be exposed.
 The private runtime `RKB_INDEXING_HEALTH_PATH` is an atomic coarse heartbeat file,
 not recovery state. Logs record activation wakeups, vector writes, enqueue counts,
 retry error types and correlation IDs; they contain no source text or credentials.
-Missing vectors remain recoverable after any transient failure. Persistent source
+Missing required vectors remain recoverable after any transient failure. Missing
+optional E5 vectors are diagnostic debt, not a publication blocker. Persistent source
 hash mismatch, disabled owner, DB/provider outage or disk/queue failure requires
 operator diagnosis; degraded readiness must not be treated as completed indexing.
 The health file becomes unavailable after120 seconds without a pass.

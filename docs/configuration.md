@@ -101,12 +101,15 @@ beta acceptance.
 | `RKB_BGE_QUERY_WAIT_SECONDS` | maximum interactive wait for a ready-worker BGE query before truthful fast fallback; default 0.8, hard maximum 3 |
 | `RKB_LEXICAL_BUDGET_MS` | bounded ordinary SQLite FTS branch budget; default 100 ms |
 | `RKB_BGE_TOKENIZER_PATH` | optional override for the SHA-pinned BGE tokenizer used only by local ingestion token-count validation |
+| `RKB_REQUIRED_VECTOR_SPACES` | comma-separated publication gate; default `bge`; `e5,bge` is an explicit strict diagnostic mode |
+| `RKB_INDEX_E5_DIAGNOSTIC` | `1` additionally populates E5 without making E5 a publication requirement |
 
 The default BGE tokenizer path is
 `~/.local/share/regional-knowledge-base/fast-e5/bge-m3-tokenizer.json`. It is
 public model metadata, not a credential, but it is provisioned outside Git to keep
-the repository small. New ingestion validation fails closed if exact E5/BGE token
-counts cannot be obtained.
+the repository small. New ingestion validation still fails closed if exact E5/BGE token counts cannot
+be obtained: E5 remains useful as an independent tokenizer/truncation safety check
+even though its vector space is not a default publication gate.
 
 ## Database-size invariant
 

@@ -12,6 +12,7 @@ from .local_e5 import LocalE5Embedder
 from .e5_contract import SPACE as E5_SPACE,validate_vector as validate_e5
 from .bge_contract import SPACE as BGE_SPACE,REVISION,validate_vector as validate_bge
 from .bge_queue import BgeQueue
+from .vector_policy import index_vector_spaces
 log=logging.getLogger(__name__)
 POLL_SECONDS=5
 
@@ -34,7 +35,7 @@ def literal(vector):return '['+','.join(format(v,'.9g') for v in vector)+']'
 
 class IndexReconciler:
     def __init__(self,backend,queue):
-        if not isinstance(backend.embedder,LocalE5Embedder):raise RuntimeError('local E5 required; no provider fallback')
+        if 'e5' in index_vector_spaces() and not isinstance(backend.embedder,LocalE5Embedder):raise RuntimeError('local E5 required when E5 indexing is enabled; no provider fallback')
         self.backend=backend;self.queue=queue;self.cursor=None
         self.mirror=None
         self.archive=None
@@ -51,14 +52,21 @@ class IndexReconciler:
     async def documents(self):
         # System metadata selection only. No source bytes/locators leave this
         # boundary until the owner account and chunk are authorized below.
+        spaces=index_vector_spaces()
+        missing=[];params=[]
+        if 'bge' in spaces:
+            missing.append(f'not ({VALID_BGE})');params.extend((BGE_SPACE,REVISION))
+        if 'e5' in spaces:
+            missing.append(f'not ({VALID_E5})');params.append(E5_SPACE)
+        predicate=' or '.join(missing)
         async with self.backend.data_client._connection({'x-rkb-service':'1'}) as db:
             rows=await(await db.execute(f'''select distinct d.id,d.owner_user_id from rkb_documents d
              join rkb_users u on u.id=d.owner_user_id and u.status='active'
              join rkb_chunks c on c.document_id=d.id and {self.selected_revision()}
              left join rkb_chunk_embeddings_e5 e on e.chunk_id=c.id
              left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id
-             where (not ({VALID_E5}) or not ({VALID_BGE}))
-             and (%s::uuid is null or d.id>%s) order by d.id limit 4''',(E5_SPACE,BGE_SPACE,REVISION,self.cursor,self.cursor))).fetchall()
+             where ({predicate})
+             and (%s::uuid is null or d.id>%s) order by d.id limit 4''',(*params,self.cursor,self.cursor))).fetchall()
         if not rows:
             wrapped=self.cursor is not None;self.cursor=None
             if wrapped:return await self.documents()
@@ -210,8 +218,8 @@ class IndexReconciler:
             await collect(self.backend,apply=True);self.last_gc=time.time()
         for document in await self.documents():
             actor=self.actor(document['owner_user_id'])
-            # An E5 outage must not prevent durable BGE enqueue/install.
-            for space in ('e5','bge'):
+            # BGE is the production gate and always runs first. E5 is optional.
+            for space in index_vector_spaces():
                 try:
                     if space=='e5':stats['e5_written']+=await self.e5(actor,document['id'])
                     else:
