@@ -17,6 +17,7 @@ V384=[1.0]+[0.0]*383;V1024=[1.0]+[0.0]*1023
 
 @pytest.mark.asyncio
 async def test_unavailable_mirror_grant_does_not_block_automatic_vectors(graph_db,tmp_path,monkeypatch):
+    monkeypatch.setenv('RKB_REQUIRED_VECTOR_SPACES','e5,bge')
     monkeypatch.setenv('RKB_VIBEPUBLISH_GRANT_FILE',str(tmp_path/'unavailable-grant.json'))
     b,q,actor,doc,rows,calls=source_fixture(graph_db,tmp_path,n=1)
     try:
@@ -58,6 +59,7 @@ def complete_documents(queue,actor):
 
 @pytest.mark.asyncio
 async def test_missing_vectors_batching_replay_recovery_and_safe_degradation(graph_db,tmp_path,monkeypatch):
+    monkeypatch.setenv('RKB_REQUIRED_VECTOR_SPACES','e5,bge')
     monkeypatch.setenv('RKB_AUTO_INDEX_ENABLED','1');monkeypatch.setenv('RKB_BGE_ENABLED','1');monkeypatch.setenv('RKB_INDEXING_HEALTH_PATH',str(tmp_path/'health.json'))
     b,q,actor,doc,rows,calls=source_fixture(graph_db,tmp_path);monkeypatch.setenv('RKB_BGE_QUEUE_PATH',str(q.path))
     try:
@@ -86,7 +88,9 @@ async def test_missing_vectors_batching_replay_recovery_and_safe_degradation(gra
         query=q.enqueue(actor.subject,'ready-query',['indexprobe'],identity={'query_sha256':hashlib.sha256(b'indexprobe').hexdigest()});complete_documents(q,actor)
         main=await b.search('indexprobe',actor,main_job_id=query);assert main.retrieval_mode=='bge_lexical' and main.main_state=='ready'
         replay=await IndexReconciler(b,q).tick();assert replay['e5_written']==replay['bge_written']==replay['bge_submitted']==0
-        with q.connect() as db:assert db.execute("select count(*) from jobs where kind='document'").fetchone()[0]==10
+        # Completed production document jobs are recovery state only; once
+        # durably installed they are retired instead of becoming a second vector store.
+        with q.connect() as db:assert db.execute("select count(*) from jobs where kind='document'").fetchone()[0]==0
         async with b.data_client._connection({'x-rkb-service':'1'}) as db:
             await db.execute('delete from rkb_chunk_embeddings_e5 where chunk_id=%s',(rows[0]['id'],))
         repair=await IndexReconciler(b,q).tick();assert repair['e5_written']==1 and repair['bge_submitted']==0
@@ -100,6 +104,7 @@ async def test_missing_vectors_batching_replay_recovery_and_safe_degradation(gra
 
 @pytest.mark.asyncio
 async def test_activation_wakes_running_loop_and_owner_restart(graph_db,tmp_path,monkeypatch):
+    monkeypatch.setenv('RKB_REQUIRED_VECTOR_SPACES','e5,bge')
     monkeypatch.setenv('RKB_INDEXING_HEALTH_PATH',str(tmp_path/'health.json'));b,q,actor,doc,rows,calls=source_fixture(graph_db,tmp_path,n=2,active=False)
     task=asyncio.create_task(run_loop(b,q))
     try:
@@ -125,9 +130,10 @@ async def test_activation_wakes_running_loop_and_owner_restart(graph_db,tmp_path
             if (await counts(b,actor))['bge_ready']==2:break
             await asyncio.sleep(.02)
         assert (await counts(b,actor))['bge_ready']==2 and len(calls)==1
-        # Exact activation replay produces no document job duplicate.
+        # Exact activation replay produces no document job duplicate. Completed
+        # document jobs have already been retired after durable installation.
         async with b.data_client._connection(b._headers(actor)) as db:await db.execute('update rkb_documents set active_revision=1 where id=%s',(doc,))
-        with q.connect() as db:assert db.execute("select count(*) from jobs where kind='document'").fetchone()[0]==2
+        with q.connect() as db:assert db.execute("select count(*) from jobs where kind='document'").fetchone()[0]==0
     finally:
         task.cancel();await asyncio.gather(task,return_exceptions=True)
         async with b.data_client._connection(b._headers(actor)) as db:await db.execute('update rkb_documents set active_revision=0 where id=%s',(doc,))
@@ -135,6 +141,7 @@ async def test_activation_wakes_running_loop_and_owner_restart(graph_db,tmp_path
 
 @pytest.mark.asyncio
 async def test_actor_status_stale_vectors_and_source_hash_fail_closed(graph_db,tmp_path,monkeypatch):
+    monkeypatch.setenv('RKB_REQUIRED_VECTOR_SPACES','e5,bge')
     b,q,actor,doc,rows,calls=source_fixture(graph_db,tmp_path,n=1)
     try:
         await IndexReconciler(b,q).tick()

@@ -16,7 +16,7 @@ from regional_knowledge.oauth_provider import (
     KNOWLEDGE_SCOPE,
     RegionalOAuthProvider,
 )
-from regional_knowledge.server import build_server
+from regional_knowledge.server import build_server, _transport_security
 
 
 def _provider(tmp_path: Path) -> RegionalOAuthProvider:
@@ -245,3 +245,113 @@ def test_consent_csp_rejects_unapproved_redirect(tmp_path: Path) -> None:
     provider = _provider(tmp_path)
     with pytest.raises(ValueError, match="invalid redirect"):
         provider._security_headers("https://evil.example/callback")
+
+
+@pytest.mark.parametrize('method', ['none', 'client_secret_post', 'client_secret_basic'])
+@pytest.mark.parametrize('include_resource', [True, False])
+def test_grok_http_pkce_tokens_refresh_revoke_and_existing_grant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: str, include_resource: bool,
+) -> None:
+    import base64
+    import hashlib
+
+    provider = _provider(tmp_path)
+    # A pre-existing confidential ChatGPT grant stays usable throughout the new flow.
+    old_request = asyncio.run(provider.authorize(provider.client, _params()))
+    old_code = parse_qs(urlsplit(provider.approve(parse_qs(urlsplit(old_request).query)['id'][0])).query)['code'][0]
+    old_loaded = asyncio.run(provider.load_authorization_code(provider.client, old_code))
+    old_tokens = asyncio.run(provider.exchange_authorization_code(provider.client, old_loaded))
+    server = build_server(backend=UnavailableBackend(), issuer=provider.issuer,
+                          resource_url=provider.resource, oauth_provider=provider)
+    callback = 'https://grok.com/connectors-oauth-exchange-code/instance-123'
+    verifier = 'v' * 64
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
+    resource = {'resource': provider.resource} if include_resource else {}
+    with TestClient(server.streamable_http_app(stateless_http=True, json_response=True, transport_security=_transport_security(provider.resource)), base_url=provider.origin) as client:
+        metadata = client.get('/.well-known/oauth-authorization-server').json()
+        assert 'none' in metadata['token_endpoint_auth_methods_supported']
+        assert 'none' in metadata['revocation_endpoint_auth_methods_supported']
+        registration = client.post('/register', json={
+            'redirect_uris': [callback], 'client_name': 'Grok integration test',
+            'token_endpoint_auth_method': method,
+            'grant_types': ['authorization_code', 'refresh_token'], 'response_types': ['code'],
+        })
+        assert registration.status_code == 201, registration.text
+        registered = registration.json()
+        cid = registered['client_id']
+        if method == 'none':
+            assert not registered.get('client_secret')
+        auth_fields = {'client_id': cid}
+        auth_headers = {}
+        if method == 'client_secret_post':
+            auth_fields['client_secret'] = registered['client_secret']
+        elif method == 'client_secret_basic':
+            basic = base64.b64encode((cid + ':' + registered['client_secret']).encode()).decode()
+            auth_headers['Authorization'] = 'Basic ' + basic
+        start = client.get('/authorize', params={
+            'client_id': cid, 'redirect_uri': callback, 'response_type': 'code',
+            'code_challenge': challenge, 'code_challenge_method': 'S256', 'state': 'grok-state',
+            **resource,
+        }, follow_redirects=False)
+        assert start.status_code == 302, start.text
+        consent = start.headers['location']
+        request_id = parse_qs(urlsplit(consent).query)['id'][0]
+        assert client.get(consent).status_code == 200
+        login = client.post('/oauth/login', data={
+            'id': request_id, 'csrf': client.cookies.get('__Host-rkb_csrf'),
+            'secret': 'owner-login-secret-12345',
+        }, headers={'Origin': provider.origin}, follow_redirects=False)
+        assert login.status_code == 303
+        page = client.get(login.headers['location'])
+        assert "form-action 'self' https://grok.com;" in page.headers['content-security-policy']
+        approved = client.post('/oauth/consent', data={
+            'id': request_id, 'csrf': client.cookies.get('__Host-rkb_csrf'), 'decision': 'allow',
+        }, headers={'Origin': provider.origin}, follow_redirects=False)
+        assert approved.status_code == 303
+        returned = urlsplit(approved.headers['location'])
+        assert returned.netloc == 'grok.com' and returned.path == urlsplit(callback).path
+        values = parse_qs(returned.query)
+        assert values['state'] == ['grok-state']
+        exchange = {**auth_fields, **resource, 'grant_type': 'authorization_code',
+                    'code': values['code'][0], 'redirect_uri': callback, 'code_verifier': verifier}
+        wrong = client.post('/token', data={**exchange, 'code_verifier': 'wrong'}, headers=auth_headers)
+        assert wrong.status_code == 400
+        tokens_response = client.post('/token', data=exchange, headers=auth_headers)
+        assert tokens_response.status_code == 200, tokens_response.text
+        tokens = tokens_response.json()
+        assert asyncio.run(provider.load_access_token(tokens['access_token'])).resource == provider.resource
+        mcp_headers = {'Authorization': 'Bearer ' + tokens['access_token'],
+                       'Accept': 'application/json, text/event-stream'}
+        tools = client.post('/mcp', json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}, headers=mcp_headers)
+        assert tools.status_code == 200 and 'tools' in tools.json()['result']
+        reused = client.post('/token', data=exchange, headers=auth_headers)
+        assert reused.status_code == 400
+        refreshed = client.post('/token', data={**auth_fields, **resource, 'grant_type': 'refresh_token',
+                                               'refresh_token': tokens['refresh_token']}, headers=auth_headers)
+        assert refreshed.status_code == 200
+        rotated = refreshed.json()
+        foreign = client.post('/revoke', data={**auth_fields, 'token': old_tokens.access_token}, headers=auth_headers)
+        assert foreign.status_code == 200
+        assert asyncio.run(provider.load_access_token(old_tokens.access_token)) is not None
+        revoked = client.post('/revoke', data={**auth_fields, 'token': rotated['refresh_token']}, headers=auth_headers)
+        assert revoked.status_code == 200
+        assert asyncio.run(provider.load_access_token(rotated['access_token'])) is None
+        assert asyncio.run(provider.load_access_token(old_tokens.access_token)) is not None
+        # Registration and grants survive loading the same encrypted store again.
+        restored = _provider(tmp_path)
+        assert asyncio.run(restored.get_client(cid)).token_endpoint_auth_method == method
+        assert asyncio.run(restored.load_access_token(old_tokens.access_token)) is not None
+
+
+@pytest.mark.parametrize('redirect', [
+    'http://grok.com/callback', 'https://grok.com.evil.example/callback',
+    'https://grok.com@evil.example/callback', 'https://evil.example@grok.com/callback',
+    'https://grok.com:444/callback', 'https://grok.com/callback#fragment',
+    'https://grok.com/callback?redirect=https://evil.example',
+])
+@pytest.mark.asyncio
+async def test_grok_registration_rejects_unsafe_callbacks(tmp_path: Path, redirect: str) -> None:
+    provider = _provider(tmp_path)
+    client = _dynamic_client(redirect_uri=redirect)
+    with pytest.raises(RegistrationError):
+        await provider.register_client(client)

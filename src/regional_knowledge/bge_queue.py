@@ -19,6 +19,8 @@ ROTATE_SECONDS = 10 * 3600 + 45 * 60
 MAX_LIFETIME = 11 * 3600
 HEARTBEAT_SECONDS = 120
 JOB_SECONDS = 180
+DONE_QUERY_RETENTION_SECONDS = 24 * 3600
+DONE_AUDIT_RETENTION_SECONDS = 24 * 3600
 
 class BgeQueue:
     def __init__(self, path, *, clock=time.time):
@@ -134,6 +136,18 @@ class BgeQueue:
         with self.connect() as db:
             return db.execute("select count(*) from jobs where kind='document' and state!='done'").fetchone()[0]
 
+    def retire_done_documents(self, actor, job_ids):
+        ids=[str(uuid.UUID(str(value))) for value in job_ids]
+        if not ids:return 0
+        if len(ids)>256:raise ValueError('too many BGE retirement ids')
+        slots=','.join('?' for _ in ids)
+        with self.connect() as db:
+            cursor=db.execute(
+                f"delete from jobs where actor=? and kind='document' and state='done' and id in ({slots})",
+                (actor,*ids),
+            )
+            return cursor.rowcount
+
     def _authorize(self, db, run_id, token, now):
         run=db.execute('select * from runs where id=?',(run_id,)).fetchone()
         digest=hashlib.sha256(token.encode()).hexdigest()
@@ -219,6 +233,17 @@ class BgeQueue:
                 db.execute('update control set successor=? where id=1',(self._new_run(db,now),))
             # Old workers drain only their already claimed job; no more claims.
             db.execute("update runs set status='expired' where status='draining' and not exists(select 1 from jobs where jobs.run_id=runs.id and state='claimed')")
+            db.execute(
+                "delete from jobs where kind='query' and state='done' and updated<?",
+                (now-DONE_QUERY_RETENTION_SECONDS,),
+            )
+            # Benchmark/audit document jobs are transient inference cache, not
+            # production publication recovery state. Bound them independently.
+            db.execute(
+                "delete from jobs where kind='document' and state='done' and updated<? "
+                "and json_extract(identity,'$.audit') is not null",
+                (now-DONE_AUDIT_RETENTION_SECONDS,),
+            )
             return [dict(row) for row in db.execute('select id,status,launch_state,provider_ref,provider_version from runs').fetchall()]
 
     def launch_claim(self, run_id, *, provider_ref=None):

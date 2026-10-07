@@ -12,8 +12,11 @@ from .local_e5 import LocalE5Embedder
 from .e5_contract import SPACE as E5_SPACE,validate_vector as validate_e5
 from .bge_contract import SPACE as BGE_SPACE,REVISION,validate_vector as validate_bge
 from .bge_queue import BgeQueue
+from .vector_policy import index_vector_spaces
 log=logging.getLogger(__name__)
 POLL_SECONDS=5
+BGE_DOCUMENT_WINDOW=64
+STALL_SECONDS=300
 
 VALID_E5="e.chunk_id is not null and e.embedding_space=%s and e.revision=c.revision and e.text_sha256=c.text_sha256 and e.search_material_sha256=c.search_material_sha256"
 VALID_BGE="b.chunk_id is not null and b.embedding_space=%s and b.model_revision=%s and b.revision=c.revision and b.text_sha256=c.text_sha256 and b.search_material_sha256=c.search_material_sha256"
@@ -34,7 +37,7 @@ def literal(vector):return '['+','.join(format(v,'.9g') for v in vector)+']'
 
 class IndexReconciler:
     def __init__(self,backend,queue):
-        if not isinstance(backend.embedder,LocalE5Embedder):raise RuntimeError('local E5 required; no provider fallback')
+        if 'e5' in index_vector_spaces() and not isinstance(backend.embedder,LocalE5Embedder):raise RuntimeError('local E5 required when E5 indexing is enabled; no provider fallback')
         self.backend=backend;self.queue=queue;self.cursor=None
         self.mirror=None
         self.archive=None
@@ -51,14 +54,21 @@ class IndexReconciler:
     async def documents(self):
         # System metadata selection only. No source bytes/locators leave this
         # boundary until the owner account and chunk are authorized below.
+        spaces=index_vector_spaces()
+        missing=[];params=[]
+        if 'bge' in spaces:
+            missing.append(f'not ({VALID_BGE})');params.extend((BGE_SPACE,REVISION))
+        if 'e5' in spaces:
+            missing.append(f'not ({VALID_E5})');params.append(E5_SPACE)
+        predicate=' or '.join(missing)
         async with self.backend.data_client._connection({'x-rkb-service':'1'}) as db:
             rows=await(await db.execute(f'''select distinct d.id,d.owner_user_id from rkb_documents d
              join rkb_users u on u.id=d.owner_user_id and u.status='active'
              join rkb_chunks c on c.document_id=d.id and {self.selected_revision()}
              left join rkb_chunk_embeddings_e5 e on e.chunk_id=c.id
              left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id
-             where (not ({VALID_E5}) or not ({VALID_BGE}))
-             and (%s::uuid is null or d.id>%s) order by d.id limit 4''',(E5_SPACE,BGE_SPACE,REVISION,self.cursor,self.cursor))).fetchall()
+             where ({predicate})
+             and (%s::uuid is null or d.id>%s) order by d.id limit 4''',(*params,self.cursor,self.cursor))).fetchall()
         if not rows:
             wrapped=self.cursor is not None;self.cursor=None
             if wrapped:return await self.documents()
@@ -83,9 +93,23 @@ class IndexReconciler:
         return groups
 
     async def source(self,actor,row):
-        result=await self.backend.fetch(str(row['id']),actor)
-        if hashlib.sha256(result.text.encode()).hexdigest()!=row['text_sha256']:raise ValueError('source hash mismatch')
-        text=row.get('search_material') if row.get('search_material') is not None else result.text
+        if row.get('source_text') is not None:
+            # This payload came from the actor-authorized selected-revision
+            # query. Reuse it instead of reopening evidence hydration per chunk.
+            result_text=row['source_text']
+            text=row.get('search_material') if row.get('search_material') is not None else result_text
+        elif hasattr(self.backend,'corpus'):
+            await asyncio.to_thread(self.backend.corpus.authorize,actor.subject,str(row['document_id']),owner=True)
+            chunk=await asyncio.to_thread(self.backend.corpus.one,'rkb_chunks',str(row['id']))
+            if not chunk or str(chunk['document_id'])!=str(row['document_id']) or chunk['revision']!=row['revision']:
+                raise ValueError('publication source changed')
+            result_text=chunk['source_text']
+            text=chunk.get('search_material') if chunk.get('search_material') is not None else result_text
+        else:
+            result=await self.backend.fetch(str(row['id']),actor)
+            result_text=result.text
+            text=row.get('search_material') if row.get('search_material') is not None else result_text
+        if hashlib.sha256(result_text.encode()).hexdigest()!=row['text_sha256']:raise ValueError('source hash mismatch')
         if hashlib.sha256(text.encode()).hexdigest()!=row.get('search_material_sha256',row['text_sha256']):raise ValueError('search material hash mismatch')
         return text
 
@@ -140,27 +164,100 @@ class IndexReconciler:
              where rkb_chunk_embeddings_bge.embedding_space is distinct from excluded.embedding_space or rkb_chunk_embeddings_bge.model_revision is distinct from excluded.model_revision or rkb_chunk_embeddings_bge.text_sha256 is distinct from excluded.text_sha256 or rkb_chunk_embeddings_bge.search_material_sha256 is distinct from excluded.search_material_sha256 or rkb_chunk_embeddings_bge.revision is distinct from excluded.revision''',(BGE_SPACE,REVISION,literal(vector),row['id'],row['revision'],row['text_sha256'],row.get('search_material_sha256',row['text_sha256'])))
             return cursor.rowcount
 
+    async def install_bge_batch(self,actor,ready):
+        if not ready:return 0
+        rows=[];vectors=[]
+        for row,result in ready:
+            if result['space']!=BGE_SPACE or len(result['vectors'])!=1:raise ValueError('BGE result contract')
+            rows.append(row);vectors.append(validate_bge(result['vectors'][0]))
+        if hasattr(self.backend,'corpus'):
+            return await self.install_local(actor,rows,vectors,BGE_SPACE,model_revision=REVISION)
+        written=0
+        for row,vector in zip(rows,vectors,strict=True):
+            written+=await self.install_bge(actor,row,{'space':BGE_SPACE,'vectors':[vector]})
+        return written
+
+    async def local_bge_rows(self,actor,document):
+        # One owner check admits the background worker to this document. From
+        # there, use the local corpus authority directly: actor-filtered temp
+        # views call local_visible() per joined embedding row and turn a bounded
+        # missing-vector scan into pathological repeated chunk lookups.
+        await asyncio.to_thread(self.backend.corpus.authorize,actor.subject,str(document),owner=True)
+        def select():
+            with self.backend.corpus.connect() as db:
+                doc=db.execute(
+                    "select payload from corpus_rows where table_name='rkb_documents' and row_key=?",
+                    (str(document),),
+                ).fetchone()
+                if not doc:return []
+                active=int(json.loads(doc['payload']).get('active_revision') or 0)
+                pending=[
+                    int(row['revision']) for row in db.execute(
+                        "select revision from revision_publication where document_id=? and state='pending' order by revision",
+                        (str(document),),
+                    )
+                ]
+                revisions=list(dict.fromkeys(([active] if active>0 else [])+pending))
+                if not revisions:return []
+                slots=','.join('?' for _ in revisions)
+                query=f'''select t.chunk_id id,t.document_id,t.revision,t.text_sha256,
+                    t.source_text,t.search_material,t.search_material_sha256
+                    from chunk_text t
+                    left join corpus_rows b
+                      on b.table_name='rkb_chunk_embeddings_bge' and b.row_key=t.chunk_id
+                    left join corpus_rows c
+                      on c.table_name='rkb_chunks' and c.row_key=t.chunk_id
+                    where t.document_id=? and t.revision in ({slots})
+                    and not (
+                      b.row_key is not null
+                      and json_extract(b.payload,'$.embedding_space')=?
+                      and json_extract(b.payload,'$.model_revision')=?
+                      and json_extract(b.payload,'$.revision')=t.revision
+                      and json_extract(b.payload,'$.text_sha256')=t.text_sha256
+                      and json_extract(b.payload,'$.search_material_sha256')=t.search_material_sha256
+                    )
+                    order by coalesce(json_extract(c.payload,'$.text_start'),t.rowid),t.chunk_id
+                    limit ?'''
+                args=[str(document),*revisions,BGE_SPACE,REVISION,BGE_DOCUMENT_WINDOW]
+                return [dict(row) for row in db.execute(query,args).fetchall()]
+        return await asyncio.to_thread(select)
+
     async def bge(self,actor,document):
-        async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
-            rows=await(await db.execute(f'''select c.id,c.document_id,c.revision,c.text_sha256,c.search_material,c.search_material_sha256 from rkb_chunks c join rkb_documents d on d.id=c.document_id
-             left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id where d.id=%s and {self.selected_revision()} and not ({VALID_BGE})
-             order by c.text_start,c.id limit 16''',(document,BGE_SPACE,REVISION))).fetchall()
-        submitted=written=0
+        if hasattr(self.backend,'corpus'):
+            rows=await self.local_bge_rows(actor,document)
+        else:
+            async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
+                rows=await(await db.execute(f'''select c.id,c.document_id,c.revision,c.text_sha256,c.source_text,c.search_material,c.search_material_sha256 from rkb_chunks c join rkb_documents d on d.id=c.document_id
+                 left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id where d.id=%s and d.owner_user_id=rkb_current_actor_id()
+                 and {self.selected_revision()} and not ({VALID_BGE})
+                 order by c.text_start,c.id limit {BGE_DOCUMENT_WINDOW}''',(document,BGE_SPACE,REVISION))).fetchall()
+        submitted=0;ready=[];ready_job_ids=[]
+        capacity=max(0,BGE_DOCUMENT_WINDOW-await asyncio.to_thread(self.queue.document_pending))
         for row in rows:
             key=bge_key(row);job=await asyncio.to_thread(self.queue.lookup,actor.subject,key)
             if job:
                 if job['kind']!='document' or job['identity']!=bge_identity(row):raise ValueError('BGE source identity mismatch')
-                if job['state']=='done':written+=await self.install_bge(actor,row,job['result'])
+                if job['state']=='done':
+                    ready.append((row,job['result']));ready_job_ids.append(job['id'])
                 continue
-            # Reserve interactive capacity: at most 64 unfinished document jobs
-            # globally. Claim still strictly prioritizes queries over documents.
-            if await asyncio.to_thread(self.queue.document_pending)>=64:break
+            # Reserve interactive capacity. Claims still strictly prioritize
+            # queries over document jobs.
+            if capacity<=0:continue
             text=await self.source(actor,row)
-            async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
-                active=await(await db.execute(f'''select c.id from rkb_chunks c join rkb_documents d on d.id=c.document_id
-                 where c.id=%s and c.revision=%s and c.text_sha256=%s and c.search_material_sha256=%s and {self.selected_revision()} and d.owner_user_id=rkb_current_actor_id() for share of d''',(row['id'],row['revision'],row['text_sha256'],row['search_material_sha256']))).fetchone()
-                if not active:continue
-                await asyncio.to_thread(self.queue.enqueue,actor.subject,key,[text],kind='document',identity=bge_identity(row));submitted+=1
+            if not hasattr(self.backend,'corpus'):
+                # Legacy PostgreSQL corpus path retains its late selection guard.
+                async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
+                    active=await(await db.execute(f'''select c.id from rkb_chunks c join rkb_documents d on d.id=c.document_id
+                     where c.id=%s and c.revision=%s and c.text_sha256=%s and c.search_material_sha256=%s and {self.selected_revision()} and d.owner_user_id=rkb_current_actor_id() for share of d''',(row['id'],row['revision'],row['text_sha256'],row['search_material_sha256']))).fetchone()
+                    if not active:continue
+            # SQLite already selected this immutable revision under the owner
+            # context. A later supersede only leaves this idempotent job inert.
+            await asyncio.to_thread(self.queue.enqueue,actor.subject,key,[text],kind='document',identity=bge_identity(row));submitted+=1;capacity-=1
+        written=await self.install_bge_batch(actor,ready)
+        if ready_job_ids:
+            retired=await asyncio.to_thread(self.queue.retire_done_documents,actor.subject,ready_job_ids)
+            if retired!=len(ready_job_ids):
+                log.warning(json.dumps({'event':'bge_document_job_retirement_incomplete','expected':len(ready_job_ids),'retired':retired}))
         return submitted,written
 
     async def install_local(self,actor,rows,vectors,space,**extra):
@@ -186,14 +283,37 @@ class IndexReconciler:
         return len(items)
 
     async def tick(self):
-        stats={'e5_written':0,'bge_submitted':0,'bge_written':0,'errors':[]}
+        stats={'e5_written':0,'bge_submitted':0,'bge_written':0,'errors':[],'pending_documents':0,'phase_seconds':{}}
+        started=time.monotonic()
+        phase=time.monotonic();documents=await self.documents();stats['pending_documents']=len(documents);stats['phase_seconds']['document_scan']=time.monotonic()-phase
+        phase=time.monotonic()
+        for document in documents:
+            actor=self.actor(document['owner_user_id'])
+            # Publication work is the primary responsibility of this worker.
+            # BGE is the production gate and always runs before optional E5.
+            for space in index_vector_spaces():
+                try:
+                    if space=='e5':stats['e5_written']+=await self.e5(actor,document['id'])
+                    else:
+                        submitted,written=await self.bge(actor,document['id']);stats['bge_submitted']+=submitted;stats['bge_written']+=written
+                except Exception as error:
+                    stats['errors'].append(type(error).__name__)
+                    log.warning(json.dumps({'event':'indexing_retry','space':space,'document_id':str(document['id']),'error_type':type(error).__name__}))
+        if hasattr(self.backend,'corpus'):await self.backend.activate_pending()
+        stats['phase_seconds']['publication']=time.monotonic()-phase
+
+        # Ancillary maintenance follows publication so unrelated provider
+        # latency cannot delay this pass's vector progress or activation.
+        phase=time.monotonic()
         if time.time()-self.last_original_gc>60:
             from .original_cache import OriginalCache
             stats['original_cache']=await asyncio.to_thread(OriginalCache.from_env().cleanup)
             proof_cache=OriginalCache(os.getenv('RKB_PROOF_CACHE_DIR','/home/dev/.local/state/regional-knowledge-base/proofs'),max_bytes=64*1024*1024)
             stats['proof_cache']=await asyncio.to_thread(proof_cache.cleanup)
             self.last_original_gc=time.time()
-        if os.getenv('RKB_VIBEPUBLISH_GRANT_FILE'):
+        stats['phase_seconds']['cache_gc']=time.monotonic()-phase
+        phase=time.monotonic()
+        if not documents and os.getenv('RKB_VIBEPUBLISH_GRANT_FILE'):
             try:
                 if self.mirror is None:
                     from .illustration_mirror import IllustrationMirror,VibePublishClient
@@ -205,28 +325,35 @@ class IndexReconciler:
                 stats['mirrors_verified']=await self.mirror.tick()
             except Exception as error:
                 log.warning(json.dumps({'event':'illustration_mirror_pass_retry','error_type':type(error).__name__}))
-        if os.getenv('RKB_STORAGE_GC_ENABLED')=='1' and time.time()-self.last_gc>60:
+        stats['phase_seconds']['archive_mirror']=time.monotonic()-phase
+        phase=time.monotonic()
+        if not documents and os.getenv('RKB_STORAGE_GC_ENABLED')=='1' and time.time()-self.last_gc>60:
             from .storage_gc import collect
             await collect(self.backend,apply=True);self.last_gc=time.time()
-        for document in await self.documents():
-            actor=self.actor(document['owner_user_id'])
-            # An E5 outage must not prevent durable BGE enqueue/install.
-            for space in ('e5','bge'):
-                try:
-                    if space=='e5':stats['e5_written']+=await self.e5(actor,document['id'])
-                    else:
-                        submitted,written=await self.bge(actor,document['id']);stats['bge_submitted']+=submitted;stats['bge_written']+=written
-                except Exception as error:
-                    stats['errors'].append(type(error).__name__)
-                    log.warning(json.dumps({'event':'indexing_retry','space':space,'document_id':str(document['id']),'error_type':type(error).__name__}))
-        if hasattr(self.backend,'corpus'):await self.backend.activate_pending()
+        stats['phase_seconds']['storage_gc']=time.monotonic()-phase
+        stats['phase_seconds']['total']=time.monotonic()-started
         if any(stats[k] for k in ('e5_written','bge_submitted','bge_written')) or stats['errors']:
             log.info(json.dumps({'event':'indexing_progress',**stats,'external_embedding_api_calls':0}))
         return stats
 
 def write_health(stats):
     path=Path(os.environ['RKB_INDEXING_HEALTH_PATH']);path.parent.mkdir(parents=True,exist_ok=True)
-    value={'updated_at':time.time(),'pid':os.getpid(),'state':'degraded' if stats['errors'] else 'running' if any(stats[k] for k in ('e5_written','bge_submitted','bge_written')) else 'ready','error_type':stats['errors'][0] if stats['errors'] else None}
+    now=time.time();previous={}
+    try:previous=json.loads(path.read_text())
+    except (OSError,ValueError):pass
+    progress=sum(int(stats.get(k,0)) for k in ('e5_written','bge_submitted','bge_written'))
+    pending=int(stats.get('pending_documents',0))
+    if progress or not previous.get('pending_documents'):last_progress=now
+    else:last_progress=float(previous.get('last_progress_at',now))
+    stalled=pending>0 and now-last_progress>STALL_SECONDS
+    if stalled and not previous.get('stalled_seconds'):
+        log.error(json.dumps({'event':'indexing_stalled','pending_documents':pending,'stalled_seconds':now-last_progress}))
+    state='degraded' if stats.get('errors') or stalled else 'running' if pending or progress else 'ready'
+    value={'updated_at':now,'pid':os.getpid(),'state':state,
+           'error_type':stats['errors'][0] if stats.get('errors') else 'indexing_stalled' if stalled else None,
+           'pending_documents':pending,'last_progress_at':last_progress,
+           'stalled_seconds':max(0,now-last_progress) if stalled else 0,
+           'phase_seconds':stats.get('phase_seconds',{})}
     temp=path.with_name(path.name+'.new');temp.write_text(json.dumps(value));temp.chmod(0o600);temp.replace(path)
 
 async def run_loop(backend,queue):

@@ -26,9 +26,10 @@ from mcp.server.auth.provider import (
     construct_redirect_uri,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from mcp.server.auth.middleware.client_auth import ClientAuthenticator, AuthenticationError
 from pydantic import AnyHttpUrl, AnyUrl
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import HTMLResponse, RedirectResponse, Response, JSONResponse
 
 
 KNOWLEDGE_SCOPE = "knowledge:manage"
@@ -234,7 +235,7 @@ class RegionalOAuthProvider:
             parsed = urlsplit(value)
             if (
                 parsed.scheme != "https"
-                or parsed.hostname != "chatgpt.com"
+                or parsed.hostname not in {"chatgpt.com", "grok.com"}
                 or parsed.username
                 or parsed.password
                 or parsed.query
@@ -244,6 +245,10 @@ class RegionalOAuthProvider:
                 return False
         except ValueError:
             return False
+        # Grok callbacks can differ between connector instances. Registration
+        # pins the exact URI; only the HTTPS Grok origin is admitted here.
+        if parsed.hostname == "grok.com":
+            return bool(parsed.path) and len(value) <= 2048
         if parsed.path == "/connector_platform_oauth_redirect":
             return True
         prefix = "/connector/oauth/"
@@ -263,21 +268,31 @@ class RegionalOAuthProvider:
         return OAuthClientInformationFull.model_validate(record)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        method = client_info.token_endpoint_auth_method
+        try:
+            await self._register_client(client_info)
+        except RegistrationError as exc:
+            _LOGGER.warning("oauth_client_registration outcome=rejected method=%s reason=%s", method, exc.error)
+            raise
+        _LOGGER.info("oauth_client_registration outcome=accepted method=%s", method)
+
+    async def _register_client(self, client_info: OAuthClientInformationFull) -> None:
         redirects = [str(value) for value in (client_info.redirect_uris or [])]
         if not redirects or any(not self._redirect_allowed(value) for value in redirects):
             raise RegistrationError(
                 error="invalid_redirect_uri",
-                error_description="only registered ChatGPT HTTPS callbacks are allowed",
+                error_description="only registered ChatGPT or Grok HTTPS callbacks are allowed",
             )
         if client_info.token_endpoint_auth_method not in {
             "client_secret_basic",
             "client_secret_post",
+            "none",
         }:
             raise RegistrationError(
                 error="invalid_client_metadata",
                 error_description="registered clients must use a supported client secret method",
             )
-        if not client_info.client_secret:
+        if client_info.token_endpoint_auth_method != "none" and not client_info.client_secret:
             raise RegistrationError(
                 error="invalid_client_metadata",
                 error_description="registered client secret is required",
@@ -340,7 +355,9 @@ class RegionalOAuthProvider:
         registered_redirects = {str(value) for value in (client.redirect_uris or [])}
         if redirect not in registered_redirects or not self._redirect_allowed(redirect):
             raise AuthorizeError(error="invalid_request")
-        if params.resource != self.resource:
+        # Older MCP clients omit resource. This AS serves exactly one resource;
+        # bind omitted values to it and still reject every explicit mismatch.
+        if params.resource is not None and params.resource != self.resource:
             raise AuthorizeError(error="invalid_target")
         scopes = params.scopes or [KNOWLEDGE_SCOPE]
         if scopes != [KNOWLEDGE_SCOPE]:
@@ -358,7 +375,7 @@ class RegionalOAuthProvider:
                 "scopes": scopes,
                 "state": params.state,
                 "code_challenge": params.code_challenge,
-                "resource": params.resource,
+                "resource": self.resource,
                 "expires_at": self.clock() + _REQUEST_SECONDS,
             }
 
@@ -629,6 +646,29 @@ class RegionalOAuthProvider:
 
         self.store.mutate(revoke)
 
+    async def revoke_endpoint(self, request: Request) -> Response:
+        # The SDK revocation schema currently requires a client_secret form field
+        # even for public and HTTP Basic clients. Authenticate by the registered
+        # method, then apply RFC 7009 without requiring a redundant secret field.
+        try:
+            form = await self._form(request)
+            supplied = form.get("token", "")
+            if not supplied or form.get("token_type_hint", "access_token") not in {"access_token", "refresh_token"}:
+                raise ValueError("invalid revocation request")
+        except ValueError:
+            return JSONResponse({"error": "invalid_request"}, status_code=400)
+        try:
+            client = await ClientAuthenticator(self).authenticate_request(request)
+        except AuthenticationError:
+            return JSONResponse({"error": "unauthorized_client"}, status_code=401)
+        token = await self.load_access_token(supplied)
+        if token is None:
+            token = await self.load_refresh_token(client, supplied)
+        if token is not None and token.client_id == client.client_id:
+            await self.revoke_token(token)
+        _LOGGER.info("oauth_revocation outcome=accepted method=%s", client.token_endpoint_auth_method)
+        return Response(status_code=200, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
     async def exchange_identity_assertion(self, client, params):
         raise TokenError(error="unsupported_grant_type")
 
@@ -692,7 +732,7 @@ class RegionalOAuthProvider:
                 body = (
                     "<h1>Вход владельца</h1>"
                     "<p>Введите код входа владельца Regional Knowledge. "
-                    "После входа доступ ChatGPT подтверждается отдельно.</p>"
+                    "После входа доступ коннектора подтверждается отдельно.</p>"
                     "<form method='post' action='/oauth/login'>"
                     f"<input type='hidden' name='id' value='{html.escape(request_id)}'>"
                     f"<input type='hidden' name='csrf' value='{html.escape(csrf)}'>"
@@ -702,7 +742,7 @@ class RegionalOAuthProvider:
                 )
             else:
                 body = (
-                    "<h1>Подключить ChatGPT</h1>"
+                    "<h1>Подключить базу знаний региона</h1>"
                     "<p>Regional Knowledge предоставит этому подключению доступ к "
                     "вашим книгам, поиску и импорту. Доступ можно отозвать.</p>"
                     "<form method='post' action='/oauth/consent'>"

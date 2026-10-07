@@ -8,7 +8,7 @@ WorkingDirectory=/home/dev/.local/share/regional-knowledge-base/fast-e5/current
 Environment=PYTHONPATH=/home/dev/.local/share/regional-knowledge-base/fast-e5/current/src
 Environment=RKB_E5_MODEL_DIR=/home/dev/.local/share/regional-knowledge-base/fast-e5/models
 ExecStart=/home/dev/.local/share/regional-knowledge-base/fast-e5/runtime/bin/python -m regional_knowledge.e5_service
-MemoryMax=1G
+MemoryMax=2G
 MemorySwapMax=0
 CPUQuota=100%
 CPUAffinity=0

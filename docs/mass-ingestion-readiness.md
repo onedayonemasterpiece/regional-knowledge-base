@@ -69,7 +69,7 @@ The accepted active revision must:
 - preserve document -> page -> region evidence provenance;
 - use coherent semantic passages rather than page-sized embeddings;
 - pass exact E5/BGE token-budget validation with no silent truncation;
-- complete both required vector spaces;
+- complete the configured required vector spaces; the measured production default is BGE-only, while E5 remains an optional diagnostic/fusion space;
 - pass natural-query retrieval checks against **that exact active revision**.
 
 The page review/provenance layer may be reused for a byte-identical archived
@@ -80,23 +80,46 @@ source, but new chunking/retrieval output is evaluated again.
 Mass ingestion must be resumable and idempotent. One failed or superseded
 revision must not block unrelated books. Queues and concurrency are bounded;
 backpressure is explicit; ChatGPT does not need to keep a turn open while indexing
-finishes; only a fully indexed/accepted revision becomes active.
+finishes; only a fully indexed/accepted revision becomes active. A pending book
+must also be observably making progress: five minutes without required-vector
+publication progress is a degraded/stalled condition, not a normal steady state.
+Deployment must keep the MCP, indexer and BGE controller on one exact release SHA;
+mixed runtime releases are a failed deployment, not an acceptable compatibility
+mode.
 
 ## Current evidence and remaining proof
 
-The 2026-10-05 vector-only benchmark provides strong evidence for the small-passage
-BGE path: on the held-out fixture the selected t256 BGE projection reached Hit@5
-87.5%, Hit@10 90.62%, and RU-query -> German-source Hit@10 21/24 (87.5%). This
-meets the new retrieval-quality floors for that fixture.
+The two-book dense-only stress work now strengthens the small-passage BGE decision.
+On the frozen held-out original questions, t256+BGE reaches Hit@5 **87.5%** and
+Hit@10 **90.625%**. The held-out Russian-query -> German-source slice reaches
+Hit@5/Hit@10 **91.67% / 91.67%**. E5 is materially weaker on the same corpus and
+is therefore no longer a default publication requirement.
+
+The same stress deliberately exposes remaining weaknesses rather than hiding
+them. Verbose instruction wrappers reduce retrieval, and adding an unrelated
+other-book title can poison the query embedding badly. A single cosine threshold
+also does not reliably separate answerable from out-of-corpus questions.
+Retrieval clients should therefore send the semantic question cleanly, use
+document scope separately from query text, and verify returned evidence.
+
+Compact pgvector storage has also been measured, not merely estimated. At
+100,000 synthetic rows backed by real BGE vectors, halfvec(1024) plus a
+binary-quantized HNSW candidate index and halfvec rerank projects the migrated
+database to about **345 MB** steady state and **352 MB** with a 2,000-row pending
+revision, against the current 500 MB planning quota. Candidate+rerank p95 is
+about **35-42 ms** in that temporary-table stress. This passes the storage
+headroom gate for the benchmark shape, but still requires production migration
+acceptance.
 
 That does **not** yet mean the project is mass-ingestion-ready. The remaining
 critical proof includes:
 
-- measured Supabase capacity and reimport peak at the scale benchmark;
-- p95 MCP/backend latency under production-like scale and concurrency;
+- production migration/acceptance of the compact BGE vector plane;
+- end-to-end p95 MCP/backend latency, including query embedding, at production-like
+  scale and concurrency;
 - repeatable per-book active-revision retrieval acceptance on real imports,
   including the current Brünneck reprocess;
-- continued quality after corpus growth, not only on the three-source audit corpus.
+- continued quality after corpus growth beyond the current two-book design corpus.
 
 Until these gates pass together, treat the system as retrieval-hardening /
 mass-ingestion-preparation rather than approved for unattended bulk filling.

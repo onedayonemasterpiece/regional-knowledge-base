@@ -1040,6 +1040,7 @@ class SupabaseRestBackend(KnowledgeBackend):
 
     async def _ingestion_with_indexing(self,output,principal):
         from .index_readiness import enabled,status
+        from .vector_policy import missing_required
         if output.document_id and hasattr(self,'data_client'):
             async with self.data_client._connection(self._headers(principal)) as db:
                 source=await(await db.execute('select source_archive_status from rkb_documents where id=%s', (UUID(output.document_id),))).fetchone()
@@ -1047,7 +1048,7 @@ class SupabaseRestBackend(KnowledgeBackend):
         if not enabled() or output.state!='finalized' or not output.document_id:return output
         readiness=await status(self,principal,output.document_id)
         warnings=[w for w in output.warnings if w not in ('fast_e5_backfill_required','automatic_indexing_pending')]
-        if readiness.e5_missing or readiness.bge_missing:
+        if missing_required(e5_missing=readiness.e5_missing,bge_missing=readiness.bge_missing):
             warnings.append('automatic_indexing_pending')
             next_action='wait'
         else:

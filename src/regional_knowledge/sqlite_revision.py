@@ -6,6 +6,7 @@ from .sqlite_corpus import canonical
 from .sqlite_data import defaults
 from .e5_contract import SPACE as E5_SPACE
 from .bge_contract import SPACE as BGE_SPACE,REVISION
+from .vector_policy import required_vector_spaces
 
 
 def start(ctx,p):
@@ -116,9 +117,15 @@ def validate(ctx,d,rev,events):
 def manifest(chunks):return sorted([(c['id'],c['revision'],c['text_sha256'],c['search_material_sha256']) for c in chunks])
 
 def ready(ctx,c):
-    for table,space in (('rkb_chunk_embeddings_e5',E5_SPACE),('rkb_chunk_embeddings_bge',BGE_SPACE)):
+    required=set(required_vector_spaces())
+    for name,table,space in (
+        ('e5','rkb_chunk_embeddings_e5',E5_SPACE),
+        ('bge','rkb_chunk_embeddings_bge',BGE_SPACE),
+    ):
+        if name not in required:
+            continue
         e=ctx.one(table,c['id'])
-        if not e or e['embedding_space']!=space or any(e[k]!=c[k] for k in ('revision','text_sha256','search_material_sha256')) or space==BGE_SPACE and e.get('model_revision')!=REVISION:return False
+        if not e or e['embedding_space']!=space or any(e[k]!=c[k] for k in ('revision','text_sha256','search_material_sha256')) or name=='bge' and e.get('model_revision')!=REVISION:return False
     return True
 
 

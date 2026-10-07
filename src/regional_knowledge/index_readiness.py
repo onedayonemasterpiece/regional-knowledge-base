@@ -5,6 +5,7 @@ from uuid import UUID
 from .local_e5 import LocalE5Embedder
 from .bge_queue import BgeQueue
 from .contracts import IndexingStatus
+from .vector_policy import missing_required
 
 def enabled():return os.getenv('RKB_AUTO_INDEX_ENABLED')=='1'
 
@@ -39,6 +40,9 @@ async def status(backend,principal,document_id=None):
         and (not needs_e5 or (e==n and fast['ready']))
     )
     mode=warm_mode if main_ready else 'fast_e5' if n and e==n and fast['ready'] else 'lexical_only'
-    missing=e<n or b<n
-    state='ready' if not missing else 'degraded' if owner in ('unavailable','degraded','disabled') or (e<n and not fast['ready']) or (b<n and worker in ('failed','unavailable')) else 'running' if owner=='running' or e>0 or b>0 else 'pending'
+    required_missing=missing_required(e5_missing=n-e,bge_missing=n-b)
+    required_unavailable=(b<n and worker in ('failed','unavailable')) or (
+        missing_required(e5_missing=n-e,bge_missing=0) and not fast['ready']
+    )
+    state='ready' if not required_missing else 'degraded' if owner in ('unavailable','degraded','disabled') or required_unavailable else 'running' if owner=='running' or e>0 or b>0 else 'pending'
     return IndexingStatus(**values,e5_missing=n-e,bge_missing=n-b,indexing_state=state,bge_worker_state=worker,indexing_owner_state=owner,effective_retrieval_mode=mode)
