@@ -14,6 +14,7 @@ from regional_knowledge.postgres_backend import PostgresBackend
 from regional_knowledge.supabase_backend import LexicalOnlyEmbedder
 from regional_knowledge.local_e5 import LocalE5Embedder
 from regional_knowledge.e5_contract import SPACE
+from regional_knowledge.bge_contract import SPACE as BGE_SPACE
 from regional_knowledge.bge_queue import BgeQueue
 from regional_knowledge.indexing import IndexReconciler
 from regional_knowledge.index_readiness import counts
@@ -113,7 +114,9 @@ async def test_source_race_visual_crop_new_revision_and_changed_index(graph_db,t
         async with b.data_client._connection({'x-rkb-service':'1'}) as db:
             await db.execute('update rkb_chunks set search_material=%s,search_material_sha256=%s where id=%s',(changed,hashlib.sha256(changed.encode()).hexdigest(),image_only['id']))
         assert (await counts(b,owner))['e5_ready']==2
-        stale=await worker.install_bge(owner,image_only,{'space':q.lookup(owner.subject, __import__('regional_knowledge.indexing',fromlist=['bge_key']).bge_key(image_only))['result']['space'],'vectors':[[1.0]+[0.0]*1023]});assert stale==0
+        # The prior completed queue job was retired after durable install; the
+        # stale-result fence is tested directly against the pinned BGE contract.
+        stale=await worker.install_bge(owner,image_only,{'space':BGE_SPACE,'vectors':[[1.0]+[0.0]*1023]});assert stale==0
         delta=await worker.tick();assert delta['e5_written']==1 and delta['bge_submitted']==1 and len(calls[-1])==1
         complete_documents(q,owner);assert (await worker.tick())['bge_written']==1
         assert (await b.fetch(str(image_only['id']),owner)).text=='' # misleading description never becomes a source quote.
