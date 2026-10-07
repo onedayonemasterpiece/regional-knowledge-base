@@ -124,6 +124,51 @@ class SQLiteBackend(PostgresBackend):
         fields=('id','title','authors','publication_year','language','active_revision','page_count','source_format','source_archive_status')
         return {**{k:row.get(k) for k in fields},'catalog':{'kind':'book',**(row.get('catalog') or {})}}
 
+    async def _pending_vector_progress(self,row):
+        from .e5_contract import SPACE as E5_SPACE
+        from .bge_contract import SPACE as BGE_SPACE,REVISION
+        document=str(row['document_id']);revision=int(row['staged_revision'])
+        def read():
+            with self.corpus.connect() as db:
+                value=db.execute('''select count(*) chunks,
+                  coalesce(sum(case when e.row_key is not null
+                    and json_extract(e.payload,'$.embedding_space')=?
+                    and json_extract(e.payload,'$.revision')=t.revision
+                    and json_extract(e.payload,'$.text_sha256')=t.text_sha256
+                    and json_extract(e.payload,'$.search_material_sha256')=t.search_material_sha256
+                    then 1 else 0 end),0) e5_ready,
+                  coalesce(sum(case when b.row_key is not null
+                    and json_extract(b.payload,'$.embedding_space')=?
+                    and json_extract(b.payload,'$.model_revision')=?
+                    and json_extract(b.payload,'$.revision')=t.revision
+                    and json_extract(b.payload,'$.text_sha256')=t.text_sha256
+                    and json_extract(b.payload,'$.search_material_sha256')=t.search_material_sha256
+                    then 1 else 0 end),0) bge_ready
+                  from chunk_text t
+                  left join corpus_rows e on e.table_name='rkb_chunk_embeddings_e5' and e.row_key=t.chunk_id
+                  left join corpus_rows b on b.table_name='rkb_chunk_embeddings_bge' and b.row_key=t.chunk_id
+                  where t.document_id=? and t.revision=?''',
+                  (E5_SPACE,BGE_SPACE,REVISION,document,revision)).fetchone()
+                return dict(value)
+        return await asyncio.to_thread(read)
+
+    async def _pending_vector_message(self,row,principal):
+        from .vector_policy import required_vector_spaces
+        from .index_readiness import maintenance_state
+        self.corpus.authorize(principal.subject,str(row['document_id']),owner=True)
+        counts=await self._pending_vector_progress(row)
+        required=required_vector_spaces();parts=[]
+        for space in required:
+            ready=int(counts[space+'_ready'])
+            parts.append(f"{space.upper()} {ready}/{int(counts['chunks'])}")
+        spaces='+'.join(space.upper() for space in required)
+        progress=', '.join(parts)
+        return (
+            f"Waiting for required {spaces} publication "
+            f"(revision {int(row['staged_revision'])}: {progress}; indexer {maintenance_state()}); "
+            "previous revision remains selected"
+        )
+
     async def book_ingest(self,**kwargs):
         payload=kwargs.get('payload') or {}
         if kwargs.get('command')=='start' and (payload.get('catalog') or {}).get('parent_id') and kwargs.get('file') is None:

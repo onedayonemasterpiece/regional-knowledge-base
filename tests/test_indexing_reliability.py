@@ -199,6 +199,12 @@ async def test_local_bge_selector_reads_pending_revision_without_actor_visibilit
         "search_material_sha256": chunks[0][2],
     }])
 
+    progress = await backend._pending_vector_progress({
+        "document_id": document,
+        "staged_revision": 2,
+    })
+    assert progress == {"chunks": 2, "e5_ready": 0, "bge_ready": 1}
+
     worker = IndexReconciler(backend, object())
     rows = await worker.local_bge_rows(SimpleNamespace(subject=owner), document)
     assert [row["id"] for row in rows] == [chunks[1][0]]
