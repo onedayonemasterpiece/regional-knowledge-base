@@ -40,6 +40,7 @@ def pdf():
 
 @pytest.mark.asyncio
 async def test_source_race_visual_crop_new_revision_and_changed_index(graph_db,tmp_path,monkeypatch):
+    monkeypatch.setenv('RKB_REQUIRED_VECTOR_SPACES','e5,bge')
     monkeypatch.setenv('RKB_WORK_DIR',str(tmp_path));data=pdf()
     class Downloader:
         async def download(self,url,directory):

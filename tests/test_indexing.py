@@ -17,6 +17,7 @@ V384=[1.0]+[0.0]*383;V1024=[1.0]+[0.0]*1023
 
 @pytest.mark.asyncio
 async def test_unavailable_mirror_grant_does_not_block_automatic_vectors(graph_db,tmp_path,monkeypatch):
+    monkeypatch.setenv('RKB_REQUIRED_VECTOR_SPACES','e5,bge')
     monkeypatch.setenv('RKB_VIBEPUBLISH_GRANT_FILE',str(tmp_path/'unavailable-grant.json'))
     b,q,actor,doc,rows,calls=source_fixture(graph_db,tmp_path,n=1)
     try:
@@ -58,6 +59,7 @@ def complete_documents(queue,actor):
 
 @pytest.mark.asyncio
 async def test_missing_vectors_batching_replay_recovery_and_safe_degradation(graph_db,tmp_path,monkeypatch):
+    monkeypatch.setenv('RKB_REQUIRED_VECTOR_SPACES','e5,bge')
     monkeypatch.setenv('RKB_AUTO_INDEX_ENABLED','1');monkeypatch.setenv('RKB_BGE_ENABLED','1');monkeypatch.setenv('RKB_INDEXING_HEALTH_PATH',str(tmp_path/'health.json'))
     b,q,actor,doc,rows,calls=source_fixture(graph_db,tmp_path);monkeypatch.setenv('RKB_BGE_QUEUE_PATH',str(q.path))
     try:
@@ -100,6 +102,7 @@ async def test_missing_vectors_batching_replay_recovery_and_safe_degradation(gra
 
 @pytest.mark.asyncio
 async def test_activation_wakes_running_loop_and_owner_restart(graph_db,tmp_path,monkeypatch):
+    monkeypatch.setenv('RKB_REQUIRED_VECTOR_SPACES','e5,bge')
     monkeypatch.setenv('RKB_INDEXING_HEALTH_PATH',str(tmp_path/'health.json'));b,q,actor,doc,rows,calls=source_fixture(graph_db,tmp_path,n=2,active=False)
     task=asyncio.create_task(run_loop(b,q))
     try:
