@@ -496,6 +496,11 @@ class SupabaseRestBackend(KnowledgeBackend):
         query = query.strip()
         if not query:
             return SearchOutput(results=[], mode="lexical_degraded")
+        if aliases is None and not _fast_only and hasattr(self,'automatic_aliases'):
+            try:aliases=await self.automatic_aliases(query,principal)
+            except Exception as error:
+                logger.warning(json.dumps({'event':'automatic_alias_expansion_failed','error_type':type(error).__name__}))
+                aliases=[]
         if not _fast_only and os.getenv('RKB_BGE_ENABLED')=='1':
             from .multilingual_retrieval import main_search
             from .index_readiness import enabled,status
