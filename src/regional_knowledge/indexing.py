@@ -177,12 +177,60 @@ class IndexReconciler:
             written+=await self.install_bge(actor,row,{'space':BGE_SPACE,'vectors':[vector]})
         return written
 
+    async def local_bge_rows(self,actor,document):
+        # One owner check admits the background worker to this document. From
+        # there, use the local corpus authority directly: actor-filtered temp
+        # views call local_visible() per joined embedding row and turn a bounded
+        # missing-vector scan into pathological repeated chunk lookups.
+        await asyncio.to_thread(self.backend.corpus.authorize,actor.subject,str(document),owner=True)
+        def select():
+            with self.backend.corpus.connect() as db:
+                doc=db.execute(
+                    "select payload from corpus_rows where table_name='rkb_documents' and row_key=?",
+                    (str(document),),
+                ).fetchone()
+                if not doc:return []
+                active=int(json.loads(doc['payload']).get('active_revision') or 0)
+                pending=[
+                    int(row['revision']) for row in db.execute(
+                        "select revision from revision_publication where document_id=? and state='pending' order by revision",
+                        (str(document),),
+                    )
+                ]
+                revisions=list(dict.fromkeys(([active] if active>0 else [])+pending))
+                if not revisions:return []
+                slots=','.join('?' for _ in revisions)
+                query=f'''select t.chunk_id id,t.document_id,t.revision,t.text_sha256,
+                    t.source_text,t.search_material,t.search_material_sha256
+                    from chunk_text t
+                    left join corpus_rows b
+                      on b.table_name='rkb_chunk_embeddings_bge' and b.row_key=t.chunk_id
+                    left join corpus_rows c
+                      on c.table_name='rkb_chunks' and c.row_key=t.chunk_id
+                    where t.document_id=? and t.revision in ({slots})
+                    and not (
+                      b.row_key is not null
+                      and json_extract(b.payload,'$.embedding_space')=?
+                      and json_extract(b.payload,'$.model_revision')=?
+                      and json_extract(b.payload,'$.revision')=t.revision
+                      and json_extract(b.payload,'$.text_sha256')=t.text_sha256
+                      and json_extract(b.payload,'$.search_material_sha256')=t.search_material_sha256
+                    )
+                    order by coalesce(json_extract(c.payload,'$.text_start'),t.rowid),t.chunk_id
+                    limit ?'''
+                args=[str(document),*revisions,BGE_SPACE,REVISION,BGE_DOCUMENT_WINDOW]
+                return [dict(row) for row in db.execute(query,args).fetchall()]
+        return await asyncio.to_thread(select)
+
     async def bge(self,actor,document):
-        async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
-            rows=await(await db.execute(f'''select c.id,c.document_id,c.revision,c.text_sha256,c.source_text,c.search_material,c.search_material_sha256 from rkb_chunks c join rkb_documents d on d.id=c.document_id
-             left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id where d.id=%s and d.owner_user_id=rkb_current_actor_id()
-             and {self.selected_revision()} and not ({VALID_BGE})
-             order by c.text_start,c.id limit {BGE_DOCUMENT_WINDOW}''',(document,BGE_SPACE,REVISION))).fetchall()
+        if hasattr(self.backend,'corpus'):
+            rows=await self.local_bge_rows(actor,document)
+        else:
+            async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
+                rows=await(await db.execute(f'''select c.id,c.document_id,c.revision,c.text_sha256,c.source_text,c.search_material,c.search_material_sha256 from rkb_chunks c join rkb_documents d on d.id=c.document_id
+                 left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id where d.id=%s and d.owner_user_id=rkb_current_actor_id()
+                 and {self.selected_revision()} and not ({VALID_BGE})
+                 order by c.text_start,c.id limit {BGE_DOCUMENT_WINDOW}''',(document,BGE_SPACE,REVISION))).fetchall()
         submitted=0;ready=[]
         capacity=max(0,BGE_DOCUMENT_WINDOW-await asyncio.to_thread(self.queue.document_pending))
         for row in rows:
