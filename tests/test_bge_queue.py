@@ -103,8 +103,12 @@ async def test_cold_main_returns_fast_evidence_and_actor_bound_pending_job(monke
     actor=Principal(subject='actor',client_id='test',issuer='test',access_token='test')
     result=await main_search(Backend(),'query',actor)
     assert result.main_state=='starting' and result.results[0].id=='safe'
+    replay=await main_search(Backend(),'query',actor)
+    assert replay.main_job_id==result.main_job_id
     queue=BgeQueue(tmp_path/'queue.sqlite')
     assert queue.result('actor',result.main_job_id)['state']=='pending'
+    with queue.connect() as db:
+        assert db.execute("select count(*) from jobs where kind='query'").fetchone()[0]==1
     with pytest.raises(PermissionError):queue.result('other',result.main_job_id)
     with pytest.raises(ValueError):await main_search(Backend(),'changed',actor,main_job_id=result.main_job_id)
 

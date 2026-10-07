@@ -64,7 +64,7 @@ def main():
             try:
                 if pending is None:
                     job=call('claim',{'space':SPACE}).get('job')
-                    if not job:stop.wait(.2);continue
+                    if not job:stop.wait(.1);continue
                     if job['space']!=SPACE or len(job['texts'])!=1:raise RuntimeError('job contract mismatch')
                     before=time.monotonic();vector=encode(job['texts'][0]);seconds=time.monotonic()-before
                     pending={'job_id':job['id'],'claim':job['claim'],'space':SPACE,'vectors':[vector],'timings':{'encoder_seconds':seconds}}

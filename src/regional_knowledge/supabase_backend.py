@@ -498,18 +498,13 @@ class SupabaseRestBackend(KnowledgeBackend):
             return SearchOutput(results=[], mode="lexical_degraded")
         if not _fast_only and os.getenv('RKB_BGE_ENABLED')=='1':
             from .multilingual_retrieval import main_search
-            from .index_readiness import enabled,counts,status
-            if enabled():
-                coverage=await counts(self,principal)
-                if coverage['bge_ready']<coverage['active_chunks']:
-                    fast=await self.search(query,principal,match_count=match_count,_fast_only=True)
-                    return fast.model_copy(update={'main_state':'pending'})
+            from .index_readiness import enabled,status
+            readiness=await status(self,principal) if enabled() else None
+            if readiness and readiness.bge_missing:
+                fast=await self.search(query,principal,match_count=match_count,_fast_only=True)
+                return fast.model_copy(update={'main_state':'pending'})
             result=await main_search(self,query,principal,match_count=match_count,main_job_id=main_job_id,aliases=aliases)
-            if enabled():
-                readiness=await status(self,principal)
-                if readiness.bge_missing and result.main_state=='ready':
-                    fast=await self.search(query,principal,match_count=match_count,_fast_only=True)
-                    return fast.model_copy(update={'main_state':'pending'})
+            if readiness:
                 result=result.model_copy(update={'indexing':readiness})
             if result.main_state=='ready':
                 result=await self._expand_continuation_results(

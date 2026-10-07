@@ -37,12 +37,15 @@ class RemoteVectorClient(PostgresDataClient):
                 yield db
 
     async def candidates(self,actor,revisions,e5,es,bge,bs,depth):
-        """Return candidates inside a compact server-authorized document/revision scope."""
-        headers={'x-rkb-actor':actor,'x-rkb-vector-revisions':json.dumps(revisions)}
+        """Return candidates inside the server-authorized active revision scope."""
+        scope={str(UUID(str(key))):int(value) for key,value in revisions.items()}
+        if any(value<0 for value in scope.values()):raise PermissionError('invalid vector revision scope')
+        if not scope:return []
+        headers={'x-rkb-actor':actor,'x-rkb-vector-revisions':json.dumps(scope)}
         async with self._connection(headers) as db:
             rows=await(await db.execute(
-                'select * from rkb_vector_candidates_v3(%s,%s,%s,%s,%s)',
-                (e5,es,bge,bs,depth),
+                'select * from public.rkb_vector_candidates_v4(%s,%s,%s,%s,%s)',
+                (e5,es,bge,bs,max(1,min(int(depth),100))),
             )).fetchall()
             return [dict(row) for row in rows]
 

@@ -45,7 +45,9 @@ The queue is recovery state, not a permanent second vector store.
 An E5 outage does not block BGE enqueue, source activation or lexical retrieval.
 The default publication/readiness gate is BGE; set `RKB_REQUIRED_VECTOR_SPACES=e5,bge`
 only for an explicit strict dual-space experiment. `RKB_INDEX_E5_DIAGNOSTIC=1`
-may populate E5 without making it a publication requirement.
+may populate E5 without making it a publication requirement. Public indexing status exposes `required_vector_spaces` so optional E5 debt cannot be mistaken for a failed production publication.
+
+Interactive BGE query jobs use an actor + BGE-space + query-hash idempotency key, so identical retries and concurrent duplicate requests share one bounded result for the queue retention window. The ready remote worker polls for new claims every 100 ms. Vector ranking receives the exact server-authorized document/revision map explicitly and still runs under the independent RLS scope; this avoids row-by-row revision-scope function evaluation on the hot path.
 If a newer replacement revision is finalized while an older replacement is still
 waiting for vectors, the older pending publication is marked `superseded` and
 its ingestion becomes an explicit failed/superseded job. The indexer then selects

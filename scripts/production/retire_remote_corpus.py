@@ -40,6 +40,7 @@ async def run(args):
   (args.evidence/'retirement.json').write_text(json.dumps(report,indent=2))
   if not args.apply:await db.rollback();print('verified; --apply required to retire');return
   await db.execute(Path('sql/021_vector_only_plane.sql').read_text().strip().removeprefix('begin;').removesuffix('commit;'))
+  await db.execute(Path('sql/022_vector_candidate_hotpath.sql').read_text().strip().removeprefix('begin;').removesuffix('commit;'))
   # RESTRICT is intentional: any unreviewed database dependency aborts the transaction.
   await db.execute(sql.SQL('drop table {} restrict').format(sql.SQL(',').join(sql.Identifier(t) for t in sorted(retire))))
   for f in functions:

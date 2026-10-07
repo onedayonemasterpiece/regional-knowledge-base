@@ -341,3 +341,19 @@ def test_vector_sql_compact_revision_scope_contract():
     assert "public.rkb_vector_revision_scope(a.document_id,a.revision)" in v3
     assert "language plpgsql stable security invoker set search_path=public as $rkb_v3$" in v3
     assert "end $rkb_v3$;" in v3
+
+def test_vector_sql_hotpath_scope_contract():
+    sql = Path("sql/022_vector_candidate_hotpath.sql").read_text()
+    assert "rkb_vector_candidates_v4" in sql
+    assert "security definer set search_path=''" in sql
+    assert "jsonb_each_text(admitted)" in sql
+    assert "a.document_id=s.document_id and a.revision=s.revision" in sql
+    assert "vector document/revision scope mismatch" in sql
+    v4 = sql.split("create or replace function public.rkb_vector_candidates_v4", 1)[1]
+    assert "rkb_vector_revision_scope" not in v4
+
+def test_runtime_vector_candidates_use_v4_hotpath():
+    source = Path("src/regional_knowledge/vector_plane.py").read_text()
+    candidates = source.split("async def candidates", 1)[1].split("async def install", 1)[0]
+    assert "rkb_vector_candidates_v4" in candidates
+    assert "rkb_vector_candidates_v3" not in candidates

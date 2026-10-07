@@ -22,9 +22,10 @@ async def main():
                   on conflict(chunk_id) do update set source_sha256=excluded.source_sha256,owner_user_id=excluded.owner_user_id
                   where rkb_vector_items.document_id=excluded.document_id and rkb_vector_items.revision=excluded.revision and rkb_vector_items.text_sha256=excluded.text_sha256 and rkb_vector_items.search_material_sha256=excluded.search_material_sha256''',(Jsonb(items[offset:offset+256]),))
             await db.execute(Path('sql/021_vector_only_plane.sql').read_text().strip().removeprefix('begin;').removesuffix('commit;'))
+            await db.execute(Path('sql/022_vector_candidate_hotpath.sql').read_text().strip().removeprefix('begin;').removesuffix('commit;'))
             anchors=await(await db.execute('select count(*) n,count(*) filter(where source_sha256 is null or owner_user_id is null) unbound from rkb_vector_items')).fetchone()
             if anchors['n']!=len(items) or anchors['unbound']:raise ValueError('anchor identity coverage failed')
-            rpc=await(await db.execute("select to_regprocedure('public.rkb_vector_candidates_v3(text,text,text,text,integer)')::text name,to_regprocedure('public.rkb_vector_revision_scope(uuid,bigint)')::text scope")).fetchone()
+            rpc=await(await db.execute("select to_regprocedure('public.rkb_vector_candidates_v4(text,text,text,text,integer)')::text name,to_regprocedure('public.rkb_vector_revision_scope(uuid,bigint)')::text scope")).fetchone()
             if not rpc or not rpc['name'] or not rpc['scope']:raise ValueError('compact vector candidate scope/RPC missing')
         print(json.dumps(anchors))
     finally:await client.aclose()

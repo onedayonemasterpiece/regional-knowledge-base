@@ -354,8 +354,10 @@ class IndexingStatus(BaseModel):
     bge_missing: int = Field(ge=0)
     indexing_state: Literal['pending','running','ready','degraded']
     bge_worker_state: str
+    bge_query_state: Literal['disabled','unavailable','ready','degraded'] = 'disabled'
     indexing_owner_state: Literal['disabled','unavailable','running','ready','degraded']
     effective_retrieval_mode: Literal['bge_lexical','e5_bge_lexical','bge','e5_bge','fast_e5','lexical_only']
+    required_vector_spaces: list[Literal['e5','bge']] = Field(default_factory=list)
 
 
 class SearchOutput(BaseModel):
