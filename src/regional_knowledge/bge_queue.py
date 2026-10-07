@@ -20,6 +20,7 @@ MAX_LIFETIME = 11 * 3600
 HEARTBEAT_SECONDS = 120
 JOB_SECONDS = 180
 DONE_QUERY_RETENTION_SECONDS = 24 * 3600
+DONE_AUDIT_RETENTION_SECONDS = 24 * 3600
 
 class BgeQueue:
     def __init__(self, path, *, clock=time.time):
@@ -235,6 +236,13 @@ class BgeQueue:
             db.execute(
                 "delete from jobs where kind='query' and state='done' and updated<?",
                 (now-DONE_QUERY_RETENTION_SECONDS,),
+            )
+            # Benchmark/audit document jobs are transient inference cache, not
+            # production publication recovery state. Bound them independently.
+            db.execute(
+                "delete from jobs where kind='document' and state='done' and updated<? "
+                "and json_extract(identity,'$.audit') is not null",
+                (now-DONE_AUDIT_RETENTION_SECONDS,),
             )
             return [dict(row) for row in db.execute('select id,status,launch_state,provider_ref,provider_version from runs').fetchall()]
 

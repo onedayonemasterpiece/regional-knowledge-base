@@ -1,6 +1,6 @@
 import concurrent.futures
 import pytest
-from regional_knowledge.bge_queue import BgeQueue,IDLE_SECONDS,ROTATE_SECONDS,DONE_QUERY_RETENTION_SECONDS
+from regional_knowledge.bge_queue import BgeQueue,IDLE_SECONDS,ROTATE_SECONDS,DONE_QUERY_RETENTION_SECONDS,DONE_AUDIT_RETENTION_SECONDS
 from regional_knowledge.bge_contract import SPACE,validate_vector
 
 def run_details(queue):
@@ -129,3 +129,17 @@ def test_done_query_results_expire_after_bounded_retention(tmp_path):
     assert queue.result('actor',query)['state']=='done'
     now[0]+=2;queue.maintenance()
     with pytest.raises(PermissionError):queue.result('actor',query)
+
+def test_done_audit_document_results_expire_without_touching_production_documents(tmp_path):
+    now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
+    audit=queue.enqueue('actor','audit-doc',['passage'],kind='document',identity={'audit':'benchmark','material_sha256':'a'*64,'space':SPACE})
+    production=queue.enqueue('actor','prod-doc',['passage'],kind='document',identity={'chunk_id':'chunk','revision':1,'text_sha256':'b'*64})
+    run,token=run_details(queue);queue.heartbeat(run,token,ready=True)
+    claimed=set()
+    for _ in range(2):
+        job=queue.claim(run,token);claimed.add(job['id'])
+        queue.complete(run,token,job['id'],job['claim'],SPACE,[[1]+[0]*1023],{})
+    assert claimed=={audit,production}
+    now[0]+=DONE_AUDIT_RETENTION_SECONDS+1;queue.maintenance()
+    with pytest.raises(PermissionError):queue.result('actor',audit)
+    assert queue.result('actor',production)['state']=='done'

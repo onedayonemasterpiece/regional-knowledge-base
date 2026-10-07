@@ -39,6 +39,8 @@ are produced; the existing queue claims interactive queries ahead of documents.
 A completed document job is retained only until its vector has been durably
 installed and acknowledged, then retired from the queue. Completed interactive
 query results are retained for 24 hours for bounded replay and then removed.
+Completed benchmark/audit document results also expire after 24 hours; they must
+not turn the production recovery queue into a persistent benchmark vector cache.
 The queue is recovery state, not a permanent second vector store.
 An E5 outage does not block BGE enqueue, source activation or lexical retrieval.
 The default publication/readiness gate is BGE; set `RKB_REQUIRED_VECTOR_SPACES=e5,bge`
