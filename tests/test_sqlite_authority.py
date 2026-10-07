@@ -224,3 +224,36 @@ async def test_nonsearchable_catalog_documents_do_not_pollute_global_retrieval_o
     p=Principal(subject=actor,client_id='test',issuer='test',access_token='test')
     catalog=await b.catalog(p)
     assert {str(x['id']) for x in catalog['items']}=={visible,hidden}
+
+@pytest.mark.asyncio
+async def test_automatic_graph_aliases_expand_exact_query_spans_and_respect_searchability(backend):
+    from regional_knowledge.contracts import Principal
+    from regional_knowledge.entity_graph import normalize_alias
+    b=backend;actor=str(uuid4());doc=str(uuid4());entity=str(uuid4())
+    a1,a2=[str(uuid4()) for _ in range(2)]
+    b.corpus.put('rkb_users',[{**defaults('rkb_users'),'id':actor}])
+    b.corpus.put('rkb_documents',[{
+        **defaults('rkb_documents'),'id':doc,'owner_user_id':actor,
+        'title':'Historical place source','source_sha256':'a'*64,'active_revision':1,
+        'catalog':{'kind':'book','searchable':True},
+    }])
+    b.corpus.put('rkb_entities',[{
+        **defaults('rkb_entities'),'id':entity,'owner_user_id':actor,
+        'kind':'poi_ref','canonical_label':'Твангсте','document_id':doc,
+        'revision':1,'state':'candidate',
+    }])
+    b.corpus.put('rkb_entity_aliases',[
+        {**defaults('rkb_entity_aliases'),'id':a1,'entity_id':entity,
+         'value':'Twanste','normalized_value':normalize_alias('Twanste'),
+         'alias_type':'transliteration','document_id':doc,'revision':1,'evidence':{}},
+        {**defaults('rkb_entity_aliases'),'id':a2,'entity_id':entity,
+         'value':'Twangste','normalized_value':normalize_alias('Twangste'),
+         'alias_type':'spelling_variant','document_id':doc,'revision':1,'evidence':{}},
+    ])
+    p=Principal(subject=actor,client_id='test',issuer='test',access_token='test')
+    names={row['name'] for row in await b.automatic_aliases('route through Twanste',p)}
+    assert {'Твангсте','Twanste','Twangste'}<=names
+
+    current=b.corpus.one('rkb_documents',doc)
+    b.corpus.put('rkb_documents',[{**current,'catalog':{'kind':'book','searchable':False}}])
+    assert await b.automatic_aliases('Twanste',p)==[]

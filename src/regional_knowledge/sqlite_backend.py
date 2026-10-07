@@ -66,6 +66,55 @@ class SQLiteBackend(PostgresBackend):
             document=self.corpus.one('rkb_documents',parent)
         return False
 
+    async def automatic_aliases(self,query,principal):
+        from .entity_graph import normalize_alias
+        normalized=normalize_alias(query)
+        words=normalized.split()
+        spans=[]
+        for width in range(1,min(4,len(words))+1):
+            for start in range(0,len(words)-width+1):
+                value=' '.join(words[start:start+width])
+                if len(value)>=3:spans.append(value)
+        spans=list(dict.fromkeys(spans))[:64]
+        if not spans:return []
+        async with self.data_client._connection(self._headers(principal)) as db:
+            matched=await(await db.execute(
+                'select entity_id from rkb_entity_aliases where normalized_value=any(%s) limit 20',
+                (spans,),
+            )).fetchall()
+            entity_ids=list(dict.fromkeys(str(row['entity_id']) for row in matched))
+            if not entity_ids:return []
+            aliases=await(await db.execute(
+                'select entity_id,value,alias_type,document_id,revision from rkb_entity_aliases where entity_id=any(%s) order by entity_id,id limit 100',
+                (entity_ids,),
+            )).fetchall()
+            entities=await(await db.execute(
+                'select id,canonical_label,document_id,revision from rkb_entities where id=any(%s) order by id limit 20',
+                (entity_ids,),
+            )).fetchall()
+        active={}
+        for entity in entities:
+            doc=self.corpus.one('rkb_documents',str(entity['document_id']))
+            if doc and int(doc.get('active_revision') or 0)==int(entity['revision']) and self.search_visible(entity['document_id']):
+                active[str(entity['id'])]=entity
+        result=[];seen=set()
+        for entity_id in entity_ids:
+            entity=active.get(entity_id)
+            if not entity:continue
+            canonical=str(entity['canonical_label']).strip()
+            if canonical and canonical.casefold() not in seen:
+                result.append({'name':canonical,'kind':'historical'});seen.add(canonical.casefold())
+            for alias in aliases:
+                if str(alias['entity_id'])!=entity_id:continue
+                doc=self.corpus.one('rkb_documents',str(alias['document_id']))
+                if not doc or int(doc.get('active_revision') or 0)!=int(alias['revision']) or not self.search_visible(alias['document_id']):continue
+                value=str(alias['value']).strip();key=value.casefold()
+                if not value or key in seen:continue
+                kind=alias.get('alias_type') if alias.get('alias_type') in ('current','historical') else 'historical'
+                result.append({'name':value,'kind':kind});seen.add(key)
+                if len(result)>=20:return result
+        return result
+
     async def local_rankings(self,name,payload,headers):
         actor=self.data_client.actor(headers)
         if actor is None:raise PermissionError('actor required')
