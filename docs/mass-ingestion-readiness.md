@@ -80,7 +80,12 @@ source, but new chunking/retrieval output is evaluated again.
 Mass ingestion must be resumable and idempotent. One failed or superseded
 revision must not block unrelated books. Queues and concurrency are bounded;
 backpressure is explicit; ChatGPT does not need to keep a turn open while indexing
-finishes; only a fully indexed/accepted revision becomes active.
+finishes; only a fully indexed/accepted revision becomes active. A pending book
+must also be observably making progress: five minutes without required-vector
+publication progress is a degraded/stalled condition, not a normal steady state.
+Deployment must keep the MCP, indexer and BGE controller on one exact release SHA;
+mixed runtime releases are a failed deployment, not an acceptable compatibility
+mode.
 
 ## Current evidence and remaining proof
 

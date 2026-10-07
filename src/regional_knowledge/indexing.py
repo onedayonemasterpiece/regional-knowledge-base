@@ -15,6 +15,8 @@ from .bge_queue import BgeQueue
 from .vector_policy import index_vector_spaces
 log=logging.getLogger(__name__)
 POLL_SECONDS=5
+BGE_DOCUMENT_WINDOW=64
+STALL_SECONDS=300
 
 VALID_E5="e.chunk_id is not null and e.embedding_space=%s and e.revision=c.revision and e.text_sha256=c.text_sha256 and e.search_material_sha256=c.search_material_sha256"
 VALID_BGE="b.chunk_id is not null and b.embedding_space=%s and b.model_revision=%s and b.revision=c.revision and b.text_sha256=c.text_sha256 and b.search_material_sha256=c.search_material_sha256"
@@ -91,9 +93,21 @@ class IndexReconciler:
         return groups
 
     async def source(self,actor,row):
-        result=await self.backend.fetch(str(row['id']),actor)
-        if hashlib.sha256(result.text.encode()).hexdigest()!=row['text_sha256']:raise ValueError('source hash mismatch')
-        text=row.get('search_material') if row.get('search_material') is not None else result.text
+        if hasattr(self.backend,'corpus'):
+            # Indexing needs the exact authorized passage, not fully hydrated
+            # evidence metadata. Public fetch expands pages, regions and
+            # illustrations and made large-book indexing scale with hydration.
+            await asyncio.to_thread(self.backend.corpus.authorize,actor.subject,str(row['document_id']),owner=True)
+            chunk=await asyncio.to_thread(self.backend.corpus.one,'rkb_chunks',str(row['id']))
+            if not chunk or str(chunk['document_id'])!=str(row['document_id']) or chunk['revision']!=row['revision']:
+                raise ValueError('publication source changed')
+            result_text=chunk['source_text']
+            text=chunk.get('search_material') if chunk.get('search_material') is not None else result_text
+        else:
+            result=await self.backend.fetch(str(row['id']),actor)
+            result_text=result.text
+            text=row.get('search_material') if row.get('search_material') is not None else result_text
+        if hashlib.sha256(result_text.encode()).hexdigest()!=row['text_sha256']:raise ValueError('source hash mismatch')
         if hashlib.sha256(text.encode()).hexdigest()!=row.get('search_material_sha256',row['text_sha256']):raise ValueError('search material hash mismatch')
         return text
 
@@ -148,28 +162,42 @@ class IndexReconciler:
              where rkb_chunk_embeddings_bge.embedding_space is distinct from excluded.embedding_space or rkb_chunk_embeddings_bge.model_revision is distinct from excluded.model_revision or rkb_chunk_embeddings_bge.text_sha256 is distinct from excluded.text_sha256 or rkb_chunk_embeddings_bge.search_material_sha256 is distinct from excluded.search_material_sha256 or rkb_chunk_embeddings_bge.revision is distinct from excluded.revision''',(BGE_SPACE,REVISION,literal(vector),row['id'],row['revision'],row['text_sha256'],row.get('search_material_sha256',row['text_sha256'])))
             return cursor.rowcount
 
+    async def install_bge_batch(self,actor,ready):
+        if not ready:return 0
+        rows=[];vectors=[]
+        for row,result in ready:
+            if result['space']!=BGE_SPACE or len(result['vectors'])!=1:raise ValueError('BGE result contract')
+            rows.append(row);vectors.append(validate_bge(result['vectors'][0]))
+        if hasattr(self.backend,'corpus'):
+            return await self.install_local(actor,rows,vectors,BGE_SPACE,model_revision=REVISION)
+        written=0
+        for row,vector in zip(rows,vectors,strict=True):
+            written+=await self.install_bge(actor,row,{'space':BGE_SPACE,'vectors':[vector]})
+        return written
+
     async def bge(self,actor,document):
         async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
             rows=await(await db.execute(f'''select c.id,c.document_id,c.revision,c.text_sha256,c.search_material,c.search_material_sha256 from rkb_chunks c join rkb_documents d on d.id=c.document_id
              left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id where d.id=%s and {self.selected_revision()} and not ({VALID_BGE})
-             order by c.text_start,c.id limit 16''',(document,BGE_SPACE,REVISION))).fetchall()
-        submitted=written=0
+             order by c.text_start,c.id limit {BGE_DOCUMENT_WINDOW}''',(document,BGE_SPACE,REVISION))).fetchall()
+        submitted=0;ready=[]
+        capacity=max(0,BGE_DOCUMENT_WINDOW-await asyncio.to_thread(self.queue.document_pending))
         for row in rows:
             key=bge_key(row);job=await asyncio.to_thread(self.queue.lookup,actor.subject,key)
             if job:
                 if job['kind']!='document' or job['identity']!=bge_identity(row):raise ValueError('BGE source identity mismatch')
-                if job['state']=='done':written+=await self.install_bge(actor,row,job['result'])
+                if job['state']=='done':ready.append((row,job['result']))
                 continue
-            # Reserve interactive capacity: at most 64 unfinished document jobs
-            # globally. Claim still strictly prioritizes queries over documents.
-            if await asyncio.to_thread(self.queue.document_pending)>=64:break
+            # Reserve interactive capacity. Claims still strictly prioritize
+            # queries over document jobs.
+            if capacity<=0:continue
             text=await self.source(actor,row)
             async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
                 active=await(await db.execute(f'''select c.id from rkb_chunks c join rkb_documents d on d.id=c.document_id
                  where c.id=%s and c.revision=%s and c.text_sha256=%s and c.search_material_sha256=%s and {self.selected_revision()} and d.owner_user_id=rkb_current_actor_id() for share of d''',(row['id'],row['revision'],row['text_sha256'],row['search_material_sha256']))).fetchone()
                 if not active:continue
-                await asyncio.to_thread(self.queue.enqueue,actor.subject,key,[text],kind='document',identity=bge_identity(row));submitted+=1
-        return submitted,written
+                await asyncio.to_thread(self.queue.enqueue,actor.subject,key,[text],kind='document',identity=bge_identity(row));submitted+=1;capacity-=1
+        return submitted,await self.install_bge_batch(actor,ready)
 
     async def install_local(self,actor,rows,vectors,space,**extra):
         from .sqlite_data import defaults
@@ -194,14 +222,37 @@ class IndexReconciler:
         return len(items)
 
     async def tick(self):
-        stats={'e5_written':0,'bge_submitted':0,'bge_written':0,'errors':[]}
+        stats={'e5_written':0,'bge_submitted':0,'bge_written':0,'errors':[],'pending_documents':0,'phase_seconds':{}}
+        started=time.monotonic()
+        phase=time.monotonic();documents=await self.documents();stats['pending_documents']=len(documents);stats['phase_seconds']['document_scan']=time.monotonic()-phase
+        phase=time.monotonic()
+        for document in documents:
+            actor=self.actor(document['owner_user_id'])
+            # Publication work is the primary responsibility of this worker.
+            # BGE is the production gate and always runs before optional E5.
+            for space in index_vector_spaces():
+                try:
+                    if space=='e5':stats['e5_written']+=await self.e5(actor,document['id'])
+                    else:
+                        submitted,written=await self.bge(actor,document['id']);stats['bge_submitted']+=submitted;stats['bge_written']+=written
+                except Exception as error:
+                    stats['errors'].append(type(error).__name__)
+                    log.warning(json.dumps({'event':'indexing_retry','space':space,'document_id':str(document['id']),'error_type':type(error).__name__}))
+        if hasattr(self.backend,'corpus'):await self.backend.activate_pending()
+        stats['phase_seconds']['publication']=time.monotonic()-phase
+
+        # Ancillary maintenance follows publication so unrelated provider
+        # latency cannot delay this pass's vector progress or activation.
+        phase=time.monotonic()
         if time.time()-self.last_original_gc>60:
             from .original_cache import OriginalCache
             stats['original_cache']=await asyncio.to_thread(OriginalCache.from_env().cleanup)
             proof_cache=OriginalCache(os.getenv('RKB_PROOF_CACHE_DIR','/home/dev/.local/state/regional-knowledge-base/proofs'),max_bytes=64*1024*1024)
             stats['proof_cache']=await asyncio.to_thread(proof_cache.cleanup)
             self.last_original_gc=time.time()
-        if os.getenv('RKB_VIBEPUBLISH_GRANT_FILE'):
+        stats['phase_seconds']['cache_gc']=time.monotonic()-phase
+        phase=time.monotonic()
+        if not documents and os.getenv('RKB_VIBEPUBLISH_GRANT_FILE'):
             try:
                 if self.mirror is None:
                     from .illustration_mirror import IllustrationMirror,VibePublishClient
@@ -213,28 +264,35 @@ class IndexReconciler:
                 stats['mirrors_verified']=await self.mirror.tick()
             except Exception as error:
                 log.warning(json.dumps({'event':'illustration_mirror_pass_retry','error_type':type(error).__name__}))
-        if os.getenv('RKB_STORAGE_GC_ENABLED')=='1' and time.time()-self.last_gc>60:
+        stats['phase_seconds']['archive_mirror']=time.monotonic()-phase
+        phase=time.monotonic()
+        if not documents and os.getenv('RKB_STORAGE_GC_ENABLED')=='1' and time.time()-self.last_gc>60:
             from .storage_gc import collect
             await collect(self.backend,apply=True);self.last_gc=time.time()
-        for document in await self.documents():
-            actor=self.actor(document['owner_user_id'])
-            # BGE is the production gate and always runs first. E5 is optional.
-            for space in index_vector_spaces():
-                try:
-                    if space=='e5':stats['e5_written']+=await self.e5(actor,document['id'])
-                    else:
-                        submitted,written=await self.bge(actor,document['id']);stats['bge_submitted']+=submitted;stats['bge_written']+=written
-                except Exception as error:
-                    stats['errors'].append(type(error).__name__)
-                    log.warning(json.dumps({'event':'indexing_retry','space':space,'document_id':str(document['id']),'error_type':type(error).__name__}))
-        if hasattr(self.backend,'corpus'):await self.backend.activate_pending()
+        stats['phase_seconds']['storage_gc']=time.monotonic()-phase
+        stats['phase_seconds']['total']=time.monotonic()-started
         if any(stats[k] for k in ('e5_written','bge_submitted','bge_written')) or stats['errors']:
             log.info(json.dumps({'event':'indexing_progress',**stats,'external_embedding_api_calls':0}))
         return stats
 
 def write_health(stats):
     path=Path(os.environ['RKB_INDEXING_HEALTH_PATH']);path.parent.mkdir(parents=True,exist_ok=True)
-    value={'updated_at':time.time(),'pid':os.getpid(),'state':'degraded' if stats['errors'] else 'running' if any(stats[k] for k in ('e5_written','bge_submitted','bge_written')) else 'ready','error_type':stats['errors'][0] if stats['errors'] else None}
+    now=time.time();previous={}
+    try:previous=json.loads(path.read_text())
+    except (OSError,ValueError):pass
+    progress=sum(int(stats.get(k,0)) for k in ('e5_written','bge_submitted','bge_written'))
+    pending=int(stats.get('pending_documents',0))
+    if progress or not previous.get('pending_documents'):last_progress=now
+    else:last_progress=float(previous.get('last_progress_at',now))
+    stalled=pending>0 and now-last_progress>STALL_SECONDS
+    if stalled and not previous.get('stalled_seconds'):
+        log.error(json.dumps({'event':'indexing_stalled','pending_documents':pending,'stalled_seconds':now-last_progress}))
+    state='degraded' if stats.get('errors') or stalled else 'running' if pending or progress else 'ready'
+    value={'updated_at':now,'pid':os.getpid(),'state':state,
+           'error_type':stats['errors'][0] if stats.get('errors') else 'indexing_stalled' if stalled else None,
+           'pending_documents':pending,'last_progress_at':last_progress,
+           'stalled_seconds':max(0,now-last_progress) if stalled else 0,
+           'phase_seconds':stats.get('phase_seconds',{})}
     temp=path.with_name(path.name+'.new');temp.write_text(json.dumps(value));temp.chmod(0o600);temp.replace(path)
 
 async def run_loop(backend,queue):

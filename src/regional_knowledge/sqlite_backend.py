@@ -131,7 +131,10 @@ class SQLiteBackend(PostgresBackend):
             return create(self.corpus,kwargs['principal'].subject,payload)
         if kwargs.get('ingestion_id') and kwargs.get('command') in ('status','finalize','continue_pages','validate'):
             row=await self._ingestion_row(principal=kwargs['principal'],ingestion_id=kwargs['ingestion_id'])
-            if row and row.get('cursor')=='vectors':return self._ingestion_output(row,'Waiting for E5 and BGE publication; previous revision remains selected')
+            if row and row.get('cursor')=='vectors':
+                from .vector_policy import required_vector_spaces
+                required='+'.join(space.upper() for space in required_vector_spaces())
+                return self._ingestion_output(row,f'Waiting for required {required} publication; previous revision remains selected')
         result=await super().book_ingest(**kwargs)
         if result.document_id and payload.get('catalog'):
             from .contracts import CatalogMetadata
