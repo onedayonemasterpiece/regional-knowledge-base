@@ -178,3 +178,49 @@ async def test_newer_pending_revision_supersedes_older_vector_work(backend):
     assert old['error_code']=='superseded_by_revision_2'
     assert current['state']=='processing' and current['cursor']=='vectors'
     assert b.corpus.one('rkb_documents',doc)['active_revision']==0
+
+@pytest.mark.asyncio
+async def test_nonsearchable_catalog_documents_do_not_pollute_global_retrieval_or_readiness(backend):
+    from regional_knowledge.contracts import Principal
+    b=backend;actor=str(uuid4());h={'x-rkb-actor':actor}
+    visible,hidden=[str(uuid4()) for _ in range(2)]
+    vc,hc=[str(uuid4()) for _ in range(2)]
+    b.corpus.put('rkb_users',[{**defaults('rkb_users'),'id':actor}])
+    for doc,chunk,title,searchable in (
+        (visible,vc,'Visible real book',True),
+        (hidden,hc,'Synthetic hidden control',False),
+    ):
+        text='needle '+title;sha=hashlib.sha256(text.encode()).hexdigest()
+        b.corpus.put('rkb_documents',[{
+            **defaults('rkb_documents'),'id':doc,'owner_user_id':actor,
+            'title':title,'source_sha256':'a'*64,'active_revision':1,
+            'catalog':{'kind':'book','searchable':searchable},
+        }])
+        b.corpus.put('rkb_chunks',[{
+            **defaults('rkb_chunks'),'id':chunk,'document_id':doc,'revision':1,
+            'title':title,'source_text':text,'search_material':text,
+            'text_sha256':sha,'search_material_sha256':sha,
+        }])
+        b.corpus.put('rkb_chunk_embeddings_bge',[{
+            **defaults('rkb_chunk_embeddings_bge'),'chunk_id':chunk,
+            'embedding_space':BS,'revision':1,'text_sha256':sha,
+            'search_material_sha256':sha,'model_revision':REVISION,
+        }])
+        b.corpus.build_fragments(doc,1)
+
+    rows=(await b.local_rankings('rkb_multilingual_rankings',{
+        'query_text':'needle','bge_vector':None,'bge_space':None,
+        'e5_vector':None,'e5_space':None,'aliases':[],'depth':100,
+    },h)).json()
+    assert rows
+    assert all(str(row['chunk_id'])!=hc for row in rows)
+
+    async with b.data_client._connection(h) as db:
+        global_counts=await(await db.execute('select * from rkb_index_counts(%s)',(None,))).fetchone()
+        hidden_counts=await(await db.execute('select * from rkb_index_counts(%s)',(hidden,))).fetchone()
+    assert global_counts['active_chunks']==1 and global_counts['bge_ready']==1
+    assert hidden_counts['active_chunks']==1 and hidden_counts['bge_ready']==1
+
+    p=Principal(subject=actor,client_id='test',issuer='test',access_token='test')
+    catalog=await b.catalog(p)
+    assert {str(x['id']) for x in catalog['items']}=={visible,hidden}

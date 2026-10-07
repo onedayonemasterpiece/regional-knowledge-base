@@ -51,12 +51,27 @@ class SQLiteBackend(PostgresBackend):
             d=self.corpus.one('rkb_documents',r['document_id'])
             await self.local_rpc('rkb_activate_revision',{'p_document_id':r['document_id'],'p_ingestion_id':r['ingestion_id'],'p_revision':r['revision'],'p_poi_events':__import__('json').loads(r['poi_events'])},{'x-rkb-actor':d['owner_user_id']})
 
+    def search_visible(self,document_id):
+        document=self.corpus.one('rkb_documents',str(document_id))
+        if not document:return False
+        seen=set()
+        while document:
+            catalog=document.get('catalog') or {}
+            if catalog.get('searchable',True) is False:return False
+            parent=catalog.get('parent_id') or document.get('parent_id')
+            if not parent:return True
+            parent=str(parent)
+            if parent in seen:return False
+            seen.add(parent)
+            document=self.corpus.one('rkb_documents',parent)
+        return False
+
     async def local_rankings(self,name,payload,headers):
         actor=self.data_client.actor(headers)
         if actor is None:raise PermissionError('actor required')
         async with self.data_client._connection(headers) as db:
             docs=await(await db.execute('select id,active_revision from rkb_documents')).fetchall()
-        allowed={str(d['id']):d['active_revision'] for d in docs}
+        allowed={str(d['id']):d['active_revision'] for d in docs if self.search_visible(d['id'])}
         depth=max(1,min(int(payload.get('depth',100)),100)) if name=='rkb_multilingual_rankings' else max(20,max(1,min(int(payload.get('match_count',8)),20))*5)
         query=payload.get('query_text','')
         include_lexical=bool(payload.get('include_lexical',True))

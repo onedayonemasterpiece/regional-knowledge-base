@@ -120,6 +120,7 @@ class CatalogMetadata(BaseModel):
     identifiers: list[dict[str,str]] = Field(default_factory=list,max_length=30)
     form: str | None = Field(default=None,max_length=100)
     purpose: str | None = Field(default=None,max_length=100)
+    searchable: bool = True
     topics: list[str] = Field(default_factory=list,max_length=50)
     annotation: str | None = Field(default=None,max_length=4000)
     annotation_origin: Literal['source','user','model'] | None = None

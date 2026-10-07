@@ -271,9 +271,11 @@ class LocalConnection:
               from corpus_rows d join chunk_text t on t.document_id=d.row_key and t.revision=json_extract(d.payload,'$.active_revision')
               left join corpus_rows e on e.table_name='rkb_chunk_embeddings_e5' and e.row_key=t.chunk_id
               left join corpus_rows b on b.table_name='rkb_chunk_embeddings_bge' and b.row_key=t.chunk_id
-              where d.table_name='rkb_documents' and local_visible('rkb_documents',d.payload) and (? is null or d.row_key=?)"""
+              where d.table_name='rkb_documents' and local_visible('rkb_documents',d.payload)
+                and (? is not null or coalesce(json_extract(d.payload,'$.catalog.searchable'),1)<>0)
+                and (? is null or d.row_key=?)"""
             target=str(values[0]) if values and values[0] else None
-            return LocalCursor(await asyncio.to_thread(self.db.execute,query,(es,bs,REVISION,target,target)))
+            return LocalCursor(await asyncio.to_thread(self.db.execute,query,(es,bs,REVISION,target,target,target)))
         if 'pg_advisory' in statement:return LocalCursor(self.db.execute('select 1 as locked'))
         if 'string_agg' in statement:
             text=','.join(str(r['id'])+str(r['active_revision']) for r in sorted(self.context.rows('rkb_documents'),key=lambda r:r['id']) if r['active_revision']>0 and self.context.readable(r['id']))
