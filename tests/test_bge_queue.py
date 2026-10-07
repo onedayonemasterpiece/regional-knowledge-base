@@ -1,6 +1,6 @@
 import concurrent.futures
 import pytest
-from regional_knowledge.bge_queue import BgeQueue,IDLE_SECONDS,ROTATE_SECONDS
+from regional_knowledge.bge_queue import BgeQueue,IDLE_SECONDS,ROTATE_SECONDS,DONE_QUERY_RETENTION_SECONDS
 from regional_knowledge.bge_contract import SPACE,validate_vector
 
 def run_details(queue):
@@ -107,3 +107,25 @@ async def test_cold_main_returns_fast_evidence_and_actor_bound_pending_job(monke
     assert queue.result('actor',result.main_job_id)['state']=='pending'
     with pytest.raises(PermissionError):queue.result('other',result.main_job_id)
     with pytest.raises(ValueError):await main_search(Backend(),'changed',actor,main_job_id=result.main_job_id)
+
+def test_done_document_job_can_retire_only_after_completion(tmp_path):
+    queue=BgeQueue(tmp_path/'queue.sqlite')
+    doc=queue.enqueue('actor','doc-retire',['passage'],kind='document')
+    assert queue.retire_done_documents('actor',[doc])==0
+    run,token=run_details(queue);queue.heartbeat(run,token,ready=True)
+    job=queue.claim(run,token);assert job['id']==doc
+    queue.complete(run,token,doc,job['claim'],SPACE,[[1]+[0]*1023],{})
+    assert queue.retire_done_documents('other',[doc])==0
+    assert queue.retire_done_documents('actor',[doc])==1
+    with pytest.raises(PermissionError):queue.result('actor',doc)
+
+
+def test_done_query_results_expire_after_bounded_retention(tmp_path):
+    now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
+    query=queue.enqueue('actor','query-retention',['query'])
+    run,token=run_details(queue);queue.heartbeat(run,token,ready=True)
+    job=queue.claim(run,token);queue.complete(run,token,query,job['claim'],SPACE,[[1]+[0]*1023],{})
+    now[0]+=DONE_QUERY_RETENTION_SECONDS-1;queue.maintenance()
+    assert queue.result('actor',query)['state']=='done'
+    now[0]+=2;queue.maintenance()
+    with pytest.raises(PermissionError):queue.result('actor',query)

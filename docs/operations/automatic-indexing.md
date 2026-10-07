@@ -34,8 +34,12 @@ part of embedding. Writes recheck owner/account/selected revision, source hash a
 exact space. Inactive revisions and archived controls are ignored;
 old vectors are never deleted. BGE jobs retain the existing actor/space/chunk/
 revision/hash idempotency keys. Completed jobs can be installed after restart
-without submitting or encoding them again. At most64 unfinished document jobs
+without submitting or encoding them again. At most 64 unfinished document jobs
 are produced; the existing queue claims interactive queries ahead of documents.
+A completed document job is retained only until its vector has been durably
+installed and acknowledged, then retired from the queue. Completed interactive
+query results are retained for 24 hours for bounded replay and then removed.
+The queue is recovery state, not a permanent second vector store.
 An E5 outage does not block BGE enqueue, source activation or lexical retrieval.
 The default publication/readiness gate is BGE; set `RKB_REQUIRED_VECTOR_SPACES=e5,bge`
 only for an explicit strict dual-space experiment. `RKB_INDEX_E5_DIAGNOSTIC=1`

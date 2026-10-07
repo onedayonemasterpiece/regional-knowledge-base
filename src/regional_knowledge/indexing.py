@@ -231,13 +231,14 @@ class IndexReconciler:
                  left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id where d.id=%s and d.owner_user_id=rkb_current_actor_id()
                  and {self.selected_revision()} and not ({VALID_BGE})
                  order by c.text_start,c.id limit {BGE_DOCUMENT_WINDOW}''',(document,BGE_SPACE,REVISION))).fetchall()
-        submitted=0;ready=[]
+        submitted=0;ready=[];ready_job_ids=[]
         capacity=max(0,BGE_DOCUMENT_WINDOW-await asyncio.to_thread(self.queue.document_pending))
         for row in rows:
             key=bge_key(row);job=await asyncio.to_thread(self.queue.lookup,actor.subject,key)
             if job:
                 if job['kind']!='document' or job['identity']!=bge_identity(row):raise ValueError('BGE source identity mismatch')
-                if job['state']=='done':ready.append((row,job['result']))
+                if job['state']=='done':
+                    ready.append((row,job['result']));ready_job_ids.append(job['id'])
                 continue
             # Reserve interactive capacity. Claims still strictly prioritize
             # queries over document jobs.
@@ -252,7 +253,12 @@ class IndexReconciler:
             # SQLite already selected this immutable revision under the owner
             # context. A later supersede only leaves this idempotent job inert.
             await asyncio.to_thread(self.queue.enqueue,actor.subject,key,[text],kind='document',identity=bge_identity(row));submitted+=1;capacity-=1
-        return submitted,await self.install_bge_batch(actor,ready)
+        written=await self.install_bge_batch(actor,ready)
+        if ready_job_ids:
+            retired=await asyncio.to_thread(self.queue.retire_done_documents,actor.subject,ready_job_ids)
+            if retired!=len(ready_job_ids):
+                log.warning(json.dumps({'event':'bge_document_job_retirement_incomplete','expected':len(ready_job_ids),'retired':retired}))
+        return submitted,written
 
     async def install_local(self,actor,rows,vectors,space,**extra):
         from .sqlite_data import defaults
