@@ -93,10 +93,12 @@ class IndexReconciler:
         return groups
 
     async def source(self,actor,row):
-        if hasattr(self.backend,'corpus'):
-            # Indexing needs the exact authorized passage, not fully hydrated
-            # evidence metadata. Public fetch expands pages, regions and
-            # illustrations and made large-book indexing scale with hydration.
+        if row.get('source_text') is not None:
+            # This payload came from the actor-authorized selected-revision
+            # query. Reuse it instead of reopening evidence hydration per chunk.
+            result_text=row['source_text']
+            text=row.get('search_material') if row.get('search_material') is not None else result_text
+        elif hasattr(self.backend,'corpus'):
             await asyncio.to_thread(self.backend.corpus.authorize,actor.subject,str(row['document_id']),owner=True)
             chunk=await asyncio.to_thread(self.backend.corpus.one,'rkb_chunks',str(row['id']))
             if not chunk or str(chunk['document_id'])!=str(row['document_id']) or chunk['revision']!=row['revision']:
@@ -177,8 +179,9 @@ class IndexReconciler:
 
     async def bge(self,actor,document):
         async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
-            rows=await(await db.execute(f'''select c.id,c.document_id,c.revision,c.text_sha256,c.search_material,c.search_material_sha256 from rkb_chunks c join rkb_documents d on d.id=c.document_id
-             left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id where d.id=%s and {self.selected_revision()} and not ({VALID_BGE})
+            rows=await(await db.execute(f'''select c.id,c.document_id,c.revision,c.text_sha256,c.source_text,c.search_material,c.search_material_sha256 from rkb_chunks c join rkb_documents d on d.id=c.document_id
+             left join rkb_chunk_embeddings_bge b on b.chunk_id=c.id where d.id=%s and d.owner_user_id=rkb_current_actor_id()
+             and {self.selected_revision()} and not ({VALID_BGE})
              order by c.text_start,c.id limit {BGE_DOCUMENT_WINDOW}''',(document,BGE_SPACE,REVISION))).fetchall()
         submitted=0;ready=[]
         capacity=max(0,BGE_DOCUMENT_WINDOW-await asyncio.to_thread(self.queue.document_pending))
@@ -192,11 +195,15 @@ class IndexReconciler:
             # queries over document jobs.
             if capacity<=0:continue
             text=await self.source(actor,row)
-            async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
-                active=await(await db.execute(f'''select c.id from rkb_chunks c join rkb_documents d on d.id=c.document_id
-                 where c.id=%s and c.revision=%s and c.text_sha256=%s and c.search_material_sha256=%s and {self.selected_revision()} and d.owner_user_id=rkb_current_actor_id() for share of d''',(row['id'],row['revision'],row['text_sha256'],row['search_material_sha256']))).fetchone()
-                if not active:continue
-                await asyncio.to_thread(self.queue.enqueue,actor.subject,key,[text],kind='document',identity=bge_identity(row));submitted+=1;capacity-=1
+            if not hasattr(self.backend,'corpus'):
+                # Legacy PostgreSQL corpus path retains its late selection guard.
+                async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
+                    active=await(await db.execute(f'''select c.id from rkb_chunks c join rkb_documents d on d.id=c.document_id
+                     where c.id=%s and c.revision=%s and c.text_sha256=%s and c.search_material_sha256=%s and {self.selected_revision()} and d.owner_user_id=rkb_current_actor_id() for share of d''',(row['id'],row['revision'],row['text_sha256'],row['search_material_sha256']))).fetchone()
+                    if not active:continue
+            # SQLite already selected this immutable revision under the owner
+            # context. A later supersede only leaves this idempotent job inert.
+            await asyncio.to_thread(self.queue.enqueue,actor.subject,key,[text],kind='document',identity=bge_identity(row));submitted+=1;capacity-=1
         return submitted,await self.install_bge_batch(actor,ready)
 
     async def install_local(self,actor,rows,vectors,space,**extra):
