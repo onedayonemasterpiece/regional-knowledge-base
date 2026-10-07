@@ -1,0 +1,21 @@
+[Unit]
+Description=Regional Knowledge local BGE query encoder
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/home/dev/.local/state/regional-knowledge-base/service.env
+Environment=RKB_BGE_QUERY_MODEL_DIR=/home/dev/.local/share/regional-knowledge-base/bge-m3-int8
+ExecStart=/home/dev/.local/share/rkb-embedding/venv/bin/python -m regional_knowledge.bge_query_service
+Restart=on-failure
+RestartSec=3
+MemoryMax=1536M
+MemorySwapMax=0
+CPUQuota=100%
+CPUAffinity=1
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

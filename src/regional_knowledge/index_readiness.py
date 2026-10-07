@@ -5,7 +5,7 @@ from uuid import UUID
 from .local_e5 import LocalE5Embedder
 from .bge_queue import BgeQueue
 from .contracts import IndexingStatus
-from .vector_policy import missing_required
+from .vector_policy import missing_required,required_vector_spaces
 
 def enabled():return os.getenv('RKB_AUTO_INDEX_ENABLED')=='1'
 
@@ -25,18 +25,23 @@ def maintenance_state():
 
 async def status(backend,principal,document_id=None):
     values=await counts(backend,principal,document_id);n=values['active_chunks'];e=values['e5_ready'];b=values['bge_ready']
-    fast=await backend.embedder.status() if isinstance(backend.embedder,LocalE5Embedder) else {'ready':False}
-    try:
-        q=await asyncio.to_thread(BgeQueue(os.environ['RKB_BGE_QUEUE_PATH']).status)
-        worker=q['state']
-    except (KeyError,OSError,RuntimeError):worker='unavailable'
-    owner=maintenance_state() if enabled() else 'disabled'
     warm_mode=os.getenv('RKB_BGE_WARM_MODE','bge')
     if warm_mode not in ('bge_lexical','e5_bge_lexical','bge','e5_bge'):
         warm_mode='bge'
     needs_e5=warm_mode in ('e5_bge_lexical','e5_bge')
+    need_fast_health=needs_e5 or b<n
+    fast=await backend.embedder.status() if need_fast_health and isinstance(backend.embedder,LocalE5Embedder) else {'ready':False}
+    try:
+        q=await asyncio.to_thread(BgeQueue(os.environ['RKB_BGE_QUEUE_PATH']).status)
+        worker=q['state']
+    except (KeyError,OSError,RuntimeError):worker='unavailable'
+    local_bge=getattr(backend,'bge_query_embedder',None)
+    local_bge_status=await local_bge.status() if local_bge is not None else {'ready':False}
+    query_ready=bool(local_bge_status.get('ready') or worker=='ready')
+    bge_query_state='disabled' if os.getenv('RKB_BGE_ENABLED')!='1' else 'ready' if query_ready else 'unavailable'
+    owner=maintenance_state() if enabled() else 'disabled'
     main_ready=(
-        n and b==n and worker=='ready' and os.getenv('RKB_BGE_ENABLED')=='1'
+        n and b==n and query_ready and os.getenv('RKB_BGE_ENABLED')=='1'
         and (not needs_e5 or (e==n and fast['ready']))
     )
     mode=warm_mode if main_ready else 'fast_e5' if n and e==n and fast['ready'] else 'lexical_only'
@@ -45,4 +50,4 @@ async def status(backend,principal,document_id=None):
         missing_required(e5_missing=n-e,bge_missing=0) and not fast['ready']
     )
     state='ready' if not required_missing else 'degraded' if owner in ('unavailable','degraded','disabled') or required_unavailable else 'running' if owner=='running' or e>0 or b>0 else 'pending'
-    return IndexingStatus(**values,e5_missing=n-e,bge_missing=n-b,indexing_state=state,bge_worker_state=worker,indexing_owner_state=owner,effective_retrieval_mode=mode)
+    return IndexingStatus(**values,e5_missing=n-e,bge_missing=n-b,indexing_state=state,bge_worker_state=worker,bge_query_state=bge_query_state,indexing_owner_state=owner,effective_retrieval_mode=mode,required_vector_spaces=list(required_vector_spaces()))

@@ -15,11 +15,16 @@ class SQLiteBackend(PostgresBackend):
         self.corpus=SQLiteCorpus(corpus_path)
         self.data_client=SQLiteDataClient(self.corpus,self)
         self.vector_client=RemoteVectorClient(dsn,min_size=0,max_size=pool_max_size) if dsn else None
+        self.bge_query_embedder=None
+        if os.getenv('RKB_BGE_QUERY_LOCAL_ENABLED')=='1':
+            from .local_bge import LocalBGEQueryEmbedder
+            self.bge_query_embedder=LocalBGEQueryEmbedder()
         SupabaseRestBackend.__init__(self,SupabaseConfig(url='sqlite://regional-knowledge.internal',anon_key='local',service_role_key='local',public_base_url=public_base_url),embedder=embedder,object_store=object_store,client=self.data_client)
 
     async def aclose(self):
         await SupabaseRestBackend.aclose(self)
         if self.vector_client:await self.vector_client.aclose()
+        if self.bge_query_embedder:await self.bge_query_embedder.aclose()
 
     async def local_rpc(self,name,p,headers):
         if name in ('rkb_fast_e5_search','rkb_hybrid_search','rkb_multilingual_rankings'):return await self.local_rankings(name,p,headers)
