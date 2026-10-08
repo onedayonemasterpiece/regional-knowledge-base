@@ -41,14 +41,13 @@ create policy vector_read on public.rkb_chunk_embeddings_bge
 
 -- The v4 SECURITY DEFINER routine remains installed as a bounded fallback.
 -- v5 always runs as the caller (rkb_app) under both independent RLS policies.
-create or replace function public.rkb_vector_candidates_v5(
-    e5_query text,e5_space text,bge_query text,bge_space text,depth integer
-)
-returns table(
-    chunk_id uuid,branch text,rank bigint,revision bigint,
-    text_sha256 text,search_material_sha256 text
-)
-language plpgsql stable security invoker set search_path='' as $rkb_v5$
+-- Explicit fail-closed gate. This small PL/pgSQL helper runs only once for the
+-- candidate query. The expensive ranking itself must remain a SQL function so
+-- PostgreSQL can inline/plan it under independently enforced invoker RLS.
+create or replace function public.rkb_vector_validate_scope_v5(
+    e5_query text,e5_space text,bge_query text,bge_space text
+) returns boolean
+language plpgsql stable security invoker set search_path='' as $rkb_v5_validate$
 declare
     admitted jsonb;
     admitted_documents text[];
@@ -79,48 +78,78 @@ begin
        and bge_space is distinct from 'bge-m3:5617a9f:t211-tr5161:cls-l2-512:q1-d1:v1' then
         raise exception 'BGE space mismatch';
     end if;
-
-    if e5_query is not null then
-        return query
-        with scope as materialized (
-            select key::uuid document_id,value::bigint revision
-            from pg_catalog.jsonb_each_text(admitted)
-        )
-        select a.chunk_id,'e5'::text,
-            row_number() over(order by e.embedding OPERATOR(public.<=>) e5_query::public.vector(384),a.chunk_id),
-            a.revision,a.text_sha256,a.search_material_sha256
-        from scope s
-        join public.rkb_vector_items a
-            on a.document_id=s.document_id and a.revision=s.revision
-        join public.rkb_chunk_embeddings_e5 e on e.chunk_id=a.chunk_id
-        where e.embedding_space=e5_space
-            and e.revision=a.revision and e.text_sha256=a.text_sha256
-            and e.search_material_sha256=a.search_material_sha256
-        order by e.embedding OPERATOR(public.<=>) e5_query::public.vector(384),a.chunk_id
-        limit least(greatest(depth,1),100);
-    end if;
-
-    if bge_query is not null then
-        return query
-        with scope as materialized (
-            select key::uuid document_id,value::bigint revision
-            from pg_catalog.jsonb_each_text(admitted)
-        )
-        select a.chunk_id,'bge'::text,
-            row_number() over(order by e.embedding OPERATOR(public.<=>) bge_query::public.vector(1024),a.chunk_id),
-            a.revision,a.text_sha256,a.search_material_sha256
-        from scope s
-        join public.rkb_vector_items a
-            on a.document_id=s.document_id and a.revision=s.revision
-        join public.rkb_chunk_embeddings_bge e on e.chunk_id=a.chunk_id
-        where e.model_revision='5617a9f61b028005a4858fdac845db406aefb181'
-            and e.embedding_space=bge_space
-            and e.revision=a.revision and e.text_sha256=a.text_sha256
-            and e.search_material_sha256=a.search_material_sha256
-        order by e.embedding OPERATOR(public.<=>) bge_query::public.vector(1024),a.chunk_id
-        limit least(greatest(depth,1),100);
-    end if;
+    return true;
 end
+$rkb_v5_validate$;
+revoke all on function public.rkb_vector_validate_scope_v5(text,text,text,text) from public;
+grant execute on function public.rkb_vector_validate_scope_v5(text,text,text,text) to rkb_app;
+
+-- Set-returning SQL (not PL/pgSQL) enables ordinary planner optimization and
+-- avoids a generic PL/pgSQL plan around thousands of RLS-filtered vectors.
+-- Every relation, helper, operator and vector type is schema-qualified.
+create or replace function public.rkb_vector_candidates_v5(
+    e5_query text,e5_space text,bge_query text,bge_space text,depth integer
+)
+returns table(
+    chunk_id uuid,branch text,rank bigint,revision bigint,
+    text_sha256 text,search_material_sha256 text
+)
+language sql stable security invoker as $rkb_v5$
+    with gate as materialized (
+        select public.rkb_vector_validate_scope_v5(
+            e5_query,e5_space,bge_query,bge_space
+        ) as allowed
+    ),
+    scope as materialized (
+        select key::uuid document_id,value::bigint revision
+        from pg_catalog.jsonb_each_text(
+            nullif(pg_catalog.current_setting('rkb.vector_revisions',true),'')::jsonb
+        )
+    )
+    select ranked.chunk_id,ranked.branch,ranked.rank,
+           ranked.revision,ranked.text_sha256,ranked.search_material_sha256
+    from (
+        (
+            select a.chunk_id,'e5'::text as branch,
+                row_number() over(
+                    order by e.embedding OPERATOR(public.<=>) e5_query::public.vector(384),a.chunk_id
+                ) as rank,
+                a.revision,a.text_sha256,a.search_material_sha256
+            from scope s
+            join public.rkb_vector_items a
+                on a.document_id=s.document_id and a.revision=s.revision
+            join public.rkb_chunk_embeddings_e5 e on e.chunk_id=a.chunk_id
+            cross join gate
+            where gate.allowed and e5_query is not null
+                and e.embedding_space=e5_space
+                and e.revision=a.revision and e.text_sha256=a.text_sha256
+                and e.search_material_sha256=a.search_material_sha256
+            order by e.embedding OPERATOR(public.<=>) e5_query::public.vector(384),a.chunk_id
+            limit least(greatest(depth,1),100)
+        )
+        union all
+        (
+            select a.chunk_id,'bge'::text as branch,
+                row_number() over(
+                    order by e.embedding OPERATOR(public.<=>) bge_query::public.vector(1024),a.chunk_id
+                ) as rank,
+                a.revision,a.text_sha256,a.search_material_sha256
+            from scope s
+            join public.rkb_vector_items a
+                on a.document_id=s.document_id and a.revision=s.revision
+            join public.rkb_chunk_embeddings_bge e on e.chunk_id=a.chunk_id
+            cross join gate
+            where gate.allowed and bge_query is not null
+                and e.model_revision='5617a9f61b028005a4858fdac845db406aefb181'
+                and e.embedding_space=bge_space
+                and e.revision=a.revision and e.text_sha256=a.text_sha256
+                and e.search_material_sha256=a.search_material_sha256
+            order by e.embedding OPERATOR(public.<=>) bge_query::public.vector(1024),a.chunk_id
+            limit least(greatest(depth,1),100)
+        )
+    ) ranked
+    order by case when ranked.branch='e5' then 0 else 1 end,
+             ranked.rank,ranked.chunk_id
 $rkb_v5$;
 
 revoke all on function public.rkb_vector_candidates_v5(text,text,text,text,integer) from public;
