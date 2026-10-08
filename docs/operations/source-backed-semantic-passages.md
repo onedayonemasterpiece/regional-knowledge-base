@@ -38,3 +38,15 @@ validation instead of silently gaining `visual_reviewed`. If the historical
 review graph was discarded or deleted, its evidence must be recovered or the
 page explicitly reviewed again. This safeguard does not automatically
 activate any book revision and does not change dense-quality acceptance.
+
+### Retention of accepted review evidence
+
+Source-review graphs are **not disposable staging caches** after successful
+finalization. Storage GC retains the current graph object referenced by every
+finalized ingestion job, including older finalized revisions needed for
+provenance and rollback. Intermediate superseded/orphaned graphs and graphs
+from failed jobs remain eligible for normal bounded GC.
+
+This policy prevents future imports from deleting the sole proof of page-level
+visual review. It is prospective: graphs that were already physically deleted
+cannot be declared recovered or retroactively marked reviewed.
