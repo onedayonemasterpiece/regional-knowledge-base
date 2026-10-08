@@ -108,7 +108,7 @@ language sql stable security invoker as $rkb_v5$
     )
     select ranked.chunk_id,ranked.branch,ranked.rank,
            ranked.revision,ranked.text_sha256,ranked.search_material_sha256
-    from (
+    from gate cross join lateral (
         (
             select a.chunk_id,'e5'::text as branch,
                 row_number() over(
@@ -119,7 +119,6 @@ language sql stable security invoker as $rkb_v5$
             join public.rkb_vector_items a
                 on a.document_id=s.document_id and a.revision=s.revision
             join public.rkb_chunk_embeddings_e5 e on e.chunk_id=a.chunk_id
-            cross join gate
             where gate.allowed and e5_query is not null
                 and e.embedding_space=e5_space
                 and e.revision=a.revision and e.text_sha256=a.text_sha256
@@ -138,7 +137,6 @@ language sql stable security invoker as $rkb_v5$
             join public.rkb_vector_items a
                 on a.document_id=s.document_id and a.revision=s.revision
             join public.rkb_chunk_embeddings_bge e on e.chunk_id=a.chunk_id
-            cross join gate
             where gate.allowed and bge_query is not null
                 and e.model_revision='5617a9f61b028005a4858fdac845db406aefb181'
                 and e.embedding_space=bge_space
