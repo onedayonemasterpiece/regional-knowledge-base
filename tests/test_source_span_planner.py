@@ -109,3 +109,49 @@ def test_complete_reviewed_region_required_and_no_silent_head_or_tail_loss():
     )
     assert any("uncovered source span text" in e
                for e in validate_graph(graph,expected_page_count=1).errors)
+
+
+def test_reviewed_image_is_still_indexed_as_dedicated_visual_passage():
+    from regional_knowledge.search_material import graph_material
+    initial=source_page(include_figure=True)
+    page=StagePageInput.model_validate(initial.model_dump()|{
+        "excluded_figure_regions":{},
+        "illustrations":[{
+            "illustration_key":"figure-0",
+            "source_region_key":"figure",
+            "kind":"drawing",
+            "visual_description":"A historically observed drawing of a street facade.",
+            "visual_description_provenance":"model_observation",
+            "visual_description_language":"en",
+        }],
+    })
+    planned=plan_reviewed_page(page,title="Test illustrations",token_count=count_tokens,
+                             target_tokens=80,max_chars=500)
+    visual=[item for item in planned if item.illustration_refs]
+    assert len(visual)==1
+    assert visual[0].region_refs[0].region_key=="figure"
+    graph=merge_stage(StagedGraph(revision=REVISION),
+        compile_model_stage(StagedGraph(revision=REVISION),
+            document_id=DOC,revision=REVISION,pages=[page],chunks=planned))
+    checks=validate_graph(graph,expected_page_count=1)
+    assert checks.errors==[]
+    visual_chunk=next(item for item in graph.chunks if item.illustration_ids)
+    assert visual_chunk.text==""
+    material,sha=graph_material(graph,visual_chunk)
+    assert "historically observed drawing" in material
+    assert len(sha)==64
+
+
+def test_unobserved_uncaptioned_image_never_vanishes_from_source_pilot():
+    page=source_page(include_figure=True)
+    page=StagePageInput.model_validate(page.model_dump()|{
+        "excluded_figure_regions":{},
+        "illustrations":[{
+            "illustration_key":"undocumented",
+            "source_region_key":"figure",
+            "kind":"photo",
+        }],
+    })
+    with pytest.raises(ValueError,match="caption or reviewed model observation"):
+        plan_reviewed_page(page,title="Image without evidence",token_count=count_tokens,
+                           target_tokens=80,max_chars=500)
