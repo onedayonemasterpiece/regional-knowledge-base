@@ -130,7 +130,7 @@ class QueryQueue:
             # unlikely to meet the same interaction budget instead of
             # accepting a deep queue and later returning HTTP 503.
             waiting=self.queue.qsize()+(1 if self.busy else 0)
-            if self.queue.full() or waiting>=4 or waiting*self._ewma_duration>=self.deadline_seconds-.20:
+            if self.queue.full() or waiting>=4 or waiting*self._ewma_duration>=max(.05,self.deadline_seconds-.20):
                 self.rejected+=1
                 raise QueryOverloaded("bge_query_overloaded")
             future=asyncio.get_running_loop().create_future()
