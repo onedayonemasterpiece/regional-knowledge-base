@@ -6,6 +6,10 @@ from .bge_contract import SPACE,validate_vector
 
 query_timings=contextvars.ContextVar("bge_query_timings",default={})
 
+class LocalBGEOverloaded(RuntimeError):
+    """Explicit bounded sidecar overload/deadline signal; not model corruption."""
+
+
 class LocalBGEQueryEmbedder:
     embedding_space=SPACE
     encoder_revision="onnx-community/bge-m3-ONNX:int8:2237f770"
@@ -13,11 +17,13 @@ class LocalBGEQueryEmbedder:
         parsed=urlparse(endpoint)
         if parsed.scheme!="http" or parsed.hostname!="127.0.0.1" or parsed.port!=8768 or parsed.username or parsed.path not in ("","/"):
             raise ValueError("BGE query endpoint must be the fixed loopback service")
-        self.client=httpx.AsyncClient(base_url=endpoint,timeout=httpx.Timeout(1.2,connect=.1),trust_env=False,follow_redirects=False)
+        self.client=httpx.AsyncClient(base_url=endpoint,timeout=httpx.Timeout(1.65,connect=.1),trust_env=False,follow_redirects=False)
 
     async def embed(self,text):
         query_timings.set({})
         response=await self.client.post("/embed",json={"space":SPACE,"texts":[text]})
+        if response.status_code==429:
+            raise LocalBGEOverloaded("local BGE queue cannot meet the interaction deadline")
         response.raise_for_status()
         data=response.json()
         if data.get("space")!=SPACE or len(data.get("vectors",[]))!=1:
@@ -27,6 +33,7 @@ class LocalBGEQueryEmbedder:
             "bge_queue_seconds":float(data.get("queue_wait_seconds",0)),
             "bge_encoder_seconds":float(data.get("encoder_seconds",0)),
             "bge_query_local":1.0,
+            "bge_query_cache_hit":float(bool(data.get("cache_hit",False))),
         })
         return vector
 
