@@ -87,6 +87,43 @@ Deployment must keep the MCP, indexer and BGE controller on one exact release SH
 mixed runtime releases are a failed deployment, not an acceptable compatibility
 mode.
 
+## Latest production stress: current dense-quality gate FAIL (2026-10-08)
+
+The live RLS-v5 retrieval stress on the **actual accepted source revisions**
+found all 64 original proof passages in active chunks, but the production
+BGE-only held-out known-proof Hit@5/Hit@10 was only
+**25/32 = 78.13% / 27/32 = 84.38%** with frozen FP32 query vectors
+(versus **28/32 = 87.50% / 29/32 = 90.63%** for the *experimental*
+t256 vector matrix). The same 32 cases using the local INT8 query encoder
+on the active passages gave 78.13% / 87.50%; FP32 alone does not recover
+the required recall. All 384 source-grounded query variants were
+re-evaluated against the exact production v5 release, with no lexical
+boost, aliases or neighbor expansion. Adding/excluding the third real
+book changed **zero** of the 384 target evidence ranks. Long instruction
+wrappers and unrelated book titles still cause substantial retrieval loss.
+
+Sustained live encoder tests also recorded seven HTTP failures and one
+connection timeout in the first 128 attempted requests at concurrency 2
+under high shared-host load; the run deliberately aborted and was **not**
+counted as a completed successful benchmark. A separate 384-query search
+using precomputed vectors completed, confirming distinct encoding versus
+retrieval concerns. The 20 experimental boundary-pair cases recovered
+both adjoining evidence chunks within Top-5 only 40% of the time.
+
+**Current release decision: mass book filling is not approved.** A
+non-destructive staged, semantically coherent ~256-token re-chunk/re-embed
+trial and BGE query-sidecar resilience tests are the next retrieval gates.
+The existing 100k compact-halfvec capacity numbers are synthetic and do
+not indicate a deployed compact index: today's Supabase BGE column is still
+`vector(1024)` with ordinary HNSW. The actual Supabase DB was 75.8 MB
+against the project's 500 MB *planning* quota on 2026-10-08. Preserve
+the full-scale 100k/source headroom and latency requirements unchanged.
+
+See [full dated stress report](reports/expanded-retrieval-stress-20261008.md).
+This latest live result supersedes any inference of **production acceptance**
+from the earlier frozen t256 experiment; the historical experiment itself
+remains useful design evidence.
+
 ## Current evidence and remaining proof
 
 The two-book dense-only stress work now strengthens the small-passage BGE decision.
