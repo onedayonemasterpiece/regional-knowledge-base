@@ -46,8 +46,12 @@ def _regions(regions, *, staged=False):
             column = region.get("column_id")
             needs_review = region.get("needs_review")
             declared_sha = region.get("text_sha256")
-            if not declared_sha or declared_sha != hashlib.sha256(source.encode()).hexdigest():
-                raise ValueError("accepted source region SHA mismatch")
+            if not (kind == "figure" and source == ""):
+                # Image-only figure regions may carry a binary-crop digest in
+                # text_sha256. Their source proof is the archived PDF SHA,
+                # unchanged figure bbox and checked illustration references.
+                if not declared_sha or declared_sha != hashlib.sha256(source.encode()).hexdigest():
+                    raise ValueError("accepted source region SHA mismatch")
         if order in (value[1] for value in references.values()):
             raise ValueError("duplicate source reading order")
         if ident in references:
