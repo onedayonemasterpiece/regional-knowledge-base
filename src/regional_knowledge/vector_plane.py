@@ -5,6 +5,7 @@ application actor bridge plus server-computed document/revision scope, never aut
 """
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 from uuid import UUID
 from psycopg import sql
@@ -41,10 +42,17 @@ class RemoteVectorClient(PostgresDataClient):
         scope={str(UUID(str(key))):int(value) for key,value in revisions.items()}
         if any(value<0 for value in scope.values()):raise PermissionError('invalid vector revision scope')
         if not scope:return []
+        version=os.getenv('RKB_VECTOR_CANDIDATE_VERSION','v4')
+        if version not in ('v4','v5'):
+            raise ValueError('unsupported vector candidate version')
+        routine={
+            'v4':'rkb_vector_candidates_v4',
+            'v5':'rkb_vector_candidates_v5',
+        }[version]
         headers={'x-rkb-actor':actor,'x-rkb-vector-revisions':json.dumps(scope)}
         async with self._connection(headers) as db:
             rows=await(await db.execute(
-                'select * from public.rkb_vector_candidates_v4(%s,%s,%s,%s,%s)',
+                'select * from public.'+routine+'(%s,%s,%s,%s,%s)',
                 (e5,es,bge,bs,max(1,min(int(depth),100))),
             )).fetchall()
             return [dict(row) for row in rows]
