@@ -397,15 +397,19 @@ async def test_function_call_surface_actual_mutation_receipt_and_readback(setup,
     assert "idempotency_key" in declared["story_create"].input_schema["required"]
     args = {"seed": {"text": "Фонарь у городской стены", "origin_status": "unknown"},
             "idempotency_key": "mcp-function-0001"}
+    def unpack(value):
+        # ToolManager exposes structured dicts in MCP >=2.2, while some
+        # unstructured compatibility tools return text content.
+        return value if isinstance(value, dict) else json.loads(value[0].text)
     result = await server._tool_manager.call_tool("story_create", args, None)
-    created = json.loads(result[0].text)
+    created = unpack(result)
     assert created["commit_state"] == "saved"
     story_id = created["story_id"]
-    assert json.loads((await server._tool_manager.call_tool(
-        "story_create", args, None))[0].text) == created
-    fetched = json.loads((await server._tool_manager.call_tool(
-        "story_get", {"story_id": story_id, "view": "compact"}, None))[0].text)
+    assert unpack(await server._tool_manager.call_tool(
+        "story_create", args, None)) == created
+    fetched = unpack(await server._tool_manager.call_tool(
+        "story_get", {"story_id": story_id, "view": "compact"}, None))
     assert fetched["snapshot"]["seed"]["origin_status"] == "unknown"
-    search = json.loads((await server._tool_manager.call_tool(
-        "story_search", {"query": "фонарь", "limit": 3}, None))[0].text)
+    search = unpack(await server._tool_manager.call_tool(
+        "story_search", {"query": "фонарь", "limit": 3}, None))
     assert any(x["story_id"] == story_id for x in search["results"])
