@@ -205,6 +205,64 @@ async def _load_graph(service, row: dict[str, Any]) -> StagedGraph:
     return graph
 
 
+
+def _reviewed_source_page_signature(graph: StagedGraph, page: Any) -> tuple[Any, ...] | None:
+    """Compare original reviewed evidence across revision-specific UUIDs.
+
+    Source-file SHA and physical page index alone do not prove that the new
+    OCR/region geometry, captions, or figure associations were preserved.
+    """
+    regions = sorted(page.regions, key=lambda r: r.reading_order)
+    if len({r.reading_order for r in regions}) != len(regions):
+        return None
+    by_id = {str(r.region_id): r.reading_order for r in regions}
+    by_key = {r.region_key: r.reading_order for r in regions}
+    if len(by_id) != len(regions) or len(by_key) != len(regions):
+        return None
+    if any(key not in by_key for key in page.excluded_figure_regions):
+        return None
+    source = tuple(
+        (r.reading_order, r.kind.value, r.bbox.model_dump_json(),
+         r.column_id, r.source_text, r.normalized_text,
+         r.confidence, r.needs_review)
+        for r in regions
+    )
+    excluded = tuple(sorted(
+        (by_key[key], reason)
+        for key, reason in page.excluded_figure_regions.items()
+    ))
+    media = []
+    for illustration in graph.illustrations:
+        if illustration.page_id != page.page_id:
+            continue
+        source_order = by_id.get(str(illustration.source_region_id))
+        captions = [by_id.get(str(i)) for i in illustration.caption_region_ids]
+        nearby = [by_id.get(str(i)) for i in illustration.nearby_region_ids]
+        if source_order is None or any(x is None for x in [*captions, *nearby]):
+            return None
+        media.append((
+            source_order, illustration.kind, illustration.bbox.model_dump_json(),
+            tuple(captions), tuple(nearby), illustration.visual_description,
+            illustration.visual_description_provenance,
+            illustration.visual_description_language,
+            illustration.display_rotation_degrees,
+        ))
+    relations = []
+    for rel in graph.relations:
+        left = str(rel.source_region_id)
+        right = str(rel.target_region_id)
+        if left in by_id or right in by_id:
+            if left not in by_id or right not in by_id:
+                return None
+            relations.append((by_id[left], by_id[right], rel.kind.value))
+    return (
+        page.physical_page_index, page.printed_page_number,
+        page.width, page.height, page.layout_kind,
+        source, excluded, tuple(sorted(media, key=repr)),
+        tuple(sorted(relations, key=repr)),
+    )
+
+
 async def _reuse_prior_visual_reviews(
     service,
     row: dict[str, Any],
@@ -240,6 +298,7 @@ async def _reuse_prior_visual_reviews(
         ]
 
     reviewed: dict[int, Any] = {}
+    reviewed_graph: StagedGraph | None = None
     source_revision: int | None = None
     for publication in publications:
         prior_row = corpus.one("rkb_ingestion_jobs", publication["ingestion_id"])
@@ -260,6 +319,7 @@ async def _reuse_prior_visual_reviews(
         if not candidate:
             continue
         reviewed = candidate
+        reviewed_graph = prior_graph
         source_revision = int(publication["revision"])
         break
 
@@ -271,6 +331,15 @@ async def _reuse_prior_visual_reviews(
     for page in graph.pages:
         prior = reviewed.get(page.physical_page_index)
         if page.source_material == "visual_reviewed" or prior is None:
+            pages.append(page)
+            continue
+        if reviewed_graph is None:
+            pages.append(page)
+            continue
+        old_signature = _reviewed_source_page_signature(reviewed_graph, prior)
+        new_signature = _reviewed_source_page_signature(graph, page)
+        if old_signature is None or old_signature != new_signature:
+            # Preserve the explicit pending review; do not silently upgrade it.
             pages.append(page)
             continue
         note = (
