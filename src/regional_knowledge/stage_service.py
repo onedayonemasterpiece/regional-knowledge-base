@@ -1086,75 +1086,88 @@ async def finalize_ingestion(
     page_render_object_ids: dict[int, str] = {}
     illustration_rows: list[dict[str, Any]] = []
     work_root = os.getenv("RKB_WORK_DIR") or None
-    with tempfile.TemporaryDirectory(
-        prefix="rkb-finalize-",
-        dir=work_root,
-    ) as temp_dir:
-        source_path = Path(temp_dir) / "source.pdf"
-        from .source_archive import download_source
-        await download_source(service,principal,document_id,source_object,source_path)
-        actual_sha, _ = await asyncio.to_thread(sha256_file, source_path)
-        if actual_sha != row["source_sha256"]:
-            raise RuntimeError(
-                "source PDF integrity check failed during finalize"
-            )
+    # Derived-only re-chunking is not a new OCR or visual inspection.
+    # It may skip redundant archive bytes only when all already accepted
+    # evidence is byte/geometry-identical and NO new crop is required.
+    derived = str(row.get("source_file_id") or "").startswith(
+        f"accepted-rechunk:{document_id}:"
+    )
+    if derived:
+        from .accepted_source_reuse import certified_accepted_source_reuse
+        if not hasattr(service, "corpus") or not certified_accepted_source_reuse(
+            service.corpus, row, graph,
+        )[0]:
+            raise RuntimeError("derived rechunk source provenance is not verified")
+    if not derived or graph.illustrations:
+        with tempfile.TemporaryDirectory(
+            prefix="rkb-finalize-",
+            dir=work_root,
+        ) as temp_dir:
+            source_path = Path(temp_dir) / "source.pdf"
+            from .source_archive import download_source
+            await download_source(service,principal,document_id,source_object,source_path)
+            actual_sha, _ = await asyncio.to_thread(sha256_file, source_path)
+            if actual_sha != row["source_sha256"]:
+                raise RuntimeError(
+                    "source PDF integrity check failed during finalize"
+                )
 
-        if graph.illustrations:
-            page_by_id = {str(page.page_id): page for page in graph.pages}
-            for item in graph.illustrations:
-                page = page_by_id[str(item.page_id)]
-                source_crop = await asyncio.to_thread(
-                    __import__("regional_knowledge.source_adapter",fromlist=["crop_sync"]).crop_sync,
-                    source_path,
-                    page.physical_page_index,
-                    item.bbox.model_dump(),
-                )
-                source_crop_sha = hashlib.sha256(source_crop).hexdigest()
-                display_crop = await asyncio.to_thread(
-                    _rotate_png_clockwise,
-                    source_crop,
-                    item.display_rotation_degrees,
-                )
-                display_crop_sha = hashlib.sha256(display_crop).hexdigest()
-                crop_key = (
-                    f"users/{principal.subject}/documents/{document_id}/"
-                    f"illustrations/r{revision}/"
-                    f"{item.illustration_id}-{display_crop_sha}.png"
-                )
-                crop_object_id = await _ensure_object(
-                    service,
-                    document_id=document_id,
-                    kind="illustration_crop",
-                    object_key=crop_key,
-                    data=display_crop,
-                    mime_type="image/png",
-                )
-                illustration_rows.append(
-                    {
-                        "id": str(item.illustration_id),
-                        "document_id": document_id,
-                        "page_id": str(item.page_id),
-                        "source_region_id": str(item.source_region_id),
-                        "crop_object_id": crop_object_id,
-                        "kind": item.kind,
-                        "visual_description": item.visual_description,
-                        "visual_description_provenance": item.visual_description_provenance,
-                        "visual_description_language": item.visual_description_language,
-                        "display_rotation_degrees": item.display_rotation_degrees,
-                        "display_crop_sha256": display_crop_sha,
-                        "caption_text": '\n'.join(region.source_text for page in graph.pages for rid in item.caption_region_ids for region in page.regions if region.region_id == rid),
-                        "caption_region_ids": [
-                            str(value) for value in item.caption_region_ids
-                        ],
-                        "nearby_region_ids": [
-                            str(value) for value in item.nearby_region_ids
-                        ],
-                        "visibility": "private",
-                        "rights_status": "unknown",
-                        "rights_evidence": {},
-                        "source_crop_sha256": source_crop_sha,
-                    }
-                )
+            if graph.illustrations:
+                page_by_id = {str(page.page_id): page for page in graph.pages}
+                for item in graph.illustrations:
+                    page = page_by_id[str(item.page_id)]
+                    source_crop = await asyncio.to_thread(
+                        __import__("regional_knowledge.source_adapter",fromlist=["crop_sync"]).crop_sync,
+                        source_path,
+                        page.physical_page_index,
+                        item.bbox.model_dump(),
+                    )
+                    source_crop_sha = hashlib.sha256(source_crop).hexdigest()
+                    display_crop = await asyncio.to_thread(
+                        _rotate_png_clockwise,
+                        source_crop,
+                        item.display_rotation_degrees,
+                    )
+                    display_crop_sha = hashlib.sha256(display_crop).hexdigest()
+                    crop_key = (
+                        f"users/{principal.subject}/documents/{document_id}/"
+                        f"illustrations/r{revision}/"
+                        f"{item.illustration_id}-{display_crop_sha}.png"
+                    )
+                    crop_object_id = await _ensure_object(
+                        service,
+                        document_id=document_id,
+                        kind="illustration_crop",
+                        object_key=crop_key,
+                        data=display_crop,
+                        mime_type="image/png",
+                    )
+                    illustration_rows.append(
+                        {
+                            "id": str(item.illustration_id),
+                            "document_id": document_id,
+                            "page_id": str(item.page_id),
+                            "source_region_id": str(item.source_region_id),
+                            "crop_object_id": crop_object_id,
+                            "kind": item.kind,
+                            "visual_description": item.visual_description,
+                            "visual_description_provenance": item.visual_description_provenance,
+                            "visual_description_language": item.visual_description_language,
+                            "display_rotation_degrees": item.display_rotation_degrees,
+                            "display_crop_sha256": display_crop_sha,
+                            "caption_text": '\n'.join(region.source_text for page in graph.pages for rid in item.caption_region_ids for region in page.regions if region.region_id == rid),
+                            "caption_region_ids": [
+                                str(value) for value in item.caption_region_ids
+                            ],
+                            "nearby_region_ids": [
+                                str(value) for value in item.nearby_region_ids
+                            ],
+                            "visibility": "private",
+                            "rights_status": "unknown",
+                            "rights_evidence": {},
+                            "source_crop_sha256": source_crop_sha,
+                        }
+                    )
 
     await _reset_revision(
         service,

@@ -1078,6 +1078,7 @@ class SupabaseRestBackend(KnowledgeBackend):
         principal: Principal,
         document_id: str,
         force_new_revision: bool = False,
+        derived_only: bool = False,
     ) -> BookIngestOutput:
         response = await self.client.get(
             f"{self.config.url.rstrip('/')}/rest/v1/rkb_documents",
@@ -1122,11 +1123,16 @@ class SupabaseRestBackend(KnowledgeBackend):
         active_revision = int(document.get("active_revision") or 0)
         if force_new_revision and not hasattr(self, "corpus"):
             raise RuntimeError("forced archived reprocess requires local revision authority")
-        source_file_id = (
-            f"archive-reprocess:{document_id}:force-after:{active_revision}"
-            if force_new_revision
-            else f"archive-reprocess:{document_id}:after:{active_revision}"
-        )
+        if derived_only:
+            if force_new_revision or not hasattr(self, "corpus"):
+                raise RuntimeError("derived rechunk requires the local source authority")
+            source_file_id = f"accepted-rechunk:{document_id}:after:{active_revision}"
+        else:
+            source_file_id = (
+                f"archive-reprocess:{document_id}:force-after:{active_revision}"
+                if force_new_revision
+                else f"archive-reprocess:{document_id}:after:{active_revision}"
+            )
 
         previous = await self._ingestion_row(
             principal=principal,
@@ -1141,29 +1147,60 @@ class SupabaseRestBackend(KnowledgeBackend):
                 principal,
             )
 
-        work_root = os.getenv("RKB_WORK_DIR") or None
-        format_name = str(document.get("source_format") or "pdf").lower()
-        suffix = "djvu" if format_name == "djvu" else "pdf"
-        with tempfile.TemporaryDirectory(prefix="rkb-reprocess-", dir=work_root) as temp_dir:
-            source_path = Path(temp_dir) / f"source.{suffix}"
-            from .source_archive import download_source
-
-            await download_source(
-                self,
-                principal,
-                document_id,
-                source_object,
-                source_path,
-                require_archive=True,
-            )
-            actual_sha256, _ = await asyncio.to_thread(sha256_file, source_path)
-            if actual_sha256 != source_sha256:
-                raise RuntimeError("archived source integrity mismatch")
-            source_info = await self.pdf_processor.inspect_file(source_path)
-
         stored_page_count = int(document.get("page_count") or 0)
-        if stored_page_count and source_info.page_count != stored_page_count:
-            raise RuntimeError("archived source page count mismatch")
+        if derived_only:
+            if stored_page_count < 1 or active_revision < 1:
+                raise RuntimeError("derived rechunk requires an active complete source")
+            jobs = self.corpus.rows("rkb_ingestion_jobs")
+            if not any(
+                item.get("document_id") == document_id
+                and item.get("owner_user_id") == principal.subject
+                and item.get("source_sha256") == source_sha256
+                and item.get("state") == "finalized"
+                and int(item.get("staged_revision") or 0) == active_revision
+                for item in jobs
+            ):
+                raise RuntimeError("accepted finalized source revision missing")
+            if any(
+                item.get("document_id") == document_id
+                and item.get("state") not in ("finalized", "failed", "cancelled", "superseded")
+                for item in jobs
+            ):
+                raise RuntimeError("another revision is already pending")
+            old_pages = [
+                page for page in self.corpus.rows("rkb_pages")
+                if page.get("document_id") == document_id
+                and int(page.get("revision") or 0) == active_revision
+            ]
+            if len(old_pages) != stored_page_count:
+                raise RuntimeError("accepted source page count is incomplete")
+            new_page_count = stored_page_count
+        else:
+            # Real re-import still downloads original archived bytes and verifies
+            # the exact PDF/DjVu SHA and physical page count.
+            work_root = os.getenv("RKB_WORK_DIR") or None
+            format_name = str(document.get("source_format") or "pdf").lower()
+            suffix = "djvu" if format_name == "djvu" else "pdf"
+            with tempfile.TemporaryDirectory(prefix="rkb-reprocess-", dir=work_root) as temp_dir:
+                source_path = Path(temp_dir) / f"source.{suffix}"
+                from .source_archive import download_source
+    
+                await download_source(
+                    self,
+                    principal,
+                    document_id,
+                    source_object,
+                    source_path,
+                    require_archive=True,
+                )
+                actual_sha256, _ = await asyncio.to_thread(sha256_file, source_path)
+                if actual_sha256 != source_sha256:
+                    raise RuntimeError("archived source integrity mismatch")
+                source_info = await self.pdf_processor.inspect_file(source_path)
+    
+            new_page_count = source_info.page_count
+            if stored_page_count and new_page_count != stored_page_count:
+                raise RuntimeError("archived source page count mismatch")
 
         new_ingestion_id = str(uuid4())
         start = await self.client.post(
@@ -1178,7 +1215,7 @@ class SupabaseRestBackend(KnowledgeBackend):
                 "p_language": document.get("language"),
                 "p_source_sha256": source_sha256,
                 "p_source_file_id": source_file_id,
-                "p_page_count": source_info.page_count,
+                "p_page_count": new_page_count,
                 "p_duplicate_policy": "new_revision",
                 **({"p_force_new_revision": True} if force_new_revision else {}),
             },
@@ -1226,7 +1263,9 @@ class SupabaseRestBackend(KnowledgeBackend):
         return await self._ingestion_with_indexing(
             self._ingestion_output(
                 row,
-                "Verified archived source opened; continue with book_pages and stage",
+                ("Accepted source selected for derived-only re-chunk; stage exact source proof"
+                 if derived_only else
+                 "Verified archived source opened; continue with book_pages and stage"),
             ),
             principal,
         )
@@ -1300,11 +1339,17 @@ class SupabaseRestBackend(KnowledgeBackend):
                 ingestion_id=ingestion_id,
             )
 
-        if command == "reprocess":
+        if command in ("reprocess", "rechunk"):
             if file is not None:
-                raise ValueError("reprocess uses the verified archived source; do not attach a file")
+                raise ValueError("existing-source operation must not attach a new file")
             if not document_id:
-                raise ValueError("document_id is required for reprocess")
+                raise ValueError("document_id is required for existing-source operation")
+            if command == "rechunk":
+                if (payload or {}).get("duplicate_policy") not in (None, "reuse"):
+                    raise ValueError("derived-only rechunk cannot force an unfinished revision")
+                return await self._reprocess_existing_source(
+                    principal=principal, document_id=document_id, derived_only=True,
+                )
             force_new_revision = bool(
                 (payload or {}).get("duplicate_policy") == "new_revision"
             )
