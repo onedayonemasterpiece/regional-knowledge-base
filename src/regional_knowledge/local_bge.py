@@ -1,4 +1,5 @@
 """Loopback client for the pinned local BGE-M3 INT8 query encoder."""
+import asyncio
 import contextvars
 from urllib.parse import urlparse
 import httpx
@@ -17,11 +18,15 @@ class LocalBGEQueryEmbedder:
         parsed=urlparse(endpoint)
         if parsed.scheme!="http" or parsed.hostname!="127.0.0.1" or parsed.port!=8768 or parsed.username or parsed.path not in ("","/"):
             raise ValueError("BGE query endpoint must be the fixed loopback service")
-        self.client=httpx.AsyncClient(base_url=endpoint,timeout=httpx.Timeout(1.65,connect=.1),trust_env=False,follow_redirects=False)
+        self.client=httpx.AsyncClient(base_url=endpoint,timeout=httpx.Timeout(1.65,connect=.35),trust_env=False,follow_redirects=False)
 
     async def embed(self,text):
         query_timings.set({})
-        response=await self.client.post("/embed",json={"space":SPACE,"texts":[text]})
+        # CPU contention on the shared host can delay loopback connection
+        # scheduling. Allow some connect headroom, while capping the *whole*
+        # HTTP operation within the product's interaction budget.
+        async with asyncio.timeout(1.7):
+            response=await self.client.post("/embed",json={"space":SPACE,"texts":[text]})
         if response.status_code==429:
             raise LocalBGEOverloaded("local BGE queue cannot meet the interaction deadline")
         response.raise_for_status()
