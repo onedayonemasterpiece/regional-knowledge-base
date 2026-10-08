@@ -1021,13 +1021,21 @@ class StoryRegistry:
                     continue
                 snap = json.loads(r["snapshot"])
                 attribution = []
+                kind_speech = {"legend": "По легенде", "tradition": "По преданию",
+                               "rumor": "По неподтверждённому рассказу",
+                               "recollection": "По воспоминанию", "testimony": "По свидетельству"}
                 for a in snap["assertions"]:
                     if a["kind"] == "attributed_account":
-                        kind = a.get("account_kind") or "рассказ"
+                        kind = kind_speech.get(a.get("account_kind"), "По рассказу")
                         attributed = a.get("attributed_to") or a.get("reported_by")
-                        attribution.append((kind + (": " + attributed if attributed else ": происхождение не установлено"))[:160])
+                        attribution.append((kind + (", рассказчик: " + attributed if attributed
+                                                    else ", рассказчик неизвестен"))[:160])
                     if len(attribution) == 3:
                         break
+                seed_origin = snap.get("seed", {}).get("origin_status", "unknown")
+                if not snap["assertions"] and seed_origin in {"unknown", "partial"}:
+                    attribution.insert(0, "Непроверенная зацепка, происхождение " +
+                                       ("неизвестно" if seed_origin == "unknown" else "установлено частично"))
                 interest = (snap.get("interest_assessments") or [None])[-1]
                 hits.append({"story_id": r["id"], "revision": r["revision"], "title": r["title"],
                              "potential": interest.get("potential") if interest else None,
