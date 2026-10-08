@@ -64,6 +64,7 @@ def _signature(pages, regions, illustrations, relations, *, staged=False):
     """Canonical source-position signature. Never hashes new derived chunks."""
     page_signatures = []
     positions = {}
+    bounds = {}
     if staged:
         ordered_pages = list(pages)
     else:
@@ -80,6 +81,9 @@ def _signature(pages, regions, illustrations, relations, *, staged=False):
             if ident in positions:
                 raise ValueError("cross-page repeated region")
             positions[ident] = (index, order)
+        for region in region_list:
+            ident = str(region.region_id if staged else region["id"])
+            bounds[ident] = _bbox(region.bbox if staged else region["bbox"])
         metadata = (
             index,
             str((page.printed_page_number if staged else page.get("printed_page_number")) or ""),
@@ -114,6 +118,8 @@ def _signature(pages, regions, illustrations, relations, *, staged=False):
             page_id = str(item["page_id"])
         if source not in positions or any(key not in positions for key in (*captions, *nearby)):
             raise ValueError("source illustration references unknown region")
+        if staged and _bbox(item.bbox) != bounds[source]:
+            raise ValueError("illustration crop differs from accepted region")
         page_idx = positions[source][0]
         if staged:
             expected_id = next(
