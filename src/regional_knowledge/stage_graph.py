@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import hashlib
 from typing import Literal
 from uuid import UUID, uuid5
 
@@ -76,6 +77,13 @@ class StagedIllustration(BaseModel):
     nearby_region_ids: list[UUID] = Field(default_factory=list, max_length=100)
 
 
+class StagedSourceSpan(BaseModel):
+    region_id: UUID
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    source_text_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class StagedChunk(BaseModel):
     chunk_key: str
     article_id: str | None = None
@@ -87,6 +95,7 @@ class StagedChunk(BaseModel):
     footnote_region_ids: list[UUID] = Field(default_factory=list, max_length=50)
     text: str = Field(default='', max_length=40_000)
     normalized_text: str = Field(default='', max_length=40_000)
+    source_spans: list[StagedSourceSpan] = Field(default_factory=list, max_length=100)
 
 
 class StagedPoiFact(BaseModel):
@@ -288,6 +297,43 @@ def compile_model_stage(
                 )
             main_regions.append(region)
 
+        source_spans: list[StagedSourceSpan] = []
+        source_span_parts: list[str] = []
+        latest_offset: dict[str, int] = {}
+        for span in chunk.span_refs:
+            region = region_by_ref.get((span.page_id, span.region_key))
+            if region is None:
+                raise ValueError(
+                    f"chunk {chunk.chunk_key} references unknown source span region"
+                )
+            if region.kind not in {
+                RegionKind.HEADING,RegionKind.BODY,RegionKind.CAPTION,
+                RegionKind.TABLE,RegionKind.MARGINALIA,
+            }:
+                raise ValueError("source span must point to a textual non-footnote region")
+            text = region.source_text
+            digest=hashlib.sha256(text.encode("utf-8")).hexdigest()
+            if digest!=span.source_text_sha256:
+                raise ValueError("stale source region span hash")
+            if span.end>len(text) or span.start>=span.end:
+                raise ValueError("source span beyond reviewed region text")
+            if text[span.start:span.end].strip()=="":
+                raise ValueError("source span selects only whitespace")
+            if span.start>0 and text[span.start-1].isalnum() and text[span.start].isalnum():
+                raise ValueError("source span cuts through a word at start")
+            if span.end<len(text) and text[span.end-1].isalnum() and text[span.end].isalnum():
+                raise ValueError("source span cuts through a word at end")
+            key=str(region.region_id)
+            if key in latest_offset and latest_offset[key]>span.start:
+                raise ValueError("source span overlaps or reverses an earlier span")
+            latest_offset[key]=span.end
+            main_regions.append(region)
+            source_spans.append(StagedSourceSpan(
+                region_id=region.region_id,start=span.start,end=span.end,
+                source_text_sha256=digest,
+            ))
+            source_span_parts.append(text[span.start:span.end].strip())
+
         footnotes: list[StagedRegion] = []
         for ref in chunk.footnote_refs:
             region = region_by_ref.get((ref.page_id, ref.region_key))
@@ -312,12 +358,12 @@ def compile_model_stage(
                 )
             chunk_illustrations.append(item)
 
-        source_parts = [
+        source_parts = source_span_parts if chunk.span_refs else [
             region.source_text.strip()
             for region in main_regions
             if region.source_text.strip()
         ]
-        normalized_parts = [
+        normalized_parts = list(source_span_parts) if chunk.span_refs else [
             (region.normalized_text or region.source_text).strip()
             for region in main_regions
             if (region.normalized_text or region.source_text).strip()
@@ -357,6 +403,7 @@ def compile_model_stage(
                 ),
                 text=text,
                 normalized_text=normalized_text,
+                source_spans=source_spans,
             )
         )
 
@@ -627,6 +674,27 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
             errors.append(f"duplicate chunk_id: {cid}")
         chunk_ids.add(cid)
         chunk_page_set = {str(value) for value in chunk.page_ids}
+        if chunk.source_spans:
+            text_parts=[]
+            for span in chunk.source_spans:
+                region=regions.get(str(span.region_id))
+                if region is None:
+                    errors.append(f"chunk {cid} source span region absent")
+                    continue
+                source=region.source_text
+                if (hashlib.sha256(source.encode("utf-8")).hexdigest()!=span.source_text_sha256
+                    or span.end>len(source) or span.start>=span.end):
+                    errors.append(f"chunk {cid} stale or invalid source span")
+                    continue
+                if region_page[str(region.region_id)] not in chunk_page_set:
+                    errors.append(f"chunk {cid} missing source span page")
+                text_parts.append(source[span.start:span.end].strip())
+            for reference in chunk.footnote_region_ids:
+                region=regions.get(str(reference))
+                if region is not None and region.source_text.strip():
+                    text_parts.append("[Footnote] "+region.source_text.strip())
+            if "\\n".join(text_parts).strip()!=chunk.text.strip():
+                errors.append(f"chunk {cid} source span text drift")
         for page_id in chunk.page_ids:
             if str(page_id) not in page_set:
                 errors.append(f"chunk {cid} references unknown page {page_id}")
