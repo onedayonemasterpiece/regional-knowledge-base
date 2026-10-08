@@ -115,7 +115,7 @@ def test_spans_cannot_cut_through_words_or_select_figures():
     with pytest.raises(ValueError,match="cuts through a word"):
         graph_with_chunks(text,[bad])
     bad_start=chunks[1].model_copy(deep=True)
-    bad_start.span_refs[0].start=chunks[1].span_refs[0].start+4
+    bad_start.span_refs[0].start=chunks[1].span_refs[0].start+2
     with pytest.raises(ValueError,match="cuts through a word"):
         graph_with_chunks(text,[bad_start])
 
