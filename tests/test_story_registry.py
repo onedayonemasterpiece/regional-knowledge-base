@@ -76,6 +76,7 @@ def test_seed_idempotency_unknown_provenance_and_search(setup):
     found = registry.search(owner, query="фонаря")
     assert found["retrieval_mode"] == "lexical_only"
     assert found["results"][0]["story_id"] == original["story_id"]
+    assert "Непроверенная зацепка" in found["results"][0]["spoken_summary"]
     assert registry.get(owner, original["story_id"])["snapshot"]["seed"]["origin_status"] == "unknown"
     assert registry.history(owner, original["story_id"])["history"][0]["action"] == "create"
 
@@ -145,6 +146,8 @@ def test_legend_editor_approval_no_truth_proof_and_source_change(setup):
     exported = registry.export(owner, sid, variant["variant_id"])
     assert exported["publication_state"] == "not_sent"
     assert "легенда" in exported["attributions"][0]
+    spoken = registry.search(owner, "фонаря")["results"][0]["spoken_summary"]
+    assert "По легенде" in spoken
     assessed = registry.edit(owner, sid, approved["committed_revision"], [RecordAssessment(
         op="record_assessment", assertion_id=claim["assertion_id"],
         assertion_revision=1, evidence_ids=[registry.get(owner, sid, view="evidence")["snapshot"]["assertions"][0]["evidence_ids"][0]],
