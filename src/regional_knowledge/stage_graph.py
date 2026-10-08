@@ -693,7 +693,7 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
                 region=regions.get(str(reference))
                 if region is not None and region.source_text.strip():
                     text_parts.append("[Footnote] "+region.source_text.strip())
-            if "\\n".join(text_parts).strip()!=chunk.text.strip():
+            if "\n".join(text_parts).strip()!=chunk.text.strip():
                 errors.append(f"chunk {cid} source span text drift")
         for page_id in chunk.page_ids:
             if str(page_id) not in page_set:
