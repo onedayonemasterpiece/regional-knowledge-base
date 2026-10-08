@@ -389,6 +389,22 @@ class StoryRegistry:
         self._permission(db, actor, rec, capability)
         return rec, json.loads(rec["snapshot"])
 
+    def _effective_readiness(self, db, snap):
+        # Derived current readiness: historical approval receipts stay immutable,
+        # but changed source identities must not be advertised as ready.
+        result = self._readiness(snap)
+        stale = []
+        for variant in snap.get("variants", []):
+            if variant.get("state") != "publish_ready":
+                continue
+            approved = self._row(db, "story_variants", variant["variant_id"])
+            if (approved is None or
+                    approved["approval_fingerprint"] != self._fingerprint(db, snap, variant)):
+                stale.append(variant["variant_id"])
+        result["ready_variants"] = [x for x in result["ready_variants"] if x not in stale]
+        result["needs_revalidation"] = sorted(set([*result["needs_revalidation"], *stale]))
+        return result
+
     def get(self, principal, story_id, revision=None, view="compact"):
         with self.corpus.connect() as db:
             actor = self._actor(db, principal)
@@ -408,7 +424,7 @@ class StoryRegistry:
             if view == "editorial":
                 snapshot.pop("source_refs", None)  # source metadata available in evidence view
             return {"story_id": story_id, "revision": revision or rec["revision"],
-                    "snapshot": snapshot, "readiness": self._readiness(json.loads(rec["snapshot"])),
+                    "snapshot": snapshot, "readiness": self._effective_readiness(db, json.loads(rec["snapshot"])),
                     "allowed_actions": permitted, "indexing_state": "local_fts_ready_vector_awaiting_worker"}
 
     def _available_actions(self, db, actor, rec):
@@ -670,6 +686,16 @@ class StoryRegistry:
         if not snap["assertions"]:
             blockers.append("no_reviewable_assertions")
         for a in snap["assertions"]:
+            for evidence_id in a.get("evidence_ids") or []:
+                evidence = self._row(db, "story_evidence", evidence_id)
+                if not evidence:
+                    blockers.append("missing_evidence:" + evidence_id)
+                    continue
+                if evidence["source_kind"] == "document":
+                    latest_source = self._corpus_row(db, "rkb_documents", evidence["source_id"])
+                    if (not latest_source or
+                            latest_source.get("source_sha256") != evidence["source_sha256"]):
+                        blockers.append("source_changed:" + evidence_id)
             if a["kind"] == "attributed_account":
                 if not a.get("account_kind"):
                     blockers.append("account_kind_required")
