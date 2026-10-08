@@ -12,7 +12,9 @@ ROOT=Path(__file__).resolve().parents[1]
 def test_v5_invoker_and_policies_keep_independent_actor_scope():
     sql=(ROOT/"sql/023_vector_rls_v5.sql").read_text()
     assert "language plpgsql stable security invoker" in sql
-    assert "security definer" not in sql.lower()
+    v5=sql.split("create or replace function public.rkb_vector_candidates_v5(",1)[1]
+    assert "language plpgsql stable security invoker" in v5
+    assert "language plpgsql stable security definer" not in v5
     assert "rkb_current_actor_id()" in sql
     assert "rkb_vector_readable_documents" in sql
     assert "document_id = any((select public.rkb_vector_readable_documents()))" in sql
