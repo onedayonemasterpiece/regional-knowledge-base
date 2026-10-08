@@ -524,6 +524,16 @@ class StoryRegistry:
                 if locator.get("physical_page_index") is not None and (
                         locator["physical_page_index"] != page.get("physical_page_index")):
                     fail("invalid_evidence", "Physical source page mismatch")
+                if locator.get("printed_page_number") is not None and (
+                        str(locator["printed_page_number"]) != str(page.get("printed_page_number"))):
+                    fail("invalid_evidence", "Printed page number mismatch")
+                if locator.get("chunk_id"):
+                    chunk = self._corpus_row(db, "rkb_chunks", locator["chunk_id"])
+                    if (not chunk or chunk.get("document_id") != op.source_id
+                            or chunk.get("revision") != op.source_revision
+                            or locator["page_id"] not in (chunk.get("page_ids") or [])
+                            or locator["region_id"] not in (chunk.get("region_ids") or [])):
+                        fail("invalid_evidence", "Chunk pointer escapes source/region")
                 source = region.get("source_text") or ""
                 source_hash = doc.get("source_sha256") or ""
             else:
@@ -713,6 +723,10 @@ class StoryRegistry:
                         blockers.append("historical_claim_without_semantic_review:" + a["assertion_id"])
             if a["kind"] in {"hypothesis", "creative_material"} and not variant.get("attributions"):
                 blockers.append("hypothesis_or_reconstruction_not_marked:" + a["assertion_id"])
+        if variant.get("media_refs"):
+            # No trusted media/rights adapter is wired to the Story Registry yet.
+            # An opaque ref supplied by a model is not evidence of a license.
+            blockers.append("media_rights_not_verified")
         if any(x["state"] == "open" and x["priority"] == "critical" for x in snap["gaps"]):
             blockers.append("critical_unresolved_gap")
         if review is not None and not all((review.semantic_checked, review.attribution_checked, review.rights_checked)):
@@ -1052,7 +1066,9 @@ class StoryRegistry:
             return {"target": target, "story_id": story_id, "story_revision": rec["revision"],
                     "variant_id": variant_revision_id, "variant_revision": variant["revision"],
                     "body": variant["body"], "blocks": variant["blocks"],
-                    "attributions": variant["attributions"], "media_refs": variant["media_refs"],
+                    "attributions": variant["attributions"],
+                    "narration_text": "\n".join([*variant["attributions"], variant["body"]]),
+                    "media_refs": variant["media_refs"],
                     "bibliography": citations, "export_state": "read_only_package",
                     "publication_state": "not_sent"}
 
