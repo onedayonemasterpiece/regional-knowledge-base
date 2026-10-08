@@ -801,7 +801,7 @@ class SupabaseRestBackend(KnowledgeBackend):
     ) -> dict[str, Any] | None:
         params: dict[str, str] = {
             "select": (
-                "id,document_id,source_file_id,source_object_id,source_sha256,"
+                "id,document_id,owner_user_id,source_file_id,source_object_id,source_sha256,"
                 "staged_graph_object_id,state,cursor,staged_revision,warnings,"
                 "error_code,created_at"
             ),
