@@ -129,7 +129,7 @@ def test_accepted_source_requires_server_proof_and_is_not_fresh_review(tmp_path)
 
 
 @pytest.mark.parametrize("mutation", [
-    "ocr", "geometry", "picture_bbox", "picture_caption",
+    "ocr", "normalized_ocr", "geometry", "picture_bbox", "picture_caption",
     "picture_removed", "relation_removed", "wrong_owner",
     "source_sha", "unverified_archive", "no_finalized_job",
     "older_staged_revision", "missing_region",
@@ -140,6 +140,8 @@ def test_accepted_source_fail_closed_on_any_material_change(tmp_path, mutation):
     row = dict(row)
     if mutation == "ocr":
         graph.pages[0].regions[2].source_text = "A different river."
+    elif mutation == "normalized_ocr":
+        graph.pages[0].regions[2].normalized_text = "Fabricated normalized content."
     elif mutation == "geometry":
         graph.pages[0].regions[2].bbox = BBox(left=41, top=600, right=920, bottom=930)
     elif mutation == "picture_bbox":
