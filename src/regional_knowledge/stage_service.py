@@ -957,7 +957,12 @@ async def finalize_ingestion(
                 "search_material_sha256": material_sha,
                 "title": chunk.title,
                 "normalized_text": normalized,
-                "metadata": {"chunk_key": chunk.chunk_key,**({"article_id":chunk.article_id} if chunk.article_id else {})},
+                "metadata": {
+                    "chunk_key": chunk.chunk_key,
+                    **({"article_id":chunk.article_id} if chunk.article_id else {}),
+                    **({"source_spans":[item.model_dump(mode="json") for item in chunk.source_spans]}
+                       if chunk.source_spans else {}),
+                },
             }
         )
 
