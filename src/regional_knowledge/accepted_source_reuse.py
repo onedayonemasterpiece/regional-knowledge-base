@@ -31,6 +31,8 @@ def _regions(regions, *, staged=False):
     for region in regions:
         if staged:
             source = region.source_text
+            if region.normalized_text != source:
+                raise ValueError("unverified normalized source text")
             ident = str(region.region_id)
             order = int(region.reading_order)
             kind = _row_value(region.kind)
