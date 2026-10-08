@@ -30,6 +30,7 @@ def sql_for_schema(sql_path: str, schema: str) -> str:
     for name in (
         "rkb_vector_readable_documents",
         "rkb_vector_candidates_v5",
+        "rkb_vector_validate_scope_v5",
         "rkb_vector_candidates_v4",
         "rkb_current_actor_id",
         *TABLES,
