@@ -25,7 +25,7 @@ grant execute on function public.rkb_vector_readable_documents() to rkb_app;
 drop policy if exists rkb_vector_items_read on public.rkb_vector_items;
 create policy rkb_vector_items_read on public.rkb_vector_items
     for select to rkb_app
-    using (document_id = any((select public.rkb_vector_readable_documents())));
+    using (document_id = any(array(select pg_catalog.unnest(public.rkb_vector_readable_documents()))));
 
 -- Noncorrelated membership permits one hashed/semi-join authorization
 -- subplan instead of invoking an EXISTS/RLS nested-loop for every embedding.
