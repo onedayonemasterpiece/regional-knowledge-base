@@ -26,6 +26,8 @@ ingest = [
   "Pillow>=11,<13",
 ]
 dev = ["pytest>=8.4,<9", "pytest-asyncio>=1.2,<2"]
+# Exact BGE/E5 tokenizer counting used only by private source-grounded pilots.
+benchmarks = ["tokenizers>=0.21,<0.24"]
 
 [project.scripts]
 regional-knowledge-mcp = "regional_knowledge.server:main"
