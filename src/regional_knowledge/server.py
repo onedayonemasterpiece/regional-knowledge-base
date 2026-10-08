@@ -352,7 +352,11 @@ def build_server(
             "next_action. For an existing book named by the user, call book_find first and "
             "use reprocess with its document_id; reprocess opens the verified archived source "
             "and creates/resumes the next revision on the same logical document without a "
-            "re-upload. Resume existing state after interruptions; when the user explicitly "
+            "re-upload. For unchanged already accepted sources, rechunk creates a derived-only "
+            "pending revision without fetching the original archive again; validate/finalize "
+            "must prove exact source/geometry/illustration identity. For new crops the original "
+            "verified PDF/DjVu archive is still mandatory. "
+            "Resume existing state after interruptions; when the user explicitly "
             "asks to replace a still-pending reprocess, pass metadata.duplicate_policy=new_revision "
             "to start one newer archived-source revision instead of resuming the pending job. "
             "Finalization alone activates "
@@ -371,7 +375,7 @@ def build_server(
         meta={"openai/fileParams": ["file"]},
     )
     async def book_ingest(
-        command: Literal["start", "reprocess", "stage", "validate", "finalize", "status"],
+        command: Literal["start", "reprocess", "rechunk", "stage", "validate", "finalize", "status"],
         file: ChatFile | None = None,
         document_id: str | None = None,
         ingestion_id: str | None = None,
