@@ -188,3 +188,43 @@ def test_staging_contract_accepts_distinct_reuse_status():
         "regions": [],
     })
     assert item.source_material == "accepted_reuse"
+
+
+@pytest.mark.asyncio
+async def test_read_ingestion_projection_preserves_owner_for_accepted_source_gate(tmp_path):
+    """Do not drop the owner when reading a staged job through the API.
+
+    An omitted owner caused 478 valid accepted pages to be rejected as
+    unreviewed even though the stored full-book source matched exactly.
+    """
+    from regional_knowledge.contracts import Principal
+
+    backend, row, graph, _ = make_source(tmp_path)
+    actor = Principal(
+        subject=row["owner_user_id"],
+        client_id="synthetic-stage",
+        issuer="test",
+        access_token="not-a-secret",
+    )
+    job_id=str(uuid4())
+    try:
+        backend.corpus.put("rkb_ingestion_jobs", [{
+            **defaults("rkb_ingestion_jobs"),
+            "id":job_id,
+            "document_id":row["document_id"],
+            "owner_user_id":row["owner_user_id"],
+            "source_sha256":row["source_sha256"],
+            "source_file_id":"synthetic:accepted-rechunk",
+            "state":"processing",
+            "staged_revision":2,
+        }])
+        stored=await backend._ingestion_row(principal=actor,ingestion_id=job_id)
+        assert stored and stored.get("owner_user_id")==row["owner_user_id"]
+        assert certified_accepted_source_reuse(backend.corpus,stored,graph)==(True,1)
+        wrong=Principal(
+            subject=str(uuid4()),client_id="foreign",issuer="test",
+            access_token="not-a-secret",
+        )
+        assert await backend._ingestion_row(principal=wrong,ingestion_id=job_id) is None
+    finally:
+        await backend.aclose()
