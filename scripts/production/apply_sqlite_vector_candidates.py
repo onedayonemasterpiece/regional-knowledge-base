@@ -23,6 +23,9 @@ async def main():
                   where rkb_vector_items.document_id=excluded.document_id and rkb_vector_items.revision=excluded.revision and rkb_vector_items.text_sha256=excluded.text_sha256 and rkb_vector_items.search_material_sha256=excluded.search_material_sha256''',(Jsonb(items[offset:offset+256]),))
             await db.execute(Path('sql/021_vector_only_plane.sql').read_text().strip().removeprefix('begin;').removesuffix('commit;'))
             await db.execute(Path('sql/022_vector_candidate_hotpath.sql').read_text().strip().removeprefix('begin;').removesuffix('commit;'))
+            # Restore the v5 RLS policies after the legacy v2/v3 schema refresh.
+            # Candidate dispatch remains opt-in until shadow acceptance succeeds.
+            await db.execute(Path('sql/023_vector_rls_v5.sql').read_text().strip().removeprefix('begin;').removesuffix('commit;'))
             anchors=await(await db.execute('select count(*) n,count(*) filter(where source_sha256 is null or owner_user_id is null) unbound from rkb_vector_items')).fetchone()
             if anchors['n']!=len(items) or anchors['unbound']:raise ValueError('anchor identity coverage failed')
             rpc=await(await db.execute("select to_regprocedure('public.rkb_vector_candidates_v4(text,text,text,text,integer)')::text name,to_regprocedure('public.rkb_vector_revision_scope(uuid,bigint)')::text scope")).fetchone()
