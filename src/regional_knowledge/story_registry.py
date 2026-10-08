@@ -855,7 +855,7 @@ class StoryRegistry:
 
     def search(self, principal, query="", filters=None, mode="lexical", order="updated", limit=3, cursor=None):
         filters = filters or {}
-        if any(k not in {"state", "material_type", "workspace_id"} for k in filters):
+        if any(k not in {"state", "material_type", "workspace_id", "assertion_kind", "source_id", "entity_ref", "format", "audience", "min_potential"} for k in filters):
             fail("validation_failed", "Unsupported story search filter")
         # The vector plane is deliberately not used until a separately scoped
         # index is installed. Never silently call a hybrid query semantic.
@@ -928,18 +928,49 @@ class StoryRegistry:
             if filters.get("workspace_id"):
                 predicates.append("s.workspace_id=?")
                 params.append(str(filters["workspace_id"])[:128])
+            if filters.get("source_id"):
+                predicates.append("EXISTS (SELECT 1 FROM story_dependencies dep WHERE dep.story_id=s.id AND dep.source_id=?)")
+                params.append(str(filters["source_id"])[:128])
+            if filters.get("assertion_kind"):
+                predicates.append("""EXISTS (SELECT 1 FROM json_each(s.snapshot,'$.assertions') a
+                                     WHERE json_extract(a.value,'$.kind')=?)""")
+                params.append(str(filters["assertion_kind"])[:80])
+            if filters.get("entity_ref"):
+                predicates.append("""EXISTS (SELECT 1 FROM json_each(s.snapshot,'$.links') l
+                                     WHERE json_extract(l.value,'$.entity_ref')=?)""")
+                params.append(str(filters["entity_ref"])[:128])
+            if filters.get("format"):
+                predicates.append("""EXISTS (SELECT 1 FROM json_each(s.snapshot,'$.variants') v
+                                     WHERE json_extract(v.value,'$.format')=?)""")
+                params.append(str(filters["format"])[:80])
+            if filters.get("audience"):
+                predicates.append("""EXISTS (SELECT 1 FROM json_each(s.snapshot,'$.variants') v
+                                     WHERE json_extract(v.value,'$.audience')=?)""")
+                params.append(str(filters["audience"])[:250])
+            score = "json_extract(s.snapshot,'$.interest_assessments[#-1].potential')"
+            if filters.get("min_potential") is not None:
+                try:
+                    min_score = float(filters["min_potential"])
+                    if not (0 <= min_score <= 100):
+                        raise ValueError("outside range")
+                except (ValueError, TypeError):
+                    fail("validation_failed", "min_potential must be 0..100")
+                predicates.append(score + ">=?")
+                params.append(min_score)
             tokens = re.findall(r"[^\W_]+", str(query), re.UNICODE)[:12]
             expression = " OR ".join('"' + t + '"' for t in tokens)
             if tokens:
                 sql = """WITH who(actor_id) AS (VALUES (?))
                     SELECT s.* FROM story_fts JOIN story_records s ON s.rowid=story_fts.rowid
                     WHERE story_fts MATCH ? AND """ + " AND ".join(predicates)
-                sql += " ORDER BY bm25(story_fts),s.id LIMIT ? OFFSET ?"
+                sql += (" ORDER BY COALESCE(" + score + ",-1) DESC,bm25(story_fts),s.id LIMIT ? OFFSET ?"
+                        if order == "potential" else " ORDER BY bm25(story_fts),s.id LIMIT ? OFFSET ?")
                 args = [actor, expression, *params[1:], limit + 1, offset]
             else:
                 sql = """WITH who(actor_id) AS (VALUES (?))
                     SELECT s.* FROM story_records s WHERE """ + " AND ".join(predicates)
-                sql += " ORDER BY s.updated_at DESC,s.id LIMIT ? OFFSET ?"
+                sql += (" ORDER BY COALESCE(" + score + ",-1) DESC,s.updated_at DESC,s.id LIMIT ? OFFSET ?"
+                        if order == "potential" else " ORDER BY s.updated_at DESC,s.id LIMIT ? OFFSET ?")
                 args = [*params, limit + 1, offset]
             rows = db.execute(sql, args).fetchall()
             hits = []
@@ -958,7 +989,11 @@ class StoryRegistry:
                         attribution.append((kind + (": " + attributed if attributed else ": происхождение не установлено"))[:160])
                     if len(attribution) == 3:
                         break
+                interest = (snap.get("interest_assessments") or [None])[-1]
                 hits.append({"story_id": r["id"], "revision": r["revision"], "title": r["title"],
+                             "potential": interest.get("potential") if interest else None,
+                             "score_coverage": interest.get("coverage") if interest else 0,
+                             "production_priority": interest.get("production_priority") if interest else None,
                              "summary": (r["summary"] or r["seed_text"])[:350],
                              "state": r["state"], "material_type": r["material_type"],
                              "kinds": list(dict.fromkeys(a["kind"] for a in snap["assertions"])),
