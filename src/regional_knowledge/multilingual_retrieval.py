@@ -59,7 +59,11 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
                     wait_seconds=float(os.environ.get('RKB_BGE_QUERY_WAIT_SECONDS','0.8'))
                 except ValueError:
                     wait_seconds=.8
-                wait_seconds=max(0.0,min(wait_seconds,3.0))
+                # When the local encoder has already consumed most of the
+                # interaction budget, never add a second implicit wait on
+                # the durable fallback. Emit an explicit pending/degraded state.
+                remaining=max(0.0,1.65-(time.monotonic()-started))
+                wait_seconds=max(0.0,min(wait_seconds,remaining,0.8))
                 job=await wait_result(
                     queue,principal.subject,main_job_id,
                     wait_seconds if status['state']=='ready' else 0,
