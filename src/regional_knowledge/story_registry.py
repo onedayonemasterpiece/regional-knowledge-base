@@ -573,7 +573,7 @@ class StoryRegistry:
                 fail("invalid_evidence", "Assessment cites an unrelated evidence ID")
             if op.support_status == "corroborated" and op.independence != "independent":
                 fail("validation_failed", "Independent provenance assessment is required")
-            if op.assessor_kind != "human" and not op.method_version:
+            if op.assessor_kind == "model" and not op.method_version:
                 fail("validation_failed", "Model/application assessment needs method version")
             ident = str(uuid4())
             data = op.model_dump(mode="json", exclude={"op"})
