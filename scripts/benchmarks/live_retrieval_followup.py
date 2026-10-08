@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import hashlib
+from uuid import UUID
 import os
 import statistics
 import sys
@@ -20,32 +22,38 @@ from regional_knowledge.supabase_backend import backend_from_env
 from regional_knowledge.bge_queue import BgeQueue
 from regional_knowledge.indexing import IndexReconciler
 
-GAUSE="7ce738b0-d3d3-4fc2-9a61-aa58b537a0e9"
-BRUNNECK="432bbc6a-ec04-4936-aed9-950f67f25230"
-POSITIVES=[
-    ("kulmisches Recht",BRUNNECK),
-    ("Kulmer Handfeste",BRUNNECK),
-    ("flämisches Erbe",BRUNNECK),
-    ("iure Culmensi",BRUNNECK),
-    ("Reiterdienst Recognitionszins",BRUNNECK),
-    ("kölmischen Güter Allodisation",BRUNNECK),
-    ("1233 Kulmer Handfeste",BRUNNECK),
-    ("Landrecht von 1620",BRUNNECK),
-    ("Кёнигсберг основание крепости",GAUSE),
-    ("Твангсте",GAUSE),
-    ("Twanste",GAUSE),
-    ("Twangste",GAUSE),
-    ("Альтштадт Лёбенихт Кнайпхоф",GAUSE),
-    ("Оттокар",GAUSE),
-    ("Mont Royal Königliche Berg",GAUSE),
-    ("Геркус Монте",GAUSE),
-]
-NEGATIVES=("xyzzy12345","NoSuchBook999999")
-SCOPED=[
-    ("Оттокар",[GAUSE]),
-    ("Kulmer Handfeste",[BRUNNECK]),
-    ("iure Culmensi",[BRUNNECK]),
-]
+def load_fixture(path: Path):
+    """Load source-grounded acceptance cases outside the public Git checkout."""
+    source=path.resolve()
+    git_root=Path(__file__).resolve().parents[2]
+    if source==git_root or git_root in source.parents:
+        raise ValueError("private retrieval fixture must live outside the public repository")
+    raw=source.read_bytes()
+    fixture=json.loads(raw)
+    if not isinstance(fixture,dict) or fixture.get("version")!=1:
+        raise ValueError("unsupported private retrieval fixture version")
+    def query(value):
+        if not isinstance(value,str) or not 1<=len(value.strip())<=1024:
+            raise ValueError("invalid query")
+        return value.strip()
+    def document(value):
+        return str(UUID(str(value)))
+    positives=[
+        (query(row["query"]),document(row["document_id"]))
+        for row in fixture["positives"]
+    ]
+    negatives=[query(value) for value in fixture["negative_identifiers"]]
+    scoped=[
+        (query(row["query"]),[document(value) for value in row["document_ids"]])
+        for row in fixture["scoped"]
+    ]
+    if not 1<=len(positives)<=300 or len(negatives)>100 or len(scoped)>100:
+        raise ValueError("retrieval fixture outside bounded acceptance size")
+    if any(not 1<=len(documents)<=20 or len(documents)!=len(set(documents))
+           for _,documents in scoped):
+        raise ValueError("invalid scoped fixture")
+    unauthorized=document(fixture["unauthorized_doc_id"])
+    return positives,negatives,scoped,unauthorized,hashlib.sha256(raw).hexdigest()
 
 def percentile(data,p):
     data=sorted(data)
@@ -56,29 +64,38 @@ def percentile(data,p):
 
 async def main():
     parser=argparse.ArgumentParser()
+    parser.add_argument("--cases",type=Path,required=True,help="Private fixture JSON located outside the public repository")
     parser.add_argument("--output",type=Path)
     parser.add_argument("--strict",action="store_true")
+    parser.add_argument("--concurrency",type=int,default=1,help="Maximum concurrent positive retrievals, 1-8")
     args=parser.parse_args()
+    if not 1<=args.concurrency<=8:parser.error("concurrency must be 1..8")
+    positives,negatives,scoped,unauthorized,fixture_sha256=load_fixture(args.cases)
     load_service_env()
     backend=backend_from_env()
     actor=IndexReconciler(backend,BgeQueue(os.environ["RKB_BGE_QUEUE_PATH"])).actor(os.environ["RKB_OWNER_SUBJECT"])
     checks=[]
     try:
         # A readiness request avoids measuring the first model warm-up as a warm-path result.
-        await backend.search("Твангсте",actor,match_count=8)
-        for query,expected in POSITIVES:
-            result=await backend.search(query,actor,match_count=8)
-            top=result.results[0] if result.results else None
-            doc=(backend.corpus.one("rkb_chunks",top.id) or {}).get("document_id") if top else None
-            checks.append({
-                "query":query,"type":"positive","expected_doc":expected,
-                "actual_top1_doc":doc,"top1_title":top.title if top else None,
-                "mode":result.retrieval_mode,"state":result.main_state,
-                "latency_ms":result.latency_ms,
-                "pass":bool(result.main_state=="ready" and result.retrieval_mode=="bge"
-                            and doc==expected and top and top.ranking_signals),
-            })
-        for query in NEGATIVES:
+        await backend.search(positives[0][0],actor,match_count=8)
+        semaphore=asyncio.Semaphore(args.concurrency)
+        async def check_positive(query,expected):
+            async with semaphore:
+                result=await backend.search(query,actor,match_count=8)
+                top=result.results[0] if result.results else None
+                doc=(backend.corpus.one("rkb_chunks",top.id) or {}).get("document_id") if top else None
+                return {
+                    "query":query,"type":"positive","expected_doc":expected,
+                    "actual_top1_doc":doc,"top1_title":top.title if top else None,
+                    "mode":result.retrieval_mode,"state":result.main_state,
+                    "latency_ms":result.latency_ms,
+                    "pass":bool(result.main_state=="ready" and result.retrieval_mode=="bge"
+                                and doc==expected and top and top.ranking_signals),
+                }
+        checks.extend(await asyncio.gather(
+            *(check_positive(query,expected) for query,expected in positives)
+        ))
+        for query in negatives:
             result=await backend.search(query,actor,match_count=8)
             checks.append({
                 "query":query,"type":"negative_identifier",
@@ -89,7 +106,7 @@ async def main():
                 "pass":bool(result.main_state=="ready" and not result.results
                             and result.retrieval_policy=="exact_identifier"),
             })
-        for query,scope in SCOPED:
+        for query,scope in scoped:
             result=await backend.search(query,actor,match_count=8,document_ids=scope)
             found=set()
             for item in result.results:
@@ -104,7 +121,7 @@ async def main():
                             and result.results and found.issubset(set(scope))),
             })
         try:
-            await backend.search("Оттокар",actor,document_ids=["00000000-0000-4000-8000-000000000000"])
+            await backend.search(positives[0][0],actor,document_ids=[unauthorized])
         except PermissionError:
             checks.append({"type":"unauthorized_scope","pass":True})
         else:
@@ -119,9 +136,11 @@ async def main():
             "measurement":"backend latency_ms (includes continuation; excludes MCP transport)",
             "corpus":"real active books and other authorized corpus, no synthetic search controls",
             "required_bge":"production policy",
-            "positive_cases":len(POSITIVES),
-            "scoped_cases":len(SCOPED),
-            "negative_identifier_cases":len(NEGATIVES),
+            "fixture_sha256":fixture_sha256,
+            "concurrency":args.concurrency,
+            "positive_cases":len(positives),
+            "scoped_cases":len(scoped),
+            "negative_identifier_cases":len(negatives),
             "quality_pass":quality,
             "latency_gate":{"warm_backend_p95_ms_max":1000,"hard_per_request_ms_max":2000,
                             "observed_p50_ms":percentile(timings,.5),
