@@ -29,6 +29,7 @@ from regional_knowledge.indexing import IndexReconciler
 from regional_knowledge.source_span_planner import plan_reviewed_page
 from regional_knowledge.contracts import StagePageInput
 from regional_knowledge.stage_graph import StagedGraph,compile_model_stage,merge_stage,validate_graph
+from regional_knowledge.search_material import graph_material
 from regional_knowledge.bge_contract import MAX_TOKENS as BGE_MAX
 from regional_knowledge.e5_contract import MAX_TOKENS as E5_MAX
 
@@ -216,13 +217,15 @@ async def pilot(args):
             for chunk in graph.chunks:
                 # All indexed material will be independently checked with
                 # the same actual BGE and E5 tokenizer input conventions.
-                material=chunk.text
+                material,_=graph_material(graph,chunk)
                 b_count,e_count=token_counts(material)
                 if b_count>BGE_MAX or e_count>E5_MAX:
                     raise ValueError("pilot chunk violates required encoder budget")
                 materials.append({
                     "id":str(chunk.chunk_id),"doc":did,"pages":[str(x) for x in chunk.page_ids],
-                    "text":material,"source_spans":[x.model_dump(mode="json") for x in chunk.source_spans],
+                    "text":chunk.text,"search_material":material,
+                    "illustration_ids":[str(x) for x in chunk.illustration_ids],
+                    "source_spans":[x.model_dump(mode="json") for x in chunk.source_spans],
                     "bge_tokens":b_count,"e5_tokens":e_count,
                 })
             material_all[did]=materials
@@ -235,7 +238,8 @@ async def pilot(args):
                     len(regions[p["id"]]) for p in prows),
                 "original_illustrations":sum(len(images[p["id"]]) for p in prows),
                 "planned_chunks":len(materials),
-                "chars":measure([len(m["text"]) for m in materials]),
+                "planned_visual_chunks":sum(bool(m["illustration_ids"]) for m in materials),
+                "chars":measure([len(m["search_material"]) for m in materials]),
                 "bge_tokens":measure([m["bge_tokens"] for m in materials]),
                 "e5_tokens":measure([m["e5_tokens"] for m in materials]),
                 "requires_reverification_pages":len(completeness),
