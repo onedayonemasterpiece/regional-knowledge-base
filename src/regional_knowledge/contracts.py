@@ -243,6 +243,23 @@ class StageRegionRef(BaseModel):
     region_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
 
 
+class StageRegionSpanRef(StageRegionRef):
+    """Exact source-codepoint excerpt within a visually reviewed region.
+
+    Boundaries refer to the original source_text, never normalized search text.
+    A SHA-256 anchor prevents silently reusing stale offsets after page edits.
+    """
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    source_text_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def ordered_source_bounds(self) -> "StageRegionSpanRef":
+        if self.start >= self.end:
+            raise ValueError("source span end must exceed start")
+        return self
+
+
 class StageIllustrationRef(BaseModel):
     page_id: str = Field(min_length=36, max_length=36)
     illustration_key: str = Field(
@@ -254,11 +271,19 @@ class StageChunkInput(BaseModel):
     article_id: str | None = Field(default=None,max_length=100)
     chunk_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
     title: str = Field(min_length=1, max_length=500)
-    region_refs: list[StageRegionRef] = Field(min_length=1, max_length=100)
+    region_refs: list[StageRegionRef] = Field(default_factory=list, max_length=100)
+    span_refs: list[StageRegionSpanRef] = Field(default_factory=list, max_length=100)
     footnote_refs: list[StageRegionRef] = Field(default_factory=list, max_length=50)
     illustration_refs: list[StageIllustrationRef] = Field(
         default_factory=list, max_length=30
     )
+
+    @model_validator(mode="after")
+    def source_selection(self) -> "StageChunkInput":
+        # One mechanism per chunk avoids silently duplicating page contents.
+        if bool(self.region_refs) == bool(self.span_refs):
+            raise ValueError("use either whole region_refs or source-backed span_refs")
+        return self
 
 
 class PoiLocatorInput(BaseModel):
