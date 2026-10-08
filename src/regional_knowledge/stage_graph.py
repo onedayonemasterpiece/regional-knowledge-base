@@ -37,7 +37,7 @@ class StagedRegion(BaseModel):
 
 class StagedPage(BaseModel):
     excluded_figure_regions: dict[str, str] = Field(default_factory=dict, max_length=100)
-    source_material: Literal["unreviewed", "preview", "full_native", "visual_reviewed"] = "unreviewed"
+    source_material: Literal["unreviewed", "preview", "full_native", "visual_reviewed", "accepted_reuse"] = "unreviewed"
     source_review_note: str | None = Field(default=None, min_length=1, max_length=500)
     page_id: UUID
     physical_page_index: int = Field(ge=0)
@@ -568,7 +568,7 @@ def merge_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
     )
 
 
-def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphValidation:
+def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reuse_verified: bool = False) -> GraphValidation:
     errors: list[str] = []
     warnings: list[str] = []
     for bundle in graph.entity_candidates:
@@ -576,7 +576,7 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
         except ValueError as error: errors.append(str(error))
 
     for page in graph.pages:
-        if page.source_material != "visual_reviewed" or not (page.source_review_note or "").strip():
+        if (page.source_material != "visual_reviewed" and not (accepted_reuse_verified and page.source_material == "accepted_reuse")) or not (page.source_review_note or "").strip():
             errors.append(f"source completeness unreviewed: page {page.physical_page_index}; visual review and note required (page IDs/native previews are insufficient)")
 
     page_ids = [str(page.page_id) for page in graph.pages]

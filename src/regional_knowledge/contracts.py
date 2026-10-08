@@ -193,7 +193,7 @@ class StageIllustrationInput(BaseModel):
 
 class StagePageInput(BaseModel):
     excluded_figure_regions: dict[str, str] = Field(default_factory=dict, max_length=100)
-    source_material: Literal["unreviewed", "preview", "full_native", "visual_reviewed"] = "unreviewed"
+    source_material: Literal["unreviewed", "preview", "full_native", "visual_reviewed", "accepted_reuse"] = "unreviewed"
     source_review_note: str | None = Field(default=None, min_length=1, max_length=500)
     page_id: str = Field(min_length=36, max_length=36)
     physical_page_index: int = Field(ge=0)

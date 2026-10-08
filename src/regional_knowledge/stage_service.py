@@ -31,6 +31,7 @@ from .stage_graph import (
     merge_stage,
     validate_graph,
 )
+from .accepted_source_reuse import certified_accepted_source_reuse
 from .e5_contract import MAX_TOKENS as E5_MAX_TOKENS, TARGET_PASSAGE_TOKENS
 from .bge_contract import MAX_TOKENS as BGE_MAX_TOKENS
 
@@ -57,8 +58,29 @@ async def _validate_with_token_budget(
     graph: StagedGraph,
     *,
     expected_page_count: int,
+    ingestion_row: dict[str, Any] | None = None,
 ) -> GraphValidation:
-    result = validate_graph(graph, expected_page_count=expected_page_count)
+    # A derived re-chunk is not a new visual review. Accept the distinct
+    # provenance state only when the unchanged active source, graph, owner,
+    # archive SHA and previously finalized revision match exactly.
+    accepted = False
+    source_revision = None
+    if any(page.source_material == "accepted_reuse" for page in graph.pages):
+        corpus = getattr(service, "corpus", None)
+        if corpus is not None and ingestion_row is not None:
+            accepted, source_revision = certified_accepted_source_reuse(
+                corpus, ingestion_row, graph,
+            )
+    result = validate_graph(
+        graph, expected_page_count=expected_page_count,
+        accepted_reuse_verified=accepted,
+    )
+    if accepted:
+        result = GraphValidation(
+            errors=result.errors,
+            warnings=[*result.warnings,
+                      f"source_completeness:accepted_source_reuse:revision={source_revision}"],
+        )
     from .local_e5 import LocalE5Embedder
     if not isinstance(getattr(service, "embedder", None), LocalE5Embedder):
         if os.getenv("RKB_AUTO_INDEX_ENABLED") == "1":
@@ -330,7 +352,7 @@ async def _reuse_prior_visual_reviews(
     reused = 0
     for page in graph.pages:
         prior = reviewed.get(page.physical_page_index)
-        if page.source_material == "visual_reviewed" or prior is None:
+        if page.source_material in ("visual_reviewed", "accepted_reuse") or prior is None:
             pages.append(page)
             continue
         if reviewed_graph is None:
@@ -525,6 +547,7 @@ async def validate_ingestion(
         service,
         graph,
         expected_page_count=page_count,
+        ingestion_row=row,
     )
     if reused_reviews:
         result = GraphValidation(
@@ -976,6 +999,7 @@ async def finalize_ingestion(
         service,
         graph,
         expected_page_count=int(document.get("page_count") or 0),
+        ingestion_row=row,
     )
     if reused_reviews:
         validation = GraphValidation(
