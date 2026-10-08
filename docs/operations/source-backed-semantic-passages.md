@@ -50,3 +50,26 @@ from failed jobs remain eligible for normal bounded GC.
 This policy prevents future imports from deleting the sole proof of page-level
 visual review. It is prospective: graphs that were already physically deleted
 cannot be declared recovered or retroactively marked reviewed.
+
+### Exact accepted-source reuse without a new page review
+
+A re-chunk proposal may declare each page as \`source_material: accepted_reuse\`
+instead of \`visual_reviewed\` only if it reuses a **previously accepted,
+unchanged** source. It does **not** claim a new visual inspection. An
+owner-controlled staged ingestion cannot self-certify this status: the server
+rechecks the existing finalized active revision, exact archived source SHA-256,
+owner identity, all page dimensions and printed numbers, source-region text
+hashes, reading order and geometry, figure/caption associations, and
+cross-region relationships against the proposal.
+
+This applies to any book, language or page layout supported by the existing
+graph model; no author names or evaluation questions participate in the
+decision. Reused source changes **only** the derived semantic passages, not
+the original OCR, source archive or accepted evidence coordinates. A single
+missing, changed or unverifiable part fails closed to \`needs_review\`.
+The regular page-level \`visual_reviewed\` process remains required for
+new or changed source material.
+
+The existing BGE-only held-out evidence gate, source recovery and vector
+readiness checks remain separate requirements: a proven source match is **not**
+permission to activate a new vector revision or declare mass ingestion ready.
