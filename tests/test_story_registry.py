@@ -413,3 +413,24 @@ async def test_function_call_surface_actual_mutation_receipt_and_readback(setup,
     search = unpack(await server._tool_manager.call_tool(
         "story_search", {"query": "фонарь", "limit": 3}, None))
     assert any(x["story_id"] == story_id for x in search["results"])
+
+
+def test_story_interest_scoring_order_and_typed_filters(setup):
+    from regional_knowledge.story_contracts import RecordInterest, ScoreCriterion
+    registry, actor, _ = setup
+    raw = seed(registry, actor, "Повседневность в архиве", "score-seed-001")
+    scored = seed(registry, actor, "Повседневность на улицах", "score-seed-002")
+    best = ScoreCriterion(value=4, rationale="Есть необычная региональная деталь")
+    registry.edit(actor, scored["story_id"], 1, [RecordInterest(
+        op="record_interest_assessment", unexpectedness=best, local_relevance=best,
+        human_resonance=best, explanatory_value=best, visual_potential=best,
+        channel_novelty=80, production_readiness=50,
+    )], "score-edit-001")
+    ranked = registry.search(actor, "Повседневность", order="potential")
+    assert ranked["results"][0]["story_id"] == scored["story_id"]
+    assert ranked["results"][0]["potential"] == 100
+    assert ranked["results"][0]["score_coverage"] == 1
+    assert ranked["results"][1]["potential"] is None
+    selected = registry.search(actor, filters={"min_potential": "90", "material_type": "other"})
+    assert [r["story_id"] for r in selected["results"]] == [scored["story_id"]]
+    expect("validation_failed", registry.search, actor, filters={"min_potential": "101"})
