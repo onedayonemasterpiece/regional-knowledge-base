@@ -22,7 +22,7 @@ Migration `sql/023_vector_rls_v5.sql` is one transaction:
 
 - `rkb_vector_readable_documents()` returns an empty array without a valid
   actor. Under the rkb_app anchor RLS policy it is evaluated through a
-  noncorrelated scalar SELECT, so PostgreSQL can cache it as an InitPlan per
+  noncorrelated ARRAY(SELECT ...), so PostgreSQL can cache it as an InitPlan per
   statement rather than invoke a document-scope function per anchor.
 - Both embedding tables permit reads only when their chunk IDs appear in the
   independently RLS-filtered vector-anchor table. The membership subquery
