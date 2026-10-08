@@ -17,7 +17,7 @@ async def wait_result(queue,actor,job_id,seconds):
         if time.monotonic()>=deadline:return None
         await asyncio.sleep(.05)
 
-async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,aliases=None):
+async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,aliases=None,document_ids=None):
     started=time.monotonic()
     mode=os.environ.get('RKB_BGE_WARM_MODE','bge')
     if mode not in ('bge','bge_lexical','e5_bge','e5_bge_lexical'):raise RuntimeError('invalid BGE warm path')
@@ -42,7 +42,7 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
                 cache_key='query:'+BGE_SPACE+':'+query_hash
                 main_job_id=await asyncio.to_thread(queue.enqueue,principal.subject,cache_key,[query],identity={'query_sha256':query_hash})
         except RuntimeError:
-            fast=await backend.search(query,principal,match_count=match_count,_fast_only=True)
+            fast=await backend.search(query,principal,match_count=match_count,_fast_only=True,**({'document_ids':document_ids} if document_ids is not None else {}))
             logger.info(json.dumps({'event':'main_retrieval_degraded','state':'unavailable','retrieval_mode':fast.retrieval_mode}))
             return fast.model_copy(update={'main_state':'unavailable'})
     else:
@@ -65,7 +65,7 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
                     wait_seconds if status['state']=='ready' else 0,
                 )
             if job is None:
-                fast=await backend.search(query,principal,match_count=match_count,_fast_only=True)
+                fast=await backend.search(query,principal,match_count=match_count,_fast_only=True,**({'document_ids':document_ids} if document_ids is not None else {}))
                 state='starting' if status['state'] in ('stopped','starting') else 'unavailable' if status['state']=='failed' else 'pending'
                 logger.info(json.dumps({'event':'main_retrieval_pending','state':state,'job_id':main_job_id,'retrieval_mode':fast.retrieval_mode,'initial_seconds':time.monotonic()-started}))
                 return fast.model_copy(update={'main_state':state,'main_job_id':main_job_id})
@@ -101,6 +101,7 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
                 'e5_vector':literal(e5_vector),
                 'e5_space':E5_SPACE if e5_vector else None,
                 'aliases':aliases or [],
+                'document_ids':document_ids,
                 'depth':100,
                 'include_lexical':include_lexical,
                 'lexical_timeout_ms':lexical_budget_ms,
@@ -108,7 +109,7 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
         )
         response.raise_for_status();rows=response.json();branches=list(MODES[mode])
         if not any(r['branch'] in ('e5','bge') for r in rows):
-            fast=await backend.search(query,principal,match_count=match_count,_fast_only=True)
+            fast=await backend.search(query,principal,match_count=match_count,_fast_only=True,**({'document_ids':document_ids} if document_ids is not None else {}))
             logger.info(json.dumps({
                 'event':'main_retrieval_degraded','state':'unavailable',
                 'retrieval_mode':fast.retrieval_mode,'job_id':main_job_id,

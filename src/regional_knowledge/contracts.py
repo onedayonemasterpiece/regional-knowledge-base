@@ -365,6 +365,8 @@ class SearchOutput(BaseModel):
     results: list[SearchResult]
     mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
     retrieval_mode: Literal["fast_e5", "lexical_only", "bge_lexical", "e5_bge_lexical", "bge", "e5_bge"] = "lexical_only"
+    retrieval_policy: Literal['semantic','exact_identifier'] = 'semantic'
+    latency_ms: float | None = Field(default=None,ge=0)
     main_state: Literal['disabled','starting','pending','ready','unavailable'] = 'disabled'
     main_job_id: str | None = None
     indexing: IndexingStatus | None = None
@@ -383,6 +385,8 @@ class EvidenceSearchOutput(BaseModel):
     evidence: list[FetchOutput]
     mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
     retrieval_mode: Literal["fast_e5", "lexical_only", "bge_lexical", "e5_bge_lexical", "bge", "e5_bge"] = "lexical_only"
+    retrieval_policy: Literal['semantic','exact_identifier'] = 'semantic'
+    latency_ms: float | None = Field(default=None,ge=0)
     main_state: Literal['disabled','starting','pending','ready','unavailable'] = 'disabled'
     main_job_id: str | None = None
     indexing: IndexingStatus | None = None

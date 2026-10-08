@@ -258,12 +258,14 @@ def build_server(
             query: str,
             max_evidence: int = 3,
             main_job_id: str | None = None,
+            document_ids: list[str] | None = None,
         ) -> EvidenceSearchOutput:
             return await backend.search_evidence(
                 query.strip(),
                 _principal(),
                 max_evidence=max(1, min(max_evidence, 5)),
                 **({'main_job_id': main_job_id} if main_job_id else {}),
+                **({'document_ids': document_ids} if document_ids is not None else {}),
             )
 
         return mcp
@@ -276,8 +278,9 @@ def build_server(
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
-    async def search(query: str, main_job_id: str | None = None, aliases: list[dict[str,str]] | None = None) -> SearchOutput:
+    async def search(query: str, main_job_id: str | None = None, aliases: list[dict[str,str]] | None = None, document_ids: list[str] | None = None) -> SearchOutput:
         options={}
+        if document_ids is not None:options['document_ids']=document_ids
         if main_job_id:options['main_job_id']=main_job_id
         if aliases:options['aliases']=aliases
         return await backend.search(query.strip(), _principal(),**options)
