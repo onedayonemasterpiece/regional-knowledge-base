@@ -121,6 +121,15 @@ class SQLiteBackend(PostgresBackend):
         async with self.data_client._connection(headers) as db:
             docs=await(await db.execute('select id,active_revision from rkb_documents')).fetchall()
         allowed={str(d['id']):d['active_revision'] for d in docs if self.search_visible(d['id'])}
+        document_ids=payload.get('document_ids')
+        if document_ids is not None:
+            if not isinstance(document_ids,list) or not 1<=len(document_ids)<=20:
+                raise ValueError('document scope requires 1-20 document IDs')
+            try:requested=[str(UUID(str(value))) for value in document_ids]
+            except (TypeError,ValueError) as exc:raise ValueError('invalid document scope') from exc
+            if len(set(requested))!=len(requested):raise ValueError('duplicate document scope')
+            if not set(requested).issubset(allowed):raise PermissionError('document scope not readable or searchable')
+            allowed={key:allowed[key] for key in requested}
         depth=max(1,min(int(payload.get('depth',100)),100)) if name=='rkb_multilingual_rankings' else max(20,max(1,min(int(payload.get('match_count',8)),20))*5)
         query=payload.get('query_text','')
         include_lexical=bool(payload.get('include_lexical',True))

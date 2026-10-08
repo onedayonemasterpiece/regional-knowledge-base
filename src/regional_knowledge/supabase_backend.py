@@ -282,7 +282,9 @@ class SupabaseRestBackend(KnowledgeBackend):
             # Legacy PostgREST is transitional/test-only. Production direct
             # Postgres owns the RLS-safe ordered-neighbor lookup.
             return output
-        selected=[UUID(item.id) for item in output.results[:limit]]
+        # Only top two anchors can legally trigger continuation; do not hydrate
+        # the remaining ranked hits merely to discard their neighbors.
+        selected=[UUID(item.id) for item in output.results[:min(2,limit)]]
         statement="""with selected_docs as (
           select distinct c.document_id,c.revision
           from public.rkb_chunks c
@@ -491,11 +493,23 @@ class SupabaseRestBackend(KnowledgeBackend):
 
         return output.model_copy(update={"results":working[:limit]})
 
-    async def search(self, query: str, principal: Principal, *, match_count: int = 8, main_job_id: str | None = None, aliases: list | None = None, _fast_only: bool = False) -> SearchOutput:
+    async def search(self, query: str, principal: Principal, *, match_count: int = 8, main_job_id: str | None = None, aliases: list | None = None, document_ids: list[str] | None = None, _fast_only: bool = False) -> SearchOutput:
         started = time.monotonic()
         query = query.strip()
+        if document_ids is not None:
+            if not hasattr(self,'corpus'):
+                raise NotImplementedError('document-scoped retrieval requires local ACL authority')
+            if not isinstance(document_ids,list) or not 1<=len(document_ids)<=20:
+                raise ValueError('document scope requires 1-20 document IDs')
+            try:document_ids=[str(UUID(str(value))) for value in document_ids]
+            except (TypeError,ValueError) as exc:raise ValueError('invalid document scope') from exc
+            if len(set(document_ids))!=len(document_ids):raise ValueError('duplicate document scope')
         if not query:
             return SearchOutput(results=[], mode="lexical_degraded")
+        if not _fast_only and hasattr(self,'corpus'):
+            from .query_intent import is_opaque_identifier,exact_identifier_search
+            if is_opaque_identifier(query):
+                return await exact_identifier_search(self,query,principal,match_count=match_count,document_ids=document_ids)
         if aliases is None and not _fast_only and hasattr(self,'automatic_aliases'):
             try:aliases=await self.automatic_aliases(query,principal)
             except Exception as error:
@@ -506,16 +520,16 @@ class SupabaseRestBackend(KnowledgeBackend):
             from .index_readiness import enabled,status
             readiness=await status(self,principal) if enabled() else None
             if readiness and readiness.bge_missing:
-                fast=await self.search(query,principal,match_count=match_count,_fast_only=True)
-                return fast.model_copy(update={'main_state':'pending'})
-            result=await main_search(self,query,principal,match_count=match_count,main_job_id=main_job_id,aliases=aliases)
+                fast=await self.search(query,principal,match_count=match_count,_fast_only=True,document_ids=document_ids)
+                return fast.model_copy(update={'main_state':'pending','latency_ms':round(1000*(time.monotonic()-started),1)})
+            result=await main_search(self,query,principal,match_count=match_count,main_job_id=main_job_id,aliases=aliases,**({'document_ids':document_ids} if document_ids is not None else {}))
             if readiness:
                 result=result.model_copy(update={'indexing':readiness})
             if result.main_state=='ready':
                 result=await self._expand_continuation_results(
                     result,principal,query=query,match_count=match_count
                 )
-            return result
+            return result.model_copy(update={'latency_ms':round(1000*(time.monotonic()-started),1)})
 
         vector: list[float] | None = None
         from .index_readiness import enabled,counts,status
@@ -543,6 +557,7 @@ class SupabaseRestBackend(KnowledgeBackend):
                     self.embedder.embedding_space if vector is not None else None
                 ),
                 "match_count": max(1,min(match_count,20)),
+                "document_ids": document_ids,
             },
         )
         response.raise_for_status()
@@ -566,9 +581,10 @@ class SupabaseRestBackend(KnowledgeBackend):
             ],
             mode="hybrid" if (retrieval_mode!="lexical_only" if hasattr(self,"corpus") else vector is not None) else "lexical_degraded",
         )
-        return await self._expand_continuation_results(
+        expanded=await self._expand_continuation_results(
             output,principal,query=query,match_count=match_count
         )
+        return expanded.model_copy(update={'latency_ms':round(1000*(time.monotonic()-started),1)})
 
     async def fetch(self, item_id: str, principal: Principal) -> FetchOutput:
         # Resolve the chunk under the caller's JWT first. This RLS query is the
@@ -691,18 +707,19 @@ class SupabaseRestBackend(KnowledgeBackend):
         *,
         max_evidence: int = 3,
         main_job_id: str | None = None,
+        document_ids: list[str] | None = None,
     ) -> EvidenceSearchOutput:
         started = time.monotonic()
         limit = max(1, min(int(max_evidence), 5))
-        found = await self.search(query, principal, **({'main_job_id': main_job_id} if main_job_id else {}))
+        found = await self.search(query, principal, **({'main_job_id': main_job_id} if main_job_id else {}), **({'document_ids':document_ids} if document_ids is not None else {}))
         selected = found.results[:limit]
         if not selected:
-            return EvidenceSearchOutput(evidence=[], mode=found.mode, retrieval_mode=found.retrieval_mode, main_state=found.main_state, main_job_id=found.main_job_id, indexing=found.indexing, timings={**found.timings,"hydration_seconds":0,"total_seconds":time.monotonic()-started})
+            return EvidenceSearchOutput(evidence=[], mode=found.mode, retrieval_mode=found.retrieval_mode, retrieval_policy=found.retrieval_policy, main_state=found.main_state, main_job_id=found.main_job_id, indexing=found.indexing, latency_ms=round(1000*(time.monotonic()-started),1), timings={**found.timings,"hydration_seconds":0,"total_seconds":time.monotonic()-started})
         hydration_start = time.monotonic()
         evidence = await asyncio.gather(
             *(self.fetch(item.id, principal) for item in selected)
         )
-        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode, retrieval_mode=found.retrieval_mode, main_state=found.main_state, main_job_id=found.main_job_id, indexing=found.indexing, timings={**found.timings,"hydration_seconds":time.monotonic()-hydration_start,"total_seconds":time.monotonic()-started})
+        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode, retrieval_mode=found.retrieval_mode, retrieval_policy=found.retrieval_policy, main_state=found.main_state, main_job_id=found.main_job_id, indexing=found.indexing, latency_ms=round(1000*(time.monotonic()-started),1), timings={**found.timings,"hydration_seconds":time.monotonic()-hydration_start,"total_seconds":time.monotonic()-started})
 
     async def document_access(
         self,
