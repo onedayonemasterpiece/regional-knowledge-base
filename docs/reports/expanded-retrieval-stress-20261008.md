@@ -72,4 +72,13 @@ The separately retained 100,000-row *temporary synthetic* halfvec/HNSW benchmark
 4. Pilot compact halfvec + binary-quantized HNSW in isolated/rollback-ready scope. Measure 100k capacity including index/TOAST/system overhead and peak reimport, candidate recall versus exact scan, query-embedding time, and agent-facing latency.
 5. Keep the existing public MCP and indexed books available: this stress report is a targeted quality/capacity **release-gate failure**, not evidence that normal retrieval is unavailable or that the RLS v5 speedup regressed.
 
+**Public reproducibility runner:** `scripts/benchmarks/live_dense_source_stress.py`
+accepts a separate owner-restricted `--lab` directory, the exact installed
+`--expected-sha`, `--query-mode fp32-frozen|int8-live`, document
+`--scope`, `--concurrency 1..4`, variant/split filters, a private output
+path, and optional `--strict`. Its first-attempt errors are retained, not
+silently retried; the runner aborts after excessive failures, preserving
+partial metrics distinctly from a completed sample. To run it, use the exact
+immutable release checkout rather than a dirty or stale working branch.
+
 **Reproducibility:** Frozen cases, raw source/text, query embedding arrays, raw result IDs, case-level failure traces, both actor-scope comparisons and capacity experiments remain in the managed, owner-restricted Regional Knowledge Base artifact store on DevCoveer. This public report contains only non-sensitive aggregate findings. No synthetic documents, vectors or book revisions were written to production during the new retrieval tests.
