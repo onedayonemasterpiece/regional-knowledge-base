@@ -73,3 +73,26 @@ new or changed source material.
 The existing BGE-only held-out evidence gate, source recovery and vector
 readiness checks remain separate requirements: a proven source match is **not**
 permission to activate a new vector revision or declare mass ingestion ready.
+
+### Derived-only re-chunk from an accepted source
+
+Use \`book_ingest(command="rechunk", document_id=...)\` instead of \`reprocess\`
+only to replace the derived retrieval passages of a previously accepted,
+unchanged book. It is owner-scoped, idempotent to the current active revision
+and starts a *pending* revision using the recorded complete accepted page
+structure. It neither re-downloads the original archive nor creates a fresh
+visual/OCR review. No PDF bytes are needed to start a stage.
+
+Every staged page must be \`source_material="accepted_reuse"\`. Existing
+server validation and finalization independently verify the entire candidate
+against its finalized, archived SHA-bound source: all page geometry, exact
+region source text, figures/captions and relations. Drift fails closed.
+Only *text-only* verified rechunks may skip opening the PDF at finalization;
+illustrated sources still need the verified original for deterministic
+re-cropping. Genuine source re-import always uses \`reprocess\` and validates
+the original archived PDF/DjVu.
+
+The pending publication uses the existing protected BGE vector readiness
+gate; previous active revisions stay searchable until the complete new
+revision is accepted. Archive OAuth problems remain visible for operations
+that truly need original bytes, not bypassed.
