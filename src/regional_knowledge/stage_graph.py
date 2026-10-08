@@ -668,6 +668,8 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
             if region.kind is RegionKind.FIGURE and str(region.region_id) not in represented and not page.excluded_figure_regions.get(region.region_key, '').strip():
                 errors.append(f'figure must be staged or explicitly excluded: {region.region_id}')
     covered_regions: set[str] = set()
+    fully_covered_regions: set[str] = set()
+    source_span_intervals: dict[str,list[tuple[int,int]]] = defaultdict(list)
     for chunk in graph.chunks:
         cid = str(chunk.chunk_id)
         if cid in chunk_ids:
@@ -689,6 +691,7 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
                 if region_page[str(region.region_id)] not in chunk_page_set:
                     errors.append(f"chunk {cid} missing source span page")
                 text_parts.append(source[span.start:span.end].strip())
+                source_span_intervals[str(span.region_id)].append((span.start,span.end))
             for reference in chunk.footnote_region_ids:
                 region=regions.get(str(reference))
                 if region is not None and region.source_text.strip():
@@ -698,8 +701,11 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
         for page_id in chunk.page_ids:
             if str(page_id) not in page_set:
                 errors.append(f"chunk {cid} references unknown page {page_id}")
+        span_region_ids={str(span.region_id) for span in chunk.source_spans}
         for region_id in chunk.region_ids:
             value = str(region_id)
+            if value not in span_region_ids:
+                fully_covered_regions.add(value)
             if value not in region_set:
                 errors.append(f"chunk {cid} references unknown region {region_id}")
             else:
@@ -717,6 +723,7 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
                 )
             else:
                 covered_regions.add(value)
+                fully_covered_regions.add(value)
                 if region.kind is not RegionKind.FOOTNOTE:
                     errors.append(
                         f"chunk {cid} footnote_region_id is not a footnote"
@@ -849,6 +856,25 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int) -> GraphVali
     uncovered = sorted(required_coverage - covered_regions)
     if uncovered:
         errors.append(f"uncovered textual regions: {uncovered[:40]}")
+    # A reference to *part* of a region does not count as full text coverage.
+    # Span-derived passages must together preserve every non-whitespace source
+    # codepoint unless a separate whole-region chunk already covers it.
+    for region_id in sorted(required_coverage - fully_covered_regions):
+        if region_id not in covered_regions:
+            continue
+        source=regions[region_id].source_text
+        intervals=sorted(source_span_intervals.get(region_id,[]))
+        cursor=0
+        missing=False
+        for start,end in intervals:
+            if start>cursor and source[cursor:start].strip():
+                missing=True
+                break
+            cursor=max(cursor,end)
+        if source[cursor:].strip():
+            missing=True
+        if missing:
+            errors.append(f"uncovered source span text in region: {region_id}")
 
     return GraphValidation(
         errors=list(dict.fromkeys(errors)),
