@@ -130,7 +130,7 @@ class RecordAssessment(Strict):
     independence: Literal["not_assessed", "dependent", "independent", "mixed", "unknown"] = "not_assessed"
     semantic_review: Literal["not_reviewed", "supported", "partially_supported", "unsupported", "contested"] = "not_reviewed"
     rationale: ShortText
-    assessor_kind: Literal["human", "model", "application"] = "human"
+    assessor_kind: Literal["human", "model", "application"] = "application"
     method_version: str | None = Field(default=None, max_length=80)
     supersedes_assessment_id: str | None = None
 
@@ -199,7 +199,7 @@ class ReviewDecision(Strict):
     attribution_checked: bool = False
     rights_checked: bool = False
     reviewer_note: ShortText
-    reviewer_kind: Literal["human", "model", "application"] = "human"
+    reviewer_kind: Literal["human", "model", "application"] = "application"
     model_version: str | None = Field(default=None, max_length=120)
 
 
