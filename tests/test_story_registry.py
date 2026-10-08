@@ -297,7 +297,22 @@ def test_source_change_invalidates_fingerprint_and_persists_editor_decision(setu
         assert __import__("json").loads(decision["review"])["actual_executor"] == "application"
     assert registry.export(owner, sid, variant["variant_id"])["body"] == "Днём у фонаря собирались мастера."
     current = registry.corpus.one("rkb_documents", doc)
-    registry.corpus.put("rkb_documents", [{**current, "source_sha256": "b"*64, "active_revision": 2}])
+    # Rechunk: page/region IDs may change, but text and original SHA do not.
+    new_page, new_region = str(uuid4()), str(uuid4())
+    registry.corpus.put("rkb_pages", [{"id": new_page, "document_id": doc,
+                                      "revision": 2, "physical_page_index": 0}])
+    registry.corpus.put("rkb_regions", [{"id": new_region, "page_id": new_page,
+                                        "source_text": text, "reading_order": 0}])
+    registry.corpus.put("rkb_documents", [{**current, "active_revision": 2}])
+    assert registry.get(owner, sid)["readiness"]["ready_variants"] == [variant["variant_id"]]
+    assert registry.export(owner, sid, variant["variant_id"])["body"] == "Днём у фонаря собирались мастера."
+    # Corrected OCR under the SAME original PDF SHA must invalidate approval.
+    corrected_page, corrected_region = str(uuid4()), str(uuid4())
+    registry.corpus.put("rkb_pages", [{"id": corrected_page, "document_id": doc,
+                                      "revision": 3, "physical_page_index": 0}])
+    registry.corpus.put("rkb_regions", [{"id": corrected_region, "page_id": corrected_page,
+                "source_text": "Исправленный источник: мастера в другом месте.", "reading_order": 0}])
+    registry.corpus.put("rkb_documents", [{**current, "active_revision": 3}])
     assert registry.get(owner, sid)["readiness"]["ready_variants"] == []
     assert registry.get(owner, sid)["readiness"]["needs_revalidation"] == [variant["variant_id"]]
     assert registry.validate(owner, sid)["variants"][0]["result"] == "failed"
