@@ -667,6 +667,53 @@ class StoryRegistry:
                               {"story_id": story_id, "expected_revision": expected_revision, "operations": ops, "reason": reason},
                               authorize, apply)
 
+    def _evidence_state(self, db, evidence):
+        """Check the accepted source, not its replaceable retrieval chunk.
+
+        A rechunk of identical page/region text remains valid; corrected OCR
+        or a changed source blocks approval. Ambiguous matching fails closed.
+        """
+        if evidence is None:
+            return "missing"
+        if evidence["source_kind"] == "external":
+            source = db.execute("SELECT content_sha256 FROM story_sources WHERE id=? AND version=?",
+                                (evidence["source_id"], evidence["source_revision"])).fetchone()
+            return "unchanged" if source and source[0] == evidence["source_sha256"] else "changed"
+        doc = self._corpus_row(db, "rkb_documents", evidence["source_id"])
+        if not doc or doc.get("source_sha256") != evidence["source_sha256"]:
+            return "changed"
+        if doc.get("active_revision", 0) < evidence["source_revision"]:
+            return "changed"
+        loc = json.loads(evidence["locator"])
+        old_page = self._corpus_row(db, "rkb_pages", loc.get("page_id"))
+        old_region = self._corpus_row(db, "rkb_regions", loc.get("region_id"))
+        if (not old_page or not old_region
+                or old_page.get("document_id") != evidence["source_id"]
+                or old_page.get("revision") != evidence["source_revision"]
+                or old_region.get("page_id") != old_page.get("id")):
+            return "changed"
+        old_text = old_region.get("source_text") or ""
+        excerpt = evidence["original_excerpt"]
+        begin, finish = loc.get("start"), loc.get("end")
+        if (begin is None or finish is None or old_text[begin:finish] != excerpt):
+            return "changed"
+        if doc.get("active_revision") == evidence["source_revision"]:
+            return "unchanged"
+        # A new accepted revision may have different page/region IDs after
+        # rechunking. Match physical position AND entire original region text.
+        pages = db.execute("""SELECT payload FROM corpus_rows WHERE table_name='rkb_pages'
+                     AND document_id=? AND revision=?
+                     AND json_extract(payload,'$.physical_page_index')=? LIMIT 2""",
+                           (evidence["source_id"], doc["active_revision"],
+                            old_page.get("physical_page_index"))).fetchall()
+        if len(pages) != 1:
+            return "changed"
+        page_id = json.loads(pages[0][0])["id"]
+        regions = db.execute("""SELECT payload FROM corpus_rows WHERE table_name='rkb_regions'
+                     AND json_extract(payload,'$.page_id')=?""", (page_id,)).fetchall()
+        matches = [1 for r in regions if (json.loads(r[0]).get("source_text") or "") == old_text]
+        return "unchanged" if len(matches) == 1 else "changed"
+
     def _fingerprint(self, db, snap, variant):
         ids = [(a["assertion_id"], a["revision"], a.get("assessment_ids"), a.get("evidence_ids"))
                for a in snap["assertions"]]
@@ -674,17 +721,12 @@ class StoryRegistry:
         for aid, revision, assessments, evidence in ids:
             for eid in evidence:
                 ev = self._row(db, "story_evidence", eid)
-                # Check the current source identity at read/approval time. A new
-                # index or rechunk on the *same original* does not revoke an
-                # approval; changing the original does.
-                doc_current = (self._corpus_row(db, "rkb_documents", ev["source_id"])
-                               if ev["source_kind"] == "document" else None)
-                current_sha = (doc_current.get("source_sha256") if doc_current else ev["source_sha256"])
-                proof.append((eid, ev["source_sha256"], current_sha,
-                              ev["source_revision"], ev["excerpt_sha256"]))
+                proof.append((eid, ev["source_sha256"] if ev else None,
+                              self._evidence_state(db, ev), ev["source_revision"] if ev else None,
+                              ev["excerpt_sha256"] if ev else None))
             for assessment in assessments:
                 ar = self._row(db, "story_assessments", assessment)
-                proof.append((assessment, json.loads(ar["payload"])))
+                proof.append((assessment, json.loads(ar["payload"]) if ar else None))
         return digest({"variant": {k:v for k,v in variant.items() if k != "state"}, "assertions": ids, "proof": proof})
 
     def _validate(self, db, snap, variant, review=None):
@@ -701,11 +743,8 @@ class StoryRegistry:
                 if not evidence:
                     blockers.append("missing_evidence:" + evidence_id)
                     continue
-                if evidence["source_kind"] == "document":
-                    latest_source = self._corpus_row(db, "rkb_documents", evidence["source_id"])
-                    if (not latest_source or
-                            latest_source.get("source_sha256") != evidence["source_sha256"]):
-                        blockers.append("source_changed:" + evidence_id)
+                if self._evidence_state(db, evidence) != "unchanged":
+                    blockers.append("source_changed:" + evidence_id)
             if a["kind"] == "attributed_account":
                 if not a.get("account_kind"):
                     blockers.append("account_kind_required")
