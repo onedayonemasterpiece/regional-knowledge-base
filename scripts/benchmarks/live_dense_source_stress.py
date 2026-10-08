@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[2]
-sys.path[:0]=[str(ROOT/"src"),str(ROOT/"scripts/production")]
+sys.path[:0]=[str(ROOT/"src"),str(ROOT/"scripts/production"),str(ROOT/"scripts/benchmarks")]
 from operator_env import load_service_env
 from chunk_size_audit import norm
 from regional_knowledge.supabase_backend import backend_from_env
