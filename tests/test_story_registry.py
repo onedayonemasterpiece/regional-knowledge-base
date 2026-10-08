@@ -381,3 +381,31 @@ def test_unverified_media_cannot_be_approved(setup):
     v = registry.validate(owner, sid)["variants"][0]
     assert v["result"] == "failed"
     assert "media_rights_not_verified" in v["blockers"]
+
+
+@pytest.mark.asyncio
+async def test_function_call_surface_actual_mutation_receipt_and_readback(setup, monkeypatch):
+    from regional_knowledge import server as server_module
+    import json
+    registry, owner, _ = setup
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    monkeypatch.setattr(server_module, "_principal", lambda: owner)
+    server = server_module.build_server(
+        backend=SimpleNamespace(corpus=registry.corpus), profile="story_contributor")
+    declared = {tool.name: tool for tool in await server.list_tools()}
+    assert "story_create" in declared and "story_get" in declared
+    assert "idempotency_key" in declared["story_create"].input_schema["required"]
+    args = {"seed": {"text": "Фонарь у городской стены", "origin_status": "unknown"},
+            "idempotency_key": "mcp-function-0001"}
+    result = await server._tool_manager.call_tool("story_create", args, None)
+    created = json.loads(result[0].text)
+    assert created["commit_state"] == "saved"
+    story_id = created["story_id"]
+    assert json.loads((await server._tool_manager.call_tool(
+        "story_create", args, None))[0].text) == created
+    fetched = json.loads((await server._tool_manager.call_tool(
+        "story_get", {"story_id": story_id, "view": "compact"}, None))[0].text)
+    assert fetched["snapshot"]["seed"]["origin_status"] == "unknown"
+    search = json.loads((await server._tool_manager.call_tool(
+        "story_search", {"query": "фонарь", "limit": 3}, None))[0].text)
+    assert any(x["story_id"] == story_id for x in search["results"])
