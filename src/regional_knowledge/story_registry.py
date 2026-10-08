@@ -636,7 +636,7 @@ class StoryRegistry:
             for assessment in assessments:
                 ar = self._row(db, "story_assessments", assessment)
                 proof.append((assessment, json.loads(ar["payload"])))
-        return digest({"variant": variant, "assertions": ids, "proof": proof})
+        return digest({"variant": {k:v for k,v in variant.items() if k != "state"}, "assertions": ids, "proof": proof})
 
     def _validate(self, db, snap, variant, review=None):
         blockers, unknown = [], []
@@ -811,7 +811,7 @@ class StoryRegistry:
             tokens = re.findall(r"[^\W_]+", str(query), re.UNICODE)[:12]
             expression = " OR ".join('"' + t + '"' for t in tokens)
             if tokens:
-                sql = """SELECT s.* FROM story_fts f JOIN story_records s ON s.rowid=f.rowid
+                sql = """SELECT s.* FROM story_fts JOIN story_records s ON s.rowid=story_fts.rowid
                          WHERE story_fts MATCH ? AND """ + " AND ".join(predicates)
                 sql += " ORDER BY bm25(story_fts),s.id LIMIT ? OFFSET ?"
                 args = [expression, *params, max(100, limit * 10), offset]
@@ -993,8 +993,6 @@ class StoryRegistry:
     def entity_list(self, principal, document_ids=None, kinds=None, query="", cursor=None, limit=20):
         with self.corpus.connect() as db:
             actor = self._actor(db, principal)
-            allowed = {d["id"]: d for d in
-                       (self._document_allowed(db, actor, d["id"]) for d in []) if d}
             # Fetch only scoped graph rows. Unknown scope does not become all actors' graph.
             docs = document_ids or [r["row_key"] for r in db.execute(
                 "SELECT row_key FROM corpus_rows WHERE table_name='rkb_documents'")]
@@ -1039,7 +1037,7 @@ class StoryRegistry:
                 total = db.execute("SELECT count(*) FROM chunk_text WHERE document_id=? AND revision=?",
                                    (request.document_id, request.source_revision)).fetchone()[0]
                 job_id = str(uuid4())
-                db.execute("INSERT INTO story_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                db.execute("INSERT INTO story_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                            (job_id, actor, request.document_id, request.source_revision, 1,
                             "awaiting_agent", "awaiting_agent", request.batch_size, 0, total,
                             None, None, None, "{}", "[]", 0, None, now()))
