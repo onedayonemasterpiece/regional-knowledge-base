@@ -17,7 +17,7 @@ def test_v5_invoker_and_policies_keep_independent_actor_scope():
     assert "language plpgsql stable security definer" not in v5
     assert "rkb_current_actor_id()" in sql
     assert "rkb_vector_readable_documents" in sql
-    assert "document_id = any((select public.rkb_vector_readable_documents()))" in sql
+    assert "document_id = any(array(select pg_catalog.unnest(public.rkb_vector_readable_documents())))" in sql
     for table in ("rkb_chunk_embeddings_e5","rkb_chunk_embeddings_bge"):
         assert f"create policy vector_read on public.{table}" in sql
     assert sql.count("chunk_id in (select a.chunk_id from public.rkb_vector_items a)") == 2
