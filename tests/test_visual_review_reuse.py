@@ -6,7 +6,8 @@ import regional_knowledge.stage_service as stage_service
 from regional_knowledge.object_store import UnavailableObjectStore
 from regional_knowledge.sqlite_backend import SQLiteBackend
 from regional_knowledge.sqlite_data import defaults
-from regional_knowledge.stage_graph import StagedGraph, StagedPage
+from regional_knowledge.stage_graph import StagedGraph, StagedPage, StagedRegion, StagedIllustration
+from regional_knowledge.contracts import BBox
 from regional_knowledge.supabase_backend import LexicalOnlyEmbedder
 
 
@@ -147,3 +148,66 @@ async def test_visual_review_reuse_requires_same_source_sha(tmp_path, monkeypatc
     assert count==0 and revision is None
     assert updated.pages[0].source_material=="full_native"
     await service.aclose()
+
+
+def _review_fixture_page(text="Accepted printed text", *, left=10):
+    page_id=uuid4()
+    region=StagedRegion(
+        region_key="body-0", region_id=uuid4(), page_id=page_id,
+        kind="body", reading_order=0,
+        bbox=BBox(left=left,top=10,right=900,bottom=400),
+        source_text=text, normalized_text=text,
+    )
+    return StagedPage(
+        page_id=page_id, physical_page_index=0,
+        width=1000, height=1000, regions=[region],
+    )
+
+
+def test_source_review_reuse_fails_closed_on_changed_ocr_or_geometry():
+    old_page=_review_fixture_page()
+    same=_review_fixture_page()
+    old=StagedGraph(revision=1,pages=[old_page])
+    proposed=StagedGraph(revision=2,pages=[same])
+    assert stage_service._reviewed_source_page_signature(old,old_page)==(
+        stage_service._reviewed_source_page_signature(proposed,same)
+    )
+    different_text=_review_fixture_page("Mutated OCR despite same PDF SHA")
+    changed=StagedGraph(revision=2,pages=[different_text])
+    assert stage_service._reviewed_source_page_signature(old,old_page)!=(
+        stage_service._reviewed_source_page_signature(changed,different_text)
+    )
+    shifted=_review_fixture_page(left=11)
+    shifted_graph=StagedGraph(revision=2,pages=[shifted])
+    assert stage_service._reviewed_source_page_signature(old,old_page)!=(
+        stage_service._reviewed_source_page_signature(shifted_graph,shifted)
+    )
+
+
+def test_source_review_reuse_rejects_changed_or_missing_illustration():
+    old_page=_review_fixture_page()
+    same=_review_fixture_page()
+    def image(page,description):
+        region=page.regions[0]
+        return StagedIllustration(
+            illustration_key="drawing-0",illustration_id=uuid4(),
+            page_id=page.page_id,source_region_id=region.region_id,
+            bbox=region.bbox,kind="drawing",
+            caption_region_ids=[region.region_id],visual_description=description,
+        )
+    old=StagedGraph(revision=1,pages=[old_page],
+                    illustrations=[image(old_page,"Original illustration")])
+    proposed=StagedGraph(revision=2,pages=[same],
+                         illustrations=[image(same,"Original illustration")])
+    assert stage_service._reviewed_source_page_signature(old,old_page)==(
+        stage_service._reviewed_source_page_signature(proposed,same)
+    )
+    changed=StagedGraph(revision=2,pages=[same],
+                        illustrations=[image(same,"Changed illustration")])
+    assert stage_service._reviewed_source_page_signature(old,old_page)!=(
+        stage_service._reviewed_source_page_signature(changed,same)
+    )
+    deleted=StagedGraph(revision=2,pages=[same])
+    assert stage_service._reviewed_source_page_signature(old,old_page)!=(
+        stage_service._reviewed_source_page_signature(deleted,same)
+    )
