@@ -51,6 +51,11 @@ from .oauth_provider import (
     oauth_provider_from_env,
 )
 from .supabase_backend import backend_from_env
+from .story_registry import StoryRegistry, StoryError
+from .story_contracts import (
+    Key, SeedInput, SourceRef, StoryMetadata, StoryOperation,
+    ReviewDecision, RegisteredSource, ExtractRequest,
+)
 
 
 def _principal() -> Principal:
@@ -254,11 +259,6 @@ def build_server(
             if profile != "full":
                 raise RuntimeError("Story Registry requires the existing SQLite authority")
         else:
-            from .story_registry import StoryRegistry, StoryError
-            from .story_contracts import (
-                Key, SeedInput, SourceRef, StoryMetadata, StoryOperation,
-                ReviewDecision, RegisteredSource, ExtractRequest,
-            )
             registry = StoryRegistry(backend.corpus)
 
             async def story_call(fn, *args, **kwargs):
