@@ -219,7 +219,7 @@ async def test_read_ingestion_projection_preserves_owner_for_accepted_source_gat
             "staged_revision":2,
         }])
         stored=await backend._ingestion_row(principal=actor,ingestion_id=job_id)
-        assert stored and stored.get("owner_user_id")==row["owner_user_id"]
+        assert stored and str(stored.get("owner_user_id"))==row["owner_user_id"]
         assert certified_accepted_source_reuse(backend.corpus,stored,graph)==(True,1)
         wrong=Principal(
             subject=str(uuid4()),client_id="foreign",issuer="test",
