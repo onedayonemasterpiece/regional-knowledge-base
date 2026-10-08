@@ -302,3 +302,82 @@ def test_source_change_invalidates_fingerprint_and_persists_editor_decision(setu
     assert registry.get(owner, sid)["readiness"]["needs_revalidation"] == [variant["variant_id"]]
     assert registry.validate(owner, sid)["variants"][0]["result"] == "failed"
     expect("source_changed", registry.export, owner, sid, variant["variant_id"])
+
+
+def test_source_acl_applied_to_search_before_ranking_and_after_revocation(setup):
+    registry, owner, other = setup
+    from regional_knowledge.story_contracts import SourceRef
+    doc, _, _, _, _ = document(registry, owner)
+    hidden = registry.create(owner, SeedInput(text="Фонарь секретной улицы"), None, None,
+            [SourceRef(kind="document", source_id=doc, source_revision=1)], "search-private-001")
+    registry.access(owner, hidden["story_id"], 1, other.subject, "viewer", "search-grant-001")
+    accessible = registry.create(other, SeedInput(text="Фонарь открытой улицы"), None,
+                                 None, None, "search-public-001")
+    before = registry.search(other, "Фонарь", mode="semantic")
+    assert before["retrieval_mode"] == "lexical_degraded"
+    assert [h["story_id"] for h in before["results"]] == [accessible["story_id"]]
+    registry.corpus.put("rkb_document_grants", [{
+       "document_id": doc, "grantee_user_id": other.subject, "role": "viewer",
+    }])
+    granted = registry.search(other, "Фонарь")
+    assert {h["story_id"] for h in granted["results"]} == {
+        accessible["story_id"], hidden["story_id"]
+    }
+    with registry.corpus.connect() as db:
+        db.execute("""DELETE FROM corpus_rows WHERE table_name='rkb_document_grants'
+                      AND json_extract(payload,'$.document_id')=?""", (doc,))
+    revoked = registry.search(other, "Фонарь")
+    assert [h["story_id"] for h in revoked["results"]] == [accessible["story_id"]]
+    assert all("секретной" not in h["summary"] for h in revoked["results"])
+
+
+def test_story_search_cursor_does_not_skip_ranked_rows(setup):
+    registry, owner, _ = setup
+    expected = set()
+    for i in range(7):
+        result = registry.create(owner, SeedInput(text=f"Фонарь и эпизод {i}"),
+                                 None, None, None, f"story-page-{i:04d}")
+        expected.add(result["story_id"])
+    found, cursor = set(), None
+    for _ in range(5):
+        page = registry.search(owner, "Фонарь", limit=2, cursor=cursor)
+        found.update(h["story_id"] for h in page["results"])
+        cursor = page["next_cursor"]
+        if not page["has_more"]:
+            assert cursor is None
+            break
+    assert found == expected
+
+
+def test_source_locator_does_not_accept_foreign_chunk(setup):
+    registry, owner, _ = setup
+    doc, page, region, chunk, text = document(registry, owner)
+    sid = seed(registry, owner)["story_id"]
+    registry.edit(owner, sid, 1, [UpsertAssertion(
+        op="upsert_assertion", proposition="Мастера собирались днем",
+        kind="historical_claim")], "bad-pointer-claim-001")
+    a = registry.get(owner, sid, view="evidence")["snapshot"]["assertions"][0]
+    expect("invalid_evidence", registry.edit, owner, sid, 2, [AttachEvidence(
+        op="attach_evidence", assertion_id=a["assertion_id"], assertion_revision=1,
+        source_kind="document", source_id=doc, source_revision=1, relation="supports",
+        original_excerpt="У старого фонаря днём собирались мастера.",
+        locator=EvidenceLocator(page_id=page, region_id=region, chunk_id=str(uuid4()),
+                                physical_page_index=0)
+    )], "bad-pointer-ev-001")
+    assert registry.get(owner, sid, view="evidence")["revision"] == 2
+
+
+def test_unverified_media_cannot_be_approved(setup):
+    registry, owner, _ = setup
+    sid = seed(registry, owner)["story_id"]
+    registry.edit(owner, sid, 1, [UpsertAssertion(op="upsert_assertion",
+        proposition="Кто-то рассказывал о фонаре", kind="attributed_account",
+        account_kind="legend", attributed_to="аноним")], "media-claim-001")
+    registry.edit(owner, sid, 2, [UpsertVariant(op="upsert_variant", audience="Город",
+        format="short_video", body="По рассказу анонима...",
+        attributions=["По рассказу анонима, это легенда."],
+        media_refs=["knowledge://illustrations/unverified"])
+    ], "media-variant-001")
+    v = registry.validate(owner, sid)["variants"][0]
+    assert v["result"] == "failed"
+    assert "media_rights_not_verified" in v["blockers"]
