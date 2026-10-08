@@ -152,6 +152,16 @@ class StoryRegistry:
               batch_id TEXT, lease_token TEXT, lease_deadline REAL,
               checkpoint TEXT NOT NULL, result_ids TEXT NOT NULL,
               attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS story_review_decisions(
+              id TEXT PRIMARY KEY,
+              story_id TEXT NOT NULL REFERENCES story_records(id),
+              variant_id TEXT NOT NULL REFERENCES story_variants(id),
+              variant_revision INTEGER NOT NULL,
+              approval_fingerprint TEXT NOT NULL,
+              actor_id TEXT NOT NULL, client_id TEXT, review TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY(variant_id,variant_revision)
+                REFERENCES story_variant_versions(id,revision));
             CREATE TABLE IF NOT EXISTS story_publications(
               id TEXT PRIMARY KEY, story_id TEXT NOT NULL REFERENCES story_records(id),
               variant_id TEXT NOT NULL, variant_revision INTEGER NOT NULL,
@@ -166,6 +176,7 @@ class StoryRegistry:
             CREATE TABLE IF NOT EXISTS story_schema_migrations(
               version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
             INSERT OR IGNORE INTO story_schema_migrations VALUES(1,datetime('now'));
+            INSERT OR IGNORE INTO story_schema_migrations VALUES(2,datetime('now'));
             """)
 
     @staticmethod
@@ -551,6 +562,11 @@ class StoryRegistry:
             ident = str(uuid4())
             data = op.model_dump(mode="json", exclude={"op"})
             data["id"] = ident
+            # The authenticated actor is real; "human" or "model" in tool
+            # arguments is at most a client claim, not verified authorship.
+            data["assessor_claim_verified"] = False
+            data["actual_executor"] = "application"
+            data["client_id"] = getattr(principal, "client_id", None)
             db.execute("INSERT INTO story_assessments VALUES(?,?,?,?,?,?,?)",
                        (ident, snap["story_id"], op.assertion_id, op.assertion_revision,
                         canonical(data), str(principal.subject), now()))
@@ -632,7 +648,14 @@ class StoryRegistry:
         for aid, revision, assessments, evidence in ids:
             for eid in evidence:
                 ev = self._row(db, "story_evidence", eid)
-                proof.append((eid, ev["source_sha256"], ev["source_revision"], ev["excerpt_sha256"]))
+                # Check the current source identity at read/approval time. A new
+                # index or rechunk on the *same original* does not revoke an
+                # approval; changing the original does.
+                doc_current = (self._corpus_row(db, "rkb_documents", ev["source_id"])
+                               if ev["source_kind"] == "document" else None)
+                current_sha = (doc_current.get("source_sha256") if doc_current else ev["source_sha256"])
+                proof.append((eid, ev["source_sha256"], current_sha,
+                              ev["source_revision"], ev["excerpt_sha256"]))
             for assessment in assessments:
                 ar = self._row(db, "story_assessments", assessment)
                 proof.append((assessment, json.loads(ar["payload"])))
@@ -723,6 +746,13 @@ class StoryRegistry:
                     # Assessor's review explicitly owns unresolved semantic questions; no automatic truth assertion.
                     fp = self._fingerprint(db, snap, item)
                     item["state"] = "publish_ready"
+                    review_record = review.model_dump(mode="json")
+                    review_record["actual_executor"] = "application"
+                    review_record["reviewer_claim_verified"] = False
+                    db.execute("""INSERT INTO story_review_decisions VALUES(?,?,?,?,?,?,?,?,?)""",
+                               (str(uuid4()), story_id, item["variant_id"], item["revision"],
+                                fp, actor, getattr(principal, "client_id", None),
+                                canonical(review_record), now()))
                     db.execute("""UPDATE story_variants SET state='publish_ready',approved_revision=?,
                                   approval_fingerprint=? WHERE id=?""", (item["revision"], fp, item["variant_id"]))
                 snap["state"] = "review"
