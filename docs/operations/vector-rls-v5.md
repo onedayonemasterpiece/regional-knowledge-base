@@ -27,7 +27,7 @@ Migration `sql/023_vector_rls_v5.sql` is one transaction:
 - Both embedding tables permit reads only when their chunk IDs appear in the
   independently RLS-filtered vector-anchor table. The membership subquery
   is noncorrelated; PostgreSQL may implement it as a hashed subplan.
-- `rkb_vector_candidates_v5` uses `SECURITY INVOKER`, checks that an actor
+- `rkb_vector_candidates_v5` is an inlineable SQL `SECURITY INVOKER` set-returning function; a separately materialized, one-shot `rkb_vector_validate_scope_v5` helper checks that an actor
   and explicit revision map are present, validates document/revision scope
   consistency, and restricts returned candidates to those active revisions.
   The search space and model-revision checks match v4. Both BGE and E5 have

@@ -26,6 +26,7 @@ create policy rkb_vector_items_read on public.rkb_vector_items
     for select to rkb_app using (public.rkb_vector_scope(document_id));
 
 drop function if exists public.rkb_vector_candidates_v5(text,text,text,text,integer);
+drop function if exists public.rkb_vector_validate_scope_v5(text,text,text,text);
 drop function if exists public.rkb_vector_readable_documents();
 
 commit;
