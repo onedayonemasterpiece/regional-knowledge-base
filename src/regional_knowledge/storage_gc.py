@@ -3,6 +3,9 @@ from uuid import UUID
 import json,logging
 
 # Candidates are derived exclusively from known database-owned objects. No bucket wipe.
+# Finalized jobs retain their last staged_graph_object_id as immutable source-review
+# evidence across rechunking/rollback. Only orphaned, superseded intermediate
+# snapshots or failed-job graphs are disposable; never GC accepted proof.
 CANDIDATES="""select o.* from rkb_objects o join rkb_documents d on d.id=o.document_id
  where o.deleted_at is null and (
   (o.kind='text_projection' and not exists(select 1 from rkb_chunks c where c.text_object_id=o.id and c.source_text is null))
@@ -10,7 +13,7 @@ CANDIDATES="""select o.* from rkb_objects o join rkb_documents d on d.id=o.docum
   or (o.kind='illustration_crop' and exists(select 1 from rkb_illustrations i where i.crop_object_id=o.id and i.vibepublish_entry_ref is not null))
   or (o.kind='source_pdf' and d.source_archive_status='verified' and d.source_archive_ref is not null and o.sha256=d.source_sha256
       and not exists(select 1 from rkb_ingestion_jobs j where j.document_id=d.id and j.state not in ('finalized','failed')))
-  or (o.kind='document_graph' and not exists(select 1 from rkb_ingestion_jobs j where j.staged_graph_object_id=o.id and j.state not in ('finalized','failed'))
+  or (o.kind='document_graph' and not exists(select 1 from rkb_ingestion_jobs j where j.staged_graph_object_id=o.id and j.state <> 'failed')
       and not exists(select 1 from rkb_regions r join rkb_pages p on p.id=r.page_id where p.document_id=d.id and r.text_sha256 is not null and r.source_text is null))
  ) and o.created_at < now()-interval '1 hour' order by o.created_at,o.id limit 100"""
 
