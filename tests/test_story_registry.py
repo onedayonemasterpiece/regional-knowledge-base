@@ -260,3 +260,45 @@ async def test_mcp_bundles_and_unmodified_default_live(setup, monkeypatch):
     assert "story_create" not in reader and "story_search" in reader
     assert "story_create" in contributor and "story_transition" not in contributor
     assert {"story_export", "story_transition", "story_access", "story_publication_record"} <= editor
+
+def test_source_change_invalidates_fingerprint_and_persists_editor_decision(setup):
+    registry, owner, _ = setup
+    doc, page, region, chunk, text = document(registry, owner)
+    sid = seed(registry, owner)["story_id"]
+    registry.edit(owner, sid, 1, [UpsertAssertion(
+        op="upsert_assertion", proposition="Днём у фонаря собирались мастера",
+        kind="historical_claim")], "source-claim-001")
+    claim = registry.get(owner, sid, view="evidence")["snapshot"]["assertions"][0]
+    registry.edit(owner, sid, 2, [AttachEvidence(
+        op="attach_evidence", assertion_id=claim["assertion_id"], assertion_revision=1,
+        source_kind="document", source_id=doc, source_revision=1,
+        relation="supports", source_role_for_assertion="secondary",
+        original_excerpt="У старого фонаря днём собирались мастера.",
+        locator=EvidenceLocator(page_id=page, region_id=region, chunk_id=chunk, physical_page_index=0)
+    )], "source-proof-001")
+    evidence_id = registry.get(owner, sid, view="evidence")["snapshot"]["assertions"][0]["evidence_ids"][0]
+    registry.edit(owner, sid, 3, [RecordAssessment(
+        op="record_assessment", assertion_id=claim["assertion_id"], assertion_revision=1,
+        evidence_ids=[evidence_id], support_status="single_source",
+        semantic_review="supported", rationale="В источнике прямо описаны дневные встречи"
+    )], "source-assess-001")
+    registry.edit(owner, sid, 4, [UpsertVariant(
+        op="upsert_variant", audience="Жители", format="post", body="Днём у фонаря собирались мастера.",
+    )], "source-variant-001")
+    variant = registry.get(owner, sid, view="evidence")["snapshot"]["variants"][0]
+    ready = registry.transition(owner, sid, 5, "publish_ready",
+       [{"variant_id": variant["variant_id"], "revision": 1}],
+       ReviewDecision(semantic_checked=True, attribution_checked=True, rights_checked=True,
+                      reviewer_note="Сверено с источником"), "source-ready-001")
+    assert ready["readiness"]["ready_variants"] == [variant["variant_id"]]
+    with registry.corpus.connect() as db:
+        decision = db.execute("SELECT * FROM story_review_decisions WHERE story_id=?", (sid,)).fetchone()
+        assert decision is not None and decision["actor_id"] == owner.subject
+        assert __import__("json").loads(decision["review"])["actual_executor"] == "application"
+    assert registry.export(owner, sid, variant["variant_id"])["body"] == "Днём у фонаря собирались мастера."
+    current = registry.corpus.one("rkb_documents", doc)
+    registry.corpus.put("rkb_documents", [{**current, "source_sha256": "b"*64, "active_revision": 2}])
+    assert registry.get(owner, sid)["readiness"]["ready_variants"] == []
+    assert registry.get(owner, sid)["readiness"]["needs_revalidation"] == [variant["variant_id"]]
+    assert registry.validate(owner, sid)["variants"][0]["result"] == "failed"
+    expect("source_changed", registry.export, owner, sid, variant["variant_id"])
