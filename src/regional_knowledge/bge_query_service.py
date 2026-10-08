@@ -53,55 +53,150 @@ class PinnedBGEQueryEncoder:
         hidden/=np.maximum(np.linalg.norm(hidden,axis=1,keepdims=True),1e-12)
         return validate_vector(hidden[0].tolist())
 
+class QueryOverloaded(RuntimeError):
+    """Bounded, retryable local encoder capacity or deadline failure."""
+
+
 class QueryQueue:
-    def __init__(self,encode,capacity=16):
+    """Single-encoder, bounded sidecar with duplicate collapse and short-lived cache.
+
+    All query keys are SHA-256 digests: retained cache and inflight tracking do
+    not store plaintext user queries. Once the local interaction budget is
+    exhausted, reject explicitly instead of silently holding a request.
+    """
+
+    def __init__(self,encode,capacity=16,deadline_seconds=1.45,cache_capacity=96):
+        from collections import OrderedDict,deque
+        if not 1<=capacity<=128 or not .2<=deadline_seconds<=1.6:
+            raise ValueError("invalid local query limits")
+        if not 0<=cache_capacity<=256:
+            raise ValueError("invalid local query cache")
         self.encode=encode
+        self.deadline_seconds=float(deadline_seconds)
         self.queue=asyncio.Queue(maxsize=capacity)
         self.executor=concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.worker=None
         self.busy=False
         self.completed=0
         self.rejected=0
+        self.expired=0
+        self.coalesced=0
+        self.cache_hits=0
         self.max_queue=0
+        self._inflight={}
+        self._cache=OrderedDict()
+        self._cache_capacity=cache_capacity
+        self._encoder_samples=deque(maxlen=128)
+        self._ewma_duration=.16
 
     def start(self):
-        if self.worker is None:self.worker=asyncio.create_task(self.run())
+        if self.worker is None or self.worker.done():
+            self.worker=asyncio.create_task(self.run())
+
+    def _key(self,text):
+        return hashlib.sha256(text.encode("utf-8")).digest()
+
+    def _cached(self,key,now):
+        hit=self._cache.get(key)
+        if not hit:return None
+        when,vector,encoder_duration=hit
+        if now-when>180:
+            del self._cache[key]
+            return None
+        self._cache.move_to_end(key)
+        self.cache_hits+=1
+        return {
+            "space":SPACE,"vectors":[vector],"queue_wait_seconds":0.0,
+            "encoder_seconds":0.0,"encoder_revision":ENCODER_REVISION,
+            "cache_hit":True,"original_encoder_seconds":encoder_duration,
+        }
+
+    def _cache_result(self,key,vector,elapsed):
+        if not self._cache_capacity:return
+        self._cache[key]=(time.monotonic(),vector,elapsed)
+        self._cache.move_to_end(key)
+        while len(self._cache)>self._cache_capacity:
+            self._cache.popitem(last=False)
 
     async def submit(self,text):
         self.start()
-        future=asyncio.get_running_loop().create_future()
-        future.add_done_callback(lambda f:f.exception() if not f.cancelled() else None)
-        try:self.queue.put_nowait((text,time.monotonic(),future))
-        except asyncio.QueueFull:
-            self.rejected+=1
-            raise RuntimeError("bge_query_queue_full")
-        self.max_queue=max(self.max_queue,self.queue.qsize())
-        return await asyncio.wait_for(asyncio.shield(future),1.0)
+        now=time.monotonic()
+        key=self._key(text)
+        hit=self._cached(key,now)
+        if hit is not None:return hit
+        future=self._inflight.get(key)
+        if future is None:
+            # The sidecar has one CPU-bound model worker. Reject requests
+            # unlikely to meet the same interaction budget instead of
+            # accepting a deep queue and later returning HTTP 503.
+            waiting=self.queue.qsize()+(1 if self.busy else 0)
+            if self.queue.full() or waiting>=4 or waiting*self._ewma_duration>=self.deadline_seconds-.20:
+                self.rejected+=1
+                raise QueryOverloaded("bge_query_overloaded")
+            future=asyncio.get_running_loop().create_future()
+            future.add_done_callback(lambda f:f.exception() if not f.cancelled() else None)
+            self._inflight[key]=future
+            try:self.queue.put_nowait((key,text,now,future))
+            except asyncio.QueueFull:
+                self._inflight.pop(key,None)
+                self.rejected+=1
+                raise QueryOverloaded("bge_query_overloaded")
+            self.max_queue=max(self.max_queue,self.queue.qsize())
+        else:
+            self.coalesced+=1
+        try:
+            return await asyncio.wait_for(asyncio.shield(future),self.deadline_seconds)
+        except asyncio.TimeoutError as exc:
+            self.expired+=1
+            raise QueryOverloaded("bge_query_deadline") from exc
 
     async def run(self):
         while True:
-            text,submitted,future=await self.queue.get()
+            key,text,submitted,future=await self.queue.get()
             wait=time.monotonic()-submitted
             self.busy=True
             try:
-                if wait>=.85:raise TimeoutError("bge_query_queue_deadline")
+                if wait>=self.deadline_seconds-.12:
+                    self.expired+=1
+                    raise QueryOverloaded("bge_query_queue_expired")
                 started=time.monotonic()
-                vector=await asyncio.get_running_loop().run_in_executor(self.executor,self.encode,text)
+                vector=await asyncio.get_running_loop().run_in_executor(
+                    self.executor,self.encode,text
+                )
+                elapsed=time.monotonic()-started
+                self._encoder_samples.append(elapsed)
+                self._ewma_duration=max(.02,min(1.5,.75*self._ewma_duration+.25*elapsed))
                 result={
-                    "space":SPACE,
-                    "vectors":[vector],
-                    "queue_wait_seconds":wait,
-                    "encoder_seconds":time.monotonic()-started,
+                    "space":SPACE,"vectors":[vector],
+                    "queue_wait_seconds":wait,"encoder_seconds":elapsed,
                     "encoder_revision":ENCODER_REVISION,
+                    "cache_hit":False,
                 }
                 if not future.done():future.set_result(result)
+                self._cache_result(key,vector,elapsed)
                 self.completed+=1
             except Exception as exc:
                 if not future.done():future.set_exception(exc)
-                log.warning(json.dumps({"event":"local_bge_query_failed","error_type":type(exc).__name__}))
+                if not isinstance(exc,QueryOverloaded):
+                    log.warning(json.dumps({
+                        "event":"local_bge_query_failed",
+                        "error_type":type(exc).__name__,
+                    }))
             finally:
+                self._inflight.pop(key,None)
                 self.busy=False
                 self.queue.task_done()
+
+    def metrics(self):
+        durations=sorted(self._encoder_samples)
+        p95=durations[min(len(durations)-1,int(.95*(len(durations)-1)))] if durations else None
+        return {
+            "coalesced":self.coalesced,"cache_hits":self.cache_hits,
+            "cache_size":len(self._cache),"expired":self.expired,
+            "deadline_seconds":self.deadline_seconds,
+            "encoder_p95_seconds":p95,
+            "inflight_unique":len(self._inflight),
+        }
 
 class Service:
     def __init__(self,queue):
@@ -120,6 +215,7 @@ class Service:
             "rejected":self.queue.rejected,
             "max_queue_depth":self.queue.max_queue,
             "pid":os.getpid(),
+            **self.queue.metrics(),
         }
 
     async def handle(self,reader,writer):
@@ -146,10 +242,12 @@ class Service:
                 payload=await self.queue.submit(text)
             else:
                 status,payload=404,{"error":"not_found"}
+        except QueryOverloaded:
+            status,payload=429,{"error":"encoder_capacity_or_deadline"}
         except (TimeoutError,asyncio.TimeoutError):
-            status,payload=503,{"error":"encoder_deadline"}
+            status,payload=429,{"error":"encoder_deadline"}
         except RuntimeError as exc:
-            status,payload=(429 if "queue_full" in str(exc) else 503),{"error":str(exc)}
+            status,payload=503,{"error":"encoder_unavailable","error_type":type(exc).__name__}
         except (ValueError,KeyError,UnicodeError,asyncio.IncompleteReadError,asyncio.LimitOverrunError):
             status,payload=400,{"error":"invalid_request"}
         except Exception:
