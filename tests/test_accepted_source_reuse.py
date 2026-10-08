@@ -116,6 +116,12 @@ def make_source(tmp_path):
 def test_accepted_source_requires_server_proof_and_is_not_fresh_review(tmp_path):
     service, row, graph, _ = make_source(tmp_path)
     assert certified_accepted_source_reuse(service.corpus, row, graph) == (True, 1)
+    # Accepted illustrated sources may store the original crop/hash on an
+    # empty figure region, rather than SHA256 of the empty OCR string.
+    region = service.corpus.rows("rkb_regions")[0]
+    region["text_sha256"] = "f" * 64
+    service.corpus.put("rkb_regions", [region])
+    assert certified_accepted_source_reuse(service.corpus, row, graph) == (True, 1)
     untrusted = validate_graph(graph, expected_page_count=1)
     assert any("source completeness unreviewed" in x for x in untrusted.errors)
     verified = validate_graph(graph, expected_page_count=1, accepted_reuse_verified=True)
