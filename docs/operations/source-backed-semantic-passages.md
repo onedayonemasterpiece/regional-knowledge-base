@@ -22,3 +22,19 @@ The compiler rejects missing regions, stale hashes, reversed/overlapping spans, 
 5. Activate the revision **only after** all applicable tests pass, with previous active revision retained for rollback. This interface enhancement alone does not constitute a completed reimport and does not waive the separate >=100,000 active chunk capacity/quota gate.
 
 The original source PDF/DjVu, original page image, archived SHA and geometry remain unchanged. This change introduces no automatic mutation of existing book revisions and no new external provider dependency.
+
+### Reusing prior visual reviews in a later revision
+
+The server may inherit a prior page-level visual review only from a
+validated, same-source staged graph whose exact page content also matches the
+new graph: printed page/geometry, OCR/normalized source region texts,
+reading order, excluded figures, region relationships, and captions/
+illustration references. Newly generated page/region/illustration UUIDs are
+not themselves required to match.
+
+A matching book SHA and physical page number without this evidence are
+insufficient. Changed or unprovable pages remain unreviewed and block
+validation instead of silently gaining `visual_reviewed`. If the historical
+review graph was discarded or deleted, its evidence must be recovered or the
+page explicitly reviewed again. This safeguard does not automatically
+activate any book revision and does not change dense-quality acceptance.
