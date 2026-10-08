@@ -841,61 +841,121 @@ class StoryRegistry:
 
     def search(self, principal, query="", filters=None, mode="lexical", order="updated", limit=3, cursor=None):
         filters = filters or {}
+        if any(k not in {"state", "material_type", "workspace_id"} for k in filters):
+            fail("validation_failed", "Unsupported story search filter")
+        # The vector plane is deliberately not used until a separately scoped
+        # index is installed. Never silently call a hybrid query semantic.
+        actual_mode = "lexical_only" if mode == "lexical" else "lexical_degraded"
         with self.corpus.connect() as db:
             actor = self._actor(db, principal)
             offset = max(0, int(cursor or 0))
             limit = max(1, min(int(limit), 20))
-            # The access predicate is part of the SQL candidate selection, before
-            # content is read or a semantic model can receive any story text.
-            visible = """(s.owner_id=? OR EXISTS (SELECT 1 FROM story_grants g
-                 WHERE g.story_id=s.id AND g.grantee_id=?)
-                 OR EXISTS (SELECT 1 FROM corpus_rows w
-                 WHERE w.table_name='rkb_workspace_members' AND
-                 json_extract(w.payload,'$.workspace_id')=s.workspace_id AND
-                 json_extract(w.payload,'$.user_id')=?))"""
-            params = [actor, actor, actor]
-            predicates = [visible, "s.archived=0", "s.merged_into IS NULL"]
+            if offset > 100000:
+                fail("validation_failed", "Cursor outside bounded results")
+            # Filter *all* story and source permissions in SQL BEFORE FTS BM25
+            # orders candidates. A post-ranking check alone can reveal which
+            # private content is relevant and displace authorized hits.
+            # 'who' is a bound verified principal, never client JSON.
+            visibility = """(
+               (s.owner_id=(SELECT actor_id FROM who)
+                OR EXISTS (SELECT 1 FROM story_grants g WHERE g.story_id=s.id
+                      AND g.grantee_id=(SELECT actor_id FROM who))
+                OR EXISTS (SELECT 1 FROM corpus_rows w
+                  WHERE w.table_name='rkb_workspaces' AND w.row_key=s.workspace_id
+                  AND json_extract(w.payload,'$.owner_user_id')=(SELECT actor_id FROM who))
+                OR EXISTS (SELECT 1 FROM corpus_rows m
+                  WHERE m.table_name='rkb_workspace_members'
+                    AND json_extract(m.payload,'$.workspace_id')=s.workspace_id
+                    AND json_extract(m.payload,'$.user_id')=(SELECT actor_id FROM who)))
+               AND NOT EXISTS (
+                 SELECT 1 FROM story_dependencies dep
+                 WHERE dep.story_id=s.id AND (
+                   (dep.source_kind='document' AND NOT EXISTS (
+                     SELECT 1 FROM corpus_rows d
+                     WHERE d.table_name='rkb_documents' AND d.row_key=dep.source_id
+                       AND (
+                         json_extract(d.payload,'$.owner_user_id')=(SELECT actor_id FROM who)
+                         OR (json_extract(d.payload,'$.content_visibility')='public'
+                             AND json_extract(d.payload,'$.rights_status') IN
+                              ('licensed','permission_granted','public_domain_verified','statutory_access_verified')
+                             AND json_extract(d.payload,'$.rights_policy_version') IS NOT NULL
+                             AND json_extract(d.payload,'$.rights_evidence.public_distribution')=1)
+                         OR EXISTS (SELECT 1 FROM corpus_rows grant_row
+                             WHERE grant_row.table_name='rkb_document_grants'
+                               AND grant_row.document_id=d.row_key
+                               AND json_extract(grant_row.payload,'$.grantee_user_id')=(SELECT actor_id FROM who))
+                         OR (json_extract(d.payload,'$.content_visibility') IN ('workspace','public')
+                             AND EXISTS (SELECT 1 FROM corpus_rows w
+                               WHERE w.table_name='rkb_workspaces'
+                                 AND w.row_key=json_extract(d.payload,'$.workspace_id')
+                                 AND json_extract(w.payload,'$.owner_user_id')=(SELECT actor_id FROM who)))
+                         OR (json_extract(d.payload,'$.content_visibility') IN ('workspace','public')
+                             AND EXISTS (SELECT 1 FROM corpus_rows member
+                               WHERE member.table_name='rkb_workspace_members'
+                                 AND json_extract(member.payload,'$.workspace_id')=
+                                     json_extract(d.payload,'$.workspace_id')
+                                 AND json_extract(member.payload,'$.user_id')=(SELECT actor_id FROM who)))
+                       )))
+                   OR (dep.source_kind='external' AND NOT EXISTS(
+                     SELECT 1 FROM story_sources source
+                     WHERE source.id=dep.source_id AND source.version=dep.source_revision
+                       AND (source.owner_id=(SELECT actor_id FROM who)
+                            OR s.owner_id=(SELECT actor_id FROM who))))
+                   OR dep.source_kind NOT IN ('document','external')
+                 )))"""
+            params = [actor]
+            predicates = [visibility, "s.archived=0", "s.merged_into IS NULL"]
             if filters.get("state"):
                 predicates.append("s.state=?")
-                params.append(str(filters["state"]))
+                params.append(str(filters["state"])[:80])
             if filters.get("material_type"):
                 predicates.append("s.material_type=?")
-                params.append(str(filters["material_type"]))
+                params.append(str(filters["material_type"])[:80])
             if filters.get("workspace_id"):
                 predicates.append("s.workspace_id=?")
-                params.append(str(filters["workspace_id"]))
+                params.append(str(filters["workspace_id"])[:128])
             tokens = re.findall(r"[^\W_]+", str(query), re.UNICODE)[:12]
             expression = " OR ".join('"' + t + '"' for t in tokens)
             if tokens:
-                sql = """SELECT s.* FROM story_fts JOIN story_records s ON s.rowid=story_fts.rowid
-                         WHERE story_fts MATCH ? AND """ + " AND ".join(predicates)
+                sql = """WITH who(actor_id) AS (VALUES (?))
+                    SELECT s.* FROM story_fts JOIN story_records s ON s.rowid=story_fts.rowid
+                    WHERE story_fts MATCH ? AND """ + " AND ".join(predicates)
                 sql += " ORDER BY bm25(story_fts),s.id LIMIT ? OFFSET ?"
-                args = [expression, *params, max(100, limit * 10), offset]
+                args = [actor, expression, *params[1:], limit + 1, offset]
             else:
-                sql = "SELECT s.* FROM story_records s WHERE " + " AND ".join(predicates)
+                sql = """WITH who(actor_id) AS (VALUES (?))
+                    SELECT s.* FROM story_records s WHERE """ + " AND ".join(predicates)
                 sql += " ORDER BY s.updated_at DESC,s.id LIMIT ? OFFSET ?"
-                args = [*params, max(100, limit * 10), offset]
+                args = [*params, limit + 1, offset]
             rows = db.execute(sql, args).fetchall()
             hits = []
-            for r in rows:
+            for r in rows[:limit]:
                 try:
                     self._permission(db, actor, r)
                 except StoryError:
+                    # A concurrent revocation must still win at readback.
                     continue
                 snap = json.loads(r["snapshot"])
+                attribution = []
+                for a in snap["assertions"]:
+                    if a["kind"] == "attributed_account":
+                        kind = a.get("account_kind") or "рассказ"
+                        attributed = a.get("attributed_to") or a.get("reported_by")
+                        attribution.append((kind + (": " + attributed if attributed else ": происхождение не установлено"))[:160])
+                    if len(attribution) == 3:
+                        break
                 hits.append({"story_id": r["id"], "revision": r["revision"], "title": r["title"],
                              "summary": (r["summary"] or r["seed_text"])[:350],
                              "state": r["state"], "material_type": r["material_type"],
                              "kinds": list(dict.fromkeys(a["kind"] for a in snap["assertions"])),
-                             "attributions": [a.get("attributed_to") or a.get("reported_by") for a in snap["assertions"]
-                                              if a["kind"] == "attributed_account"][:3],
+                             "attributions": attribution,
+                             "spoken_summary": "; ".join([*attribution, (r["summary"] or r["seed_text"])[:200]]),
                              "open_gaps": sum(g["state"] == "open" for g in snap["gaps"]),
                              "allowed_actions": self._available_actions(db, actor, r)[:6]})
-                if len(hits) >= limit + 1:
-                    break
-            return {"results": hits[:limit], "has_more": len(hits) > limit,
-                    "next_cursor": str(offset + len(rows)) if len(hits) > limit else None,
-                    "retrieval_mode": "lexical_only" if mode != "semantic" else "lexical_degraded",
+            more = len(rows) > limit
+            return {"results": hits, "has_more": more,
+                    "next_cursor": str(offset + limit) if more else None,
+                    "retrieval_mode": actual_mode,
                     "indexing_state": "local_fts_ready_vector_awaiting_worker"}
 
     def access(self, principal, story_id, expected_revision, grantee_user_id, capability, idempotency_key):
