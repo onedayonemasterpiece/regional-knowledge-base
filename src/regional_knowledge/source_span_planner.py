@@ -147,4 +147,28 @@ def plan_reviewed_page(
             raise ValueError("planner emitted a passage beyond the token budget")
         pending.append(item)
     flush()
+    # Images must remain searchable, not just structurally retained on the
+    # page. A dedicated caption/model-observation passage avoids silently
+    # inflating unrelated source text chunks past their token budgets.
+    for index,illustration in enumerate(page.illustrations):
+        printed_caption="\n".join(
+            region.source_text
+            for region in page.regions
+            if region.region_key in illustration.caption_region_keys
+            and region.source_text.strip()
+        )
+        if not (printed_caption.strip() or (illustration.visual_description or "").strip()):
+            raise ValueError("visual source needs caption or reviewed model observation")
+        output.append(StageChunkInput(
+            chunk_key=f"{chunk_prefix}-visual-{index:03d}",
+            title=title,
+            region_refs=[{
+                "page_id":page.page_id,
+                "region_key":illustration.source_region_key,
+            }],
+            illustration_refs=[{
+                "page_id":page.page_id,
+                "illustration_key":illustration.illustration_key,
+            }],
+        ))
     return output
