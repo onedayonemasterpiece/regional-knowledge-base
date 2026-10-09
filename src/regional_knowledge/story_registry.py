@@ -295,6 +295,11 @@ class StoryRegistry:
                         raise
                     after_id = rows[-1]["id"]
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(5,datetime('now'))")
+                # sqlite3's default transaction mode implicitly begins a write
+                # for the migration receipt. Release it before the next bounded
+                # BEGIN IMMEDIATE. This matters only on an existing populated
+                # production database where both versions must be backfilled.
+                db.commit()
             if not had_reconcile_backfill:
                 # Pre-feature books can already have evidence-backed cards.
                 # Enroll them for incremental reconciliation without rereading
@@ -323,6 +328,7 @@ class StoryRegistry:
                         raise
                     after_story = rows[-1]["id"]
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(6,datetime('now'))")
+                db.commit()
 
     @staticmethod
     def _row(db, table, ident):
