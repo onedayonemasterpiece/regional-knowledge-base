@@ -47,8 +47,10 @@ text and revisions are never mutated as a side effect.
 
 ## Contract boundaries and cartography readiness
 
-The adapter labels source request/owner lookup
-`cartography.resolve.v1`. This is a **compatibility label only**.
+The internal RKB MCP lease packet uses **`rkb.geo_claim.v1`**. It is
+an owner-only authenticated source request, **not** an interservice envelope.
+The future, separate producer protocol is `cartography.resolve.v1`, requiring
+a verifiable issuer/audience, scope and canonical payload hash.
 `cartography.projection.v1` and `cartography.decision.v1` need
 conformance fixtures in the canonical Regional Cartography repository
 and authenticated Street Story owner transport before allowing
@@ -85,3 +87,28 @@ separate protected gate.
 
 Any test lacking an accepted Kneiphof cartographic projection reports
 the map-layer acceptance as **pending**, not a synthetic PASS.
+
+## Production retry and fairness hardening (2026-10-09)
+
+A transient Street Story owner outage is **not** an unresolved place.
+The existing geo consumer releases a failed fenced lease into `retry_wait`
+with exponential bounded backoff (15–600 seconds). Attempt number five
+becomes the explicit `dependency_unavailable` terminal outcome, never
+an orphaned `leased` row or infinite hot loop. A new matching owner
+revision can create a new attempt after terminal exhaustion.
+
+Claim batches rank at most one eligible attempt **per document before**
+the final LIMIT, so the first 25 mentions of a long book cannot starve
+another book. The age of an attempt contributes bounded priority aging.
+`geo_status` reports actor-scoped state counts and oldest pending lag.
+No other principal's queue depths or source names are returned.
+
+The identity-only owner bridge rejects spatial relation fields even
+for an exact POI match: a name or modern representative coordinate
+cannot establish historical `within`/`same_site`/`occurred_at`.
+Only the future accepted map projection plus Street Story owner
+decision can supply spatially verified geometry.
+
+No remote network is invoked while holding the source's SQLite write
+lock; a full geo-resolution success is still a **candidate identity**,
+not independently verified historical geometry.
