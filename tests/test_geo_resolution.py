@@ -111,7 +111,7 @@ async def test_geo_intent_auto_atomic_queue_late_owner_binding_and_durable_repla
     with sqlite3.connect(street) as db:
         db.execute("INSERT INTO pois VALUES(?,?,?,?,?)",
                    (owner_ref,"candidate","Калининградский зоопарк",54.72044,20.48737))
-        db.execute("INSERT INTO poi_aliases VALUES(?,?,?,?)",
+        db.execute("INSERT INTO poi_aliases(poi_id,namespace,value,normalized_value) VALUES(?,?,?,?)",
                    (owner_ref,"wikidata","Q1193386","q1193386"))
     irrelevant=geo.recheck(actor,"Непохожая на зоопарк улица","owner_poi",
                            "streetstory://poi/"+owner_ref,"new-owner-revision")
