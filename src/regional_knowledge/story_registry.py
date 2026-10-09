@@ -988,6 +988,13 @@ class StoryRegistry:
                     fail("not_found_or_not_accessible")
                 snapshot = json.loads(hist[0])
             permitted = self._available_actions(db, actor, rec)
+            if view in {"event_dates_page", "event_date_history_page"}:
+                if revision is not None and revision != rec["revision"]:
+                    fail("validation_failed", "Date views require the current authorized story revision")
+                from .story_calendar import StoryCalendar
+                return StoryCalendar(self).page(
+                    db, actor, rec, snapshot, cursor, limit, assertion_id,
+                    include_history=view=="event_date_history_page")
             if view in {"assertion_page", "assessments_page", "evidence_page", "sources_page",
                         "relations_page", "relation_history_page", "relation_reviews_page"}:
                 if (revision is not None and view in {
@@ -1006,6 +1013,12 @@ class StoryRegistry:
             return {"story_id": story_id, "revision": revision or rec["revision"],
                     "snapshot": snapshot, "readiness": self._effective_readiness(db, json.loads(rec["snapshot"])),
                     "allowed_actions": permitted, "indexing_state": "local_fts_ready_vector_awaiting_worker"}
+
+    def calendar(self, principal, month, day, calendar="gregorian", limit=3, cursor=None):
+        from .story_calendar import StoryCalendar
+        return StoryCalendar(self).query(
+            principal, month=month, day=day,
+            calendar=calendar, limit=limit, cursor=cursor)
 
     def _available_actions(self, db, actor, rec):
         role = self._permission(db, actor, rec)
