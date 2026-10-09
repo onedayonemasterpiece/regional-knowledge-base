@@ -638,7 +638,19 @@ class GeoQueue:
                     "attempts":[dict(x) for x in latest],
                     "source_access":"authorized_current",
                 })
+            summary=db.execute("""SELECT a.state,COUNT(*) n,
+                MIN(a.created_at) oldest
+                FROM rkb_geo_attempts a JOIN rkb_geo_intents i
+                    ON i.request_id=a.request_id
+                WHERE i.actor_id=? GROUP BY a.state""",
+                (actor,)).fetchall()
+            states={r["state"]:r["n"] for r in summary}
+            # Count old pending intents, not global private corpus state.
+            waiting=[r["oldest"] for r in summary
+                     if r["state"] in ("pending","retry_wait")]
+            lag=max(0,round(time.time()-min(waiting),1)) if waiting else 0
             return {"items":items,"count":len(items),
+                    "state_counts":states,"oldest_pending_seconds":lag,
                     "accepted_layer_revision":None,
                     "cartography_capability":"awaiting_producer",
                     "paging":"bounded","scope":"actor_only"}
@@ -888,7 +900,8 @@ class GeoQueue:
         with self.corpus.connect() as db:
             actors=[r[0] for r in db.execute("""SELECT DISTINCT i.actor_id
               FROM rkb_geo_intents i JOIN rkb_geo_attempts a
-                ON a.request_id=i.request_id WHERE a.state='pending'
+                ON a.request_id=i.request_id
+              WHERE a.state IN ('pending','retry_wait')
               AND a.available_at<=? ORDER BY i.actor_id LIMIT ?""",
               (time.time(),max(1,min(limit,5))))]
         results=[]
