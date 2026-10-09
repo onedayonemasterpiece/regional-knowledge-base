@@ -427,7 +427,175 @@ class StoryRegistry:
         result["needs_revalidation"] = sorted(set([*result["needs_revalidation"], *stale]))
         return result
 
-    def get(self, principal, story_id, revision=None, view="compact"):
+    def _current_assessments(self, db, assertion):
+        """Return only effective reviews of this exact assertion revision.
+
+        A superseded review stays in the audit and history, but may not
+        authorize approval. Multiple un-superseded conflicting assessments
+        remain visible; order of writing is not a vote for the latest.
+        """
+        ids = [str(x) for x in assertion.get("assessment_ids") or []]
+        if not ids:
+            return []
+        rows = db.execute("""
+            SELECT a.id,a.payload,a.actor_id,a.at FROM story_assessments a
+            JOIN json_each(?) ids ON a.id=ids.value
+            WHERE a.assertion_id=? AND a.assertion_revision=?""",
+            (canonical(ids), assertion["assertion_id"], assertion["revision"]),
+        ).fetchall()
+        assessments = {}
+        for row in rows:
+            payload = json.loads(row["payload"])
+            payload["id"] = row["id"]
+            payload["verified_actor_id"] = row["actor_id"]
+            payload["recorded_at"] = row["at"]
+            assessments[row["id"]] = payload
+        replaced = {
+            x.get("supersedes_assessment_id") for x in assessments.values()
+            if x.get("supersedes_assessment_id") in assessments
+        }
+        return sorted(
+            [value for key, value in assessments.items() if key not in replaced],
+            key=lambda x: (x["recorded_at"], x["id"]),
+        )
+
+    def _dossier_page(self, db, actor, rec, snapshot, section, cursor, limit, assertion_id):
+        """Bounded, source-authorized dossier; IDs survive controlled merges."""
+        take = max(1, min(int(limit), 10))
+        effective_rev = int(rec["revision"])
+        after = ""
+        if cursor:
+            try:
+                version, last = cursor.split(":", 1)
+                if int(version) != effective_rev or len(last) > 128:
+                    raise ValueError("stale or oversized cursor")
+                after = last
+            except (ValueError, TypeError):
+                fail("validation_failed", "Stale or invalid dossier cursor")
+        assertions = [
+            a for a in snapshot.get("assertions", [])
+            if assertion_id is None or a["assertion_id"] == assertion_id
+        ]
+        if assertion_id is not None and not assertions:
+            fail("not_found_or_not_accessible")
+        if section == "assertion_page":
+            selected = [a for a in sorted(assertions, key=lambda x: x["assertion_id"])
+                        if a["assertion_id"] > after][:take + 1]
+            page = []
+            for a in selected[:take]:
+                assessments = self._current_assessments(db, a)
+                page.append({
+                    "assertion_id": a["assertion_id"], "revision": a["revision"],
+                    "proposition": a["proposition"], "kind": a["kind"],
+                    "account_kind": a.get("account_kind"),
+                    "attributed_to": a.get("attributed_to"),
+                    "reported_by": a.get("reported_by"),
+                    "evidence_count": len(a.get("evidence_ids", [])),
+                    "effective_assessments": assessments[:6],
+                    "assessments_has_more": len(assessments) > 6,
+                })
+            more = len(selected) > take
+            next_id = page[-1]["assertion_id"] if more and page else None
+        elif section == "sources_page":
+            # Merge retains foreign assertion IDs, so resolve actual evidence
+            # by assertion ID/revision, not by ev.story_id=target_story_id.
+            sources = db.execute("""
+                WITH active AS (
+                  SELECT json_extract(value,'$.assertion_id') aid,
+                         json_extract(value,'$.revision') rev FROM json_each(?)
+                ), source_keys AS (
+                  SELECT source_kind,source_id,source_revision FROM story_dependencies
+                    WHERE story_id=?
+                  UNION SELECT ev.source_kind,ev.source_id,ev.source_revision
+                    FROM story_evidence ev JOIN active a
+                    ON ev.assertion_id=a.aid AND ev.assertion_revision=a.rev
+                )
+                SELECT source_kind,source_id,source_revision FROM source_keys
+                WHERE (source_kind || ':' || source_id || ':' || source_revision)>?
+                ORDER BY source_kind,source_id,source_revision LIMIT ?""",
+                (canonical(assertions), rec["id"], after, take + 1),
+            ).fetchall()
+            page = []
+            for src in sources[:take]:
+                if src["source_kind"] == "document":
+                    doc = self._document_allowed(db, actor, src["source_id"])
+                    if not doc:
+                        fail("not_found_or_not_accessible")
+                    metadata = {"title": doc.get("title"), "authors": doc.get("authors"),
+                                "source_sha256": doc.get("source_sha256")}
+                elif src["source_kind"] == "external":
+                    ext = db.execute(
+                        "SELECT owner_id,metadata FROM story_sources WHERE id=? AND version=?",
+                        (src["source_id"], src["source_revision"]),
+                    ).fetchone()
+                    if not ext or (ext["owner_id"] != actor and rec["owner_id"] != actor):
+                        fail("not_found_or_not_accessible")
+                    metadata = json.loads(ext["metadata"])
+                else:
+                    fail("not_found_or_not_accessible")
+                page.append({"kind": src["source_kind"], "source_id": src["source_id"],
+                             "source_revision": src["source_revision"], "metadata": metadata})
+            more = len(sources) > take
+            next_id = (page[-1]["kind"] + ":" + page[-1]["source_id"] + ":" +
+                       str(page[-1]["source_revision"])) if more and page else None
+        else:
+            rows = db.execute("""
+                WITH active AS (
+                  SELECT json_extract(value,'$.assertion_id') aid,
+                         json_extract(value,'$.revision') rev FROM json_each(?)
+                )
+                SELECT ev.* FROM story_evidence ev JOIN active a
+                  ON ev.assertion_id=a.aid AND ev.assertion_revision=a.rev
+                WHERE ev.id>? ORDER BY ev.id LIMIT ?""",
+                (canonical(assertions), after, take + 1),
+            ).fetchall()
+            mapping = {(a["assertion_id"], a["revision"]): a for a in assertions}
+            page = []
+            for ev in rows[:take]:
+                assertion = mapping[(ev["assertion_id"], ev["assertion_revision"])]
+                if ev["source_kind"] == "document":
+                    document = self._document_allowed(db, actor, ev["source_id"])
+                    if not document:
+                        fail("not_found_or_not_accessible")
+                    source_info = {"title": document.get("title"),
+                                   "authors": document.get("authors")}
+                else:
+                    external = db.execute(
+                        "SELECT owner_id,metadata FROM story_sources WHERE id=? AND version=?",
+                        (ev["source_id"], ev["source_revision"]),
+                    ).fetchone()
+                    if not external or (external["owner_id"] != actor and rec["owner_id"] != actor):
+                        fail("not_found_or_not_accessible")
+                    source_info = json.loads(external["metadata"])
+                reviews = self._current_assessments(db, assertion)
+                page.append({
+                    "evidence_id": ev["id"], "assertion_id": ev["assertion_id"],
+                    "assertion_revision": ev["assertion_revision"],
+                    "proposition": assertion["proposition"],
+                    "attribution": assertion.get("attributed_to") or assertion.get("reported_by"),
+                    "source_kind": ev["source_kind"], "source_id": ev["source_id"],
+                    "source_revision": ev["source_revision"], "source": source_info,
+                    "locator": json.loads(ev["locator"]),
+                    "original_excerpt": ev["original_excerpt"],
+                    "text_match": ev["text_match"],
+                    "relation": ev["relation"], "source_role": ev["source_role"],
+                    "source_state": self._evidence_state(db, ev),
+                    "independence": "unknown" if not reviews else reviews[-1].get("independence", "unknown"),
+                    "effective_assessments": reviews[:6],
+                    "assessments_has_more": len(reviews) > 6,
+                    "recorded_by": ev["actor_id"],
+                })
+            more = len(rows) > take
+            next_id = page[-1]["evidence_id"] if more and page else None
+        return {
+            "story_id": rec["id"], "story_revision": effective_rev,
+            "section": section, "items": page, "has_more": more,
+            "next_cursor": str(effective_rev) + ":" + next_id if next_id else None,
+            "source_refs_authority": "dependencies_and_current_evidence",
+            "coverage": "bounded_authorized_read_not_entire_dossier",
+        }
+
+    def get(self, principal, story_id, revision=None, view="compact", cursor=None, limit=8, assertion_id=None):
         with self.corpus.connect() as db:
             actor = self._actor(db, principal)
             rec, snapshot = self._read_story(db, actor, story_id)
@@ -438,6 +606,8 @@ class StoryRegistry:
                     fail("not_found_or_not_accessible")
                 snapshot = json.loads(hist[0])
             permitted = self._available_actions(db, actor, rec)
+            if view in {"assertion_page", "evidence_page", "sources_page"}:
+                return self._dossier_page(db, actor, rec, snapshot, view, cursor, limit, assertion_id)
             if view == "compact":
                 snapshot = {k: snapshot[k] for k in ("story_id", "state", "seed", "metadata", "gaps")}
                 snapshot["assertions"] = [
