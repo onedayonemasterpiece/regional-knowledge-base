@@ -13,10 +13,12 @@ def main():
   for role in ('anon','authenticated','service_role','rkb_app'):
    if not db.execute('select 1 from pg_roles where rolname=%s',(role,)).fetchone():db.execute('create role '+role)
   for path in sorted(Path('sql').glob('0*.sql')):
-   if path.name.endswith('rollback.sql') or path.name.startswith(('012','013')):continue
+   if path.name.endswith('rollback.sql') or path.name.startswith(('012','013','024')):continue
    db.execute(path.read_text())
   migration=Path('sql/012_entity_graph.sql').read_text();db.execute(migration);db.execute(migration)
   finalize_guard=Path('sql/013_async_finalize_guard.sql').read_text();db.execute(finalize_guard);db.execute(finalize_guard)
+  org_extension=Path('sql/024_organization_graph.sql').read_text()
+  db.execute(org_extension);db.execute(org_extension)
   owner,other,doc,page,region,chunk,obj,nid=([uuid4() for _ in range(8)])
   db.execute('insert into rkb_users(id) values(%s),(%s)',(owner,other))
   db.execute("insert into rkb_documents(id,owner_user_id,title,source_sha256,active_revision,page_count) values(%s,%s,'Synthetic graph source',%s,1,1)",(doc,owner,'a'*64))
@@ -30,6 +32,27 @@ def main():
   args=(uuid4(),nid,doc,chunk,page,region,json.dumps(e))
   for _ in range(2):db.execute("insert into rkb_entity_mentions(id,entity_id,document_id,revision,chunk_id,page_id,region_id,exact_source_spelling,evidence,state) values(%s,%s,%s,1,%s,%s,%s,'Ada',%s::jsonb,'candidate') on conflict(id) do nothing",args)
   assert db.execute('select count(*) from rkb_entity_mentions').fetchone()[0]==1
+  # Test direct SQL, not just client model validation: legacy PostgreSQL
+  # must enforce the same organization endpoint and source-evidence policy.
+  oid,eid=uuid4(),uuid4()
+  db.execute("insert into rkb_entities values(%s,%s,'organization','Ada Fellowship',null,%s,1,'candidate','{}')",(oid,owner,doc))
+  db.execute("insert into rkb_entities values(%s,%s,'event','Ada attendance',null,%s,1,'candidate','{}')",(eid,owner,doc))
+  db.execute("""insert into rkb_entity_relations
+    (id,source_id,target_id,kind,document_id,revision,evidence,state)
+    values(%s,%s,%s,'affiliated_with',%s,1,%s::jsonb,'candidate')""",
+    (uuid4(),nid,oid,doc,json.dumps([e])))
+  db.execute("""insert into rkb_entity_relations
+    (id,source_id,target_id,kind,document_id,revision,evidence,state)
+    values(%s,%s,%s,'participated_in',%s,1,%s::jsonb,'candidate')""",
+    (uuid4(),oid,eid,doc,json.dumps([e])))
+  assert db.execute("select count(*) from rkb_entity_relations").fetchone()[0]==2
+  try:
+   db.execute("""insert into rkb_entity_relations
+     (id,source_id,target_id,kind,document_id,revision,evidence,state)
+     values(%s,%s,%s,'operated_at',%s,1,%s::jsonb,'candidate')""",
+     (uuid4(),nid,oid,doc,json.dumps([e])))
+  except psycopg.Error:pass
+  else:raise AssertionError('invalid organization relation shape accepted')
   invalid={**e,'region_id':str(uuid4())}
   try:db.execute("insert into rkb_entity_aliases(id,entity_id,value,normalized_value,alias_type,document_id,revision,evidence) values(%s,%s,'Ada','ada','current',%s,1,%s::jsonb)",(uuid4(),nid,doc,json.dumps(invalid)))
   except psycopg.Error:pass
@@ -44,7 +67,10 @@ def main():
   assert db.execute('select count(*) from rkb_graph_discovery_jobs where document_id=%s',(doc,)).fetchone()[0]==1
   db.execute('update rkb_documents set active_revision=2 where id=%s',(doc,));assert db.execute('select count(*) from rkb_graph_discovery_jobs where document_id=%s',(doc,)).fetchone()[0]==1
   db.execute('set role rkb_app');db.execute("select set_config('rkb.actor_id',%s,false)",(str(owner),));assert db.execute('select count(*) from rkb_entity_mentions where rkb_graph_active(document_id,revision)').fetchone()[0]==0
- result={'migration_sha256':hashlib.sha256(migration.encode()).hexdigest(),'migration_twice':True,'owner_write_read':True,'acl_denied':True,'forged_evidence_rejected':True,'idempotent_mentions':True,'revision_enqueue_idempotent':True,'stale_mentions_hidden':True}
+ result={'organization_extension_sha256':hashlib.sha256(org_extension.encode()).hexdigest(),
+         'organization_extension_twice':True,
+         'organization_relation_shapes_guarded':True,
+         'migration_sha256':hashlib.sha256(migration.encode()).hexdigest(),'migration_twice':True,'owner_write_read':True,'acl_denied':True,'forged_evidence_rejected':True,'idempotent_mentions':True,'revision_enqueue_idempotent':True,'stale_mentions_hidden':True}
  result.update(finalize_guard_sha256=hashlib.sha256(finalize_guard.encode()).hexdigest(),finalize_guard_twice=True)
  a.output.write_text(json.dumps(result,indent=2));print(json.dumps(result))
 if __name__=='__main__':main()
