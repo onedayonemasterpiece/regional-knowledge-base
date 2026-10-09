@@ -15,7 +15,7 @@ from uuid import uuid4
 from .sqlite_corpus import canonical
 from .story_contracts import (
     AttachEvidence, EvidenceLocator, ReconcileApply, ReconcileCancel,
-    ReconcileClaim, ReconcileEnqueue, ReconcileStage, ReconcileStart,
+    ReconcileClaim, ReconcileEnqueue, ReconcileStage, ReconcileStart, ReconcileNext,
     UpsertAssertion,
 )
 from .story_registry import StoryError, digest, fail, now
@@ -153,6 +153,92 @@ class StoryReconciler:
     def dispatch(self, principal, request, idempotency_key):
         data = request.model_dump(mode="json")
         registry = self.registry
+        if isinstance(request, ReconcileNext):
+            def authorize(db, actor):
+                if request.document_id and not registry._document_allowed(
+                        db, actor, request.document_id):
+                    fail("not_found_or_not_accessible")
+                return None
+
+            def apply(db, actor):
+                scoped = """EXISTS (
+                    SELECT 1 FROM story_dependencies dep
+                    WHERE dep.story_id=s.id AND dep.source_kind='document'
+                      AND dep.source_id=?
+                )"""
+                condition = " AND " + scoped if request.document_id else ""
+                scope_args = [request.document_id] if request.document_id else []
+                # A fresh executor can rediscover an interrupted run with no
+                # previous chat context or duplicated second run.
+                active = db.execute("""SELECT r.* FROM story_reconcile_runs r
+                    JOIN story_records s ON s.id=r.anchor_story_id
+                    WHERE r.owner_id=? AND s.owner_id=?
+                      AND r.anchor_story_revision=s.revision
+                      AND r.state IN ('awaiting_search','awaiting_agent',
+                                      'awaiting_review','leased')
+                      AND s.archived=0""" + condition +
+                    " ORDER BY r.updated_at,r.id LIMIT 1",
+                    [actor,actor,*scope_args],
+                ).fetchone()
+                if active:
+                    state = active["state"]
+                    return {
+                        "job_id": active["id"], "job_revision":active["revision"],
+                        "anchor_story_id": active["anchor_story_id"],
+                        "anchor_story_revision": active["anchor_story_revision"],
+                        "state":state,
+                        "next_action":"wait_for_lease" if state=="leased"
+                            else "read_proposals" if state=="awaiting_review"
+                            else "claim" if state=="awaiting_agent"
+                            else "search_then_enqueue",
+                        "reused":True,
+                    }
+
+                pending = db.execute("""SELECT q.story_id,q.story_revision
+                    FROM story_reconcile_queue q
+                    JOIN story_records s ON s.id=q.story_id
+                    WHERE q.state='awaiting_agent' AND s.owner_id=?
+                      AND s.archived=0 AND s.revision=q.story_revision""" +
+                    condition + " ORDER BY q.created_at,q.story_id LIMIT 1",
+                    [actor,*scope_args],
+                ).fetchone()
+                if not pending:
+                    return {"resource_type":"reconciliation","state":"idle",
+                            "next_action":None,"commit_state":"saved"}
+                record, snap = registry._read_story(db, actor, pending["story_id"],
+                                                    "researcher")
+                if not any(a.get("evidence_ids") for a in snap["assertions"]):
+                    fail("invalid_evidence","Pending cross-book story lacks evidence")
+                run_id = str(uuid4())
+                query = str(snap["metadata"]["title"])[:350]
+                plan = {"policy_version":request.policy_version,
+                        "queries":[query], "searched_channels":[],
+                        "required_channels":["story_lexical","source_bge"],
+                        "search_completeness":"not_exhaustive",
+                        "index_generation":None,
+                        "candidate_budget":request.max_candidate_pairs}
+                db.execute("""INSERT INTO story_reconcile_runs(
+                    id,owner_id,anchor_story_id,anchor_story_revision,policy_version,
+                    query,search_plan,frontier,position,max_candidate_pairs,revision,
+                    state,work_id,lease_token,lease_deadline,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (run_id,actor,record["id"],record["revision"],
+                     request.policy_version,query,canonical(plan),"[]",0,
+                     request.max_candidate_pairs,1,"awaiting_search",None,None,None,now()))
+                db.execute("""UPDATE story_reconcile_queue SET state='run_started'
+                    WHERE story_id=? AND story_revision=?""",
+                    (record["id"],record["revision"]))
+                return {
+                    "resource_type":"reconciliation", "job_id":run_id,
+                    "job_revision":1,"anchor_story_id":record["id"],
+                    "anchor_story_revision":record["revision"],
+                    "state":"awaiting_search","query":query,"search_plan":plan,
+                    "next_action":"search_then_enqueue","reused":False,
+                    "commit_state":"queued",
+                }
+            return registry._mutation(principal, "story_reconcile_next",
+                                      idempotency_key,data,authorize,apply)
+
         if isinstance(request, ReconcileStart):
             def authorize(db, actor):
                 record, _ = registry._read_story(db, actor, request.anchor_story_id, "researcher")
