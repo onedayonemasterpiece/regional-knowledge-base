@@ -437,3 +437,30 @@ Discovery returns candidate mentions with exact source locators and independent
 ranking diagnostics. Vector-only hits have no asserted source-name spelling;
 matching and grouping are review aids, not automatic merges or atomic facts.
 Owner-scoped identity reuse across books requires an explicit entity ID.
+
+## Real Street Story canonical POI key compatibility (2026-10-09)
+
+The live Street Story registry contains **two** accepted POI ID encodings:
+canonical UUIDs created by the external-fact ingestion route and stable,
+owner-generated `poi_ss_<24 lowercase hex>` IDs from its photo/identity
+registry. A separate UUID minted by RKB for an existing `poi_ss_` POI
+would duplicate its physical identity and break exact alias links.
+
+The read-only `StreetStoryPoiResolver` accepts either exact canonical form
+under `streetstory://poi/<existing-key>`. It fetches names, candidate/verified
+status, and any representative point from **Street Story's live SQLite**
+without copying canonical POIs into RKB. A representative point is not a
+surveyed polygon, a visitable gate, or historical georeference; the adapter
+returns `historical_geometry=not_verified`. `GraphService.discover_poi`
+accepts both keys and returns `identity_state` rather than claiming a
+candidate is independently verified. A missing or conflicted external ID
+fails closed instead of quietly reverting to a same-name guess.
+
+This fixes the consumer contract only. Registration of an absent place
+remains a Street Story owner operation. RKB graph stage with a sourced
+`poi_locator` cannot create a canonical POI on its own, and should return
+`unresolved_pois>0` until one exists. The source book's original/private
+citation must not be copied to Street Story without a scoped resource
+grant. Stage E's historical geometry, temporal revisions, geographic
+address/coordinate predicates and source licensed map layers still
+require separate owner-side acceptance.
