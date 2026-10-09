@@ -13,7 +13,9 @@ import secrets
 import sqlite3
 import time
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .entity_graph import normalize_alias
 from .poi_reference import StreetStoryPoiResolver, canonical_poi_key
@@ -69,6 +71,26 @@ CREATE TABLE IF NOT EXISTS rkb_geo_watermarks(
  name TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at REAL NOT NULL
 );
 """
+
+
+class GeoProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["candidate","unresolved","ambiguous","outside_coverage","rejected"]
+    reason: str = Field(min_length=10,max_length=500)
+    canonical_poi_ref: str | None = None
+    relation: Literal["same_site","within","nearby","occurred_at"] | None = None
+    layer_ref: str | None = None
+    geometry_ref: str | None = None
+
+    @model_validator(mode="after")
+    def check(self):
+        if self.status=="candidate":
+            if not self.canonical_poi_ref:
+                raise ValueError("candidate canonical identity required")
+            canonical_poi_key(self.canonical_poi_ref)
+        elif self.canonical_poi_ref or self.relation:
+            raise ValueError("unresolved proposal cannot assert POI identity or relation")
+        return self
 
 
 class GeoError(ValueError):
@@ -332,7 +354,10 @@ class GeoQueue:
     def stage(self,principal,attempt_id,lease_token,lease_fence,
               proposal,command_id):
         actor=self._actor(principal)
-        proposed=dict(proposal)
+        proposed=(proposal.model_dump(exclude_none=True)
+                  if isinstance(proposal,GeoProposal) else dict(proposal))
+        if set(proposed)-set(GeoProposal.model_fields):
+            raise GeoError("invalid_proposal_fields")
         state=proposed.get("status")
         if state not in ("candidate","unresolved","ambiguous","outside_coverage","rejected"):
             raise GeoError("invalid_proposal_status")
@@ -401,10 +426,15 @@ class GeoQueue:
         payload={"attempt":attempt_id,"token":lease_token,"fence":lease_fence}
         # External read ONLY, before the short SQLite write lock.
         with self.corpus.connect() as db:
+            replay,_=self._receipt(db,actor,"apply",command_id,payload)
+            if replay is not None:
+                return replay  # Lost network reply: never re-run owner lookup.
             row=db.execute("""SELECT a.*,i.* FROM rkb_geo_attempts a
                  JOIN rkb_geo_intents i ON i.request_id=a.request_id
                  WHERE a.attempt_id=?""",(attempt_id,)).fetchone()
-            proposed=json.loads(row["proposal_json"]) if row and row["proposal_json"] else None
+            if row is None or row["actor_id"]!=actor:
+                raise GeoError("not_found_or_not_accessible")
+            proposed=json.loads(row["proposal_json"]) if row["proposal_json"] else None
         if proposed is None:
             raise GeoError("proposal_missing")
         identity=None
@@ -589,7 +619,7 @@ class GeoQueue:
                     "original_toponym":row["original_spelling"],
                     "temporal_match":"unknown" if not known_period else "within_declared_scope",
                     "source_evidence_ref":"knowledge://chunks/"+
-                          str(json.loads(ctx.one("rkb_entity_mentions",row["mention_id"])["evidence"])["chunk_id"]),
+                          str(ctx.one("rkb_entity_mentions",row["mention_id"])["evidence"]["chunk_id"]),
                     "historical_geometry":"not_verified",
                 })
         return {"items":items,"count":len(items),
