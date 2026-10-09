@@ -136,10 +136,21 @@ class GraphDiscoveryWorker:
 
 async def main():
     from .supabase_backend import backend_from_env
+    from .geo_resolution import GeoQueue
     logging.basicConfig(level=logging.INFO);backend=backend_from_env();worker=GraphDiscoveryWorker(backend);last=0
+    geo=GeoQueue(backend.corpus) if hasattr(backend,'corpus') else None
+    last_geo=0
     try:
         while True:
             if time.monotonic()-last>30:await worker.sync_pois();last=time.monotonic()
+            # Separate local SQLite queue. Read-only Street Story lookups and
+            # short fenced commits; exceptions never stop the book worker.
+            if geo is not None and time.monotonic()-last_geo>5:
+                try:await asyncio.to_thread(geo.worker_tick,2)
+                except Exception as error:
+                    log.warning(json.dumps({'event':'geo_queue_worker_degraded',
+                                            'error_type':type(error).__name__}))
+                last_geo=time.monotonic()
             if not await worker.tick():await asyncio.sleep(2)
     finally:await backend.aclose()
 if __name__=='__main__':asyncio.run(main())
