@@ -1222,7 +1222,12 @@ class SupabaseRestBackend(KnowledgeBackend):
                     raise RuntimeError("reprocess source page count mismatch")
                 if verified_file is not None:
                     if source_object.get("deleted_at"):
-                        raise RuntimeError("reprocess source object was retired")
+                        from .storage_gc import reserve_source
+                        await reserve_source(
+                            self, principal, document_id,
+                            str(source_object["object_key"]), downloaded,
+                            str(source_object.get("mime_type") or "application/pdf"),
+                        )
                     # Restore precisely the original private source object for
                     # subsequent book_pages. The source identity and accepted
                     # revision stay unchanged until finalization.
