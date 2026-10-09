@@ -580,3 +580,42 @@ def test_accepted_source_batch_rejects_false_and_out_of_batch_evidence(setup):
     assert registry.job_get(owner, started["job_id"])["processed_chunks"] == 1
 
 
+
+
+def test_entity_list_acl_keyset_reaches_sources_beyond_first_hundred(setup):
+    """The global source catalog is not truncated before filtering and paging."""
+    registry, owner, other = setup
+    own_docs, other_docs, entities = [], [], []
+    for i in range(175):
+        document_id, entity_id = str(uuid4()), str(uuid4())
+        is_owner = i >= 23
+        (own_docs if is_owner else other_docs).append(document_id)
+        registry.corpus.put("rkb_documents", [{
+            "id": document_id, "owner_user_id": owner.subject if is_owner else other.subject,
+            "source_sha256": "a" * 64, "active_revision": 1, "content_visibility": "private",
+            "rights_status": "restricted",
+        }])
+        entities.append({
+            "id": entity_id, "document_id": document_id, "revision": 1,
+            "kind": "place", "canonical_label": f"Место {i:03d}",
+        })
+    registry.corpus.put("rkb_entities", entities)
+    seen, cursor, seen_cursors = set(), None, set()
+    for _ in range(30):
+        result = registry.entity_list(owner, kinds=["place"], cursor=cursor, limit=9)
+        assert result["cursor_policy"] == "authorized_keyset_highwater_acl_rechecked"
+        for item in result["items"]:
+            assert item["document_id"] in own_docs
+            assert item["entity_id"] not in seen
+            seen.add(item["entity_id"])
+        if not result["has_more"]:
+            break
+        assert result["next_cursor"] and result["next_cursor"] not in seen_cursors
+        seen_cursors.add(result["next_cursor"])
+        cursor = result["next_cursor"]
+    assert len(seen) == 152
+    assert registry.entity_list(other, document_ids=own_docs[:15])["items"] == []
+    with pytest.raises(StoryError) as exc:
+        registry.entity_list(other, cursor=cursor, limit=9)
+    assert exc.value.code == "validation_failed"
+
