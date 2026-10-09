@@ -71,6 +71,9 @@ class StoryRegistry:
             had_assertion_index = (bool(db.execute(
                 "SELECT 1 FROM story_schema_migrations WHERE version=5").fetchone())
                 if had_versions else False)
+            had_reconcile_backfill = (bool(db.execute(
+                "SELECT 1 FROM story_schema_migrations WHERE version=6").fetchone())
+                if had_versions else False)
             db.executescript("""
             CREATE TABLE IF NOT EXISTS story_records(
               id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, workspace_id TEXT,
@@ -292,6 +295,34 @@ class StoryRegistry:
                         raise
                     after_id = rows[-1]["id"]
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(5,datetime('now'))")
+            if not had_reconcile_backfill:
+                # Pre-feature books can already have evidence-backed cards.
+                # Enroll them for incremental reconciliation without rereading
+                # their PDFs, creating duplicate story records or changing
+                # editorial revisions. Short 128-row SQLite transactions.
+                after_story = ""
+                while True:
+                    rows = db.execute("""SELECT s.id,s.revision
+                        FROM story_records s
+                        WHERE s.id>? AND s.archived=0
+                          AND EXISTS(SELECT 1 FROM story_evidence e
+                                     WHERE e.story_id=s.id)
+                        ORDER BY s.id LIMIT 128""",
+                        (after_story,)).fetchall()
+                    if not rows:
+                        break
+                    db.execute("BEGIN IMMEDIATE")
+                    try:
+                        db.executemany("""INSERT OR IGNORE INTO story_reconcile_queue(
+                                story_id,story_revision,state,created_at)
+                            VALUES(?,?,'awaiting_agent',?)""",
+                            ((row["id"],row["revision"],now()) for row in rows))
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                        raise
+                    after_story = rows[-1]["id"]
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(6,datetime('now'))")
 
     @staticmethod
     def _row(db, table, ident):
