@@ -584,6 +584,45 @@ class StoryRegistry:
             more = len(sources) > take
             next_id = (page[-1]["kind"] + ":" + page[-1]["source_id"] + ":" +
                        str(page[-1]["source_revision"])) if more and page else None
+        elif section == "relations_page":
+            relations = db.execute("""SELECT * FROM story_relations
+                WHERE active=1 AND (left_story_id=? OR right_story_id=?)
+                  AND id>? ORDER BY id LIMIT ?""",
+                (rec["id"], rec["id"], after, take + 1)).fetchall()
+            page = []
+            for relation in relations[:take]:
+                related_id = (relation["right_story_id"]
+                              if relation["left_story_id"]==rec["id"]
+                              else relation["left_story_id"])
+                related, _ = self._read_story(db, actor, related_id)
+                proposal = self._row(db, "story_reconcile_proposals",
+                                     relation["source_proposal_id"])
+                if not proposal:
+                    fail("source_changed", "Relation proof is unavailable")
+                decision = json.loads(proposal["decision"])
+                proofs = []
+                for side in ("anchor_proof", "candidate_proof"):
+                    evidence = decision.get(side) or {}
+                    if not self._document_allowed(db, actor, evidence.get("source_id")):
+                        fail("not_found_or_not_accessible")
+                    proofs.append({
+                        "document_id": evidence["source_id"],
+                        "source_revision": evidence["source_revision"],
+                        "page_id": evidence["page_id"],
+                        "region_id": evidence["region_id"],
+                        "original_excerpt": evidence["original_excerpt"],
+                    })
+                page.append({
+                    "relation_id": relation["id"],
+                    "kind": relation["kind"], "related_story_id": related_id,
+                    "related_story_title": related["title"],
+                    "rationale": relation["rationale"],
+                    "proofs": proofs,
+                    "recorded_by": relation["actor_id"],
+                    "proposal_id": proposal["id"],
+                })
+            more = len(relations) > take
+            next_id = page[-1]["relation_id"] if more and page else None
         else:
             rows = db.execute("""
                 WITH active AS (
@@ -652,7 +691,7 @@ class StoryRegistry:
                     fail("not_found_or_not_accessible")
                 snapshot = json.loads(hist[0])
             permitted = self._available_actions(db, actor, rec)
-            if view in {"assertion_page", "evidence_page", "sources_page"}:
+            if view in {"assertion_page", "evidence_page", "sources_page", "relations_page"}:
                 return self._dossier_page(db, actor, rec, snapshot, view, cursor, limit, assertion_id)
             if view == "compact":
                 snapshot = {k: snapshot[k] for k in ("story_id", "state", "seed", "metadata", "gaps")}
