@@ -66,7 +66,7 @@ def offline_backup():
     if not db_path.exists() or not db_path.is_file():
         raise RuntimeError("authoritative SQLite corpus is missing")
     size = db_path.stat().st_size
-    available = shutil.disk_usage(BACKUPS.parent).free
+    available = shutil.disk_usage(STATE).free
     if available < size * 2 + 128 * 1024 * 1024:
         raise RuntimeError("insufficient free space for consistent SQLite snapshot")
     BACKUPS.mkdir(mode=0o700, parents=True, exist_ok=True)
