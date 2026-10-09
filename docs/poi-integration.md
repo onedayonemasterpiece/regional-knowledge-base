@@ -28,7 +28,9 @@ Street Story currently has stable accepted object candidates such as Wikipedia/O
 identities. Cross-service ingestion adds books that may name the same physical
 object without one of those identifiers.
 
-Therefore Street Story should evolve to a service-owned opaque UUID:
+The deployed Street Story **already owns an opaque canonical POI key**. Existing
+keys may be standard UUIDs or stable `poi_ss_<24 lowercase hex>` IDs; do not
+rewrite either format or create a replacement ID in RKB:
 
 ~~~text
 poi_id
@@ -486,3 +488,22 @@ both graph directions and the exact canonical owner reference. The
 representative modern coordinate is NOT a 1896 visitor entrance or
 surveyed polygon. Full source and limitation audit:
 [geo pilot acceptance report](reports/rkb-street-story-zoo-geo-acceptance-20261009.md).
+
+
+## Geo-resolution intent and late Cartography producer
+
+The in-source-transaction SQLite geographic queue is documented in
+[geo resolution queue](geo-resolution-queue.md). It is **not**
+`rkb_graph_discovery_jobs`, which discovers source mentions in BGE/FTS and
+cannot serve as a canonical POI binding decision/outbox. A source-backed
+`poi_ref` creates a stable evidence+revision+policy intent, each relevant
+Street Story owner alias or accepted Cartography dependency revision creates
+a separately fenced attempt. Street Story remains the ONLY canonical
+identity writer; owner-local read-only matches yield at most
+`linked_candidate` with `historical_geometry=not_verified`.
+
+The future Cartography PostGIS project produces bounded vector-feature
+observations with separate IDs. It cannot write into RKB's SQLite or
+replace `streetstory://poi/...` IDs. No accepted Kneiphof layer is
+available on this documented checkpoint; map/vector feature acceptance
+remains pending without a real immutable layer+geometry revision.
