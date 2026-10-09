@@ -189,6 +189,14 @@ class LocalContext:
         self.check_write(table,old,row)
         if mode=='insert' and old:return 1
         self.corpus.put(table,[row],connection=self.db)
+        if table=='rkb_entity_mentions' and new:
+            # SAME transaction as accepted graph mention. Never wait for
+            # Street Story, cartography, geocoding or a model under this lock.
+            from .geo_resolution import enqueue_mention
+            node=self.one('rkb_entities',row['entity_id'])
+            if node and node.get('kind')=='poi_ref':
+                enqueue_mention(self.db,self.actor or node['owner_user_id'],
+                                row,node)
         return 1
     def remove(self,table,key):
         old=self.one(table,key)
