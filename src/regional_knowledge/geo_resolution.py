@@ -240,6 +240,7 @@ class GeoQueue:
         if not mention or not entity:
             raise GeoError("stale_source")
         if (mention.get("entity_id") != entity["id"]
+                or mention.get("document_id") != intent["document_id"]
                 or mention.get("revision") != intent["source_revision"]
                 or entity.get("kind")!="poi_ref"
                 or entity.get("owner_user_id")!=ctx.actor):
@@ -318,14 +319,41 @@ class GeoQueue:
         with self.corpus.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             ctx=self._ctx(db,actor)
-            rows=db.execute("""SELECT a.*,i.* FROM rkb_geo_attempts a
-                JOIN rkb_geo_intents i ON i.request_id=a.request_id
+            # Explicit terminal state for leases exhausted during an owner outage:
+            # otherwise they remain "leased" forever, invisible to operators.
+            db.execute("""UPDATE rkb_geo_attempts SET
+                    state='retry_exhausted',reason='lease_attempts_exhausted',
+                    lease_token=NULL,lease_until=NULL,updated_at=?
+                WHERE attempts>=5 AND state IN ('leased','staged')
+                    AND lease_until<=? AND request_id IN
+                    (SELECT request_id FROM rkb_geo_intents WHERE actor_id=?)""",
+                    (now,now,actor))
+            # Rank one eligible attempt PER DOCUMENT first. Applying LIMIT 25
+            # before fairness starved a second book behind a large first book.
+            rows=db.execute("""WITH ranked AS (
+                SELECT a.attempt_id,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY i.document_id
+                      ORDER BY (a.priority +
+                        MIN(5,CAST((? - a.created_at)/86400 AS INTEGER))) DESC,
+                        a.created_at,a.attempt_id
+                    ) AS doc_rank
+                FROM rkb_geo_attempts a JOIN rkb_geo_intents i
+                    ON i.request_id=a.request_id
                 WHERE i.actor_id=? AND a.attempts<5
-                AND a.available_at<=?
-                AND (a.state='pending' OR
-                   (a.state IN ('leased','staged') AND a.lease_until<?))
-                ORDER BY a.priority DESC,a.created_at,a.attempt_id LIMIT 25""",
-                (actor,now,now)).fetchall()
+                    AND ((
+                      a.state IN ('pending','retry_wait') AND a.available_at<=?
+                    ) OR (
+                      a.state IN ('leased','staged') AND a.lease_until<=?
+                    ))
+            ) SELECT a.*,i.* FROM ranked r
+                JOIN rkb_geo_attempts a ON a.attempt_id=r.attempt_id
+                JOIN rkb_geo_intents i ON i.request_id=a.request_id
+                WHERE r.doc_rank=1
+                ORDER BY (a.priority +
+                   MIN(5,CAST((? - a.created_at)/86400 AS INTEGER))) DESC,
+                   a.created_at,a.attempt_id LIMIT ?""",
+                (now,actor,now,now,now,limit)).fetchall()
             results=[];documents=set()
             for row in rows:
                 if len(results)>=limit:break
@@ -372,6 +400,53 @@ class GeoQueue:
                     "max_packet":5,"authoritative_owner":"Street Story",
                     "no_public_source_export":True}
 
+    def defer(self, principal, attempt_id, lease_token, lease_fence,
+              *, reason="owner_unavailable"):
+        """Release an attempted owner read without burning 90s per failure.
+
+        A retry is bounded, delayed and guarded by the live source+fence.
+        After five attempts, the same intent awaits an explicit relevant
+        dependency revision, rather than retrying forever.
+        """
+        if reason not in ("owner_unavailable","owner_timeout"):
+            raise GeoError("invalid_transient_reason")
+        actor=self._actor(principal)
+        with self.corpus.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            ctx=self._ctx(db,actor)
+            row=db.execute("""SELECT a.*,i.* FROM rkb_geo_attempts a
+                JOIN rkb_geo_intents i ON i.request_id=a.request_id
+                WHERE a.attempt_id=?""",(attempt_id,)).fetchone()
+            if not row or row["actor_id"]!=actor:
+                raise GeoError("not_found_or_not_accessible")
+            if (row["state"] not in ("leased","staged") or
+                  row["lease_token"]!=lease_token or
+                  row["lease_fence"]!=lease_fence or
+                  (row["lease_until"] or 0)<=time.time()):
+                raise GeoError("stale_lease")
+            try:self._live(db,ctx,row)
+            except GeoError as exc:
+                status=("stale_source" if exc.code=="stale_source"
+                        else "blocked_access")
+                db.execute("""UPDATE rkb_geo_attempts SET state=?,reason=?,
+                    lease_token=NULL,lease_until=NULL,updated_at=?
+                    WHERE attempt_id=?""",
+                    (status,exc.code,time.time(),attempt_id))
+                return {"state":status,"attempt_id":attempt_id}
+            now=time.time()
+            exhausted=row["attempts"]>=5
+            status="dependency_unavailable" if exhausted else "retry_wait"
+            # Exponential backoff, bounded to 10 minutes. A later accepted
+            # alias/layer revision can create a NEW attempt even after exhaust.
+            delay=min(600,15*2**min(row["attempts"]-1,6))
+            db.execute("""UPDATE rkb_geo_attempts SET
+                state=?,reason=?,available_at=?,lease_token=NULL,
+                lease_until=NULL,proposal_json=NULL,proposal_hash=NULL,
+                updated_at=? WHERE attempt_id=?""",
+                (status,reason,now+delay,now,attempt_id))
+            return {"state":status,"attempt_id":attempt_id,
+                    "retry_after_seconds":None if exhausted else delay}
+
     def stage(self,principal,attempt_id,lease_token,lease_fence,
               proposal,command_id):
         actor=self._actor(principal)
@@ -396,6 +471,11 @@ class GeoQueue:
             raise GeoError("invalid_spatial_relation")
         if state!="candidate" and proposed.get("relation"):
             raise GeoError("relation_requires_candidate")
+        if proposed.get("relation") is not None:
+            # A catalog candidate has not undergone historical-spatial owner
+            # acceptance. The precise relation is intentionally not supported
+            # until the signed layer+geometry+owner decision contracts land.
+            raise GeoError("spatial_relation_requires_owner_decision")
         if len(_json(proposed))>3000:
             raise GeoError("proposal_too_large")
         payload={"attempt":attempt_id,"token":lease_token,"fence":lease_fence,
@@ -829,9 +909,11 @@ class GeoQueue:
                     })
                     try:
                         match=self.resolver.resolve(p)
-                    except (OSError,sqlite3.Error):
-                        # Transient owner unavailable: retry after lease expiry;
-                        # no false terminal "no match" caused by connectivity.
+                    except (OSError,sqlite3.Error,RuntimeError):
+                        # A missing owner projection must NOT become a
+                        # terminal no-match. Back off, bounded, with reason.
+                        self.defer(principal,job["attempt_id"],job["lease_token"],
+                                   job["lease_fence"],reason="owner_unavailable")
                         continue
                     ref=match.get("external_ref")
                     if ref:
@@ -845,9 +927,14 @@ class GeoQueue:
                     self.stage(principal,job["attempt_id"],job["lease_token"],
                                job["lease_fence"],proposal,
                                "geo-worker-stage:"+_hash(prefix)[:32])
-                    result=self.apply(principal,job["attempt_id"],job["lease_token"],
-                                      job["lease_fence"],
-                                      "geo-worker-apply:"+_hash(prefix)[:32])
+                    try:
+                        result=self.apply(principal,job["attempt_id"],job["lease_token"],
+                                          job["lease_fence"],
+                                          "geo-worker-apply:"+_hash(prefix)[:32])
+                    except (OSError,sqlite3.Error,RuntimeError):
+                        self.defer(principal,job["attempt_id"],job["lease_token"],
+                                   job["lease_fence"],reason="owner_unavailable")
+                        continue
                     results.append(result["state"])
             except (GeoError, ValueError, LookupError, sqlite3.Error):
                 # Failed source/auth must not block normal indexing or reading.
