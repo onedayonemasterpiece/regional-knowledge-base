@@ -1093,3 +1093,57 @@ def test_record_event_date_contract_respects_julian_leap_and_unknown_precision()
     with pytest.raises(ValidationError):
         RecordEventDate(**{**fields,"precision":"year","month":None,"day":1},
                         calendar="unspecified")
+
+
+def test_calendar_keyset_does_not_skip_lookahead_date_across_stories(setup):
+    registry, owner, _ = setup
+    first_id, _, _ = _synthetic_dated_story(registry,owner)
+    proof = registry.get(owner,first_id,view="evidence_page")["items"][0]
+    others = []
+    for index in (1,2):
+        sid=registry.create(
+            owner,SeedInput(text=f"Другой синтетический рассказ {index}"),
+            None,None,None,f"calendar-paging-seed-{index}")["story_id"]
+        registry.edit(owner,sid,1,[UpsertAssertion(
+            op="upsert_assertion",kind="attributed_account",account_kind="other",
+            attributed_to="Синтетический источник",
+            proposition="Автор сообщает о событии той же опубликованной даты.",
+        )],f"calendar-paging-claim-{index}")
+        assertion=registry.get(owner,sid,view="evidence")["snapshot"]["assertions"][0]
+        registry.edit(owner,sid,2,[AttachEvidence(
+            op="attach_evidence",assertion_id=assertion["assertion_id"],
+            assertion_revision=1,source_kind="document",
+            source_id=proof["source_id"],source_revision=proof["source_revision"],
+            relation="reports",original_excerpt=proof["original_excerpt"],
+            locator=EvidenceLocator(**proof["locator"]),
+        )],f"calendar-paging-proof-{index}")
+        aid=assertion["assertion_id"]
+        evid=registry.get(owner,sid,view="evidence")["snapshot"]["assertions"][0]["evidence_ids"][0]
+        registry.edit(owner,sid,3,[RecordEventDate(
+            op="record_event_date",assertion_id=aid,assertion_revision=1,
+            evidence_ids=[evid],original_date_text="15 марта 1550 года",
+            precision="day",calendar="gregorian",date_role="event",
+            year=1550,month=3,day=15,
+            rationale="A second synthetic attribution to the same date text.",
+        )],f"calendar-paging-date-{index}")
+        others.append(sid)
+    # Date from first story is attached only now; all three are current.
+    aid=registry.get(owner,first_id,view="evidence")["snapshot"]["assertions"][0]["assertion_id"]
+    eid=registry.get(owner,first_id,view="evidence")["snapshot"]["assertions"][0]["evidence_ids"][0]
+    registry.edit(owner,first_id,3,[RecordEventDate(
+        op="record_event_date",assertion_id=aid,assertion_revision=1,
+        evidence_ids=[eid],original_date_text="15 марта 1550 года",
+        precision="day",calendar="gregorian",year=1550,month=3,day=15,
+        rationale="First source uses the same exact historical date.",
+    )],"calendar-paging-first-date")
+    visited=[];cursor=None
+    while True:
+        response=registry.calendar(owner,3,15,calendar="gregorian",limit=1,cursor=cursor)
+        visited.extend(x["story_id"] for x in response["items"])
+        cursor=response["next_cursor"]
+        if not cursor:
+            assert not response["has_more"]
+            break
+        assert len(visited)<=3, "Cursor must progress without duplication"
+    assert len(visited)==len(set(visited))==3
+    assert set(visited)==set([first_id,*others])
