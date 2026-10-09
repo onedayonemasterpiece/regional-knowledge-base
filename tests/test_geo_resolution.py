@@ -188,8 +188,7 @@ async def test_geo_fence_expiry_and_source_revisions_guard_mutations(tmp_path):
                      fresh["lease_fence"],"geo-after-revision")
     assert result["state"]=="stale_source"
     assert len(b.corpus.rows("rkb_entities"))==before
-    with pytest.raises(GeoError):
-        geo.claim(actor,limit=1)
+    assert geo.claim(actor,limit=1)["items"]==[]
     # Actor revocation blocks every read/write despite a prior lease.
     b.corpus.put("rkb_users",[{**b.corpus.one("rkb_users",actor.subject),
                               "status":"disabled"}])
