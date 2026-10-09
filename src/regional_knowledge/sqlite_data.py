@@ -189,7 +189,7 @@ class LocalContext:
         self.check_write(table,old,row)
         if mode=='insert' and old:return 1
         self.corpus.put(table,[row],connection=self.db)
-        if table=='rkb_entity_mentions' and new:
+        if table=='rkb_entity_mentions' and row:
             # SAME transaction as accepted graph mention. Never wait for
             # Street Story, cartography, geocoding or a model under this lock.
             from .geo_resolution import enqueue_mention
