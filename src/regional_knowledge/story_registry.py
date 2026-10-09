@@ -941,6 +941,93 @@ class StoryRegistry:
             db.execute("UPDATE story_variants SET state='needs_revalidation' WHERE id=?",
                        (item["variant_id"],))
 
+
+    def _revise_relation(self, db, principal, snap, op):
+        """Revision-guarded correction of one owned link, never a silent UUID rewrite.
+
+        The initiating anchor owns the editorial review. The opposite card is
+        read-only to this action and both original source proofs remain intact.
+        """
+        actor = str(principal.subject)
+        row = db.execute("""SELECT r.*, run.anchor_story_id
+            FROM story_relations r
+            JOIN story_reconcile_proposals p ON p.id=r.source_proposal_id
+            JOIN story_reconcile_runs run ON run.id=p.run_id
+            WHERE r.id=?""", (op.relation_id,)).fetchone()
+        if row is None or row["anchor_story_id"] != snap["story_id"]:
+            fail("not_found_or_not_accessible", "Only the original anchor editor may review a link")
+        if int(row["revision"]) != op.expected_relation_revision:
+            fail("revision_conflict", "Relation revision changed")
+        related_id = (row["right_story_id"] if row["left_story_id"] == snap["story_id"]
+                      else row["left_story_id"])
+        self._read_story(db, actor, related_id)
+        old_active = int(row["active"])
+        if op.action == "retract" and old_active != 1:
+            fail("validation_failed", "Relation is already retracted")
+        if op.action == "restore" and old_active != 0:
+            fail("validation_failed", "Relation is already active")
+        if op.action == "correct_direction":
+            if old_active != 1 or row["kind"] != "phase_of":
+                fail("validation_failed", "Only an active phase link supports direction correction")
+            if {op.phase_from_story_id, op.phase_to_story_id} != {
+                    row["left_story_id"], row["right_story_id"]}:
+                fail("validation_failed", "Direction endpoints are not the relation's two stories")
+            if (row["phase_from_story_id"] == op.phase_from_story_id
+                    and row["phase_to_story_id"] == op.phase_to_story_id):
+                fail("validation_failed", "Direction is already current")
+        if op.action in {"restore", "correct_direction"}:
+            # Re-approval must not rely on stale/revoked source access or a
+            # rewritten quote. A retraction remains possible without proof.
+            proposal = self._row(db, "story_reconcile_proposals", row["source_proposal_id"])
+            if proposal is None:
+                fail("source_changed", "The original proposal was lost")
+            decision = json.loads(proposal["decision"])
+            for side in ("anchor_proof", "candidate_proof"):
+                proof = decision.get(side) or {}
+                doc = self._document_allowed(db, actor, proof.get("source_id"))
+                page = self._corpus_row(db, "rkb_pages", proof.get("page_id"))
+                region = self._corpus_row(db, "rkb_regions", proof.get("region_id"))
+                if (doc is None or page is None or region is None
+                        or page.get("document_id") != proof.get("source_id")
+                        or int(page.get("revision") or 0) != proof.get("source_revision")
+                        or str(region.get("page_id")) != proof.get("page_id")):
+                    fail("source_changed", "Original relation citation is unavailable")
+                source = str(region.get("source_text") or "")
+                begin, end = proof.get("start"), proof.get("end")
+                if (not isinstance(begin, int) or not isinstance(end, int)
+                        or begin < 0 or end <= begin or source[begin:end] != proof.get("original_excerpt")
+                        or hashlib.sha256(source.encode()).hexdigest()
+                           != proof.get("source_region_sha256")):
+                    fail("source_changed", "Original relation quote has changed")
+        before = {
+            "active": bool(old_active), "phase_from_story_id": row["phase_from_story_id"],
+            "phase_to_story_id": row["phase_to_story_id"],
+        }
+        after = dict(before)
+        if op.action == "retract":
+            after["active"] = False
+        elif op.action == "restore":
+            after["active"] = True
+        else:
+            after["phase_from_story_id"] = op.phase_from_story_id
+            after["phase_to_story_id"] = op.phase_to_story_id
+        next_revision = int(row["revision"]) + 1
+        db.execute("""UPDATE story_relations
+            SET active=?,phase_from_story_id=?,phase_to_story_id=?,revision=?
+            WHERE id=? AND revision=?""",
+            (int(after["active"]), after["phase_from_story_id"],
+             after["phase_to_story_id"], next_revision, op.relation_id, row["revision"]))
+        db.execute("""INSERT INTO story_relation_reviews
+            (relation_id,revision,action,reason,before_state,after_state,actor_id,client_id,at)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
+            (op.relation_id, next_revision, op.action, op.reason,
+             canonical(before), canonical(after), actor,
+             getattr(principal, "client_id", None), now()))
+        # A link change may alter the interpretation used by any previously
+        # published variant of this anchor. Re-review, do not keep stale ready.
+        self._invalidate(db, snap)
+        return "relation:" + op.action
+
     def _apply_op(self, db, principal, snap, op):
         if isinstance(op, ReviseRelation):
             return self._revise_relation(db, principal, snap, op)
