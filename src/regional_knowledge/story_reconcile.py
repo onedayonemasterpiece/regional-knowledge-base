@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from .sqlite_corpus import canonical
 from .story_contracts import (
-    AttachEvidence, EvidenceLocator, ReconcileApply, ReconcileCancel,
+    AttachEvidence, EvidenceLocator, RecordAssessment, ReconcileApply, ReconcileCancel,
     ReconcileClaim, ReconcileEnqueue, ReconcileStage, ReconcileStart, ReconcileNext,
     UpsertAssertion,
 )
@@ -130,6 +130,22 @@ class StoryReconciler:
         if decision.proposed_effect == "add_attributed_claim" and (
                 not decision.new_proposition or not decision.attributed_to):
             fail("validation_failed", "New claim must be attributed and proposed explicitly")
+        assessment = decision.effective_assessment
+        if assessment is not None:
+            if decision.proposed_effect not in {"attach_evidence", "add_attributed_claim"}:
+                fail("validation_failed", "Effective assessment requires changed assertion evidence")
+            if assessment.independence != decision.independence:
+                fail("validation_failed", "Assessment independence conflicts with pair decision")
+            if (assessment.support_status == "corroborated" and
+                    (decision.independence != "independent"
+                     or decision.proposed_effect != "attach_evidence")):
+                fail("validation_failed", "Corroboration needs two explicitly independent sources")
+            if decision.proposed_effect == "attach_evidence":
+                anchor_evidence = self.registry._row(db, "story_evidence",
+                                                     decision.anchor_evidence.evidence_id)
+                if (not anchor_evidence or
+                        anchor_evidence["assertion_id"] != decision.target_assertion_id):
+                    fail("validation_failed", "Assessment must name the target assertion's original evidence")
         left = self._exact(db, actor, decision.anchor_evidence)
         self._story_evidence(db, actor, run["anchor_story_id"],
                              decision.anchor_evidence, left)
@@ -469,13 +485,33 @@ class StoryReconciler:
                         assertion_id=assertion["assertion_id"],
                         assertion_revision=assertion["revision"],
                         source_kind="document",source_id=quoted["source_id"],
-                        source_revision=quoted["source_revision"],relation="reports",
+                        source_revision=quoted["source_revision"],
+                        relation=decision.evidence_relation,
                         original_excerpt=quoted["original_excerpt"],
                         locator=EvidenceLocator(
                             page_id=quoted["page_id"],region_id=quoted["region_id"],
                             physical_page_index=quoted["physical_page_index"],
                             printed_page_number=quoted["printed_page_number"],
                             start=quoted["start"],end=quoted["end"])))
+                    if decision.effective_assessment is not None:
+                        # Only the two exact passages reviewed in this proposal,
+                        # never every other unexamined citation of the dossier.
+                        assessed_ids = [assertion["evidence_ids"][-1]]
+                        if effect == "attach_evidence":
+                            assessed_ids.insert(0, decision.anchor_evidence.evidence_id)
+                        judgement = decision.effective_assessment
+                        registry._apply_op(db, principal, snap, RecordAssessment(
+                            op="record_assessment",
+                            assertion_id=assertion["assertion_id"],
+                            assertion_revision=assertion["revision"],
+                            evidence_ids=assessed_ids,
+                            support_status=judgement.support_status,
+                            independence=judgement.independence,
+                            semantic_review=judgement.semantic_review,
+                            rationale=judgement.rationale,
+                            assessor_kind="model",
+                            method_version=judgement.method_version,
+                        ))
                     result_revision = target["revision"]+1
                     registry._snapshot(db,target_id,result_revision,snap,principal,
                                        "reconcile_"+effect)

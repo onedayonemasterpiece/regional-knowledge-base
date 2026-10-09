@@ -361,6 +361,20 @@ class ReconcileEvidenceRef(Strict):
         return self
 
 
+class ReconcileEvidenceAssessment(Strict):
+    """Explicit model judgement, not inferred from a matched quotation."""
+    support_status: Literal[
+        "unassessed", "unsupported", "single_source", "corroborated",
+        "contested", "contradicted",
+    ] = "unassessed"
+    independence: Literal["dependent", "independent", "mixed", "unknown"] = "unknown"
+    semantic_review: Literal[
+        "not_reviewed", "supported", "partially_supported", "unsupported", "contested",
+    ] = "not_reviewed"
+    rationale: Annotated[str, Field(min_length=10, max_length=500)]
+    method_version: Annotated[str, Field(min_length=1, max_length=80)]
+
+
 class ReconcileDecision(Strict):
     identity_relation: Literal[
         "same_episode", "part_or_phase", "different_episode", "unrelated", "unresolved"
@@ -378,6 +392,10 @@ class ReconcileDecision(Strict):
     # Meaning: selected story is a phase OF the other story, not a date-order guess.
     # None retains the non-directional interpretation of legacy proposals.
     phase_of_source: Literal["anchor", "candidate"] | None = None
+    evidence_relation: Literal[
+        "reports", "supports", "contradicts", "provides_context",
+    ] = "reports"
+    effective_assessment: ReconcileEvidenceAssessment | None = None
     anchor_evidence: ReconcileEvidenceRef
     candidate_evidence: ReconcileEvidenceRef
     target_assertion_id: Identifier | None = None
