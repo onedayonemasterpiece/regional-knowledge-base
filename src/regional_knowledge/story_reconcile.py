@@ -108,15 +108,19 @@ class StoryReconciler:
             fail("invalid_evidence", "Candidate quote escapes registered evidence")
         return record
 
-    def _validate_pair(self, db, actor, run, reference, decision):
+    def _validate_pair(self, db, actor, run, reference, decision, *, applying=False):
         anchor_rec, _ = self.registry._read_story(db, actor, run["anchor_story_id"])
-        if int(anchor_rec["revision"]) != int(run["anchor_story_revision"]):
+        if (not applying and int(anchor_rec["revision"]) !=
+                int(run["anchor_story_revision"])):
             fail("source_changed", "Anchor story changed; re-evaluate the comparison")
         if (decision.identity_relation in {"unrelated", "unresolved"}
                 and decision.proposed_effect != "no_change"):
             fail("validation_failed", "No automatic effect for unresolved/unrelated pair")
         if decision.proposed_effect == "link_stories" and reference["kind"] != "story":
             fail("validation_failed", "Story relation requires two existing stories")
+        if (decision.proposed_effect in {"attach_evidence", "add_attributed_claim"}
+                and decision.identity_relation != "same_episode"):
+            fail("validation_failed", "Enrichment requires same episode; link distinct phases")
         if decision.proposed_effect == "attach_evidence" and not decision.target_assertion_id:
             fail("validation_failed", "Attach requires an explicit existing assertion")
         if decision.proposed_effect == "add_attributed_claim" and (
@@ -307,11 +311,14 @@ class StoryReconciler:
                 stored = json.loads(proposal["decision"])
                 reference = stored["reference"]
                 decision = _decision_model(stored["decision"])
-                left, right = self._validate_pair(db, actor, run, reference, decision)
+                left, right = self._validate_pair(db, actor, run, reference, decision,
+                                                   applying=True)
                 if stored["anchor_proof"] != left or stored["candidate_proof"] != right:
                     fail("source_changed", "Evidence changed after model comparison")
-                target_id = (reference["id"] if reference["kind"]=="story"
-                             else run["anchor_story_id"])
+                # The anchor is the chosen editorial dossier. A candidate story
+                # remains independently addressable, never silently becomes
+                # the destination of a source enrichment.
+                target_id = run["anchor_story_id"]
                 target, snap = registry._read_story(db, actor, target_id, "editor")
                 if target["revision"] != request.expected_target_revision:
                     fail("revision_conflict", "Target story revision changed")
@@ -335,7 +342,10 @@ class StoryReconciler:
                     registry._audit(db, principal, target_id, result_revision,
                                     "reconcile_link:"+kind, request.reviewer_note)
                 elif effect in {"attach_evidence","add_attributed_claim"}:
-                    quoted = (left if reference["kind"]=="story" else right)
+                    # Always attach the candidate's original evidence, not the
+                    # anchor's already existing proof. Applies equally to
+                    # candidate stories and uncatalogued source chunks.
+                    quoted = right
                     if effect == "add_attributed_claim":
                         operation = UpsertAssertion(
                             op="upsert_assertion",kind="attributed_account",
