@@ -84,7 +84,11 @@ def offline_backup():
             fk = restored.execute("PRAGMA foreign_key_check").fetchall()
             if fk:
                 raise RuntimeError("online backup foreign_key_check failed")
-        digest = hashlib.sha256(target.read_bytes()).hexdigest() if target.stat().st_size < 128_000_000 else None
+        hasher = hashlib.sha256()
+        with open(target, "rb") as copy:
+            for part in iter(lambda: copy.read(1024 * 1024), b""):
+                hasher.update(part)
+        digest = hasher.hexdigest()
         receipt = {"db_backup": str(target), "backup_bytes": target.stat().st_size,
                    "sha256": digest, "integrity_check": "ok", "foreign_keys": "ok"}
         atomically(target.with_suffix(".json"), json.dumps(receipt, ensure_ascii=False), 0o600)
@@ -217,7 +221,8 @@ def run(sha, apply):
     if existing_override and b"story-registry" not in existing_override:
         raise RuntimeError("unexpected unrelated systemd override: refusing overwrite")
     print(json.dumps({"phase": "preflight", "candidate_sha": sha, "source": str(source),
-                      "preflight": "passed", "will_restart_only": SERVICE}, ensure_ascii=False), flush=True)
+                      "preflight": "passed", "sqlite_runtime": sqlite3.sqlite_version,
+                      "will_restart_only": SERVICE}, ensure_ascii=False), flush=True)
     if not apply:
         return
     backup = offline_backup()
