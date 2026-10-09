@@ -156,7 +156,20 @@ typed assessment, `assertion_id` и `assertion_revision` сохраняются.
 две nullable колонки, без сброса данных/ревизий/историй. Для старых MCP
 клиентов поле optional; обновлённую client schema нужно подтвердить отдельно.
 
+При enrichment операция `story_reconcile(stage)` может дополнительно
+передать `decision.evidence_relation` (по умолчанию `reports`) и
+`decision.effective_assessment` — явно сформулированное моделью решение
+с `support_status`, `independence`, `semantic_review`, `rationale`,
+`method_version`. При `apply` оно проверяется и записывается через обычный
+`RecordAssessment` в той же транзакции и той же новой редакции истории:
+только точное исходное свидетельство anchor и новое свидетельство candidate,
+без механической оценки остальных цитат. Claim новой версии имеет только одно
+собственное evidence. `corroborated` не допускается без отдельно заявленной
+`independent` оценки двух источников; backend не объявляет её доказанной
+самостоятельно. Реальная проверка авторства модели остаётся отдельной задачей:
+`assessor_claim_verified=false` и `actual_executor=application`. Отсутствие
+assessment сохраняет старую семантику (добавить reports, не оценивать смысл).
+
 Следующая независимая поставка: revision-guarded correction/retraction,
-typed assessment при reconcile apply, durable frontier/corpus watermark,
-реальный story-vector worker. Пока `story_search(semantic|hybrid)` сообщает
+durable frontier/corpus watermark, реальный story-vector worker. Пока `story_search(semantic|hybrid)` сообщает
 lexical fallback и не считается прошедшим semantic recall.
