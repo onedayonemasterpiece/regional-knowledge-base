@@ -17,7 +17,8 @@ from .sqlite_corpus import canonical
 from .story_contracts import (
     AddGap, AttachEvidence, EvidenceLocator, ExtractCancel, ExtractClaim, ExtractStage, ExtractStart,
     UpsertAssertion, LinkEntity, RecordAssessment, RecordInterest, ResolveGap, SetAngle,
-    SetContributors, SetMetadata, ReviseRelation, UpsertAssertion, UpsertVariant,
+    SetContributors, SetMetadata, ReviseRelation, RecordEventDate,
+    UpsertAssertion, UpsertVariant,
 )
 
 ROLE_LEVEL = {"viewer": 1, "contributor": 2, "researcher": 3, "editor": 4, "publisher": 5, "manager": 6}
@@ -377,6 +378,34 @@ class StoryRegistry:
                     ON story_reconcile_pair_decisions(anchor_story_id,policy_version,ref_kind,ref_id);
                 """)
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(9,datetime('now'))")
+                db.commit()
+            if not db.execute("SELECT 1 FROM story_schema_migrations WHERE version=10").fetchone():
+                # Dates belong to exact current assertion/evidence versions.
+                # No automatic calendar conversions or backfilled fictional days.
+                db.executescript("""
+                CREATE TABLE IF NOT EXISTS story_event_dates(
+                    id TEXT PRIMARY KEY,
+                    story_id TEXT NOT NULL REFERENCES story_records(id),
+                    assertion_id TEXT NOT NULL,
+                    assertion_revision INTEGER NOT NULL CHECK(assertion_revision>=1),
+                    source_evidence_ids TEXT NOT NULL,
+                    original_date_text TEXT NOT NULL,
+                    precision TEXT NOT NULL,
+                    calendar TEXT NOT NULL,
+                    date_role TEXT NOT NULL,
+                    year INTEGER, month INTEGER, day INTEGER,
+                    rationale TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    superseded_by TEXT,
+                    actor_id TEXT NOT NULL, client_id TEXT, created_at TEXT NOT NULL,
+                    UNIQUE(assertion_id,assertion_revision,fingerprint)
+                );
+                CREATE INDEX IF NOT EXISTS story_event_calendar_day
+                  ON story_event_dates(date_role,precision,calendar,month,day,id);
+                CREATE INDEX IF NOT EXISTS story_event_date_claim
+                  ON story_event_dates(assertion_id,assertion_revision,id);
+                """)
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(10,datetime('now'))")
                 db.commit()
 
     @staticmethod
@@ -959,6 +988,13 @@ class StoryRegistry:
                     fail("not_found_or_not_accessible")
                 snapshot = json.loads(hist[0])
             permitted = self._available_actions(db, actor, rec)
+            if view in {"event_dates_page", "event_date_history_page"}:
+                if revision is not None and revision != rec["revision"]:
+                    fail("validation_failed", "Date views require the current authorized story revision")
+                from .story_calendar import StoryCalendar
+                return StoryCalendar(self).page(
+                    db, actor, rec, snapshot, cursor, limit, assertion_id,
+                    include_history=view=="event_date_history_page")
             if view in {"assertion_page", "assessments_page", "evidence_page", "sources_page",
                         "relations_page", "relation_history_page", "relation_reviews_page"}:
                 if (revision is not None and view in {
@@ -977,6 +1013,12 @@ class StoryRegistry:
             return {"story_id": story_id, "revision": revision or rec["revision"],
                     "snapshot": snapshot, "readiness": self._effective_readiness(db, json.loads(rec["snapshot"])),
                     "allowed_actions": permitted, "indexing_state": "local_fts_ready_vector_awaiting_worker"}
+
+    def calendar(self, principal, month, day, calendar="gregorian", limit=3, cursor=None):
+        from .story_calendar import StoryCalendar
+        return StoryCalendar(self).query(
+            principal, month=month, day=day,
+            calendar=calendar, limit=limit, cursor=cursor)
 
     def _available_actions(self, db, actor, rec):
         role = self._permission(db, actor, rec)
@@ -1110,7 +1152,71 @@ class StoryRegistry:
         self._invalidate(db, snap)
         return "relation:" + op.action
 
+
+    def _record_event_date(self, db, principal, snap, op):
+        """Store one exact attributed dating, never infer Julian/Gregorian conversion."""
+        assertion = next((a for a in snap.get("assertions") or []
+                          if a["assertion_id"] == op.assertion_id
+                          and a["revision"] == op.assertion_revision), None)
+        if assertion is None:
+            fail("revision_conflict", "Date must reference a current assertion revision")
+        if not set(op.evidence_ids).issubset(set(assertion.get("evidence_ids") or [])):
+            fail("invalid_evidence", "Date citation is not on the current assertion")
+        actor = str(principal.subject)
+        matched_original = False
+        for evidence_id in op.evidence_ids:
+            evidence = self._row(db, "story_evidence", evidence_id)
+            if (not evidence or evidence["assertion_id"] != op.assertion_id
+                    or evidence["assertion_revision"] != op.assertion_revision):
+                fail("invalid_evidence", "Date citation points to a different assertion revision")
+            if evidence["source_kind"] == "document":
+                if not self._document_allowed(db, actor, evidence["source_id"]):
+                    fail("not_found_or_not_accessible")
+            elif evidence["source_kind"] == "external":
+                source = db.execute("""SELECT owner_id FROM story_sources
+                    WHERE id=? AND version=?""",
+                    (evidence["source_id"], evidence["source_revision"])).fetchone()
+                if not source or (source["owner_id"] != actor and
+                                  not self._row(db, "story_records", snap["story_id"])["owner_id"] == actor):
+                    fail("not_found_or_not_accessible")
+            else:
+                fail("invalid_evidence", "Unsupported date evidence source kind")
+            if op.original_date_text in evidence["original_excerpt"]:
+                matched_original = True
+        if not matched_original:
+            fail("invalid_evidence", "Printed date text must occur in the exact attributed excerpt")
+        payload = op.model_dump(mode="json", exclude={"op", "supersedes_date_id", "rationale"})
+        fingerprint = digest(payload)
+        if db.execute("""SELECT 1 FROM story_event_dates
+             WHERE assertion_id=? AND assertion_revision=? AND fingerprint=?""",
+             (op.assertion_id, op.assertion_revision, fingerprint)).fetchone():
+            fail("validation_failed", "Identical dating already registered")
+        ident = str(uuid4())
+        if op.supersedes_date_id:
+            previous = self._row(db, "story_event_dates", op.supersedes_date_id)
+            if (previous is None or previous["assertion_id"] != op.assertion_id
+                    or previous["assertion_revision"] != op.assertion_revision
+                    or previous["superseded_by"]):
+                fail("revision_conflict", "Only one active dating of the same claim can be superseded")
+            db.execute("""UPDATE story_event_dates SET superseded_by=?
+                         WHERE id=? AND superseded_by IS NULL""",
+                       (ident, op.supersedes_date_id))
+        db.execute("""INSERT INTO story_event_dates(
+            id,story_id,assertion_id,assertion_revision,source_evidence_ids,
+            original_date_text,precision,calendar,date_role,year,month,day,
+            rationale,fingerprint,superseded_by,actor_id,client_id,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (ident, snap["story_id"], op.assertion_id, op.assertion_revision,
+             canonical(op.evidence_ids), op.original_date_text, op.precision,
+             op.calendar, op.date_role, op.year, op.month, op.day,
+             op.rationale, fingerprint, None, actor,
+             getattr(principal, "client_id", None), now()))
+        self._invalidate(db, snap, {op.assertion_id})
+        return "event_date"
+
     def _apply_op(self, db, principal, snap, op):
+        if isinstance(op, RecordEventDate):
+            return self._record_event_date(db, principal, snap, op)
         if isinstance(op, ReviseRelation):
             return self._revise_relation(db, principal, snap, op)
         if isinstance(op, SetMetadata):
@@ -1302,7 +1408,8 @@ class StoryRegistry:
         ops = [x.model_dump(mode="json") for x in operations]
         def authorize(db, actor):
             rec, _ = self._read_story(db, actor, story_id, "contributor")
-            if any(isinstance(op, (RecordAssessment, AttachEvidence, UpsertAssertion)) for op in operations):
+            if any(isinstance(op, (RecordAssessment, RecordEventDate,
+                                   AttachEvidence, UpsertAssertion)) for op in operations):
                 self._permission(db, actor, rec, "researcher")
             if any(isinstance(op, (UpsertVariant, SetAngle, SetContributors, ReviseRelation)) for op in operations):
                 self._permission(db, actor, rec, "editor")

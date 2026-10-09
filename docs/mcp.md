@@ -343,3 +343,21 @@ bounded one-hop `graph_fetch`. The existing `graph_stage`,
 `graph_fetch`, `graph_related` and `entity_list` methods are reused.
 No new graph backend or POI identity is introduced. Validation is repeated
 in SQLite writes. [Full organization contract](organization-graph.md).
+
+
+## Source-attributed calendar query (2026-10-09)
+
+The bounded read-only `story_calendar(month,day,calendar,limit,cursor)`
+returns current exact day-level event datings with original source evidence,
+author/source attribution, precision and explicit calendar. It uses SQLite
+exact predicates and source ACL, **not** semantic ranking. A year-only,
+approximate, source-publication or recorded-at date is not eligible.
+`story_get(view=event_dates_page|event_date_history_page)` pages the
+dossier's date claims, including competing/explicitly superseded datings.
+Editors/researchers can add an event date with
+`story_edit(operations=[{"op":"record_event_date", ...}])`
+only when the date text literally occurs in a current assertion's
+registered source evidence. Old Live default remains read-only
+`knowledge_search`; adding `story_calendar` to reader profiles does not
+grant mutations or install a new ASR/router.
+See [Story Registry's calendar contract](story-registry.md).
