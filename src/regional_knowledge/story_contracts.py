@@ -396,7 +396,10 @@ class ReconcileEnqueue(Strict):
     command: Literal["enqueue"]
     run_id: Identifier
     expected_job_revision: int = Field(ge=1)
-    refs: list[ReconcileCandidateRef] = Field(min_length=1, max_length=50)
+    refs: list[ReconcileCandidateRef] = Field(default_factory=list, max_length=50)
+    searched_channels: list[Literal[
+        "story_lexical", "story_semantic", "source_lexical", "source_bge",
+    ]] = Field(default_factory=list, max_length=4)
 
 
 class ReconcileClaim(Strict):
