@@ -74,6 +74,30 @@ class LinkEntity(Strict):
     time_scope: str | None = Field(default=None, max_length=100)
 
 
+
+class ReviseRelation(Strict):
+    """An editor's deliberate correction to one already reviewed cross-book link."""
+    op: Literal["revise_relation"]
+    relation_id: Identifier
+    expected_relation_revision: int = Field(ge=1)
+    action: Literal["retract", "restore", "correct_direction"]
+    reason: Annotated[str, Field(min_length=10, max_length=500)]
+    phase_from_story_id: Identifier | None = None
+    phase_to_story_id: Identifier | None = None
+
+    @model_validator(mode="after")
+    def direction(self):
+        supplied = self.phase_from_story_id is not None or self.phase_to_story_id is not None
+        if self.action == "correct_direction" and not (
+            self.phase_from_story_id and self.phase_to_story_id
+            and self.phase_from_story_id != self.phase_to_story_id
+        ):
+            raise ValueError("Correction requires two distinct, ordered story IDs")
+        if self.action != "correct_direction" and supplied:
+            raise ValueError("Only direction corrections accept phase endpoints")
+        return self
+
+
 class UpsertAssertion(Strict):
     op: Literal["upsert_assertion"]
     assertion_id: str | None = None
@@ -191,6 +215,7 @@ class SetContributors(Strict):
 StoryOperation = Annotated[Union[
     SetMetadata, AddGap, ResolveGap, SetAngle, LinkEntity, UpsertAssertion,
     AttachEvidence, RecordAssessment, UpsertVariant, RecordInterest, SetContributors,
+    ReviseRelation,
 ], Field(discriminator="op")]
 
 
