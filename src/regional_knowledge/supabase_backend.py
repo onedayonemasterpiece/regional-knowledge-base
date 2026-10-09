@@ -1079,7 +1079,10 @@ class SupabaseRestBackend(KnowledgeBackend):
         document_id: str,
         force_new_revision: bool = False,
         derived_only: bool = False,
+        verified_file: ChatFile | None = None,
     ) -> BookIngestOutput:
+        if derived_only and verified_file is not None:
+            raise ValueError("rechunk cannot accept an attached source")
         response = await self.client.get(
             f"{self.config.url.rstrip('/')}/rest/v1/rkb_documents",
             headers=self._headers(principal),
@@ -1183,25 +1186,54 @@ class SupabaseRestBackend(KnowledgeBackend):
             suffix = "djvu" if format_name == "djvu" else "pdf"
             with tempfile.TemporaryDirectory(prefix="rkb-reprocess-", dir=work_root) as temp_dir:
                 source_path = Path(temp_dir) / f"source.{suffix}"
-                from .source_archive import download_source
-    
-                await download_source(
-                    self,
-                    principal,
-                    document_id,
-                    source_object,
-                    source_path,
-                    require_archive=True,
-                )
+                if verified_file is None:
+                    from .source_archive import download_source
+
+                    await download_source(
+                        self,
+                        principal,
+                        document_id,
+                        source_object,
+                        source_path,
+                        require_archive=True,
+                    )
+                else:
+                    # Recovery when the archive transport is unavailable.
+                    # Accept ONLY the exact bytes of this already-verified,
+                    # caller-owned source. Never create a different document
+                    # or silently substitute a new edition.
+                    from .source_adapter import source_format
+
+                    downloaded = await self.file_downloader.download(
+                        str(verified_file.download_url), Path(temp_dir),
+                    )
+                    if downloaded.sha256 != source_sha256:
+                        raise ValueError("reprocess_attachment_source_sha256_mismatch")
+                    if source_format(downloaded.path) != format_name:
+                        raise ValueError("reprocess_attachment_source_format_mismatch")
+                    source_path = downloaded.path
+
                 actual_sha256, _ = await asyncio.to_thread(sha256_file, source_path)
                 if actual_sha256 != source_sha256:
-                    raise RuntimeError("archived source integrity mismatch")
+                    raise RuntimeError("reprocess source integrity mismatch")
                 source_info = await self.pdf_processor.inspect_file(source_path)
-    
-            new_page_count = source_info.page_count
-            if stored_page_count and new_page_count != stored_page_count:
-                raise RuntimeError("archived source page count mismatch")
+                new_page_count = source_info.page_count
+                if stored_page_count and new_page_count != stored_page_count:
+                    raise RuntimeError("reprocess source page count mismatch")
+                if verified_file is not None:
+                    if source_object.get("deleted_at"):
+                        raise RuntimeError("reprocess source object was retired")
+                    # Restore precisely the original private source object for
+                    # subsequent book_pages. The source identity and accepted
+                    # revision stay unchanged until finalization.
+                    await self.object_store.put_file(
+                        str(source_object["object_key"]),
+                        str(source_path),
+                        str(source_object.get("mime_type") or
+                            ("application/pdf" if suffix == "pdf" else "image/vnd.djvu")),
+                    )
 
+        
         new_ingestion_id = str(uuid4())
         start = await self.client.post(
             f"{self.config.url.rstrip('/')}/rest/v1/rpc/rkb_start_ingestion",
@@ -1340,8 +1372,8 @@ class SupabaseRestBackend(KnowledgeBackend):
             )
 
         if command in ("reprocess", "rechunk"):
-            if file is not None:
-                raise ValueError("existing-source operation must not attach a new file")
+            if file is not None and command == "rechunk":
+                raise ValueError("derived-only rechunk must not attach a file")
             if not document_id:
                 raise ValueError("document_id is required for existing-source operation")
             if command == "rechunk":
@@ -1357,6 +1389,7 @@ class SupabaseRestBackend(KnowledgeBackend):
                 principal=principal,
                 document_id=document_id,
                 force_new_revision=force_new_revision,
+                **({"verified_file": file} if file is not None else {}),
             )
 
         if command != "start":
