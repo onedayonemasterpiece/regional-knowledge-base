@@ -129,10 +129,7 @@ class GraphService:
         async with self.connection(principal) as db:
             await self._alias(db,nid,row['document_id'],row['revision'],a)
             jid=await self.enqueue(db,principal.subject,nid,{'kind':'entity','version':digest(a.model_dump(mode='json'))})
-        return {'job_id':jid,'state':'candidate_discovery',
-                'canonical_poi_ref':external_ref,
-                'identity_state':canonical['identity_state'],
-                'historical_geometry':canonical['historical_geometry']}
+        return {'job_id':jid,'state':'candidate_discovery'}
 
     async def discover_poi(self,principal,external_ref):
         canonical_poi_key(external_ref)
@@ -140,7 +137,10 @@ class GraphService:
         if not canonical:raise LookupError('canonical POI not found')
         async with self.connection(principal) as db:
             jid=await self.enqueue(db,principal.subject,None,{'kind':'poi','external_ref':external_ref,'version':canonical['version'],'names':canonical['names']})
-        return {'job_id':jid,'state':'candidate_discovery'}
+        return {'job_id':jid,'state':'candidate_discovery',
+                'canonical_poi_ref':external_ref,
+                'identity_state':canonical['identity_state'],
+                'historical_geometry':canonical['historical_geometry']}
 
     async def job_read(self,principal,jid,limit=20):
         async with self.connection(principal) as db:
