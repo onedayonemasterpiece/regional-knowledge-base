@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import os
 from typing import Annotated, Any, Literal
@@ -50,6 +51,11 @@ from .oauth_provider import (
     oauth_provider_from_env,
 )
 from .supabase_backend import backend_from_env
+from .story_registry import StoryRegistry, StoryError
+from .story_contracts import (
+    Key, SeedInput, SourceRef, StoryMetadata, StoryOperation,
+    ReviewDecision, RegisteredSource, ExtractRequest,
+)
 
 
 def _principal() -> Principal:
@@ -138,7 +144,7 @@ def build_server(
     resource_url: str | None = None,
     jwks_url: str | None = None,
     oauth_provider: RegionalOAuthProvider | None = None,
-    profile: Literal["full", "live"] = "full",
+    profile: Literal["full", "live", "story_reader", "story_contributor", "story_editor"] = "full",
 ) -> MCPServer:
     backend = backend or backend_from_env()
     issuer = (
@@ -243,6 +249,161 @@ def build_server(
             status = await encoder.status()
             return JSONResponse({k:status[k] for k in ("configured","ready","retrieval_mode")},headers={"Cache-Control":"no-store"})
         return JSONResponse({"configured":False,"ready":False,"retrieval_mode":"lexical_only"},headers={"Cache-Control":"no-store"})
+
+
+    # Optional narrow function-call bundles for the client application's own Live agent.
+    # The default read-only Live surface above remains unchanged.
+    story_profiles = {"full", "story_reader", "story_contributor", "story_editor"}
+    if profile in story_profiles:
+        if not hasattr(backend, "corpus"):
+            if profile != "full":
+                raise RuntimeError("Story Registry requires the existing SQLite authority")
+        else:
+            registry = StoryRegistry(backend.corpus)
+
+            async def story_call(fn, *args, **kwargs):
+                try:
+                    return await asyncio.to_thread(fn, _principal(), *args, **kwargs)
+                except StoryError as exc:
+                    return {"error": {"code": exc.code, "message_ru": exc.message,
+                                      "detail": exc.detail}}
+
+            @mcp.tool(name="story_search", title="Find editorial stories",
+                description="ACL-scoped compact editorial story search; story content and book evidence remain distinct.",
+                annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+            async def story_search(query: str = "", filters: dict[str,str] | None = None,
+                    mode: Literal["lexical","semantic","hybrid"] = "lexical",
+                    order: Literal["updated","potential"] = "updated",
+                    limit: Annotated[int, Field(ge=1,le=20)] = 3,
+                    cursor: str | None = None) -> dict[str,Any]:
+                return await story_call(registry.search, query, filters, mode, order, limit, cursor)
+
+            @mcp.tool(name="story_get", title="Read a sourced editorial card",
+                description="Read one authorized story revision, its typed assertions and editorial state.",
+                annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+            async def story_get(story_id: str, revision: int | None = None,
+                    view: Literal["compact","editorial","evidence","review"] = "compact") -> dict[str,Any]:
+                return await story_call(registry.get, story_id, revision, view)
+
+            @mcp.tool(name="story_history", title="Read story change history",
+                description="Bounded version authorship and actions, with current source-access recheck.",
+                annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+            async def story_history(story_id: str, from_revision: int | None = None,
+                    to_revision: int | None = None, limit: Annotated[int,Field(ge=1,le=20)]=10,
+                    cursor: str | None = None) -> dict[str,Any]:
+                return await story_call(registry.history, story_id, from_revision, to_revision, cursor, limit)
+
+            @mcp.tool(name="story_validate", title="Check editorial readiness",
+                description="Read-only structural check. Text matching is not semantic or historical verification.",
+                annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+            async def story_validate(story_id: str,
+                    variant_revision_ids: list[dict[str,str|int]] | None = None) -> dict[str,Any]:
+                return await story_call(registry.validate, story_id, variant_revision_ids)
+
+            @mcp.tool(name="story_job_get", title="Inspect extraction checkpoint",
+                description="Real persisted state; awaiting_agent means that no model worker has started.",
+                annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+            async def story_job_get(job_id: str) -> dict[str,Any]:
+                return await story_call(registry.job_get, job_id)
+
+            @mcp.tool(name="entity_list", title="List accepted graph mentions",
+                description="Authorized bounded entity list, not a complete claim of book coverage.",
+                annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+            async def entity_list(document_ids: list[str] | None = None, kinds: list[str] | None = None,
+                    query: str = "", limit: Annotated[int,Field(ge=1,le=50)]=20,
+                    cursor: str | None = None) -> dict[str,Any]:
+                return await story_call(registry.entity_list, document_ids, kinds, query, cursor, limit)
+
+            @mcp.tool(name="corpus_read", title="Read bounded accepted book context",
+                description="Read selected corpus revision in bounded source chunks with immutable provenance.",
+                annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+            async def corpus_read(document_id: str, source_revision: Annotated[int,Field(ge=1)],
+                    cursor: str | None = None, limit: Annotated[int,Field(ge=1,le=5)]=3) -> dict[str,Any]:
+                return await story_call(registry.corpus_read, document_id, source_revision, cursor, limit)
+
+            if profile in {"full", "story_contributor", "story_editor"}:
+                @mcp.tool(name="story_create", title="Save a story seed",
+                    description="Persist an unknown-origin seed or candidate, with actor taken only from OAuth.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_create(seed: SeedInput, idempotency_key: Key,
+                        workspace_id: str | None = None,
+                        source_refs: list[SourceRef] | None = None,
+                        metadata: StoryMetadata | None = None) -> dict[str,Any]:
+                    return await story_call(registry.create, seed, metadata, workspace_id, source_refs, idempotency_key)
+
+                @mcp.tool(name="story_edit", title="Apply atomic editorial changes",
+                    description="Typed, revision-guarded changes; cannot approve a variant.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_edit(story_id: str, expected_revision: Annotated[int,Field(ge=1)],
+                        operations: Annotated[list[StoryOperation], Field(min_length=1,max_length=12)],
+                        idempotency_key: Key, reason: str | None = None) -> dict[str,Any]:
+                    return await story_call(registry.edit, story_id, expected_revision, operations, idempotency_key, reason)
+
+                @mcp.tool(name="story_archive", title="Archive or restore an editorial story",
+                    description="Reversible, idempotent archive/restore, no physical erasure.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_archive(story_id: str, expected_revision: Annotated[int,Field(ge=1)],
+                        idempotency_key: Key, action: Literal["archive","restore"]="archive") -> dict[str,Any]:
+                    return await story_call(registry.archive, story_id, expected_revision, action, idempotency_key)
+
+                @mcp.tool(name="story_source_register", title="Register immutable testimony",
+                    description="Persist external note provenance once; books are referenced by existing document IDs.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_source_register(source: RegisteredSource, idempotency_key: Key) -> dict[str,Any]:
+                    return await story_call(registry.register_source, source, idempotency_key)
+
+                @mcp.tool(name="story_extract", title="Track bounded source extraction",
+                    description="Explicit start/claim/stage/cancel lease workflow. No hidden LLM calls.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_extract(request: ExtractRequest, idempotency_key: Key) -> dict[str,Any]:
+                    return await story_call(registry.extract, request, idempotency_key)
+
+            if profile in {"full", "story_editor"}:
+                @mcp.tool(name="story_transition", title="Review or approve chosen story variants",
+                    description="Checks exact variant revisions, reviewer decision, source provenance and permissions.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_transition(story_id: str, expected_revision: Annotated[int,Field(ge=1)],
+                        target_state: Literal["candidate","researching","drafting","review","publish_ready","deferred","rejected"],
+                        idempotency_key: Key, variant_revision_ids: list[dict[str,str|int]] | None = None,
+                        review: ReviewDecision | None = None) -> dict[str,Any]:
+                    return await story_call(registry.transition, story_id, expected_revision,
+                                            target_state, variant_revision_ids, review, idempotency_key)
+
+                @mcp.tool(name="story_merge", title="Merge related story seeds",
+                    description="Explicit revision-guarded merge, preserving original story references.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_merge(target_id: str, source_ids: Annotated[list[str],Field(min_length=1,max_length=10)],
+                        expected_revisions: dict[str,int], reason: str,
+                        idempotency_key: Key) -> dict[str,Any]:
+                    return await story_call(registry.merge, target_id, source_ids, expected_revisions, reason, idempotency_key)
+
+                @mcp.tool(name="story_access", title="Grant or revoke story capabilities",
+                    description="Only authorized story owner/manager can change per-story grants; source ACL remains independent.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_access(story_id: str, expected_revision: Annotated[int,Field(ge=1)],
+                        grantee_user_id: str, capability: Literal[
+                            "viewer","contributor","researcher","editor","publisher","manager","revoke"],
+                        idempotency_key: Key) -> dict[str,Any]:
+                    return await story_call(registry.access, story_id, expected_revision,
+                                            grantee_user_id, capability, idempotency_key)
+
+                @mcp.tool(name="story_export", title="Export an approved story variant",
+                    description="Read-only attribution-aware package; does not send or publish.",
+                    annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+                async def story_export(story_id: str, variant_revision_id: str,
+                        target: Literal["editorial","social","video","narration"]="editorial") -> dict[str,Any]:
+                    return await story_call(registry.export, story_id, variant_revision_id, target)
+
+                @mcp.tool(name="story_publication_record", title="Record a reported publication",
+                    description="Persist a separately observed publication; never sends content or self-verifies provider.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_publication_record(story_id: str, variant_revision_id: str,
+                        publication: dict[str,str], idempotency_key: Key) -> dict[str,Any]:
+                    return await story_call(registry.publication_record, story_id, variant_revision_id,
+                                            publication, idempotency_key)
+
+    if profile.startswith("story_"):
+        return mcp
 
     if profile == "live":
         @mcp.tool(
@@ -540,8 +701,8 @@ def main() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("regional_knowledge.oauth_provider").setLevel(logging.INFO)
     profile = os.getenv("RKB_MCP_PROFILE", "full").strip().lower()
-    if profile not in {"full", "live"}:
-        raise RuntimeError("RKB_MCP_PROFILE must be 'full' or 'live'")
+    if profile not in {"full", "live", "story_reader", "story_contributor", "story_editor"}:
+        raise RuntimeError("RKB_MCP_PROFILE must be full, live or an enabled story capability bundle")
     build_server(profile=profile).run(
         transport="streamable-http",
         stateless_http=True,
