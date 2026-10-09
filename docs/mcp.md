@@ -361,3 +361,17 @@ registered source evidence. Old Live default remains read-only
 `knowledge_search`; adding `story_calendar` to reader profiles does not
 grant mutations or install a new ASR/router.
 See [Story Registry's calendar contract](story-registry.md).
+
+## Evidence-backed numbers and units
+
+`RecordObservation` in typed `story_edit` records the original numeral,
+exact normalized decimal, `metric_key`, `unit_code`, source-bounded period,
+method, precision, proposition and proof. Each claimed value must occur in a
+current authorized excerpt. Queries:
+`story_get(view="observations_page"|"observations_history_page")`,
+`story_observation_search(metric_key, unit_code?, limit, cursor)`, and
+`story_observation_compare(story_id, left_id, right_id)`. The latter
+**never performs unreviewed arithmetic**: identical display names do not
+establish matching entity identity or methodology. All tools remain bounded,
+read-scoped and omit source-inaccessible records. No new spatial or relational
+identity authority. See [numerical observations](story-registry.md).
