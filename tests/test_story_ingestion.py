@@ -180,3 +180,53 @@ async def test_model_facing_existing_ingest_schema_advertises_inline_candidate_s
     assert "story_extraction" in ingest.output_schema["properties"]
     # No second model, source upload, chat workflow or companion app is required.
     assert tools["book_ingest"].annotations.read_only_hint is False
+
+@pytest.mark.asyncio
+async def test_book_ingest_response_reports_real_story_extraction_progress(fixture):
+    """MCP output exposes durable coverage before and after activation."""
+    from regional_knowledge.contracts import BookIngestOutput
+    from regional_knowledge.server import _attach_story_extraction
+
+    corpus, registry, principal, doc, job, graph, page, candidate = fixture
+    persist_stage(corpus, principal, job, graph, [page], [candidate])
+
+    class AuthorizedIngestionBackend:
+        def __init__(self, corpus):
+            self.corpus = corpus
+
+        async def _ingestion_row(self, *, principal, ingestion_id):
+            row = self.corpus.one("rkb_ingestion_jobs", ingestion_id)
+            if row is not None and row["owner_user_id"] == principal.subject:
+                return row
+            return None
+
+    backend = AuthorizedIngestionBackend(corpus)
+    response = BookIngestOutput(
+        ingestion_id=job["id"], document_id=doc["id"],
+        state="processing", message="Test stage",
+    )
+    staged = await _attach_story_extraction(backend, principal, response)
+    assert staged.story_extraction is not None
+    assert staged.story_extraction.state == "staged"
+    assert staged.story_extraction.reviewed_pages == 1
+    assert staged.story_extraction.total_pages == 1
+    assert staged.story_extraction.staged_candidates == 1
+    assert staged.story_extraction.saved_candidates == 0
+    assert response.story_extraction is None  # immutable output enrichment
+
+    # Finalization activates candidates and updates the same MCP progress.
+    assert accept_source(corpus, principal, doc, job, graph)["accepted"] == 1
+    corpus.put("rkb_ingestion_jobs", [{**job, "state": "finalized"}])
+    finalized = await _attach_story_extraction(backend, principal, response.model_copy(
+        update={"state": "finalized", "message": "Finalized"}
+    ))
+    assert finalized.story_extraction.state == "completed"
+    assert finalized.story_extraction.reviewed_pages == 1
+    assert finalized.story_extraction.staged_candidates == 0
+    assert finalized.story_extraction.saved_candidates == 1
+
+    # A document owned by another actor cannot reveal its story progress.
+    foreign = await _attach_story_extraction(backend, owner(), response)
+    assert foreign.story_extraction is None
+
+

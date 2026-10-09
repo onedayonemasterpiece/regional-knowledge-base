@@ -31,6 +31,7 @@ from .backend import KnowledgeBackend
 from .contracts import (
     BookFindOutput,
     BookIngestOutput,
+    StoryExtractionStatus,
     ChatFile,
     DocumentAccessOutput,
     EvidenceSearchOutput,
@@ -69,6 +70,35 @@ def _principal() -> Principal:
         issuer=issuer,
         access_token=token.token,
     )
+
+
+async def _attach_story_extraction(
+    backend: KnowledgeBackend,
+    principal: Principal,
+    result: BookIngestOutput,
+) -> BookIngestOutput:
+    """Expose persisted same-pass story coverage, never infer it from stage input.
+
+    The ingestion row is resolved with the caller's identity first. This keeps
+    source ownership and revision checks authoritative and works for every
+    ingest command (stage, validate, finalize, status, reprocess and resume).
+    """
+    if not result.ingestion_id or getattr(backend, "corpus", None) is None:
+        return result
+    lookup = getattr(backend, "_ingestion_row", None)
+    if lookup is None:
+        return result
+    row = await lookup(principal=principal, ingestion_id=result.ingestion_id)
+    if row is None:
+        return result
+    from .story_ingestion import extraction_status
+
+    status = extraction_status(backend.corpus, row)
+    if status is None:
+        return result
+    return result.model_copy(update={
+        "story_extraction": StoryExtractionStatus.model_validate(status),
+    })
 
 
 def _transport_security(resource_url: str | None = None) -> TransportSecuritySettings:
@@ -591,15 +621,17 @@ def build_server(
                     for link in (poi_media_links or [])
                 ],
             }
-        return await backend.book_ingest(
+        principal = _principal()
+        result = await backend.book_ingest(
             command=command,
-            principal=_principal(),
+            principal=principal,
             file=file,
             ingestion_id=ingestion_id,
             cursor=cursor,
             payload=payload,
             document_id=document_id,
         )
+        return await _attach_story_extraction(backend, principal, result)
 
     @mcp.tool(title="Stage evidence-backed entity graph", description="Submit bounded model-authored graph candidates on an owned active document, or add a sourced alias to one owned entity. No automatic identity merge. Exact source chunk/page/region evidence required.", annotations=ToolAnnotations(read_only_hint=False,open_world_hint=False))
     async def graph_stage(document_id:str|None=None,revision:int|None=None,candidates:GraphBundle|None=None,entity_id:str|None=None,alias:GraphAlias|None=None,poi_discovery_ref:str|None=None)->dict[str,Any]:
