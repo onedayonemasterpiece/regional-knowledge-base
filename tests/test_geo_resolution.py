@@ -703,3 +703,38 @@ async def test_geo_activation_supersedes_old_inflight_leases_without_moving_proo
                   "geo-old-revision-stage")
     assert len(b.corpus.rows("rkb_entity_mentions"))==1
     assert len(b.corpus.rows("rkb_entities"))==1
+
+
+
+@pytest.mark.asyncio
+async def test_book_ingest_tool_requests_source_provenance_geo_review_in_same_pass(
+        tmp_path,monkeypatch):
+    """Model instructions reuse the existing graph field; no secret LLM worker."""
+    from types import SimpleNamespace
+    from regional_knowledge.server import build_server
+    from regional_knowledge.sqlite_corpus import SQLiteCorpus
+    monkeypatch.setenv("RKB_DEV_NOAUTH","1")
+    instance=build_server(backend=SimpleNamespace(
+        corpus=SQLiteCorpus(tmp_path/"book-geo-tool-schema.sqlite3")),
+        profile="full")
+    descriptions={x.name:x for x in await instance.list_tools()}
+    assert "book_ingest" in descriptions
+    tool=descriptions["book_ingest"]
+    props=tool.input_schema["properties"]
+    assert "entity_candidates" in props
+    description=tool.description
+    for required in (
+        "SAME model page-review pass",
+        "entity_candidates",
+        "source-backed poi_ref",
+        "exact_source_spelling",
+        "chunk_id/page_id/region_id/exact_quote",
+        "delayed vector readiness",
+        "geo outbox",
+        "Private excerpts",
+    ):
+        assert required in description,required
+    assert "story_candidates" in props
+    assert "poi_facts" in props
+    # Location review does not enlarge or replace the one-call ingestion tool.
+    assert len([t for t in descriptions if t=="book_ingest"])==1
