@@ -17,7 +17,7 @@ from .sqlite_corpus import canonical
 from .story_contracts import (
     AddGap, AttachEvidence, EvidenceLocator, ExtractCancel, ExtractClaim, ExtractStage, ExtractStart,
     UpsertAssertion, LinkEntity, RecordAssessment, RecordInterest, ResolveGap, SetAngle,
-    SetContributors, SetMetadata, UpsertAssertion, UpsertVariant,
+    SetContributors, SetMetadata, ReviseRelation, UpsertAssertion, UpsertVariant,
 )
 
 ROLE_LEVEL = {"viewer": 1, "contributor": 2, "researcher": 3, "editor": 4, "publisher": 5, "manager": 6}
@@ -338,6 +338,22 @@ class StoryRegistry:
                 if "phase_to_story_id" not in columns:
                     db.execute("ALTER TABLE story_relations ADD COLUMN phase_to_story_id TEXT")
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(7,datetime('now'))")
+                db.commit()
+            if not db.execute("SELECT 1 FROM story_schema_migrations WHERE version=8").fetchone():
+                # A review never overwrites its predecessor. Existing relations
+                # start at revision 1; original proposal remains authoritative.
+                columns = {row["name"] for row in db.execute("PRAGMA table_info(story_relations)")}
+                if "revision" not in columns:
+                    db.execute("ALTER TABLE story_relations ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+                db.execute("""CREATE TABLE IF NOT EXISTS story_relation_reviews (
+                    relation_id TEXT NOT NULL REFERENCES story_relations(id),
+                    revision INTEGER NOT NULL CHECK(revision >= 2),
+                    action TEXT NOT NULL, reason TEXT NOT NULL,
+                    before_state TEXT NOT NULL, after_state TEXT NOT NULL,
+                    actor_id TEXT NOT NULL, client_id TEXT, at TEXT NOT NULL,
+                    PRIMARY KEY(relation_id,revision)
+                )""")
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(8,datetime('now'))")
                 db.commit()
 
     @staticmethod
@@ -926,6 +942,8 @@ class StoryRegistry:
                        (item["variant_id"],))
 
     def _apply_op(self, db, principal, snap, op):
+        if isinstance(op, ReviseRelation):
+            return self._revise_relation(db, principal, snap, op)
         if isinstance(op, SetMetadata):
             for field in ("title", "summary", "material_type", "tags", "time_scope"):
                 value = getattr(op, field)
@@ -1117,7 +1135,7 @@ class StoryRegistry:
             rec, _ = self._read_story(db, actor, story_id, "contributor")
             if any(isinstance(op, (RecordAssessment, AttachEvidence, UpsertAssertion)) for op in operations):
                 self._permission(db, actor, rec, "researcher")
-            if any(isinstance(op, (UpsertVariant, SetAngle, SetContributors)) for op in operations):
+            if any(isinstance(op, (UpsertVariant, SetAngle, SetContributors, ReviseRelation)) for op in operations):
                 self._permission(db, actor, rec, "editor")
             return rec["workspace_id"]
         def apply(db, actor):
