@@ -676,3 +676,111 @@ def test_bounded_cross_book_evidence_reader_keeps_source_after_merge(setup):
     with pytest.raises(StoryError) as mismatch:
         registry.get(owner, story_ids[0], view="evidence_page", cursor="3:anything")
     assert mismatch.value.code == "validation_failed"
+
+
+def test_variant_dependencies_ignore_unrelated_story_enrichment(setup):
+    """Adding another episode does not invalidate a separately sourced variant."""
+    from regional_knowledge.story_contracts import VariantBlock
+    registry, owner, _ = setup
+    sid = seed(registry, owner, key="variant-scope-seed")["story_id"]
+    registry.edit(owner, sid, 1, [UpsertAssertion(
+        op="upsert_assertion", kind="attributed_account",
+        account_kind="other", attributed_to="Source A", proposition="Источник A сообщает об эпизоде."
+    )], "variant-scope-assertion-a")
+    registry.edit(owner, sid, 2, [UpsertAssertion(
+        op="upsert_assertion", kind="attributed_account",
+        account_kind="other", attributed_to="Source B", proposition="Источник B сообщает о другом эпизоде."
+    )], "variant-scope-assertion-b")
+    a, b = registry.get(owner, sid, view="evidence")["snapshot"]["assertions"]
+    registry.edit(owner, sid, 3, [
+        UpsertVariant(op="upsert_variant", audience="Местные жители", format="post",
+                      body="Первый эпизод", attributions=["По версии источника A"],
+                      blocks=[VariantBlock(
+                          text="Первый эпизод", assertion_id=a["assertion_id"],
+                          assertion_revision=a["revision"],
+                      )]),
+        UpsertVariant(op="upsert_variant", audience="Исследователи", format="article",
+                      body="Второй эпизод", attributions=["По версии источника B"],
+                      blocks=[VariantBlock(
+                          text="Второй эпизод", assertion_id=b["assertion_id"],
+                          assertion_revision=b["revision"],
+                      )]),
+    ], "variant-scope-two-formats")
+    variants = registry.get(owner, sid, view="evidence")["snapshot"]["variants"]
+    registry.transition(owner, sid, 4, "publish_ready", [
+        {"variant_id": v["variant_id"], "revision": 1} for v in variants
+    ], ReviewDecision(semantic_checked=True, attribution_checked=True,
+                      rights_checked=True, reviewer_note="Synthetic review"),
+       "variant-scope-approval")
+    ids = [v["variant_id"] for v in variants]
+    assert set(registry.get(owner, sid)["readiness"]["ready_variants"]) == set(ids)
+
+    registry.edit(owner, sid, 5, [UpsertAssertion(
+        op="upsert_assertion", kind="attributed_account",
+        account_kind="other", attributed_to="Source C",
+        proposition="Третий эпизод не входит в опубликованные варианты.",
+    )], "variant-scope-new-unrelated")
+    assert set(registry.get(owner, sid)["readiness"]["ready_variants"]) == set(ids)
+    registry.edit(owner, sid, 6, [RecordAssessment(
+        op="record_assessment", assertion_id=a["assertion_id"],
+        assertion_revision=1, rationale="Review of A only",
+    )], "variant-scope-a-review")
+    readiness = registry.get(owner, sid)["readiness"]
+    assert ids[0] in readiness["needs_revalidation"]
+    assert ids[1] in readiness["ready_variants"]
+
+
+def test_superseded_assessment_cannot_approve_a_historical_claim(setup):
+    """One stale favorable review never overrides current adverse evidence."""
+    registry, owner, _ = setup
+    doc, page, region, chunk, text = document(registry, owner)
+    sid = seed(registry, owner, key="review-freshness-seed")["story_id"]
+    registry.edit(owner, sid, 1, [UpsertAssertion(
+        op="upsert_assertion", kind="historical_claim",
+        proposition="Мастера ежедневно собирались у фонаря.",
+    )], "review-freshness-claim")
+    assertion = registry.get(owner, sid, view="evidence")["snapshot"]["assertions"][0]
+    registry.edit(owner, sid, 2, [AttachEvidence(
+        op="attach_evidence", assertion_id=assertion["assertion_id"],
+        assertion_revision=1, source_kind="document", source_id=doc, source_revision=1,
+        relation="reports", original_excerpt="У старого фонаря днём собирались мастера.",
+        locator=EvidenceLocator(page_id=page, region_id=region, chunk_id=chunk),
+    )], "review-freshness-evidence")
+    evidence_id = registry.get(owner, sid, view="evidence")["snapshot"]["assertions"][0]["evidence_ids"][0]
+    registry.edit(owner, sid, 3, [RecordAssessment(
+        op="record_assessment", assertion_id=assertion["assertion_id"],
+        assertion_revision=1, evidence_ids=[evidence_id], support_status="single_source",
+        semantic_review="supported", rationale="Source initially appears supporting",
+    )], "review-freshness-supported")
+    approved_id = registry.get(owner, sid, view="evidence")["snapshot"]["assertions"][0]["assessment_ids"][0]
+    registry.edit(owner, sid, 4, [UpsertVariant(
+        op="upsert_variant", audience="Жители", format="post",
+        body="Мастера ежедневно собирались у фонаря.",
+    )], "review-freshness-variant")
+    variant = registry.get(owner, sid, view="evidence")["snapshot"]["variants"][0]
+    registry.transition(owner, sid, 5, "publish_ready", [
+        {"variant_id": variant["variant_id"], "revision": 1},
+    ], ReviewDecision(semantic_checked=True, attribution_checked=True,
+                      rights_checked=True, reviewer_note="Synthetic provisional approval"),
+       "review-freshness-approve")
+    registry.edit(owner, sid, 6, [RecordAssessment(
+        op="record_assessment", assertion_id=assertion["assertion_id"],
+        assertion_revision=1, evidence_ids=[evidence_id], support_status="contradicted",
+        semantic_review="unsupported", rationale="Earlier reading was wrong",
+        supersedes_assessment_id=approved_id,
+    )], "review-freshness-superseded")
+    detail = registry.get(owner, sid, view="assertion_page")
+    reviews = detail["items"][0]["effective_assessments"]
+    assert len(reviews) == 1 and reviews[0]["semantic_review"] == "unsupported"
+    report = registry.validate(owner, sid)
+    assert any("historical_claim_has_active_disagreement" in x
+               for x in report["variants"][0]["blockers"])
+    assert not registry.get(owner, sid)["readiness"]["ready_variants"]
+    with pytest.raises(StoryError) as exc:
+        registry.edit(owner, sid, 7, [RecordAssessment(
+            op="record_assessment", assertion_id=assertion["assertion_id"],
+            assertion_revision=1, evidence_ids=[evidence_id],
+            semantic_review="supported", rationale="Invalid stale override",
+            supersedes_assessment_id=approved_id,
+        )], "review-freshness-invalid-double-supersession")
+    assert exc.value.code == "revision_conflict"
