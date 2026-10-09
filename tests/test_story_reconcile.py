@@ -217,3 +217,104 @@ def test_reconcile_wrong_quote_does_not_advance_checkpoint(fixture):
     status=registry.job_get(owner,start["job_id"])
     assert status["processed_pairs"]==0
     assert status["pending_proposals"]==0
+
+
+def test_cross_book_enrichment_attaches_candidate_evidence_to_anchor_only(fixture):
+    """Second book contributes its own quote to ONE existing dossier, not vice versa."""
+    registry, owner, _ = fixture
+    older = source(registry, owner, "В 1535 году горожане построили деревянный мост.")
+    newer = source(registry, owner, "В 1535 году городской совет разрешил постройку моста.")
+    old_story = grounded_story(registry, owner, older, "old")
+    anchor = grounded_story(registry, owner, newer, "new")
+    reconcile = StoryReconciler(registry)
+    start = reconcile.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=anchor[0], expected_story_revision=3,
+        refs=[ReconcileCandidateRef(kind="story", ref_id=old_story[0])],
+    ), "enrich-stories-start-01")
+    claim = reconcile.dispatch(owner, ReconcileClaim(
+        command="claim", run_id=start["job_id"], expected_job_revision=1,
+    ), "enrich-stories-claim-01")
+    decision = ReconcileDecision(
+        identity_relation="same_episode", contribution_kinds=["additional_evidence"],
+        independence="unknown",
+        independence_basis="May share a predecessor; source independence not established",
+        proposed_effect="attach_evidence", target_assertion_id=anchor[1],
+        rationale="The older publication also explicitly describes this bridge episode.",
+        anchor_evidence=ReconcileEvidenceRef(
+            document_id=newer[0], source_revision=1, page_id=newer[1],
+            region_id=newer[2], original_excerpt=newer[4],
+            evidence_id=anchor[2]),
+        candidate_evidence=ReconcileEvidenceRef(
+            document_id=older[0], source_revision=1, page_id=older[1],
+            region_id=older[2], original_excerpt=older[4],
+            evidence_id=old_story[2]),
+    )
+    stage = reconcile.dispatch(owner, ReconcileStage(
+        command="stage", run_id=start["job_id"], expected_job_revision=2,
+        work_id=claim["work_id"], lease_token=claim["lease_token"],
+        decision=decision,
+    ), "enrich-stories-stage-01")
+    applied = reconcile.dispatch(owner, ReconcileApply(
+        command="apply", run_id=start["job_id"], proposal_id=stage["proposal_id"],
+        expected_job_revision=3, expected_target_revision=3,
+        reviewer_note="The same bridge episode was checked in both printed sources.",
+    ), "enrich-stories-apply-01")
+    assert applied["target_story_id"] == anchor[0]
+    assert applied["committed_story_revision"] == 4
+    assert registry.get(owner, old_story[0])["revision"] == 3
+    enriched = registry.get(owner, anchor[0], view="evidence_page", limit=10)
+    assert {v["source_id"] for v in enriched["items"]} == {older[0], newer[0]}
+    assert len(enriched["items"]) == 2
+    assert {v["original_excerpt"] for v in enriched["items"]} == {older[4], newer[4]}
+    assert {v["source_id"] for v in registry.get(owner, anchor[0], view="sources_page")["items"]} == {
+        older[0], newer[0],
+    }
+    assert reconcile.dispatch(owner, ReconcileApply(
+        command="apply", run_id=start["job_id"], proposal_id=stage["proposal_id"],
+        expected_job_revision=3, expected_target_revision=3,
+        reviewer_note="The same bridge episode was checked in both printed sources.",
+    ), "enrich-stories-apply-01") == applied
+
+
+def test_cross_book_link_is_not_automatic_merge(fixture):
+    registry, owner, _ = fixture
+    book_a = source(registry, owner, "В 1535 году построили первый мост.")
+    book_b = source(registry, owner, "В 1540 году мост расширили.")
+    first = grounded_story(registry, owner, book_a, "phaseA")
+    second = grounded_story(registry, owner, book_b, "phaseB")
+    reconciler = StoryReconciler(registry)
+    started = reconciler.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=first[0], expected_story_revision=3,
+        refs=[ReconcileCandidateRef(kind="story", ref_id=second[0])],
+    ), "phase-link-start-001")
+    claimed = reconciler.dispatch(owner, ReconcileClaim(
+        command="claim", run_id=started["job_id"], expected_job_revision=1,
+    ), "phase-link-claim-001")
+    decision = ReconcileDecision(
+        identity_relation="part_or_phase", contribution_kinds=["new_detail"],
+        independence="unknown", independence_basis="Different primary source roots not verified",
+        proposed_effect="link_stories", rationale="Second event follows first by five years; not same episode.",
+        anchor_evidence=ReconcileEvidenceRef(
+            document_id=book_a[0], source_revision=1, page_id=book_a[1],
+            region_id=book_a[2], original_excerpt=book_a[4], evidence_id=first[2]),
+        candidate_evidence=ReconcileEvidenceRef(
+            document_id=book_b[0], source_revision=1, page_id=book_b[1],
+            region_id=book_b[2], original_excerpt=book_b[4], evidence_id=second[2]),
+    )
+    proposed = reconciler.dispatch(owner, ReconcileStage(
+        command="stage", run_id=started["job_id"], expected_job_revision=2,
+        work_id=claimed["work_id"], lease_token=claimed["lease_token"],
+        decision=decision,
+    ), "phase-link-stage-001")
+    result = reconciler.dispatch(owner, ReconcileApply(
+        command="apply", run_id=started["job_id"],
+        proposal_id=proposed["proposal_id"], expected_job_revision=3,
+        expected_target_revision=3,
+        reviewer_note="This is a different temporal phase; retain both separate stories.",
+    ), "phase-link-apply-001")
+    assert result["committed_effect"] == "link_stories"
+    assert registry.get(owner, first[0])["snapshot"]["state"] != "archived"
+    assert registry.get(owner, second[0])["snapshot"]["state"] != "archived"
+    related = registry.get(owner, first[0], view="relations_page")
+    assert related["items"][0]["kind"] == "phase_of"
+    assert related["items"][0]["related_story_id"] == second[0]
