@@ -187,3 +187,41 @@ Street Story canonical identity. No new daemon/process is created.
 This recovery is an **RKB-only owner-local retry mechanism**; it does not
 constitute an authenticated Cartography/Street Story network mutation
 transport or verified historic geometry.
+
+## Activation gate for newly staged books — queue/source consistency
+
+The geo outbox is saved atomically with a `poi_ref` mention, but the
+mention may belong to a **staged** book revision that has not yet passed
+vector readiness and `rkb_activate_revision`. Before this fix an active
+consumer could claim such a pending geo attempt, see `source_revision >
+active_revision` and incorrectly mark it `stale_source` permanently.
+A large book whose BGE publication takes time was especially vulnerable;
+this was an actual code-path race rather than a completed import failure.
+
+New behavior:
+
+- `enqueue_mention` persists the stable intent/attempt in the same
+  source graph transaction with state `awaiting_activation` when the
+  evidence's source revision is newer than the active book.
+- An unauthorized other actor cannot read that intent; its owner may
+  inspect `geo_status` with `source_access=staged_not_accepted`, but
+  `geo_lookup` does not publish staged source evidence and the automatic
+  worker never claims it.
+- **Inside** the existing SQLite `rkb_activate_revision` transaction
+  (after accepted source and graph revision update), exactly the
+  matching future-revision intents become `pending`. Still-pending
+  geo attempts for superseded earlier source revisions become
+  `stale_source/superseded_source_revision`; their tokens/proposals are
+  invalidated and their prior receipts preserved.
+- If an operator tries to claim a historical prematurely-pending job,
+  the source validity guard yields `source_not_activated` and parks the
+  attempt instead of labeling an unaccepted future revision stale.
+- Delayed activation when vectors are missing leaves intents dormant and
+  cannot block the book or the existing Story Registry. Repeating the
+  activation hook is idempotent.
+
+Acceptance tests exercise the real `rkb_start_ingestion → stage pages,
+regions, chunks + sourced graph entity → pending_vectors → E5/BGE ready
+→ rkb_activate_revision` SQLite path, along with the expired/replaced
+source fencing and unchanged evidence. They do not use fictitious
+historical map geometry or imply Cartography network delivery.

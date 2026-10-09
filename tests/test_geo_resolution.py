@@ -573,3 +573,133 @@ async def test_geo_concurrent_reapers_are_idempotent_and_disabled_users_not_poll
     with b.corpus.connect() as db:
         row=db.execute("SELECT state,attempts FROM rkb_geo_attempts").fetchone()
     assert row["state"]=="pending" and row["attempts"]==1
+
+
+
+@pytest.mark.asyncio
+async def test_staged_book_geo_intent_is_dormant_until_actual_vector_activation(tmp_path):
+    """Full normal SQLite book activation, not a mocked status flip.
+
+    A source-backed POI graph mention is staged while BGE publication is
+    incomplete. The geo daemon must NOT mark that future accepted revision
+    stale, nor read it into Street Story before finalization. The normal
+    rkb_activate_revision transaction wakes exactly its original intent.
+    """
+    from regional_knowledge.e5_contract import SPACE as ES
+    from regional_knowledge.bge_contract import SPACE as BS,REVISION
+    b,actor,graph,geo,street,doc,bundle,text=prepare(tmp_path)
+    old_page=bundle["entities"][0]["evidence"]["page_id"]
+    old_region=bundle["entities"][0]["evidence"]["region_id"]
+    original=bundle["entities"][0]["evidence"]["chunk_id"]
+    page2,region2,chunk2,job=[str(uuid4()) for _ in range(4)]
+    head={"x-rkb-actor":actor.subject}
+    source=b.corpus.one("rkb_documents",doc)
+    assert source["active_revision"]==1
+    initial=await b.local_rpc("rkb_start_ingestion",{
+        "p_ingestion_id":job,"p_document_id":doc,
+        "p_title":source["title"],"p_authors":[],
+        "p_source_sha256":source["source_sha256"],
+        "p_source_file_id":"staged-book-revision-2",
+        "p_page_count":1,"p_duplicate_policy":"new_revision"
+    },head)
+    assert initial.json()[0]["document_id"]==doc
+    await b.client.patch(b.config.url+"/rest/v1/rkb_ingestion_jobs",
+                         headers=head,params={"id":"eq."+job},json={"state":"ready"})
+    await b.client.post(b.config.url+"/rest/v1/rkb_pages",headers=head,json=[{
+        "id":page2,"document_id":doc,"revision":2,"physical_page_index":0}])
+    sha=hashlib.sha256(text.encode()).hexdigest()
+    await b.client.post(b.config.url+"/rest/v1/rkb_regions",headers=head,json=[{
+        "id":region2,"page_id":page2,"kind":"body","reading_order":0,
+        "source_text":text,"text_sha256":sha}])
+    await b.local_rpc("rkb_insert_chunks",{
+        "p_document_id":doc,"p_ingestion_id":job,"p_revision":2,
+        "p_chunks":[{"id":chunk2,"source_text":text,"search_material":text,
+                     "text_sha256":sha,"search_material_sha256":sha,
+                     "region_ids":[region2],"footnote_region_ids":[],
+                     "page_ids":[page2],"illustration_ids":[],
+                     "title":"Exact place evidence",
+                     "text_start":0,"text_end":len(text)}]
+    },head)
+    staged=json.loads(json.dumps(bundle))
+    staged["entities"][0]["key"]="future-book-zoo"
+    staged["entities"][0]["evidence"].update(
+        chunk_id=chunk2,page_id=page2,region_id=region2
+    )
+    accepted=await graph.stage(actor,doc,2,staged,staged_texts={chunk2:text})
+    node=accepted["entities"]["future-book-zoo"]
+    with b.corpus.connect() as db:
+        rows=db.execute("""SELECT a.state,a.attempts FROM rkb_geo_attempts a
+            JOIN rkb_geo_intents i ON i.request_id=a.request_id
+            WHERE i.document_id=? AND i.source_revision=2""",
+            (doc,)).fetchall()
+        assert len(rows)==1
+        assert rows[0]["state"]=="awaiting_activation"
+        assert rows[0]["attempts"]==0
+    before=geo.status(actor,entity_id=node)["items"][0]
+    assert before["source_access"]=="staged_not_accepted"
+    assert before["attempts"][0]["state"]=="awaiting_activation"
+    # A pending source is not an independently available place assertion.
+    assert geo.lookup(actor,"Кёнигсбергский зоопарк")["items"]==[]
+    assert geo.claim(actor,limit=5)["items"]==[]
+    assert geo.worker_tick(limit=1)["processed"]==0
+
+    activation={"p_document_id":doc,"p_ingestion_id":job,"p_revision":2}
+    pending=(await b.local_rpc("rkb_activate_revision",activation,head)).json()[0]
+    assert pending["pending_vectors"]
+    assert b.corpus.one("rkb_documents",doc)["active_revision"]==1
+    assert geo.status(actor,entity_id=node)["items"][0]["attempts"][0][
+        "state"]=="awaiting_activation"
+    for table,space in (("rkb_chunk_embeddings_e5",ES),
+                        ("rkb_chunk_embeddings_bge",BS)):
+        b.corpus.put(table,[{**defaults(table),
+            "chunk_id":chunk2,"embedding_space":space,"revision":2,
+            "text_sha256":sha,"search_material_sha256":sha,
+            "model_revision":REVISION}])
+    await b.activate_pending()
+    assert b.corpus.one("rkb_documents",doc)["active_revision"]==2
+    with b.corpus.connect() as db:
+        row=db.execute("""SELECT a.state,a.attempts FROM rkb_geo_attempts a
+          JOIN rkb_geo_intents i ON i.request_id=a.request_id
+          WHERE i.document_id=? AND i.source_revision=2""",(doc,)).fetchone()
+        assert row["state"]=="pending" and row["attempts"]==0
+    found=geo.status(actor,entity_id=node)["items"][0]
+    assert found["source_access"]=="authorized_current"
+    assert found["attempts"][0]["state"]=="pending"
+    assert geo.lookup(actor,"Кёнигсбергский зоопарк")["items"][0]["entity_id"]==node
+    # The first resolver call may only run AFTER the source was accepted.
+    completed=geo.worker_tick(1)
+    assert completed["processed"]==1 and completed["states"]==["unresolved"]
+    assert len(b.corpus.rows("rkb_entities"))==1
+    await b.aclose()
+
+
+@pytest.mark.asyncio
+async def test_geo_activation_supersedes_old_inflight_leases_without_moving_proofs(tmp_path):
+    from regional_knowledge.geo_resolution import geo_revision_activated
+    b,actor,graph,geo,street,doc,bundle,text=prepare(tmp_path)
+    accepted=await graph.stage(actor,doc,1,bundle)
+    lease=geo.claim(actor,limit=1)["items"][0]
+    eid=accepted["entities"]["historical-zoo-site"]
+    with b.corpus.connect() as db:
+        # Simulated normal service-owned activation transaction on an
+        # already proof-backed source; no old story/graph node is erased.
+        db.execute("BEGIN IMMEDIATE")
+        old=b.corpus.one("rkb_documents",doc)
+        b.corpus.put("rkb_documents",[{**old,"active_revision":2}],
+                     connection=db)
+        first=geo_revision_activated(db,doc,2)
+        second=geo_revision_activated(db,doc,2)
+        assert first["superseded_attempts"]==1
+        assert second["superseded_attempts"]==0
+    with b.corpus.connect() as db:
+        state=db.execute("SELECT state,reason,lease_token FROM rkb_geo_attempts").fetchone()
+    assert state["state"]=="stale_source"
+    assert state["reason"]=="superseded_source_revision"
+    assert state["lease_token"] is None
+    with pytest.raises(GeoError,match="stale_lease"):
+        geo.stage(actor,lease["attempt_id"],lease["lease_token"],
+                  lease["lease_fence"],
+                  {"status":"unresolved","reason":"Old revision can no longer apply."},
+                  "geo-old-revision-stage")
+    assert len(b.corpus.rows("rkb_entity_mentions"))==1
+    assert len(b.corpus.rows("rkb_entities"))==1

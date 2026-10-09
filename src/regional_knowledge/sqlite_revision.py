@@ -178,6 +178,12 @@ def activate(ctx,p):
     key='document:'+d['id']+':'+str(rev)
     if not any(x['job_key']==key for x in ctx.rows('rkb_graph_discovery_jobs')):
         ctx.corpus.put('rkb_graph_discovery_jobs',[{**defaults('rkb_graph_discovery_jobs'),'actor_id':d['owner_user_id'],'document_id':d['id'],'revision':rev,'job_key':key,'payload':{'kind':'document','offset':0}}],connection=ctx.db)
+    # Pending geo mentions were persisted with the staged book revision,
+    # but cannot be claimed before this activation. Wake them only in the
+    # SAME accepted-revision transaction, after graph entities are updated.
+    # An older source's in-flight geo lease must never outlive supersession.
+    from .geo_resolution import geo_revision_activated
+    geo_revision_activated(ctx.db,d['id'],rev)
     for e in events:
         if not any(x['event_id']==e['event_id'] for x in ctx.rows('rkb_integration_outbox')):
             ctx.corpus.put('rkb_integration_outbox',[{**defaults('rkb_integration_outbox'),'owner_user_id':d['owner_user_id'],'document_id':d['id'],'revision':rev,'target_service':'street_story','event_type':e['contract_version'],'event_id':e['event_id'],'idempotency_key':e['idempotency_key'],'visibility':e['scope']['visibility'],'workspace_id':e['scope'].get('workspace_id'),'payload':e,'state':'pending_delivery' if e['scope']['visibility']=='public' else 'pending_authorization'}],connection=ctx.db)
