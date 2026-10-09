@@ -153,3 +153,91 @@ async def test_historical_organizations_are_sourced_not_merged_and_acl_scoped(tm
                       access_token='not-a-production-token')
     with pytest.raises(LookupError):
         await g.read(visitor,saved['entities']['guild'])
+
+
+@pytest.mark.asyncio
+async def test_graph_links_street_story_real_opaque_poi_without_local_identity_copy(tmp_path):
+    import sqlite3
+    from regional_knowledge.poi_reference import StreetStoryPoiResolver
+    src=tmp_path/'street-owner.sqlite3'
+    opaque='poi_ss_3a81064258bae2c9b8c41f44'
+    with sqlite3.connect(src) as db:
+        db.executescript("""
+        CREATE TABLE pois(id TEXT PRIMARY KEY,status TEXT,canonical_name TEXT,
+                          latitude REAL,longitude REAL);
+        CREATE TABLE poi_aliases(poi_id TEXT,namespace TEXT,value TEXT,normalized_value TEXT);
+        """)
+    backend=SQLiteBackend(
+        corpus_path=tmp_path/'regional.sqlite3',
+        embedder=LexicalOnlyEmbedder(),
+        object_store=UnavailableObjectStore(),
+    )
+    owner,document,page,region,chunk=[str(uuid4()) for _ in range(5)]
+    text='21 мая 1896 года Кёнигсбергский зоопарк был открыт.'
+    sha=hashlib.sha256(text.encode()).hexdigest()
+    backend.corpus.put('rkb_users',[{**defaults('rkb_users'),'id':owner}])
+    backend.corpus.put('rkb_documents',[{
+        **defaults('rkb_documents'),'id':document,'owner_user_id':owner,
+        'title':'Source', 'source_sha256':'f'*64,'active_revision':1,'page_count':1,
+    }])
+    backend.corpus.put('rkb_pages',[{
+        **defaults('rkb_pages'),'id':page,'document_id':document,
+        'revision':1,'physical_page_index':0,
+    }])
+    backend.corpus.put('rkb_regions',[{
+        **defaults('rkb_regions'),'id':region,'page_id':page,
+        'reading_order':0,'kind':'body','source_text':text,'text_sha256':sha,
+    }])
+    backend.corpus.put('rkb_chunks',[{
+        **defaults('rkb_chunks'),'id':chunk,'document_id':document,'revision':1,
+        'source_text':text,'text_sha256':sha,
+        'search_material':text,'search_material_sha256':sha,
+        'region_ids':[region],'page_ids':[page],'title':'Zoo opening',
+    }])
+    proof={'chunk_id':chunk,'page_id':page,'region_id':region,'exact_quote':text}
+    actor=Principal(subject=owner,client_id='test',issuer='test',access_token='local')
+    graph=GraphService(backend,StreetStoryPoiResolver(src))
+    first=await graph.stage(actor,document,1,{'entities':[{
+        'key':'zoo-site','kind':'poi_ref',
+        'canonical_label':'Калининградский зоопарк',
+        'exact_source_spelling':'Кёнигсбергский зоопарк',
+        'poi_locator':{
+            'names':['Калининградский зоопарк','Кёнигсбергский зоопарк'],
+            'external_ids':{'wikidata':'Q1193386'},
+        },
+        'evidence':proof,
+    }]})
+    assert first['unresolved_pois']==1
+    original=await graph.read(actor,first['entities']['zoo-site'])
+    assert original['entity']['external_ref'] is None
+    assert original['entity']['state']=='unresolved'
+
+    # Street Story owner imports a verified external binding in its OWN SQLite
+    # after RKB has already staged this exact private book evidence.
+    with sqlite3.connect(src) as db:
+        db.execute("INSERT INTO pois VALUES(?,?,?,?,?)",
+                   (opaque,'candidate','Калининградский зоопарк',54.72044,20.48737))
+        db.execute("INSERT INTO poi_aliases VALUES(?,?,?,?)",
+                   (opaque,'wikidata','Q1193386','q1193386'))
+    payload={'entities':[{
+        'key':'zoo-site','kind':'poi_ref',
+        'canonical_label':'Калининградский зоопарк',
+        'exact_source_spelling':'Кёнигсбергский зоопарк',
+        'poi_locator':{
+            'names':['Калининградский зоопарк','Кёнигсбергский зоопарк'],
+            'external_ids':{'wikidata':'Q1193386'},
+        },
+        'evidence':proof,
+    }]}
+    saved=await graph.stage(actor,document,1,payload)
+    assert saved['unresolved_pois']==0
+    assert saved['entities']==first['entities']
+    assert await graph.stage(actor,document,1,payload)==saved
+    node=await graph.read(actor,saved['entities']['zoo-site'])
+    assert node['entity']['external_ref']=='streetstory://poi/'+opaque
+    assert node['entity']['external_identity_state']=='candidate'
+    discovery=await graph.discover_poi(actor,'streetstory://poi/'+opaque)
+    assert discovery['identity_state']=='candidate'
+    assert discovery['historical_geometry']=='not_verified'
+    with pytest.raises(ValueError):
+        await graph.discover_poi(actor,'streetstory://poi/poi_ss_unsafe')
