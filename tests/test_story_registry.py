@@ -773,7 +773,7 @@ def test_superseded_assessment_cannot_approve_a_historical_claim(setup):
     reviews = detail["items"][0]["effective_assessments"]
     assert len(reviews) == 1 and reviews[0]["semantic_review"] == "unsupported"
     report = registry.validate(owner, sid)
-    assert any("historical_claim_has_active_disagreement" in x
+    assert any("historical_claim_without_semantic_review" in x
                for x in report["variants"][0]["blockers"])
     assert not registry.get(owner, sid)["readiness"]["ready_variants"]
     with pytest.raises(StoryError) as exc:
