@@ -18,7 +18,7 @@ from .story_contracts import (
     AddGap, AttachEvidence, EvidenceLocator, ExtractCancel, ExtractClaim, ExtractStage, ExtractStart,
     UpsertAssertion, LinkEntity, RecordAssessment, RecordInterest, ResolveGap, SetAngle,
     SetContributors, SetMetadata, ReviseRelation, RecordEventDate,
-    UpsertAssertion, UpsertVariant,
+    RecordObservation, UpsertAssertion, UpsertVariant,
 )
 
 ROLE_LEVEL = {"viewer": 1, "contributor": 2, "researcher": 3, "editor": 4, "publisher": 5, "manager": 6}
@@ -406,6 +406,42 @@ class StoryRegistry:
                   ON story_event_dates(assertion_id,assertion_revision,id);
                 """)
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(10,datetime('now'))")
+                db.commit()
+            if not db.execute("SELECT 1 FROM story_schema_migrations WHERE version=11").fetchone():
+                # Evidence-backed quantities are claims tied to exact assertion
+                # revisions; unit/metric/period are independent dimensions.
+                db.executescript("""
+                CREATE TABLE IF NOT EXISTS story_observations(
+                    id TEXT PRIMARY KEY,
+                    story_id TEXT NOT NULL REFERENCES story_records(id),
+                    assertion_id TEXT NOT NULL,
+                    assertion_revision INTEGER NOT NULL CHECK(assertion_revision>=1),
+                    source_evidence_ids TEXT NOT NULL,
+                    original_value_text TEXT NOT NULL,
+                    value_decimal TEXT NOT NULL,
+                    metric_key TEXT NOT NULL,
+                    unit_code TEXT NOT NULL,
+                    subject_label TEXT NOT NULL,
+                    period_text TEXT NOT NULL,
+                    period_start_year INTEGER,
+                    period_end_year INTEGER,
+                    method TEXT NOT NULL,
+                    method_note TEXT NOT NULL,
+                    precision TEXT NOT NULL,
+                    rationale TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    superseded_by TEXT,
+                    actor_id TEXT NOT NULL,
+                    client_id TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(assertion_id,assertion_revision,fingerprint)
+                );
+                CREATE INDEX IF NOT EXISTS story_observations_metric
+                    ON story_observations(metric_key,unit_code,id);
+                CREATE INDEX IF NOT EXISTS story_observations_claim
+                    ON story_observations(assertion_id,assertion_revision,id);
+                """)
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(11,datetime('now'))")
                 db.commit()
 
     @staticmethod
@@ -1215,6 +1251,8 @@ class StoryRegistry:
         return "event_date"
 
     def _apply_op(self, db, principal, snap, op):
+        if isinstance(op, RecordObservation):
+            return self._record_observation(db, principal, snap, op)
         if isinstance(op, RecordEventDate):
             return self._record_event_date(db, principal, snap, op)
         if isinstance(op, ReviseRelation):
@@ -1409,7 +1447,8 @@ class StoryRegistry:
         def authorize(db, actor):
             rec, _ = self._read_story(db, actor, story_id, "contributor")
             if any(isinstance(op, (RecordAssessment, RecordEventDate,
-                                   AttachEvidence, UpsertAssertion)) for op in operations):
+                                   RecordObservation, AttachEvidence,
+                                   UpsertAssertion)) for op in operations):
                 self._permission(db, actor, rec, "researcher")
             if any(isinstance(op, (UpsertVariant, SetAngle, SetContributors, ReviseRelation)) for op in operations):
                 self._permission(db, actor, rec, "editor")
