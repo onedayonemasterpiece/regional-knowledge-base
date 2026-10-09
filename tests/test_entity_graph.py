@@ -112,3 +112,45 @@ def test_identically_named_historical_organizations_never_merge_by_label():
     assert entity_id(uuid4(),"old")!=entity_id(uuid4(),"new")
     doc=uuid4()
     assert entity_id(doc,"old")!=entity_id(doc,"new")
+
+
+def test_actual_street_story_opaque_poi_id_and_uuid_are_both_canonical(tmp_path):
+    """Deployed Street Story owns poi_ss_* IDs; RKB cannot mint replacement UUIDs."""
+    from regional_knowledge.poi_reference import StreetStoryPoiResolver,canonical_poi_key
+    opaque="poi_ss_3a81064258bae2c9b8c41f44"
+    uuid_key=str(uuid4())
+    path=tmp_path/"street-owner.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+        CREATE TABLE pois(id TEXT PRIMARY KEY,status TEXT,canonical_name TEXT,
+                          latitude REAL,longitude REAL);
+        CREATE TABLE poi_aliases(poi_id TEXT,namespace TEXT,value TEXT,normalized_value TEXT);
+        """)
+        db.executemany("INSERT INTO pois VALUES(?,?,?,?,?)",[
+            (opaque,"candidate","Королевские ворота",54.7136272,20.5357559),
+            (uuid_key,"candidate","Кёнигсбергский замок",None,None),
+        ])
+        db.executemany("INSERT INTO poi_aliases VALUES(?,?,?,?)",[
+            (opaque,"name","Königstor","königstor"),
+            (opaque,"wikidata","Q123","q123"),
+            (uuid_key,"name","Королевский замок","королевский замок"),
+        ])
+    resolver=StreetStoryPoiResolver(path)
+    locator=PoiLocatorInput(names=["Королевские ворота"],external_ids={"wikidata":"Q123"})
+    linked=resolver.resolve(locator)
+    assert linked["external_ref"]=="streetstory://poi/"+opaque
+    assert canonical_poi_key(linked["external_ref"])==opaque
+    version=resolver.version(linked["external_ref"])
+    assert version["identity_state"]=="candidate"
+    assert version["representative_position"]["type"]=="representative_point_not_historical_geometry"
+    assert version["historical_geometry"]=="not_verified"
+    assert "Königstor" in version["names"]
+    assert resolver.version("streetstory://poi/"+uuid_key)["identity_state"]=="candidate"
+    assert resolver.resolve(PoiLocatorInput(names=["Кёнигсбергский замок"]))["external_ref"]=="streetstory://poi/"+uuid_key
+    assert resolver.resolve(PoiLocatorInput(names=["Королевские ворота"],external_ids={"wikidata":"Q999"}))["external_ref"] is None
+    for invalid in ("streetstory://poi/poi_ss_bad",
+                    "streetstory://poi/../../etc/passwd",
+                    "streetstory://poi/"+opaque+"/extra",
+                    "http://poi/"+opaque):
+        with pytest.raises(ValueError):
+            canonical_poi_key(invalid)
