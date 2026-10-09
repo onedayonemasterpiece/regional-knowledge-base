@@ -225,3 +225,30 @@ regions, chunks + sourced graph entity → pending_vectors → E5/BGE ready
 → rkb_activate_revision` SQLite path, along with the expired/replaced
 source fencing and unchanged evidence. They do not use fictitious
 historical map geometry or imply Cartography network delivery.
+
+## Same-pass extraction at new book ingestion (agent UX)
+
+The backend does **not** run a hidden model for place identification.
+The MCP calling model is responsible for reading the actual staged source,
+not guessing from text hashes. The `book_ingest` tool and server instructions
+now explicitly direct it to include a bounded `entity_candidates`
+`GraphBundle` of **distinct, evidence-backed `poi_ref`** entities
+during the SAME `book_pages → book_ingest(stage)` review already used
+for semantic retrieval chunks and Story Registry story candidates.
+
+Each place candidate must carry its exact original spelling and matching
+`chunk_id / page_id / region_id / exact_quote`; its owner `poi_locator`
+contains source-grounded name variants. Ambiguous identity and missing
+historical maps are valid `unresolved` outcomes, not grounds to reject
+a book. One entity per retrieval chunk or fabricated modern coordinates/
+historical footprints are prohibited. An empty bundle is allowed when
+the source has no reliable place mention.
+
+The durable geo intent is written by the existing **graph stage** hook.
+For a staged not-yet-accepted book revision its attempt waits in
+`awaiting_activation`; the same SQLite activation transaction makes it
+eligible only after the source/vector publication is accepted.
+No second extraction prompt is required. The model must still perform
+the semantic review; these instructions do not prove recall/completeness
+of toponyms in previously imported books, and do not backfill private
+source content into Cartography.
