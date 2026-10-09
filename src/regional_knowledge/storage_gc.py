@@ -59,7 +59,12 @@ async def reserve_source(backend, principal, document_id, key, downloaded, mime,
     async with backend.data_client._connection({'x-rkb-service':'1'},**({'write':True} if hasattr(backend,'corpus') else {})) as db:
         await db.execute("select pg_advisory_xact_lock(hashtext('rkb-staging-capacity'))")
         await db.execute('select id from rkb_documents where id=%s for update',(UUID(document_id),))
-        existing=await(await db.execute('select id,deleted_at from rkb_objects where id=%s',(ident,))).fetchone()
+        existing=await(await db.execute('select id,document_id,kind,object_key,sha256,deleted_at from rkb_objects where id=%s',(ident,))).fetchone()
+        if existing and (str(existing['document_id'])!=str(document_id)
+                         or existing['kind']!='source_pdf'
+                         or existing['object_key']!=key
+                         or existing['sha256']!=downloaded.sha256):
+            raise RuntimeError('source_object_identity_mismatch')
         if existing_object_id is not None and existing is None:raise RuntimeError('source_object_identity_missing')
         if existing and existing['deleted_at'] is None:return
         used=await(await db.execute('select coalesce(sum(size_bytes),0)::bigint bytes from rkb_objects where deleted_at is null')).fetchone()
