@@ -274,6 +274,20 @@ class GeoQueue:
                    (command_id,actor,command,token,_json(result),time.time()))
         return result
 
+    def receipt(self, principal, command_id):
+        """Authenticated read after a lost MCP response; no repeat side effect."""
+        actor=self._actor(principal)
+        if not KEY.fullmatch(command_id):
+            raise GeoError("invalid_command_id")
+        with self.corpus.connect() as db:
+            self._ctx(db,actor)
+            row=db.execute(
+                "SELECT result_json FROM rkb_geo_receipts WHERE command_id=? AND actor_id=?",
+                (command_id,actor)).fetchone()
+            if not row:
+                raise GeoError("not_found_or_not_accessible")
+            return json.loads(row[0])
+
     def enqueue_existing(self, principal, entity_id, *, policy=POLICY):
         actor=self._actor(principal)
         with self.corpus.connect() as db:
