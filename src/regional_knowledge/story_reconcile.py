@@ -396,7 +396,7 @@ class StoryReconciler:
             fail("validation_failed", "Unknown reconcile operation")
         return registry._mutation(principal, "story_reconcile", idempotency_key, data, authorize, apply)
 
-    def status(self, principal, run_id):
+    def status(self, principal, run_id, cursor=None, limit=5):
         with self.registry.corpus.connect() as db:
             actor = self.registry._actor(db, principal)
             run = self._scoped_run(db, actor, run_id, "viewer")
@@ -412,6 +412,15 @@ class StoryReconciler:
                 "review_proposals" if pending else
                 "expand_or_finish_under_policy"
             )
+            after = str(cursor or "")
+            if len(after)>128:
+                fail("validation_failed", "Invalid proposal cursor")
+            take = max(1, min(int(limit), 10))
+            proposal_rows = db.execute("""SELECT id,state FROM story_reconcile_proposals
+                WHERE run_id=? AND id>? ORDER BY id LIMIT ?""",
+                (run_id,after,take+1)).fetchall()
+            proposal_items = [{"proposal_id":row["id"],"state":row["state"]}
+                              for row in proposal_rows[:take]]
             return {"job_id":run_id,"revision":run["revision"],"state":run["state"],
                     "executor_state":"external_model_required",
                     "anchor_story_id":run["anchor_story_id"],
@@ -425,6 +434,10 @@ class StoryReconciler:
                     "lease_active":bool(run["lease_token"] and run["lease_deadline"]
                                         and run["lease_deadline"]>time.time()),
                     "next_action":next_action,
+                    "proposals":proposal_items,
+                    "proposals_has_more":len(proposal_rows)>take,
+                    "proposals_next_cursor":proposal_items[-1]["proposal_id"]
+                        if len(proposal_rows)>take and proposal_items else None,
                     "coverage":"completed_under_declared_policy_is_not_global_semantic_completeness"}
 
 
