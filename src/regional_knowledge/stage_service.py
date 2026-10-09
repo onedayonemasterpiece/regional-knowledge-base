@@ -517,15 +517,16 @@ async def stage_ingestion(
         merged,
         cursor=progress_cursor,
     )
+    story_checkpoint = None
     if hasattr(service, "corpus") and (pages or story_candidates):
         # Do not use a separate model, second scan or vector index. The same
         # reviewed regions back the candidate and its SQLite checkpoint.
         from .story_ingestion import persist_stage
-        await asyncio.to_thread(
+        story_checkpoint = await asyncio.to_thread(
             persist_stage, service.corpus, principal, row,
             merged, pages, story_candidates,
         )
-    return service._ingestion_output(
+    output = service._ingestion_output(
         updated,
         (
             f"Staged {len(pages)} pages, {len(chunks)} chunks, "
@@ -534,6 +535,11 @@ async def stage_ingestion(
             "continue with book_pages/stage or validate when complete"
         ),
     )
+    if story_checkpoint and story_checkpoint["needs_review_count"]:
+        output.warnings.append(
+            f"story_candidates:needs_review:{story_checkpoint['needs_review_count']}"
+        )
+    return output
 
 
 async def validate_ingestion(
