@@ -1,4 +1,4 @@
-"""Deploy only the Story Registry MCP release, preserving corpus and other workers.
+"""Deploy the Story MCP and optionally the indexing activation worker.
 
 The active SQLite remains the authority. Preflight takes a consistent SQLite
 Online Backup before any schema migration or service change. A failed rollout
@@ -33,7 +33,9 @@ OVERRIDE_ENV = STATE / "story-registry-release.env"
 ENV = STATE / "service.env"
 BACKUPS = STATE / "backups" / "story-registry"
 SERVICE = "regional-knowledge-base.service"
-BRANCH = "chatgpt/story-registry-mvp-20261009"
+INDEXER_SERVICE = "regional-knowledge-indexing.service"
+INDEXER_OVERRIDE = UNIT_DIR / "regional-knowledge-indexing.service.d/90-story-ingestion.conf"
+BRANCH = "chatgpt/auto-story-extract-on-book-ingest-20261009"
 
 
 def cmd(*args, capture=True, timeout=90):
@@ -162,7 +164,7 @@ asyncio.run(main())
                    env=env, check=True, timeout=35, capture_output=True)
 
 
-def configure(source, sha):
+def configure(source, sha, *, with_indexer=False):
     # An isolated per-service override: changing the global service.env would
     # inadvertently alter BGE/graph/indexing workers after their next restart.
     override = """[Service]
@@ -174,6 +176,10 @@ EnvironmentFile={extra}
     metadata = "PYTHONPATH=\"{}\"\nRKB_RELEASE_SHA=\"{}\"\n".format(source / "src", sha)
     atomically(OVERRIDE_ENV, metadata, 0o600)
     atomically(OVERRIDE, override, 0o644)
+    if with_indexer:
+        # The existing indexing worker can activate revisions asynchronously.
+        # Both it and the importing MCP must run the SAME Story activation hook.
+        atomically(INDEXER_OVERRIDE, override, 0o644)
 
 
 def health():
@@ -196,8 +202,8 @@ def systemctl(action, service=None):
     cmd("systemctl", "--user", action, *( [service] if service else [] ), timeout=40)
 
 
-def verify_pid(source, sha):
-    pid = int(cmd("systemctl", "--user", "show", SERVICE, "--value", "-p", "MainPID"))
+def verify_pid(source, sha, unit=SERVICE):
+    pid = int(cmd("systemctl", "--user", "show", unit, "--value", "-p", "MainPID"))
     if pid < 1:
         raise RuntimeError("MCP process not alive")
     environment = Path("/proc") / str(pid) / "environ"
@@ -211,34 +217,45 @@ def verify_pid(source, sha):
     return pid
 
 
-def run(sha, apply):
+def run(sha, apply, *, with_indexer=False):
     os.environ["XDG_RUNTIME_DIR"] = "/run/user/" + str(os.getuid())
     os.environ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + os.environ["XDG_RUNTIME_DIR"] + "/bus"
     source = materialize(sha)
     verify_imports(source)
     existing_override = OVERRIDE.read_bytes() if OVERRIDE.exists() else None
     existing_env = OVERRIDE_ENV.read_bytes() if OVERRIDE_ENV.exists() else None
+    existing_indexer = INDEXER_OVERRIDE.read_bytes() if INDEXER_OVERRIDE.exists() else None
+    if with_indexer and not (source / "src/regional_knowledge/story_ingestion.py").is_file():
+        raise RuntimeError("Candidate release has no story ingestion hook")
+    if with_indexer and existing_indexer and b"story-registry" not in existing_indexer:
+        raise RuntimeError("unexpected indexing override: refusing overwrite")
     if existing_override and b"story-registry" not in existing_override:
         raise RuntimeError("unexpected unrelated systemd override: refusing overwrite")
     print(json.dumps({"phase": "preflight", "candidate_sha": sha, "source": str(source),
                       "preflight": "passed", "sqlite_runtime": sqlite3.sqlite_version,
-                      "will_restart_only": SERVICE}, ensure_ascii=False), flush=True)
+                      "will_restart": [SERVICE, INDEXER_SERVICE] if with_indexer else [SERVICE]},
+                     ensure_ascii=False), flush=True)
     if not apply:
         return
     backup = offline_backup()
     print(json.dumps({"phase": "backup", **backup}, ensure_ascii=False), flush=True)
     try:
-        configure(source, sha)
+        configure(source, sha, with_indexer=with_indexer)
         systemctl("daemon-reload")
         systemctl("restart", SERVICE)
+        if with_indexer:
+            systemctl("restart", INDEXER_SERVICE)
         health()
         pid = verify_pid(source, sha)
+        indexer_pid = verify_pid(source, sha, INDEXER_SERVICE) if with_indexer else None
         print(json.dumps({"phase": "deployed", "sha": sha, "service": SERVICE,
-                          "pid": pid, "public_health": "ok",
+                          "pid": pid, "indexer_pid": indexer_pid,
+                          "public_health": "ok",
                           "backup_file": backup["db_backup"]}, ensure_ascii=False), flush=True)
     except BaseException:
         for path, previous, mode in ((OVERRIDE, existing_override, 0o644),
-                                     (OVERRIDE_ENV, existing_env, 0o600)):
+                                     (OVERRIDE_ENV, existing_env, 0o600),
+                                     (INDEXER_OVERRIDE, existing_indexer, 0o644)):
             if previous is None:
                 path.unlink(missing_ok=True)
             else:
@@ -246,8 +263,10 @@ def run(sha, apply):
         try:
             systemctl("daemon-reload")
             systemctl("restart", SERVICE)
+            if with_indexer:
+                systemctl("restart", INDEXER_SERVICE)
             health()
-            print(json.dumps({"phase": "rolled_back_service_only", "health": "ok"}), flush=True)
+            print(json.dumps({"phase": "rolled_back_previous_services", "health": "ok"}), flush=True)
         except Exception as rollback_error:
             print(json.dumps({"phase": "rollback_health_failed",
                               "error_type": type(rollback_error).__name__}), flush=True)
@@ -258,5 +277,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--sha", required=True)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--with-indexer", action="store_true",
+                        help="Update both MCP and the accepted-revision activation worker")
     args = parser.parse_args()
-    run(args.sha, args.apply)
+    run(args.sha, args.apply, with_indexer=args.with_indexer)
