@@ -321,7 +321,7 @@ def build_server(
                 annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
             async def story_get(story_id: str, revision: int | None = None,
                     view: Literal["compact","editorial","evidence","review",
-                                  "evidence_page","assertion_page","sources_page"] = "compact",
+                                  "evidence_page","assertion_page","sources_page","relations_page"] = "compact",
                     cursor: str | None = None, limit: Annotated[int, Field(ge=1,le=10)] = 8,
                     assertion_id: str | None = None) -> dict[str,Any]:
                 return await story_call(registry.get, story_id, revision, view, cursor, limit, assertion_id)
@@ -341,11 +341,13 @@ def build_server(
                     variant_revision_ids: list[dict[str,str|int]] | None = None) -> dict[str,Any]:
                 return await story_call(registry.validate, story_id, variant_revision_ids)
 
-            @mcp.tool(name="story_job_get", title="Inspect extraction checkpoint",
-                description="Real persisted state; awaiting_agent means that no model worker has started.",
+            @mcp.tool(name="story_job_get", title="Inspect extraction and reconciliation state",
+                description="Persisted bounded progress and paginated proposal IDs. "
+                            "awaiting_agent means an external model must continue.",
                 annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
-            async def story_job_get(job_id: str) -> dict[str,Any]:
-                return await story_call(registry.job_get, job_id)
+            async def story_job_get(job_id: str, cursor: str | None = None,
+                    limit: Annotated[int,Field(ge=1,le=10)]=5) -> dict[str,Any]:
+                return await story_call(registry.job_get, job_id, cursor, limit)
 
             @mcp.tool(name="entity_list", title="List accepted graph mentions",
                 description="Authorized bounded entity list, not a complete claim of book coverage.",
