@@ -7,12 +7,14 @@ from .supabase_backend import SupabaseRestBackend,SupabaseConfig
 from .sqlite_corpus import SQLiteCorpus
 from .sqlite_data import SQLiteDataClient
 from .vector_plane import RemoteVectorClient
-from .contracts import BookFindOutput,BookFindResult
+from .contracts import BookFindOutput,BookFindResult,BookIngestOutput
 from .rank_fusion import fuse
 
 class SQLiteBackend(PostgresBackend):
     def __init__(self,dsn=None,*,corpus_path,embedder,object_store,pool_min_size=0,pool_max_size=4,public_base_url=None):
         self.corpus=SQLiteCorpus(corpus_path)
+        from .story_registry import StoryRegistry
+        self.story_registry=StoryRegistry(self.corpus)
         self.data_client=SQLiteDataClient(self.corpus,self)
         self.vector_client=RemoteVectorClient(dsn,min_size=0,max_size=pool_max_size) if dsn else None
         self.bge_query_embedder=None
@@ -113,6 +115,12 @@ class SQLiteBackend(PostgresBackend):
                 kind=alias.get('alias_type') if alias.get('alias_type') in ('current','historical') else 'historical'
                 result.append({'name':value,'kind':kind});seen.add(key)
                 if len(result)>=20:return result
+        if isinstance(result, BookIngestOutput) and result.ingestion_id:
+            from .story_ingestion import extraction_status
+            current = await self._ingestion_row(principal=kwargs['principal'],
+                                               ingestion_id=result.ingestion_id)
+            if current:
+                result.story_extraction = extraction_status(self.corpus, current)
         return result
 
     async def local_rankings(self,name,payload,headers):
@@ -257,7 +265,10 @@ class SQLiteBackend(PostgresBackend):
             if row and row.get('cursor')=='vectors':
                 from .vector_policy import required_vector_spaces
                 required='+'.join(space.upper() for space in required_vector_spaces())
-                return self._ingestion_output(row,f'Waiting for required {required} publication; previous revision remains selected')
+                out=self._ingestion_output(row,f'Waiting for required {required} publication; previous revision remains selected')
+                from .story_ingestion import extraction_status
+                out.story_extraction=extraction_status(self.corpus,row)
+                return out
         result=await super().book_ingest(**kwargs)
         if result.document_id and payload.get('catalog'):
             from .contracts import CatalogMetadata

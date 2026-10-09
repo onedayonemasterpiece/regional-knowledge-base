@@ -448,15 +448,22 @@ async def stage_ingestion(
     raw_chunks = payload.get("chunks", [])
     raw_poi_facts = payload.get("poi_facts", [])
     raw_poi_media_links = payload.get("poi_media_links", [])
+    raw_story_candidates = payload.get("story_candidates", [])
     if (
         not isinstance(raw_pages, list)
         or not isinstance(raw_chunks, list)
         or not isinstance(raw_poi_facts, list)
         or not isinstance(raw_poi_media_links, list)
+        or not isinstance(raw_story_candidates, list)
     ):
         raise ValueError(
             "stage pages/chunks/poi_facts/poi_media_links must be arrays"
         )
+    from .story_contracts import StageStoryCandidateInput
+    story_candidates = [StageStoryCandidateInput.model_validate(value)
+                        for value in raw_story_candidates]
+    if len(story_candidates) > 12:
+        raise ValueError("at most 12 model-authored story candidates per stage batch")
     pages = [StagePageInput.model_validate(value) for value in raw_pages]
     chunks = [StageChunkInput.model_validate(value) for value in raw_chunks]
     poi_facts = [
@@ -473,7 +480,7 @@ async def stage_ingestion(
         raise ValueError("stage accepts at most 100 POI facts per call")
     if len(poi_media_links) > 100:
         raise ValueError("stage accepts at most 100 POI media links per call")
-    if not pages and not chunks and not poi_facts and not poi_media_links and not entity_candidates:
+    if not pages and not chunks and not poi_facts and not poi_media_links and not entity_candidates and not story_candidates:
         raise ValueError(
             "stage requires a page, chunk, POI fact or POI media link"
         )
@@ -510,14 +517,29 @@ async def stage_ingestion(
         merged,
         cursor=progress_cursor,
     )
-    return service._ingestion_output(
+    story_checkpoint = None
+    if hasattr(service, "corpus") and (pages or story_candidates):
+        # Do not use a separate model, second scan or vector index. The same
+        # reviewed regions back the candidate and its SQLite checkpoint.
+        from .story_ingestion import persist_stage
+        story_checkpoint = await asyncio.to_thread(
+            persist_stage, service.corpus, principal, row,
+            merged, pages, story_candidates,
+        )
+    output = service._ingestion_output(
         updated,
         (
             f"Staged {len(pages)} pages, {len(chunks)} chunks, "
-            f"{len(poi_facts)} POI facts and {len(poi_media_links)} POI media "
-            "links; continue with book_pages/stage or validate when complete"
+            f"{len(poi_facts)} POI facts, {len(poi_media_links)} POI media links "
+            f"and {len(story_candidates)} source-grounded story candidates; "
+            "continue with book_pages/stage or validate when complete"
         ),
     )
+    if story_checkpoint and story_checkpoint["needs_review_count"]:
+        output.warnings.append(
+            f"story_candidates:needs_review:{story_checkpoint['needs_review_count']}"
+        )
+    return output
 
 
 async def validate_ingestion(
