@@ -167,6 +167,10 @@ def activate(ctx,p):
     ctx.activation=True
     ctx.corpus.put('rkb_documents',[{**d,'active_revision':rev}],connection=ctx.db)
     ctx.corpus.put('rkb_ingestion_jobs',[{**j,'state':'finalized','cursor':None,'error_code':None}],connection=ctx.db)
+    # Same short SQLite transaction: candidates are source-backed stories only
+    # after accepted book activation. No network/model call under the write lock.
+    from .story_ingestion import activate_stories
+    activate_stories(ctx,d,j['id'],rev)
     for node in ctx.rows('rkb_entities'):
         m=node.get('metadata') or {}
         if node['document_id']==d['id'] and m.get('_next_revision')==rev and any(x['entity_id']==node['id'] and x['document_id']==d['id'] and x['revision']==rev for x in ctx.rows('rkb_entity_mentions')):
