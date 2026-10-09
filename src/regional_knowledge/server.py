@@ -265,6 +265,19 @@ def build_server(
             "same book_ingest(stage) call. Attach source-region exact quotes; distinguish the book author's " +
             "account from historically proven facts. Do not make a candidate per chunk. " +
             "Complete page-by-page story review in the existing ingestion workflow without a second prompt. " +
+            "In that SAME page-and-passage review, identify historical place names, "
+            "toponyms and old addresses grounded in actually printed source text. "
+            "Put a bounded set of DISTINCT, evidence-backed poi_ref graph nodes in "
+            "book_ingest(stage).entity_candidates, with exact_source_spelling, "
+            "poi_locator names and source chunk/page/region/exact_quote references. "
+            "Do not generate one place per chunk or duplicate names. A unique "
+            "Street Story POI is NOT required at book ingestion time: unresolved "
+            "identity stays queued and must not block the source or Story Registry. "
+            "Never invent coordinates, historical footprints, modern addresses, "
+            "canonical POI IDs or time precision. If the page has no suitable "
+            "sourced place, an empty graph candidate batch is fine. The accepted "
+            "source activates the durable geo queue without a second model prompt, "
+            "and Cartography/Street Story complete downstream review separately. " +
             "Never infer that a source is public."
         ),
         **kwargs,
@@ -760,7 +773,18 @@ def build_server(
             "stage evidence-grounded cross-book comparisons and apply permitted reviewed effects. " +
             "The server cannot semantically compare stories without this calling model; " +
             "persist pending frontier and report unfinished work explicitly rather than pretending " +
-            "that acceptance of the book completed reconciliation."
+            "that acceptance of the book completed reconciliation. " +
+            "During the SAME model page-review pass, use existing entity_candidates " +
+            "for a bounded GraphBundle of source-backed poi_ref place/toponym/" +
+            "historical-address nodes: include exact_source_spelling and locator names " +
+            "plus matching chunk_id/page_id/region_id/exact_quote. " +
+            "Prefer distinct physical places, not a new node for every occurrence. " +
+            "Do not guess historical geography, modern coordinates or canonical IDs. " +
+            "An empty entity_candidates bundle is valid when there are no grounded " +
+            "places. When the source activates (including delayed vector readiness), " +
+            "its same-transaction geo outbox is claimable without a separate extraction " +
+            "prompt or map availability. Private excerpts stay under RKB ACL; " +
+            "a POI candidate is not a verified historical geometry."
         ),
         annotations=ToolAnnotations(
             read_only_hint=False,
