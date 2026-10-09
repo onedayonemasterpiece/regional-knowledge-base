@@ -7,7 +7,7 @@ from .supabase_backend import SupabaseRestBackend,SupabaseConfig
 from .sqlite_corpus import SQLiteCorpus
 from .sqlite_data import SQLiteDataClient
 from .vector_plane import RemoteVectorClient
-from .contracts import BookFindOutput,BookFindResult
+from .contracts import BookFindOutput,BookFindResult,BookIngestOutput
 from .rank_fusion import fuse
 
 class SQLiteBackend(PostgresBackend):
