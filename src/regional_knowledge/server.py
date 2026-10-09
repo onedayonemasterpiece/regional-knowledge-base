@@ -315,16 +315,20 @@ def build_server(
 
             @mcp.tool(name="story_get", title="Read sourced stories and bounded evidence",
                 description="Read one authorized story. For large cross-book dossiers use "
-                            "view=evidence_page, assertion_page, assessments_page or sources_page with a "
+                            "view=evidence_page, assertion_page, assessments_page, relation_history_page "
+                            "or relation_reviews_page (requires relation_id) with a "
                             "revision-bound cursor and limit; sources are derived from actual "
                             "evidence/dependencies, including controlled merges.",
                 annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
             async def story_get(story_id: str, revision: int | None = None,
                     view: Literal["compact","editorial","evidence","review",
-                                  "evidence_page","assertion_page","assessments_page","sources_page","relations_page"] = "compact",
+                                  "evidence_page","assertion_page","assessments_page","sources_page",
+                                  "relations_page","relation_history_page","relation_reviews_page"] = "compact",
                     cursor: str | None = None, limit: Annotated[int, Field(ge=1,le=10)] = 8,
-                    assertion_id: str | None = None) -> dict[str,Any]:
-                return await story_call(registry.get, story_id, revision, view, cursor, limit, assertion_id)
+                    assertion_id: str | None = None,
+                    relation_id: str | None = None) -> dict[str,Any]:
+                return await story_call(registry.get, story_id, revision, view, cursor,
+                                        limit, assertion_id, relation_id)
 
             @mcp.tool(name="story_history", title="Read story change history",
                 description="Bounded version authorship and actions, with current source-access recheck.",
