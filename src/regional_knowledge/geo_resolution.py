@@ -186,6 +186,12 @@ def enqueue_mention(db, actor, mention, node, *, policy=POLICY):
         if normalized:
             db.execute("INSERT OR IGNORE INTO rkb_geo_aliases VALUES(?,?)",
                        (request_id, normalized))
+    # External owner aliases are exact namespace/value pairs; a name match
+    # alone must never override a contradictory Wikidata/OSM ID.
+    for namespace,value in refs.items():
+        normalized=namespace+":"+normalize_alias(value)
+        db.execute("INSERT OR IGNORE INTO rkb_geo_aliases VALUES(?,?)",
+                   (request_id,normalized))
     input_hash = _hash({"request":request_id, "dependency":"source",
                         "revision":mention["revision"],"hash":mention_hash})
     attempt_id = "geoa_" + input_hash[:32]
@@ -627,6 +633,160 @@ class GeoQueue:
                 "coverage":"source_mentions_not_historical_map_coverage",
                 "spatial_relation":"not_inferred",
                 "time_query_year":year,"has_more":len(rows)>take}
+
+    def backfill_batch(self,limit=12):
+        """One-time bounded catch-up for old, already accepted graph mentions.
+
+        New book stages are always handled atomically by LocalContext.store.
+        This does not inspect source text, extract new entities or reimport books.
+        """
+        take=max(1,min(int(limit),32))
+        with self.corpus.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            old=db.execute(
+                "SELECT value_json FROM rkb_geo_watermarks WHERE name='graph_mentions_v1'"
+            ).fetchone()
+            state=json.loads(old[0]) if old else {"after":"","completed":False}
+            if state.get("completed"):
+                return {"scanned":0,"created":0,"completed":True}
+            rows=db.execute("""SELECT row_key,payload FROM corpus_rows
+                WHERE table_name='rkb_entity_mentions' AND row_key>?
+                ORDER BY row_key LIMIT ?""",(state["after"],take)).fetchall()
+            created=0
+            from .sqlite_data import LocalContext
+            for row in rows:
+                mention=json.loads(row["payload"])
+                entity_row=db.execute(
+                    "SELECT payload FROM corpus_rows WHERE table_name='rkb_entities' AND row_key=?",
+                    (mention.get("entity_id"),)).fetchone()
+                if not entity_row:continue
+                entity=json.loads(entity_row["payload"])
+                if entity.get("kind")!="poi_ref":continue
+                source_row=db.execute(
+                    "SELECT payload FROM corpus_rows WHERE table_name='rkb_documents' AND row_key=?",
+                    (mention.get("document_id"),)).fetchone()
+                if not source_row:continue
+                doc=json.loads(source_row["payload"])
+                owner=str(doc.get("owner_user_id") or "")
+                if (not owner or owner!=entity.get("owner_user_id")
+                        or doc.get("active_revision")!=mention.get("revision")):
+                    continue
+                ctx=LocalContext(self.corpus,db,owner)
+                user=ctx.one("rkb_users",owner)
+                if not user or user.get("status")!="active" or not ctx.check_evidence(
+                        doc["id"],mention["revision"],mention.get("evidence") or {}):
+                    continue
+                before=db.execute(
+                    "SELECT COUNT(*) FROM rkb_geo_intents WHERE mention_id=? AND policy_version=?",
+                    (mention["id"],POLICY)).fetchone()[0]
+                key=enqueue_mention(db,owner,mention,entity)
+                if key and not before:created+=1
+            state={"after":rows[-1]["row_key"] if rows else state["after"],
+                   "completed":len(rows)<take}
+            db.execute("""INSERT INTO rkb_geo_watermarks VALUES('graph_mentions_v1',?,?)
+                ON CONFLICT(name) DO UPDATE SET value_json=excluded.value_json,
+                                             updated_at=excluded.updated_at""",
+                (_json(state),time.time()))
+            return {"scanned":len(rows),"created":created,
+                    "completed":state["completed"]}
+
+    def poll_owner_updates(self,limit=24):
+        """Watch OWNER canonical alias additions, schedule only exact relevant intents.
+
+        This is a local read-only projection poll. It does not read the user's
+        private source out of RKB or write to Street Story. Alias created_at
+        + SQLite rowid is a cursor, not a global atlas watermark.
+        """
+        take=max(1,min(int(limit),32))
+        with self.corpus.connect() as db:
+            old=db.execute(
+                "SELECT value_json FROM rkb_geo_watermarks WHERE name='street_owner_alias_v1'"
+            ).fetchone()
+            cursor=json.loads(old[0]) if old else {"time":0.0,"rowid":0}
+        try:
+            with self.resolver._connect() as owner:
+                owner.row_factory=sqlite3.Row
+                aliases=owner.execute("""SELECT rowid,poi_id,namespace,value,created_at
+                    FROM poi_aliases
+                    WHERE created_at>? OR (created_at=? AND rowid>?)
+                    ORDER BY created_at,rowid LIMIT ?""",
+                    (cursor["time"],cursor["time"],cursor["rowid"],take)).fetchall()
+                if not aliases:return {"seen":0,"scheduled":0}
+                groups={}
+                for row in aliases:
+                    groups.setdefault(row["poi_id"],[]).append(row)
+                owner_versions={}
+                for poi_id,changes in groups.items():
+                    row=owner.execute(
+                        "SELECT id,status,canonical_name FROM pois WHERE id=?",
+                        (poi_id,)).fetchone()
+                    if not row or row["status"]=="merged":continue
+                    values=owner.execute(
+                        "SELECT namespace,value FROM poi_aliases WHERE poi_id=? ORDER BY namespace,normalized_value",
+                        (poi_id,)).fetchall()
+                    searchable={
+                        normalize_alias(row["canonical_name"]),
+                        *(normalize_alias(a["value"]) if a["namespace"]=="name"
+                          else a["namespace"]+":"+normalize_alias(a["value"])
+                          for a in values),
+                    }
+                    owner_versions[poi_id]={
+                        "aliases":[v for v in searchable if v],
+                        "revision":_hash({"owner":poi_id,"status":row["status"],
+                                          "aliases":[(v["namespace"],v["value"])
+                                                     for v in values]}),
+                    }
+        except (sqlite3.Error,RuntimeError,OSError):
+            return {"seen":0,"scheduled":0,"owner":"unavailable"}
+        created=0
+        with self.corpus.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for poi_id,meta in owner_versions.items():
+                for name in meta["aliases"][:40]:
+                    matches=db.execute("""SELECT DISTINCT i.* FROM rkb_geo_intents i
+                        JOIN rkb_geo_aliases a ON a.request_id=i.request_id
+                        WHERE a.normalized_name=? LIMIT 30""",(name,)).fetchall()
+                    for intent in matches:
+                        try:
+                            ctx=self._ctx(db,intent["actor_id"])
+                            entity,_=self._live(db,ctx,intent)
+                        except GeoError:
+                            continue
+                        if entity.get("external_ref"):
+                            continue
+                        states=[r[0] for r in db.execute("""SELECT state
+                            FROM rkb_geo_attempts WHERE request_id=?
+                            ORDER BY created_at DESC,attempt_id DESC LIMIT 3""",
+                            (intent["request_id"],))]
+                        if any(x in ("pending","leased","staged","linked_candidate")
+                               for x in states):
+                            continue
+                        dep="streetstory://poi/"+poi_id
+                        signature=_hash({
+                            "request_id":intent["request_id"],
+                            "dependency_kind":"owner_poi",
+                            "dependency_ref":dep,
+                            "dependency_revision":meta["revision"],
+                            "mention_sha":intent["mention_sha256"],
+                            "policy":intent["policy_version"],
+                        })
+                        now=time.time()
+                        count=db.execute("""INSERT OR IGNORE INTO rkb_geo_attempts(
+                            attempt_id,request_id,dependency_kind,dependency_ref,
+                            dependency_revision,input_hash,state,available_at,
+                            created_at,updated_at)
+                            VALUES(?,?,?,?,?,?,'pending',?,?,?)""",(
+                            "geoa_"+signature[:32],intent["request_id"],
+                            "owner_poi",dep,meta["revision"],signature,now,now,now
+                        )).rowcount
+                        created+=int(bool(count))
+            last=aliases[-1]
+            new_cursor={"time":last["created_at"],"rowid":last["rowid"]}
+            db.execute("""INSERT INTO rkb_geo_watermarks VALUES('street_owner_alias_v1',?,?)
+                ON CONFLICT(name) DO UPDATE SET value_json=excluded.value_json,
+                                             updated_at=excluded.updated_at""",
+                (_json(new_cursor),time.time()))
+        return {"seen":len(aliases),"scheduled":created,"scope":"relevant_aliases"}
 
     def worker_tick(self,limit=2):
         """Low-cost owner-local consumer, isolated from remote map/provider failures."""
