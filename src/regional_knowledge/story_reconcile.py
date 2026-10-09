@@ -447,9 +447,11 @@ class StoryReconciler:
                     phase_to = (reference["id"] if decision.phase_of_source == "anchor"
                                 else run["anchor_story_id"] if decision.phase_of_source == "candidate"
                                 else None) if kind == "phase_of" else None
-                    existing = db.execute("""SELECT phase_from_story_id,phase_to_story_id
+                    existing = db.execute("""SELECT active,phase_from_story_id,phase_to_story_id
                         FROM story_relations WHERE left_story_id=? AND right_story_id=? AND kind=?""",
                         (pair[0], pair[1], kind)).fetchone()
+                    if existing and not existing["active"]:
+                        fail("revision_conflict", "Retracted link needs explicit reviewed restoration")
                     if existing and kind == "phase_of" and (
                             existing["phase_from_story_id"] != phase_from
                             or existing["phase_to_story_id"] != phase_to):
