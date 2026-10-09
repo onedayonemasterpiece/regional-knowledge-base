@@ -1227,6 +1227,7 @@ class SupabaseRestBackend(KnowledgeBackend):
                             self, principal, document_id,
                             str(source_object["object_key"]), downloaded,
                             str(source_object.get("mime_type") or "application/pdf"),
+                            existing_object_id=str(source_object["id"]),
                         )
                     # Restore precisely the original private source object for
                     # subsequent book_pages. The source identity and accepted
