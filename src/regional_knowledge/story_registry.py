@@ -980,10 +980,16 @@ class StoryRegistry:
                     assessments = self._current_assessments(db, a)
                     positions = {x.get("semantic_review") for x in assessments}
                     adverse = {"unsupported", "contested"}
-                    if (positions & adverse or any(x.get("support_status") in
-                            {"contested", "contradicted", "unsupported"} for x in assessments)):
+                    positive = bool(positions & {"supported", "partially_supported"})
+                    negative = bool(positions & adverse or any(
+                        x.get("support_status") in {"contested", "contradicted", "unsupported"}
+                        for x in assessments))
+                    if positive and negative:
                         blockers.append("historical_claim_has_active_disagreement:" + a["assertion_id"])
-                    elif not (positions & {"supported", "partially_supported"}):
+                    elif not positive:
+                        # Preserve the existing public blocker for an adverse-only
+                        # or unassessed claim. A superseded old positive cannot
+                        # satisfy the requirement.
                         blockers.append("historical_claim_without_semantic_review:" + a["assertion_id"])
             if a["kind"] in {"hypothesis", "creative_material"} and not variant.get("attributions"):
                 blockers.append("hypothesis_or_reconstruction_not_marked:" + a["assertion_id"])
