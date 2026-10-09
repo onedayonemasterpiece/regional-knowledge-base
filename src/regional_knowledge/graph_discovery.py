@@ -142,11 +142,20 @@ async def main():
     last_geo=0
     try:
         while True:
-            if time.monotonic()-last>30:await worker.sync_pois();last=time.monotonic()
-            # Separate local SQLite queue. Read-only Street Story lookups and
-            # short fenced commits; exceptions never stop the book worker.
+            if time.monotonic()-last>30:
+                if geo is not None:
+                    try:await asyncio.to_thread(geo.poll_owner_updates,24)
+                    except Exception as error:
+                        log.warning(json.dumps({'event':'geo_owner_delta_degraded',
+                                                'error_type':type(error).__name__}))
+                await worker.sync_pois()
+                last=time.monotonic()
+            # Bounded catch-up of old graph mentions and one fenced owner
+            # resolution; source ingest and BGE are never held behind geography.
             if geo is not None and time.monotonic()-last_geo>5:
-                try:await asyncio.to_thread(geo.worker_tick,2)
+                try:
+                    await asyncio.to_thread(geo.backfill_batch,12)
+                    await asyncio.to_thread(geo.worker_tick,2)
                 except Exception as error:
                     log.warning(json.dumps({'event':'geo_queue_worker_degraded',
                                             'error_type':type(error).__name__}))
