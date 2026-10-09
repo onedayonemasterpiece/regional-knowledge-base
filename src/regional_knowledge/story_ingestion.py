@@ -91,7 +91,20 @@ def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates):
         raise PermissionError("source owner required for candidate extraction")
     if len(candidates) > 12 or len(pages) > 8:
         raise ValueError("bounded extraction batch exceeded")
-    collected = _resolve_candidates(graph, candidates)
+    collected, invalid = [], []
+    for candidate in candidates:
+        try:
+            collected.extend(_resolve_candidates(graph, [candidate]))
+        except ValueError:
+            # Never derail a valid book import because one OPTIONAL model-
+            # authored story failed source proof. Persist a bounded review
+            # checkpoint instead of creating an unsourced historical claim.
+            item = candidate.model_dump(mode="json", exclude={"evidence_refs"})
+            item["evidence"] = [
+                {"page_id": ref.page_id, "region_key": ref.region_key}
+                for ref in candidate.evidence_refs
+            ]
+            invalid.append(item)
     changed = [page.page_id for page in pages]
     with corpus.connect() as db:
         db.execute("PRAGMA synchronous=FULL")
@@ -109,7 +122,7 @@ def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates):
         if changed:
             marks = ",".join("?" for _ in changed)
             db.execute(f"""DELETE FROM story_ingest_candidates
-                  WHERE ingestion_id=? AND state='staged'
+                  WHERE ingestion_id=? AND state IN ('staged','needs_review')
                     AND EXISTS (
                       SELECT 1 FROM json_each(story_ingest_candidates.payload,'$.evidence') e
                       WHERE json_extract(e.value,'$.page_id') IN ({marks})
@@ -121,6 +134,16 @@ def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates):
                   DO UPDATE SET state=excluded.state,at=excluded.at""",
                            (ing_id, doc_id, revision, page.physical_page_index,
                             "reviewed" if page.story_candidates_reviewed else "unreviewed", now()))
+        for candidate in invalid:
+            db.execute("""INSERT INTO story_ingest_candidates
+                    (ingestion_id,candidate_key,document_id,source_revision,
+                     payload,payload_hash,state,story_id,at)
+                    VALUES(?,?,?,?,?,?,'needs_review',NULL,?)
+                    ON CONFLICT(ingestion_id,candidate_key)
+                    DO UPDATE SET payload=excluded.payload,payload_hash=excluded.payload_hash,
+                                  state='needs_review',story_id=NULL,at=excluded.at""",
+                       (ing_id, candidate["candidate_key"], doc_id, revision,
+                        canonical(candidate), digest(candidate), now()))
         for candidate in collected:
             key = candidate["candidate_key"]
             existing = db.execute("""SELECT payload,state FROM story_ingest_candidates
@@ -136,7 +159,8 @@ def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates):
                                   state='staged',story_id=NULL,at=excluded.at""",
                        (ing_id, key, doc_id, revision,
                         canonical(candidate), digest(candidate), now()))
-    return {"candidate_count": len(collected), "reviewed_in_batch":
+    return {"candidate_count": len(collected), "needs_review_count": len(invalid),
+            "reviewed_in_batch":
             sum(bool(page.story_candidates_reviewed) for page in pages)}
 
 
