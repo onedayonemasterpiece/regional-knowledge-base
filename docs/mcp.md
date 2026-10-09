@@ -332,3 +332,14 @@ text still must match exactly. Scans and DjVu use bounded Flash-Lite localizatio
 without the expected quote. Code applies yellow stripes; ambiguous or mismatched
 results fail closed. Warm model proofs recheck `RKB_SCAN_PROOF_ENABLED` and
 source ownership, so capability revocation also rejects a warm cache hit.
+
+## Organizations and sourced graph relationships (2026-10-09)
+
+`GraphBundle.entities` now accepts `organization` in the **existing**
+graph stage/ingest surface. Typed directed organization edges are
+`affiliated_with`, `founded_by`, `participated_in`, `operated_at`,
+`predecessor_of` and `member_of` with exact original quote evidence and
+bounded one-hop `graph_fetch`. The existing `graph_stage`,
+`graph_fetch`, `graph_related` and `entity_list` methods are reused.
+No new graph backend or POI identity is introduced. Validation is repeated
+in SQLite writes. [Full organization contract](organization-graph.md).
