@@ -1,6 +1,6 @@
 # Реестр историй — Story Registry
 
-**Статус (2026-10-09):** основной Story Registry уже работает; сквозное обогащение разрабатывается в [PR #85](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/85) и до подтверждённого production MCP не считается развёрнутым. Точный runtime SHA проверяется отдельно от HEAD репозитория.
+**Статус (2026-10-09):** Story Registry работает; PR #85, #86 и #87 объединены с main. Production MCP и конкретный deployed SHA проверяются отдельно от состояния кода; полная межкнижная и векторная продуктовая приёмка не объявлена.
 
 ## Границы и назначение
 
@@ -127,3 +127,36 @@ phrases. Если story semantic/vector branch не запущен, он не о
 ## План развития хранилища
 
 Если появятся два одновременно пишущих API/worker-хоста, проверенное восстановление перестанет удовлетворять RTO/RPO или устойчиво нарушится write SLO после устранения длинных транзакций — переносим всё взаимосвязанное основное состояние/ACL/истории/каталог/доказательства/задания на PostgreSQL согласованно. Число зарегистрированных пользователей не является причиной миграции.
+
+
+### Доступ ко всем assessment и направленные связи (совместимое дополнение v7)
+
+`story_get(view="assessments_page", assertion_id=..., limit<=10, cursor=...)`
+возвращает **все текущие (не замещённые) оценки** конкретной редакции
+утверждения, страница за страницей: `items[].assessment` содержит исходный
+typed assessment, `assertion_id` и `assertion_revision` сохраняются.
+Следующий `next_cursor` привязан к версии истории и ID утверждения.
+После изменения карточки или попытки использовать курсор другой assertion
+возвращается validation_failed. Ссылка на evidence перепроверяется по
+текущим source ACL при каждом чтении. Прежние `assertion_page` и
+`evidence_page` всё ещё возвращают только первые шесть effective assessments;
+`assessments_has_more` означает, что продолжение доступно отдельно.
+
+Для `story_reconcile(stage)` есть необязательное typed
+`decision.phase_of_source = "anchor" | "candidate"`. Его значение —
+**какая из двух историй является фазой другой**, а не порядок дат.
+При `link_stories` с `part_or_phase` новое поле записывается в
+`story_relations.phase_from_story_id/phase_to_story_id` независимо от
+сортировки UUID. В `story_get(view="relations_page")` доступны
+`phase_direction` и `phase_direction_status`. Исторические записи, для
+которых исходная модель не указала направление, возвращаются
+`legacy_unresolved`; миграция не приписывает им направление задним числом.
+Конфликт нового направления с уже сохранённым требует явной редакционной
+коррекции и не переписывает старое доказательство. SQL v7 добавляет только
+две nullable колонки, без сброса данных/ревизий/историй. Для старых MCP
+клиентов поле optional; обновлённую client schema нужно подтвердить отдельно.
+
+Следующая независимая поставка: revision-guarded correction/retraction,
+typed assessment при reconcile apply, durable frontier/corpus watermark,
+реальный story-vector worker. Пока `story_search(semantic|hybrid)` сообщает
+lexical fallback и не считается прошедшим semantic recall.
