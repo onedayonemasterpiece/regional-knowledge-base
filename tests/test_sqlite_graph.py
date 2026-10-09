@@ -167,10 +167,6 @@ async def test_graph_links_street_story_real_opaque_poi_without_local_identity_c
                           latitude REAL,longitude REAL);
         CREATE TABLE poi_aliases(poi_id TEXT,namespace TEXT,value TEXT,normalized_value TEXT);
         """)
-        db.execute("INSERT INTO pois VALUES(?,?,?,?,?)",
-                   (opaque,'candidate','Калининградский зоопарк',54.72044,20.48737))
-        db.execute("INSERT INTO poi_aliases VALUES(?,?,?,?)",
-                   (opaque,'wikidata','Q1193386','q1193386'))
     backend=SQLiteBackend(
         corpus_path=tmp_path/'regional.sqlite3',
         embedder=LexicalOnlyEmbedder(),
@@ -201,7 +197,7 @@ async def test_graph_links_street_story_real_opaque_poi_without_local_identity_c
     proof={'chunk_id':chunk,'page_id':page,'region_id':region,'exact_quote':text}
     actor=Principal(subject=owner,client_id='test',issuer='test',access_token='local')
     graph=GraphService(backend,StreetStoryPoiResolver(src))
-    saved=await graph.stage(actor,document,1,{'entities':[{
+    first=await graph.stage(actor,document,1,{'entities':[{
         'key':'zoo-site','kind':'poi_ref',
         'canonical_label':'Калининградский зоопарк',
         'exact_source_spelling':'Кёнигсбергский зоопарк',
@@ -211,7 +207,32 @@ async def test_graph_links_street_story_real_opaque_poi_without_local_identity_c
         },
         'evidence':proof,
     }]})
+    assert first['unresolved_pois']==1
+    original=await graph.read(actor,first['entities']['zoo-site'])
+    assert original['entity']['external_ref'] is None
+    assert original['entity']['state']=='unresolved'
+
+    # Street Story owner imports a verified external binding in its OWN SQLite
+    # after RKB has already staged this exact private book evidence.
+    with sqlite3.connect(src) as db:
+        db.execute("INSERT INTO pois VALUES(?,?,?,?,?)",
+                   (opaque,'candidate','Калининградский зоопарк',54.72044,20.48737))
+        db.execute("INSERT INTO poi_aliases VALUES(?,?,?,?)",
+                   (opaque,'wikidata','Q1193386','q1193386'))
+    payload={'entities':[{
+        'key':'zoo-site','kind':'poi_ref',
+        'canonical_label':'Калининградский зоопарк',
+        'exact_source_spelling':'Кёнигсбергский зоопарк',
+        'poi_locator':{
+            'names':['Калининградский зоопарк','Кёнигсбергский зоопарк'],
+            'external_ids':{'wikidata':'Q1193386'},
+        },
+        'evidence':proof,
+    }]}
+    saved=await graph.stage(actor,document,1,payload)
     assert saved['unresolved_pois']==0
+    assert saved['entities']==first['entities']
+    assert await graph.stage(actor,document,1,payload)==saved
     node=await graph.read(actor,saved['entities']['zoo-site'])
     assert node['entity']['external_ref']=='streetstory://poi/'+opaque
     assert node['entity']['external_identity_state']=='candidate'
