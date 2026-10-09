@@ -1024,6 +1024,13 @@ class StoryRegistry:
                     fail("not_found_or_not_accessible")
                 snapshot = json.loads(hist[0])
             permitted = self._available_actions(db, actor, rec)
+            if view in {"observations_page","observations_history_page"}:
+                if revision is not None and revision != rec["revision"]:
+                    fail("validation_failed","Observation views require current authorized story revision")
+                from .story_observations import StoryObservations
+                return StoryObservations(self).page(
+                    db,actor,rec,snapshot,cursor,limit,assertion_id,
+                    history=view=="observations_history_page")
             if view in {"event_dates_page", "event_date_history_page"}:
                 if revision is not None and revision != rec["revision"]:
                     fail("validation_failed", "Date views require the current authorized story revision")
@@ -1049,6 +1056,15 @@ class StoryRegistry:
             return {"story_id": story_id, "revision": revision or rec["revision"],
                     "snapshot": snapshot, "readiness": self._effective_readiness(db, json.loads(rec["snapshot"])),
                     "allowed_actions": permitted, "indexing_state": "local_fts_ready_vector_awaiting_worker"}
+
+    def observation_search(self, principal, metric_key, unit_code=None, limit=3, cursor=None):
+        from .story_observations import StoryObservations
+        return StoryObservations(self).search(
+            principal,metric_key,unit_code,limit,cursor)
+
+    def observation_compare(self, principal, story_id, left_id, right_id):
+        from .story_observations import StoryObservations
+        return StoryObservations(self).compare(principal,story_id,left_id,right_id)
 
     def calendar(self, principal, month, day, calendar="gregorian", limit=3, cursor=None):
         from .story_calendar import StoryCalendar
