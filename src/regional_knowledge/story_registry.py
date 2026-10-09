@@ -378,6 +378,30 @@ class StoryRegistry:
                 """)
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(9,datetime('now'))")
                 db.commit()
+            if not db.execute("SELECT 1 FROM story_schema_migrations WHERE version=10").fetchone():
+                # The 50-item model frontier is a packet bound, never a
+                # corpus-wide limit. Overflow persists with its originating
+                # run/policy/search proof and is promoted in bounded new runs.
+                db.executescript("""
+                CREATE TABLE IF NOT EXISTS story_reconcile_overflow(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    origin_run_id TEXT NOT NULL REFERENCES story_reconcile_runs(id),
+                    ref_kind TEXT NOT NULL CHECK(ref_kind IN ('story','chunk')),
+                    ref_id TEXT NOT NULL,
+                    reference TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(state IN ('pending','continued','already_decided','cancelled')),
+                    continued_run_id TEXT REFERENCES story_reconcile_runs(id),
+                    added_at TEXT NOT NULL,
+                    UNIQUE(origin_run_id,ref_kind,ref_id)
+                );
+                CREATE INDEX IF NOT EXISTS story_reconcile_overflow_pending
+                    ON story_reconcile_overflow(origin_run_id,state,id);
+                CREATE INDEX IF NOT EXISTS story_reconcile_overflow_state
+                    ON story_reconcile_overflow(state,id);
+                """)
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(10,datetime('now'))")
+                db.commit()
 
     @staticmethod
     def _row(db, table, ident):
