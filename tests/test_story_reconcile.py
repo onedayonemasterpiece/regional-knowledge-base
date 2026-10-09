@@ -448,25 +448,37 @@ def test_cross_book_link_is_not_automatic_merge(fixture):
     assert old["latest_review"]["action"] == "retract"
     assert old["proofs"][0]["original_excerpt"] == book_a[4]
 
-    # A second source comparison cannot silently revive a retracted unique edge.
+    # Under the same evidence/policy, a previously reviewed pair is skipped,
+    # including its retracted relation: no work is leased to a model.
     retry = reconciler.dispatch(owner, ReconcileStart(
         command="start", anchor_story_id=first[0], expected_story_revision=4,
         refs=[ReconcileCandidateRef(kind="story", ref_id=second[0])],
     ), "phase-link-retry-start")
+    assert retry["candidate_count"] == 0
+    assert retry["skipped_decided_pairs"] == 1
+
+    # A deliberately new policy can reopen comparison, but it cannot
+    # silently restore an editorially retracted link.
+    new_policy = reconciler.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=first[0], expected_story_revision=4,
+        policy_version="cross-book-v2",
+        refs=[ReconcileCandidateRef(kind="story", ref_id=second[0])],
+    ), "phase-link-new-policy-start")
+    assert new_policy["candidate_count"] == 1
     lease = reconciler.dispatch(owner, ReconcileClaim(
-        command="claim", run_id=retry["job_id"], expected_job_revision=1,
-    ), "phase-link-retry-claim")
+        command="claim", run_id=new_policy["job_id"], expected_job_revision=1,
+    ), "phase-link-new-policy-claim")
     restage = reconciler.dispatch(owner, ReconcileStage(
-        command="stage", run_id=retry["job_id"], expected_job_revision=2,
+        command="stage", run_id=new_policy["job_id"], expected_job_revision=2,
         work_id=lease["work_id"], lease_token=lease["lease_token"], decision=decision,
-    ), "phase-link-retry-stage")
+    ), "phase-link-new-policy-stage")
     with pytest.raises(StoryError) as withheld:
         reconciler.dispatch(owner, ReconcileApply(
-            command="apply", run_id=retry["job_id"],
+            command="apply", run_id=new_policy["job_id"],
             proposal_id=restage["proposal_id"], expected_job_revision=3,
             expected_target_revision=4,
-            reviewer_note="An unreviewed proposal cannot undo a deliberate retraction.",
-        ), "phase-link-retry-apply")
+            reviewer_note="Even a new comparison policy cannot revive a retracted relation.",
+        ), "phase-link-new-policy-apply")
     assert withheld.value.code == "revision_conflict"
     assert registry.get(owner, first[0], view="relations_page")["items"] == []
 
