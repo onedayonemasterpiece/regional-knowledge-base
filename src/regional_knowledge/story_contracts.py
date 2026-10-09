@@ -261,3 +261,38 @@ ExtractRequest = Annotated[
     ExtractStart | ExtractClaim | ExtractStage | ExtractCancel,
     Field(discriminator="command"),
 ]
+
+
+# New books are processed by the SAME importing model that reviews their pages.
+# Each candidate represents one episode, not one chunk; region quotes must exist.
+class StageStoryEvidenceInput(Strict):
+    page_id: Annotated[str, Field(min_length=36, max_length=36)]
+    region_key: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")]
+    original_excerpt: Annotated[str, Field(min_length=1, max_length=500)]
+    start: int | None = Field(default=None, ge=0)
+    end: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def span(self):
+        if (self.start is None) != (self.end is None):
+            raise ValueError("Both exact source offsets are required together")
+        if self.start is not None and self.start >= self.end:
+            raise ValueError("Source offsets must be ordered")
+        return self
+
+
+class StageStoryCandidateInput(Strict):
+    candidate_key: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")]
+    title: Annotated[str, Field(min_length=3, max_length=250)]
+    summary: Annotated[str, Field(min_length=5, max_length=1000)]
+    material_type: Literal[
+        "event_narrative", "person_episode", "place_biography", "explanation",
+        "comparison", "everyday_life", "mystery", "conflicting_accounts", "other",
+    ] = "other"
+    proposition: Annotated[str, Field(min_length=5, max_length=500)]
+    account_kind: Literal[
+        "legend", "tradition", "rumor", "recollection", "testimony", "other",
+    ] = "other"
+    attributed_to: str | None = Field(default=None, max_length=250)
+    reported_by: str | None = Field(default=None, max_length=250)
+    evidence_refs: list[StageStoryEvidenceInput] = Field(min_length=1, max_length=4)
