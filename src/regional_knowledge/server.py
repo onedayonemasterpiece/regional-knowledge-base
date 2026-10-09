@@ -313,12 +313,18 @@ def build_server(
                     cursor: str | None = None) -> dict[str,Any]:
                 return await story_call(registry.search, query, filters, mode, order, limit, cursor)
 
-            @mcp.tool(name="story_get", title="Read a sourced editorial card",
-                description="Read one authorized story revision, its typed assertions and editorial state.",
+            @mcp.tool(name="story_get", title="Read sourced stories and bounded evidence",
+                description="Read one authorized story. For large cross-book dossiers use "
+                            "view=evidence_page, assertion_page or sources_page with a "
+                            "revision-bound cursor and limit; sources are derived from actual "
+                            "evidence/dependencies, including controlled merges.",
                 annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
             async def story_get(story_id: str, revision: int | None = None,
-                    view: Literal["compact","editorial","evidence","review"] = "compact") -> dict[str,Any]:
-                return await story_call(registry.get, story_id, revision, view)
+                    view: Literal["compact","editorial","evidence","review",
+                                  "evidence_page","assertion_page","sources_page"] = "compact",
+                    cursor: str | None = None, limit: Annotated[int, Field(ge=1,le=10)] = 8,
+                    assertion_id: str | None = None) -> dict[str,Any]:
+                return await story_call(registry.get, story_id, revision, view, cursor, limit, assertion_id)
 
             @mcp.tool(name="story_history", title="Read story change history",
                 description="Bounded version authorship and actions, with current source-access recheck.",
