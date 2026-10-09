@@ -912,3 +912,52 @@ def test_upgrading_populated_registry_backfills_assertions_and_reconciliation_wi
                           (sid,)).fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM story_revisions WHERE story_id=?",
                           (sid,)).fetchone()[0] == 3
+
+
+def test_effective_assessment_pagination_is_complete_scoped_and_revision_guarded(setup):
+    """Seven-plus independent reviews must be retrievable, not silently clipped at six."""
+    registry, owner, outsider = setup
+    sid = seed(registry, owner, key="assessment-pages-seed")["story_id"]
+    registry.edit(owner, sid, 1, [UpsertAssertion(
+        op="upsert_assertion", kind="historical_claim",
+        proposition="Синтетический мост построен в 1535 году.",
+    )], "assessment-pages-first")
+    registry.edit(owner, sid, 2, [UpsertAssertion(
+        op="upsert_assertion", kind="historical_claim",
+        proposition="Синтетический мост перестроен в 1540 году.",
+    )], "assessment-pages-second")
+    claims = registry.get(owner, sid, view="evidence")["snapshot"]["assertions"]
+    aid, other_id = claims[0]["assertion_id"], claims[1]["assertion_id"]
+    for i in range(8):
+        registry.edit(owner, sid, 3+i, [RecordAssessment(
+            op="record_assessment", assertion_id=aid, assertion_revision=1,
+            rationale=f"Independent synthetic review {i}", evidence_ids=[],
+        )], f"assessment-pages-review-{i}")
+    page = registry.get(owner, sid, view="assessments_page", assertion_id=aid, limit=3)
+    assert page["story_revision"] == 11
+    assert page["has_more"] and len(page["items"]) == 3
+    expect("validation_failed", registry.get, owner, sid,
+           view="assessments_page", limit=3)
+    expect("validation_failed", registry.get, owner, sid,
+           view="assessments_page", assertion_id=other_id,
+           cursor=page["next_cursor"], limit=3)
+    expect("not_found_or_not_accessible", registry.get, outsider, sid,
+           view="assessments_page", assertion_id=aid, limit=3)
+    ids = []
+    cursor = None
+    while True:
+        result = registry.get(owner, sid, view="assessments_page",
+                              assertion_id=aid, cursor=cursor, limit=3)
+        ids.extend(row["assessment"]["id"] for row in result["items"])
+        assert all(row["assertion_revision"] == 1 for row in result["items"])
+        cursor = result["next_cursor"]
+        if not cursor:
+            assert not result["has_more"]
+            break
+    assert len(ids) == len(set(ids)) == 8
+    registry.edit(owner, sid, 11, [AddGap(
+        op="add_gap", text="Синтетический вопрос о мосте",
+    )], "assessment-pages-invalidate-cursor")
+    expect("validation_failed", registry.get, owner, sid,
+           view="assessments_page", assertion_id=aid,
+           cursor=page["next_cursor"], limit=3)

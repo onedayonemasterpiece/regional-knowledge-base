@@ -375,6 +375,9 @@ class ReconcileDecision(Strict):
         "link_stories", "attach_evidence", "add_attributed_claim", "no_change"
     ]
     rationale: Annotated[str, Field(min_length=10, max_length=1000)]
+    # Meaning: selected story is a phase OF the other story, not a date-order guess.
+    # None retains the non-directional interpretation of legacy proposals.
+    phase_of_source: Literal["anchor", "candidate"] | None = None
     anchor_evidence: ReconcileEvidenceRef
     candidate_evidence: ReconcileEvidenceRef
     target_assertion_id: Identifier | None = None

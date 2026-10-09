@@ -329,6 +329,16 @@ class StoryRegistry:
                     after_story = rows[-1]["id"]
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(6,datetime('now'))")
                 db.commit()
+            if not db.execute("SELECT 1 FROM story_schema_migrations WHERE version=7").fetchone():
+                # Forward-only additive migration: old phase_of records have UNKNOWN
+                # direction. Sorting historical endpoint UUIDs cannot recover it.
+                columns = {row["name"] for row in db.execute("PRAGMA table_info(story_relations)")}
+                if "phase_from_story_id" not in columns:
+                    db.execute("ALTER TABLE story_relations ADD COLUMN phase_from_story_id TEXT")
+                if "phase_to_story_id" not in columns:
+                    db.execute("ALTER TABLE story_relations ADD COLUMN phase_to_story_id TEXT")
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(7,datetime('now'))")
+                db.commit()
 
     @staticmethod
     def _row(db, table, ident):
@@ -618,13 +628,21 @@ class StoryRegistry:
         """Bounded, source-authorized dossier; IDs survive controlled merges."""
         take = max(1, min(int(limit), 10))
         effective_rev = int(rec["revision"])
+        if section == "assessments_page" and assertion_id is None:
+            fail("validation_failed", "Assessment pages require assertion_id")
         after = ""
         if cursor:
             try:
                 version, last = cursor.split(":", 1)
                 if int(version) != effective_rev or len(last) > 128:
                     raise ValueError("stale or oversized cursor")
-                after = last
+                if section == "assessments_page":
+                    scoped_assertion, sep, assessment_key = last.partition(":")
+                    if not sep or scoped_assertion != assertion_id or not assessment_key:
+                        raise ValueError("assessment cursor belongs to another assertion")
+                    after = assessment_key
+                else:
+                    after = last
             except (ValueError, TypeError):
                 fail("validation_failed", "Stale or invalid dossier cursor")
         assertions = [
@@ -651,6 +669,42 @@ class StoryRegistry:
                 })
             more = len(selected) > take
             next_id = page[-1]["assertion_id"] if more and page else None
+        elif section == "assessments_page":
+            assertion = assertions[0]
+            # Stable ID keyset; never claim the first six are the full review set.
+            reviews = sorted(self._current_assessments(db, assertion), key=lambda r: r["id"])
+            selected = [review for review in reviews if review["id"] > after][:take + 1]
+            page = []
+            for review in selected[:take]:
+                # The story grant does not implicitly grant its source. Recheck
+                # every cited source, including after ACL revocation or merge.
+                for evidence_id in review.get("evidence_ids") or []:
+                    evidence = db.execute(
+                        "SELECT * FROM story_evidence WHERE id=?", (evidence_id,)
+                    ).fetchone()
+                    if (not evidence or evidence["assertion_id"] != assertion["assertion_id"]
+                            or evidence["assertion_revision"] != assertion["revision"]):
+                        fail("source_changed", "Assessment evidence no longer matches the assertion")
+                    if evidence["source_kind"] == "document":
+                        if not self._document_allowed(db, actor, evidence["source_id"]):
+                            fail("not_found_or_not_accessible")
+                    elif evidence["source_kind"] == "external":
+                        source = db.execute(
+                            "SELECT owner_id FROM story_sources WHERE id=? AND version=?",
+                            (evidence["source_id"], evidence["source_revision"]),
+                        ).fetchone()
+                        if not source or (source["owner_id"] != actor and rec["owner_id"] != actor):
+                            fail("not_found_or_not_accessible")
+                    else:
+                        fail("not_found_or_not_accessible")
+                page.append({
+                    "assertion_id": assertion["assertion_id"],
+                    "assertion_revision": assertion["revision"],
+                    "assessment": review,
+                })
+            more = len(selected) > take
+            next_id = (assertion_id + ":" + page[-1]["assessment"]["id"]
+                       if more and page else None)
         elif section == "sources_page":
             # Merge retains foreign assertion IDs, so resolve actual evidence
             # by assertion ID/revision, not by ev.story_id=target_story_id.
@@ -725,6 +779,19 @@ class StoryRegistry:
                     "relation_id": relation["id"],
                     "kind": relation["kind"], "related_story_id": related_id,
                     "related_story_title": related["title"],
+                    "phase_direction": ({
+                        "from_story_id": relation["phase_from_story_id"],
+                        "to_story_id": relation["phase_to_story_id"],
+                        "relative_to_requested": (
+                            "outgoing" if relation["phase_from_story_id"] == rec["id"]
+                            else "incoming"),
+                    } if relation["kind"] == "phase_of"
+                        and relation["phase_from_story_id"] and relation["phase_to_story_id"]
+                        else None),
+                    "phase_direction_status": (
+                        "explicit" if relation["phase_from_story_id"] and relation["phase_to_story_id"]
+                        else "legacy_unresolved" if relation["kind"] == "phase_of"
+                        else "not_applicable"),
                     "rationale": relation["rationale"],
                     "proofs": proofs,
                     "recorded_by": relation["actor_id"],
@@ -800,7 +867,7 @@ class StoryRegistry:
                     fail("not_found_or_not_accessible")
                 snapshot = json.loads(hist[0])
             permitted = self._available_actions(db, actor, rec)
-            if view in {"assertion_page", "evidence_page", "sources_page", "relations_page"}:
+            if view in {"assertion_page", "assessments_page", "evidence_page", "sources_page", "relations_page"}:
                 return self._dossier_page(db, actor, rec, snapshot, view, cursor, limit, assertion_id)
             if view == "compact":
                 snapshot = {k: snapshot[k] for k in ("story_id", "state", "seed", "metadata", "gaps")}
