@@ -952,9 +952,13 @@ class StoryRegistry:
             return ["variant_not_found"], []
         if not all(variant.get(k) for k in ("audience", "format", "language", "body")):
             blockers.append("missing_variant_fields")
-        if not snap["assertions"]:
+        used = {str(block["assertion_id"]) for block in variant.get("blocks") or []
+                if block.get("assertion_id")}
+        relevant = [a for a in snap["assertions"]
+                    if not used or a["assertion_id"] in used]
+        if not relevant:
             blockers.append("no_reviewable_assertions")
-        for a in snap["assertions"]:
+        for a in relevant:
             for evidence_id in a.get("evidence_ids") or []:
                 evidence = self._row(db, "story_evidence", evidence_id)
                 if not evidence:
