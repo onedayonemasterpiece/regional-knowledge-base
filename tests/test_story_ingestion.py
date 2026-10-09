@@ -95,7 +95,7 @@ def accept_source(corpus, principal, doc, job, graph):
 def test_auto_candidate_staged_with_page_and_accepted_only_when_book_activates(fixture):
     corpus, registry, principal, doc, job, graph, page, candidate = fixture
     stored = persist_stage(corpus, principal, job, graph, [page], [candidate])
-    assert stored == {"candidate_count": 1, "reviewed_in_batch": 1}
+    assert stored == {"candidate_count": 1, "needs_review_count": 0, "reviewed_in_batch": 1}
     assert corpus.path.exists()
     status = extraction_status(corpus, job)
     assert status["state"] == "staged"
@@ -146,9 +146,11 @@ def test_false_or_foreign_evidence_rejected_before_authority(fixture):
     corpus, registry, principal, doc, job, graph, page, candidate = fixture
     wrong = candidate.model_copy(update={"evidence_refs": [
         candidate.evidence_refs[0].model_copy(update={"original_excerpt": "Совершенно выдуманный текст."})]})
-    with pytest.raises(ValueError, match="missing or ambiguous"):
-        persist_stage(corpus, principal, job, graph, [page], [wrong])
+    result = persist_stage(corpus, principal, job, graph, [page], [wrong])
+    assert result["candidate_count"] == 0 and result["needs_review_count"] == 1
     assert extraction_status(corpus, job)["saved_candidates"] == 0
+    assert extraction_status(corpus, job)["needs_review_candidates"] == 1
+    assert accept_source(corpus, principal, doc, job, graph)["accepted"] == 0
     stranger = owner()
     with pytest.raises(PermissionError):
         persist_stage(corpus, stranger, job, graph, [page], [candidate])
