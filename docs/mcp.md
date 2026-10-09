@@ -82,7 +82,15 @@ through page review, staging, validation and finalization. For an existing sourc
 first calls `book_find`; if one plausible match remains it calls
 `book_ingest(command="reprocess", document_id=...)`. The server requires the exact
 source to be present in the verified Telegram source archive and creates/resumes the
-next staged revision on the same logical document. A re-upload is requested only when
+next staged revision on the same logical document. When an already verified archive cannot be retrieved, the model may pass the
+owner's attached original as `book_ingest(command="reprocess", document_id=..., file=...)`.
+The server compares its SHA-256, format and physical page count with the registered
+verified source *before* opening a new revision. A different edition is rejected;
+the same document ID, accepted active revision, private rights and editorial history
+are preserved. The verified bytes restore only the original private source object
+for subsequent `book_pages` reads; this is an optional recovery path, not a
+replacement for archived-source reprocessing or a new logical import.
+A re-upload is requested only when
 that verified archive is genuinely unavailable. Multiple plausible catalog matches are
 a user-facing disambiguation case: show title, author and year; hidden IDs are never
 a user requirement. A pending archive is a recovery/wait blocker, not an immediate
