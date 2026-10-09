@@ -275,3 +275,19 @@ Proof cache is limited to 64 MiB and requested evidence only. It is keyed by
 source SHA, exact fragment/revision/quote, region, locator/model version. Repeated
 proof reads reauthorize access and return cached WebP without new inference.
 No page images or proof results are automatically published or archived.
+
+
+## Measured BGE capacity gate (2026-10-09)
+
+Live pgvector 0.8.2 size inventory and session-local compact-index trial:
+[compact storage measurements](reports/rkb-vector-storage-compact-capacity-20261009.md).
+The deployed BGE uses vector(1024)+HNSW and currently occupies 67.71 decimal
+MB for 5,813 stored rows (active and inactive). Bounded temp experiments
+measured 28.02 MB for halfvec+HNSW and 18.68 MB for halfvec payload with binary
+HNSW on the same rows. None is a quality-tested production migration.
+
+No 100k-chunk capacity or semantic-recall gate has passed from those measurements.
+The SQLite authority and current BGE-required/E5-optional vector policy remain
+unchanged. At a planning quota of 500 decimal MB, 80% steady and 90% peak
+requirements still apply to the **entire** database, including baseline,
+story vectors, index rebuild and largest-source reimport—not only BGE payload.
