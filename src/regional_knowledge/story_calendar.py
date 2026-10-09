@@ -222,6 +222,10 @@ class StoryCalendar:
             # continuation rather than falsely claiming there were no matches.
             more = len(results) > take or partial
             items = results[:take]
+            if len(results) > take:
+                # An extra authorized row is only a lookahead marker; starting
+                # the next page AFTER it would silently skip a historic event.
+                after_year, after_id = int(items[-1]["year"]), items[-1]["date_id"]
             return {
                 "items": items, "has_more": more,
                 "next_cursor": self._encode_cursor({
