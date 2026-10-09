@@ -784,3 +784,27 @@ def test_superseded_assessment_cannot_approve_a_historical_claim(setup):
             supersedes_assessment_id=approved_id,
         )], "review-freshness-invalid-double-supersession")
     assert exc.value.code == "revision_conflict"
+
+
+def test_story_search_indexes_current_claims_not_just_story_titles(setup):
+    """A detail only present in assertion text is discoverable and remains ACL scoped."""
+    registry, owner, stranger = setup
+    sid = seed(registry, owner, name="Старая городская заметка",
+               key="claim-search-001")["story_id"]
+    registry.edit(owner, sid, 1, [UpsertAssertion(
+        op="upsert_assertion", kind="attributed_account", account_kind="other",
+        attributed_to="Синтетический автор",
+        proposition="На городской площади обнаружили алебарду с необычной печатью.",
+    )], "claim-search-assertion-001")
+    result = registry.search(owner, query="алебарду")
+    assert sid in [hit["story_id"] for hit in result["results"]]
+    assert registry.search(stranger, query="алебарду")["results"] == []
+    assertion = registry.get(owner, sid, view="evidence")["snapshot"]["assertions"][0]
+    registry.edit(owner, sid, 2, [UpsertAssertion(
+        op="upsert_assertion", kind="attributed_account", account_kind="other",
+        assertion_id=assertion["assertion_id"], expected_assertion_revision=1,
+        attributed_to="Синтетический автор",
+        proposition="На городской площади обнаружили старинный меч с печатью.",
+    )], "claim-search-assertion-002")
+    assert sid not in [hit["story_id"] for hit in registry.search(owner, query="алебарду")["results"]]
+    assert sid in [hit["story_id"] for hit in registry.search(owner, query="меч")["results"]]
