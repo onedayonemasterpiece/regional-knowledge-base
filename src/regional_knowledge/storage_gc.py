@@ -48,18 +48,24 @@ async def collect(backend, *, apply=False):
     return result
 
 
-async def reserve_source(backend, principal, document_id, key, downloaded, mime):
+async def reserve_source(backend, principal, document_id, key, downloaded, mime, *, existing_object_id=None):
     """Reserve capacity before upload; concurrent starts cannot overcommit staging."""
     import os
     from uuid import uuid5
     if not hasattr(backend,'data_client'):return
     maximum=int(os.environ.get('RKB_STAGING_MAX_BYTES',str(800*1024*1024)))
     if not 1<=maximum<=1024*1024*1024:raise ValueError('staging_capacity_config_invalid')
-    ident=uuid5(UUID(document_id),'source:'+downloaded.sha256)
+    ident=UUID(str(existing_object_id)) if existing_object_id is not None else uuid5(UUID(document_id),'source:'+downloaded.sha256)
     async with backend.data_client._connection({'x-rkb-service':'1'},**({'write':True} if hasattr(backend,'corpus') else {})) as db:
         await db.execute("select pg_advisory_xact_lock(hashtext('rkb-staging-capacity'))")
         await db.execute('select id from rkb_documents where id=%s for update',(UUID(document_id),))
-        existing=await(await db.execute('select id,deleted_at from rkb_objects where id=%s',(ident,))).fetchone()
+        existing=await(await db.execute('select id,document_id,kind,object_key,sha256,deleted_at from rkb_objects where id=%s',(ident,))).fetchone()
+        if existing and (str(existing['document_id'])!=str(document_id)
+                         or existing['kind']!='source_pdf'
+                         or existing['object_key']!=key
+                         or existing['sha256']!=downloaded.sha256):
+            raise RuntimeError('source_object_identity_mismatch')
+        if existing_object_id is not None and existing is None:raise RuntimeError('source_object_identity_missing')
         if existing and existing['deleted_at'] is None:return
         used=await(await db.execute('select coalesce(sum(size_bytes),0)::bigint bytes from rkb_objects where deleted_at is null')).fetchone()
         if used['bytes']+downloaded.size_bytes>maximum:raise RuntimeError('source_staging_capacity_exceeded')

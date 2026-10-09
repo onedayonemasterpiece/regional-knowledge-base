@@ -88,7 +88,11 @@ The server compares its SHA-256, format and physical page count with the registe
 verified source *before* opening a new revision. A different edition is rejected;
 the same document ID, accepted active revision, private rights and editorial history
 are preserved. The verified bytes restore only the original private source object
-for subsequent `book_pages` reads; this is an optional recovery path, not a
+for subsequent `book_pages` reads, including after the original object was
+retired by bounded archive GC. Existing source identity is retained and
+staging capacity is reserved before rehydration; the same archive GC policy
+can retire those temporary bytes after the pending revision completes.
+This is an optional recovery path, not a
 replacement for archived-source reprocessing or a new logical import.
 A re-upload is requested only when
 that verified archive is genuinely unavailable. Multiple plausible catalog matches are

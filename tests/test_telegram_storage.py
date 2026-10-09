@@ -272,3 +272,52 @@ async def test_source_archive_cross_version_djvu_filename_ambiguity_is_recovered
             frozen=db.execute('select source_archive_filename,source_archive_status from rkb_documents where id=%s',(doc,)).fetchone()
         assert frozen==('source.pdf','verified')
     finally:await b.aclose()
+
+
+@pytest.mark.asyncio
+async def test_exact_source_recovery_revives_legacy_retired_id_without_duplication(graph_db, monkeypatch):
+    """Retired source restoration reuses immutable metadata, including legacy IDs."""
+    from types import SimpleNamespace
+    from regional_knowledge.storage_gc import reserve_source
+
+    doc, owner, _, _, _, _ = fixture(graph_db)
+    legacy_id = uuid4()  # historical source object IDs may not be uuid5-derived
+    source_sha = "c" * 64
+    object_key = "private-legacy-source"
+    with psycopg.connect(graph_db, autocommit=True) as db:
+        db.execute(
+            "insert into rkb_objects(id,document_id,kind,object_key,sha256,mime_type,size_bytes,deleted_at) "
+            "values(%s,%s,'source_pdf',%s,%s,'application/pdf',%s,now())",
+            (legacy_id, doc, object_key, source_sha, 20),
+        )
+    b = PostgresBackend(graph_db, object_store=Cache(), embedder=LexicalOnlyEmbedder())
+    original = SimpleNamespace(sha256=source_sha, size_bytes=20)
+    monkeypatch.setenv("RKB_STAGING_MAX_BYTES", "10000000")
+    try:
+        await reserve_source(b, owner, str(doc), object_key, original, "application/pdf",
+                             existing_object_id=str(legacy_id))
+        # Replay is idempotent, even with a noncanonical historical UUID.
+        await reserve_source(b, owner, str(doc), object_key, original, "application/pdf",
+                             existing_object_id=str(legacy_id))
+        with psycopg.connect(graph_db) as db:
+            rows = db.execute(
+                "select id,deleted_at from rkb_objects where document_id=%s and kind='source_pdf'",
+                (doc,),
+            ).fetchall()
+        assert rows == [(legacy_id, None)]
+
+        # Wrong source SHA or nonexistent prior identity cannot revive/insert.
+        with pytest.raises(RuntimeError, match="source_object_identity_mismatch"):
+            await reserve_source(
+                b, owner, str(doc), object_key,
+                SimpleNamespace(sha256="d" * 64, size_bytes=20),
+                "application/pdf", existing_object_id=str(legacy_id),
+            )
+        with pytest.raises(RuntimeError, match="source_object_identity_missing"):
+            await reserve_source(b, owner, str(doc), object_key, original,
+                                 "application/pdf", existing_object_id=str(uuid4()))
+        with psycopg.connect(graph_db) as db:
+            assert db.execute("select count(*) from rkb_objects where document_id=%s and kind='source_pdf'",
+                              (doc,)).fetchone()[0] == 1
+    finally:
+        await b.aclose()
