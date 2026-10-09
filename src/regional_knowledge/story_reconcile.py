@@ -118,6 +118,10 @@ class StoryReconciler:
             fail("validation_failed", "No automatic effect for unresolved/unrelated pair")
         if decision.proposed_effect == "link_stories" and reference["kind"] != "story":
             fail("validation_failed", "Story relation requires two existing stories")
+        if decision.phase_of_source is not None and (
+                decision.identity_relation != "part_or_phase"
+                or decision.proposed_effect != "link_stories"):
+            fail("validation_failed", "Explicit phase direction requires a phase link")
         if (decision.proposed_effect in {"attach_evidence", "add_attributed_claim"}
                 and decision.identity_relation != "same_episode"):
             fail("validation_failed", "Enrichment requires same episode; link distinct phases")
@@ -421,12 +425,26 @@ class StoryReconciler:
                     kind = ("same_episode" if decision.identity_relation=="same_episode"
                             else "phase_of" if decision.identity_relation=="part_or_phase"
                             else "related_theme")
+                    phase_from = (run["anchor_story_id"] if decision.phase_of_source == "anchor"
+                                  else reference["id"] if decision.phase_of_source == "candidate"
+                                  else None) if kind == "phase_of" else None
+                    phase_to = (reference["id"] if decision.phase_of_source == "anchor"
+                                else run["anchor_story_id"] if decision.phase_of_source == "candidate"
+                                else None) if kind == "phase_of" else None
+                    existing = db.execute("""SELECT phase_from_story_id,phase_to_story_id
+                        FROM story_relations WHERE left_story_id=? AND right_story_id=? AND kind=?""",
+                        (pair[0], pair[1], kind)).fetchone()
+                    if existing and kind == "phase_of" and (
+                            existing["phase_from_story_id"] != phase_from
+                            or existing["phase_to_story_id"] != phase_to):
+                        fail("revision_conflict", "Phase direction differs; reviewed correction required")
                     db.execute("""INSERT OR IGNORE INTO story_relations(
                         id,left_story_id,right_story_id,kind,rationale,
-                        source_proposal_id,actor_id,created_at)
-                        VALUES(?,?,?,?,?,?,?,?)""",
+                        source_proposal_id,actor_id,created_at,
+                        phase_from_story_id,phase_to_story_id)
+                        VALUES(?,?,?,?,?,?,?,?,?,?)""",
                         (str(uuid4()),pair[0],pair[1],kind,
-                         decision.rationale,proposal["id"],actor,now()))
+                         decision.rationale,proposal["id"],actor,now(),phase_from,phase_to))
                     registry._audit(db, principal, target_id, result_revision,
                                     "reconcile_link:"+kind, request.reviewer_note)
                 elif effect in {"attach_evidence","add_attributed_claim"}:
