@@ -66,6 +66,14 @@ class StoryRegistry:
     def migrate(self):
         # All domain data, receipts, audit and jobs share the corpus.sqlite3 WAL.
         with self.corpus.connect() as db:
+            had_versions = db.execute("""SELECT 1 FROM sqlite_master
+                        WHERE type='table' AND name='story_schema_migrations'""").fetchone()
+            had_assertion_index = (bool(db.execute(
+                "SELECT 1 FROM story_schema_migrations WHERE version=5").fetchone())
+                if had_versions else False)
+            had_reconcile_backfill = (bool(db.execute(
+                "SELECT 1 FROM story_schema_migrations WHERE version=6").fetchone())
+                if had_versions else False)
             db.executescript("""
             CREATE TABLE IF NOT EXISTS story_records(
               id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, workspace_id TEXT,
@@ -194,12 +202,127 @@ class StoryRegistry:
               fingerprint TEXT NOT NULL, story_id TEXT NOT NULL REFERENCES story_records(id),
               at TEXT NOT NULL,
               PRIMARY KEY(document_id,source_sha256,fingerprint));
+            CREATE TABLE IF NOT EXISTS story_assertion_search(
+              assertion_id TEXT PRIMARY KEY,
+              story_id TEXT NOT NULL REFERENCES story_records(id),
+              revision INTEGER NOT NULL, phrase TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS story_assertion_search_story
+              ON story_assertion_search(story_id,revision);
+            CREATE VIRTUAL TABLE IF NOT EXISTS story_assertion_fts
+              USING fts5(phrase,content='story_assertion_search',
+                         content_rowid='rowid',tokenize='unicode61');
+            CREATE TRIGGER IF NOT EXISTS story_assertion_fts_ai
+              AFTER INSERT ON story_assertion_search BEGIN
+                INSERT INTO story_assertion_fts(rowid,phrase)
+                  VALUES(new.rowid,new.phrase); END;
+            CREATE TRIGGER IF NOT EXISTS story_assertion_fts_au
+              AFTER UPDATE ON story_assertion_search BEGIN
+                INSERT INTO story_assertion_fts(story_assertion_fts,rowid,phrase)
+                  VALUES('delete',old.rowid,old.phrase);
+                INSERT INTO story_assertion_fts(rowid,phrase)
+                  VALUES(new.rowid,new.phrase); END;
+            CREATE TRIGGER IF NOT EXISTS story_assertion_fts_ad
+              AFTER DELETE ON story_assertion_search BEGIN
+                INSERT INTO story_assertion_fts(story_assertion_fts,rowid,phrase)
+                  VALUES('delete',old.rowid,old.phrase); END;
+            CREATE TABLE IF NOT EXISTS story_reconcile_runs(
+              id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
+              anchor_story_id TEXT NOT NULL REFERENCES story_records(id),
+              anchor_story_revision INTEGER NOT NULL, policy_version TEXT NOT NULL,
+              query TEXT NOT NULL, search_plan TEXT NOT NULL, frontier TEXT NOT NULL,
+              position INTEGER NOT NULL DEFAULT 0, max_candidate_pairs INTEGER NOT NULL,
+              revision INTEGER NOT NULL DEFAULT 1, state TEXT NOT NULL,
+              work_id TEXT, lease_token TEXT, lease_deadline REAL,
+              updated_at TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS story_reconcile_anchor
+              ON story_reconcile_runs(anchor_story_id,state,updated_at);
+            CREATE TABLE IF NOT EXISTS story_reconcile_proposals(
+              id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES story_reconcile_runs(id),
+              ref_kind TEXT NOT NULL, ref_id TEXT NOT NULL,
+              decision TEXT NOT NULL, state TEXT NOT NULL,
+              actor_id TEXT NOT NULL, created_at TEXT NOT NULL, applied_at TEXT,
+              UNIQUE(run_id,ref_kind,ref_id));
+            CREATE INDEX IF NOT EXISTS story_reconcile_proposal_state
+              ON story_reconcile_proposals(run_id,state,created_at);
+            CREATE TABLE IF NOT EXISTS story_relations(
+              id TEXT PRIMARY KEY,
+              left_story_id TEXT NOT NULL REFERENCES story_records(id),
+              right_story_id TEXT NOT NULL REFERENCES story_records(id),
+              kind TEXT NOT NULL, rationale TEXT NOT NULL, source_proposal_id TEXT NOT NULL,
+              actor_id TEXT NOT NULL, created_at TEXT NOT NULL,
+              active INTEGER NOT NULL DEFAULT 1,
+              UNIQUE(left_story_id,right_story_id,kind));
+            CREATE INDEX IF NOT EXISTS story_relations_right
+              ON story_relations(right_story_id,kind,active);
+            CREATE TABLE IF NOT EXISTS story_reconcile_queue(
+              story_id TEXT NOT NULL REFERENCES story_records(id),
+              story_revision INTEGER NOT NULL, state TEXT NOT NULL,
+              created_at TEXT NOT NULL, PRIMARY KEY(story_id,story_revision));
+            CREATE INDEX IF NOT EXISTS story_reconcile_queue_state
+              ON story_reconcile_queue(state,created_at);
             CREATE TABLE IF NOT EXISTS story_schema_migrations(
               version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
             INSERT OR IGNORE INTO story_schema_migrations VALUES(1,datetime('now'));
             INSERT OR IGNORE INTO story_schema_migrations VALUES(2,datetime('now'));
             INSERT OR IGNORE INTO story_schema_migrations VALUES(3,datetime('now'));
+            INSERT OR IGNORE INTO story_schema_migrations VALUES(4,datetime('now'));
             """)
+            if not had_assertion_index:
+                # Idempotent, keyset-based backfill of already accepted stories.
+                # SQLite authority remains unchanged and only 128 current card
+                # snapshots are hydrated per short transaction.
+                after_id = ""
+                while True:
+                    rows = db.execute("""SELECT id,snapshot FROM story_records
+                        WHERE id>? ORDER BY id LIMIT 128""", (after_id,)).fetchall()
+                    if not rows:
+                        break
+                    db.execute("BEGIN IMMEDIATE")
+                    try:
+                        for row in rows:
+                            snap = json.loads(row["snapshot"])
+                            for item in snap.get("assertions", []):
+                                db.execute("""INSERT INTO story_assertion_search
+                                    (assertion_id,story_id,revision,phrase)
+                                    VALUES(?,?,?,?) ON CONFLICT(assertion_id)
+                                    DO UPDATE SET story_id=excluded.story_id,
+                                      revision=excluded.revision,phrase=excluded.phrase""",
+                                    (item["assertion_id"],row["id"],item["revision"],
+                                     item["proposition"][:500]))
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                        raise
+                    after_id = rows[-1]["id"]
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(5,datetime('now'))")
+            if not had_reconcile_backfill:
+                # Pre-feature books can already have evidence-backed cards.
+                # Enroll them for incremental reconciliation without rereading
+                # their PDFs, creating duplicate story records or changing
+                # editorial revisions. Short 128-row SQLite transactions.
+                after_story = ""
+                while True:
+                    rows = db.execute("""SELECT s.id,s.revision
+                        FROM story_records s
+                        WHERE s.id>? AND s.archived=0
+                          AND EXISTS(SELECT 1 FROM story_evidence e
+                                     WHERE e.story_id=s.id)
+                        ORDER BY s.id LIMIT 128""",
+                        (after_story,)).fetchall()
+                    if not rows:
+                        break
+                    db.execute("BEGIN IMMEDIATE")
+                    try:
+                        db.executemany("""INSERT OR IGNORE INTO story_reconcile_queue(
+                                story_id,story_revision,state,created_at)
+                            VALUES(?,?,'awaiting_agent',?)""",
+                            ((row["id"],row["revision"],now()) for row in rows))
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                        raise
+                    after_story = rows[-1]["id"]
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(6,datetime('now'))")
 
     @staticmethod
     def _row(db, table, ident):
@@ -334,7 +457,33 @@ class StoryRegistry:
                       VALUES(?,?,?,?,?)""", (str(uuid4()), story_id, revision,
                                                digest({"title": meta["title"], "summary": meta.get("summary")}),
                                                now()))
+        # Keep the current assertion/alias projection in the same SQLite
+        # transaction as the canonical story revision. Stale assertion revisions
+        # cannot persist as search results after a mutation or merge.
+        db.execute("DELETE FROM story_assertion_search WHERE story_id=?", (story_id,))
+        for assertion in content.get("assertions") or []:
+            label = " ".join(str(value) for value in (
+                assertion.get("proposition"), assertion.get("attributed_to"),
+                assertion.get("reported_by")
+            ) if value)
+            db.execute("""INSERT INTO story_assertion_search
+                    (assertion_id,story_id,revision,phrase) VALUES(?,?,?,?)
+                    ON CONFLICT(assertion_id) DO UPDATE SET
+                      story_id=excluded.story_id,revision=excluded.revision,
+                      phrase=excluded.phrase""",
+                      (assertion["assertion_id"], story_id, assertion["revision"],
+                       label[:900]))
         self._audit(db, principal, story_id, revision, action, action)
+        # Accepted-source extraction creates a durable reconciliation delta
+        # without running another model, or blocking book acceptance.
+        if action in {"automated_source_candidate", "accepted_source_candidate"} or (
+            action.startswith("edit:") and "evidence" in action):
+            if content.get("assertions") and any(a.get("evidence_ids")
+                                                   for a in content["assertions"]):
+                db.execute("""INSERT OR IGNORE INTO story_reconcile_queue
+                    (story_id,story_revision,state,created_at)
+                    VALUES(?,?,'awaiting_agent',?)""",
+                    (story_id, revision, now()))
 
     def _create_record(self, db, principal, seed, metadata, workspace_id=None, source_refs=None):
         story_id = str(uuid4())
@@ -427,7 +576,214 @@ class StoryRegistry:
         result["needs_revalidation"] = sorted(set([*result["needs_revalidation"], *stale]))
         return result
 
-    def get(self, principal, story_id, revision=None, view="compact"):
+    def _current_assessments(self, db, assertion):
+        """Return only effective reviews of this exact assertion revision.
+
+        A superseded review stays in the audit and history, but may not
+        authorize approval. Multiple un-superseded conflicting assessments
+        remain visible; order of writing is not a vote for the latest.
+        """
+        ids = [str(x) for x in assertion.get("assessment_ids") or []]
+        if not ids:
+            return []
+        rows = db.execute("""
+            SELECT a.id,a.payload,a.actor_id,a.at FROM story_assessments a
+            JOIN json_each(?) ids ON a.id=ids.value
+            WHERE a.assertion_id=? AND a.assertion_revision=?""",
+            (canonical(ids), assertion["assertion_id"], assertion["revision"]),
+        ).fetchall()
+        assessments = {}
+        for row in rows:
+            payload = json.loads(row["payload"])
+            payload["id"] = row["id"]
+            payload["verified_actor_id"] = row["actor_id"]
+            payload["recorded_at"] = row["at"]
+            assessments[row["id"]] = payload
+        replaced = {
+            x.get("supersedes_assessment_id") for x in assessments.values()
+            if x.get("supersedes_assessment_id") in assessments
+        }
+        return sorted(
+            [value for key, value in assessments.items() if key not in replaced],
+            key=lambda x: (x["recorded_at"], x["id"]),
+        )
+
+    def _dossier_page(self, db, actor, rec, snapshot, section, cursor, limit, assertion_id):
+        """Bounded, source-authorized dossier; IDs survive controlled merges."""
+        take = max(1, min(int(limit), 10))
+        effective_rev = int(rec["revision"])
+        after = ""
+        if cursor:
+            try:
+                version, last = cursor.split(":", 1)
+                if int(version) != effective_rev or len(last) > 128:
+                    raise ValueError("stale or oversized cursor")
+                after = last
+            except (ValueError, TypeError):
+                fail("validation_failed", "Stale or invalid dossier cursor")
+        assertions = [
+            a for a in snapshot.get("assertions", [])
+            if assertion_id is None or a["assertion_id"] == assertion_id
+        ]
+        if assertion_id is not None and not assertions:
+            fail("not_found_or_not_accessible")
+        if section == "assertion_page":
+            selected = [a for a in sorted(assertions, key=lambda x: x["assertion_id"])
+                        if a["assertion_id"] > after][:take + 1]
+            page = []
+            for a in selected[:take]:
+                assessments = self._current_assessments(db, a)
+                page.append({
+                    "assertion_id": a["assertion_id"], "revision": a["revision"],
+                    "proposition": a["proposition"], "kind": a["kind"],
+                    "account_kind": a.get("account_kind"),
+                    "attributed_to": a.get("attributed_to"),
+                    "reported_by": a.get("reported_by"),
+                    "evidence_count": len(a.get("evidence_ids", [])),
+                    "effective_assessments": assessments[:6],
+                    "assessments_has_more": len(assessments) > 6,
+                })
+            more = len(selected) > take
+            next_id = page[-1]["assertion_id"] if more and page else None
+        elif section == "sources_page":
+            # Merge retains foreign assertion IDs, so resolve actual evidence
+            # by assertion ID/revision, not by ev.story_id=target_story_id.
+            sources = db.execute("""
+                WITH active AS (
+                  SELECT json_extract(value,'$.assertion_id') aid,
+                         json_extract(value,'$.revision') rev FROM json_each(?)
+                ), source_keys AS (
+                  SELECT source_kind,source_id,source_revision FROM story_dependencies
+                    WHERE story_id=?
+                  UNION SELECT ev.source_kind,ev.source_id,ev.source_revision
+                    FROM story_evidence ev JOIN active a
+                    ON ev.assertion_id=a.aid AND ev.assertion_revision=a.rev
+                )
+                SELECT source_kind,source_id,source_revision FROM source_keys
+                WHERE (source_kind || ':' || source_id || ':' || source_revision)>?
+                ORDER BY source_kind,source_id,source_revision LIMIT ?""",
+                (canonical(assertions), rec["id"], after, take + 1),
+            ).fetchall()
+            page = []
+            for src in sources[:take]:
+                if src["source_kind"] == "document":
+                    doc = self._document_allowed(db, actor, src["source_id"])
+                    if not doc:
+                        fail("not_found_or_not_accessible")
+                    metadata = {"title": doc.get("title"), "authors": doc.get("authors"),
+                                "source_sha256": doc.get("source_sha256")}
+                elif src["source_kind"] == "external":
+                    ext = db.execute(
+                        "SELECT owner_id,metadata FROM story_sources WHERE id=? AND version=?",
+                        (src["source_id"], src["source_revision"]),
+                    ).fetchone()
+                    if not ext or (ext["owner_id"] != actor and rec["owner_id"] != actor):
+                        fail("not_found_or_not_accessible")
+                    metadata = json.loads(ext["metadata"])
+                else:
+                    fail("not_found_or_not_accessible")
+                page.append({"kind": src["source_kind"], "source_id": src["source_id"],
+                             "source_revision": src["source_revision"], "metadata": metadata})
+            more = len(sources) > take
+            next_id = (page[-1]["kind"] + ":" + page[-1]["source_id"] + ":" +
+                       str(page[-1]["source_revision"])) if more and page else None
+        elif section == "relations_page":
+            relations = db.execute("""SELECT * FROM story_relations
+                WHERE active=1 AND (left_story_id=? OR right_story_id=?)
+                  AND id>? ORDER BY id LIMIT ?""",
+                (rec["id"], rec["id"], after, take + 1)).fetchall()
+            page = []
+            for relation in relations[:take]:
+                related_id = (relation["right_story_id"]
+                              if relation["left_story_id"]==rec["id"]
+                              else relation["left_story_id"])
+                related, _ = self._read_story(db, actor, related_id)
+                proposal = self._row(db, "story_reconcile_proposals",
+                                     relation["source_proposal_id"])
+                if not proposal:
+                    fail("source_changed", "Relation proof is unavailable")
+                decision = json.loads(proposal["decision"])
+                proofs = []
+                for side in ("anchor_proof", "candidate_proof"):
+                    evidence = decision.get(side) or {}
+                    if not self._document_allowed(db, actor, evidence.get("source_id")):
+                        fail("not_found_or_not_accessible")
+                    proofs.append({
+                        "document_id": evidence["source_id"],
+                        "source_revision": evidence["source_revision"],
+                        "page_id": evidence["page_id"],
+                        "region_id": evidence["region_id"],
+                        "original_excerpt": evidence["original_excerpt"],
+                    })
+                page.append({
+                    "relation_id": relation["id"],
+                    "kind": relation["kind"], "related_story_id": related_id,
+                    "related_story_title": related["title"],
+                    "rationale": relation["rationale"],
+                    "proofs": proofs,
+                    "recorded_by": relation["actor_id"],
+                    "proposal_id": proposal["id"],
+                })
+            more = len(relations) > take
+            next_id = page[-1]["relation_id"] if more and page else None
+        else:
+            rows = db.execute("""
+                WITH active AS (
+                  SELECT json_extract(value,'$.assertion_id') aid,
+                         json_extract(value,'$.revision') rev FROM json_each(?)
+                )
+                SELECT ev.* FROM story_evidence ev JOIN active a
+                  ON ev.assertion_id=a.aid AND ev.assertion_revision=a.rev
+                WHERE ev.id>? ORDER BY ev.id LIMIT ?""",
+                (canonical(assertions), after, take + 1),
+            ).fetchall()
+            mapping = {(a["assertion_id"], a["revision"]): a for a in assertions}
+            page = []
+            for ev in rows[:take]:
+                assertion = mapping[(ev["assertion_id"], ev["assertion_revision"])]
+                if ev["source_kind"] == "document":
+                    document = self._document_allowed(db, actor, ev["source_id"])
+                    if not document:
+                        fail("not_found_or_not_accessible")
+                    source_info = {"title": document.get("title"),
+                                   "authors": document.get("authors")}
+                else:
+                    external = db.execute(
+                        "SELECT owner_id,metadata FROM story_sources WHERE id=? AND version=?",
+                        (ev["source_id"], ev["source_revision"]),
+                    ).fetchone()
+                    if not external or (external["owner_id"] != actor and rec["owner_id"] != actor):
+                        fail("not_found_or_not_accessible")
+                    source_info = json.loads(external["metadata"])
+                reviews = self._current_assessments(db, assertion)
+                page.append({
+                    "evidence_id": ev["id"], "assertion_id": ev["assertion_id"],
+                    "assertion_revision": ev["assertion_revision"],
+                    "proposition": assertion["proposition"],
+                    "attribution": assertion.get("attributed_to") or assertion.get("reported_by"),
+                    "source_kind": ev["source_kind"], "source_id": ev["source_id"],
+                    "source_revision": ev["source_revision"], "source": source_info,
+                    "locator": json.loads(ev["locator"]),
+                    "original_excerpt": ev["original_excerpt"],
+                    "text_match": ev["text_match"],
+                    "relation": ev["relation"], "source_role": ev["source_role"],
+                    "source_state": self._evidence_state(db, ev),
+                    "independence": "unknown" if not reviews else reviews[-1].get("independence", "unknown"),
+                    "effective_assessments": reviews[:6],
+                    "assessments_has_more": len(reviews) > 6,
+                    "recorded_by": ev["actor_id"],
+                })
+            more = len(rows) > take
+            next_id = page[-1]["evidence_id"] if more and page else None
+        return {
+            "story_id": rec["id"], "story_revision": effective_rev,
+            "section": section, "items": page, "has_more": more,
+            "next_cursor": str(effective_rev) + ":" + next_id if next_id else None,
+            "source_refs_authority": "dependencies_and_current_evidence",
+            "coverage": "bounded_authorized_read_not_entire_dossier",
+        }
+
+    def get(self, principal, story_id, revision=None, view="compact", cursor=None, limit=8, assertion_id=None):
         with self.corpus.connect() as db:
             actor = self._actor(db, principal)
             rec, snapshot = self._read_story(db, actor, story_id)
@@ -438,6 +794,8 @@ class StoryRegistry:
                     fail("not_found_or_not_accessible")
                 snapshot = json.loads(hist[0])
             permitted = self._available_actions(db, actor, rec)
+            if view in {"assertion_page", "evidence_page", "sources_page", "relations_page"}:
+                return self._dossier_page(db, actor, rec, snapshot, view, cursor, limit, assertion_id)
             if view == "compact":
                 snapshot = {k: snapshot[k] for k in ("story_id", "state", "seed", "metadata", "gaps")}
                 snapshot["assertions"] = [
@@ -475,12 +833,24 @@ class StoryRegistry:
             return {"story_id": story_id, "history": page, "has_more": len(rows) > limit,
                     "next_cursor": str(page[-1]["revision"] + 1) if len(rows) > limit else None}
 
-    def _invalidate(self, db, snap):
+    def _invalidate(self, db, snap, affected_assertion_ids=None):
+        """Invalidate only variants depending on changed assertion identities.
+
+        A legacy variant without explicit assertion-linked blocks still depends
+        conservatively on the whole card. New variants with declared blocks do
+        not become stale when an unrelated episode is enriched.
+        """
+        affected = set(affected_assertion_ids or [])
         for item in snap["variants"]:
-            if item["state"] == "publish_ready":
-                item["state"] = "needs_revalidation"
-                db.execute("UPDATE story_variants SET state='needs_revalidation' WHERE id=?",
-                           (item["variant_id"],))
+            if item["state"] != "publish_ready":
+                continue
+            used = {str(block["assertion_id"]) for block in item.get("blocks") or []
+                    if block.get("assertion_id")}
+            if affected and used and not (used & affected):
+                continue
+            item["state"] = "needs_revalidation"
+            db.execute("UPDATE story_variants SET state='needs_revalidation' WHERE id=?",
+                       (item["variant_id"],))
 
     def _apply_op(self, db, principal, snap, op):
         if isinstance(op, SetMetadata):
@@ -524,7 +894,7 @@ class StoryRegistry:
             db.execute("INSERT INTO story_assertion_versions VALUES(?,?,?,?,?,?,?)",
                        (ident, revision, snap["story_id"], values["proposition"], canonical(values),
                         str(principal.subject), now()))
-            self._invalidate(db, snap)
+            self._invalidate(db, snap, {ident})
             return "assertion"
         if isinstance(op, AttachEvidence):
             assertion = next((a for a in snap["assertions"]
@@ -591,7 +961,7 @@ class StoryRegistry:
                         op.relation, op.source_role_for_assertion, match, "not_checked", op.derived_from, actor, now()))
             self._dependency(db, snap["story_id"], op.source_kind, op.source_id, op.source_revision, actor)
             assertion["evidence_ids"].append(ident)
-            self._invalidate(db, snap)
+            self._invalidate(db, snap, {op.assertion_id})
             return "evidence"
         if isinstance(op, RecordAssessment):
             a = next((x for x in snap["assertions"]
@@ -607,6 +977,10 @@ class StoryRegistry:
                 fail("validation_failed", "Independent provenance assessment is required")
             if op.assessor_kind == "model" and not op.method_version:
                 fail("validation_failed", "Model/application assessment needs method version")
+            if op.supersedes_assessment_id:
+                active = {row["id"] for row in self._current_assessments(db, a)}
+                if op.supersedes_assessment_id not in active:
+                    fail("revision_conflict", "Supersession requires one current review of this assertion revision")
             ident = str(uuid4())
             data = op.model_dump(mode="json", exclude={"op"})
             data["id"] = ident
@@ -619,7 +993,7 @@ class StoryRegistry:
                        (ident, snap["story_id"], op.assertion_id, op.assertion_revision,
                         canonical(data), str(principal.subject), now()))
             a["assessment_ids"].append(ident)
-            self._invalidate(db, snap)
+            self._invalidate(db, snap, {op.assertion_id})
             return "assessment"
         if isinstance(op, UpsertVariant):
             item = next((x for x in snap["variants"] if x["variant_id"] == op.variant_id), None)
@@ -737,19 +1111,28 @@ class StoryRegistry:
         return "unchanged" if len(matches) == 1 else "changed"
 
     def _fingerprint(self, db, snap, variant):
-        ids = [(a["assertion_id"], a["revision"], a.get("assessment_ids"), a.get("evidence_ids"))
-               for a in snap["assertions"]]
+        """Only declared variant-assertion dependencies affect scoped approval.
+
+        Legacy variants with no explicit blocks conservatively depend on the
+        entire card. Superseded reviews are not effective support.
+        """
+        used = {str(b["assertion_id"]) for b in variant.get("blocks") or []
+                if b.get("assertion_id")}
+        affected = [a for a in snap["assertions"]
+                    if not used or a["assertion_id"] in used]
+        ids = [(a["assertion_id"], a["revision"], a.get("evidence_ids"))
+               for a in affected]
         proof = []
-        for aid, revision, assessments, evidence in ids:
-            for eid in evidence:
+        for assertion in affected:
+            for eid in assertion.get("evidence_ids") or []:
                 ev = self._row(db, "story_evidence", eid)
                 proof.append((eid, ev["source_sha256"] if ev else None,
                               self._evidence_state(db, ev), ev["source_revision"] if ev else None,
                               ev["excerpt_sha256"] if ev else None))
-            for assessment in assessments:
-                ar = self._row(db, "story_assessments", assessment)
-                proof.append((assessment, json.loads(ar["payload"]) if ar else None))
-        return digest({"variant": {k:v for k,v in variant.items() if k != "state"}, "assertions": ids, "proof": proof})
+            for assessment in self._current_assessments(db, assertion):
+                proof.append(("effective_assessment", assessment["id"], assessment))
+        return digest({"variant": {k:v for k,v in variant.items() if k != "state"},
+                       "assertions": ids, "proof": proof})
 
     def _validate(self, db, snap, variant, review=None):
         blockers, unknown = [], []
@@ -757,9 +1140,13 @@ class StoryRegistry:
             return ["variant_not_found"], []
         if not all(variant.get(k) for k in ("audience", "format", "language", "body")):
             blockers.append("missing_variant_fields")
-        if not snap["assertions"]:
+        used = {str(block["assertion_id"]) for block in variant.get("blocks") or []
+                if block.get("assertion_id")}
+        relevant = [a for a in snap["assertions"]
+                    if not used or a["assertion_id"] in used]
+        if not relevant:
             blockers.append("no_reviewable_assertions")
-        for a in snap["assertions"]:
+        for a in relevant:
             for evidence_id in a.get("evidence_ids") or []:
                 evidence = self._row(db, "story_evidence", evidence_id)
                 if not evidence:
@@ -778,9 +1165,19 @@ class StoryRegistry:
                 if not a.get("evidence_ids"):
                     blockers.append("historical_claim_without_evidence:" + a["assertion_id"])
                 else:
-                    assessments = [self._row(db, "story_assessments", x) for x in a.get("assessment_ids", [])]
-                    if not any(x and json.loads(x["payload"]).get("semantic_review") in
-                               {"supported", "partially_supported", "contested"} for x in assessments):
+                    assessments = self._current_assessments(db, a)
+                    positions = {x.get("semantic_review") for x in assessments}
+                    adverse = {"unsupported", "contested"}
+                    positive = bool(positions & {"supported", "partially_supported"})
+                    negative = bool(positions & adverse or any(
+                        x.get("support_status") in {"contested", "contradicted", "unsupported"}
+                        for x in assessments))
+                    if positive and negative:
+                        blockers.append("historical_claim_has_active_disagreement:" + a["assertion_id"])
+                    elif not positive:
+                        # Preserve the existing public blocker for an adverse-only
+                        # or unassessed claim. A superseded old positive cannot
+                        # satisfy the requirement.
                         blockers.append("historical_claim_without_semantic_review:" + a["assertion_id"])
             if a["kind"] in {"hypothesis", "creative_material"} and not variant.get("attributions"):
                 blockers.append("hypothesis_or_reconstruction_not_marked:" + a["assertion_id"])
@@ -1021,12 +1418,27 @@ class StoryRegistry:
             tokens = re.findall(r"[^\W_]+", str(query), re.UNICODE)[:12]
             expression = " OR ".join('"' + t + '"' for t in tokens)
             if tokens:
-                sql = """WITH who(actor_id) AS (VALUES (?))
-                    SELECT s.* FROM story_fts JOIN story_records s ON s.rowid=story_fts.rowid
-                    WHERE story_fts MATCH ? AND """ + " AND ".join(predicates)
-                sql += (" ORDER BY COALESCE(" + score + ",-1) DESC,bm25(story_fts),s.id LIMIT ? OFFSET ?"
-                        if order == "potential" else " ORDER BY bm25(story_fts),s.id LIMIT ? OFFSET ?")
-                args = [actor, expression, *params[1:], limit + 1, offset]
+                # Retrieve from current story headings AND separately indexed
+                # assertion language. Do not expand every story snapshot into
+                # the calling model. Apply the identical ACL before ordering.
+                sql = """WITH who(actor_id) AS (VALUES (?)),
+                matched AS (
+                    SELECT s.id AS id, bm25(story_fts) AS score
+                    FROM story_fts JOIN story_records s ON s.rowid=story_fts.rowid
+                    WHERE story_fts MATCH ?
+                    UNION ALL
+                    SELECT a.story_id AS id, bm25(story_assertion_fts) + 0.5 AS score
+                    FROM story_assertion_fts
+                    JOIN story_assertion_search a
+                      ON a.rowid=story_assertion_fts.rowid
+                    WHERE story_assertion_fts MATCH ?
+                ),
+                ranked AS (SELECT id,MIN(score) AS relevance FROM matched GROUP BY id)
+                SELECT s.* FROM ranked r JOIN story_records s ON s.id=r.id
+                WHERE """ + " AND ".join(predicates)
+                sql += (" ORDER BY COALESCE(" + score + ",-1) DESC,r.relevance,s.id LIMIT ? OFFSET ?"
+                        if order == "potential" else " ORDER BY r.relevance,s.id LIMIT ? OFFSET ?")
+                args = [actor, expression, expression, *params[1:], limit + 1, offset]
             else:
                 sql = """WITH who(actor_id) AS (VALUES (?))
                     SELECT s.* FROM story_records s WHERE """ + " AND ".join(predicates)
@@ -1102,8 +1514,10 @@ class StoryRegistry:
                                "grantee": grantee, "capability": capability}, authorize, apply)
 
     def merge(self, principal, target_id, source_ids, expected_revisions, reason, idempotency_key):
-        if not source_ids or len(source_ids) > 10 or target_id in source_ids or len(set(source_ids)) != len(source_ids):
-            fail("validation_failed")
+        if (not source_ids or len(source_ids) > 10 or target_id in source_ids
+                or len(set(source_ids)) != len(source_ids)
+                or not reason or len(reason.strip()) < 10):
+            fail("validation_failed", "Reviewed merge requires distinct IDs and a substantive reason")
         def authorize(db, actor):
             target, _ = self._read_story(db, actor, target_id, "editor")
             for sid in source_ids:
@@ -1129,6 +1543,50 @@ class StoryRegistry:
                 for gap in s["gaps"]:
                     if gap not in snap["gaps"]:
                         snap["gaps"].append(gap)
+                # Preserve independent author/editor context rather than
+                # discarding it when source cards are archived. Links remain
+                # references, not proof of historical/event identity.
+                for link in s.get("links") or []:
+                    if link not in snap["links"]:
+                        snap["links"].append(link)
+                for contributor in s.get("contributors") or []:
+                    if contributor not in snap["contributors"]:
+                        snap["contributors"].append(contributor)
+                for ref in s.get("source_refs") or []:
+                    if ref not in snap["source_refs"]:
+                        snap["source_refs"].append(ref)
+                # Ratings were made under the source story's old framing.
+                # Keep the original assessment and author in history, but do
+                # NOT treat its score as an up-to-date target-story rating.
+                historical = snap.setdefault("historical_interest_assessments", [])
+                for rating in s.get("interest_assessments") or []:
+                    historical.append({
+                        "origin_story_id": sid,
+                        "origin_story_revision": r["revision"],
+                        "assessment": rating,
+                        "requires_reassessment": True,
+                    })
+                for prior in s.get("historical_interest_assessments") or []:
+                    if prior not in historical:
+                        historical.append(prior)
+                for variant in s.get("variants") or []:
+                    if any(v["variant_id"] == variant["variant_id"]
+                           for v in snap["variants"]):
+                        fail("validation_failed", "Variant ID unexpectedly reused")
+                    old_state = variant.get("state")
+                    migrated = {**variant, "state": "needs_revalidation",
+                                "merge_origin_story_id": sid,
+                                "previous_editorial_state": old_state}
+                    snap["variants"].append(migrated)
+                    # Keep authored variant_version history and review receipts
+                    # intact; no prior source approval transfers to the target.
+                    result = db.execute("""UPDATE story_variants
+                      SET story_id=?, state='needs_revalidation',
+                          approved_revision=NULL, approval_fingerprint=NULL
+                      WHERE id=? AND story_id=?""",
+                      (target_id, variant["variant_id"], sid))
+                    if result.rowcount != 1:
+                        fail("source_changed", "Merge variant revision is missing")
                 s["merged_into"] = target_id
                 s["archived"] = True
                 s["state"] = "archived"
@@ -1262,32 +1720,109 @@ class StoryRegistry:
             }
 
     def entity_list(self, principal, document_ids=None, kinds=None, query="", cursor=None, limit=20):
+        """ACL-filtered keyset walk; never cut the catalog to the first 100 documents.
+
+        Cursor freezes the maximum *authorized* entity id at the initial query;
+        ACL and active revision are rechecked on every subsequent page.
+        Changes to records during traversal are not a point-in-time snapshot:
+        restart the walk to include new/updated entities before the cursor.
+        """
+        import base64
         with self.corpus.connect() as db:
             actor = self._actor(db, principal)
-            # Fetch only scoped graph rows. Unknown scope does not become all actors' graph.
-            docs = document_ids or [r["row_key"] for r in db.execute(
-                "SELECT row_key FROM corpus_rows WHERE table_name='rkb_documents'")]
-            docs = [d for d in docs[:100] if self._document_allowed(db, actor, d)]
-            results = []
-            for d in docs:
-                for row in self._matching_corpus(db, "rkb_entities", document_id=d):
-                    if kinds and row.get("kind") not in kinds:
-                        continue
-                    doc = self._document_allowed(db, actor, d)
-                    if row.get("revision") != doc.get("active_revision"):
-                        continue
-                    if query and query.casefold() not in row.get("canonical_label", "").casefold():
-                        continue
-                    results.append({"entity_id": row["id"], "kind": row["kind"],
-                                    "label": row["canonical_label"], "document_id": d,
-                                    "revision": row["revision"]})
-            results.sort(key=lambda x: (x["label"], x["entity_id"]))
-            offset = max(0, int(cursor or 0))
             take = max(1, min(int(limit), 50))
-            page = results[offset:offset + take]
-            return {"items": page, "has_more": len(results) > offset + take,
-                    "next_cursor": str(offset + take) if len(results) > offset + take else None,
-                    "coverage": "accepted_mentions_not_complete_extraction"}
+            docs = [str(x) for x in (document_ids or [])]
+            kind_list = [str(x) for x in (kinds or [])]
+            if len(docs) > 400 or len(kind_list) > 40:
+                fail("validation_failed", "Limit one explicit scope to 400 documents and 40 kinds")
+            query = str(query or "")
+            scope_hash = digest({"actor": actor, "docs": sorted(set(docs)),
+                                 "kinds": sorted(set(kind_list)), "query": query})
+            # The document-level source ACL is evaluated in SQL *before* keyset
+            # ordering. Unauthorized entities never displace visible results.
+            visible = """(
+                json_extract(d.payload,'$.owner_user_id') = ?
+                OR (json_extract(d.payload,'$.content_visibility') = 'public'
+                    AND json_extract(d.payload,'$.rights_status') IN
+                      ('licensed','permission_granted','public_domain_verified','statutory_access_verified')
+                    AND json_extract(d.payload,'$.rights_policy_version') IS NOT NULL
+                    AND json_extract(d.payload,'$.rights_evidence.public_distribution') = 1)
+                OR EXISTS (SELECT 1 FROM corpus_rows grant_row
+                  WHERE grant_row.table_name='rkb_document_grants'
+                    AND grant_row.document_id=d.row_key
+                    AND json_extract(grant_row.payload,'$.grantee_user_id') = ?)
+                OR (json_extract(d.payload,'$.content_visibility') IN ('workspace','public')
+                    AND (EXISTS (SELECT 1 FROM corpus_rows ws
+                         WHERE ws.table_name='rkb_workspaces'
+                           AND ws.row_key=json_extract(d.payload,'$.workspace_id')
+                           AND json_extract(ws.payload,'$.owner_user_id') = ?)
+                         OR EXISTS (SELECT 1 FROM corpus_rows member
+                         WHERE member.table_name='rkb_workspace_members'
+                           AND json_extract(member.payload,'$.workspace_id') =
+                             json_extract(d.payload,'$.workspace_id')
+                           AND json_extract(member.payload,'$.user_id') = ?)))
+            )"""
+            where = [
+                "e.table_name='rkb_entities'",
+                "d.table_name='rkb_documents'",
+                "d.row_key=e.document_id",
+                "CAST(e.revision AS INTEGER)=CAST(json_extract(d.payload,'$.active_revision') AS INTEGER)",
+                visible,
+            ]
+            params = [actor, actor, actor, actor]
+            if docs:
+                where.append("e.document_id IN (" + ",".join("?" for _ in docs) + ")")
+                params.extend(docs)
+            if kind_list:
+                where.append("json_extract(e.payload,'$.kind') IN (" + ",".join("?" for _ in kind_list) + ")")
+                params.extend(kind_list)
+            if query:
+                where.append("instr(lower(json_extract(e.payload,'$.canonical_label')),lower(?))>0")
+                params.append(query)
+            where_sql = " AND ".join(where)
+            if cursor is None:
+                upper = db.execute(
+                    "SELECT MAX(e.row_key) FROM corpus_rows e JOIN corpus_rows d "
+                    "ON d.row_key=e.document_id WHERE " + where_sql,
+                    params,
+                ).fetchone()[0]
+                after = ""
+            else:
+                try:
+                    value = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+                    if (value.get("v") != 1 or value.get("scope") != scope_hash
+                            or not isinstance(value.get("after"), str)
+                            or not isinstance(value.get("upper"), str)):
+                        raise ValueError("invalid cursor scope")
+                    after, upper = value["after"], value["upper"]
+                except (ValueError, UnicodeError, TypeError, KeyError):
+                    fail("validation_failed", "Invalid or mismatched entity cursor")
+            if upper is None:
+                return {"items": [], "has_more": False, "next_cursor": None,
+                        "coverage": "accepted_mentions_not_complete_extraction",
+                        "cursor_policy": "authorized_keyset_highwater_acl_rechecked"}
+            rows = db.execute(
+                "SELECT e.row_key, e.payload, e.document_id, e.revision "
+                "FROM corpus_rows e JOIN corpus_rows d ON d.row_key=e.document_id "
+                "WHERE " + where_sql + " AND e.row_key>? AND e.row_key<=? "
+                "ORDER BY e.row_key LIMIT ?",
+                [*params, after, upper, take + 1],
+            ).fetchall()
+            items = []
+            for row in rows[:take]:
+                item = json.loads(row["payload"])
+                items.append({"entity_id": row["row_key"], "kind": item.get("kind"),
+                              "label": item.get("canonical_label"),
+                              "document_id": row["document_id"], "revision": row["revision"]})
+            more = len(rows) > take
+            next_cursor = None
+            if more and items:
+                token = {"v": 1, "scope": scope_hash, "upper": upper, "after": items[-1]["entity_id"]}
+                next_cursor = base64.urlsafe_b64encode(
+                    canonical(token).encode("utf8")).decode("ascii").rstrip("=")
+            return {"items": items, "has_more": more, "next_cursor": next_cursor,
+                    "coverage": "accepted_mentions_not_complete_extraction",
+                    "cursor_policy": "authorized_keyset_highwater_acl_rechecked"}
 
     def _accepted_story_candidate(self, db, principal, job, document, candidate, batch_region_ids):
         """Materialize an attributed episode in the same transaction as its lease.
@@ -1517,11 +2052,17 @@ class StoryRegistry:
             result = {**result, "lease_active": result["lease_deadline"] > time.time()}
         return result
 
-    def job_get(self, principal, job_id):
+    def job_get(self, principal, job_id, cursor=None, limit=5, proposal_id=None):
         with self.corpus.connect() as db:
             actor = self._actor(db, principal)
             job = self._row(db, "story_jobs", job_id)
-            if not job or job["owner_id"] != actor or not self._document_allowed(db, actor, job["document_id"]):
+            if not job:
+                # Reuse the existing public job reader for reconciliation work.
+                # The reconciler performs fresh actor/source authorization.
+                from .story_reconcile import StoryReconciler
+                return StoryReconciler(self).status(
+                    principal, job_id, cursor, limit, proposal_id)
+            if job["owner_id"] != actor or not self._document_allowed(db, actor, job["document_id"]):
                 fail("not_found_or_not_accessible")
             return {"job_id": job_id, "revision": job["revision"], "state": job["state"],
                     "executor_state": job["executor_state"], "document_id": job["document_id"],

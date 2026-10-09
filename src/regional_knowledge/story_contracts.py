@@ -332,3 +332,116 @@ class StageStoryCandidateInput(Strict):
     attributed_to: str | None = Field(default=None, max_length=250)
     reported_by: str | None = Field(default=None, max_length=250)
     evidence_refs: list[StageStoryEvidenceInput] = Field(min_length=1, max_length=4)
+
+
+# Bounded cross-book comparison. Model-authored conclusions are proposals,
+# not identity or historical truth assigned by this deterministic backend.
+class ReconcileCandidateRef(Strict):
+    kind: Literal["story", "chunk"]
+    ref_id: Identifier
+
+
+class ReconcileEvidenceRef(Strict):
+    document_id: Identifier
+    source_revision: int = Field(ge=1)
+    page_id: Identifier
+    region_id: Identifier
+    original_excerpt: Annotated[str, Field(min_length=1, max_length=500)]
+    evidence_id: Identifier | None = None
+    chunk_id: Identifier | None = None
+    start: int | None = Field(default=None, ge=0)
+    end: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def span(self):
+        if (self.start is None) != (self.end is None):
+            raise ValueError("Offsets must be provided together")
+        if self.start is not None and self.start >= self.end:
+            raise ValueError("Ordered source offsets required")
+        return self
+
+
+class ReconcileDecision(Strict):
+    identity_relation: Literal[
+        "same_episode", "part_or_phase", "different_episode", "unrelated", "unresolved"
+    ]
+    contribution_kinds: list[Literal[
+        "new_detail", "additional_evidence", "repeat", "contradiction",
+        "interpretation", "thematic_context"
+    ]] = Field(default_factory=list, max_length=6)
+    independence: Literal["independent", "dependent", "mixed", "unknown"] = "unknown"
+    independence_basis: Annotated[str, Field(min_length=5, max_length=500)]
+    proposed_effect: Literal[
+        "link_stories", "attach_evidence", "add_attributed_claim", "no_change"
+    ]
+    rationale: Annotated[str, Field(min_length=10, max_length=1000)]
+    anchor_evidence: ReconcileEvidenceRef
+    candidate_evidence: ReconcileEvidenceRef
+    target_assertion_id: Identifier | None = None
+    new_proposition: Annotated[str, Field(min_length=5, max_length=500)] | None = None
+    attributed_to: str | None = Field(default=None, max_length=250)
+
+
+class ReconcileNext(Strict):
+    """Claim the next pending *model-authored* reconciliation goal, no server LLM."""
+    command: Literal["next"]
+    document_id: Identifier | None = None
+    policy_version: str = Field(default="cross-book-v1", max_length=80)
+    max_candidate_pairs: int = Field(default=50, ge=1, le=50)
+
+
+class ReconcileStart(Strict):
+    command: Literal["start"]
+    anchor_story_id: Identifier
+    expected_story_revision: int = Field(ge=1)
+    query: str = Field(default="", max_length=350)
+    policy_version: str = Field(default="cross-book-v1", max_length=80)
+    max_candidate_pairs: int = Field(default=50, ge=1, le=50)
+    refs: list[ReconcileCandidateRef] = Field(default_factory=list, max_length=50)
+
+
+class ReconcileEnqueue(Strict):
+    command: Literal["enqueue"]
+    run_id: Identifier
+    expected_job_revision: int = Field(ge=1)
+    refs: list[ReconcileCandidateRef] = Field(default_factory=list, max_length=50)
+    searched_channels: list[Literal[
+        "story_lexical", "story_semantic", "source_lexical", "source_bge",
+    ]] = Field(default_factory=list, max_length=4)
+
+
+class ReconcileClaim(Strict):
+    command: Literal["claim"]
+    run_id: Identifier
+    expected_job_revision: int = Field(ge=1)
+
+
+class ReconcileStage(Strict):
+    command: Literal["stage"]
+    run_id: Identifier
+    expected_job_revision: int = Field(ge=1)
+    work_id: Identifier
+    lease_token: Identifier
+    decision: ReconcileDecision
+
+
+class ReconcileApply(Strict):
+    command: Literal["apply"]
+    run_id: Identifier
+    proposal_id: Identifier
+    expected_job_revision: int = Field(ge=1)
+    expected_target_revision: int = Field(ge=1)
+    reviewer_note: Annotated[str, Field(min_length=10, max_length=500)]
+
+
+class ReconcileCancel(Strict):
+    command: Literal["cancel"]
+    run_id: Identifier
+    expected_job_revision: int = Field(ge=1)
+
+
+ReconcileRequest = Annotated[
+    ReconcileNext | ReconcileStart | ReconcileEnqueue | ReconcileClaim | ReconcileStage
+    | ReconcileApply | ReconcileCancel,
+    Field(discriminator="command"),
+]

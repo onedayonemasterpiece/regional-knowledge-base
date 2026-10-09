@@ -55,7 +55,7 @@ from .supabase_backend import backend_from_env
 from .story_registry import StoryRegistry, StoryError
 from .story_contracts import (
     StageStoryCandidateInput, Key, SeedInput, SourceRef, StoryMetadata, StoryOperation,
-    ReviewDecision, RegisteredSource, ExtractRequest,
+    ReviewDecision, RegisteredSource, ExtractRequest, ReconcileRequest,
 )
 
 
@@ -313,12 +313,18 @@ def build_server(
                     cursor: str | None = None) -> dict[str,Any]:
                 return await story_call(registry.search, query, filters, mode, order, limit, cursor)
 
-            @mcp.tool(name="story_get", title="Read a sourced editorial card",
-                description="Read one authorized story revision, its typed assertions and editorial state.",
+            @mcp.tool(name="story_get", title="Read sourced stories and bounded evidence",
+                description="Read one authorized story. For large cross-book dossiers use "
+                            "view=evidence_page, assertion_page or sources_page with a "
+                            "revision-bound cursor and limit; sources are derived from actual "
+                            "evidence/dependencies, including controlled merges.",
                 annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
             async def story_get(story_id: str, revision: int | None = None,
-                    view: Literal["compact","editorial","evidence","review"] = "compact") -> dict[str,Any]:
-                return await story_call(registry.get, story_id, revision, view)
+                    view: Literal["compact","editorial","evidence","review",
+                                  "evidence_page","assertion_page","sources_page","relations_page"] = "compact",
+                    cursor: str | None = None, limit: Annotated[int, Field(ge=1,le=10)] = 8,
+                    assertion_id: str | None = None) -> dict[str,Any]:
+                return await story_call(registry.get, story_id, revision, view, cursor, limit, assertion_id)
 
             @mcp.tool(name="story_history", title="Read story change history",
                 description="Bounded version authorship and actions, with current source-access recheck.",
@@ -335,11 +341,14 @@ def build_server(
                     variant_revision_ids: list[dict[str,str|int]] | None = None) -> dict[str,Any]:
                 return await story_call(registry.validate, story_id, variant_revision_ids)
 
-            @mcp.tool(name="story_job_get", title="Inspect extraction checkpoint",
-                description="Real persisted state; awaiting_agent means that no model worker has started.",
+            @mcp.tool(name="story_job_get", title="Inspect extraction and reconciliation state",
+                description="Persisted bounded progress and paginated proposal IDs. "
+                            "awaiting_agent means an external model must continue.",
                 annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
-            async def story_job_get(job_id: str) -> dict[str,Any]:
-                return await story_call(registry.job_get, job_id)
+            async def story_job_get(job_id: str, cursor: str | None = None,
+                    limit: Annotated[int,Field(ge=1,le=10)]=5,
+                    proposal_id: str | None = None) -> dict[str,Any]:
+                return await story_call(registry.job_get, job_id, cursor, limit, proposal_id)
 
             @mcp.tool(name="entity_list", title="List accepted graph mentions",
                 description="Authorized bounded entity list, not a complete claim of book coverage.",
@@ -399,6 +408,22 @@ def build_server(
                     annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
                 async def story_extract(request: ExtractRequest, idempotency_key: Key) -> dict[str,Any]:
                     return await story_call(registry.extract, request, idempotency_key)
+
+                @mcp.tool(name="story_reconcile", title="Reconcile source-backed episodes across books",
+                    description="Durable next/start/enqueue/claim/stage/apply/cancel workflow. " +
+                                "After book_ingest finalize or story_extract, next yields the next "
+                                "accepted pending story and resumes unfinished runs without original chat history. "
+                                "The same calling model searches story_search and knowledge_search, "
+                                "compares exact original evidence via story_get evidence_page and "
+                                "corpus_read, and saves a typed proposal. Application checks exact "
+                                "story/source revisions, rights and reviewer intent before attaching "
+                                "another source or linking episodes without automatic merge. "
+                                "Never infer historical truth or independence from a mere quote match.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True,
+                                                destructive_hint=False, open_world_hint=False))
+                async def story_reconcile(request: ReconcileRequest, idempotency_key: Key) -> dict[str,Any]:
+                    from .story_reconcile import StoryReconciler
+                    return await story_call(StoryReconciler(registry).dispatch, request, idempotency_key)
 
             if profile in {"full", "story_editor"}:
                 @mcp.tool(name="story_transition", title="Review or approve chosen story variants",
@@ -577,7 +602,14 @@ def build_server(
             "story_candidates list is a valid explicit no-candidate review. Submit exact region excerpts " +
             "as story_candidates in the SAME stage call, without a separate prompt or LLM request. " +
             "They are saved when the accepted book revision activates; they are attributed candidates " +
-            "and never automatically publish_ready. Review story_extraction progress in status."
+            "and never automatically publish_ready. Review story_extraction progress in status. " +
+            "After successful finalization, continue the SAME user goal by calling " +
+            "story_reconcile(next, document_id=...) to claim accepted story candidates; " +
+            "search existing story_search assertions and knowledge_search original sources, " +
+            "stage evidence-grounded cross-book comparisons and apply permitted reviewed effects. " +
+            "The server cannot semantically compare stories without this calling model; " +
+            "persist pending frontier and report unfinished work explicitly rather than pretending " +
+            "that acceptance of the book completed reconciliation."
         ),
         annotations=ToolAnnotations(
             read_only_hint=False,
