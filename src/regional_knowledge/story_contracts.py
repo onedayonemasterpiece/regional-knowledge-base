@@ -227,11 +227,46 @@ class RegisteredSource(Strict):
         return self
 
 
+class ExtractGroundedEvidence(Strict):
+    """Evidence in an already accepted source, not an inferred chunk reference."""
+    page_id: Identifier
+    region_id: Identifier
+    original_excerpt: Annotated[str, Field(min_length=1, max_length=500)]
+    start: int | None = Field(default=None, ge=0)
+    end: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def offsets_must_pair(self):
+        if (self.start is None) != (self.end is None):
+            raise ValueError("Both exact source offsets are required together")
+        if self.start is not None and self.start >= self.end:
+            raise ValueError("Source offsets must be ordered")
+        return self
+
+
+class ExtractGroundedCandidate(Strict):
+    """One distinct source-attributed episode; no model call inside the server."""
+    candidate_key: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")]
+    title: Annotated[str, Field(min_length=3, max_length=250)]
+    summary: Annotated[str, Field(min_length=5, max_length=1000)]
+    material_type: Literal[
+        "event_narrative", "person_episode", "place_biography", "explanation",
+        "comparison", "everyday_life", "mystery", "conflicting_accounts", "other",
+    ] = "other"
+    proposition: Annotated[str, Field(min_length=5, max_length=500)]
+    account_kind: Literal[
+        "legend", "tradition", "rumor", "recollection", "testimony", "other",
+    ] = "other"
+    attributed_to: str | None = Field(default=None, max_length=250)
+    reported_by: str | None = Field(default=None, max_length=250)
+    evidence_refs: list[ExtractGroundedEvidence] = Field(min_length=1, max_length=4)
+
+
 class ExtractStart(Strict):
     command: Literal["start"]
     document_id: Identifier
     source_revision: int = Field(ge=1)
-    batch_size: int = Field(default=3, ge=1, le=10)
+    batch_size: int = Field(default=10, ge=1, le=20)
 
 
 class ExtractClaim(Strict):
@@ -248,7 +283,8 @@ class ExtractStage(Strict):
     lease_token: Identifier
     source_revision: int = Field(ge=1)
     candidates: list[SeedInput] = Field(default_factory=list, max_length=10)
-    skipped: list[str] = Field(default_factory=list, max_length=10)
+    grounded_candidates: list[ExtractGroundedCandidate] = Field(default_factory=list, max_length=10)
+    skipped: list[str] = Field(default_factory=list, max_length=20)
 
 
 class ExtractCancel(Strict):
