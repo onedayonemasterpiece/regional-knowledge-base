@@ -1,4 +1,4 @@
-BEGIN;
+begin;
 -- Optional compatibility migration for installations still running the
 -- legacy PostgreSQL graph authority. The production RKB authority is SQLite;
 -- do not move identities or evidence to PostgreSQL.
@@ -59,4 +59,4 @@ BEGIN
   END IF;
   RETURN NEW;
 END $$;
-COMMIT;
+commit;
