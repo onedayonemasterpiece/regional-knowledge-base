@@ -63,3 +63,52 @@ async def test_related_reuses_backend_and_canonical_alias_contract():
     async def read(*args):return {'entity':{'external_ref':'streetstory://poi/'+str(uuid4()),'canonical_label':'Modern'},'aliases':[]}
     g.read=read;await g.related(None,str(uuid4()),'Current name query',100)
     assert b.called==('Current name query',{'match_count':20,'aliases':[{'name':'Modern','kind':'historical'},{'name':'Old German','kind':'historical'}]})
+
+
+@pytest.mark.parametrize("kind,left,right", [
+    ("affiliated_with", "person", "organization"),
+    ("participated_in", "organization", "event"),
+    ("member_of", "organization", "historical_thread"),
+    ("operated_at", "organization", "poi_ref"),
+    ("predecessor_of", "organization", "organization"),
+    ("founded_by", "organization", "person"),
+])
+def test_organization_directed_relations_require_exact_source_nodes(kind,left,right):
+    a=node("before",left)
+    b=node("after",right)
+    for entity in (a,b):
+        if entity["kind"]=="poi_ref":
+            entity["poi_locator"]={"names":["Old City Hall"]}
+    source=evidence()
+    valid=GraphBundle(entities=[a,b],relations=[{
+        "kind":kind,"source_key":"before","target_key":"after",
+        "evidence":[source],"time_scope":"1810-1910",
+    }])
+    assert valid.relations[0].kind==kind
+    # Reversing organization/place/person/event semantics is not allowed.
+    # For org->org same kinds, a self-edge is rejected separately.
+    if left!=right:
+        with pytest.raises(ValidationError):
+            GraphBundle(entities=[a,b],relations=[{
+                "kind":kind,"source_key":"after","target_key":"before",
+                "evidence":[source],
+            }])
+    with pytest.raises(ValidationError):
+        GraphBundle(entities=[a,b],relations=[{
+            "kind":kind,"source_key":"before","target_key":"before",
+            "evidence":[source],
+        }])
+
+
+def test_identically_named_historical_organizations_never_merge_by_label():
+    a=node("old","organization")
+    b=node("new","organization")
+    a["canonical_label"]=b["canonical_label"]="Kaufmannschaft"
+    bundle=GraphBundle(entities=[a,b],relations=[{
+        "kind":"predecessor_of","source_key":"old","target_key":"new",
+        "evidence":[evidence()],
+    }])
+    assert bundle.entities[0].canonical_label==bundle.entities[1].canonical_label
+    assert entity_id(uuid4(),"old")!=entity_id(uuid4(),"new")
+    doc=uuid4()
+    assert entity_id(doc,"old")!=entity_id(doc,"new")

@@ -6,9 +6,31 @@ from uuid import UUID,uuid5
 from pydantic import BaseModel,Field,ConfigDict,model_validator
 from .contracts import PoiLocatorInput
 
-Kind=Literal['person','event','historical_thread','poi_ref']
+Kind=Literal['person','organization','event','historical_thread','poi_ref']
 AliasKind=Literal['current','historical','former','transliteration','spelling_variant']
-RelationKind=Literal['participated_in','occurred_at','member_of']
+RelationKind=Literal[
+    'participated_in','occurred_at','member_of','affiliated_with',
+    'operated_at','predecessor_of','founded_by',
+]
+
+# Edges are explicit historical source claims, not automatic identity inference.
+# Keep these shapes identical to the SQLite write guard and the optional
+# PostgreSQL schema extension 024_organization_graph.sql.
+RELATION_ENDPOINTS = {
+    'participated_in': {('person','event'),('organization','event')},
+    'occurred_at': {('event','poi_ref')},
+    'member_of': {(kind,'historical_thread') for kind in (
+        'person','organization','event','poi_ref')},
+    'affiliated_with': {('person','organization')},
+    'operated_at': {('organization','poi_ref')},
+    'predecessor_of': {('organization','organization')},
+    'founded_by': {('organization','person')},
+}
+
+def valid_relation_shape(kind: str, source_kind: str, target_kind: str,
+                         *, same_entity: bool = False) -> bool:
+    return (not same_entity and
+            (source_kind, target_kind) in RELATION_ENDPOINTS.get(kind, set()))
 
 def normalize_alias(value:str)->str:
     return ' '.join(unicodedata.normalize('NFKC',value).casefold().split())
@@ -72,9 +94,10 @@ class GraphBundle(Strict):
         kinds={n.key:n.kind for n in self.entities}
         if len(kinds)!=len(self.entities):raise ValueError('duplicate entity key')
         for edge in self.relations:
-            pair=(kinds.get(edge.source_key),kinds.get(edge.target_key))
-            valid={'participated_in':{('person','event')},'occurred_at':{('event','poi_ref')},'member_of':{(k,'historical_thread') for k in ('person','event','poi_ref')}}
-            if pair not in valid[edge.kind]:raise ValueError('invalid relation endpoints')
+            if not valid_relation_shape(
+                    edge.kind,kinds.get(edge.source_key),kinds.get(edge.target_key),
+                    same_entity=edge.source_key==edge.target_key):
+                raise ValueError('invalid relation endpoints')
         return self
 
 def entity_id(document_id:UUID,key:str)->UUID:

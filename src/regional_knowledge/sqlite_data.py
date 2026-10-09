@@ -162,7 +162,19 @@ class LocalContext:
             sp=self.one('rkb_pages',source['page_id']) if source else None;tp=self.one('rkb_pages',target['page_id']) if target else None
             if not sp or not tp or (sp['document_id'],sp['revision'])!=(tp['document_id'],tp['revision']):raise ValueError('relation escapes revision')
         if table=='rkb_entity_relations' and new:
-            if any((self.one('rkb_entities',row[key]) or {}).get('owner_user_id')!=self.actor for key in ('source_id','target_id')):raise PermissionError('graph relation identity ownership required')
+            source=self.one('rkb_entities',row['source_id'])
+            target=self.one('rkb_entities',row['target_id'])
+            if not source or not target or any(
+                    entity['owner_user_id']!=self.actor for entity in (source,target)):
+                raise PermissionError('graph relation identity ownership required')
+            # Postgres guard and typed graph bundles enforce the same directed
+            # endpoint contract. Do not allow direct SQL to bypass the model
+            # validator or confuse organization, physical place and person.
+            from .entity_graph import valid_relation_shape
+            if not valid_relation_shape(
+                    row['kind'],source['kind'],target['kind'],
+                    same_entity=row['source_id']==row['target_id']):
+                raise ValueError('invalid graph relation shape')
         if table=='rkb_illustrations' and row.get('visibility')=='public':assert_visibility_allowed(Visibility.PUBLIC,RightsStatus(row['rights_status']),evidence=row.get('rights_evidence') or {},policy_version=row.get('rights_policy_version'))
         if table.startswith('rkb_entity_') and new:
             evidence=row.get('evidence') or {};items=evidence if isinstance(evidence,list) else [evidence]
