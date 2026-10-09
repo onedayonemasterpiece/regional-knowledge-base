@@ -53,7 +53,7 @@ from .oauth_provider import (
 from .supabase_backend import backend_from_env
 from .story_registry import StoryRegistry, StoryError
 from .story_contracts import (
-    Key, SeedInput, SourceRef, StoryMetadata, StoryOperation,
+    StageStoryCandidateInput, Key, SeedInput, SourceRef, StoryMetadata, StoryOperation,
     ReviewDecision, RegisteredSource, ExtractRequest,
 )
 
@@ -227,9 +227,14 @@ def build_server(
             "workflow terms unless they are useful to explain a real blocker. Build coherent "
             "retrieval passages around roughly 256 encoder tokens, usually about 800-1000 "
             "characters and generally about 700-1100 for the current book corpus; never use "
-            "page boundaries as chunk boundaries by default. Preserve complete semantic "
-            "sentences/paragraphs and let validation enforce exact final-input token budgets. Never infer "
-            "that a source is public."
+            "page boundaries as chunk boundaries by default. During the SAME model page-review pass, "
+            "sentences/paragraphs and let validation enforce exact final-input token budgets. "
+            "For every staged page also review possible story episodes, mark story_candidates_reviewed=true " +
+            "even when there is no suitable candidate, and send bounded story_candidates in the " +
+            "same book_ingest(stage) call. Attach source-region exact quotes; distinguish the book author's " +
+            "account from historically proven facts. Do not make a candidate per chunk. " +
+            "Complete page-by-page story review in the existing ingestion workflow without a second prompt. " +
+            "Never infer that a source is public."
         ),
         **kwargs,
     )
@@ -525,7 +530,13 @@ def build_server(
             "later instead of tight polling. Stage coherent semantic retrieval passages near "
             "256 encoder tokens (typically 800-1000 characters, broadly 700-1100 here), not "
             "mechanical page-sized chunks. Exact E5/BGE token counts are validated over the "
-            "final augmented search material before finalization."
+            "final augmented search material before finalization. During existing book_pages/stage " +
+            "model review also extract story candidates by episode (not per retrieval chunk). " +
+            "Mark each staged page story_candidates_reviewed=true after reviewing it; an empty " +
+            "story_candidates list is a valid explicit no-candidate review. Submit exact region excerpts " +
+            "as story_candidates in the SAME stage call, without a separate prompt or LLM request. " +
+            "They are saved when the accepted book revision activates; they are attributed candidates " +
+            "and never automatically publish_ready. Review story_extraction progress in status."
         ),
         annotations=ToolAnnotations(
             read_only_hint=False,
@@ -547,6 +558,7 @@ def build_server(
         poi_facts: list[StagePoiFactInput] | None = None,
         poi_media_links: list[StagePoiMediaLinkInput] | None = None,
         entity_candidates: GraphBundle | None = None,
+        story_candidates: Annotated[list[StageStoryCandidateInput], Field(max_length=12)] | None = None,
     ) -> BookIngestOutput:
         payload: dict[str, Any] | None = None
         if metadata is not None:
@@ -557,9 +569,11 @@ def build_server(
             or poi_facts is not None
             or poi_media_links is not None
             or entity_candidates is not None
+            or story_candidates is not None
         ):
             payload = {
                 "entity_candidates": entity_candidates.model_dump(mode="json") if entity_candidates else None,
+                "story_candidates": [x.model_dump(mode="json") for x in (story_candidates or [])],
                 "pages": [
                     page.model_dump(mode="json", exclude_none=True)
                     for page in (pages or [])
