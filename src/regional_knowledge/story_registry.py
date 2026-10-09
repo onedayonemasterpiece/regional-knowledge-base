@@ -426,6 +426,22 @@ class StoryRegistry:
                       VALUES(?,?,?,?,?)""", (str(uuid4()), story_id, revision,
                                                digest({"title": meta["title"], "summary": meta.get("summary")}),
                                                now()))
+        # Keep the current assertion/alias projection in the same SQLite
+        # transaction as the canonical story revision. Stale assertion revisions
+        # cannot persist as search results after a mutation or merge.
+        db.execute("DELETE FROM story_assertion_search WHERE story_id=?", (story_id,))
+        for assertion in content.get("assertions") or []:
+            label = " ".join(str(value) for value in (
+                assertion.get("proposition"), assertion.get("attributed_to"),
+                assertion.get("reported_by")
+            ) if value)
+            db.execute("""INSERT INTO story_assertion_search
+                    (assertion_id,story_id,revision,phrase) VALUES(?,?,?,?)
+                    ON CONFLICT(assertion_id) DO UPDATE SET
+                      story_id=excluded.story_id,revision=excluded.revision,
+                      phrase=excluded.phrase""",
+                      (assertion["assertion_id"], story_id, assertion["revision"],
+                       label[:900]))
         self._audit(db, principal, story_id, revision, action, action)
         # Accepted-source extraction creates a durable reconciliation delta
         # without running another model, or blocking book acceptance.
@@ -1371,12 +1387,27 @@ class StoryRegistry:
             tokens = re.findall(r"[^\W_]+", str(query), re.UNICODE)[:12]
             expression = " OR ".join('"' + t + '"' for t in tokens)
             if tokens:
-                sql = """WITH who(actor_id) AS (VALUES (?))
-                    SELECT s.* FROM story_fts JOIN story_records s ON s.rowid=story_fts.rowid
-                    WHERE story_fts MATCH ? AND """ + " AND ".join(predicates)
-                sql += (" ORDER BY COALESCE(" + score + ",-1) DESC,bm25(story_fts),s.id LIMIT ? OFFSET ?"
-                        if order == "potential" else " ORDER BY bm25(story_fts),s.id LIMIT ? OFFSET ?")
-                args = [actor, expression, *params[1:], limit + 1, offset]
+                # Retrieve from current story headings AND separately indexed
+                # assertion language. Do not expand every story snapshot into
+                # the calling model. Apply the identical ACL before ordering.
+                sql = """WITH who(actor_id) AS (VALUES (?)),
+                matched AS (
+                    SELECT s.id AS id, bm25(story_fts) AS score
+                    FROM story_fts JOIN story_records s ON s.rowid=story_fts.rowid
+                    WHERE story_fts MATCH ?
+                    UNION ALL
+                    SELECT a.story_id AS id, bm25(story_assertion_fts) + 0.5 AS score
+                    FROM story_assertion_fts
+                    JOIN story_assertion_search a
+                      ON a.rowid=story_assertion_fts.rowid
+                    WHERE story_assertion_fts MATCH ?
+                ),
+                ranked AS (SELECT id,MIN(score) AS relevance FROM matched GROUP BY id)
+                SELECT s.* FROM ranked r JOIN story_records s ON s.id=r.id
+                WHERE """ + " AND ".join(predicates)
+                sql += (" ORDER BY COALESCE(" + score + ",-1) DESC,r.relevance,s.id LIMIT ? OFFSET ?"
+                        if order == "potential" else " ORDER BY r.relevance,s.id LIMIT ? OFFSET ?")
+                args = [actor, expression, expression, *params[1:], limit + 1, offset]
             else:
                 sql = """WITH who(actor_id) AS (VALUES (?))
                     SELECT s.* FROM story_records s WHERE """ + " AND ".join(predicates)
