@@ -11,7 +11,7 @@ from regional_knowledge.sqlite_corpus import SQLiteCorpus
 from regional_knowledge.story_contracts import (
     AttachEvidence, EvidenceLocator, ReconcileApply, ReconcileCancel,
     ReconcileCandidateRef, ReconcileClaim, ReconcileDecision, ReconcileNext,
-    ReconcileEnqueue, ReconcileEvidenceRef, ReconcileStage, ReconcileStart,
+    ReconcileEnqueue, ReconcileEvidenceRef, ReconcileEvidenceAssessment, ReconcileStage, ReconcileStart,
     SeedInput, UpsertAssertion,
 )
 from regional_knowledge.story_registry import StoryRegistry, StoryError
@@ -246,6 +246,13 @@ def test_cross_book_enrichment_attaches_candidate_evidence_to_anchor_only(fixtur
         independence_basis="May share a predecessor; source independence not established",
         proposed_effect="attach_evidence", target_assertion_id=anchor[1],
         rationale="The older publication also explicitly describes this bridge episode.",
+        evidence_relation="provides_context",
+        effective_assessment=ReconcileEvidenceAssessment(
+            support_status="single_source", independence="unknown",
+            semantic_review="partially_supported",
+            rationale="Two source passages compared, but common root not excluded.",
+            method_version="synthetic-reconcile-v1",
+        ),
         anchor_evidence=ReconcileEvidenceRef(
             document_id=newer[0], source_revision=1, page_id=newer[1],
             region_id=newer[2], original_excerpt=newer[4],
@@ -275,6 +282,18 @@ def test_cross_book_enrichment_attaches_candidate_evidence_to_anchor_only(fixtur
     assert {v["source_id"] for v in registry.get(owner, anchor[0], view="sources_page")["items"]} == {
         older[0], newer[0],
     }
+    assert {v["relation"] for v in enriched["items"]} == {"reports", "provides_context"}
+    assessments = registry.get(owner, anchor[0], view="assessments_page",
+                               assertion_id=anchor[1])["items"]
+    assert len(assessments) == 1
+    judgement = assessments[0]["assessment"]
+    assert judgement["support_status"] == "single_source"
+    assert judgement["independence"] == "unknown"
+    assert judgement["semantic_review"] == "partially_supported"
+    assert judgement["method_version"] == "synthetic-reconcile-v1"
+    assert set(judgement["evidence_ids"]) == {anchor[2],
+                                               next(v["evidence_id"] for v in enriched["items"]
+                                                    if v["source_id"] == older[0])}
     assert reconcile.dispatch(owner, ReconcileApply(
         command="apply", run_id=start["job_id"], proposal_id=stage["proposal_id"],
         expected_job_revision=3, expected_target_revision=3,
@@ -408,3 +427,46 @@ def test_cancelled_reconciliation_cannot_apply_abandoned_proposal(fixture):
     assert exc.value.code == "validation_failed"
     assert registry.get(owner, sb[0])["revision"] == 3
     assert not registry.get(owner, sb[0], view="relations_page")["items"]
+
+
+def test_reconcile_does_not_invent_independent_corroboration(fixture):
+    registry, owner, _ = fixture
+    original = source(registry, owner, "Первое издание сообщает о мосте.")
+    second = source(registry, owner, "Второе издание повторяет сообщение о мосте.")
+    anchor = grounded_story(registry, owner, original, "unknown-root-a")
+    other = grounded_story(registry, owner, second, "unknown-root-b")
+    reconcile = StoryReconciler(registry)
+    start = reconcile.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=anchor[0], expected_story_revision=3,
+        refs=[ReconcileCandidateRef(kind="story", ref_id=other[0])],
+    ), "unknown-root-start")
+    claim = reconcile.dispatch(owner, ReconcileClaim(
+        command="claim", run_id=start["job_id"], expected_job_revision=1,
+    ), "unknown-root-claim")
+    decision = ReconcileDecision(
+        identity_relation="same_episode", contribution_kinds=["additional_evidence"],
+        independence="unknown", independence_basis="The source roots may overlap",
+        proposed_effect="attach_evidence", target_assertion_id=anchor[1],
+        rationale="The editions appear to describe the same episode.",
+        effective_assessment=ReconcileEvidenceAssessment(
+            support_status="corroborated", independence="unknown",
+            semantic_review="supported",
+            rationale="Cannot assert independent corroboration of two editions.",
+            method_version="synthetic-reconcile-v1",
+        ),
+        anchor_evidence=ReconcileEvidenceRef(
+            evidence_id=anchor[2], document_id=original[0], source_revision=1,
+            page_id=original[1], region_id=original[2], original_excerpt=original[4]),
+        candidate_evidence=ReconcileEvidenceRef(
+            evidence_id=other[2], document_id=second[0], source_revision=1,
+            page_id=second[1], region_id=second[2], original_excerpt=second[4]),
+    )
+    with pytest.raises(StoryError) as error:
+        reconcile.dispatch(owner, ReconcileStage(
+            command="stage", run_id=start["job_id"], expected_job_revision=2,
+            work_id=claim["work_id"], lease_token=claim["lease_token"],
+            decision=decision,
+        ), "unknown-root-stage")
+    assert error.value.code == "validation_failed"
+    assert registry.get(owner, anchor[0])["revision"] == 3
+    assert registry.job_get(owner, start["job_id"])["processed_pairs"] == 0
