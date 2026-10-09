@@ -12,8 +12,8 @@ from regional_knowledge.contracts import Principal
 from regional_knowledge.sqlite_corpus import SQLiteCorpus
 from regional_knowledge.story_contracts import (
     AddGap, AttachEvidence, EvidenceLocator, ExtractClaim, ExtractStage, ExtractStart,
-    RecordAssessment, RegisteredSource, ResolveGap, ReviewDecision, SeedInput,
-    UpsertAssertion, UpsertVariant,
+    LinkEntity, RecordAssessment, RecordInterest, RegisteredSource, ResolveGap,
+    ReviewDecision, SeedInput, SetContributors, UpsertAssertion, UpsertVariant,
 )
 from regional_knowledge.story_registry import StoryError, StoryRegistry
 
@@ -808,3 +808,54 @@ def test_story_search_indexes_current_claims_not_just_story_titles(setup):
     )], "claim-search-assertion-002")
     assert sid not in [hit["story_id"] for hit in registry.search(owner, query="алебарду")["results"]]
     assert sid in [hit["story_id"] for hit in registry.search(owner, query="меч")["results"]]
+
+
+def test_reviewed_merge_preserves_editors_links_drafts_and_old_interest_without_approval(setup):
+    """A true duplicate merge must never erase authorship or inherit publish_ready."""
+    registry, owner, _ = setup
+    target = seed(registry, owner, name="Первый источник о фонаре",
+                  key="preserve-merge-target-seed")["story_id"]
+    source_id = seed(registry, owner, name="Дубль по другому источнику",
+                     key="preserve-merge-source-seed")["story_id"]
+    entity_id = str(uuid4())
+    edited = registry.edit(owner, source_id, 1, [
+        SetContributors(op="set_contributors", contributors=[
+            {"name": "Редактор источника B", "role": "researcher"}]),
+        LinkEntity(op="link_entity", entity_ref=entity_id, kind="place"),
+        RecordInterest(op="record_interest_assessment", audience="Туристы", format="post"),
+        UpsertVariant(op="upsert_variant", audience="Жители", format="post",
+                      body="Источник B описывает старый фонарь."),
+    ], "preserve-merge-context-edit")
+    assert edited["committed_revision"] == 2
+    source_snap = registry.get(owner, source_id, view="evidence")["snapshot"]
+    variant_id = source_snap["variants"][0]["variant_id"]
+    assert source_snap["interest_assessments"]
+
+    merged = registry.merge(
+        owner, target, [source_id], {target: 1, source_id: 2},
+        "Exact duplicated episode manually identified in synthetic review",
+        "preserve-merge-contents")
+    assert merged["committed_revision"] == 2
+    snap = registry.get(owner, target, view="evidence")["snapshot"]
+    assert {"name": "Редактор источника B", "role": "researcher"} in snap["contributors"]
+    assert any(x["entity_ref"] == entity_id for x in snap["links"])
+    migrated = next(x for x in snap["variants"] if x["variant_id"] == variant_id)
+    assert migrated["state"] == "needs_revalidation"
+    assert migrated["merge_origin_story_id"] == source_id
+    assert migrated["previous_editorial_state"] == "drafting"
+    assert registry.get(owner, target)["readiness"]["ready_variants"] == []
+    retained = snap["historical_interest_assessments"]
+    assert retained[0]["origin_story_id"] == source_id
+    assert retained[0]["assessment"]["audience"] == "Туристы"
+    assert retained[0]["requires_reassessment"]
+    with registry.corpus.connect() as db:
+        owner_row = db.execute("SELECT story_id,state,approved_revision FROM story_variants WHERE id=?",
+                               (variant_id,)).fetchone()
+        assert owner_row["story_id"] == target
+        assert owner_row["state"] == "needs_revalidation"
+        assert owner_row["approved_revision"] is None
+        assert db.execute("SELECT COUNT(*) FROM story_variant_versions WHERE id=?",
+                          (variant_id,)).fetchone()[0] == 1
+    old = registry.get(owner, source_id, view="evidence")["snapshot"]
+    assert old["archived"] and old["merged_into"] == target
+    assert old["contributors"]
