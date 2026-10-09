@@ -157,6 +157,12 @@ async def main():
             server=build_server(backend=backend,profile=profile)
             found={x.name for x in await server.list_tools()}
             assert required <= found,(profile,required-found)
+            if profile=="full":
+                declared={tool.name:tool for tool in await server.list_tools()}
+                arg_schema=declared["book_ingest"].input_schema
+                assert "story_candidates" in arg_schema["properties"]
+                assert "story_candidates_reviewed" in str(arg_schema)
+                assert "story_extraction" in declared["book_ingest"].output_schema["properties"]
             if profile=="live":assert found=={"knowledge_search"}
 asyncio.run(main())
 '''
