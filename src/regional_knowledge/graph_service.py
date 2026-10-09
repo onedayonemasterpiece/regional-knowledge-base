@@ -4,7 +4,7 @@ import asyncio,json,logging,hashlib
 from uuid import UUID,uuid5
 from psycopg.types.json import Jsonb
 from .entity_graph import GraphBundle,GraphAlias,entity_id,normalize_alias,digest
-from .poi_reference import StreetStoryPoiResolver
+from .poi_reference import StreetStoryPoiResolver,canonical_poi_key
 log=logging.getLogger(__name__)
 
 def locator(e):
@@ -129,11 +129,13 @@ class GraphService:
         async with self.connection(principal) as db:
             await self._alias(db,nid,row['document_id'],row['revision'],a)
             jid=await self.enqueue(db,principal.subject,nid,{'kind':'entity','version':digest(a.model_dump(mode='json'))})
-        return {'job_id':jid,'state':'candidate_discovery'}
+        return {'job_id':jid,'state':'candidate_discovery',
+                'canonical_poi_ref':external_ref,
+                'identity_state':canonical['identity_state'],
+                'historical_geometry':canonical['historical_geometry']}
 
     async def discover_poi(self,principal,external_ref):
-        if not external_ref.startswith('streetstory://poi/'):raise ValueError('canonical Street Story ref required')
-        UUID(external_ref.removeprefix('streetstory://poi/'))
+        canonical_poi_key(external_ref)
         canonical=await asyncio.to_thread(self.resolver.version,external_ref)
         if not canonical:raise LookupError('canonical POI not found')
         async with self.connection(principal) as db:
