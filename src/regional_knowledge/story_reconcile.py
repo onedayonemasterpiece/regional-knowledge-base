@@ -203,14 +203,12 @@ class StoryReconciler:
             plan = json.loads(run["search_plan"])
             revision = int(run["revision"]) + 1
             if isinstance(request, ReconcileEnqueue):
-                if run["state"] in {"cancelled", "completed_under_policy"}:
-                    fail("validation_failed", "Run has finished")
+                if run["state"] in {"cancelled", "completed_under_policy", "leased"}:
+                    fail("validation_failed", "Finish current lease or start a new run")
                 existing = {(x["kind"], x["id"]) for x in frontier}
-                if len(frontier) + len(request.refs) > MAX_FRONTIER:
-                    # Distinct search budget is hard; never drop extras silently.
-                    unique_new = sum((x.kind, str(x.ref_id)) not in existing for x in request.refs)
-                    if len(frontier) + unique_new > min(MAX_FRONTIER,run["max_candidate_pairs"]):
-                        fail("validation_failed", "Candidate budget exhausted; expand via new policy run")
+                unique_new = len({(x.kind, str(x.ref_id)) for x in request.refs} - existing)
+                if len(frontier) + unique_new > min(MAX_FRONTIER, run["max_candidate_pairs"]):
+                    fail("validation_failed", "Candidate budget exhausted; use another policy run")
                 for ref in request.refs:
                     item = self._candidate(db, actor, run["anchor_story_id"], ref)
                     if (item["kind"], item["id"]) not in existing:
@@ -218,7 +216,11 @@ class StoryReconciler:
                         existing.add((item["kind"], item["id"]))
                 plan["searched_channels"] = sorted(set(plan["searched_channels"]) |
                                                   set(request.searched_channels))
-                state = "awaiting_agent" if len(frontier)>run["position"] else "awaiting_review"
+                search_done = {"story_lexical", "source_bge"}.issubset(
+                    set(plan["searched_channels"]))
+                state = ("awaiting_agent" if len(frontier)>run["position"] else
+                         "no_match_found_under_policy" if not frontier and search_done else
+                         "awaiting_search" if not frontier else "awaiting_review")
                 db.execute("""UPDATE story_reconcile_runs
                     SET frontier=?,search_plan=?,revision=?,state=?,updated_at=? WHERE id=?""",
                     (canonical(frontier), canonical(plan), revision, state, now(), run["id"]))
@@ -231,8 +233,8 @@ class StoryReconciler:
                 if (run["lease_token"] and run["lease_deadline"]
                         and float(run["lease_deadline"]) > time.time()):
                     fail("busy_retryable", "A previous batch is still leased")
-                if run["state"] == "cancelled":
-                    fail("validation_failed", "Run was cancelled")
+                if run["state"] in {"cancelled", "completed_under_policy", "no_match_found_under_policy"}:
+                    fail("validation_failed", "Run was completed or cancelled")
                 if run["position"] >= len(frontier):
                     state = "awaiting_review"
                     db.execute("""UPDATE story_reconcile_runs
@@ -267,6 +269,10 @@ class StoryReconciler:
                     fail("revision_conflict", "Lease was replaced or expired")
                 reference = frontier[run["position"]]
                 left, right = self._validate_pair(db, actor, run, reference, request.decision)
+                if db.execute("""SELECT 1 FROM story_reconcile_proposals
+                    WHERE run_id=? AND ref_kind=? AND ref_id=?""",
+                    (run["id"],reference["kind"],reference["id"])).fetchone():
+                    fail("revision_conflict", "This source pair already has a staged comparison")
                 proposal_id = str(uuid4())
                 payload = {"reference": reference,
                            "decision": request.decision.model_dump(mode="json"),
