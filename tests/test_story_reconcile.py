@@ -300,6 +300,7 @@ def test_cross_book_link_is_not_automatic_merge(fixture):
         identity_relation="part_or_phase", contribution_kinds=["new_detail"],
         independence="unknown", independence_basis="Different primary source roots not verified",
         proposed_effect="link_stories", rationale="Second event follows first by five years; not same episode.",
+        phase_of_source="candidate",
         anchor_evidence=ReconcileEvidenceRef(
             document_id=book_a[0], source_revision=1, page_id=book_a[1],
             region_id=book_a[2], original_excerpt=book_a[4], evidence_id=first[2]),
@@ -324,6 +325,19 @@ def test_cross_book_link_is_not_automatic_merge(fixture):
     related = registry.get(owner, first[0], view="relations_page")
     assert related["items"][0]["kind"] == "phase_of"
     assert related["items"][0]["related_story_id"] == second[0]
+    direction = related["items"][0]["phase_direction"]
+    assert related["items"][0]["phase_direction_status"] == "explicit"
+    assert direction["from_story_id"] == second[0]
+    assert direction["to_story_id"] == first[0]
+    assert direction["relative_to_requested"] == "incoming"
+    reverse = registry.get(owner, second[0], view="relations_page")
+    assert reverse["items"][0]["phase_direction"] == {
+        "from_story_id": second[0], "to_story_id": first[0],
+        "relative_to_requested": "outgoing",
+    }
+    # An idempotent additive SQLite upgrade cannot erase the directed link.
+    registry.migrate()
+    assert registry.get(owner, first[0], view="relations_page")["items"][0]["phase_direction"] == direction
 
 
 def test_next_reconciliation_from_accepted_story_is_resumable_without_old_chat(fixture):
