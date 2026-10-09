@@ -645,12 +645,24 @@ class StoryRegistry:
             return {"story_id": story_id, "history": page, "has_more": len(rows) > limit,
                     "next_cursor": str(page[-1]["revision"] + 1) if len(rows) > limit else None}
 
-    def _invalidate(self, db, snap):
+    def _invalidate(self, db, snap, affected_assertion_ids=None):
+        """Invalidate only variants depending on changed assertion identities.
+
+        A legacy variant without explicit assertion-linked blocks still depends
+        conservatively on the whole card. New variants with declared blocks do
+        not become stale when an unrelated episode is enriched.
+        """
+        affected = set(affected_assertion_ids or [])
         for item in snap["variants"]:
-            if item["state"] == "publish_ready":
-                item["state"] = "needs_revalidation"
-                db.execute("UPDATE story_variants SET state='needs_revalidation' WHERE id=?",
-                           (item["variant_id"],))
+            if item["state"] != "publish_ready":
+                continue
+            used = {str(block["assertion_id"]) for block in item.get("blocks") or []
+                    if block.get("assertion_id")}
+            if affected and used and not (used & affected):
+                continue
+            item["state"] = "needs_revalidation"
+            db.execute("UPDATE story_variants SET state='needs_revalidation' WHERE id=?",
+                       (item["variant_id"],))
 
     def _apply_op(self, db, principal, snap, op):
         if isinstance(op, SetMetadata):
@@ -694,7 +706,7 @@ class StoryRegistry:
             db.execute("INSERT INTO story_assertion_versions VALUES(?,?,?,?,?,?,?)",
                        (ident, revision, snap["story_id"], values["proposition"], canonical(values),
                         str(principal.subject), now()))
-            self._invalidate(db, snap)
+            self._invalidate(db, snap, {ident})
             return "assertion"
         if isinstance(op, AttachEvidence):
             assertion = next((a for a in snap["assertions"]
@@ -761,7 +773,7 @@ class StoryRegistry:
                         op.relation, op.source_role_for_assertion, match, "not_checked", op.derived_from, actor, now()))
             self._dependency(db, snap["story_id"], op.source_kind, op.source_id, op.source_revision, actor)
             assertion["evidence_ids"].append(ident)
-            self._invalidate(db, snap)
+            self._invalidate(db, snap, {op.assertion_id})
             return "evidence"
         if isinstance(op, RecordAssessment):
             a = next((x for x in snap["assertions"]
@@ -777,6 +789,10 @@ class StoryRegistry:
                 fail("validation_failed", "Independent provenance assessment is required")
             if op.assessor_kind == "model" and not op.method_version:
                 fail("validation_failed", "Model/application assessment needs method version")
+            if op.supersedes_assessment_id:
+                active = {row["id"] for row in self._current_assessments(db, a)}
+                if op.supersedes_assessment_id not in active:
+                    fail("revision_conflict", "Supersession requires one current review of this assertion revision")
             ident = str(uuid4())
             data = op.model_dump(mode="json", exclude={"op"})
             data["id"] = ident
@@ -789,7 +805,7 @@ class StoryRegistry:
                        (ident, snap["story_id"], op.assertion_id, op.assertion_revision,
                         canonical(data), str(principal.subject), now()))
             a["assessment_ids"].append(ident)
-            self._invalidate(db, snap)
+            self._invalidate(db, snap, {op.assertion_id})
             return "assessment"
         if isinstance(op, UpsertVariant):
             item = next((x for x in snap["variants"] if x["variant_id"] == op.variant_id), None)
@@ -907,19 +923,28 @@ class StoryRegistry:
         return "unchanged" if len(matches) == 1 else "changed"
 
     def _fingerprint(self, db, snap, variant):
-        ids = [(a["assertion_id"], a["revision"], a.get("assessment_ids"), a.get("evidence_ids"))
-               for a in snap["assertions"]]
+        """Only declared variant-assertion dependencies affect scoped approval.
+
+        Legacy variants with no explicit blocks conservatively depend on the
+        entire card. Superseded reviews are not effective support.
+        """
+        used = {str(b["assertion_id"]) for b in variant.get("blocks") or []
+                if b.get("assertion_id")}
+        affected = [a for a in snap["assertions"]
+                    if not used or a["assertion_id"] in used]
+        ids = [(a["assertion_id"], a["revision"], a.get("evidence_ids"))
+               for a in affected]
         proof = []
-        for aid, revision, assessments, evidence in ids:
-            for eid in evidence:
+        for assertion in affected:
+            for eid in assertion.get("evidence_ids") or []:
                 ev = self._row(db, "story_evidence", eid)
                 proof.append((eid, ev["source_sha256"] if ev else None,
                               self._evidence_state(db, ev), ev["source_revision"] if ev else None,
                               ev["excerpt_sha256"] if ev else None))
-            for assessment in assessments:
-                ar = self._row(db, "story_assessments", assessment)
-                proof.append((assessment, json.loads(ar["payload"]) if ar else None))
-        return digest({"variant": {k:v for k,v in variant.items() if k != "state"}, "assertions": ids, "proof": proof})
+            for assessment in self._current_assessments(db, assertion):
+                proof.append(("effective_assessment", assessment["id"], assessment))
+        return digest({"variant": {k:v for k,v in variant.items() if k != "state"},
+                       "assertions": ids, "proof": proof})
 
     def _validate(self, db, snap, variant, review=None):
         blockers, unknown = [], []
@@ -948,9 +973,13 @@ class StoryRegistry:
                 if not a.get("evidence_ids"):
                     blockers.append("historical_claim_without_evidence:" + a["assertion_id"])
                 else:
-                    assessments = [self._row(db, "story_assessments", x) for x in a.get("assessment_ids", [])]
-                    if not any(x and json.loads(x["payload"]).get("semantic_review") in
-                               {"supported", "partially_supported", "contested"} for x in assessments):
+                    assessments = self._current_assessments(db, a)
+                    positions = {x.get("semantic_review") for x in assessments}
+                    adverse = {"unsupported", "contested"}
+                    if (positions & adverse or any(x.get("support_status") in
+                            {"contested", "contradicted", "unsupported"} for x in assessments)):
+                        blockers.append("historical_claim_has_active_disagreement:" + a["assertion_id"])
+                    elif not (positions & {"supported", "partially_supported"}):
                         blockers.append("historical_claim_without_semantic_review:" + a["assertion_id"])
             if a["kind"] in {"hypothesis", "creative_material"} and not variant.get("attributions"):
                 blockers.append("hypothesis_or_reconstruction_not_marked:" + a["assertion_id"])
