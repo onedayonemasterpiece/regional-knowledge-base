@@ -47,8 +47,10 @@ text and revisions are never mutated as a side effect.
 
 ## Contract boundaries and cartography readiness
 
-The adapter labels source request/owner lookup
-`cartography.resolve.v1`. This is a **compatibility label only**.
+The internal RKB MCP lease packet uses **`rkb.geo_claim.v1`**. It is
+an owner-only authenticated source request, **not** an interservice envelope.
+The future, separate producer protocol is `cartography.resolve.v1`, requiring
+a verifiable issuer/audience, scope and canonical payload hash.
 `cartography.projection.v1` and `cartography.decision.v1` need
 conformance fixtures in the canonical Regional Cartography repository
 and authenticated Street Story owner transport before allowing
