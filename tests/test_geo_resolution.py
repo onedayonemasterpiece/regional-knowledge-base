@@ -57,7 +57,7 @@ def prepare(tmp_path):
           CREATE TABLE pois(id TEXT PRIMARY KEY,status TEXT,canonical_name TEXT,
                             latitude REAL,longitude REAL);
           CREATE TABLE poi_aliases(poi_id TEXT,namespace TEXT,value TEXT,
-                                   normalized_value TEXT);
+                                   normalized_value TEXT,created_at REAL DEFAULT 0);
         """)
     actor=Principal(subject=owner,client_id="synthetic-geo",issuer="unit-test",
                     access_token="test-only-non-production")
@@ -234,3 +234,49 @@ async def test_graph_transaction_rolls_back_intent_with_invalid_source_quote(tmp
     with b.corpus.connect() as db:
         assert db.execute("SELECT COUNT(*) FROM rkb_geo_intents").fetchone()[0]==0
         assert db.execute("SELECT COUNT(*) FROM rkb_geo_attempts").fetchone()[0]==0
+
+
+@pytest.mark.asyncio
+async def test_automatic_owner_alias_watermark_and_backfill_on_old_source(tmp_path):
+    b,actor,graph,geo,street,doc,bundle,text=prepare(tmp_path)
+    initial=await graph.stage(actor,doc,1,bundle)
+    node=initial["entities"]["historical-zoo-site"]
+    first=geo.claim(actor,limit=1)["items"][0]
+    geo.stage(actor,first["attempt_id"],first["lease_token"],first["lease_fence"],
+              {"status":"unresolved",
+               "reason":"Street Story has no candidate yet; final under this dependency."},
+              "owner-delta-stage-l1")
+    geo.apply(actor,first["attempt_id"],first["lease_token"],
+              first["lease_fence"],"owner-delta-apply-l1")
+    with sqlite3.connect(street) as owner:
+        owner.execute("INSERT INTO pois VALUES(?,?,?,?,?)",
+                      ("poi_ss_2d0ab75849ea3099ea17193a","candidate",
+                       "Калининградский зоопарк",54.7204,20.4874))
+        owner.execute("INSERT INTO poi_aliases VALUES(?,?,?,?,?)",
+                      ("poi_ss_2d0ab75849ea3099ea17193a","wikidata",
+                       "Q1193386","q1193386",time.time()))
+    changed=geo.poll_owner_updates(limit=8)
+    assert changed["seen"]==1 and changed["scheduled"]==1
+    assert geo.poll_owner_updates(limit=8)["scheduled"]==0
+    handled=geo.worker_tick(limit=1)
+    assert handled["processed"]==1 and handled["states"]==["linked_candidate"]
+    fetched=await graph.read(actor,node)
+    assert fetched["entity"]["external_ref"]=="streetstory://poi/poi_ss_2d0ab75849ea3099ea17193a"
+    assert len(b.corpus.rows("rkb_entities"))==1
+    assert geo.recheck(actor,"Далёкий адрес","owner_poi",
+                       "another-owner","revision-L3")["new_attempts"]==0
+
+    # Simulate upgrading an older installation which had accepted graph rows
+    # before this queue existed: bounded source-safe backfill, no source import.
+    with b.corpus.connect() as db:
+        db.execute("DELETE FROM rkb_geo_receipts")
+        db.execute("DELETE FROM rkb_geo_attempts")
+        db.execute("DELETE FROM rkb_geo_aliases")
+        db.execute("DELETE FROM rkb_geo_intents")
+        db.execute("DELETE FROM rkb_geo_watermarks")
+    restored=geo.backfill_batch(5)
+    assert restored["created"]==1 and restored["completed"]
+    assert geo.backfill_batch(5)["created"]==0
+    with b.corpus.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM rkb_geo_intents").fetchone()[0]==1
+        assert db.execute("SELECT COUNT(*) FROM rkb_geo_attempts").fetchone()[0]==1
