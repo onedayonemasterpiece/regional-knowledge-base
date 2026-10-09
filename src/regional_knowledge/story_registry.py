@@ -1262,32 +1262,109 @@ class StoryRegistry:
             }
 
     def entity_list(self, principal, document_ids=None, kinds=None, query="", cursor=None, limit=20):
+        """ACL-filtered keyset walk; never cut the catalog to the first 100 documents.
+
+        Cursor freezes the maximum *authorized* entity id at the initial query;
+        ACL and active revision are rechecked on every subsequent page.
+        Changes to records during traversal are not a point-in-time snapshot:
+        restart the walk to include new/updated entities before the cursor.
+        """
+        import base64
         with self.corpus.connect() as db:
             actor = self._actor(db, principal)
-            # Fetch only scoped graph rows. Unknown scope does not become all actors' graph.
-            docs = document_ids or [r["row_key"] for r in db.execute(
-                "SELECT row_key FROM corpus_rows WHERE table_name='rkb_documents'")]
-            docs = [d for d in docs[:100] if self._document_allowed(db, actor, d)]
-            results = []
-            for d in docs:
-                for row in self._matching_corpus(db, "rkb_entities", document_id=d):
-                    if kinds and row.get("kind") not in kinds:
-                        continue
-                    doc = self._document_allowed(db, actor, d)
-                    if row.get("revision") != doc.get("active_revision"):
-                        continue
-                    if query and query.casefold() not in row.get("canonical_label", "").casefold():
-                        continue
-                    results.append({"entity_id": row["id"], "kind": row["kind"],
-                                    "label": row["canonical_label"], "document_id": d,
-                                    "revision": row["revision"]})
-            results.sort(key=lambda x: (x["label"], x["entity_id"]))
-            offset = max(0, int(cursor or 0))
             take = max(1, min(int(limit), 50))
-            page = results[offset:offset + take]
-            return {"items": page, "has_more": len(results) > offset + take,
-                    "next_cursor": str(offset + take) if len(results) > offset + take else None,
-                    "coverage": "accepted_mentions_not_complete_extraction"}
+            docs = [str(x) for x in (document_ids or [])]
+            kind_list = [str(x) for x in (kinds or [])]
+            if len(docs) > 400 or len(kind_list) > 40:
+                fail("validation_failed", "Limit one explicit scope to 400 documents and 40 kinds")
+            query = str(query or "")
+            scope_hash = digest({"actor": actor, "docs": sorted(set(docs)),
+                                 "kinds": sorted(set(kind_list)), "query": query})
+            # The document-level source ACL is evaluated in SQL *before* keyset
+            # ordering. Unauthorized entities never displace visible results.
+            visible = """(
+                json_extract(d.payload,'$.owner_user_id') = ?
+                OR (json_extract(d.payload,'$.content_visibility') = 'public'
+                    AND json_extract(d.payload,'$.rights_status') IN
+                      ('licensed','permission_granted','public_domain_verified','statutory_access_verified')
+                    AND json_extract(d.payload,'$.rights_policy_version') IS NOT NULL
+                    AND json_extract(d.payload,'$.rights_evidence.public_distribution') = 1)
+                OR EXISTS (SELECT 1 FROM corpus_rows grant_row
+                  WHERE grant_row.table_name='rkb_document_grants'
+                    AND grant_row.document_id=d.row_key
+                    AND json_extract(grant_row.payload,'$.grantee_user_id') = ?)
+                OR (json_extract(d.payload,'$.content_visibility') IN ('workspace','public')
+                    AND (EXISTS (SELECT 1 FROM corpus_rows ws
+                         WHERE ws.table_name='rkb_workspaces'
+                           AND ws.row_key=json_extract(d.payload,'$.workspace_id')
+                           AND json_extract(ws.payload,'$.owner_user_id') = ?)
+                         OR EXISTS (SELECT 1 FROM corpus_rows member
+                         WHERE member.table_name='rkb_workspace_members'
+                           AND json_extract(member.payload,'$.workspace_id') =
+                             json_extract(d.payload,'$.workspace_id')
+                           AND json_extract(member.payload,'$.user_id') = ?)))
+            )"""
+            where = [
+                "e.table_name='rkb_entities'",
+                "d.table_name='rkb_documents'",
+                "d.row_key=e.document_id",
+                "CAST(e.revision AS INTEGER)=CAST(json_extract(d.payload,'$.active_revision') AS INTEGER)",
+                visible,
+            ]
+            params = [actor, actor, actor, actor]
+            if docs:
+                where.append("e.document_id IN (" + ",".join("?" for _ in docs) + ")")
+                params.extend(docs)
+            if kind_list:
+                where.append("json_extract(e.payload,'$.kind') IN (" + ",".join("?" for _ in kind_list) + ")")
+                params.extend(kind_list)
+            if query:
+                where.append("instr(lower(json_extract(e.payload,'$.canonical_label')),lower(?))>0")
+                params.append(query)
+            where_sql = " AND ".join(where)
+            if cursor is None:
+                upper = db.execute(
+                    "SELECT MAX(e.row_key) FROM corpus_rows e JOIN corpus_rows d "
+                    "ON d.row_key=e.document_id WHERE " + where_sql,
+                    params,
+                ).fetchone()[0]
+                after = ""
+            else:
+                try:
+                    value = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+                    if (value.get("v") != 1 or value.get("scope") != scope_hash
+                            or not isinstance(value.get("after"), str)
+                            or not isinstance(value.get("upper"), str)):
+                        raise ValueError("invalid cursor scope")
+                    after, upper = value["after"], value["upper"]
+                except (ValueError, UnicodeError, TypeError, KeyError):
+                    fail("validation_failed", "Invalid or mismatched entity cursor")
+            if upper is None:
+                return {"items": [], "has_more": False, "next_cursor": None,
+                        "coverage": "accepted_mentions_not_complete_extraction",
+                        "cursor_policy": "authorized_keyset_highwater_acl_rechecked"}
+            rows = db.execute(
+                "SELECT e.row_key, e.payload, e.document_id, e.revision "
+                "FROM corpus_rows e JOIN corpus_rows d ON d.row_key=e.document_id "
+                "WHERE " + where_sql + " AND e.row_key>? AND e.row_key<=? "
+                "ORDER BY e.row_key LIMIT ?",
+                [*params, after, upper, take + 1],
+            ).fetchall()
+            items = []
+            for row in rows[:take]:
+                item = json.loads(row["payload"])
+                items.append({"entity_id": row["row_key"], "kind": item.get("kind"),
+                              "label": item.get("canonical_label"),
+                              "document_id": row["document_id"], "revision": row["revision"]})
+            more = len(rows) > take
+            next_cursor = None
+            if more and items:
+                token = {"v": 1, "scope": scope_hash, "upper": upper, "after": items[-1]["entity_id"]}
+                next_cursor = base64.urlsafe_b64encode(
+                    canonical(token).encode("utf8")).decode("ascii").rstrip("=")
+            return {"items": items, "has_more": more, "next_cursor": next_cursor,
+                    "coverage": "accepted_mentions_not_complete_extraction",
+                    "cursor_policy": "authorized_keyset_highwater_acl_rechecked"}
 
     def _accepted_story_candidate(self, db, principal, job, document, candidate, batch_region_ids):
         """Materialize an attributed episode in the same transaction as its lease.
