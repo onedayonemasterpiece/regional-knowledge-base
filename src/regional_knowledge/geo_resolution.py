@@ -302,8 +302,8 @@ class GeoQueue:
                 raise GeoError("not_found_or_not_accessible")
             return json.loads(row[0])
 
-    def enqueue_existing(self, principal, entity_id, *, policy=POLICY,
-                         cursor=None, limit=20):
+    def enqueue_existing(self, principal, entity_id, cursor=None, limit=20,
+                         *, policy=POLICY):
         """Backfill accepted exact spellings, not arbitrary discovery hits.
 
         The previous unbounded in-memory mentions[:20] could inspect twenty
