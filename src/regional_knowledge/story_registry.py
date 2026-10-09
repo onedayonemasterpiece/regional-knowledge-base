@@ -194,11 +194,47 @@ class StoryRegistry:
               fingerprint TEXT NOT NULL, story_id TEXT NOT NULL REFERENCES story_records(id),
               at TEXT NOT NULL,
               PRIMARY KEY(document_id,source_sha256,fingerprint));
+            CREATE TABLE IF NOT EXISTS story_reconcile_runs(
+              id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
+              anchor_story_id TEXT NOT NULL REFERENCES story_records(id),
+              anchor_story_revision INTEGER NOT NULL, policy_version TEXT NOT NULL,
+              query TEXT NOT NULL, frontier TEXT NOT NULL,
+              position INTEGER NOT NULL DEFAULT 0, max_candidate_pairs INTEGER NOT NULL,
+              revision INTEGER NOT NULL DEFAULT 1, state TEXT NOT NULL,
+              work_id TEXT, lease_token TEXT, lease_deadline REAL,
+              updated_at TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS story_reconcile_anchor
+              ON story_reconcile_runs(anchor_story_id,state,updated_at);
+            CREATE TABLE IF NOT EXISTS story_reconcile_proposals(
+              id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES story_reconcile_runs(id),
+              ref_kind TEXT NOT NULL, ref_id TEXT NOT NULL,
+              decision TEXT NOT NULL, state TEXT NOT NULL,
+              actor_id TEXT NOT NULL, created_at TEXT NOT NULL, applied_at TEXT,
+              UNIQUE(run_id,ref_kind,ref_id));
+            CREATE INDEX IF NOT EXISTS story_reconcile_proposal_state
+              ON story_reconcile_proposals(run_id,state,created_at);
+            CREATE TABLE IF NOT EXISTS story_relations(
+              id TEXT PRIMARY KEY,
+              left_story_id TEXT NOT NULL REFERENCES story_records(id),
+              right_story_id TEXT NOT NULL REFERENCES story_records(id),
+              kind TEXT NOT NULL, rationale TEXT NOT NULL, source_proposal_id TEXT NOT NULL,
+              actor_id TEXT NOT NULL, created_at TEXT NOT NULL,
+              active INTEGER NOT NULL DEFAULT 1,
+              UNIQUE(left_story_id,right_story_id,kind));
+            CREATE INDEX IF NOT EXISTS story_relations_right
+              ON story_relations(right_story_id,kind,active);
+            CREATE TABLE IF NOT EXISTS story_reconcile_queue(
+              story_id TEXT NOT NULL REFERENCES story_records(id),
+              story_revision INTEGER NOT NULL, state TEXT NOT NULL,
+              created_at TEXT NOT NULL, PRIMARY KEY(story_id,story_revision));
+            CREATE INDEX IF NOT EXISTS story_reconcile_queue_state
+              ON story_reconcile_queue(state,created_at);
             CREATE TABLE IF NOT EXISTS story_schema_migrations(
               version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
             INSERT OR IGNORE INTO story_schema_migrations VALUES(1,datetime('now'));
             INSERT OR IGNORE INTO story_schema_migrations VALUES(2,datetime('now'));
             INSERT OR IGNORE INTO story_schema_migrations VALUES(3,datetime('now'));
+            INSERT OR IGNORE INTO story_schema_migrations VALUES(4,datetime('now'));
             """)
 
     @staticmethod
@@ -335,6 +371,16 @@ class StoryRegistry:
                                                digest({"title": meta["title"], "summary": meta.get("summary")}),
                                                now()))
         self._audit(db, principal, story_id, revision, action, action)
+        # Accepted-source extraction creates a durable reconciliation delta
+        # without running another model, or blocking book acceptance.
+        if action in {"automated_source_candidate", "accepted_source_candidate"} or (
+            action.startswith("edit:") and "evidence" in action):
+            if content.get("assertions") and any(a.get("evidence_ids")
+                                                   for a in content["assertions"]):
+                db.execute("""INSERT OR IGNORE INTO story_reconcile_queue
+                    (story_id,story_revision,state,created_at)
+                    VALUES(?,?,'awaiting_agent',?)""",
+                    (story_id, revision, now()))
 
     def _create_record(self, db, principal, seed, metadata, workspace_id=None, source_refs=None):
         story_id = str(uuid4())
