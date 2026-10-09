@@ -12,7 +12,8 @@ from regional_knowledge.contracts import Principal
 from regional_knowledge.sqlite_corpus import SQLiteCorpus
 from regional_knowledge.story_contracts import (
     AddGap, AttachEvidence, EvidenceLocator, ExtractClaim, ExtractStage, ExtractStart,
-    LinkEntity, RecordAssessment, RecordInterest, RegisteredSource, ResolveGap,
+    LinkEntity, RecordAssessment, RecordEventDate, RecordInterest,
+    RegisteredSource, ResolveGap,
     ReviewDecision, SeedInput, SetContributors, UpsertAssertion, UpsertVariant,
 )
 from regional_knowledge.story_registry import StoryError, StoryRegistry
@@ -961,3 +962,134 @@ def test_effective_assessment_pagination_is_complete_scoped_and_revision_guarded
     expect("validation_failed", registry.get, owner, sid,
            view="assessments_page", assertion_id=aid,
            cursor=page["next_cursor"], limit=3)
+
+
+def _synthetic_dated_story(registry, owner):
+    """One accepted synthetic source with competing datings and a year-only mention."""
+    doc, page, region, chunk = [str(uuid4()) for _ in range(4)]
+    text = ("Источник утверждает: 15 марта 1550 года состоялся въезд. "
+            "Другая запись приводит 16 марта 1550 года. "
+            "В каталоге отдельно указан 1700 год.")
+    signature = sha256(text.encode()).hexdigest()
+    registry.corpus.put("rkb_documents", [{
+        "id":doc, "title":"Synthetic chronicle",
+        "owner_user_id":owner.subject, "source_sha256":"d"*64,
+        "active_revision":1, "content_visibility":"private",
+        "rights_status":"restricted",
+    }])
+    registry.corpus.put("rkb_pages", [{
+        "id":page,"document_id":doc,"revision":1,
+        "physical_page_index":0,"printed_page_number":"12",
+    }])
+    registry.corpus.put("rkb_regions", [{
+        "id":region,"page_id":page,"source_text":text,"reading_order":0,
+    }])
+    registry.corpus.put("rkb_chunks", [{
+        "id":chunk,"document_id":doc,"revision":1,"title":"Synthetic source",
+        "source_text":text,"text_sha256":signature,
+        "search_material_sha256":signature,"page_ids":[page],"region_ids":[region],
+    }])
+    sid = registry.create(owner,SeedInput(text="Синтетический въезд в 1550 году"),
+                          None,None,None,"calendar-seed-001")["story_id"]
+    registry.edit(owner,sid,1,[UpsertAssertion(
+        op="upsert_assertion",kind="attributed_account",account_kind="other",
+        attributed_to="Синтетический летописец",
+        proposition="Летописец предлагает различные даты въезда.",
+    )],"calendar-claim-001")
+    aid=registry.get(owner,sid,view="evidence")["snapshot"]["assertions"][0]["assertion_id"]
+    registry.edit(owner,sid,2,[AttachEvidence(
+        op="attach_evidence",assertion_id=aid,assertion_revision=1,
+        source_kind="document",source_id=doc,source_revision=1,
+        relation="reports",original_excerpt=text,
+        locator=EvidenceLocator(page_id=page,region_id=region,chunk_id=chunk),
+    )],"calendar-evidence-001")
+    evid=registry.get(owner,sid,view="evidence")["snapshot"]["assertions"][0]["evidence_ids"][0]
+    return sid,aid,evid
+
+
+def test_calendar_exact_source_dates_competing_calendars_and_paging(setup):
+    registry, owner, stranger = setup
+    sid,aid,eid=_synthetic_dated_story(registry,owner)
+    def date(text,year,month,day,calendar,precision="day",role="event",**kwargs):
+        return RecordEventDate(
+            op="record_event_date",assertion_id=aid,assertion_revision=1,
+            evidence_ids=[eid],original_date_text=text,year=year,
+            month=month,day=day,calendar=calendar,precision=precision,
+            date_role=role,rationale="Source text contains this attributed date; authenticity unverified.",
+            **kwargs,
+        )
+    first=date("15 марта 1550 года",1550,3,15,"gregorian")
+    saved=registry.edit(owner,sid,3,[first],"calendar-first-date")
+    assert saved["committed_revision"]==4
+    assert registry.edit(owner,sid,3,[first],"calendar-first-date")==saved
+    second=date("16 марта 1550 года",1550,3,16,"julian")
+    registry.edit(owner,sid,4,[second],"calendar-competing-julian")
+    year_only=date("1700 год",1700,None,None,"unspecified",precision="year")
+    registry.edit(owner,sid,5,[year_only],"calendar-year-only")
+    approximation=date("15 марта 1550 года",1550,3,15,"gregorian",precision="approximate_day")
+    registry.edit(owner,sid,6,[approximation],"calendar-approximate")
+    publication=date("16 марта 1550 года",1550,3,16,"gregorian",role="publication")
+    registry.edit(owner,sid,7,[publication],"calendar-publication")
+    # Five current records, each still source-attributed, none asserted as historical truth.
+    items=[];cursor=None
+    while True:
+        page=registry.get(owner,sid,view="event_dates_page",limit=2,cursor=cursor)
+        assert page["coverage"]=="bounded_current_assertion_dates"
+        items.extend(page["items"])
+        cursor=page["next_cursor"]
+        if not cursor:
+            assert not page["has_more"]
+            break
+    assert len({d["date_id"] for d in items})==5
+    assert {d["precision"] for d in items}=={"day","year","approximate_day"}
+    assert all(d["semantic_status"]=="source_attributed_not_historical_truth_certified" for d in items)
+    assert all(d["proofs"][0]["evidence_id"]==eid for d in items)
+    exact=registry.calendar(owner,3,15,calendar="gregorian")
+    assert len(exact["items"])==1 and exact["items"][0]["story_id"]==sid
+    assert exact["retrieval_mode"]=="exact_sql_source_authorized"
+    julian=registry.calendar(owner,3,16,calendar="julian")
+    assert len(julian["items"])==1 and julian["items"][0]["original_date_text"]=="16 марта 1550 года"
+    assert registry.calendar(owner,3,16,calendar="gregorian")["items"]==[]
+    assert registry.calendar(owner,1,1,calendar="gregorian")["items"]==[]
+    assert registry.calendar(stranger,3,15,calendar="gregorian")["items"]==[]
+    expect("not_found_or_not_accessible",registry.get,stranger,sid,view="event_dates_page")
+    expect("validation_failed",registry.calendar,owner,2,30,calendar="gregorian")
+
+    with pytest.raises(StoryError) as unrelated:
+        registry.edit(owner,sid,8,[date("нигде в источнике",1550,3,15,"gregorian")],
+                      "calendar-forged-date")
+    assert unrelated.value.code=="invalid_evidence"
+    with pytest.raises(StoryError) as duplicate:
+        registry.edit(owner,sid,8,[first],"calendar-duplicate-date")
+    assert duplicate.value.code=="validation_failed"
+    # Exact correction does not erase the contested Julian dating or old source.
+    first_id=next(i["date_id"] for i in items if i["precision"]=="day"
+                  and i["calendar"]=="gregorian" and i["date_role"]=="event")
+    corrected=date("16 марта 1550 года",1550,3,16,"gregorian",
+                   supersedes_date_id=first_id)
+    registry.edit(owner,sid,8,[corrected],"calendar-correction")
+    assert registry.calendar(owner,3,15,calendar="gregorian")["items"]==[]
+    assert len(registry.calendar(owner,3,16,calendar="gregorian")["items"])==1
+    assert len(registry.calendar(owner,3,16,calendar="julian")["items"])==1
+    assert len(registry.get(owner,sid,view="event_dates_page")["items"])==5
+    history=registry.get(owner,sid,view="event_date_history_page")["items"]
+    assert len(history)==6 and any(i["superseded_by"] for i in history)
+    registry.migrate()
+    assert len(registry.calendar(owner,3,16,calendar="julian")["items"])==1
+    with registry.corpus.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM story_event_dates").fetchone()[0]==6
+
+
+def test_record_event_date_contract_respects_julian_leap_and_unknown_precision():
+    from pydantic import ValidationError
+    from regional_knowledge.story_contracts import RecordEventDate
+    fields=dict(op="record_event_date",assertion_id=str(uuid4()),assertion_revision=1,
+                evidence_ids=[str(uuid4())],original_date_text="29 февраля 1700 года",
+                year=1700,month=2,day=29,precision="day",
+                rationale="Historical calendar interpretation must remain explicit.")
+    with pytest.raises(ValidationError):
+        RecordEventDate(**fields,calendar="gregorian")
+    assert RecordEventDate(**fields,calendar="julian").day==29
+    with pytest.raises(ValidationError):
+        RecordEventDate(**{**fields,"precision":"year","month":None,"day":1},
+                        calendar="unspecified")
