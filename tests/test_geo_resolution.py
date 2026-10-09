@@ -280,3 +280,102 @@ async def test_automatic_owner_alias_watermark_and_backfill_on_old_source(tmp_pa
     with b.corpus.connect() as db:
         assert db.execute("SELECT COUNT(*) FROM rkb_geo_intents").fetchone()[0]==1
         assert db.execute("SELECT COUNT(*) FROM rkb_geo_attempts").fetchone()[0]==1
+
+
+
+@pytest.mark.asyncio
+async def test_transient_owner_failure_is_bounded_then_relevant_revision_recovers(tmp_path):
+    """Five owner outages never produce a false 'no POI' resolution."""
+    b,actor,graph,geo,street,doc,bundle,text=prepare(tmp_path)
+    saved=await graph.stage(actor,doc,1,bundle)
+    geo.resolver.path=str(tmp_path/"missing-owner-database.sqlite")
+    for n in range(5):
+        batch=geo.worker_tick(1)
+        assert batch["processed"]==0
+        with b.corpus.connect() as db:
+            status,reason,attempts,available=db.execute(
+                "SELECT state,reason,attempts,available_at FROM rkb_geo_attempts"
+            ).fetchone()
+            assert reason=="owner_unavailable"
+            assert attempts==n+1
+            assert status==("dependency_unavailable" if n==4 else "retry_wait")
+            if n<4:
+                assert available>time.time()
+                assert geo.claim(actor)["items"]==[]
+                db.execute("UPDATE rkb_geo_attempts SET available_at=0")
+    assert geo.status(actor)["state_counts"]["dependency_unavailable"]==1
+    with sqlite3.connect(street) as owner:
+        pid="poi_ss_2d0ab75849ea3099ea17193a"
+        owner.execute("INSERT INTO pois VALUES(?,?,?,?,?)",
+                      (pid,"candidate","Калининградский зоопарк",54.7204,20.4874))
+        owner.execute("""INSERT INTO poi_aliases(poi_id,namespace,value,normalized_value,created_at)
+            VALUES(?,?,?,?,?)""",(pid,"wikidata","Q1193386","q1193386",time.time()))
+    geo.resolver.path=str(street)
+    assert geo.recheck(actor,"Кёнигсбергский зоопарк","owner_poi",
+                       "streetstory://poi/"+pid,"owner-new-generation")["new_attempts"]==1
+    resolved=geo.worker_tick(1)
+    assert resolved["states"]==["linked_candidate"]
+    fetched=await graph.read(actor,saved["entities"]["historical-zoo-site"])
+    assert fetched["entity"]["external_ref"]=="streetstory://poi/"+pid
+    assert geo.status(actor)["state_counts"]["dependency_unavailable"]==1
+
+
+@pytest.mark.asyncio
+async def test_claim_fairness_across_books_beyond_old_25_result_cap(tmp_path):
+    """Twenty-six claims from one source cannot hide a second book."""
+    b,actor,graph,geo,street,doc,bundle,text=prepare(tmp_path)
+    for n in range(26):
+        another=json.loads(json.dumps(bundle))
+        another["entities"][0]["key"]="big-book-place-"+str(n)
+        await graph.stage(actor,doc,1,another)
+
+    old_page,old_region,old_chunk=(
+        bundle["entities"][0]["evidence"][key] for key in (
+            "page_id","region_id","chunk_id")
+    )
+    doc2,page2,region2,chunk2=[str(uuid4()) for _ in range(4)]
+    source=b.corpus.one("rkb_documents",doc)
+    b.corpus.put("rkb_documents",[{**source,"id":doc2,
+                                   "title":"Second synthetic source"}])
+    b.corpus.put("rkb_pages",[{**b.corpus.one("rkb_pages",old_page),
+                              "id":page2,"document_id":doc2}])
+    b.corpus.put("rkb_regions",[{**b.corpus.one("rkb_regions",old_region),
+                                "id":region2,"page_id":page2}])
+    b.corpus.put("rkb_chunks",[{**b.corpus.one("rkb_chunks",old_chunk),
+                               "id":chunk2,"document_id":doc2,
+                               "page_ids":[page2],"region_ids":[region2]}])
+    small=json.loads(json.dumps(bundle))
+    small["entities"][0]["key"]="small-book-place"
+    small["entities"][0]["evidence"].update(
+        chunk_id=chunk2,page_id=page2,region_id=region2
+    )
+    await graph.stage(actor,doc2,1,small)
+    claimed=geo.claim(actor,limit=2)["items"]
+    assert len(claimed)==2
+    assert set(x["source_ref"]["document_id"] for x in claimed)=={doc,doc2}
+    assert len({x["attempt_id"] for x in claimed})==2
+
+
+@pytest.mark.asyncio
+async def test_unaccepted_cartography_cannot_assert_same_site_or_footprint(tmp_path):
+    b,actor,graph,geo,street,doc,bundle,text=prepare(tmp_path)
+    await graph.stage(actor,doc,1,bundle)
+    claim=geo.claim(actor,limit=1)["items"][0]
+    with pytest.raises(GeoError,match="spatial_relation_requires_owner_decision"):
+        geo.stage(actor,claim["attempt_id"],claim["lease_token"],
+                  claim["lease_fence"],
+                  {"status":"candidate",
+                   "canonical_poi_ref":"streetstory://poi/poi_ss_2d0ab75849ea3099ea17193a",
+                   "relation":"same_site",
+                   "reason":"Same-name modern POI alone cannot prove historical same_site."},
+                  "geo-unsupported-samesite")
+    with pytest.raises(GeoError,match="cartography_layer_not_accepted"):
+        geo.stage(actor,claim["attempt_id"],claim["lease_token"],
+                  claim["lease_fence"],
+                  {"status":"candidate",
+                   "canonical_poi_ref":"streetstory://poi/poi_ss_2d0ab75849ea3099ea17193a",
+                   "layer_ref":"fake-kneiphof-layer-revision",
+                   "reason":"An unaccepted map must not be treated as owner evidence."},
+                  "geo-fake-layer")
+    with b.corpus.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM rkb_geo_receipts").fetchone()[0]==0
