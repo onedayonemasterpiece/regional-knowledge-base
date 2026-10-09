@@ -17,7 +17,8 @@ from .sqlite_corpus import canonical
 from .story_contracts import (
     AddGap, AttachEvidence, EvidenceLocator, ExtractCancel, ExtractClaim, ExtractStage, ExtractStart,
     UpsertAssertion, LinkEntity, RecordAssessment, RecordInterest, ResolveGap, SetAngle,
-    SetContributors, SetMetadata, ReviseRelation, UpsertAssertion, UpsertVariant,
+    SetContributors, SetMetadata, ReviseRelation, RecordEventDate,
+    UpsertAssertion, UpsertVariant,
 )
 
 ROLE_LEVEL = {"viewer": 1, "contributor": 2, "researcher": 3, "editor": 4, "publisher": 5, "manager": 6}
@@ -377,6 +378,34 @@ class StoryRegistry:
                     ON story_reconcile_pair_decisions(anchor_story_id,policy_version,ref_kind,ref_id);
                 """)
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(9,datetime('now'))")
+                db.commit()
+            if not db.execute("SELECT 1 FROM story_schema_migrations WHERE version=10").fetchone():
+                # Dates belong to exact current assertion/evidence versions.
+                # No automatic calendar conversions or backfilled fictional days.
+                db.executescript("""
+                CREATE TABLE IF NOT EXISTS story_event_dates(
+                    id TEXT PRIMARY KEY,
+                    story_id TEXT NOT NULL REFERENCES story_records(id),
+                    assertion_id TEXT NOT NULL,
+                    assertion_revision INTEGER NOT NULL CHECK(assertion_revision>=1),
+                    source_evidence_ids TEXT NOT NULL,
+                    original_date_text TEXT NOT NULL,
+                    precision TEXT NOT NULL,
+                    calendar TEXT NOT NULL,
+                    date_role TEXT NOT NULL,
+                    year INTEGER, month INTEGER, day INTEGER,
+                    rationale TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    superseded_by TEXT,
+                    actor_id TEXT NOT NULL, client_id TEXT, created_at TEXT NOT NULL,
+                    UNIQUE(assertion_id,assertion_revision,fingerprint)
+                );
+                CREATE INDEX IF NOT EXISTS story_event_calendar_day
+                  ON story_event_dates(date_role,precision,calendar,month,day,id);
+                CREATE INDEX IF NOT EXISTS story_event_date_claim
+                  ON story_event_dates(assertion_id,assertion_revision,id);
+                """)
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(10,datetime('now'))")
                 db.commit()
 
     @staticmethod
@@ -1111,6 +1140,8 @@ class StoryRegistry:
         return "relation:" + op.action
 
     def _apply_op(self, db, principal, snap, op):
+        if isinstance(op, RecordEventDate):
+            return self._record_event_date(db, principal, snap, op)
         if isinstance(op, ReviseRelation):
             return self._revise_relation(db, principal, snap, op)
         if isinstance(op, SetMetadata):
@@ -1302,7 +1333,8 @@ class StoryRegistry:
         ops = [x.model_dump(mode="json") for x in operations]
         def authorize(db, actor):
             rec, _ = self._read_story(db, actor, story_id, "contributor")
-            if any(isinstance(op, (RecordAssessment, AttachEvidence, UpsertAssertion)) for op in operations):
+            if any(isinstance(op, (RecordAssessment, RecordEventDate,
+                                   AttachEvidence, UpsertAssertion)) for op in operations):
                 self._permission(db, actor, rec, "researcher")
             if any(isinstance(op, (UpsertVariant, SetAngle, SetContributors, ReviseRelation)) for op in operations):
                 self._permission(db, actor, rec, "editor")
