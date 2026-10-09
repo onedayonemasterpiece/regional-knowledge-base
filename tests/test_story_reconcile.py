@@ -127,6 +127,12 @@ def test_reconcile_two_books_preserves_both_stories_and_citations(fixture):
     persisted=registry.job_get(owner,jid)
     assert persisted["processed_pairs"]==1 and persisted["pending_proposals"]==1
     assert persisted["proposals"][0]["proposal_id"]==staged["proposal_id"]
+    # Another session can inspect the typed decision and original proof
+    # without relying on an earlier conversational context.
+    detail=registry.job_get(owner,jid,proposal_id=staged["proposal_id"])
+    assert detail["proposal_detail"]["candidate_proof"]["source_id"]==a[0]
+    assert detail["proposal_detail"]["anchor_proof"]["source_id"]==b[0]
+    assert detail["proposal_detail"]["decision"]["identity_relation"]=="same_episode"
     applied=reconciler.dispatch(owner,ReconcileApply(
         command="apply",run_id=jid,proposal_id=staged["proposal_id"],
         expected_job_revision=4,expected_target_revision=3,
