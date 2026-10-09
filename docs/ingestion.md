@@ -90,6 +90,40 @@ ingestion-процессе — потребуется согласованный
 `publish_ready` и не отправляет на дополнительные платные OCR/LLM-обработки.
 Предыдущие книжные и BGE-gates продолжают выполняться независимо.
 
+## Evidence-backed extraction from already accepted books (no reimport)
+
+For a previously accepted, indexed book with incomplete story coverage, **do not
+reprocess the PDF or create another source revision just to extract stories**.
+The same calling model that inspects the accepted passages can use the existing
+Story Registry job:
+
+1. `story_extract(start, document_id, source_revision=active_revision, batch_size=20)`
+   creates a durable checkpoint with `awaiting_agent`. This does **not** start
+   a server-side model.
+2. `story_extract(claim, job_id, expected_job_revision)` leases the next batch
+   and returns `start_cursor`, `batch_size`, `batch_id`, and `lease_token`.
+3. `corpus_read(document_id, source_revision, cursor=start_cursor,
+   limit=batch_size)` supplies source text and **accepted** `source_regions`
+   (`page_id`, `region_id`, `physical_page_index`, exact `source_text`).
+   Review the passage semantically; distinct stories may cover multiple chunks.
+4. `story_extract(stage, ..., grounded_candidates=[...])` accepts up to
+   10 model-authored episodes with material type, attributed assertion and
+   1–4 exact `original_excerpt` references to those regions. A candidate must
+   cite at least one region from the claimed batch. A scanned batch can have zero
+   candidates — never invent an episode to reach a numerical target.
+5. The service verifies exact document revision, region, quote/offset, batch
+   scope, source ACL and replay fingerprint **in the same SQLite transaction**.
+   It creates `Story.state=candidate`, `attributed_account` and evidence
+   relation `reports`; no story is auto-approved or historically certified.
+   Continue the same job until `done`, checking `story_job_get` for count
+   of inspected source chunks, not just number of stories.
+
+Legacy `story_extract(stage, candidates=[SeedInput(...)])` still creates raw
+editorial seeds for callers that explicitly want unverified leads. Do not use
+that path to claim evidence-backed extraction. A new book still uses **same-pass
+`book_ingest(stage, pages, chunks, story_candidates)`** with the importing
+model. The accepted-source path is for books already ingested before that pass.
+
 For a later re-chunk/reprocess of byte-identical archived source, the server may
 reuse the page-level visual review from a prior revision instead of requiring the
 same scan page to be visually re-reviewed. Reuse is fail-closed: the source SHA-256

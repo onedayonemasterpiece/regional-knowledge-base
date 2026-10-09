@@ -452,3 +452,131 @@ def test_story_interest_scoring_order_and_typed_filters(setup):
     selected = registry.search(actor, filters={"min_potential": "90", "material_type": "other"})
     assert [r["story_id"] for r in selected["results"]] == [scored["story_id"]]
     expect("validation_failed", registry.search, actor, filters={"min_potential": "101"})
+
+
+def test_accepted_source_batch_creates_grounded_candidate_and_replays_without_duplicates(setup):
+    """One model-authored batch -> exact source card, citation and checkpoint."""
+    from regional_knowledge.story_contracts import (
+        ExtractGroundedCandidate, ExtractGroundedEvidence,
+    )
+    registry, owner, foreign = setup
+    doc, page, region, chunk, text = document(registry, owner)
+    batch = registry.corpus_read(owner, doc, 1, limit=20)
+    assert batch["chunks"][0]["source_regions"] == [{
+        "page_id": page, "region_id": region, "physical_page_index": 0,
+        "printed_page_number": "7", "source_text": text,
+        "source_text_truncated": False,
+    }]
+    first = registry.extract(owner, ExtractStart(
+        command="start", document_id=doc, source_revision=1, batch_size=20,
+    ), "grounded-start-first")
+    claim = registry.extract(owner, ExtractClaim(
+        command="claim", job_id=first["job_id"], expected_job_revision=1,
+    ), "grounded-claim-first")
+    episode = ExtractGroundedCandidate(
+        candidate_key="gas-lantern-meeting",
+        title="Собрание мастеров у старого фонаря",
+        summary="По книге ремесленники встречались у старого фонаря.",
+        material_type="everyday_life",
+        proposition="Автор описывает встречу мастеров у старого фонаря.",
+        account_kind="other", attributed_to="Автор синтетической книги",
+        evidence_refs=[ExtractGroundedEvidence(
+            page_id=page, region_id=region,
+            original_excerpt="У старого фонаря днём собирались мастера.",
+        )],
+    )
+    staged = ExtractStage(
+        command="stage", job_id=first["job_id"], expected_job_revision=claim["job_revision"],
+        batch_id=claim["batch_id"], lease_token=claim["lease_token"],
+        source_revision=1, grounded_candidates=[episode],
+    )
+    result = registry.extract(owner, staged, "grounded-stage-first")
+    assert result["executor_state"] == "done"
+    assert result["grounded_candidates_created"] == 1
+    assert result["grounded_candidates_reused"] == 0
+    assert len(result["resource_ids"]) == 1
+    sid = result["resource_ids"][0]
+    assert registry.extract(owner, staged, "grounded-stage-first") == result
+    assert registry.job_get(owner, first["job_id"])["processed_chunks"] == 1
+    story = registry.get(owner, sid, view="evidence")
+    assert story["revision"] == 2 and story["snapshot"]["state"] == "candidate"
+    claim_state = story["snapshot"]["assertions"][0]
+    assert claim_state["kind"] == "attributed_account"
+    assert claim_state["attributed_to"] == "Автор синтетической книги"
+    assert len(claim_state["evidence_ids"]) == 1
+    with registry.corpus.connect() as db:
+        evidence = db.execute("SELECT * FROM story_evidence WHERE story_id=?", (sid,)).fetchone()
+        assert evidence["text_match"] == "exact"
+        assert evidence["relation"] == "reports"
+        assert evidence["original_review"] == "not_checked"
+        assert db.execute("SELECT count(*) FROM story_records WHERE id=?", (sid,)).fetchone()[0] == 1
+
+    # A fresh job on the same accepted source cannot duplicate this evidence.
+    later = registry.extract(owner, ExtractStart(
+        command="start", document_id=doc, source_revision=1, batch_size=20,
+    ), "grounded-start-again")
+    later_claim = registry.extract(owner, ExtractClaim(
+        command="claim", job_id=later["job_id"], expected_job_revision=1,
+    ), "grounded-claim-again")
+    same = registry.extract(owner, ExtractStage(
+        command="stage", job_id=later["job_id"],
+        expected_job_revision=later_claim["job_revision"],
+        batch_id=later_claim["batch_id"], lease_token=later_claim["lease_token"],
+        source_revision=1, grounded_candidates=[episode],
+    ), "grounded-stage-again")
+    assert same["grounded_candidates_created"] == 0
+    assert same["grounded_candidates_reused"] == 1
+    assert same["resource_ids"] == [sid]
+    expect("not_found_or_not_accessible", registry.corpus_read, foreign, doc, 1)
+
+
+def test_accepted_source_batch_rejects_false_and_out_of_batch_evidence(setup):
+    """A bad proof never advances a lease or creates a phantom story."""
+    from regional_knowledge.story_contracts import (
+        ExtractGroundedCandidate, ExtractGroundedEvidence,
+    )
+    registry, owner, _ = setup
+    doc, page, region, chunk, text = document(registry, owner)
+    started = registry.extract(owner, ExtractStart(
+        command="start", document_id=doc, source_revision=1,
+    ), "grounded-bad-start")
+    claim = registry.extract(owner, ExtractClaim(
+        command="claim", job_id=started["job_id"], expected_job_revision=1,
+    ), "grounded-bad-claim")
+    def candidate(evidence):
+        return ExtractGroundedCandidate(
+            candidate_key="invented-episode",
+            title="Проверяем достоверность выдержки",
+            summary="Проверка точной цитаты без модели.",
+            proposition="Автор якобы утверждает выдуманный факт",
+            attributed_to="Синтетический источник",
+            evidence_refs=[evidence],
+        )
+    common = dict(
+        command="stage", job_id=started["job_id"],
+        expected_job_revision=claim["job_revision"],
+        batch_id=claim["batch_id"], lease_token=claim["lease_token"],
+        source_revision=1,
+    )
+    bad = ExtractStage(**common, grounded_candidates=[candidate(
+        ExtractGroundedEvidence(
+            page_id=page, region_id=region,
+            original_excerpt="Этого в книге нет.",
+        ),
+    )])
+    expect("invalid_evidence", registry.extract, owner, bad, "grounded-bad-proof")
+    assert registry.job_get(owner, started["job_id"])["processed_chunks"] == 0
+    with registry.corpus.connect() as db:
+        assert db.execute("SELECT count(*) FROM story_records").fetchone()[0] == 0
+    # The same lease may be fixed without a duplicate job or accepting a lie.
+    good = ExtractStage(**common, grounded_candidates=[candidate(
+        ExtractGroundedEvidence(
+            page_id=page, region_id=region,
+            original_excerpt="У старого фонаря днём собирались мастера.",
+        ),
+    )])
+    result = registry.extract(owner, good, "grounded-corrected-proof")
+    assert result["grounded_candidates_created"] == 1
+    assert registry.job_get(owner, started["job_id"])["processed_chunks"] == 1
+
+

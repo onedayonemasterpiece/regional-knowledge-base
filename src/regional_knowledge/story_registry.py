@@ -15,8 +15,8 @@ from uuid import UUID, uuid4
 
 from .sqlite_corpus import canonical
 from .story_contracts import (
-    AddGap, AttachEvidence, ExtractCancel, ExtractClaim, ExtractStage, ExtractStart,
-    LinkEntity, RecordAssessment, RecordInterest, ResolveGap, SetAngle,
+    AddGap, AttachEvidence, EvidenceLocator, ExtractCancel, ExtractClaim, ExtractStage, ExtractStart,
+    UpsertAssertion, LinkEntity, RecordAssessment, RecordInterest, ResolveGap, SetAngle,
     SetContributors, SetMetadata, UpsertAssertion, UpsertVariant,
 )
 
@@ -1215,16 +1215,51 @@ class StoryRegistry:
             if not d or d.get("active_revision") < source_revision:
                 fail("not_found_or_not_accessible")
             offset = max(0, int(cursor or 0))
-            take = max(1, min(int(limit), 5))
+            take = max(1, min(int(limit), 20))
             rows = db.execute("""SELECT chunk_id,source_text,text_sha256 FROM chunk_text
               WHERE document_id=? AND revision=? ORDER BY rowid LIMIT ? OFFSET ?""",
                               (document_id, source_revision, take + 1, offset)).fetchall()
-            return {"document_id": document_id, "source_revision": source_revision,
-                    "source_sha256": d.get("source_sha256"),
-                    "chunks": [{"chunk_id": r["chunk_id"], "text": r["source_text"][:6000],
-                                "text_sha256": r["text_sha256"], "truncated": len(r["source_text"]) > 6000}
-                               for r in rows[:take]],
-                    "has_more": len(rows) > take, "next_cursor": str(offset + take) if len(rows) > take else None}
+            chunks = []
+            for row in rows[:take]:
+                source_refs = []
+                chunk = self._corpus_row(db, "rkb_chunks", row["chunk_id"])
+                if (chunk and chunk.get("document_id") == document_id
+                        and int(chunk.get("revision") or 0) == source_revision):
+                    seen = set()
+                    refs = [str(x) for x in chunk.get("region_ids") or []]
+                    refs += [str(x.get("region_id")) for x in chunk.get("source_spans") or []
+                             if x.get("region_id")]
+                    for region_id in refs[:24]:
+                        if region_id in seen:
+                            continue
+                        seen.add(region_id)
+                        region = self._corpus_row(db, "rkb_regions", region_id)
+                        if not region:
+                            continue
+                        page = self._corpus_row(db, "rkb_pages", region.get("page_id"))
+                        if (not page or page.get("document_id") != document_id
+                                or int(page.get("revision") or 0) != source_revision):
+                            continue
+                        printed = str(region.get("source_text") or "")
+                        source_refs.append({
+                            "page_id": str(page["id"]), "region_id": region_id,
+                            "physical_page_index": int(page["physical_page_index"]),
+                            "printed_page_number": page.get("printed_page_number"),
+                            "source_text": printed[:6000],
+                            "source_text_truncated": len(printed) > 6000,
+                        })
+                chunks.append({
+                    "chunk_id": row["chunk_id"], "text": row["source_text"][:6000],
+                    "text_sha256": row["text_sha256"],
+                    "truncated": len(row["source_text"]) > 6000,
+                    "source_regions": source_refs,
+                })
+            return {
+                "document_id": document_id, "source_revision": source_revision,
+                "source_sha256": d.get("source_sha256"),
+                "chunks": chunks, "has_more": len(rows) > take,
+                "next_cursor": str(offset + take) if len(rows) > take else None,
+            }
 
     def entity_list(self, principal, document_ids=None, kinds=None, query="", cursor=None, limit=20):
         with self.corpus.connect() as db:
@@ -1253,6 +1288,110 @@ class StoryRegistry:
             return {"items": page, "has_more": len(results) > offset + take,
                     "next_cursor": str(offset + take) if len(results) > offset + take else None,
                     "coverage": "accepted_mentions_not_complete_extraction"}
+
+    def _accepted_story_candidate(self, db, principal, job, document, candidate, batch_region_ids):
+        """Materialize an attributed episode in the same transaction as its lease.
+
+        The model does the semantic selection; the server only checks immutable
+        printed source bytes, ACL, revision, batch scope and duplicate identity.
+        No second model or automatic historical truth assessment is involved.
+        """
+        doc_id = str(job["document_id"])
+        rev = int(job["source_revision"])
+        proof = []
+        for ref in candidate.evidence_refs:
+            page = self._corpus_row(db, "rkb_pages", ref.page_id)
+            region = self._corpus_row(db, "rkb_regions", ref.region_id)
+            if (not page or not region or str(page.get("document_id")) != doc_id
+                    or int(page.get("revision") or 0) != rev
+                    or str(region.get("page_id")) != ref.page_id):
+                fail("invalid_evidence", "Candidate evidence is outside the accepted document revision")
+            source = str(region.get("source_text") or "")
+            if not source:
+                fail("invalid_evidence", "Candidate needs printed source text")
+            quote = ref.original_excerpt
+            if ref.start is not None:
+                begin, end = ref.start, ref.end
+                if end > len(source) or source[begin:end] != quote:
+                    fail("invalid_evidence", "Stale or invalid exact source offsets")
+            else:
+                begin = source.find(quote)
+                if begin < 0 or source.find(quote, begin + 1) >= 0:
+                    fail("invalid_evidence", "Quoted source absent or ambiguous; provide offsets")
+                end = begin + len(quote)
+            proof.append({
+                "page_id": str(page["id"]), "region_id": str(region["id"]),
+                "physical_page_index": int(page["physical_page_index"]),
+                "printed_page_number": page.get("printed_page_number"),
+                "source_region_sha256": hashlib.sha256(source.encode("utf8")).hexdigest(),
+                "original_excerpt": quote, "start": begin, "end": end,
+            })
+        if not any(item["region_id"] in batch_region_ids for item in proof):
+            fail("invalid_evidence", "Grounded story must cite at least one region in the current batch")
+        fingerprint = digest({
+            "title": candidate.title.strip().casefold(),
+            "material_type": candidate.material_type,
+            "evidence": sorted((
+                e["physical_page_index"], e["source_region_sha256"],
+                e["start"], e["end"], e["original_excerpt"],
+            ) for e in proof),
+        })
+        source_sha = str(document["source_sha256"])
+        prior = db.execute(
+            "SELECT story_id FROM story_ingest_identity "
+            "WHERE document_id=? AND source_sha256=? AND fingerprint=?",
+            (doc_id, source_sha, fingerprint),
+        ).fetchone()
+        if prior is not None:
+            return str(prior["story_id"]), True
+
+        seed = {
+            "text": candidate.summary,
+            "origin_status": "known",
+            "origin_note": "Модель выделила кандидат при просмотре принятой книги",
+            "speaker": None,
+        }
+        metadata = {
+            "title": candidate.title,
+            "summary": candidate.summary,
+            "material_type": candidate.material_type,
+        }
+        story_id, snap = self._create_record(
+            db, principal, seed, metadata, document.get("workspace_id"),
+            [{"kind": "document", "source_id": doc_id, "source_revision": rev}],
+        )
+        assertion = UpsertAssertion(
+            op="upsert_assertion", kind="attributed_account",
+            account_kind=candidate.account_kind,
+            proposition=candidate.proposition,
+            attributed_to=candidate.attributed_to,
+            reported_by=candidate.reported_by,
+        )
+        self._apply_op(db, principal, snap, assertion)
+        claim = snap["assertions"][-1]
+        for evidence in proof:
+            self._apply_op(db, principal, snap, AttachEvidence(
+                op="attach_evidence",
+                assertion_id=claim["assertion_id"], assertion_revision=claim["revision"],
+                source_kind="document", source_id=doc_id, source_revision=rev,
+                relation="reports", source_role_for_assertion="unspecified",
+                original_excerpt=evidence["original_excerpt"],
+                locator=EvidenceLocator(
+                    page_id=evidence["page_id"], region_id=evidence["region_id"],
+                    physical_page_index=evidence["physical_page_index"],
+                    printed_page_number=evidence["printed_page_number"],
+                    start=evidence["start"], end=evidence["end"],
+                ),
+            ))
+        snap["state"] = "candidate"
+        self._snapshot(db, story_id, 2, snap, principal, "accepted_source_candidate")
+        db.execute(
+            "INSERT INTO story_ingest_identity "
+            "(document_id,source_sha256,fingerprint,story_id,at) VALUES(?,?,?,?,?)",
+            (doc_id, source_sha, fingerprint, story_id, now()),
+        )
+        return story_id, False
+
 
     def extract(self, principal, request, idempotency_key):
         data = request.model_dump(mode="json")
@@ -1322,6 +1461,30 @@ class StoryRegistry:
                                                          "source_id": job["document_id"],
                                                          "source_revision": job["source_revision"]}])
                     results.append(sid)
+                grounded_new, grounded_reused = 0, 0
+                if request.grounded_candidates:
+                    # Same rowid ordering/cursor as corpus_read. At least one exact
+                    # cited region must belong to this leased batch of source chunks.
+                    scope = db.execute(
+                        "SELECT chunk_id FROM chunk_text WHERE document_id=? AND revision=? "
+                        "ORDER BY rowid LIMIT ? OFFSET ?",
+                        (job["document_id"], job["source_revision"],
+                         job["batch_size"], job["cursor_position"]),
+                    ).fetchall()
+                    allowed = set()
+                    for item in scope:
+                        chunk = self._corpus_row(db, "rkb_chunks", item["chunk_id"])
+                        if chunk and chunk.get("document_id") == job["document_id"]:
+                            allowed.update(str(v) for v in chunk.get("region_ids") or [])
+                            allowed.update(str(v.get("region_id")) for v in chunk.get("source_spans") or []
+                                           if v.get("region_id"))
+                    for candidate in request.grounded_candidates:
+                        sid, reused = self._accepted_story_candidate(
+                            db, principal, job, doc, candidate, allowed,
+                        )
+                        results.append(sid)
+                        grounded_reused += int(reused)
+                        grounded_new += int(not reused)
                 pos = min(job["cursor_position"] + job["batch_size"], job["total_chunks"])
                 state = "done" if pos >= job["total_chunks"] else "awaiting_agent"
                 db.execute("""UPDATE story_jobs SET state=?,executor_state=?,cursor_position=?,
@@ -1344,7 +1507,10 @@ class StoryRegistry:
                               start_cursor=job["cursor_position"],
                               batch_size=job["batch_size"], lease_active=True)
             if isinstance(request, ExtractStage):
-                output["resource_ids"] = json.loads(updated["result_ids"])[-len(request.candidates):] if request.candidates else []
+                staged_count = len(request.candidates) + len(request.grounded_candidates)
+                output["resource_ids"] = json.loads(updated["result_ids"])[-staged_count:] if staged_count else []
+                output["grounded_candidates_created"] = grounded_new
+                output["grounded_candidates_reused"] = grounded_reused
             return output
         result = self._mutation(principal, "story_extract", idempotency_key, data, authorize, apply)
         if isinstance(request, ExtractClaim) and "lease_deadline" in result:
