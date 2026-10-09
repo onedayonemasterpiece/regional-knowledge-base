@@ -58,6 +58,74 @@ class StoryReconciler:
         return {"kind": "chunk", "id": ident, "revision": int(chunk["revision"]),
                 "document_id": str(chunk["document_id"])}
 
+    def _evidence_fingerprint(self, db, actor, kind, ident):
+        """Fingerprint current accepted proof, not a story title/editorial revision.
+
+        Source revision, accepted root revision, original source SHA and exact
+        evidence IDs participate. A metadata-only story edit does not rerun a
+        completed pair; new/changed evidence does. Called only for <=50 refs
+        in a bounded reconciliation packet, never an unbounded corpus scan.
+        """
+        if kind == "chunk":
+            chunk = self.registry._corpus_row(db, "rkb_chunks", ident)
+            if not chunk:
+                fail("not_found_or_not_accessible")
+            doc = self.registry._document_allowed(db, actor, chunk["document_id"])
+            if not doc or int(doc.get("active_revision") or 0) != int(chunk["revision"]):
+                fail("source_changed", "Candidate chunk revision no longer active")
+            return digest({
+                "kind": "chunk", "id": ident, "revision": chunk["revision"],
+                "text_sha": chunk.get("text_sha256"),
+                "search_material_sha": chunk.get("search_material_sha256"),
+                "source_sha": doc.get("source_sha256"),
+                "document_revision": doc.get("active_revision"),
+                "region_ids": sorted(str(x) for x in chunk.get("region_ids") or []),
+            })
+        if kind != "story":
+            fail("validation_failed", "Unsupported reconciliation pair kind")
+        record, snapshot = self.registry._read_story(db, actor, ident)
+        roots = []
+        for source in db.execute("""SELECT source_kind,source_id,source_revision
+            FROM story_dependencies WHERE story_id=?
+            ORDER BY source_kind,source_id,source_revision""", (ident,)):
+            if source["source_kind"] == "document":
+                doc = self.registry._document_allowed(db, actor, source["source_id"])
+                if not doc:
+                    fail("not_found_or_not_accessible")
+                authority = {
+                    "active_revision": doc.get("active_revision"),
+                    "source_sha256": doc.get("source_sha256"),
+                }
+            elif source["source_kind"] == "external":
+                row = db.execute("""SELECT content_sha256 FROM story_sources
+                    WHERE id=? AND version=?""",
+                    (source["source_id"], source["source_revision"])).fetchone()
+                if not row:
+                    fail("source_changed", "External source version disappeared")
+                authority = {"content_sha256": row["content_sha256"]}
+            else:
+                fail("validation_failed", "Unknown source kind in story dependency")
+            roots.append((source["source_kind"], source["source_id"],
+                          source["source_revision"], authority))
+        assertions = sorted(
+            (a["assertion_id"], a["revision"],
+             sorted(str(e) for e in a.get("evidence_ids") or []))
+            for a in snapshot.get("assertions") or []
+        )
+        return digest({"kind": "story", "story_id": record["id"],
+                       "assertions": assertions, "source_roots": roots})
+
+    def _pair_already_decided(self, db, actor, anchor_id, reference, policy):
+        anchor_hash = self._evidence_fingerprint(db, actor, "story", anchor_id)
+        candidate_hash = self._evidence_fingerprint(
+            db, actor, reference["kind"], reference["id"])
+        return bool(db.execute("""SELECT 1 FROM story_reconcile_pair_decisions
+            WHERE anchor_story_id=? AND ref_kind=? AND ref_id=?
+              AND policy_version=? AND anchor_evidence_hash=?
+              AND candidate_evidence_hash=?""",
+            (anchor_id, reference["kind"], reference["id"], policy,
+             anchor_hash, candidate_hash)).fetchone())
+
     def _exact(self, db, actor, data):
         """Return verified accepted provenance; a quote match is not truth."""
         doc = self.registry._document_allowed(db, actor, data.document_id)
@@ -270,10 +338,18 @@ class StoryReconciler:
                 if not any(a.get("evidence_ids") for a in snap.get("assertions", [])):
                     fail("invalid_evidence", "Only source-backed stories can be reconciled")
                 refs = []
+                skipped_decided = 0
                 for ref in request.refs:
                     item = self._candidate(db, actor, request.anchor_story_id, ref)
-                    if (item["kind"], item["id"]) not in {(v["kind"], v["id"]) for v in refs}:
-                        refs.append(item)
+                    if (item["kind"], item["id"]) in {
+                            (v["kind"], v["id"]) for v in refs}:
+                        continue
+                    if self._pair_already_decided(
+                            db, actor, request.anchor_story_id, item,
+                            request.policy_version):
+                        skipped_decided += 1
+                        continue
+                    refs.append(item)
                 query = (request.query or snap["metadata"]["title"]).strip()
                 run_id = str(uuid4())
                 plan = {"policy_version": request.policy_version,
@@ -281,7 +357,8 @@ class StoryReconciler:
                         "required_channels": ["story_lexical", "source_bge"],
                         "search_completeness": "not_exhaustive",
                         "index_generation": None,
-                        "candidate_budget": request.max_candidate_pairs}
+                        "candidate_budget": request.max_candidate_pairs,
+                        "skipped_decided_pairs": skipped_decided}
                 state = "awaiting_agent" if refs else "awaiting_search"
                 db.execute("""INSERT INTO story_reconcile_runs(
                     id,owner_id,anchor_story_id,anchor_story_revision,policy_version,
@@ -296,7 +373,9 @@ class StoryReconciler:
                     (request.anchor_story_id, record["revision"]))
                 return {"resource_type": "reconciliation", "resource_ids": [run_id],
                         "job_id": run_id, "job_revision": 1, "state": state,
-                        "candidate_count": len(refs), "search_plan": plan,
+                        "candidate_count": len(refs),
+                        "skipped_decided_pairs": skipped_decided,
+                        "search_plan": plan,
                         "next_action": "claim" if refs else "search_then_enqueue",
                         "commit_state": "queued"}
             return registry._mutation(principal, "story_reconcile", idempotency_key, data, authorize, apply)
@@ -313,22 +392,37 @@ class StoryReconciler:
             plan = json.loads(run["search_plan"])
             revision = int(run["revision"]) + 1
             if isinstance(request, ReconcileEnqueue):
-                if run["state"] in {"cancelled", "completed_under_policy", "leased"}:
+                if run["state"] in {"cancelled", "completed_under_policy",
+                                    "already_compared_under_policy", "no_match_found_under_policy",
+                                    "leased"}:
                     fail("validation_failed", "Finish current lease or start a new run")
                 existing = {(x["kind"], x["id"]) for x in frontier}
-                unique_new = len({(x.kind, str(x.ref_id)) for x in request.refs} - existing)
-                if len(frontier) + unique_new > min(MAX_FRONTIER, run["max_candidate_pairs"]):
-                    fail("validation_failed", "Candidate budget exhausted; use another policy run")
+                new_refs = []
+                skipped_decided = 0
                 for ref in request.refs:
                     item = self._candidate(db, actor, run["anchor_story_id"], ref)
-                    if (item["kind"], item["id"]) not in existing:
-                        frontier.append(item)
-                        existing.add((item["kind"], item["id"]))
+                    key = item["kind"], item["id"]
+                    if key in existing:
+                        continue
+                    if self._pair_already_decided(
+                            db, actor, run["anchor_story_id"], item,
+                            run["policy_version"]):
+                        skipped_decided += 1
+                        continue
+                    new_refs.append(item)
+                    existing.add(key)
+                if len(frontier) + len(new_refs) > min(MAX_FRONTIER, run["max_candidate_pairs"]):
+                    fail("validation_failed", "Candidate budget exhausted; continue under a new run")
+                frontier.extend(new_refs)
+                plan["skipped_decided_pairs"] = (
+                    int(plan.get("skipped_decided_pairs") or 0) + skipped_decided)
                 plan["searched_channels"] = sorted(set(plan["searched_channels"]) |
                                                   set(request.searched_channels))
                 search_done = {"story_lexical", "source_bge"}.issubset(
                     set(plan["searched_channels"]))
                 state = ("awaiting_agent" if len(frontier)>run["position"] else
+                         "already_compared_under_policy" if not frontier
+                             and search_done and plan["skipped_decided_pairs"] else
                          "no_match_found_under_policy" if not frontier and search_done else
                          "awaiting_search" if not frontier else "awaiting_review")
                 db.execute("""UPDATE story_reconcile_runs
@@ -337,13 +431,19 @@ class StoryReconciler:
                 return {"job_id": run["id"], "job_revision": revision, "state": state,
                         "candidate_count": len(frontier), "processed_pairs": run["position"],
                         "searched_channels": plan["searched_channels"],
-                        "next_action": "claim" if len(frontier)>run["position"] else "review_or_expand"}
+                        "skipped_decided_pairs": plan["skipped_decided_pairs"],
+                        "next_action": "claim" if len(frontier)>run["position"]
+                            else None if state in {"already_compared_under_policy",
+                                                  "no_match_found_under_policy"}
+                            else "review_or_expand"}
 
             if isinstance(request, ReconcileClaim):
                 if (run["lease_token"] and run["lease_deadline"]
                         and float(run["lease_deadline"]) > time.time()):
                     fail("busy_retryable", "A previous batch is still leased")
-                if run["state"] in {"cancelled", "completed_under_policy", "no_match_found_under_policy"}:
+                if run["state"] in {"cancelled", "completed_under_policy",
+                                    "already_compared_under_policy",
+                                    "no_match_found_under_policy"}:
                     fail("validation_failed", "Run was completed or cancelled")
                 if run["position"] >= len(frontier):
                     state = "awaiting_review"
@@ -524,6 +624,21 @@ class StoryReconciler:
                         (target_id,result_revision,now()))
                 elif effect != "no_change":
                     fail("validation_failed","Unknown effect")
+                # Record a post-apply proof fingerprint. For attach_evidence the
+                # anchor has just gained the candidate proof; using the stale
+                # pre-apply hash would re-enqueue the identical pair forever.
+                db.execute("""INSERT OR IGNORE INTO story_reconcile_pair_decisions(
+                    anchor_story_id,ref_kind,ref_id,policy_version,
+                    anchor_evidence_hash,candidate_evidence_hash,proposal_id,
+                    proposed_effect,decided_at
+                ) VALUES(?,?,?,?,?,?,?,?,?)""", (
+                    target_id, reference["kind"], reference["id"],
+                    run["policy_version"],
+                    self._evidence_fingerprint(db, actor, "story", target_id),
+                    self._evidence_fingerprint(db, actor,
+                                               reference["kind"], reference["id"]),
+                    proposal["id"], effect, now(),
+                ))
                 db.execute("""UPDATE story_reconcile_proposals
                     SET state='applied',applied_at=? WHERE id=?""",(now(),proposal["id"]))
                 remaining = db.execute("""SELECT COUNT(*) FROM story_reconcile_proposals
@@ -566,7 +681,9 @@ class StoryReconciler:
             applied = db.execute("""SELECT COUNT(*) FROM story_reconcile_proposals
                 WHERE run_id=? AND state='applied'""",(run_id,)).fetchone()[0]
             next_action = (
-                None if run["state"] in {"cancelled","completed_under_policy","no_match_found_under_policy"}
+                None if run["state"] in {"cancelled","completed_under_policy",
+                                         "already_compared_under_policy",
+                                         "no_match_found_under_policy"}
                 else "claim" if run["position"]<len(frontier)
                 else "search_then_enqueue" if not frontier
                 else "review_proposals" if pending
@@ -611,6 +728,8 @@ class StoryReconciler:
                     "candidate_count":len(frontier),"processed_pairs":run["position"],
                     "pending_proposals":pending,"applied_proposals":applied,
                     "max_candidate_pairs":run["max_candidate_pairs"],
+                    "skipped_decided_pairs":int(plan.get("skipped_decided_pairs") or 0),
+                    "pair_decision_basis":"accepted_evidence_fingerprints_and_policy_v1",
                     "lease_active":bool(run["lease_token"] and run["lease_deadline"]
                                         and run["lease_deadline"]>time.time()),
                     "next_action":next_action,
