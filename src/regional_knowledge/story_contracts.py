@@ -382,6 +382,14 @@ class ReconcileDecision(Strict):
     attributed_to: str | None = Field(default=None, max_length=250)
 
 
+class ReconcileNext(Strict):
+    """Claim the next pending *model-authored* reconciliation goal, no server LLM."""
+    command: Literal["next"]
+    document_id: Identifier | None = None
+    policy_version: str = Field(default="cross-book-v1", max_length=80)
+    max_candidate_pairs: int = Field(default=50, ge=1, le=50)
+
+
 class ReconcileStart(Strict):
     command: Literal["start"]
     anchor_story_id: Identifier
@@ -433,7 +441,7 @@ class ReconcileCancel(Strict):
 
 
 ReconcileRequest = Annotated[
-    ReconcileStart | ReconcileEnqueue | ReconcileClaim | ReconcileStage
+    ReconcileNext | ReconcileStart | ReconcileEnqueue | ReconcileClaim | ReconcileStage
     | ReconcileApply | ReconcileCancel,
     Field(discriminator="command"),
 ]
