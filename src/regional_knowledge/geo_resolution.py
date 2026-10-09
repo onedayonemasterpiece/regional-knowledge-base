@@ -1,8 +1,9 @@
 """Durable, bounded RKB-owned geo intents. Canonical place decisions stay with Street Story.
 
 No map raster, raw book passage, bearer token, or atlas geometry enters this
-queue. cartography.resolve/projection/decision v1 are compatibility envelopes,
-NOT assertions that the external producer has deployed an accepted layer.
+queue. rkb.geo_claim.v1 is an authenticated local MCP packet, not a portable
+cartography.resolve/projection/decision transport or an assertion that an
+external producer has deployed an accepted layer.
 """
 from __future__ import annotations
 
@@ -21,7 +22,11 @@ from .entity_graph import normalize_alias
 from .poi_reference import StreetStoryPoiResolver, canonical_poi_key
 
 POLICY = "rkb-geo-resolution-v1"
-CONTRACT = "cartography.resolve.v1"
+# Owner-only MCP lease packet, NOT a network cartography.resolve.v1 command.
+# The cross-service contract additionally requires issuer/audience/resource
+# binding and a checked canonical payload hash; no public relay exists yet.
+CONTRACT = "rkb.geo_claim.v1"
+CARTOGRAPHY_RESOLVE_CONTRACT = "cartography.resolve.v1"
 KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}\Z")
 
 GEO_SCHEMA = """
@@ -653,6 +658,9 @@ class GeoQueue:
                     "state_counts":states,"oldest_pending_seconds":lag,
                     "accepted_layer_revision":None,
                     "cartography_capability":"awaiting_producer",
+                    "owner_claim_contract":CONTRACT,
+                    "interservice_resolve_contract":CARTOGRAPHY_RESOLVE_CONTRACT,
+                    "interservice_transport_ready":False,
                     "paging":"bounded","scope":"actor_only"}
 
     def recheck(self,principal,name,dependency_kind,dependency_ref,
