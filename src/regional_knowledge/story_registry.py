@@ -355,6 +355,29 @@ class StoryRegistry:
                 )""")
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(8,datetime('now'))")
                 db.commit()
+            if not db.execute("SELECT 1 FROM story_schema_migrations WHERE version=9").fetchone():
+                # Decisions are reusable ONLY while both exact evidence sets
+                # and the comparison policy have the same fingerprints.
+                # No backfill guesses historical pair judgements.
+                db.executescript("""
+                CREATE TABLE IF NOT EXISTS story_reconcile_pair_decisions(
+                    anchor_story_id TEXT NOT NULL REFERENCES story_records(id),
+                    ref_kind TEXT NOT NULL CHECK(ref_kind IN ('story','chunk')),
+                    ref_id TEXT NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    anchor_evidence_hash TEXT NOT NULL,
+                    candidate_evidence_hash TEXT NOT NULL,
+                    proposal_id TEXT NOT NULL REFERENCES story_reconcile_proposals(id),
+                    proposed_effect TEXT NOT NULL,
+                    decided_at TEXT NOT NULL,
+                    PRIMARY KEY(anchor_story_id,ref_kind,ref_id,policy_version,
+                                anchor_evidence_hash,candidate_evidence_hash)
+                );
+                CREATE INDEX IF NOT EXISTS story_reconcile_pair_scope
+                    ON story_reconcile_pair_decisions(anchor_story_id,policy_version,ref_kind,ref_id);
+                """)
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(9,datetime('now'))")
+                db.commit()
 
     @staticmethod
     def _row(db, table, ident):

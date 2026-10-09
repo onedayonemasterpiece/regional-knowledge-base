@@ -12,7 +12,7 @@ from regional_knowledge.story_contracts import (
     AttachEvidence, EvidenceLocator, ReconcileApply, ReconcileCancel,
     ReconcileCandidateRef, ReconcileClaim, ReconcileDecision, ReconcileNext,
     ReconcileEnqueue, ReconcileEvidenceRef, ReconcileEvidenceAssessment, ReconcileStage, ReconcileStart,
-    ReviseRelation, SeedInput, UpsertAssertion,
+    ReviseRelation, SeedInput, SetMetadata, UpsertAssertion,
 )
 from regional_knowledge.story_registry import StoryRegistry, StoryError
 from regional_knowledge.story_reconcile import StoryReconciler
@@ -150,6 +150,60 @@ def test_reconcile_two_books_preserves_both_stories_and_citations(fixture):
     with pytest.raises(StoryError) as exc:
         registry.job_get(other,jid)
     assert exc.value.code=="not_found_or_not_accessible"
+
+    # A new run/session should not repeat a reviewed pair under identical
+    # accepted evidence and policy; both search channels are still reported.
+    same = reconciler.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=sb[0], expected_story_revision=3,
+        refs=[ReconcileCandidateRef(kind="story", ref_id=sa[0])],
+    ), "cross-dedup-new-session")
+    assert same["candidate_count"] == 0 and same["skipped_decided_pairs"] == 1
+    covered = reconciler.dispatch(owner, ReconcileEnqueue(
+        command="enqueue", run_id=same["job_id"], expected_job_revision=1,
+        refs=[ReconcileCandidateRef(kind="story", ref_id=sa[0])],
+        searched_channels=["story_lexical", "source_bge"],
+    ), "cross-dedup-new-enqueue")
+    assert covered["state"] == "already_compared_under_policy"
+    assert covered["next_action"] is None
+    coverage = registry.job_get(owner, same["job_id"])
+    assert coverage["skipped_decided_pairs"] == 2
+    assert coverage["candidate_count"] == 0 and coverage["processed_pairs"] == 0
+    assert coverage["next_action"] is None
+    with registry.corpus.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM story_reconcile_pair_decisions").fetchone()[0] == 1
+
+    # Metadata-only revisions do not change the proof identity.
+    registry.edit(owner, sb[0], 3, [SetMetadata(
+        op="set_metadata", title="Отредактированное название истории",
+    )], "cross-dedup-metadata")
+    renamed = reconciler.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=sb[0], expected_story_revision=4,
+        refs=[ReconcileCandidateRef(kind="story", ref_id=sa[0])],
+    ), "cross-dedup-after-rename")
+    assert renamed["candidate_count"] == 0 and renamed["skipped_decided_pairs"] == 1
+
+    # New exact source on the candidate opens this comparison again.
+    more = source(registry, owner, "Третий источник сообщает о строительстве того же моста.")
+    registry.edit(owner, sa[0], 3, [AttachEvidence(
+        op="attach_evidence", assertion_id=sa[1], assertion_revision=1,
+        source_kind="document", source_id=more[0], source_revision=1,
+        relation="reports", original_excerpt=more[4],
+        locator=EvidenceLocator(page_id=more[1], region_id=more[2], chunk_id=more[3]),
+    )], "cross-dedup-new-proof")
+    changed = reconciler.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=sb[0], expected_story_revision=4,
+        refs=[ReconcileCandidateRef(kind="story", ref_id=sa[0])],
+    ), "cross-dedup-evidence-change")
+    assert changed["candidate_count"] == 1 and changed["skipped_decided_pairs"] == 0
+    policy = reconciler.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=sb[0], expected_story_revision=4,
+        policy_version="cross-book-v2",
+        refs=[ReconcileCandidateRef(kind="story", ref_id=sa[0])],
+    ), "cross-dedup-policy-change")
+    assert policy["candidate_count"] == 1
+    registry.migrate()
+    with registry.corpus.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM story_reconcile_pair_decisions").fetchone()[0] == 1
 
 
 def test_reconcile_old_chunk_without_story_attaches_old_source_to_current_story(fixture):
@@ -299,6 +353,15 @@ def test_cross_book_enrichment_attaches_candidate_evidence_to_anchor_only(fixtur
         expected_job_revision=3, expected_target_revision=3,
         reviewer_note="The same bridge episode was checked in both printed sources.",
     ), "enrich-stories-apply-01") == applied
+    # Fingerprint is taken AFTER evidence has been appended to the anchor,
+    # not from its earlier state, or an unchanged follow-up would duplicate it.
+    follow = reconcile.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=anchor[0], expected_story_revision=4,
+        refs=[ReconcileCandidateRef(kind="story", ref_id=old_story[0])],
+    ), "enrich-post-apply-dedup")
+    assert follow["candidate_count"] == 0
+    assert follow["skipped_decided_pairs"] == 1
+    assert registry.get(owner, anchor[0])["revision"] == 4
 
 
 def test_cross_book_link_is_not_automatic_merge(fixture):
@@ -385,25 +448,37 @@ def test_cross_book_link_is_not_automatic_merge(fixture):
     assert old["latest_review"]["action"] == "retract"
     assert old["proofs"][0]["original_excerpt"] == book_a[4]
 
-    # A second source comparison cannot silently revive a retracted unique edge.
+    # Under the same evidence/policy, a previously reviewed pair is skipped,
+    # including its retracted relation: no work is leased to a model.
     retry = reconciler.dispatch(owner, ReconcileStart(
         command="start", anchor_story_id=first[0], expected_story_revision=4,
         refs=[ReconcileCandidateRef(kind="story", ref_id=second[0])],
     ), "phase-link-retry-start")
+    assert retry["candidate_count"] == 0
+    assert retry["skipped_decided_pairs"] == 1
+
+    # A deliberately new policy can reopen comparison, but it cannot
+    # silently restore an editorially retracted link.
+    new_policy = reconciler.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=first[0], expected_story_revision=4,
+        policy_version="cross-book-v2",
+        refs=[ReconcileCandidateRef(kind="story", ref_id=second[0])],
+    ), "phase-link-new-policy-start")
+    assert new_policy["candidate_count"] == 1
     lease = reconciler.dispatch(owner, ReconcileClaim(
-        command="claim", run_id=retry["job_id"], expected_job_revision=1,
-    ), "phase-link-retry-claim")
+        command="claim", run_id=new_policy["job_id"], expected_job_revision=1,
+    ), "phase-link-new-policy-claim")
     restage = reconciler.dispatch(owner, ReconcileStage(
-        command="stage", run_id=retry["job_id"], expected_job_revision=2,
+        command="stage", run_id=new_policy["job_id"], expected_job_revision=2,
         work_id=lease["work_id"], lease_token=lease["lease_token"], decision=decision,
-    ), "phase-link-retry-stage")
+    ), "phase-link-new-policy-stage")
     with pytest.raises(StoryError) as withheld:
         reconciler.dispatch(owner, ReconcileApply(
-            command="apply", run_id=retry["job_id"],
+            command="apply", run_id=new_policy["job_id"],
             proposal_id=restage["proposal_id"], expected_job_revision=3,
             expected_target_revision=4,
-            reviewer_note="An unreviewed proposal cannot undo a deliberate retraction.",
-        ), "phase-link-retry-apply")
+            reviewer_note="Even a new comparison policy cannot revive a retracted relation.",
+        ), "phase-link-new-policy-apply")
     assert withheld.value.code == "revision_conflict"
     assert registry.get(owner, first[0], view="relations_page")["items"] == []
 
