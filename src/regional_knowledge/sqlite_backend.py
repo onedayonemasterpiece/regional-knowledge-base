@@ -115,7 +115,7 @@ class SQLiteBackend(PostgresBackend):
                 kind=alias.get('alias_type') if alias.get('alias_type') in ('current','historical') else 'historical'
                 result.append({'name':value,'kind':kind});seen.add(key)
                 if len(result)>=20:return result
-        if result.ingestion_id:
+        if isinstance(result, BookIngestOutput) and result.ingestion_id:
             from .story_ingestion import extraction_status
             current = await self._ingestion_row(principal=kwargs['principal'],
                                                ingestion_id=result.ingestion_id)
