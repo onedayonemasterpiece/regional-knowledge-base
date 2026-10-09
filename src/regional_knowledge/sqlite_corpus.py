@@ -80,6 +80,10 @@ class SQLiteCorpus:
               chunk_id text primary key,revision integer not null,text_sha256 text not null,
               search_material_sha256 text not null,state text not null default 'pending');
             ''')
+            # Geo queue is an additive in-authority projection. Its DDL is
+            # idempotent and does not touch the book-vector index or source IDs.
+            from .geo_resolution import ensure_geo_schema
+            ensure_geo_schema(db)
         self.path.chmod(0o600)
 
     @contextmanager

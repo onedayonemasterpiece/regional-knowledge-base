@@ -25,6 +25,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from .entity_graph import GraphBundle,GraphAlias
 from .graph_service import GraphService
+from .geo_resolution import GeoProposal
 from .local_e5 import LocalE5Embedder
 from .auth import JwtResourceVerifier
 from .backend import KnowledgeBackend
@@ -394,6 +395,109 @@ def build_server(
                     limit: Annotated[int,Field(ge=1,le=10)]=5,
                     proposal_id: str | None = None) -> dict[str,Any]:
                 return await story_call(registry.job_get, job_id, cursor, limit, proposal_id)
+
+            # Geography is a separate bounded SQLite outbox, not the older
+            # BGE graph-discovery queue. Full/story readers may inspect scoped
+            # source mentions; writes remain contributor/editor only.
+            from .geo_resolution import GeoQueue,GeoError
+            geo_queue=GeoQueue(backend.corpus)
+
+            async def geo_call(fn,*args):
+                try:
+                    return await asyncio.to_thread(fn,_principal(),*args)
+                except GeoError as exc:
+                    return {"error":{"code":exc.code,
+                            "message_ru":"Географическое действие недоступно или устарело"}}
+
+            @mcp.tool(name="geo_status",title="Read geographic resolution queue and receipts",
+                description="Authorized own source-backed geo intents and up to 10 "
+                            "versioned attempts. No original chunk text or cartographic raster. "
+                            "Unresolved is not absence of the historical place.",
+                annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+            async def geo_status(request_id:str|None=None,entity_id:str|None=None,
+                    limit:Annotated[int,Field(ge=1,le=10)]=5)->dict[str,Any]:
+                return await geo_call(geo_queue.status,request_id,entity_id,limit)
+
+            @mcp.tool(name="geo_receipt",title="Read a durable geographic mutation receipt",
+                description="Authenticated lookup of an exact command receipt after "
+                            "a lost response; never replays external operations.",
+                annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+            async def geo_receipt(idempotency_key:str)->dict[str,Any]:
+                return await geo_call(geo_queue.receipt,idempotency_key)
+
+            @mcp.tool(name="geo_lookup",title="Find exact sourced place mentions with optional year",
+                description="Fast exact normalized-name source lookup, actor-scoped. "
+                            "Unknown temporal validity stays unknown; no radius, polygon "
+                            "membership or accepted historical layer is implied.",
+                annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+            async def geo_lookup(name:Annotated[str,Field(min_length=1,max_length=200)],
+                    year:Annotated[int,Field(ge=1,le=9999)]|None=None,
+                    limit:Annotated[int,Field(ge=1,le=10)]=3)->dict[str,Any]:
+                return await geo_call(geo_queue.lookup,name,year,limit)
+
+            if profile in {"full","story_contributor","story_editor"}:
+                @mcp.tool(name="geo_request",title="Ensure an accepted source graph place has a queued geo intent",
+                    description="Idempotently enqueue at most 20 exact owned source mentions "
+                                "of one existing POI reference. No external cartography calls "
+                                "or source reimport; normal graph staging also enqueues automatically.",
+                    annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,
+                                                destructive_hint=False,open_world_hint=False))
+                async def geo_request(entity_id:str)->dict[str,Any]:
+                    return await geo_call(geo_queue.enqueue_existing,entity_id)
+
+                @mcp.tool(name="geo_claim",title="Claim bounded geo resolution jobs",
+                    description="Lease/fence up to five jobs across source documents. "
+                                "The authenticated source owner, not the model, sets scope. "
+                                "Return original name, source refs, dependency revisions; "
+                                "never return source text or private chunks.",
+                    annotations=ToolAnnotations(read_only_hint=False,
+                                                destructive_hint=False,open_world_hint=False))
+                async def geo_claim(limit:Annotated[int,Field(ge=1,le=5)]=3,
+                                    lease_seconds:Annotated[int,Field(ge=15,le=180)]=90)->dict[str,Any]:
+                    return await geo_call(geo_queue.claim,limit,lease_seconds)
+
+                @mcp.tool(name="geo_stage",title="Stage one fenced source-grounded place proposal",
+                    description="Typed cartography.resolve.v1-compatible candidate/unresolved proposal. "
+                                "Live Street Story owner binding is rechecked on apply. "
+                                "No map geometry acceptance or public source transmission.",
+                    annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,
+                                                destructive_hint=False,open_world_hint=False))
+                async def geo_stage(attempt_id:str,lease_token:str,
+                        lease_fence:Annotated[int,Field(ge=1)],
+                        proposal:GeoProposal,
+                        idempotency_key:Annotated[str,Field(min_length=8,max_length=128)]
+                        )->dict[str,Any]:
+                    return await geo_call(geo_queue.stage,attempt_id,lease_token,
+                                          lease_fence,proposal,idempotency_key)
+
+                @mcp.tool(name="geo_apply",title="Apply a fenced place candidate with durable receipt",
+                    description="Revalidate exact source evidence, OAuth actor and Street Story "
+                                "read-only owner alias. Update only the same RKB graph node, "
+                                "never a different canonical ID or a Story revision. "
+                                "Replay returns the previous durable receipt.",
+                    annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,
+                                                destructive_hint=False,open_world_hint=False))
+                async def geo_apply(attempt_id:str,lease_token:str,
+                        lease_fence:Annotated[int,Field(ge=1)],
+                        idempotency_key:Annotated[str,Field(min_length=8,max_length=128)]
+                        )->dict[str,Any]:
+                    return await geo_call(geo_queue.apply,attempt_id,lease_token,
+                                          lease_fence,idempotency_key)
+
+                @mcp.tool(name="geo_recheck",title="Schedule relevant changed-owner or map dependency",
+                    description="Create one new attempt for exact matching place names "
+                                "when an owner POI or map layer revision changes. This is "
+                                "not an assertion that a cartographic layer was accepted.",
+                    annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,
+                                                destructive_hint=False,open_world_hint=False))
+                async def geo_recheck(
+                    name:Annotated[str,Field(min_length=3,max_length=200)],
+                    dependency_kind:Literal["owner_poi","cartography_layer"],
+                    dependency_ref:Annotated[str,Field(min_length=1,max_length=160)],
+                    dependency_revision:Annotated[str,Field(min_length=1,max_length=128)],
+                    limit:Annotated[int,Field(ge=1,le=30)]=20)->dict[str,Any]:
+                    return await geo_call(geo_queue.recheck,name,dependency_kind,
+                                          dependency_ref,dependency_revision,limit)
 
             @mcp.tool(name="entity_list", title="List accepted graph mentions",
                 description="Authorized bounded entity list, not a complete claim of book coverage.",
