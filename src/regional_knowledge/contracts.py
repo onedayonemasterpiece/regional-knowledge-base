@@ -192,6 +192,9 @@ class StageIllustrationInput(BaseModel):
 
 
 class StagePageInput(BaseModel):
+    # Same-pass semantic episode review; true with no candidates is an explicit
+    # reviewed-empty page, not a claim that all possible stories were found.
+    story_candidates_reviewed: bool = False
     excluded_figure_regions: dict[str, str] = Field(default_factory=dict, max_length=100)
     source_material: Literal["unreviewed", "preview", "full_native", "visual_reviewed", "accepted_reuse"] = "unreviewed"
     source_review_note: str | None = Field(default=None, min_length=1, max_length=500)
@@ -452,7 +455,18 @@ class BookFindOutput(BaseModel):
     results: list[BookFindResult] = Field(default_factory=list, max_length=8)
 
 
+class StoryExtractionStatus(BaseModel):
+    state: Literal["not_reviewed", "reviewing", "staged", "completed", "awaiting_agent"]
+    reviewed_pages: int = Field(ge=0)
+    total_pages: int = Field(ge=0)
+    staged_candidates: int = Field(ge=0)
+    saved_candidates: int = Field(ge=0)
+    needs_review_candidates: int = Field(ge=0)
+    coverage_note: str
+
+
 class BookIngestOutput(BaseModel):
+    story_extraction: StoryExtractionStatus | None = None
     ingestion_id: str | None = None
     state: Literal["staged", "processing", "needs_review", "ready", "finalized", "failed"]
     message: str
