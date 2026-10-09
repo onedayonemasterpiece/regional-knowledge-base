@@ -28,6 +28,7 @@ default Live read-only profile) are:
 | --- | --- |
 | `geo_request(entity_id,cursor?,limit<=20)` | paginate evidence-backed **original spellings** on one existing owned POI graph ref; ignore empty-spelling vector-only discovery candidates |
 | `geo_status(request_id?,entity_id?,limit<=10)` | current versions, attempts/reasons, without exposing the passage |
+| `geo_receipt(idempotency_key)` | actor-scoped durable readback of stage/apply receipt after lost reply; does not repeat an owner action |
 | `geo_lookup(name,year?,limit<=10)` | exact normalized, ACL-checked source mention projection; year with unknown historical scope stays unknown |
 | `geo_claim(limit<=5,lease_seconds<=180)` | finite source-fair claim packet, opaque lease token and monotonic fence |
 | `geo_stage(attempt_id,lease_token,lease_fence,proposal,idempotency_key)` | typed candidate/unresolved/ambiguous/outside_coverage/rejected, no free-form SQL/HTTP |
@@ -135,3 +136,25 @@ sources owned by someone else.
 The index is local to the canonical corpus SQLite and never copies graph or
 source material to another authority. It does not call a vector model, map
 provider or Street Story during import.
+
+## Final production checkpoint (2026-10-09)
+
+Actual RKB code release after PRs #100, #101 and #102 is
+`4b7e39f4ce8d2eaa6caa6878459f94a5e94a52cf`; all three existing
+MCP/indexing/graph-discovery services were verified against this immutable
+source SHA. On the real authority: 99 intents / 99 attempts / 198 receipts,
+including 86 POI identity candidates, seven ambiguous and six unresolved.
+The accepted zoo source/event/story/owner POI link is unchanged and remains
+`identity_state=candidate`, historical geometry `not_verified`.
+
+The [full acceptance report](reports/rkb-cartography-geo-async-production-20261009.md)
+records real SQLite snapshot restore/replay, 81/2 source mention pagination
+regression, latency (local index timings only), MCP profile capability list,
+CI evidence, ownership and separate pending Cartography/Street Story gates.
+
+The canonical schema package is now merged in
+[regional-cartography/contracts](https://github.com/onedayonemasterpiece/regional-cartography/tree/main/contracts)
+(PR #2). This does **not** mean a remote signed/authenticated producer
+exists. Its synthetic conformance fixtures passed locally; GitHub Actions
+remains red with no runner step logs. Current connected ChatGPT MCP client
+tool declarations have not yet refreshed to include the new `geo_*` methods.
