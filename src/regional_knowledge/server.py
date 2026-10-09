@@ -313,9 +313,24 @@ def build_server(
                     cursor: str | None = None) -> dict[str,Any]:
                 return await story_call(registry.search, query, filters, mode, order, limit, cursor)
 
+            @mcp.tool(name="story_calendar", title="Historical events on a calendar day",
+                description="SQL exact-day filter over CURRENT source-attributed event dates; "
+                            "calendar=gregorian, julian or unspecified is explicit. "
+                            "No year-only, approximate, publication-date or inferred conversions. "
+                            "Returns short proof locators and a bounded ACL-scoped cursor.",
+                annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+            async def story_calendar(
+                    month: Annotated[int, Field(ge=1,le=12)],
+                    day: Annotated[int, Field(ge=1,le=31)],
+                    calendar: Literal["gregorian","julian","unspecified"] = "gregorian",
+                    limit: Annotated[int, Field(ge=1,le=10)] = 3,
+                    cursor: str | None = None) -> dict[str,Any]:
+                return await story_call(registry.calendar, month, day,
+                                        calendar, limit, cursor)
+
             @mcp.tool(name="story_get", title="Read sourced stories and bounded evidence",
                 description="Read one authorized story. For large cross-book dossiers use "
-                            "view=evidence_page, assertion_page, assessments_page, relation_history_page "
+                            "view=evidence_page, assertion_page, assessments_page, event_dates_page, relation_history_page "
                             "or relation_reviews_page (requires relation_id) with a "
                             "revision-bound cursor and limit; sources are derived from actual "
                             "evidence/dependencies, including controlled merges.",
@@ -323,7 +338,8 @@ def build_server(
             async def story_get(story_id: str, revision: int | None = None,
                     view: Literal["compact","editorial","evidence","review",
                                   "evidence_page","assertion_page","assessments_page","sources_page",
-                                  "relations_page","relation_history_page","relation_reviews_page"] = "compact",
+                                  "relations_page","relation_history_page","relation_reviews_page",
+                                  "event_dates_page","event_date_history_page"] = "compact",
                     cursor: str | None = None, limit: Annotated[int, Field(ge=1,le=10)] = 8,
                     assertion_id: str | None = None,
                     relation_id: str | None = None) -> dict[str,Any]:
