@@ -418,6 +418,13 @@ def build_server(
                     limit:Annotated[int,Field(ge=1,le=10)]=5)->dict[str,Any]:
                 return await geo_call(geo_queue.status,request_id,entity_id,limit)
 
+            @mcp.tool(name="geo_receipt",title="Read a durable geographic mutation receipt",
+                description="Authenticated lookup of an exact command receipt after "
+                            "a lost response; never replays external operations.",
+                annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+            async def geo_receipt(idempotency_key:str)->dict[str,Any]:
+                return await geo_call(geo_queue.receipt,idempotency_key)
+
             @mcp.tool(name="geo_lookup",title="Find exact sourced place mentions with optional year",
                 description="Fast exact normalized-name source lookup, actor-scoped. "
                             "Unknown temporal validity stays unknown; no radius, polygon "
