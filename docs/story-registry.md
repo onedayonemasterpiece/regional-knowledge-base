@@ -297,3 +297,54 @@ source version invalidation beyond current assertion revision,
 общие интервалы/статистические observations и продакшн календарное
 наполнение остаются отдельными этапами. Массовые protected
 BGE/capacity/latency gates не смягчены.
+
+
+## Числовые наблюдения — SQLite v11 (2026-10-09)
+
+`story_edit(operations=[{"op":"record_observation",...}])` сохраняет
+отдельный **атрибутированный числовой факт-утверждение** с текущим
+`assertion_id/revision`, 1–8 зарегистрированными `evidence_ids`,
+оригинальным числовым выражением `original_value_text`, точным
+decimal `value`, `metric_key`, `unit_code`, `subject_label`,
+`period_text`, при наличии точных границ `period_start_year/
+period_end_year`, `method/method_note`, `precision`, `rationale`
+и ссылкой на замещаемую редакционную версию.
+
+Исходное выражение числа и точный период должны встречаться в
+разрешённой **исходной цитате** этого assertion. Даты-годы, явно
+записанные в structured year bounds, должны присутствовать в самой
+цитате. Проверяется также `source_state=unchanged` — нельзя
+выдавать ранее сохранённую цифру за актуально доказанную после
+изменения источника. Один excerpt может сообщать два разных показателя,
+но это **две записи** с разными metric/unit. Decimal хранится как
+строка без потери точности. Нет автоматического перевода единиц,
+высчитывания трендов и объединения по похожим именам.
+
+`story_get(view="observations_page"|"observations_history_page",
+assertion_id?,limit<=10,cursor?)` читает все действующие наблюдения
+и/или замещённые ревизии с ACL всех источников. Исправления требуют
+`supersedes_observation_id`; прежнее основание не стирается и
+зависящий опубликованный вариант требует revalidation.
+`story_observation_search(metric_key,unit_code?,limit,cursor)`
+ищет подтверждённые **как цитаты** числа из актуальных assertion
+через индекс, короткими страницами и с повторной ACL-проверкой;
+`source_changed` не возвращается обычному читателю как свежее число.
+`story_observation_compare(story_id,left_id,right_id)` выдаёт
+`different_metrics`, `different_units`,
+`unverified_subject_identity`, `incompatible_or_unknown_method`,
+`period_not_confirmed` либо
+`manual_identity_and_semantic_review_required`. Это **диагностика
+несопоставимости**, без ложных результатов `difference/ratio`:
+совпавший `subject_label` не создаёт canonical POI/person/org.
+Публикация графа цифр без проверки единиц, объекта, периода и метода
+не разрешается.
+
+**Граница:** v11 не извлекает цифры автоматически из старых источников;
+LLM выполняет интерпретацию при разборе книг или внешних документов.
+Это не statistical timeseries engine, не калькулятор conversion и
+не автоматическое доказательство правильности любого сообщённого
+количества. Следующие шаги — source-verified
+`subject_ref` от Street Story/RKB entity graph, normalized
+measurement methods и допустимая compare/aggregate только
+для научно сопоставимых рядов. Квоты и protected dense-retrieval gates
+не меняются.

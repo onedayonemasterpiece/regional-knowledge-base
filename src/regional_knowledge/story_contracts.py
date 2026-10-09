@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal, Union
+from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Key = Annotated[str, Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]+$")]
@@ -184,6 +185,43 @@ class RecordEventDate(Strict):
         return self
 
 
+class RecordObservation(Strict):
+    """A sourced NUMBER, not an assertion that all like-looking figures compare."""
+    op: Literal["record_observation"]
+    assertion_id: Identifier
+    assertion_revision: int = Field(ge=1)
+    evidence_ids: list[Identifier] = Field(min_length=1,max_length=8)
+    original_value_text: Annotated[str,Field(min_length=1,max_length=100)]
+    value: Decimal = Field(max_digits=20,decimal_places=6)
+    metric_key: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{1,63}$")]
+    unit_code: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{1,63}$")]
+    subject_label: Annotated[str, Field(min_length=1,max_length=200)]
+    period_text: Annotated[str, Field(min_length=1,max_length=150)]
+    period_start_year: int | None = Field(default=None,ge=1,le=9999)
+    period_end_year: int | None = Field(default=None,ge=1,le=9999)
+    method: Literal["reported","counted","measured","estimated","derived","unknown"] = "reported"
+    method_note: Annotated[str, Field(min_length=10,max_length=350)]
+    precision: Literal["as_reported","approximate","lower_bound","upper_bound"] = "as_reported"
+    rationale: Annotated[str, Field(min_length=10,max_length=500)]
+    supersedes_observation_id: Identifier | None = None
+
+    @model_validator(mode="after")
+    def shape(self):
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("Duplicate evidence identifiers")
+        if (self.period_start_year is None) != (self.period_end_year is None):
+            raise ValueError("Period interval requires both year endpoints")
+        if (self.period_start_year is not None
+                and self.period_end_year is not None
+                and self.period_start_year>self.period_end_year):
+            raise ValueError("Period years out of order")
+        if self.period_text == "unknown" and self.period_start_year is not None:
+            raise ValueError("Unknown period cannot assert exact years")
+        if not self.value.is_finite():
+            raise ValueError("Observation must be a finite decimal number")
+        return self
+
+
 class RecordAssessment(Strict):
     op: Literal["record_assessment"]
     assertion_id: Identifier
@@ -255,8 +293,8 @@ class SetContributors(Strict):
 
 StoryOperation = Annotated[Union[
     SetMetadata, AddGap, ResolveGap, SetAngle, LinkEntity, UpsertAssertion,
-    AttachEvidence, RecordAssessment, RecordEventDate, UpsertVariant, RecordInterest,
-    SetContributors, ReviseRelation,
+    AttachEvidence, RecordAssessment, RecordEventDate, RecordObservation,
+    UpsertVariant, RecordInterest, SetContributors, ReviseRelation,
 ], Field(discriminator="op")]
 
 

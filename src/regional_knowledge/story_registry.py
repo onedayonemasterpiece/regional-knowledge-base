@@ -18,7 +18,7 @@ from .story_contracts import (
     AddGap, AttachEvidence, EvidenceLocator, ExtractCancel, ExtractClaim, ExtractStage, ExtractStart,
     UpsertAssertion, LinkEntity, RecordAssessment, RecordInterest, ResolveGap, SetAngle,
     SetContributors, SetMetadata, ReviseRelation, RecordEventDate,
-    UpsertAssertion, UpsertVariant,
+    RecordObservation, UpsertAssertion, UpsertVariant,
 )
 
 ROLE_LEVEL = {"viewer": 1, "contributor": 2, "researcher": 3, "editor": 4, "publisher": 5, "manager": 6}
@@ -406,6 +406,42 @@ class StoryRegistry:
                   ON story_event_dates(assertion_id,assertion_revision,id);
                 """)
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(10,datetime('now'))")
+                db.commit()
+            if not db.execute("SELECT 1 FROM story_schema_migrations WHERE version=11").fetchone():
+                # Evidence-backed quantities are claims tied to exact assertion
+                # revisions; unit/metric/period are independent dimensions.
+                db.executescript("""
+                CREATE TABLE IF NOT EXISTS story_observations(
+                    id TEXT PRIMARY KEY,
+                    story_id TEXT NOT NULL REFERENCES story_records(id),
+                    assertion_id TEXT NOT NULL,
+                    assertion_revision INTEGER NOT NULL CHECK(assertion_revision>=1),
+                    source_evidence_ids TEXT NOT NULL,
+                    original_value_text TEXT NOT NULL,
+                    value_decimal TEXT NOT NULL,
+                    metric_key TEXT NOT NULL,
+                    unit_code TEXT NOT NULL,
+                    subject_label TEXT NOT NULL,
+                    period_text TEXT NOT NULL,
+                    period_start_year INTEGER,
+                    period_end_year INTEGER,
+                    method TEXT NOT NULL,
+                    method_note TEXT NOT NULL,
+                    precision TEXT NOT NULL,
+                    rationale TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    superseded_by TEXT,
+                    actor_id TEXT NOT NULL,
+                    client_id TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(assertion_id,assertion_revision,fingerprint)
+                );
+                CREATE INDEX IF NOT EXISTS story_observations_metric
+                    ON story_observations(metric_key,unit_code,id);
+                CREATE INDEX IF NOT EXISTS story_observations_claim
+                    ON story_observations(assertion_id,assertion_revision,id);
+                """)
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(11,datetime('now'))")
                 db.commit()
 
     @staticmethod
@@ -988,6 +1024,13 @@ class StoryRegistry:
                     fail("not_found_or_not_accessible")
                 snapshot = json.loads(hist[0])
             permitted = self._available_actions(db, actor, rec)
+            if view in {"observations_page","observations_history_page"}:
+                if revision is not None and revision != rec["revision"]:
+                    fail("validation_failed","Observation views require current authorized story revision")
+                from .story_observations import StoryObservations
+                return StoryObservations(self).page(
+                    db,actor,rec,snapshot,cursor,limit,assertion_id,
+                    history=view=="observations_history_page")
             if view in {"event_dates_page", "event_date_history_page"}:
                 if revision is not None and revision != rec["revision"]:
                     fail("validation_failed", "Date views require the current authorized story revision")
@@ -1013,6 +1056,15 @@ class StoryRegistry:
             return {"story_id": story_id, "revision": revision or rec["revision"],
                     "snapshot": snapshot, "readiness": self._effective_readiness(db, json.loads(rec["snapshot"])),
                     "allowed_actions": permitted, "indexing_state": "local_fts_ready_vector_awaiting_worker"}
+
+    def observation_search(self, principal, metric_key, unit_code=None, limit=3, cursor=None):
+        from .story_observations import StoryObservations
+        return StoryObservations(self).search(
+            principal,metric_key,unit_code,limit,cursor)
+
+    def observation_compare(self, principal, story_id, left_id, right_id):
+        from .story_observations import StoryObservations
+        return StoryObservations(self).compare(principal,story_id,left_id,right_id)
 
     def calendar(self, principal, month, day, calendar="gregorian", limit=3, cursor=None):
         from .story_calendar import StoryCalendar
@@ -1153,6 +1205,81 @@ class StoryRegistry:
         return "relation:" + op.action
 
 
+    def _record_observation(self, db, principal, snap, op):
+        """Preserve the author's exact number, explicitly scoped meaning and unit."""
+        assertion = next((a for a in snap.get("assertions") or []
+                          if a["assertion_id"] == op.assertion_id
+                          and a["revision"] == op.assertion_revision), None)
+        if assertion is None:
+            fail("revision_conflict", "Observation must reference a current assertion")
+        if not set(op.evidence_ids).issubset(set(assertion.get("evidence_ids") or [])):
+            fail("invalid_evidence", "Observation citation belongs to another assertion")
+        actor = str(principal.subject)
+        quotes = []
+        for evidence_id in op.evidence_ids:
+            evidence = self._row(db, "story_evidence", evidence_id)
+            if (not evidence or evidence["assertion_id"] != op.assertion_id
+                    or evidence["assertion_revision"] != op.assertion_revision):
+                fail("invalid_evidence", "Observation evidence revision mismatch")
+            if evidence["source_kind"] == "document":
+                if not self._document_allowed(db, actor, evidence["source_id"]):
+                    fail("not_found_or_not_accessible")
+            elif evidence["source_kind"] == "external":
+                source = db.execute("""SELECT owner_id FROM story_sources
+                    WHERE id=? AND version=?""",
+                    (evidence["source_id"], evidence["source_revision"])).fetchone()
+                story = self._row(db, "story_records", snap["story_id"])
+                if (not source or (source["owner_id"] != actor
+                                   and (not story or story["owner_id"] != actor))):
+                    fail("not_found_or_not_accessible")
+            else:
+                fail("invalid_evidence", "Unsupported observation evidence kind")
+            if self._evidence_state(db, evidence) != "unchanged":
+                fail("source_changed", "Observation evidence differs from the accepted source")
+            quotes.append(evidence["original_excerpt"])
+        if not any(op.original_value_text in excerpt for excerpt in quotes):
+            fail("invalid_evidence", "Original numeric expression absent from cited evidence")
+        if op.period_text != "unknown" and not any(
+                op.period_text in excerpt for excerpt in quotes):
+            fail("invalid_evidence", "Period expression absent from cited evidence")
+        if op.period_start_year is not None and (
+                not any(str(op.period_start_year) in excerpt for excerpt in quotes)
+                or not any(str(op.period_end_year) in excerpt for excerpt in quotes)):
+            fail("invalid_evidence", "Year boundaries require exact cited source text")
+        data = op.model_dump(mode="json", exclude={"op","rationale",
+                                                     "supersedes_observation_id"})
+        fingerprint = digest(data)
+        if db.execute("""SELECT 1 FROM story_observations
+            WHERE assertion_id=? AND assertion_revision=? AND fingerprint=?""",
+            (op.assertion_id, op.assertion_revision, fingerprint)).fetchone():
+            fail("validation_failed", "Identical sourced observation already registered")
+        ident = str(uuid4())
+        if op.supersedes_observation_id:
+            old = self._row(db, "story_observations", op.supersedes_observation_id)
+            if (old is None or old["assertion_id"] != op.assertion_id
+                    or old["assertion_revision"] != op.assertion_revision
+                    or old["superseded_by"]):
+                fail("revision_conflict", "Only a current observation may be corrected")
+            db.execute("""UPDATE story_observations SET superseded_by=?
+                          WHERE id=? AND superseded_by IS NULL""",
+                       (ident, op.supersedes_observation_id))
+        db.execute("""INSERT INTO story_observations(
+            id,story_id,assertion_id,assertion_revision,source_evidence_ids,
+            original_value_text,value_decimal,metric_key,unit_code,
+            subject_label,period_text,period_start_year,period_end_year,
+            method,method_note,precision,rationale,fingerprint,
+            superseded_by,actor_id,client_id,created_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(
+            ident,snap["story_id"],op.assertion_id,op.assertion_revision,
+            canonical(op.evidence_ids),op.original_value_text,str(op.value),
+            op.metric_key,op.unit_code,op.subject_label,op.period_text,
+            op.period_start_year,op.period_end_year,op.method,op.method_note,
+            op.precision,op.rationale,fingerprint,None,actor,
+            getattr(principal,"client_id",None),now(),
+        ))
+        self._invalidate(db, snap, {op.assertion_id})
+        return "observation"
+
     def _record_event_date(self, db, principal, snap, op):
         """Store one exact attributed dating, never infer Julian/Gregorian conversion."""
         assertion = next((a for a in snap.get("assertions") or []
@@ -1215,6 +1342,8 @@ class StoryRegistry:
         return "event_date"
 
     def _apply_op(self, db, principal, snap, op):
+        if isinstance(op, RecordObservation):
+            return self._record_observation(db, principal, snap, op)
         if isinstance(op, RecordEventDate):
             return self._record_event_date(db, principal, snap, op)
         if isinstance(op, ReviseRelation):
@@ -1409,7 +1538,8 @@ class StoryRegistry:
         def authorize(db, actor):
             rec, _ = self._read_story(db, actor, story_id, "contributor")
             if any(isinstance(op, (RecordAssessment, RecordEventDate,
-                                   AttachEvidence, UpsertAssertion)) for op in operations):
+                                   RecordObservation, AttachEvidence,
+                                   UpsertAssertion)) for op in operations):
                 self._permission(db, actor, rec, "researcher")
             if any(isinstance(op, (UpsertVariant, SetAngle, SetContributors, ReviseRelation)) for op in operations):
                 self._permission(db, actor, rec, "editor")

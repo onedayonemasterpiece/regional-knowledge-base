@@ -12,7 +12,7 @@ from regional_knowledge.contracts import Principal
 from regional_knowledge.sqlite_corpus import SQLiteCorpus
 from regional_knowledge.story_contracts import (
     AddGap, AttachEvidence, EvidenceLocator, ExtractClaim, ExtractStage, ExtractStart,
-    LinkEntity, RecordAssessment, RecordEventDate, RecordInterest,
+    LinkEntity, RecordAssessment, RecordEventDate, RecordObservation, RecordInterest,
     RegisteredSource, ResolveGap,
     ReviewDecision, SeedInput, SetContributors, UpsertAssertion, UpsertVariant,
 )
@@ -1147,3 +1147,164 @@ def test_calendar_keyset_does_not_skip_lookahead_date_across_stories(setup):
         assert len(visited)<=3, "Cursor must progress without duplication"
     assert len(visited)==len(set(visited))==3
     assert set(visited)==set([first_id,*others])
+
+
+def _synthetic_numbers(registry, owner):
+    """Private exact source with metric, unit and two source years."""
+    doc,page,region,chunk=[str(uuid4()) for _ in range(4)]
+    original=("21 мая 1896 года в зоопарке было 893 животных и 262 вида. "
+              "В другой записи упоминаются 894 животных. "
+              "В 1900 году числилось 900 животных.")
+    sig=sha256(original.encode()).hexdigest()
+    registry.corpus.put("rkb_documents",[{
+        "id":doc,"owner_user_id":owner.subject,"title":"Synthetic numeric report",
+        "source_sha256":"e"*64,"active_revision":1,
+        "content_visibility":"private","rights_status":"restricted",
+    }])
+    registry.corpus.put("rkb_pages",[{
+        "id":page,"document_id":doc,"revision":1,"physical_page_index":0,
+    }])
+    registry.corpus.put("rkb_regions",[{
+        "id":region,"page_id":page,"source_text":original,"reading_order":0,
+    }])
+    registry.corpus.put("rkb_chunks",[{
+        "id":chunk,"document_id":doc,"revision":1,
+        "source_text":original,"text_sha256":sig,"search_material_sha256":sig,
+        "page_ids":[page],"region_ids":[region],
+    }])
+    story=registry.create(owner,SeedInput(text="Синтетический зоопарк и его коллекция"),
+                          None,None,None,"observation-source-seed")
+    sid=story["story_id"]
+    registry.edit(owner,sid,1,[UpsertAssertion(
+        op="upsert_assertion",kind="attributed_account",account_kind="other",
+        attributed_to="Синтетический отчёт",
+        proposition="Автор сообщает численность особей и число видов в разные годы.",
+    )],"observation-source-claim")
+    claim=registry.get(owner,sid,view="evidence")["snapshot"]["assertions"][0]
+    registry.edit(owner,sid,2,[AttachEvidence(
+        op="attach_evidence",assertion_id=claim["assertion_id"],
+        assertion_revision=1,source_kind="document",source_id=doc,
+        source_revision=1,relation="reports",original_excerpt=original,
+        locator=EvidenceLocator(page_id=page,region_id=region,chunk_id=chunk),
+    )],"observation-source-evidence")
+    eid=registry.get(owner,sid,view="evidence")["snapshot"]["assertions"][0]["evidence_ids"][0]
+    return sid,claim["assertion_id"],eid,doc,region,original
+
+
+def test_sourced_numeric_observations_do_not_conflate_units_or_species(setup):
+    registry, owner, outsider=setup
+    sid,aid,eid,doc,region,original=_synthetic_numbers(registry,owner)
+    def observation(text,value,metric,unit,period,start,end,**kwargs):
+        return RecordObservation(
+            op="record_observation",assertion_id=aid,assertion_revision=1,
+            evidence_ids=[eid],original_value_text=text,value=value,
+            metric_key=metric,unit_code=unit,subject_label="Синтетический зоопарк",
+            period_text=period,period_start_year=start,period_end_year=end,
+            method="reported",
+            method_note="Source reports this numerical figure, sampling methodology unknown.",
+            rationale="This number is an attributed account, not independently verified.",
+            **kwargs,
+        )
+    animals=observation("893 животных","893","animal_population","individuals","1896",1896,1896)
+    first=registry.edit(owner,sid,3,[animals],"observation-animals")
+    assert first["committed_revision"]==4
+    assert registry.edit(owner,sid,3,[animals],"observation-animals")==first
+    species=observation("262 вида","262","species_richness","species","1896",1896,1896)
+    registry.edit(owner,sid,4,[species],"observation-species")
+    later=observation("900 животных","900","animal_population","individuals","1900",1900,1900)
+    registry.edit(owner,sid,5,[later],"observation-later")
+    observed=[];cursor=None
+    while True:
+        page=registry.get(owner,sid,view="observations_page",limit=1,cursor=cursor)
+        observed.extend(page["items"])
+        cursor=page["next_cursor"]
+        if cursor is None:
+            assert not page["has_more"]
+            break
+    assert len(observed)==3 and len({i["observation_id"] for i in observed})==3
+    assert {x["value_decimal"] for x in observed}=={"893","262","900"}
+    assert all(x["subject_identity"]=="unverified_label_only" for x in observed)
+    assert all(x["proofs"][0]["source_id"]==doc for x in observed)
+
+    by_value={x["value_decimal"]:x["observation_id"] for x in observed}
+    incompatible=registry.observation_compare(owner,sid,by_value["893"],by_value["262"])
+    assert incompatible["comparable"] is False
+    assert incompatible["difference"] is None
+    assert incompatible["verdict"]=="different_metrics"
+    similar=registry.observation_compare(owner,sid,by_value["893"],by_value["900"])
+    assert similar["comparable"] is False
+    assert similar["verdict"]=="manual_identity_and_semantic_review_required"
+    assert similar["ratio"] is None
+
+    result=registry.observation_search(owner,"animal_population","individuals",limit=1)
+    assert result["has_more"] and len(result["items"])==1
+    second=registry.observation_search(owner,"animal_population","individuals",
+                                        limit=1,cursor=result["next_cursor"])
+    assert len(second["items"])==1 and not second["has_more"]
+    assert {r["value_decimal"] for r in [*result["items"],*second["items"]]}=={"893","900"}
+    assert {r["value_decimal"] for r in registry.observation_search(
+        owner,"species_richness")["items"]}=={"262"}
+    expect("validation_failed",registry.observation_search,owner,
+           "species_richness","species",limit=1,cursor=result["next_cursor"])
+    assert registry.observation_search(outsider,"animal_population")["items"]==[]
+    expect("not_found_or_not_accessible",registry.get,outsider,sid,view="observations_page")
+    expect("not_found_or_not_accessible",registry.observation_compare,
+           outsider,sid,by_value["893"],by_value["262"])
+
+    expect("invalid_evidence",registry.edit,owner,sid,6,
+           [observation("999 животных","999","animal_population",
+                        "individuals","1896",1896,1896)],"observation-forged")
+    expect("invalid_evidence",registry.edit,owner,sid,6,
+           [observation("893 животных","893","animal_population",
+                        "individuals","1999",1999,1999)],"observation-fake-period")
+    expect("validation_failed",registry.edit,owner,sid,6,[animals],
+           "observation-repeat-new-key")
+
+    correction=observation("894 животных","894","animal_population",
+                           "individuals","1896",1896,1896,
+                           supersedes_observation_id=by_value["893"])
+    registry.edit(owner,sid,6,[correction],"observation-reviewed-correction")
+    assert {r["value_decimal"] for r in registry.observation_search(
+        owner,"animal_population")["items"]}=={"894","900"}
+    history=registry.get(owner,sid,view="observations_history_page",limit=10)
+    assert len(history["items"])==4
+    assert any(x["superseded_by"] for x in history["items"])
+    registry.migrate()
+    with registry.corpus.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM story_observations").fetchone()[0]==4
+
+    # After source text changes, proof is no longer current: don't leak or
+    # return the old figure as a fresh historical number.
+    registry.corpus.put("rkb_regions",[{
+        "id":region,"page_id":next(iter([x for x in registry.corpus.rows("rkb_pages")
+                                        if x["document_id"]==doc]))["id"],
+        "source_text":"A changed and incompatible digit sequence.",
+        "reading_order":0,
+    }])
+    assert registry.observation_search(owner,"animal_population")["items"]==[]
+    expect("source_changed",registry.get,owner,sid,view="observations_page")
+
+
+def test_record_observation_contract_prevents_false_periods_and_unbounded_values():
+    from decimal import Decimal
+    from pydantic import ValidationError
+    def fields(**updates):
+        d=dict(op="record_observation",assertion_id=str(uuid4()),assertion_revision=1,
+               evidence_ids=[str(uuid4())],original_value_text="893",
+               value=Decimal("893"),metric_key="animal_population",
+               unit_code="individuals",subject_label="Synthetic zoo",
+               period_text="1896",period_start_year=1896,period_end_year=1896,
+               method_note="A source author's count, method not verified.",
+               rationale="Recorded from exact evidence, not asserted as historical truth.")
+        d.update(updates)
+        return d
+    assert RecordObservation(**fields()) .value==Decimal("893")
+    for change in (
+        {"value":Decimal("NaN")}, {"value":Decimal("Infinity")},
+        {"value":Decimal("999999999999999999999")}, {"metric_key":"Animals"},
+        {"period_start_year":1900,"period_end_year":1896},
+        {"period_start_year":None,"period_end_year":1896},
+        {"period_text":"unknown"},
+    ):
+        with pytest.raises(ValidationError):
+            RecordObservation(**fields(**change))
