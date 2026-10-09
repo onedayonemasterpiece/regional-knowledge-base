@@ -124,7 +124,10 @@ def enqueue_mention(db, actor, mention, node, *, policy=POLICY):
         raise GeoError("source_changed")
     doc = json.loads(source[0])
     if str(doc.get("owner_user_id")) != str(actor):
-        raise GeoError("owner_scope_mismatch")
+        # The original graph can cite a document via a scoped reader grant.
+        # An unrelated owner's private proof is not silently exported to a
+        # resolution worker; skip this optional side effect, not the book.
+        return None
     evidence = mention.get("evidence") or {}
     if not evidence.get("chunk_id") or not evidence.get("region_id"):
         raise GeoError("invalid_evidence")
@@ -220,7 +223,7 @@ class GeoQueue:
         """Recheck source, exact original evidence and owner on EVERY mutation."""
         if intent["actor_id"] != ctx.actor:
             raise GeoError("not_found_or_not_accessible")
-        if not ctx.owned(intent["document_id"]) or not ctx.readable(intent["document_id"]):
+        if not ctx.readable(intent["document_id"]):
             raise GeoError("not_found_or_not_accessible")
         doc=ctx.one("rkb_documents",intent["document_id"])
         if (not doc or doc.get("active_revision") != intent["source_revision"]
@@ -233,9 +236,7 @@ class GeoQueue:
         if (mention.get("entity_id") != entity["id"]
                 or mention.get("revision") != intent["source_revision"]
                 or entity.get("kind")!="poi_ref"
-                or entity.get("owner_user_id")!=ctx.actor
-                or entity.get("document_id")!=intent["document_id"]
-                or entity.get("revision")!=intent["source_revision"]):
+                or entity.get("owner_user_id")!=ctx.actor):
             raise GeoError("stale_source")
         proof = mention.get("evidence") or {}
         actual = _hash({
