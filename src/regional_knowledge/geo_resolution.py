@@ -946,13 +946,58 @@ class GeoQueue:
                 (_json(new_cursor),time.time()))
         return {"seen":len(aliases),"scheduled":created,"scope":"relevant_aliases"}
 
+    def recover_expired_leases(self,limit=32):
+        """Reclaim crash-orphaned geo attempts without an external operator.
+
+        Local SQLite BEGIN IMMEDIATE fences the reaper against fresh claims.
+        An expired worker's token/proposal is invalidated before requeueing.
+        After five attempts, preserve a terminal reason until a NEW relevant
+        dependency revision creates a new attempt. Called only by the
+        trusted existing graph-discovery daemon, not an exposed MCP action.
+        """
+        take=max(1,min(int(limit),64))
+        now=time.time()
+        with self.corpus.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            stale=db.execute("""SELECT attempt_id,lease_fence,lease_until,attempts
+                FROM rkb_geo_attempts
+                WHERE state IN ('leased','staged') AND lease_until<=?
+                ORDER BY lease_until,attempt_id LIMIT ?""",
+                (now,take)).fetchall()
+            released=exhausted=0
+            for row in stale:
+                terminal=int(row["attempts"])>=5
+                result="retry_exhausted" if terminal else "pending"
+                reason="lease_attempts_exhausted" if terminal else "lease_expired_worker_restarted"
+                updated=db.execute("""UPDATE rkb_geo_attempts
+                    SET state=?,reason=?,lease_token=NULL,lease_until=NULL,
+                        proposal_json=NULL,proposal_hash=NULL,
+                        available_at=?,updated_at=?
+                    WHERE attempt_id=? AND lease_fence=?
+                      AND state IN ('leased','staged') AND lease_until<=?""",
+                    (result,reason,now,now,row["attempt_id"],
+                     row["lease_fence"],now)).rowcount
+                if updated:
+                    exhausted+=int(terminal)
+                    released+=int(not terminal)
+            return {"examined":len(stale),"requeued":released,
+                    "retry_exhausted":exhausted,"max_batch":64}
+
     def worker_tick(self,limit=2):
         """Low-cost owner-local consumer, isolated from remote map/provider failures."""
         from .contracts import Principal
+        # Worker crashes leave leased/staged rows that were previously ignored
+        # by the actor preselection, even though claim() can re-lease them.
+        # Requeue expired attempts in a separate tiny fenced transaction
+        # BEFORE looking for eligible actors. Never call an owner/LLM inside.
+        recovery=self.recover_expired_leases(limit=32)
         with self.corpus.connect() as db:
             actors=[r[0] for r in db.execute("""SELECT DISTINCT i.actor_id
               FROM rkb_geo_intents i JOIN rkb_geo_attempts a
                 ON a.request_id=i.request_id
+              JOIN corpus_rows u ON u.table_name='rkb_users'
+                AND u.row_key=i.actor_id
+                AND json_extract(u.payload,'$.status')='active'
               WHERE a.state IN ('pending','retry_wait')
               AND a.available_at<=? ORDER BY i.actor_id LIMIT ?""",
               (time.time(),max(1,min(limit,5))))]
@@ -1004,4 +1049,6 @@ class GeoQueue:
             except (GeoError, ValueError, LookupError, sqlite3.Error):
                 # Failed source/auth must not block normal indexing or reading.
                 continue
-        return {"processed":len(results),"states":results}
+        return {"processed":len(results),"states":results,
+                "recovered_expired_leases":recovery["requeued"],
+                "recovered_retry_exhausted":recovery["retry_exhausted"]}
