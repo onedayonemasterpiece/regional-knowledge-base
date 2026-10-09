@@ -1189,6 +1189,81 @@ class StoryRegistry:
         return "relation:" + op.action
 
 
+    def _record_observation(self, db, principal, snap, op):
+        """Preserve the author's exact number, explicitly scoped meaning and unit."""
+        assertion = next((a for a in snap.get("assertions") or []
+                          if a["assertion_id"] == op.assertion_id
+                          and a["revision"] == op.assertion_revision), None)
+        if assertion is None:
+            fail("revision_conflict", "Observation must reference a current assertion")
+        if not set(op.evidence_ids).issubset(set(assertion.get("evidence_ids") or [])):
+            fail("invalid_evidence", "Observation citation belongs to another assertion")
+        actor = str(principal.subject)
+        quotes = []
+        for evidence_id in op.evidence_ids:
+            evidence = self._row(db, "story_evidence", evidence_id)
+            if (not evidence or evidence["assertion_id"] != op.assertion_id
+                    or evidence["assertion_revision"] != op.assertion_revision):
+                fail("invalid_evidence", "Observation evidence revision mismatch")
+            if evidence["source_kind"] == "document":
+                if not self._document_allowed(db, actor, evidence["source_id"]):
+                    fail("not_found_or_not_accessible")
+            elif evidence["source_kind"] == "external":
+                source = db.execute("""SELECT owner_id FROM story_sources
+                    WHERE id=? AND version=?""",
+                    (evidence["source_id"], evidence["source_revision"])).fetchone()
+                story = self._row(db, "story_records", snap["story_id"])
+                if (not source or (source["owner_id"] != actor
+                                   and (not story or story["owner_id"] != actor))):
+                    fail("not_found_or_not_accessible")
+            else:
+                fail("invalid_evidence", "Unsupported observation evidence kind")
+            if self._evidence_state(db, evidence) != "unchanged":
+                fail("source_changed", "Observation evidence differs from the accepted source")
+            quotes.append(evidence["original_excerpt"])
+        if not any(op.original_value_text in excerpt for excerpt in quotes):
+            fail("invalid_evidence", "Original numeric expression absent from cited evidence")
+        if op.period_text != "unknown" and not any(
+                op.period_text in excerpt for excerpt in quotes):
+            fail("invalid_evidence", "Period expression absent from cited evidence")
+        if op.period_start_year is not None and (
+                not any(str(op.period_start_year) in excerpt for excerpt in quotes)
+                or not any(str(op.period_end_year) in excerpt for excerpt in quotes)):
+            fail("invalid_evidence", "Year boundaries require exact cited source text")
+        data = op.model_dump(mode="json", exclude={"op","rationale",
+                                                     "supersedes_observation_id"})
+        fingerprint = digest(data)
+        if db.execute("""SELECT 1 FROM story_observations
+            WHERE assertion_id=? AND assertion_revision=? AND fingerprint=?""",
+            (op.assertion_id, op.assertion_revision, fingerprint)).fetchone():
+            fail("validation_failed", "Identical sourced observation already registered")
+        ident = str(uuid4())
+        if op.supersedes_observation_id:
+            old = self._row(db, "story_observations", op.supersedes_observation_id)
+            if (old is None or old["assertion_id"] != op.assertion_id
+                    or old["assertion_revision"] != op.assertion_revision
+                    or old["superseded_by"]):
+                fail("revision_conflict", "Only a current observation may be corrected")
+            db.execute("""UPDATE story_observations SET superseded_by=?
+                          WHERE id=? AND superseded_by IS NULL""",
+                       (ident, op.supersedes_observation_id))
+        db.execute("""INSERT INTO story_observations(
+            id,story_id,assertion_id,assertion_revision,source_evidence_ids,
+            original_value_text,value_decimal,metric_key,unit_code,
+            subject_label,period_text,period_start_year,period_end_year,
+            method,method_note,precision,rationale,fingerprint,
+            superseded_by,actor_id,client_id,created_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(
+            ident,snap["story_id"],op.assertion_id,op.assertion_revision,
+            canonical(op.evidence_ids),op.original_value_text,str(op.value),
+            op.metric_key,op.unit_code,op.subject_label,op.period_text,
+            op.period_start_year,op.period_end_year,op.method,op.method_note,
+            op.precision,op.rationale,fingerprint,None,actor,
+            getattr(principal,"client_id",None),now(),
+        ))
+        self._invalidate(db, snap, {op.assertion_id})
+        return "observation"
+
     def _record_event_date(self, db, principal, snap, op):
         """Store one exact attributed dating, never infer Julian/Gregorian conversion."""
         assertion = next((a for a in snap.get("assertions") or []
