@@ -84,6 +84,8 @@ class GraphService:
                 if n.entity_id and not old:raise LookupError('entity not found')
                 result=resolved.get(n.key,{});ref=result.get('external_ref');state='unresolved' if n.kind=='poi_ref' and not ref else n.state
                 metadata={'review_note':n.review_note,'poi_locator':n.poi_locator.model_dump(mode='json') if n.poi_locator else None,'resolution':result.get('state')}
+                if old and n.kind=='poi_ref' and ref and old['external_ref'] and str(old['external_ref'])!=ref:
+                    raise ValueError('canonical POI identity conflict; explicit editorial review required')
                 if old is None:
                     await db.execute('insert into rkb_entities(id,owner_user_id,kind,canonical_label,external_ref,document_id,revision,state,metadata) values(%s,%s,%s,%s,%s,%s,%s,%s,%s)',(nid,UUID(principal.subject),n.kind,n.canonical_label,ref,UUID(str(document_id)),revision,state,Jsonb(metadata)))
                 elif not n.entity_id:
@@ -94,6 +96,15 @@ class GraphService:
                             await db.execute('update rkb_entities set metadata=%s where id=%s',(Jsonb(pending),nid))
                         else:
                             await db.execute('update rkb_entities set revision=%s,external_ref=%s,state=%s,metadata=%s where id=%s',(revision,ref,state,Jsonb(metadata),nid))
+                    elif n.kind=='poi_ref' and ref and not old['external_ref']:
+                        # A POI missing during the first source stage can become
+                        # known to Street Story after asynchronous owner review.
+                        # Promote the SAME exact source-backed node and revision;
+                        # do not replace/merge its identity, citations or edges.
+                        if old['state'] not in ('unresolved','candidate'):
+                            raise ValueError('Only unresolved POI references support identity refresh')
+                        await db.execute('update rkb_entities set external_ref=%s,state=%s,metadata=%s where id=%s and external_ref is null',
+                                         (ref,state,Jsonb(metadata),nid))
                 # Explicit reuse does not overwrite seed identity/metadata from another book.
                 mid=uuid5(nid,f'mention:{document_id}:{revision}:{digest(locator(n.evidence))}')
                 await db.execute('insert into rkb_entity_mentions(id,entity_id,document_id,revision,chunk_id,page_id,region_id,exact_source_spelling,evidence,state) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) on conflict(id) do nothing',(mid,nid,UUID(str(document_id)),revision,n.evidence.chunk_id,n.evidence.page_id,n.evidence.region_id,n.exact_source_spelling,Jsonb(locator(n.evidence)),n.state))
@@ -139,8 +150,8 @@ class GraphService:
             jid=await self.enqueue(db,principal.subject,None,{'kind':'poi','external_ref':external_ref,'version':canonical['version'],'names':canonical['names']})
         return {'job_id':jid,'state':'candidate_discovery',
                 'canonical_poi_ref':external_ref,
-                'identity_state':canonical['identity_state'],
-                'historical_geometry':canonical['historical_geometry']}
+                'identity_state':canonical.get('identity_state','candidate'),
+                'historical_geometry':canonical.get('historical_geometry','not_verified')}
 
     async def job_read(self,principal,jid,limit=20):
         async with self.connection(principal) as db:
