@@ -859,3 +859,56 @@ def test_reviewed_merge_preserves_editors_links_drafts_and_old_interest_without_
     old = registry.get(owner, source_id, view="evidence")["snapshot"]
     assert old["archived"] and old["merged_into"] == target
     assert old["contributors"]
+
+
+def test_upgrading_populated_registry_backfills_assertions_and_reconciliation_without_locks(setup):
+    """Production upgrade v3 -> v5/v6 on an existing sourced card is restart-safe."""
+    registry, owner, _ = setup
+    doc, page, region, chunk, text = document(registry, owner)
+    sid = seed(registry, owner, name="Неполное описание старого моста",
+               key="upgrade-old-story")["story_id"]
+    registry.edit(owner, sid, 1, [UpsertAssertion(
+        op="upsert_assertion", kind="attributed_account",
+        account_kind="other", attributed_to="Историк архива",
+        proposition="В городских списках упоминается старый мост с дозорной башней.",
+    )], "upgrade-old-assert")
+    claim = registry.get(owner, sid, view="evidence")["snapshot"]["assertions"][0]
+    registry.edit(owner, sid, 2, [AttachEvidence(
+        op="attach_evidence", assertion_id=claim["assertion_id"],
+        assertion_revision=1, source_kind="document", source_id=doc,
+        source_revision=1, original_excerpt="У старого фонаря днём собирались мастера.",
+        relation="reports", locator=EvidenceLocator(
+            page_id=page, region_id=region, chunk_id=chunk),
+    )], "upgrade-old-evidence")
+    before = registry.get(owner, sid, view="evidence")
+    with registry.corpus.connect() as db:
+        db.execute("DELETE FROM story_schema_migrations WHERE version IN (5,6)")
+        db.execute("DELETE FROM story_assertion_search WHERE story_id=?", (sid,))
+        db.execute("DELETE FROM story_reconcile_queue WHERE story_id=?", (sid,))
+
+    # A new StoryRegistry instance performs the actual bounded backfill on a
+    # nonempty database. Before the fix, BEGIN IMMEDIATE raised
+    # 'cannot start a transaction within a transaction'.
+    recovered = StoryRegistry(registry.corpus)
+    after = recovered.get(owner, sid, view="evidence")
+    assert after["revision"] == before["revision"] == 3
+    assert after["snapshot"]["assertions"] == before["snapshot"]["assertions"]
+    assert sid in [item["story_id"] for item in recovered.search(owner, query="дозорной")["results"]]
+    with recovered.corpus.connect() as db:
+        marks = {r[0] for r in db.execute(
+            "SELECT version FROM story_schema_migrations WHERE version IN (5,6)")}
+        assert marks == {5,6}
+        pending = db.execute("SELECT state FROM story_reconcile_queue WHERE story_id=?",
+                             (sid,)).fetchall()
+        assert len(pending) == 1 and pending[0]["state"] == "awaiting_agent"
+        prior_history = db.execute("SELECT COUNT(*) FROM story_revisions WHERE story_id=?",
+                                   (sid,)).fetchone()[0]
+        assert prior_history == 3
+
+    # Replay on the same SQLite cannot create another source/claim or queue item.
+    StoryRegistry(recovered.corpus)
+    with recovered.corpus.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM story_reconcile_queue WHERE story_id=?",
+                          (sid,)).fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM story_revisions WHERE story_id=?",
+                          (sid,)).fetchone()[0] == 3
