@@ -346,8 +346,9 @@ def build_server(
                             "awaiting_agent means an external model must continue.",
                 annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
             async def story_job_get(job_id: str, cursor: str | None = None,
-                    limit: Annotated[int,Field(ge=1,le=10)]=5) -> dict[str,Any]:
-                return await story_call(registry.job_get, job_id, cursor, limit)
+                    limit: Annotated[int,Field(ge=1,le=10)]=5,
+                    proposal_id: str | None = None) -> dict[str,Any]:
+                return await story_call(registry.job_get, job_id, cursor, limit, proposal_id)
 
             @mcp.tool(name="entity_list", title="List accepted graph mentions",
                 description="Authorized bounded entity list, not a complete claim of book coverage.",
