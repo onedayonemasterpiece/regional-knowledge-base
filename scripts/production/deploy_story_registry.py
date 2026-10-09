@@ -69,7 +69,10 @@ def offline_backup():
         raise RuntimeError("authoritative SQLite corpus is missing")
     size = db_path.stat().st_size
     available = shutil.disk_usage(STATE).free
-    if available < size * 2 + 128 * 1024 * 1024:
+    # Online Backup writes one new snapshot of approximately the live .db size.
+    # Leave at least 128 MiB additional headroom for WAL and normal writes;
+    # do not invent a second full snapshot allocation.
+    if available < size + 128 * 1024 * 1024:
         raise RuntimeError("insufficient free space for consistent SQLite snapshot")
     BACKUPS.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(BACKUPS, 0o700)
