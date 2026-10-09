@@ -492,7 +492,7 @@ class StoryReconciler:
             fail("validation_failed", "Unknown reconcile operation")
         return registry._mutation(principal, "story_reconcile", idempotency_key, data, authorize, apply)
 
-    def status(self, principal, run_id, cursor=None, limit=5):
+    def status(self, principal, run_id, cursor=None, limit=5, proposal_id=None):
         with self.registry.corpus.connect() as db:
             actor = self.registry._actor(db, principal)
             run = self._scoped_run(db, actor, run_id, "viewer")
@@ -517,6 +517,26 @@ class StoryReconciler:
                 (run_id,after,take+1)).fetchall()
             proposal_items = [{"proposal_id":row["id"],"state":row["state"]}
                               for row in proposal_rows[:take]]
+            detail = None
+            if proposal_id:
+                proposal = db.execute("""SELECT * FROM story_reconcile_proposals
+                    WHERE id=? AND run_id=?""", (proposal_id,run_id)).fetchone()
+                if proposal is None:
+                    fail("not_found_or_not_accessible")
+                stored = json.loads(proposal["decision"])
+                source = stored["reference"]
+                self._candidate(db, actor, run["anchor_story_id"], _ref_input(source))
+                decision = _decision_model(stored["decision"])
+                self._validate_pair(db, actor, run, source, decision, applying=True)
+                detail = {
+                    "proposal_id":proposal["id"],"state":proposal["state"],
+                    "candidate":source,"decision":stored["decision"],
+                    "anchor_proof":stored["anchor_proof"],
+                    "candidate_proof":stored["candidate_proof"],
+                    "recorded_actor_id":proposal["actor_id"],
+                    "created_at":proposal["created_at"],
+                    "applied_at":proposal["applied_at"],
+                }
             return {"job_id":run_id,"revision":run["revision"],"state":run["state"],
                     "executor_state":"external_model_required",
                     "anchor_story_id":run["anchor_story_id"],
@@ -531,6 +551,7 @@ class StoryReconciler:
                                         and run["lease_deadline"]>time.time()),
                     "next_action":next_action,
                     "proposals":proposal_items,
+                    "proposal_detail":detail,
                     "proposals_has_more":len(proposal_rows)>take,
                     "proposals_next_cursor":proposal_items[-1]["proposal_id"]
                         if len(proposal_rows)>take and proposal_items else None,
