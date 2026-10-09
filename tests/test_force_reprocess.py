@@ -138,3 +138,47 @@ async def test_reprocess_metadata_new_revision_selects_explicit_restart(backend,
     )
     assert normal.document_id == forced.document_id == doc
     assert calls == [(actor, doc, False), (actor, doc, True)]
+
+
+@pytest.mark.asyncio
+async def test_reprocess_can_recover_from_byte_identical_attachment(backend, monkeypatch):
+    """Optional source recovery preserves document ID, no new import identity."""
+    from regional_knowledge.contracts import BookIngestOutput, ChatFile
+
+    actor, doc = str(uuid4()), str(uuid4())
+    principal = Principal(subject=actor, client_id="test", issuer="test",
+                          access_token="test-token")
+    identical_file = ChatFile(
+        file_id="attached-existing-source",
+        download_url="https://files.example.test/original.pdf",
+        mime_type="application/pdf",
+        file_name="original.pdf",
+    )
+    seen = []
+
+    async def reprocess(*, principal, document_id, force_new_revision=False,
+                        verified_file=None, derived_only=False):
+        seen.append((document_id, force_new_revision, verified_file, derived_only))
+        return BookIngestOutput(
+            ingestion_id="existing-document-revision",
+            document_id=document_id,
+            state="staged",
+            message="verified original source",
+            next_action="continue_pages",
+        )
+
+    monkeypatch.setattr(backend, "_reprocess_existing_source", reprocess)
+    result = await backend.book_ingest(
+        command="reprocess", principal=principal, file=identical_file,
+        ingestion_id=None, cursor=None, payload=None, document_id=doc,
+    )
+    assert result.document_id == doc
+    assert seen == [(doc, False, identical_file, False)]
+    with pytest.raises(ValueError, match="rechunk must not attach"):
+        await backend.book_ingest(
+            command="rechunk", principal=principal, file=identical_file,
+            ingestion_id=None, cursor=None, payload=None, document_id=doc,
+        )
+    assert len(seen) == 1  # rechunk failure did not start another revision
+
+
