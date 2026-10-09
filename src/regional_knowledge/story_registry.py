@@ -1853,7 +1853,12 @@ class StoryRegistry:
         with self.corpus.connect() as db:
             actor = self._actor(db, principal)
             job = self._row(db, "story_jobs", job_id)
-            if not job or job["owner_id"] != actor or not self._document_allowed(db, actor, job["document_id"]):
+            if not job:
+                # Reuse the existing public job reader for reconciliation work.
+                # The reconciler performs fresh actor/source authorization.
+                from .story_reconcile import StoryReconciler
+                return StoryReconciler(self).status(principal, job_id)
+            if job["owner_id"] != actor or not self._document_allowed(db, actor, job["document_id"]):
                 fail("not_found_or_not_accessible")
             return {"job_id": job_id, "revision": job["revision"], "state": job["state"],
                     "executor_state": job["executor_state"], "document_id": job["document_id"],
