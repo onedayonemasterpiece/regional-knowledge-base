@@ -501,8 +501,8 @@ class StoryReconciler:
             revision = int(run["revision"]) + 1
             if isinstance(request, ReconcileEnqueue):
                 if run["state"] in {"cancelled", "completed_under_policy",
-                                    "already_compared_under_policy", "no_match_found_under_policy",
-                                    "leased"}:
+                                    "partial_budget_exhausted", "already_compared_under_policy",
+                                    "no_match_found_under_policy", "leased"}:
                     fail("validation_failed", "Finish current lease or start a new run")
                 existing = {(x["kind"], x["id"]) for x in frontier}
                 admitted = []
@@ -561,7 +561,7 @@ class StoryReconciler:
                         and float(run["lease_deadline"]) > time.time()):
                     fail("busy_retryable", "A previous batch is still leased")
                 if run["state"] in {"cancelled", "completed_under_policy",
-                                    "already_compared_under_policy",
+                                    "partial_budget_exhausted", "already_compared_under_policy",
                                     "no_match_found_under_policy"}:
                     fail("validation_failed", "Run was completed or cancelled")
                 if run["position"] >= len(frontier):
@@ -809,8 +809,14 @@ class StoryReconciler:
                 WHERE run_id=? AND state='pending_review'""",(run_id,)).fetchone()[0]
             applied = db.execute("""SELECT COUNT(*) FROM story_reconcile_proposals
                 WHERE run_id=? AND state='applied'""",(run_id,)).fetchone()[0]
+            overflow_pending = self._overflow_pending(db, run_id)
+            continuation_count = db.execute("""SELECT COUNT(*) FROM story_reconcile_overflow
+                WHERE origin_run_id=? AND state='continued'""",(run_id,)).fetchone()[0]
             next_action = (
+                "continue_overflow" if run["state"] == "partial_budget_exhausted"
+                    and overflow_pending else
                 None if run["state"] in {"cancelled","completed_under_policy",
+                                         "partial_budget_exhausted",
                                          "already_compared_under_policy",
                                          "no_match_found_under_policy"}
                 else "claim" if run["position"]<len(frontier)
@@ -858,6 +864,12 @@ class StoryReconciler:
                     "pending_proposals":pending,"applied_proposals":applied,
                     "max_candidate_pairs":run["max_candidate_pairs"],
                     "skipped_decided_pairs":int(plan.get("skipped_decided_pairs") or 0),
+                    "overflow_pending":overflow_pending,
+                    "overflow_continued":continuation_count,
+                    "continuation_of_run_id":plan.get("continuation_of_run_id"),
+                    "coverage_state": ("partial_budget_exhausted" if overflow_pending
+                                       or run["state"]=="partial_budget_exhausted"
+                                       else "bounded_frontier_only"),
                     "pair_decision_basis":"accepted_evidence_fingerprints_and_policy_v1",
                     "lease_active":bool(run["lease_token"] and run["lease_deadline"]
                                         and run["lease_deadline"]>time.time()),
@@ -867,7 +879,7 @@ class StoryReconciler:
                     "proposals_has_more":len(proposal_rows)>take,
                     "proposals_next_cursor":proposal_items[-1]["proposal_id"]
                         if len(proposal_rows)>take and proposal_items else None,
-                    "coverage":"completed_under_declared_policy_is_not_global_semantic_completeness"}
+                    "coverage":"a_finished_packet_does_not_imply_corpus_or_index_completeness"}
 
 
 def _ref_input(row):
