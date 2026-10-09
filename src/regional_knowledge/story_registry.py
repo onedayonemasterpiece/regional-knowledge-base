@@ -1483,8 +1483,10 @@ class StoryRegistry:
                                "grantee": grantee, "capability": capability}, authorize, apply)
 
     def merge(self, principal, target_id, source_ids, expected_revisions, reason, idempotency_key):
-        if not source_ids or len(source_ids) > 10 or target_id in source_ids or len(set(source_ids)) != len(source_ids):
-            fail("validation_failed")
+        if (not source_ids or len(source_ids) > 10 or target_id in source_ids
+                or len(set(source_ids)) != len(source_ids)
+                or not reason or len(reason.strip()) < 10):
+            fail("validation_failed", "Reviewed merge requires distinct IDs and a substantive reason")
         def authorize(db, actor):
             target, _ = self._read_story(db, actor, target_id, "editor")
             for sid in source_ids:
@@ -1510,6 +1512,50 @@ class StoryRegistry:
                 for gap in s["gaps"]:
                     if gap not in snap["gaps"]:
                         snap["gaps"].append(gap)
+                # Preserve independent author/editor context rather than
+                # discarding it when source cards are archived. Links remain
+                # references, not proof of historical/event identity.
+                for link in s.get("links") or []:
+                    if link not in snap["links"]:
+                        snap["links"].append(link)
+                for contributor in s.get("contributors") or []:
+                    if contributor not in snap["contributors"]:
+                        snap["contributors"].append(contributor)
+                for ref in s.get("source_refs") or []:
+                    if ref not in snap["source_refs"]:
+                        snap["source_refs"].append(ref)
+                # Ratings were made under the source story's old framing.
+                # Keep the original assessment and author in history, but do
+                # NOT treat its score as an up-to-date target-story rating.
+                historical = snap.setdefault("historical_interest_assessments", [])
+                for rating in s.get("interest_assessments") or []:
+                    historical.append({
+                        "origin_story_id": sid,
+                        "origin_story_revision": r["revision"],
+                        "assessment": rating,
+                        "requires_reassessment": True,
+                    })
+                for prior in s.get("historical_interest_assessments") or []:
+                    if prior not in historical:
+                        historical.append(prior)
+                for variant in s.get("variants") or []:
+                    if any(v["variant_id"] == variant["variant_id"]
+                           for v in snap["variants"]):
+                        fail("validation_failed", "Variant ID unexpectedly reused")
+                    old_state = variant.get("state")
+                    migrated = {**variant, "state": "needs_revalidation",
+                                "merge_origin_story_id": sid,
+                                "previous_editorial_state": old_state}
+                    snap["variants"].append(migrated)
+                    # Keep authored variant_version history and review receipts
+                    # intact; no prior source approval transfers to the target.
+                    result = db.execute("""UPDATE story_variants
+                      SET story_id=?, state='needs_revalidation',
+                          approved_revision=NULL, approval_fingerprint=NULL
+                      WHERE id=? AND story_id=?""",
+                      (target_id, variant["variant_id"], sid))
+                    if result.rowcount != 1:
+                        fail("source_changed", "Merge variant revision is missing")
                 s["merged_into"] = target_id
                 s["archived"] = True
                 s["state"] = "archived"
