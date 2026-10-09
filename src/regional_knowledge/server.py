@@ -349,11 +349,13 @@ def build_server(
                     cursor: str | None = None) -> dict[str,Any]:
                 return await story_call(registry.entity_list, document_ids, kinds, query, cursor, limit)
 
-            @mcp.tool(name="corpus_read", title="Read bounded accepted book context",
-                description="Read selected corpus revision in bounded source chunks with immutable provenance.",
+            @mcp.tool(name="corpus_read", title="Read accepted passages and exact source evidence",
+                description="Review up to 20 accepted source chunks and their exact printed page/region texts; "
+                            "use source_regions page_id, region_id and original excerpt as proof "
+                            "for grounded_candidates in story_extract(stage). No server-side model.",
                 annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
             async def corpus_read(document_id: str, source_revision: Annotated[int,Field(ge=1)],
-                    cursor: str | None = None, limit: Annotated[int,Field(ge=1,le=5)]=3) -> dict[str,Any]:
+                    cursor: str | None = None, limit: Annotated[int,Field(ge=1,le=20)]=10) -> dict[str,Any]:
                 return await story_call(registry.corpus_read, document_id, source_revision, cursor, limit)
 
             if profile in {"full", "story_contributor", "story_editor"}:
@@ -387,8 +389,13 @@ def build_server(
                 async def story_source_register(source: RegisteredSource, idempotency_key: Key) -> dict[str,Any]:
                     return await story_call(registry.register_source, source, idempotency_key)
 
-                @mcp.tool(name="story_extract", title="Track bounded source extraction",
-                    description="Explicit start/claim/stage/cancel lease workflow. No hidden LLM calls.",
+                @mcp.tool(name="story_extract", title="Extract evidence-backed stories from accepted books",
+                    description="One model reads corpus_read page/region evidence and stages "
+                                "up to 10 grounded_candidates per leased source batch with exact "
+                                "page_id, region_id and original_excerpt. Server verifies all "
+                                "proof, deduplicates, and atomically saves attributed candidates "
+                                "with claim and evidence. No hidden LLM calls; legacy seed path "
+                                "remains supported. Model must continue until the job is done.",
                     annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
                 async def story_extract(request: ExtractRequest, idempotency_key: Key) -> dict[str,Any]:
                     return await story_call(registry.extract, request, idempotency_key)
