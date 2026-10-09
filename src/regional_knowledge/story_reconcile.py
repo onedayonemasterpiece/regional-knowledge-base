@@ -28,6 +28,20 @@ class StoryReconciler:
     def __init__(self, registry):
         self.registry = registry
 
+    @staticmethod
+    def _overflow_pending(db, run_id):
+        return db.execute("""SELECT COUNT(*) FROM story_reconcile_overflow
+            WHERE origin_run_id=? AND state='pending'""", (run_id,)).fetchone()[0]
+
+    @staticmethod
+    def _overflow_enqueue(db, run_id, refs):
+        """Durable, idempotent overflow; no model packets over 50."""
+        for ref in refs:
+            db.execute("""INSERT OR IGNORE INTO story_reconcile_overflow(
+                origin_run_id,ref_kind,ref_id,reference,state,added_at
+            ) VALUES(?,?,?,?,'pending',?)""",
+                (run_id, ref["kind"], ref["id"], canonical(ref), now()))
+
     def _run(self, db, ident):
         return db.execute("SELECT * FROM story_reconcile_runs WHERE id=?", (ident,)).fetchone()
 
