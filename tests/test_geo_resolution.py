@@ -380,3 +380,90 @@ async def test_unaccepted_cartography_cannot_assert_same_site_or_footprint(tmp_p
                   "geo-fake-layer")
     with b.corpus.connect() as db:
         assert db.execute("SELECT COUNT(*) FROM rkb_geo_receipts").fetchone()[0]==0
+
+
+
+@pytest.mark.asyncio
+async def test_geo_request_finds_original_among_80_vector_only_mentions_and_pages(tmp_path):
+    """Real zoo-like case: 81 mentions, only 1 original spelling and proof."""
+    b,actor,graph,geo,street,doc,bundle,text=prepare(tmp_path)
+    accepted=await graph.stage(actor,doc,1,bundle)
+    entity=accepted["entities"]["historical-zoo-site"]
+    original=b.corpus.rows("rkb_entity_mentions")[0]
+    vector_only=[]
+    from uuid import UUID
+    for i in range(80):
+        vector_only.append({**original,
+            "id":str(UUID(f"00000000-0000-4000-8000-{i:012x}")),
+            "exact_source_spelling":"","state":"candidate",
+            "signals":{"retrieval_mode":"vector_only","identity_unresolved":True}})
+    b.corpus.put("rkb_entity_mentions",vector_only)
+    assert len(b.corpus.rows("rkb_entity_mentions"))==81
+    result=geo.enqueue_existing(actor,entity)
+    assert result["count"]==1 and result["scanned"]==1
+    assert result["next_cursor"] is None
+    with b.corpus.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM rkb_geo_intents").fetchone()[0]==1
+
+    # More original mentions than one bounded packet, with stable cursor.
+    sourced=[]
+    for i in range(24):
+        sourced.append({**original,
+            "id":str(UUID(f"11111111-1111-4111-8111-{i:012x}")),
+            "exact_source_spelling":"Кёнигсбергским зоопарком"})
+    b.corpus.put("rkb_entity_mentions",sourced)
+    seen=set()
+    cursor=None
+    for index in range(5):
+        page=geo.enqueue_existing(actor,entity,cursor=cursor,limit=7)
+        assert page["scanned"]<=7
+        seen.update(page["request_ids"])
+        if page["next_cursor"] is None:
+            assert page["complete"] is True
+            break
+        assert page["complete"] is False
+        cursor=page["next_cursor"]
+    assert len(seen)==25
+    with b.corpus.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM rkb_geo_intents").fetchone()[0]==25
+        assert db.execute("SELECT COUNT(*) FROM rkb_geo_attempts").fetchone()[0]==25
+    # Replay one cursor page: stable intents and no new attempts.
+    geo.enqueue_existing(actor,entity,cursor=cursor,limit=7)
+    with b.corpus.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM rkb_geo_intents").fetchone()[0]==25
+    with pytest.raises(GeoError,match="invalid_source_cursor_or_entity"):
+        geo.enqueue_existing(actor,entity,cursor="not a UUID")
+
+
+@pytest.mark.asyncio
+async def test_geo_request_can_backfill_owned_cross_book_mentions_of_same_node(tmp_path):
+    """A later authorized book may cite an existing owner graph identity."""
+    b,actor,graph,geo,street,doc,bundle,text=prepare(tmp_path)
+    first=await graph.stage(actor,doc,1,bundle)
+    entity_id=first["entities"]["historical-zoo-site"]
+    oldpage,oldregion,oldchunk=[bundle["entities"][0]["evidence"][key]
+                                for key in ("page_id","region_id","chunk_id")]
+    doc2,page2,region2,chunk2=[str(uuid4()) for _ in range(4)]
+    b.corpus.put("rkb_documents",[{**b.corpus.one("rkb_documents",doc),
+                                    "id":doc2,"title":"Second private source"}])
+    b.corpus.put("rkb_pages",[{**b.corpus.one("rkb_pages",oldpage),
+                               "id":page2,"document_id":doc2}])
+    b.corpus.put("rkb_regions",[{**b.corpus.one("rkb_regions",oldregion),
+                                 "id":region2,"page_id":page2}])
+    b.corpus.put("rkb_chunks",[{**b.corpus.one("rkb_chunks",oldchunk),
+                                "id":chunk2,"document_id":doc2,
+                                "page_ids":[page2],"region_ids":[region2]}])
+    second=json.loads(json.dumps(bundle))
+    second["entities"][0]["key"]="same-place-later-source"
+    second["entities"][0]["entity_id"]=entity_id
+    second["entities"][0]["evidence"].update(
+        chunk_id=chunk2,page_id=page2,region_id=region2)
+    result=await graph.stage(actor,doc2,1,second)
+    assert result["entities"]["same-place-later-source"]==entity_id
+    assert len(b.corpus.rows("rkb_entities"))==1
+    geo_existing=geo.enqueue_existing(actor,entity_id,limit=20)
+    assert geo_existing["count"]==2
+    assert geo_existing["complete"]
+    with b.corpus.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM rkb_geo_intents").fetchone()[0]==2
+    assert len(b.corpus.rows("rkb_entity_mentions"))==2
