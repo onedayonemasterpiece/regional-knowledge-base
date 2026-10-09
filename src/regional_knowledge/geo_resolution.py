@@ -49,6 +49,14 @@ CREATE TABLE IF NOT EXISTS rkb_geo_aliases(
  normalized_name TEXT NOT NULL, PRIMARY KEY(request_id,normalized_name)
 );
 CREATE INDEX IF NOT EXISTS geo_alias_exact ON rkb_geo_aliases(normalized_name,request_id);
+-- Accepted source spellings are rare relative to vector discovery candidates.
+-- This is a partial expression index on the existing graph mentions in the
+-- SAME SQLite authority, not a new place, citation or identity table.
+CREATE INDEX IF NOT EXISTS geo_source_mention_entity ON
+ corpus_rows(json_extract(payload,'$.entity_id'),row_key)
+ WHERE table_name='rkb_entity_mentions'
+   AND coalesce(json_extract(payload,'$.exact_source_spelling'),'')<>'';
+
 CREATE TABLE IF NOT EXISTS rkb_geo_attempts(
  attempt_id TEXT PRIMARY KEY,
  request_id TEXT NOT NULL REFERENCES rkb_geo_intents(request_id),
@@ -294,28 +302,64 @@ class GeoQueue:
                 raise GeoError("not_found_or_not_accessible")
             return json.loads(row[0])
 
-    def enqueue_existing(self, principal, entity_id, *, policy=POLICY):
+    def enqueue_existing(self, principal, entity_id, *, policy=POLICY,
+                         cursor=None, limit=20):
+        """Backfill accepted exact spellings, not arbitrary discovery hits.
+
+        The previous unbounded in-memory mentions[:20] could inspect twenty
+        vector-only candidates with empty original spellings and entirely
+        miss the only two source-quoted originals. Query the partial SQLite
+        index first, then page through proven originals in stable row order.
+        """
         actor=self._actor(principal)
+        try:
+            node_id=str(UUID(str(entity_id)))
+            after=str(UUID(str(cursor))) if cursor else ""
+        except (ValueError, TypeError, AttributeError):
+            raise GeoError("invalid_source_cursor_or_entity") from None
+        take=max(1,min(int(limit),20))
         with self.corpus.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             ctx=self._ctx(db,actor)
-            entity=ctx.one("rkb_entities",entity_id)
-            if not entity or entity.get("kind")!="poi_ref" or entity.get("owner_user_id")!=actor:
+            entity=ctx.one("rkb_entities",node_id)
+            if (not entity or entity.get("kind")!="poi_ref" or
+                    entity.get("owner_user_id")!=actor):
                 raise GeoError("not_found_or_not_accessible")
             if not ctx.owned(entity["document_id"]):
                 raise GeoError("not_found_or_not_accessible")
-            mentions=ctx.rows("rkb_entity_mentions",{"entity_id":entity_id})
+            rows=db.execute("""SELECT row_key,payload FROM corpus_rows
+                WHERE table_name='rkb_entity_mentions'
+                  AND json_extract(payload,'$.entity_id')=?
+                  AND coalesce(json_extract(payload,'$.exact_source_spelling'),'')<>''
+                  AND row_key>?
+                ORDER BY row_key LIMIT ?""",
+                (node_id,after,take+1)).fetchall()
+            batch=rows[:take]
             requests=[]
-            for mention in mentions[:20]:
-                if mention.get("document_id")!=entity["document_id"]:
+            for raw in batch:
+                mention=json.loads(raw["payload"])
+                doc_id=mention.get("document_id")
+                if not doc_id or not ctx.owned(doc_id):
+                    # Cross-book owner ref is permitted, but a granted
+                    # OTHER owner's private source cannot be exported here.
                     continue
-                if not ctx.check_evidence(mention["document_id"],mention["revision"],
+                doc=ctx.one("rkb_documents",doc_id)
+                if not doc or doc.get("active_revision")!=mention.get("revision"):
+                    continue
+                if not ctx.check_evidence(doc_id,mention["revision"],
                                           mention.get("evidence") or {}):
                     continue
-                request=enqueue_mention(db,actor,mention,entity,policy=policy)
-                if request:requests.append(request)
-            return {"request_ids":list(dict.fromkeys(requests))[:20],
-                    "count":len(requests),"enqueued_from":"accepted_graph_mentions"}
+                req=enqueue_mention(db,actor,mention,entity,policy=policy)
+                if req:requests.append(req)
+            request_ids=list(dict.fromkeys(requests))
+            return {
+                "request_ids":request_ids,
+                "count":len(request_ids),
+                "next_cursor":str(batch[-1]["row_key"]) if len(rows)>take else None,
+                "complete":len(rows)<=take,
+                "scanned":len(batch),
+                "enqueued_from":"accepted_graph_source_spellings",
+            }
 
     def claim(self, principal, limit=3, lease_seconds=90):
         actor=self._actor(principal)
