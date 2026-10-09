@@ -26,7 +26,7 @@ default Live read-only profile) are:
 
 | Tool | Bounded semantics |
 | --- | --- |
-| `geo_request(entity_id)` | idempotently backfill up to 20 original accepted mentions of one owned POI graph ref |
+| `geo_request(entity_id,cursor?,limit<=20)` | paginate evidence-backed **original spellings** on one existing owned POI graph ref; ignore empty-spelling vector-only discovery candidates |
 | `geo_status(request_id?,entity_id?,limit<=10)` | current versions, attempts/reasons, without exposing the passage |
 | `geo_lookup(name,year?,limit<=10)` | exact normalized, ACL-checked source mention projection; year with unknown historical scope stays unknown |
 | `geo_claim(limit<=5,lease_seconds<=180)` | finite source-fair claim packet, opaque lease token and monotonic fence |
@@ -112,3 +112,26 @@ decision can supply spatially verified geometry.
 No remote network is invoked while holding the source's SQLite write
 lock; a full geo-resolution success is still a **candidate identity**,
 not independently verified historical geometry.
+
+## Production-source pagination regression
+
+On the real accepted zoo graph place, source discovery accumulated 81 mention
+rows, but only 2 contained evidence-backed original place spellings. The
+older `geo_request` looked at an arbitrary first 20 mixed mentions and
+returned **zero** requests, despite two durable valid intents. This did not
+remove or invalidate the automatically created intents but broke explicit
+backfill and produced a misleading empty result.
+
+The corrected `geo_request` uses a partial expression index on existing
+`rkb_entity_mentions` rows, selecting only nonempty exact source spellings,
+ordered by stable UUID and bounded by `limit<=20`. It accepts `cursor` for
+the next bounded page and returns `next_cursor`, `complete`, `scanned`
+and existing/new request IDs. Every returned source still undergoes owner,
+active revision, exact region/chunk quote and authorization validation.
+A later book owned by the same principal can attach its distinct evidence to
+the SAME graph node without creating a new canonical POI or mixing private
+sources owned by someone else.
+
+The index is local to the canonical corpus SQLite and never copies graph or
+source material to another authority. It does not call a vector model, map
+provider or Street Story during import.

@@ -442,8 +442,10 @@ def build_server(
                                 "or source reimport; normal graph staging also enqueues automatically.",
                     annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,
                                                 destructive_hint=False,open_world_hint=False))
-                async def geo_request(entity_id:str)->dict[str,Any]:
-                    return await geo_call(geo_queue.enqueue_existing,entity_id)
+                async def geo_request(entity_id:str,
+                        cursor:str|None=None,
+                        limit:Annotated[int,Field(ge=1,le=20)]=20)->dict[str,Any]:
+                    return await geo_call(geo_queue.enqueue_existing,entity_id,cursor,limit)
 
                 @mcp.tool(name="geo_claim",title="Claim bounded geo resolution jobs",
                     description="Lease/fence up to five jobs across source documents. "
