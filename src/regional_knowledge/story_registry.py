@@ -1849,7 +1849,7 @@ class StoryRegistry:
             result = {**result, "lease_active": result["lease_deadline"] > time.time()}
         return result
 
-    def job_get(self, principal, job_id):
+    def job_get(self, principal, job_id, cursor=None, limit=5):
         with self.corpus.connect() as db:
             actor = self._actor(db, principal)
             job = self._row(db, "story_jobs", job_id)
@@ -1857,7 +1857,7 @@ class StoryRegistry:
                 # Reuse the existing public job reader for reconciliation work.
                 # The reconciler performs fresh actor/source authorization.
                 from .story_reconcile import StoryReconciler
-                return StoryReconciler(self).status(principal, job_id)
+                return StoryReconciler(self).status(principal, job_id, cursor, limit)
             if job["owner_id"] != actor or not self._document_allowed(db, actor, job["document_id"]):
                 fail("not_found_or_not_accessible")
             return {"job_id": job_id, "revision": job["revision"], "state": job["state"],
