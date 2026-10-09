@@ -296,6 +296,94 @@ class StoryReconciler:
                         "reused":True,
                     }
 
+                # Continue an earlier bounded frontier before starting another
+                # unrelated story. The existing active-run check above protects
+                # against concurrent duplicate promotion and resumes lost turns.
+                origin = db.execute("""SELECT r.* FROM story_reconcile_runs r
+                    JOIN story_records s ON s.id=r.anchor_story_id
+                    WHERE r.owner_id=? AND s.owner_id=? AND s.archived=0
+                      AND r.state='partial_budget_exhausted'
+                      AND EXISTS (SELECT 1 FROM story_reconcile_overflow o
+                                  WHERE o.origin_run_id=r.id AND o.state='pending')""" +
+                    condition + " ORDER BY r.updated_at,r.id LIMIT 1",
+                    [actor, actor, *scope_args]).fetchone()
+                if origin:
+                    anchor_rec, anchor_snap = registry._read_story(
+                        db, actor, origin["anchor_story_id"], "researcher")
+                    take = min(MAX_FRONTIER, origin["max_candidate_pairs"],
+                               request.max_candidate_pairs)
+                    rows = db.execute("""SELECT id,reference FROM story_reconcile_overflow
+                        WHERE origin_run_id=? AND state='pending'
+                        ORDER BY id LIMIT ?""", (origin["id"], take)).fetchall()
+                    admitted = []
+                    skipped = []
+                    for row in rows:
+                        previous = json.loads(row["reference"])
+                        # Resolve a fresh revision and source ACL. Never apply
+                        # an old pre-hydrated proof after a book/story changed.
+                        ref = self._candidate(db, actor, anchor_rec["id"],
+                                              _ref_input(previous))
+                        if self._pair_already_decided(db, actor, anchor_rec["id"],
+                                                      ref, origin["policy_version"]):
+                            skipped.append(row["id"])
+                        else:
+                            admitted.append((row["id"], ref))
+                    if skipped:
+                        db.executemany("""UPDATE story_reconcile_overflow
+                            SET state='already_decided' WHERE id=? AND state='pending'""",
+                            ((row_id,) for row_id in skipped))
+                    if admitted:
+                        run_id = str(uuid4())
+                        parent_plan = json.loads(origin["search_plan"])
+                        plan = {
+                            **parent_plan,
+                            "policy_version": origin["policy_version"],
+                            "continuation_of_run_id": origin["id"],
+                            "search_completeness": "bounded_parent_search_continuation",
+                            "candidate_budget": take,
+                            "skipped_decided_pairs": len(skipped),
+                        }
+                        db.execute("""INSERT INTO story_reconcile_runs(
+                            id,owner_id,anchor_story_id,anchor_story_revision,policy_version,
+                            query,search_plan,frontier,position,max_candidate_pairs,revision,
+                            state,work_id,lease_token,lease_deadline,updated_at)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (run_id, actor, anchor_rec["id"], anchor_rec["revision"],
+                             origin["policy_version"], origin["query"],
+                             canonical(plan), canonical([ref for _,ref in admitted]),
+                             0, take, 1, "awaiting_agent", None,None,None,now()))
+                        db.executemany("""UPDATE story_reconcile_overflow
+                            SET state='continued',continued_run_id=?
+                            WHERE id=? AND state='pending'""",
+                            ((run_id,row_id) for row_id,_ in admitted))
+                        remaining = self._overflow_pending(db, origin["id"])
+                        return {
+                            "job_id":run_id, "job_revision":1,
+                            "anchor_story_id":anchor_rec["id"],
+                            "anchor_story_revision":anchor_rec["revision"],
+                            "policy_version":origin["policy_version"],
+                            "state":"awaiting_agent",
+                            "candidate_count":len(admitted),
+                            "origin_run_id":origin["id"],
+                            "overflow_pending":remaining,
+                            "skipped_decided_pairs":len(skipped),
+                            "next_action":"claim",
+                            "commit_state":"queued","reused":False,
+                        }
+                    # Every tested reference is already covered. This bounded
+                    # packet is consumed durably; a new next call can inspect
+                    # the next packet or other pending source-driven work.
+                    remaining = self._overflow_pending(db, origin["id"])
+                    return {
+                        "resource_type":"reconciliation",
+                        "state":"overflow_already_compared_under_policy",
+                        "origin_run_id":origin["id"],
+                        "overflow_pending":remaining,
+                        "skipped_decided_pairs":len(skipped),
+                        "next_action":"next",
+                        "commit_state":"saved",
+                    }
+
                 pending = db.execute("""SELECT q.story_id,q.story_revision
                     FROM story_reconcile_queue q
                     JOIN story_records s ON s.id=q.story_id
