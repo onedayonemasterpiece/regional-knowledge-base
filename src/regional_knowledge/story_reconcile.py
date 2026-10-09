@@ -417,23 +417,26 @@ class StoryReconciler:
                                     "leased"}:
                     fail("validation_failed", "Finish current lease or start a new run")
                 existing = {(x["kind"], x["id"]) for x in frontier}
-                new_refs = []
+                admitted = []
                 skipped_decided = 0
                 for ref in request.refs:
                     item = self._candidate(db, actor, run["anchor_story_id"], ref)
                     key = item["kind"], item["id"]
-                    if key in existing:
+                    if key in existing or db.execute("""SELECT 1 FROM story_reconcile_overflow
+                            WHERE origin_run_id=? AND ref_kind=? AND ref_id=?""",
+                            (run["id"], *key)).fetchone():
                         continue
                     if self._pair_already_decided(
                             db, actor, run["anchor_story_id"], item,
                             run["policy_version"]):
                         skipped_decided += 1
                         continue
-                    new_refs.append(item)
+                    admitted.append(item)
                     existing.add(key)
-                if len(frontier) + len(new_refs) > min(MAX_FRONTIER, run["max_candidate_pairs"]):
-                    fail("validation_failed", "Candidate budget exhausted; continue under a new run")
-                frontier.extend(new_refs)
+                capacity = max(0, min(MAX_FRONTIER, run["max_candidate_pairs"]) - len(frontier))
+                frontier.extend(admitted[:capacity])
+                self._overflow_enqueue(db, run["id"], admitted[capacity:])
+                overflow_pending = self._overflow_pending(db, run["id"])
                 plan["skipped_decided_pairs"] = (
                     int(plan.get("skipped_decided_pairs") or 0) + skipped_decided)
                 plan["searched_channels"] = sorted(set(plan["searched_channels"]) |
@@ -441,6 +444,10 @@ class StoryReconciler:
                 search_done = {"story_lexical", "source_bge"}.issubset(
                     set(plan["searched_channels"]))
                 state = ("awaiting_agent" if len(frontier)>run["position"] else
+                         "partial_budget_exhausted" if overflow_pending and search_done
+                             and not db.execute("""SELECT 1 FROM story_reconcile_proposals
+                                WHERE run_id=? AND state='pending_review' LIMIT 1""",
+                                (run["id"],)).fetchone() else
                          "already_compared_under_policy" if not frontier
                              and search_done and plan["skipped_decided_pairs"] else
                          "no_match_found_under_policy" if not frontier and search_done else
@@ -452,7 +459,11 @@ class StoryReconciler:
                         "candidate_count": len(frontier), "processed_pairs": run["position"],
                         "searched_channels": plan["searched_channels"],
                         "skipped_decided_pairs": plan["skipped_decided_pairs"],
+                        "overflow_pending": overflow_pending,
+                        "coverage_state": ("partial_budget_exhausted" if overflow_pending
+                                           else "bounded_frontier_only"),
                         "next_action": "claim" if len(frontier)>run["position"]
+                            else "continue_overflow" if state=="partial_budget_exhausted"
                             else None if state in {"already_compared_under_policy",
                                                   "no_match_found_under_policy"}
                             else "review_or_expand"}
@@ -666,14 +677,22 @@ class StoryReconciler:
                 finished = (run["position"]>=len(frontier) and remaining==0
                             and {"story_lexical","source_bge"}.issubset(
                                 set(plan.get("searched_channels") or [])))
-                state = "completed_under_policy" if finished else (
-                        "awaiting_agent" if run["position"]<len(frontier) else "awaiting_review")
+                overflow_pending = self._overflow_pending(db, run["id"])
+                state = ("partial_budget_exhausted" if finished and overflow_pending
+                         else "completed_under_policy" if finished
+                         else "awaiting_agent" if run["position"]<len(frontier)
+                         else "awaiting_review")
                 db.execute("""UPDATE story_reconcile_runs SET revision=?,state=?,updated_at=?
                     WHERE id=?""",(revision,state,now(),run["id"]))
                 return {"job_id":run["id"],"job_revision":revision,"state":state,
                         "proposal_id":proposal["id"],"committed_effect":effect,
                         "target_story_id":target_id,"committed_story_revision":result_revision,
-                        "next_action":"claim" if state=="awaiting_agent" else "review_or_expand"}
+                        "overflow_pending": overflow_pending,
+                        "coverage_state": ("partial_budget_exhausted" if overflow_pending
+                                           else "bounded_frontier_only"),
+                        "next_action":"claim" if state=="awaiting_agent"
+                            else "continue_overflow" if state=="partial_budget_exhausted"
+                            else "review_or_expand"}
 
             if isinstance(request, ReconcileCancel):
                 # Preserve the full comparison/audit as a cancelled proposal,
@@ -681,6 +700,8 @@ class StoryReconciler:
                 db.execute("""UPDATE story_reconcile_proposals
                     SET state='cancelled' WHERE run_id=? AND state='pending_review'""",
                     (run["id"],))
+                db.execute("""UPDATE story_reconcile_overflow SET state='cancelled'
+                    WHERE origin_run_id=? AND state='pending'""",(run["id"],))
                 db.execute("""UPDATE story_reconcile_runs
                     SET revision=?,state='cancelled',work_id=NULL,
                         lease_token=NULL,lease_deadline=NULL,updated_at=?
