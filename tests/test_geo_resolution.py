@@ -467,3 +467,109 @@ async def test_geo_request_can_backfill_owned_cross_book_mentions_of_same_node(t
     with b.corpus.connect() as db:
         assert db.execute("SELECT COUNT(*) FROM rkb_geo_intents").fetchone()[0]==2
     assert len(b.corpus.rows("rkb_entity_mentions"))==2
+
+
+
+@pytest.mark.asyncio
+async def test_geo_worker_autoreclaims_expired_staged_lease_after_restart(tmp_path):
+    """The service, not a human geo_claim, resumes a killed external worker."""
+    b,actor,graph,geo,street,doc,bundle,text=prepare(tmp_path)
+    saved=await graph.stage(actor,doc,1,bundle)
+    eid=saved["entities"]["historical-zoo-site"]
+    old=geo.claim(actor,limit=1,lease_seconds=15)["items"][0]
+    geo.stage(actor,old["attempt_id"],old["lease_token"],old["lease_fence"],
+              {"status":"unresolved",
+               "reason":"Before restart the owner POI had not yet been found."},
+              "crash-stage-first")
+    with sqlite3.connect(street) as owner:
+        pid="poi_ss_2d0ab75849ea3099ea17193a"
+        owner.execute("INSERT INTO pois VALUES(?,?,?,?,?)",
+                      (pid,"candidate","Калининградский зоопарк",54.7204,20.4874))
+        owner.execute("""INSERT INTO poi_aliases(poi_id,namespace,value,normalized_value,created_at)
+            VALUES(?,?,?,?,?)""",(pid,"wikidata","Q1193386","q1193386",time.time()))
+    # Simulate abrupt worker death between stage and apply. The old
+    # proposal must never survive a new lease.
+    with b.corpus.connect() as db:
+        db.execute("UPDATE rkb_geo_attempts SET lease_until=0 WHERE attempt_id=?",
+                   (old["attempt_id"],))
+    from regional_knowledge.geo_resolution import GeoQueue
+    restarted=GeoQueue(b.corpus,geo.resolver)
+    outcome=restarted.worker_tick(limit=1)
+    assert outcome["recovered_expired_leases"]==1
+    assert outcome["processed"]==1
+    assert outcome["states"]==["linked_candidate"]
+    with b.corpus.connect() as db:
+        row=db.execute("""SELECT state,attempts,lease_fence,lease_token,
+                       proposal_json,canonical_poi_ref
+                       FROM rkb_geo_attempts WHERE attempt_id=?""",
+                       (old["attempt_id"],)).fetchone()
+    assert row["state"]=="linked_candidate" and row["attempts"]==2
+    assert row["lease_fence"]==old["lease_fence"]+1
+    assert row["lease_token"] is None
+    assert row["canonical_poi_ref"]=="streetstory://poi/"+pid
+    assert json.loads(row["proposal_json"])["status"]=="candidate"
+    assert (await graph.read(actor,eid))["entity"]["external_ref"]=="streetstory://poi/"+pid
+    assert len(b.corpus.rows("rkb_entities"))==1
+    assert len(b.corpus.rows("rkb_entity_mentions"))==1
+    with pytest.raises(GeoError,match="stale_lease"):
+        restarted.stage(actor,old["attempt_id"],old["lease_token"],old["lease_fence"],
+                        {"status":"unresolved","reason":"Stale worker attempted an overwrite."},
+                        "old-worker-after-restart")
+
+
+@pytest.mark.asyncio
+async def test_geo_worker_exhausted_crash_is_terminal_and_revision_reopens(tmp_path):
+    b,actor,graph,geo,street,doc,bundle,text=prepare(tmp_path)
+    saved=await graph.stage(actor,doc,1,bundle)
+    previous=geo.claim(actor,limit=1)["items"][0]
+    with b.corpus.connect() as db:
+        db.execute("""UPDATE rkb_geo_attempts SET attempts=5,
+                   state='leased',lease_until=0 WHERE attempt_id=?""",
+                   (previous["attempt_id"],))
+    recovered=geo.worker_tick(limit=1)
+    assert recovered["recovered_retry_exhausted"]==1
+    assert recovered["processed"]==0
+    assert geo.worker_tick(limit=1)["recovered_retry_exhausted"]==0
+    with b.corpus.connect() as db:
+        row=db.execute("SELECT state,reason,lease_token FROM rkb_geo_attempts").fetchone()
+    assert row["state"]=="retry_exhausted"
+    assert row["reason"]=="lease_attempts_exhausted"
+    assert row["lease_token"] is None
+    assert geo.claim(actor,limit=1)["items"]==[]
+    new=geo.recheck(actor,"Кёнигсбергский зоопарк","owner_poi",
+                    "streetstory://poi/poi_ss_2d0ab75849ea3099ea17193a",
+                    "legitimate-owner-alias-rev-2")
+    assert new["new_attempts"]==1
+    assert geo.recheck(actor,"Кёнигсбергский зоопарк","owner_poi",
+                       "streetstory://poi/poi_ss_2d0ab75849ea3099ea17193a",
+                       "legitimate-owner-alias-rev-2")["new_attempts"]==0
+    fresh=geo.claim(actor,limit=1)["items"][0]
+    assert fresh["attempt_id"]!=previous["attempt_id"]
+
+
+@pytest.mark.asyncio
+async def test_geo_concurrent_reapers_are_idempotent_and_disabled_users_not_polled(tmp_path):
+    import asyncio
+    from regional_knowledge.geo_resolution import GeoQueue
+    b,actor,graph,geo,street,doc,bundle,text=prepare(tmp_path)
+    await graph.stage(actor,doc,1,bundle)
+    c=geo.claim(actor,limit=1)["items"][0]
+    with b.corpus.connect() as db:
+        db.execute("UPDATE rkb_geo_attempts SET lease_until=0 WHERE attempt_id=?",
+                   (c["attempt_id"],))
+    pair=await asyncio.gather(
+        asyncio.to_thread(GeoQueue(b.corpus,geo.resolver).recover_expired_leases,2),
+        asyncio.to_thread(GeoQueue(b.corpus,geo.resolver).recover_expired_leases,2))
+    assert sum(x["requeued"] for x in pair)==1
+    assert sum(x["retry_exhausted"] for x in pair)==0
+    with b.corpus.connect() as db:
+        row=db.execute("SELECT state,lease_token,attempts FROM rkb_geo_attempts").fetchone()
+    assert row["state"]=="pending" and row["lease_token"] is None
+    assert row["attempts"]==1
+    b.corpus.put("rkb_users",[{**b.corpus.one("rkb_users",actor.subject),
+                              "status":"disabled"}])
+    result=geo.worker_tick(limit=1)
+    assert result["processed"]==0
+    with b.corpus.connect() as db:
+        row=db.execute("SELECT state,attempts FROM rkb_geo_attempts").fetchone()
+    assert row["state"]=="pending" and row["attempts"]==1
