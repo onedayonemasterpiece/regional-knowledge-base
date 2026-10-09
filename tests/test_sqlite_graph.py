@@ -129,6 +129,24 @@ async def test_historical_organizations_are_sourced_not_merged_and_acl_scoped(tm
     with pytest.raises(ValidationError):
         GraphBundle.model_validate(reversed_edge)
 
+    # The actual SQLite authority independently checks source/target kinds
+    # for direct SQL clients, not merely GraphBundle/Pydantic inputs.
+    from regional_knowledge.sqlite_data import LocalContext
+    with b.corpus.connect() as db:
+        context=LocalContext(b.corpus,db,owner)
+        accepted=next(row for row in b.corpus.rows('rkb_entity_relations')
+                      if row['kind']=='predecessor_of')
+        context.check_write('rkb_entity_relations',None,accepted)
+        forged={
+            **defaults('rkb_entity_relations'),'id':str(uuid4()),
+            'source_id':saved['entities']['person'],
+            'target_id':saved['entities']['guild'],
+            'kind':'operated_at','document_id':doc,'revision':1,
+            'evidence':[proof],'state':'candidate',
+        }
+        with pytest.raises(ValueError,match='invalid graph relation shape'):
+            context.check_write('rkb_entity_relations',None,forged)
+
     stranger=str(uuid4())
     b.corpus.put('rkb_users',[{**defaults('rkb_users'),'id':stranger}])
     visitor=Principal(subject=stranger,client_id='source-test',issuer='synthetic',
