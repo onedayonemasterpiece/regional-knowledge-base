@@ -243,3 +243,43 @@ run; v9 не обещает полного corpus-watermark, очереди over
 автоматического обхода всех источников после поздней индексации. Это
 следующая часть масштабного reconciliation, требующая отдельных
 датированных тестов покрытия и реального MCP acceptance.
+
+
+### Сквозное продолжение за пределами 50 кандидатов — schema v10
+
+Число `max_candidate_pairs <= 50` ограничивает **один модельный пакет**,
+но не всю библиотеку или всю историю. `story_reconcile(start)` и
+`enqueue` сохраняют выбранные кандидаты сверх лимита в SQLite-таблице
+`story_reconcile_overflow`; одна `enqueue` принимает не более 50 refs,
+но допускаются последовательные порции. Сохраняются исходный `run_id`,
+упорядоченные id/type/revision кандидата, версия политики, provenance
+поиска и состояние `pending/continued/already_decided/cancelled`.
+Нет сканирования всего графа/книжного корпуса в SQLite write transaction.
+
+Когда все решения текущего фронтира применены, каналы поиска
+`story_lexical + source_bge` засвидетельствованы и остался overflow,
+результат — **`partial_budget_exhausted` с `next_action=continue_overflow`**,
+а не `completed_under_policy` / `no_match`. Постраничный
+`story_job_get` показывает `overflow_pending`, `overflow_continued`,
+`coverage_state`. Следующий `story_reconcile(next)` до очередной новой
+карточки поднимает не более `max_candidate_pairs` refs из durable overflow
+в **новый run** (с `origin_run_id`). Его lease/stage/apply, revisions,
+авторизация, exact-source proof и receipts остаются прежними. Продолжить
+можно после завершения сессии, не перенося весь фронтир в новый контекст.
+Фактическую версию кандидата и ACL перепроверяют при выдаче; уже принятые
+решения v9 с тем же evidence/policy повторно не анализируются, а
+отмечаются `already_decided`. Новое evidence не считается старым.
+
+Если пользователь отменил run, его невыданный overflow явно становится
+`cancelled` и не запускается сам. Новое source review и новый run можно
+создать по явному намерению. Аудит прошлых предложений/источников не
+удаляется. Примеры приёмки: 3 кандидата при лимите 1 обрабатываются в
+трёх независимых run, а 51-й при лимите 50 остаётся в SQLite и его
+отмена проверяется; idempotent migration и повторный `next` безопасны.
+
+**Честная граница:** v10 обрабатывает все *переданные* внешней моделью
+проверяемые кандидаты без общего ограничения 50. Она НЕ доказывает,
+что поисковые каналы обнаружили все истории в источниках. Для массового
+охвата по-прежнему необходимы corpus/source/index generations, устойчивые
+поисковые cursors/watermarks и late-index/alias catch-up. Semantic
+`story_search` пока `lexical_degraded`, source BGE — отдельный индекс.

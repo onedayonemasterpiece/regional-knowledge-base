@@ -28,6 +28,20 @@ class StoryReconciler:
     def __init__(self, registry):
         self.registry = registry
 
+    @staticmethod
+    def _overflow_pending(db, run_id):
+        return db.execute("""SELECT COUNT(*) FROM story_reconcile_overflow
+            WHERE origin_run_id=? AND state='pending'""", (run_id,)).fetchone()[0]
+
+    @staticmethod
+    def _overflow_enqueue(db, run_id, refs):
+        """Durable, idempotent overflow; no model packets over 50."""
+        for ref in refs:
+            db.execute("""INSERT OR IGNORE INTO story_reconcile_overflow(
+                origin_run_id,ref_kind,ref_id,reference,state,added_at
+            ) VALUES(?,?,?,?,'pending',?)""",
+                (run_id, ref["kind"], ref["id"], canonical(ref), now()))
+
     def _run(self, db, ident):
         return db.execute("SELECT * FROM story_reconcile_runs WHERE id=?", (ident,)).fetchone()
 
@@ -282,6 +296,94 @@ class StoryReconciler:
                         "reused":True,
                     }
 
+                # Continue an earlier bounded frontier before starting another
+                # unrelated story. The existing active-run check above protects
+                # against concurrent duplicate promotion and resumes lost turns.
+                origin = db.execute("""SELECT r.* FROM story_reconcile_runs r
+                    JOIN story_records s ON s.id=r.anchor_story_id
+                    WHERE r.owner_id=? AND s.owner_id=? AND s.archived=0
+                      AND r.state='partial_budget_exhausted'
+                      AND EXISTS (SELECT 1 FROM story_reconcile_overflow o
+                                  WHERE o.origin_run_id=r.id AND o.state='pending')""" +
+                    condition + " ORDER BY r.updated_at,r.id LIMIT 1",
+                    [actor, actor, *scope_args]).fetchone()
+                if origin:
+                    anchor_rec, anchor_snap = registry._read_story(
+                        db, actor, origin["anchor_story_id"], "researcher")
+                    take = min(MAX_FRONTIER, origin["max_candidate_pairs"],
+                               request.max_candidate_pairs)
+                    rows = db.execute("""SELECT id,reference FROM story_reconcile_overflow
+                        WHERE origin_run_id=? AND state='pending'
+                        ORDER BY id LIMIT ?""", (origin["id"], take)).fetchall()
+                    admitted = []
+                    skipped = []
+                    for row in rows:
+                        previous = json.loads(row["reference"])
+                        # Resolve a fresh revision and source ACL. Never apply
+                        # an old pre-hydrated proof after a book/story changed.
+                        ref = self._candidate(db, actor, anchor_rec["id"],
+                                              _ref_input(previous))
+                        if self._pair_already_decided(db, actor, anchor_rec["id"],
+                                                      ref, origin["policy_version"]):
+                            skipped.append(row["id"])
+                        else:
+                            admitted.append((row["id"], ref))
+                    if skipped:
+                        db.executemany("""UPDATE story_reconcile_overflow
+                            SET state='already_decided' WHERE id=? AND state='pending'""",
+                            ((row_id,) for row_id in skipped))
+                    if admitted:
+                        run_id = str(uuid4())
+                        parent_plan = json.loads(origin["search_plan"])
+                        plan = {
+                            **parent_plan,
+                            "policy_version": origin["policy_version"],
+                            "continuation_of_run_id": origin["id"],
+                            "search_completeness": "bounded_parent_search_continuation",
+                            "candidate_budget": take,
+                            "skipped_decided_pairs": len(skipped),
+                        }
+                        db.execute("""INSERT INTO story_reconcile_runs(
+                            id,owner_id,anchor_story_id,anchor_story_revision,policy_version,
+                            query,search_plan,frontier,position,max_candidate_pairs,revision,
+                            state,work_id,lease_token,lease_deadline,updated_at)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (run_id, actor, anchor_rec["id"], anchor_rec["revision"],
+                             origin["policy_version"], origin["query"],
+                             canonical(plan), canonical([ref for _,ref in admitted]),
+                             0, take, 1, "awaiting_agent", None,None,None,now()))
+                        db.executemany("""UPDATE story_reconcile_overflow
+                            SET state='continued',continued_run_id=?
+                            WHERE id=? AND state='pending'""",
+                            ((run_id,row_id) for row_id,_ in admitted))
+                        remaining = self._overflow_pending(db, origin["id"])
+                        return {
+                            "job_id":run_id, "job_revision":1,
+                            "anchor_story_id":anchor_rec["id"],
+                            "anchor_story_revision":anchor_rec["revision"],
+                            "policy_version":origin["policy_version"],
+                            "state":"awaiting_agent",
+                            "candidate_count":len(admitted),
+                            "origin_run_id":origin["id"],
+                            "overflow_pending":remaining,
+                            "skipped_decided_pairs":len(skipped),
+                            "next_action":"claim",
+                            "commit_state":"queued","reused":False,
+                        }
+                    # Every tested reference is already covered. This bounded
+                    # packet is consumed durably; a new next call can inspect
+                    # the next packet or other pending source-driven work.
+                    remaining = self._overflow_pending(db, origin["id"])
+                    return {
+                        "resource_type":"reconciliation",
+                        "state":"overflow_already_compared_under_policy",
+                        "origin_run_id":origin["id"],
+                        "overflow_pending":remaining,
+                        "skipped_decided_pairs":len(skipped),
+                        "next_action":"next",
+                        "commit_state":"saved",
+                    }
+
                 pending = db.execute("""SELECT q.story_id,q.story_revision
                     FROM story_reconcile_queue q
                     JOIN story_records s ON s.id=q.story_id
@@ -350,6 +452,8 @@ class StoryReconciler:
                         skipped_decided += 1
                         continue
                     refs.append(item)
+                cap = min(MAX_FRONTIER, request.max_candidate_pairs)
+                first_frontier, overflow_refs = refs[:cap], refs[cap:]
                 query = (request.query or snap["metadata"]["title"]).strip()
                 run_id = str(uuid4())
                 plan = {"policy_version": request.policy_version,
@@ -359,24 +463,28 @@ class StoryReconciler:
                         "index_generation": None,
                         "candidate_budget": request.max_candidate_pairs,
                         "skipped_decided_pairs": skipped_decided}
-                state = "awaiting_agent" if refs else "awaiting_search"
+                state = "awaiting_agent" if first_frontier else "awaiting_search"
                 db.execute("""INSERT INTO story_reconcile_runs(
                     id,owner_id,anchor_story_id,anchor_story_revision,policy_version,
                     query,search_plan,frontier,position,max_candidate_pairs,revision,
                     state,work_id,lease_token,lease_deadline,updated_at)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (run_id, actor, request.anchor_story_id, record["revision"],
-                     request.policy_version, query, canonical(plan), canonical(refs), 0,
+                     request.policy_version, query, canonical(plan), canonical(first_frontier), 0,
                      request.max_candidate_pairs, 1, state, None, None, None, now()))
+                self._overflow_enqueue(db, run_id, overflow_refs)
                 db.execute("""UPDATE story_reconcile_queue SET state='run_started'
                     WHERE story_id=? AND story_revision<=?""",
                     (request.anchor_story_id, record["revision"]))
                 return {"resource_type": "reconciliation", "resource_ids": [run_id],
                         "job_id": run_id, "job_revision": 1, "state": state,
-                        "candidate_count": len(refs),
+                        "candidate_count": len(first_frontier),
+                        "overflow_pending": len(overflow_refs),
+                        "coverage_state": "partial_budget_exhausted" if overflow_refs else
+                                          "bounded_frontier_only",
                         "skipped_decided_pairs": skipped_decided,
                         "search_plan": plan,
-                        "next_action": "claim" if refs else "search_then_enqueue",
+                        "next_action": "claim" if first_frontier else "search_then_enqueue",
                         "commit_state": "queued"}
             return registry._mutation(principal, "story_reconcile", idempotency_key, data, authorize, apply)
 
@@ -393,27 +501,30 @@ class StoryReconciler:
             revision = int(run["revision"]) + 1
             if isinstance(request, ReconcileEnqueue):
                 if run["state"] in {"cancelled", "completed_under_policy",
-                                    "already_compared_under_policy", "no_match_found_under_policy",
-                                    "leased"}:
+                                    "partial_budget_exhausted", "already_compared_under_policy",
+                                    "no_match_found_under_policy", "leased"}:
                     fail("validation_failed", "Finish current lease or start a new run")
                 existing = {(x["kind"], x["id"]) for x in frontier}
-                new_refs = []
+                admitted = []
                 skipped_decided = 0
                 for ref in request.refs:
                     item = self._candidate(db, actor, run["anchor_story_id"], ref)
                     key = item["kind"], item["id"]
-                    if key in existing:
+                    if key in existing or db.execute("""SELECT 1 FROM story_reconcile_overflow
+                            WHERE origin_run_id=? AND ref_kind=? AND ref_id=?""",
+                            (run["id"], *key)).fetchone():
                         continue
                     if self._pair_already_decided(
                             db, actor, run["anchor_story_id"], item,
                             run["policy_version"]):
                         skipped_decided += 1
                         continue
-                    new_refs.append(item)
+                    admitted.append(item)
                     existing.add(key)
-                if len(frontier) + len(new_refs) > min(MAX_FRONTIER, run["max_candidate_pairs"]):
-                    fail("validation_failed", "Candidate budget exhausted; continue under a new run")
-                frontier.extend(new_refs)
+                capacity = max(0, min(MAX_FRONTIER, run["max_candidate_pairs"]) - len(frontier))
+                frontier.extend(admitted[:capacity])
+                self._overflow_enqueue(db, run["id"], admitted[capacity:])
+                overflow_pending = self._overflow_pending(db, run["id"])
                 plan["skipped_decided_pairs"] = (
                     int(plan.get("skipped_decided_pairs") or 0) + skipped_decided)
                 plan["searched_channels"] = sorted(set(plan["searched_channels"]) |
@@ -421,6 +532,10 @@ class StoryReconciler:
                 search_done = {"story_lexical", "source_bge"}.issubset(
                     set(plan["searched_channels"]))
                 state = ("awaiting_agent" if len(frontier)>run["position"] else
+                         "partial_budget_exhausted" if overflow_pending and search_done
+                             and not db.execute("""SELECT 1 FROM story_reconcile_proposals
+                                WHERE run_id=? AND state='pending_review' LIMIT 1""",
+                                (run["id"],)).fetchone() else
                          "already_compared_under_policy" if not frontier
                              and search_done and plan["skipped_decided_pairs"] else
                          "no_match_found_under_policy" if not frontier and search_done else
@@ -432,7 +547,11 @@ class StoryReconciler:
                         "candidate_count": len(frontier), "processed_pairs": run["position"],
                         "searched_channels": plan["searched_channels"],
                         "skipped_decided_pairs": plan["skipped_decided_pairs"],
+                        "overflow_pending": overflow_pending,
+                        "coverage_state": ("partial_budget_exhausted" if overflow_pending
+                                           else "bounded_frontier_only"),
                         "next_action": "claim" if len(frontier)>run["position"]
+                            else "continue_overflow" if state=="partial_budget_exhausted"
                             else None if state in {"already_compared_under_policy",
                                                   "no_match_found_under_policy"}
                             else "review_or_expand"}
@@ -442,7 +561,7 @@ class StoryReconciler:
                         and float(run["lease_deadline"]) > time.time()):
                     fail("busy_retryable", "A previous batch is still leased")
                 if run["state"] in {"cancelled", "completed_under_policy",
-                                    "already_compared_under_policy",
+                                    "partial_budget_exhausted", "already_compared_under_policy",
                                     "no_match_found_under_policy"}:
                     fail("validation_failed", "Run was completed or cancelled")
                 if run["position"] >= len(frontier):
@@ -646,14 +765,22 @@ class StoryReconciler:
                 finished = (run["position"]>=len(frontier) and remaining==0
                             and {"story_lexical","source_bge"}.issubset(
                                 set(plan.get("searched_channels") or [])))
-                state = "completed_under_policy" if finished else (
-                        "awaiting_agent" if run["position"]<len(frontier) else "awaiting_review")
+                overflow_pending = self._overflow_pending(db, run["id"])
+                state = ("partial_budget_exhausted" if finished and overflow_pending
+                         else "completed_under_policy" if finished
+                         else "awaiting_agent" if run["position"]<len(frontier)
+                         else "awaiting_review")
                 db.execute("""UPDATE story_reconcile_runs SET revision=?,state=?,updated_at=?
                     WHERE id=?""",(revision,state,now(),run["id"]))
                 return {"job_id":run["id"],"job_revision":revision,"state":state,
                         "proposal_id":proposal["id"],"committed_effect":effect,
                         "target_story_id":target_id,"committed_story_revision":result_revision,
-                        "next_action":"claim" if state=="awaiting_agent" else "review_or_expand"}
+                        "overflow_pending": overflow_pending,
+                        "coverage_state": ("partial_budget_exhausted" if overflow_pending
+                                           else "bounded_frontier_only"),
+                        "next_action":"claim" if state=="awaiting_agent"
+                            else "continue_overflow" if state=="partial_budget_exhausted"
+                            else "review_or_expand"}
 
             if isinstance(request, ReconcileCancel):
                 # Preserve the full comparison/audit as a cancelled proposal,
@@ -661,6 +788,8 @@ class StoryReconciler:
                 db.execute("""UPDATE story_reconcile_proposals
                     SET state='cancelled' WHERE run_id=? AND state='pending_review'""",
                     (run["id"],))
+                db.execute("""UPDATE story_reconcile_overflow SET state='cancelled'
+                    WHERE origin_run_id=? AND state='pending'""",(run["id"],))
                 db.execute("""UPDATE story_reconcile_runs
                     SET revision=?,state='cancelled',work_id=NULL,
                         lease_token=NULL,lease_deadline=NULL,updated_at=?
@@ -680,8 +809,14 @@ class StoryReconciler:
                 WHERE run_id=? AND state='pending_review'""",(run_id,)).fetchone()[0]
             applied = db.execute("""SELECT COUNT(*) FROM story_reconcile_proposals
                 WHERE run_id=? AND state='applied'""",(run_id,)).fetchone()[0]
+            overflow_pending = self._overflow_pending(db, run_id)
+            continuation_count = db.execute("""SELECT COUNT(*) FROM story_reconcile_overflow
+                WHERE origin_run_id=? AND state='continued'""",(run_id,)).fetchone()[0]
             next_action = (
+                "continue_overflow" if run["state"] == "partial_budget_exhausted"
+                    and overflow_pending else
                 None if run["state"] in {"cancelled","completed_under_policy",
+                                         "partial_budget_exhausted",
                                          "already_compared_under_policy",
                                          "no_match_found_under_policy"}
                 else "claim" if run["position"]<len(frontier)
@@ -729,6 +864,12 @@ class StoryReconciler:
                     "pending_proposals":pending,"applied_proposals":applied,
                     "max_candidate_pairs":run["max_candidate_pairs"],
                     "skipped_decided_pairs":int(plan.get("skipped_decided_pairs") or 0),
+                    "overflow_pending":overflow_pending,
+                    "overflow_continued":continuation_count,
+                    "continuation_of_run_id":plan.get("continuation_of_run_id"),
+                    "coverage_state": ("partial_budget_exhausted" if overflow_pending
+                                       or run["state"]=="partial_budget_exhausted"
+                                       else "bounded_frontier_only"),
                     "pair_decision_basis":"accepted_evidence_fingerprints_and_policy_v1",
                     "lease_active":bool(run["lease_token"] and run["lease_deadline"]
                                         and run["lease_deadline"]>time.time()),
@@ -738,7 +879,7 @@ class StoryReconciler:
                     "proposals_has_more":len(proposal_rows)>take,
                     "proposals_next_cursor":proposal_items[-1]["proposal_id"]
                         if len(proposal_rows)>take and proposal_items else None,
-                    "coverage":"completed_under_declared_policy_is_not_global_semantic_completeness"}
+                    "coverage":"a_finished_packet_does_not_imply_corpus_or_index_completeness"}
 
 
 def _ref_input(row):
