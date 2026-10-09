@@ -158,3 +158,32 @@ The canonical schema package is now merged in
 exists. Its synthetic conformance fixtures passed locally; GitHub Actions
 remains red with no runner step logs. Current connected ChatGPT MCP client
 tool declarations have not yet refreshed to include the new `geo_*` methods.
+
+## Crash recovery of the *automatic* consumer
+
+After the initial v1 acceptance a reliability gap was discovered in
+`worker_tick`: the headless daemon selected actors only from `pending` and
+`retry_wait`. An interrupted `leased` or `staged` attempt whose lease
+expired was therefore never revisited by the **automatic** worker, although
+a manual `geo_claim` could reclaim it.
+
+The existing worker now performs a bounded (`<=32`) SQLite-fenced expired
+lease recovery **before** selecting actors. It atomically invalidates the
+old lease token and staged proposal and requeues attempts with fewer than
+five claims, without any Street Story calls under the write lock. The next
+claim increments the fencing counter; the previous worker cannot stage or
+apply its outdated decision. An expired fifth claim becomes
+`retry_exhausted / lease_attempts_exhausted` rather than a leaked lease or
+infinite retry loop. A later relevant owner/layer dependency revision still
+creates a separate attempt with the same stable source intent. Concurrent
+recovery workers cannot enqueue the same attempt twice.
+
+Actor preselection is now indexed to active RKB users, so a revoked
+principal's pending requests cannot create a headless polling loop. The
+source/ACL checks remain inside every *new* fenced claim and apply.
+This change does not mutate Story Registry, book text, vector indexes or
+Street Story canonical identity. No new daemon/process is created.
+
+This recovery is an **RKB-only owner-local retry mechanism**; it does not
+constitute an authenticated Cartography/Street Story network mutation
+transport or verified historic geometry.
