@@ -1215,16 +1215,51 @@ class StoryRegistry:
             if not d or d.get("active_revision") < source_revision:
                 fail("not_found_or_not_accessible")
             offset = max(0, int(cursor or 0))
-            take = max(1, min(int(limit), 5))
+            take = max(1, min(int(limit), 20))
             rows = db.execute("""SELECT chunk_id,source_text,text_sha256 FROM chunk_text
               WHERE document_id=? AND revision=? ORDER BY rowid LIMIT ? OFFSET ?""",
                               (document_id, source_revision, take + 1, offset)).fetchall()
-            return {"document_id": document_id, "source_revision": source_revision,
-                    "source_sha256": d.get("source_sha256"),
-                    "chunks": [{"chunk_id": r["chunk_id"], "text": r["source_text"][:6000],
-                                "text_sha256": r["text_sha256"], "truncated": len(r["source_text"]) > 6000}
-                               for r in rows[:take]],
-                    "has_more": len(rows) > take, "next_cursor": str(offset + take) if len(rows) > take else None}
+            chunks = []
+            for row in rows[:take]:
+                source_refs = []
+                chunk = self._corpus_row(db, "rkb_chunks", row["chunk_id"])
+                if (chunk and chunk.get("document_id") == document_id
+                        and int(chunk.get("revision") or 0) == source_revision):
+                    seen = set()
+                    refs = [str(x) for x in chunk.get("region_ids") or []]
+                    refs += [str(x.get("region_id")) for x in chunk.get("source_spans") or []
+                             if x.get("region_id")]
+                    for region_id in refs[:24]:
+                        if region_id in seen:
+                            continue
+                        seen.add(region_id)
+                        region = self._corpus_row(db, "rkb_regions", region_id)
+                        if not region:
+                            continue
+                        page = self._corpus_row(db, "rkb_pages", region.get("page_id"))
+                        if (not page or page.get("document_id") != document_id
+                                or int(page.get("revision") or 0) != source_revision):
+                            continue
+                        printed = str(region.get("source_text") or "")
+                        source_refs.append({
+                            "page_id": str(page["id"]), "region_id": region_id,
+                            "physical_page_index": int(page["physical_page_index"]),
+                            "printed_page_number": page.get("printed_page_number"),
+                            "source_text": printed[:6000],
+                            "source_text_truncated": len(printed) > 6000,
+                        })
+                chunks.append({
+                    "chunk_id": row["chunk_id"], "text": row["source_text"][:6000],
+                    "text_sha256": row["text_sha256"],
+                    "truncated": len(row["source_text"]) > 6000,
+                    "source_regions": source_refs,
+                })
+            return {
+                "document_id": document_id, "source_revision": source_revision,
+                "source_sha256": d.get("source_sha256"),
+                "chunks": chunks, "has_more": len(rows) > take,
+                "next_cursor": str(offset + take) if len(rows) > take else None,
+            }
 
     def entity_list(self, principal, document_ids=None, kinds=None, query="", cursor=None, limit=20):
         with self.corpus.connect() as db:
