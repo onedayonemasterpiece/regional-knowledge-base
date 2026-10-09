@@ -198,7 +198,7 @@ class StoryRegistry:
               id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
               anchor_story_id TEXT NOT NULL REFERENCES story_records(id),
               anchor_story_revision INTEGER NOT NULL, policy_version TEXT NOT NULL,
-              query TEXT NOT NULL, frontier TEXT NOT NULL,
+              query TEXT NOT NULL, search_plan TEXT NOT NULL, frontier TEXT NOT NULL,
               position INTEGER NOT NULL DEFAULT 0, max_candidate_pairs INTEGER NOT NULL,
               revision INTEGER NOT NULL DEFAULT 1, state TEXT NOT NULL,
               work_id TEXT, lease_token TEXT, lease_deadline REAL,
