@@ -25,6 +25,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from .entity_graph import GraphBundle,GraphAlias
 from .graph_service import GraphService
+from .geo_resolution import GeoProposal
 from .local_e5 import LocalE5Embedder
 from .auth import JwtResourceVerifier
 from .backend import KnowledgeBackend
@@ -398,7 +399,7 @@ def build_server(
             # Geography is a separate bounded SQLite outbox, not the older
             # BGE graph-discovery queue. Full/story readers may inspect scoped
             # source mentions; writes remain contributor/editor only.
-            from .geo_resolution import GeoQueue,GeoError,GeoProposal
+            from .geo_resolution import GeoQueue,GeoError
             geo_queue=GeoQueue(backend.corpus)
 
             async def geo_call(fn,*args):
