@@ -464,3 +464,25 @@ citation must not be copied to Street Story without a scoped resource
 grant. Stage E's historical geometry, temporal revisions, geographic
 address/coordinate predicates and source licensed map layers still
 require separate owner-side acceptance.
+
+
+## 2026-10-09 product pilot: historical zoo opening → owned POI
+
+**Verified against real production state**, not only synthetic acceptance.
+RKB release `be677f573787c512c55d2a8e534096326fa017ba` and Street Story
+release `db0c0d08024441536a2e59f5c3c433b12c7f4189` support an
+existing source-grounded zoo opening story (21 May 1896) → historical event
+→ source-quoted `occurred_at` edge → its **unchanged** RKB place-ref →
+Street Story canonical `streetstory://poi/poi_ss_2d0ab75849ea3099ea17193a`.
+The owner-side POI is `candidate`, not `verified`. Wikidata Q1193386
+and the zoo's public historical documentation were the independent public
+identity lookup; no RKB private book text left its own ACL boundary.
+
+The same RKB graph node was upgraded from `unresolved` to a linked
+candidate when the **Street Story owner** registered its public identity.
+No auto-merge, no new book, no duplicate RKB story/edge, no invented
+historical polygon. Connected MCP readback verified the original story,
+both graph directions and the exact canonical owner reference. The
+representative modern coordinate is NOT a 1896 visitor entrance or
+surveyed polygon. Full source and limitation audit:
+[geo pilot acceptance report](reports/rkb-street-story-zoo-geo-acceptance-20261009.md).
