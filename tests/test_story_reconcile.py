@@ -10,7 +10,7 @@ from regional_knowledge.contracts import Principal
 from regional_knowledge.sqlite_corpus import SQLiteCorpus
 from regional_knowledge.story_contracts import (
     AttachEvidence, EvidenceLocator, ReconcileApply, ReconcileCancel,
-    ReconcileCandidateRef, ReconcileClaim, ReconcileDecision,
+    ReconcileCandidateRef, ReconcileClaim, ReconcileDecision, ReconcileNext,
     ReconcileEnqueue, ReconcileEvidenceRef, ReconcileStage, ReconcileStart,
     SeedInput, UpsertAssertion,
 )
@@ -318,3 +318,33 @@ def test_cross_book_link_is_not_automatic_merge(fixture):
     related = registry.get(owner, first[0], view="relations_page")
     assert related["items"][0]["kind"] == "phase_of"
     assert related["items"][0]["related_story_id"] == second[0]
+
+
+def test_next_reconciliation_from_accepted_story_is_resumable_without_old_chat(fixture):
+    """After new evidence the MCP can find its pending story without client-side IDs."""
+    registry, owner, other = fixture
+    one = source(registry, owner, "Купцы построили деревянный мост в 1535 году.")
+    story = grounded_story(registry, owner, one, "pending")
+    reconciler = StoryReconciler(registry)
+    first = reconciler.dispatch(owner, ReconcileNext(
+        command="next", document_id=one[0],
+    ), "reconcile-next-original-01")
+    assert first["state"] == "awaiting_search"
+    assert first["anchor_story_id"] == story[0]
+    assert first["anchor_story_revision"] == 3
+    assert first["next_action"] == "search_then_enqueue"
+    assert reconciler.dispatch(owner, ReconcileNext(
+        command="next", document_id=one[0],
+    ), "reconcile-next-original-01") == first
+    # A new chat with a distinct request key must find the SAME durable run.
+    second = reconciler.dispatch(owner, ReconcileNext(
+        command="next", document_id=one[0],
+    ), "reconcile-next-fresh-session-02")
+    assert second["job_id"] == first["job_id"]
+    assert second["reused"] is True
+    assert registry.job_get(owner, first["job_id"])["next_action"] == "search_then_enqueue"
+    with pytest.raises(StoryError) as err:
+        reconciler.dispatch(other, ReconcileNext(
+            command="next", document_id=one[0],
+        ), "reconcile-next-denied-other")
+    assert err.value.code == "not_found_or_not_accessible"
