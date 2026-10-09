@@ -91,6 +91,7 @@ async def test_geo_intent_auto_atomic_queue_late_owner_binding_and_durable_repla
     request=geo.status(actor,entity_id=node)["items"][0]["request_id"]
     claim=geo.claim(actor,limit=1)["items"][0]
     assert claim["request_id"]==request
+    assert claim["contract_version"]=="rkb.geo_claim.v1"
     assert claim["source_ref"]["entity_id"]==node
     assert text not in json.dumps(claim,ensure_ascii=False)
     assert claim["time"]["precision"]=="unknown"
