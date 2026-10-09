@@ -143,6 +143,47 @@ class AttachEvidence(Strict):
     derived_from: str | None = Field(default=None, max_length=250)
 
 
+class RecordEventDate(Strict):
+    """Source-attributed date, not a historical-truth or calendar conversion claim."""
+    op: Literal["record_event_date"]
+    assertion_id: Identifier
+    assertion_revision: int = Field(ge=1)
+    evidence_ids: list[Identifier] = Field(min_length=1, max_length=8)
+    original_date_text: Annotated[str, Field(min_length=1, max_length=150)]
+    precision: Literal["day", "month", "year", "approximate_day", "range", "unknown"]
+    calendar: Literal["gregorian", "julian", "unspecified"] = "unspecified"
+    date_role: Literal["event", "publication", "source_recorded"] = "event"
+    year: int | None = Field(default=None, ge=1, le=9999)
+    month: int | None = Field(default=None, ge=1, le=12)
+    day: int | None = Field(default=None, ge=1, le=31)
+    rationale: Annotated[str, Field(min_length=10, max_length=500)]
+    supersedes_date_id: Identifier | None = None
+
+    @model_validator(mode="after")
+    def date_shape(self):
+        triple = (self.year is not None, self.month is not None,
+                  self.day is not None)
+        if self.precision in {"day", "approximate_day"}:
+            if triple != (True, True, True):
+                raise ValueError("Day-level dates require year, month and day")
+            assert self.year is not None and self.month is not None and self.day is not None
+            leap = (self.year % 4 == 0 and (
+                self.calendar == "julian" or self.calendar == "unspecified"
+                or self.year % 100 != 0 or self.year % 400 == 0))
+            month_days = (31,29 if leap else 28,31,30,31,30,31,31,30,31,30,31)
+            if self.day > month_days[self.month - 1]:
+                raise ValueError("Invalid date in stated calendar")
+        elif self.precision == "month" and triple != (True, True, False):
+            raise ValueError("Month precision must not invent a day")
+        elif self.precision == "year" and triple != (True, False, False):
+            raise ValueError("Year precision must not invent a month/day")
+        elif self.precision in {"range", "unknown"} and triple != (False, False, False):
+            raise ValueError("Unresolved range/unknown precision is not a calendar day")
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("Duplicate evidence identifiers")
+        return self
+
+
 class RecordAssessment(Strict):
     op: Literal["record_assessment"]
     assertion_id: Identifier
@@ -214,8 +255,8 @@ class SetContributors(Strict):
 
 StoryOperation = Annotated[Union[
     SetMetadata, AddGap, ResolveGap, SetAngle, LinkEntity, UpsertAssertion,
-    AttachEvidence, RecordAssessment, UpsertVariant, RecordInterest, SetContributors,
-    ReviseRelation,
+    AttachEvidence, RecordAssessment, RecordEventDate, UpsertVariant, RecordInterest,
+    SetContributors, ReviseRelation,
 ], Field(discriminator="op")]
 
 
