@@ -1139,6 +1139,68 @@ class StoryRegistry:
         self._invalidate(db, snap)
         return "relation:" + op.action
 
+
+    def _record_event_date(self, db, principal, snap, op):
+        """Store one exact attributed dating, never infer Julian/Gregorian conversion."""
+        assertion = next((a for a in snap.get("assertions") or []
+                          if a["assertion_id"] == op.assertion_id
+                          and a["revision"] == op.assertion_revision), None)
+        if assertion is None:
+            fail("revision_conflict", "Date must reference a current assertion revision")
+        if not set(op.evidence_ids).issubset(set(assertion.get("evidence_ids") or [])):
+            fail("invalid_evidence", "Date citation is not on the current assertion")
+        actor = str(principal.subject)
+        matched_original = False
+        for evidence_id in op.evidence_ids:
+            evidence = self._row(db, "story_evidence", evidence_id)
+            if (not evidence or evidence["assertion_id"] != op.assertion_id
+                    or evidence["assertion_revision"] != op.assertion_revision):
+                fail("invalid_evidence", "Date citation points to a different assertion revision")
+            if evidence["source_kind"] == "document":
+                if not self._document_allowed(db, actor, evidence["source_id"]):
+                    fail("not_found_or_not_accessible")
+            elif evidence["source_kind"] == "external":
+                source = db.execute("""SELECT owner_id FROM story_sources
+                    WHERE id=? AND version=?""",
+                    (evidence["source_id"], evidence["source_revision"])).fetchone()
+                if not source or (source["owner_id"] != actor and
+                                  not self._row(db, "story_records", snap["story_id"])["owner_id"] == actor):
+                    fail("not_found_or_not_accessible")
+            else:
+                fail("invalid_evidence", "Unsupported date evidence source kind")
+            if op.original_date_text in evidence["original_excerpt"]:
+                matched_original = True
+        if not matched_original:
+            fail("invalid_evidence", "Printed date text must occur in the exact attributed excerpt")
+        payload = op.model_dump(mode="json", exclude={"op", "supersedes_date_id", "rationale"})
+        fingerprint = digest(payload)
+        if db.execute("""SELECT 1 FROM story_event_dates
+             WHERE assertion_id=? AND assertion_revision=? AND fingerprint=?""",
+             (op.assertion_id, op.assertion_revision, fingerprint)).fetchone():
+            fail("validation_failed", "Identical dating already registered")
+        ident = str(uuid4())
+        if op.supersedes_date_id:
+            previous = self._row(db, "story_event_dates", op.supersedes_date_id)
+            if (previous is None or previous["assertion_id"] != op.assertion_id
+                    or previous["assertion_revision"] != op.assertion_revision
+                    or previous["superseded_by"]):
+                fail("revision_conflict", "Only one active dating of the same claim can be superseded")
+            db.execute("""UPDATE story_event_dates SET superseded_by=?
+                         WHERE id=? AND superseded_by IS NULL""",
+                       (ident, op.supersedes_date_id))
+        db.execute("""INSERT INTO story_event_dates(
+            id,story_id,assertion_id,assertion_revision,source_evidence_ids,
+            original_date_text,precision,calendar,date_role,year,month,day,
+            rationale,fingerprint,superseded_by,actor_id,client_id,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (ident, snap["story_id"], op.assertion_id, op.assertion_revision,
+             canonical(op.evidence_ids), op.original_date_text, op.precision,
+             op.calendar, op.date_role, op.year, op.month, op.day,
+             op.rationale, fingerprint, None, actor,
+             getattr(principal, "client_id", None), now()))
+        self._invalidate(db, snap, {op.assertion_id})
+        return "event_date"
+
     def _apply_op(self, db, principal, snap, op):
         if isinstance(op, RecordEventDate):
             return self._record_event_date(db, principal, snap, op)
