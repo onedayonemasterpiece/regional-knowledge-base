@@ -66,6 +66,11 @@ class StoryRegistry:
     def migrate(self):
         # All domain data, receipts, audit and jobs share the corpus.sqlite3 WAL.
         with self.corpus.connect() as db:
+            had_versions = db.execute("""SELECT 1 FROM sqlite_master
+                        WHERE type='table' AND name='story_schema_migrations'""").fetchone()
+            had_assertion_index = (bool(db.execute(
+                "SELECT 1 FROM story_schema_migrations WHERE version=5").fetchone())
+                if had_versions else False)
             db.executescript("""
             CREATE TABLE IF NOT EXISTS story_records(
               id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, workspace_id TEXT,
@@ -194,6 +199,29 @@ class StoryRegistry:
               fingerprint TEXT NOT NULL, story_id TEXT NOT NULL REFERENCES story_records(id),
               at TEXT NOT NULL,
               PRIMARY KEY(document_id,source_sha256,fingerprint));
+            CREATE TABLE IF NOT EXISTS story_assertion_search(
+              assertion_id TEXT PRIMARY KEY,
+              story_id TEXT NOT NULL REFERENCES story_records(id),
+              revision INTEGER NOT NULL, phrase TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS story_assertion_search_story
+              ON story_assertion_search(story_id,revision);
+            CREATE VIRTUAL TABLE IF NOT EXISTS story_assertion_fts
+              USING fts5(phrase,content='story_assertion_search',
+                         content_rowid='rowid',tokenize='unicode61');
+            CREATE TRIGGER IF NOT EXISTS story_assertion_fts_ai
+              AFTER INSERT ON story_assertion_search BEGIN
+                INSERT INTO story_assertion_fts(rowid,phrase)
+                  VALUES(new.rowid,new.phrase); END;
+            CREATE TRIGGER IF NOT EXISTS story_assertion_fts_au
+              AFTER UPDATE ON story_assertion_search BEGIN
+                INSERT INTO story_assertion_fts(story_assertion_fts,rowid,phrase)
+                  VALUES('delete',old.rowid,old.phrase);
+                INSERT INTO story_assertion_fts(rowid,phrase)
+                  VALUES(new.rowid,new.phrase); END;
+            CREATE TRIGGER IF NOT EXISTS story_assertion_fts_ad
+              AFTER DELETE ON story_assertion_search BEGIN
+                INSERT INTO story_assertion_fts(story_assertion_fts,rowid,phrase)
+                  VALUES('delete',old.rowid,old.phrase); END;
             CREATE TABLE IF NOT EXISTS story_reconcile_runs(
               id TEXT PRIMARY KEY, owner_id TEXT NOT NULL,
               anchor_story_id TEXT NOT NULL REFERENCES story_records(id),
@@ -236,6 +264,34 @@ class StoryRegistry:
             INSERT OR IGNORE INTO story_schema_migrations VALUES(3,datetime('now'));
             INSERT OR IGNORE INTO story_schema_migrations VALUES(4,datetime('now'));
             """)
+            if not had_assertion_index:
+                # Idempotent, keyset-based backfill of already accepted stories.
+                # SQLite authority remains unchanged and only 128 current card
+                # snapshots are hydrated per short transaction.
+                after_id = ""
+                while True:
+                    rows = db.execute("""SELECT id,snapshot FROM story_records
+                        WHERE id>? ORDER BY id LIMIT 128""", (after_id,)).fetchall()
+                    if not rows:
+                        break
+                    db.execute("BEGIN IMMEDIATE")
+                    try:
+                        for row in rows:
+                            snap = json.loads(row["snapshot"])
+                            for item in snap.get("assertions", []):
+                                db.execute("""INSERT INTO story_assertion_search
+                                    (assertion_id,story_id,revision,phrase)
+                                    VALUES(?,?,?,?) ON CONFLICT(assertion_id)
+                                    DO UPDATE SET story_id=excluded.story_id,
+                                      revision=excluded.revision,phrase=excluded.phrase""",
+                                    (item["assertion_id"],row["id"],item["revision"],
+                                     item["proposition"][:500]))
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                        raise
+                    after_id = rows[-1]["id"]
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(5,datetime('now'))")
 
     @staticmethod
     def _row(db, table, ident):
