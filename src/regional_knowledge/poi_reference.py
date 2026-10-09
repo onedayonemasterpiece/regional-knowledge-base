@@ -100,8 +100,14 @@ class StreetStoryPoiResolver:
     def version(self, external_ref):
         pid = canonical_poi_key(external_ref)
         with self._connect() as db:
-            row = db.execute(
-                "SELECT id,canonical_name,status,latitude,longitude FROM pois WHERE id=?",
+            # Earlier canonical owner SQLite snapshots lack coordinate columns;
+            # these still have stable aliases and remain legitimate read-only
+            # POI identity sources. Never require a fake (0,0) coordinate.
+            cols={r[1] for r in db.execute("PRAGMA table_info(pois)")}
+            lat="latitude" if "latitude" in cols else "NULL"
+            lon="longitude" if "longitude" in cols else "NULL"
+            row=db.execute(
+                f"SELECT id,canonical_name,status,{lat},{lon} FROM pois WHERE id=?",
                 (pid,),
             ).fetchone()
             if not row or row[2] == "merged":
