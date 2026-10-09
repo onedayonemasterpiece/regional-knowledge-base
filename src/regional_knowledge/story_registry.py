@@ -56,11 +56,12 @@ class StoryError(Exception):
 
 
 class StoryRegistry:
-    def __init__(self, corpus):
+    def __init__(self, corpus, *, migrate=True):
         if corpus is None:
             fail("dependency_unavailable", "SQLite authority is required")
         self.corpus = corpus
-        self.migrate()
+        if migrate:
+            self.migrate()
 
     def migrate(self):
         # All domain data, receipts, audit and jobs share the corpus.sqlite3 WAL.
@@ -173,10 +174,31 @@ class StoryRegistry:
               story_revision INTEGER NOT NULL, payload_hash TEXT NOT NULL,
               state TEXT NOT NULL DEFAULT 'awaiting_worker', created_at TEXT NOT NULL,
               UNIQUE(story_id,story_revision));
+            CREATE TABLE IF NOT EXISTS story_ingest_candidates(
+              ingestion_id TEXT NOT NULL, candidate_key TEXT NOT NULL,
+              document_id TEXT NOT NULL, source_revision INTEGER NOT NULL,
+              payload TEXT NOT NULL, payload_hash TEXT NOT NULL,
+              state TEXT NOT NULL CHECK(state IN ('staged','accepted','needs_review')),
+              story_id TEXT REFERENCES story_records(id), at TEXT NOT NULL,
+              PRIMARY KEY(ingestion_id,candidate_key));
+            CREATE INDEX IF NOT EXISTS story_ingest_doc
+              ON story_ingest_candidates(document_id,source_revision,state);
+            CREATE TABLE IF NOT EXISTS story_ingest_coverage(
+              ingestion_id TEXT NOT NULL, document_id TEXT NOT NULL,
+              source_revision INTEGER NOT NULL, physical_page_index INTEGER NOT NULL,
+              state TEXT NOT NULL CHECK(state IN ('reviewed','unreviewed')),
+              at TEXT NOT NULL,
+              PRIMARY KEY(ingestion_id,physical_page_index));
+            CREATE TABLE IF NOT EXISTS story_ingest_identity(
+              document_id TEXT NOT NULL, source_sha256 TEXT NOT NULL,
+              fingerprint TEXT NOT NULL, story_id TEXT NOT NULL REFERENCES story_records(id),
+              at TEXT NOT NULL,
+              PRIMARY KEY(document_id,source_sha256,fingerprint));
             CREATE TABLE IF NOT EXISTS story_schema_migrations(
               version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
             INSERT OR IGNORE INTO story_schema_migrations VALUES(1,datetime('now'));
             INSERT OR IGNORE INTO story_schema_migrations VALUES(2,datetime('now'));
+            INSERT OR IGNORE INTO story_schema_migrations VALUES(3,datetime('now'));
             """)
 
     @staticmethod
