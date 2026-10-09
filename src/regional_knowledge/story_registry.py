@@ -640,23 +640,26 @@ class StoryRegistry:
             key=lambda x: (x["recorded_at"], x["id"]),
         )
 
-    def _dossier_page(self, db, actor, rec, snapshot, section, cursor, limit, assertion_id):
+    def _dossier_page(self, db, actor, rec, snapshot, section, cursor, limit, assertion_id, relation_id):
         """Bounded, source-authorized dossier; IDs survive controlled merges."""
         take = max(1, min(int(limit), 10))
         effective_rev = int(rec["revision"])
         if section == "assessments_page" and assertion_id is None:
             fail("validation_failed", "Assessment pages require assertion_id")
+        if section == "relation_reviews_page" and relation_id is None:
+            fail("validation_failed", "Relation review pages require relation_id")
         after = ""
         if cursor:
             try:
                 version, last = cursor.split(":", 1)
                 if int(version) != effective_rev or len(last) > 128:
                     raise ValueError("stale or oversized cursor")
-                if section == "assessments_page":
-                    scoped_assertion, sep, assessment_key = last.partition(":")
-                    if not sep or scoped_assertion != assertion_id or not assessment_key:
-                        raise ValueError("assessment cursor belongs to another assertion")
-                    after = assessment_key
+                if section in {"assessments_page", "relation_reviews_page"}:
+                    scoped_id, sep, review_key = last.partition(":")
+                    expected = assertion_id if section == "assessments_page" else relation_id
+                    if not sep or scoped_id != expected or not review_key:
+                        raise ValueError("review cursor belongs to another resource")
+                    after = review_key
                 else:
                     after = last
             except (ValueError, TypeError):
@@ -763,9 +766,50 @@ class StoryRegistry:
             more = len(sources) > take
             next_id = (page[-1]["kind"] + ":" + page[-1]["source_id"] + ":" +
                        str(page[-1]["source_revision"])) if more and page else None
-        elif section == "relations_page":
+        elif section == "relation_reviews_page":
+            relation = self._row(db, "story_relations", relation_id)
+            if not relation or rec["id"] not in {
+                    relation["left_story_id"], relation["right_story_id"]}:
+                fail("not_found_or_not_accessible")
+            related_id = (relation["right_story_id"]
+                          if relation["left_story_id"] == rec["id"]
+                          else relation["left_story_id"])
+            self._read_story(db, actor, related_id)
+            proposal = self._row(db, "story_reconcile_proposals",
+                                 relation["source_proposal_id"])
+            if not proposal:
+                fail("source_changed", "Original relation proof is missing")
+            original = json.loads(proposal["decision"])
+            for side in ("anchor_proof", "candidate_proof"):
+                src = (original.get(side) or {}).get("source_id")
+                if not self._document_allowed(db, actor, src):
+                    fail("not_found_or_not_accessible")
+            try:
+                after_revision = int(after) if after else 1
+                if after_revision < 1:
+                    raise ValueError("Invalid revision")
+            except (ValueError, TypeError):
+                fail("validation_failed", "Invalid relation revision cursor")
+            rows = db.execute("""SELECT revision,action,reason,before_state,
+                after_state,actor_id,client_id,at FROM story_relation_reviews
+                WHERE relation_id=? AND revision>? ORDER BY revision LIMIT ?""",
+                (relation_id, after_revision, take + 1)).fetchall()
+            page = [
+                {"relation_id": relation_id, "revision": row["revision"],
+                 "action": row["action"], "reason": row["reason"],
+                 "before": json.loads(row["before_state"]),
+                 "after": json.loads(row["after_state"]),
+                 "recorded_by": row["actor_id"], "client_id": row["client_id"],
+                 "recorded_at": row["at"]}
+                for row in rows[:take]
+            ]
+            more = len(rows) > take
+            next_id = (relation_id + ":" + str(page[-1]["revision"])
+                       if more and page else None)
+        elif section in {"relations_page", "relation_history_page"}:
+            active_clause = "active=1 AND " if section == "relations_page" else ""
             relations = db.execute("""SELECT * FROM story_relations
-                WHERE active=1 AND (left_story_id=? OR right_story_id=?)
+                WHERE """ + active_clause + """(left_story_id=? OR right_story_id=?)
                   AND id>? ORDER BY id LIMIT ?""",
                 (rec["id"], rec["id"], after, take + 1)).fetchall()
             page = []
@@ -793,6 +837,8 @@ class StoryRegistry:
                     })
                 page.append({
                     "relation_id": relation["id"],
+                    "relation_revision": int(relation["revision"]),
+                    "active": bool(relation["active"]),
                     "kind": relation["kind"], "related_story_id": related_id,
                     "related_story_title": related["title"],
                     "phase_direction": ({
@@ -812,6 +858,13 @@ class StoryRegistry:
                     "proofs": proofs,
                     "recorded_by": relation["actor_id"],
                     "proposal_id": proposal["id"],
+                    "latest_review": (
+                        dict(db.execute("""SELECT revision,action,reason,actor_id,at
+                          FROM story_relation_reviews WHERE relation_id=?
+                          ORDER BY revision DESC LIMIT 1""",
+                          (relation["id"],)).fetchone() or {})
+                        if section == "relation_history_page" else None
+                    ),
                 })
             more = len(relations) > take
             next_id = page[-1]["relation_id"] if more and page else None
@@ -872,7 +925,7 @@ class StoryRegistry:
             "coverage": "bounded_authorized_read_not_entire_dossier",
         }
 
-    def get(self, principal, story_id, revision=None, view="compact", cursor=None, limit=8, assertion_id=None):
+    def get(self, principal, story_id, revision=None, view="compact", cursor=None, limit=8, assertion_id=None, relation_id=None):
         with self.corpus.connect() as db:
             actor = self._actor(db, principal)
             rec, snapshot = self._read_story(db, actor, story_id)
@@ -883,8 +936,14 @@ class StoryRegistry:
                     fail("not_found_or_not_accessible")
                 snapshot = json.loads(hist[0])
             permitted = self._available_actions(db, actor, rec)
-            if view in {"assertion_page", "assessments_page", "evidence_page", "sources_page", "relations_page"}:
-                return self._dossier_page(db, actor, rec, snapshot, view, cursor, limit, assertion_id)
+            if view in {"assertion_page", "assessments_page", "evidence_page", "sources_page",
+                        "relations_page", "relation_history_page", "relation_reviews_page"}:
+                if (revision is not None and view in {
+                        "relations_page", "relation_history_page", "relation_reviews_page"}
+                        and int(revision) != int(rec["revision"])):
+                    fail("validation_failed", "Relation views describe current reviewed link states")
+                return self._dossier_page(db, actor, rec, snapshot, view, cursor,
+                                          limit, assertion_id, relation_id)
             if view == "compact":
                 snapshot = {k: snapshot[k] for k in ("story_id", "state", "seed", "metadata", "gaps")}
                 snapshot["assertions"] = [
