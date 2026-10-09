@@ -12,7 +12,7 @@ from regional_knowledge.story_contracts import (
     AttachEvidence, EvidenceLocator, ReconcileApply, ReconcileCancel,
     ReconcileCandidateRef, ReconcileClaim, ReconcileDecision, ReconcileNext,
     ReconcileEnqueue, ReconcileEvidenceRef, ReconcileEvidenceAssessment, ReconcileStage, ReconcileStart,
-    SeedInput, UpsertAssertion,
+    ReviseRelation, SeedInput, UpsertAssertion,
 )
 from regional_knowledge.story_registry import StoryRegistry, StoryError
 from regional_knowledge.story_reconcile import StoryReconciler
@@ -357,6 +357,97 @@ def test_cross_book_link_is_not_automatic_merge(fixture):
     # An idempotent additive SQLite upgrade cannot erase the directed link.
     registry.migrate()
     assert registry.get(owner, first[0], view="relations_page")["items"][0]["phase_direction"] == direction
+
+    relation_id = related["items"][0]["relation_id"]
+    assert related["items"][0]["relation_revision"] == 1
+    with pytest.raises(StoryError) as denied:
+        registry.edit(owner, second[0], 3, [ReviseRelation(
+            op="revise_relation", relation_id=relation_id,
+            expected_relation_revision=1, action="retract",
+            reason="Only the originating editor may retract the review.",
+        )], "phase-relation-unrelated-editor")
+    assert denied.value.code == "not_found_or_not_accessible"
+
+    retract_op = ReviseRelation(
+        op="revise_relation", relation_id=relation_id,
+        expected_relation_revision=1, action="retract",
+        reason="New evidence shows the chronological relationship was incorrectly inferred.",
+    )
+    retracted = registry.edit(owner, first[0], 3, [retract_op], "phase-retract-001")
+    assert retracted["committed_revision"] == 4
+    assert registry.edit(owner, first[0], 3, [retract_op],
+                         "phase-retract-001") == retracted
+    assert registry.get(owner, first[0], view="relations_page")["items"] == []
+    historical = registry.get(owner, first[0], view="relation_history_page")
+    assert len(historical["items"]) == 1
+    old = historical["items"][0]
+    assert not old["active"] and old["relation_revision"] == 2
+    assert old["latest_review"]["action"] == "retract"
+    assert old["proofs"][0]["original_excerpt"] == book_a[4]
+
+    # A second source comparison cannot silently revive a retracted unique edge.
+    retry = reconciler.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=first[0], expected_story_revision=4,
+        refs=[ReconcileCandidateRef(kind="story", ref_id=second[0])],
+    ), "phase-link-retry-start")
+    lease = reconciler.dispatch(owner, ReconcileClaim(
+        command="claim", run_id=retry["job_id"], expected_job_revision=1,
+    ), "phase-link-retry-claim")
+    restage = reconciler.dispatch(owner, ReconcileStage(
+        command="stage", run_id=retry["job_id"], expected_job_revision=2,
+        work_id=lease["work_id"], lease_token=lease["lease_token"], decision=decision,
+    ), "phase-link-retry-stage")
+    with pytest.raises(StoryError) as withheld:
+        reconciler.dispatch(owner, ReconcileApply(
+            command="apply", run_id=retry["job_id"],
+            proposal_id=restage["proposal_id"], expected_job_revision=3,
+            expected_target_revision=4,
+            reviewer_note="An unreviewed proposal cannot undo a deliberate retraction.",
+        ), "phase-link-retry-apply")
+    assert withheld.value.code == "revision_conflict"
+    assert registry.get(owner, first[0], view="relations_page")["items"] == []
+
+    restored = registry.edit(owner, first[0], 4, [ReviseRelation(
+        op="revise_relation", relation_id=relation_id,
+        expected_relation_revision=2, action="restore",
+        reason="An editor checked both original source excerpts and restored the link.",
+    )], "phase-relation-restore")
+    assert restored["committed_revision"] == 5
+    corrected = registry.edit(owner, first[0], 5, [ReviseRelation(
+        op="revise_relation", relation_id=relation_id,
+        expected_relation_revision=3, action="correct_direction",
+        phase_from_story_id=first[0], phase_to_story_id=second[0],
+        reason="On source review it is the first episode that is part of the second.",
+    )], "phase-relation-correct")
+    assert corrected["committed_revision"] == 6
+    final = registry.get(owner, first[0], view="relations_page")["items"][0]
+    assert final["active"] and final["relation_revision"] == 4
+    assert final["phase_direction"]["from_story_id"] == first[0]
+    assert final["phase_direction"]["relative_to_requested"] == "outgoing"
+    assert final["proposal_id"] == old["proposal_id"]
+    assert final["proofs"] == old["proofs"]
+    with pytest.raises(StoryError) as stale:
+        registry.edit(owner, first[0], 6, [ReviseRelation(
+            op="revise_relation", relation_id=relation_id,
+            expected_relation_revision=2, action="retract",
+            reason="Conflicting editor working from stale relation revision.",
+        )], "phase-relation-stale")
+    assert stale.value.code == "revision_conflict"
+
+    page = registry.get(owner, first[0], view="relation_reviews_page",
+                        relation_id=relation_id, limit=1)
+    assert page["has_more"] and page["items"][0]["action"] == "retract"
+    seen = [page["items"][0]["revision"]]
+    while page["next_cursor"]:
+        page = registry.get(owner, first[0], view="relation_reviews_page",
+                            relation_id=relation_id, cursor=page["next_cursor"], limit=1)
+        seen += [x["revision"] for x in page["items"]]
+    assert seen == [2, 3, 4]
+    assert not page["has_more"]
+    assert registry.get(owner, second[0], view="relation_history_page")["items"][0]["active"]
+    registry.migrate()
+    assert registry.get(owner, first[0], view="relation_reviews_page",
+                        relation_id=relation_id)["items"][-1]["revision"] == 4
 
 
 def test_next_reconciliation_from_accepted_story_is_resumable_without_old_chat(fixture):
