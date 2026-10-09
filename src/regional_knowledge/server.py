@@ -328,9 +328,33 @@ def build_server(
                 return await story_call(registry.calendar, month, day,
                                         calendar, limit, cursor)
 
+            @mcp.tool(name="story_observation_search", title="Find sourced numeric observations",
+                description="Exact indexed metric_key and optional unit_code. "
+                            "No aggregation, no automatic conversion or identity merge. "
+                            "Returns bounded, ACL-checked original source evidence.",
+                annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+            async def story_observation_search(
+                    metric_key: str,
+                    unit_code: str | None = None,
+                    limit: Annotated[int,Field(ge=1,le=10)] = 3,
+                    cursor: str | None = None) -> dict[str,Any]:
+                return await story_call(registry.observation_search,
+                                        metric_key,unit_code,limit,cursor)
+
+            @mcp.tool(name="story_observation_compare", title="Check whether numeric series can be compared",
+                description="Read and explain why two existing sourced observations do "
+                            "or do not have commensurate metrics and units. "
+                            "No arithmetic until subject identity is independently reviewed.",
+                annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+            async def story_observation_compare(
+                    story_id: str,left_id: str,right_id: str) -> dict[str,Any]:
+                return await story_call(registry.observation_compare,
+                                        story_id,left_id,right_id)
+
             @mcp.tool(name="story_get", title="Read sourced stories and bounded evidence",
                 description="Read one authorized story. For large cross-book dossiers use "
-                            "view=evidence_page, assertion_page, assessments_page, event_dates_page, relation_history_page "
+                            "view=evidence_page, assertion_page, assessments_page, event_dates_page, "
+                            "observations_page, relation_history_page "
                             "or relation_reviews_page (requires relation_id) with a "
                             "revision-bound cursor and limit; sources are derived from actual "
                             "evidence/dependencies, including controlled merges.",
@@ -339,7 +363,8 @@ def build_server(
                     view: Literal["compact","editorial","evidence","review",
                                   "evidence_page","assertion_page","assessments_page","sources_page",
                                   "relations_page","relation_history_page","relation_reviews_page",
-                                  "event_dates_page","event_date_history_page"] = "compact",
+                                  "event_dates_page","event_date_history_page",
+                                  "observations_page","observations_history_page"] = "compact",
                     cursor: str | None = None, limit: Annotated[int, Field(ge=1,le=10)] = 8,
                     assertion_id: str | None = None,
                     relation_id: str | None = None) -> dict[str,Any]:
