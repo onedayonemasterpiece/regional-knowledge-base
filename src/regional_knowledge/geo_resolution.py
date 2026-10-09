@@ -716,8 +716,12 @@ class GeoQueue:
             sql+=" ORDER BY created_at DESC,request_id LIMIT ?";args.append(limit)
             items=[]
             for row in db.execute(sql,args):
+                source_access="authorized_current"
                 try:self._live(db,ctx,row)
-                except GeoError:continue
+                except GeoError as exc:
+                    if exc.code=="source_not_activated" and ctx.owned(row["document_id"]):
+                        source_access="staged_not_accepted"
+                    else:continue
                 latest=db.execute("""SELECT attempt_id,state,reason,dependency_kind,
                          dependency_ref,dependency_revision,canonical_poi_ref,
                          owner_identity_state,attempts,lease_fence,created_at
@@ -731,7 +735,7 @@ class GeoQueue:
                     "original_toponym":row["original_spelling"],
                     "time":json.loads(row["period_json"]),
                     "attempts":[dict(x) for x in latest],
-                    "source_access":"authorized_current",
+                    "source_access":source_access,
                 })
             summary=db.execute("""SELECT a.state,COUNT(*) n,
                 MIN(a.created_at) oldest
