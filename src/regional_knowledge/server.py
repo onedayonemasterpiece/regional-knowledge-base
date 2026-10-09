@@ -55,7 +55,7 @@ from .supabase_backend import backend_from_env
 from .story_registry import StoryRegistry, StoryError
 from .story_contracts import (
     StageStoryCandidateInput, Key, SeedInput, SourceRef, StoryMetadata, StoryOperation,
-    ReviewDecision, RegisteredSource, ExtractRequest,
+    ReviewDecision, RegisteredSource, ExtractRequest, ReconcileRequest,
 )
 
 
@@ -405,6 +405,20 @@ def build_server(
                     annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
                 async def story_extract(request: ExtractRequest, idempotency_key: Key) -> dict[str,Any]:
                     return await story_call(registry.extract, request, idempotency_key)
+
+                @mcp.tool(name="story_reconcile", title="Reconcile source-backed episodes across books",
+                    description="Durable start/enqueue/claim/stage/apply/cancel workflow. "
+                                "The same calling model searches story_search and knowledge_search, "
+                                "compares exact original evidence via story_get evidence_page and "
+                                "corpus_read, and saves a typed proposal. Application checks exact "
+                                "story/source revisions, rights and reviewer intent before attaching "
+                                "another source or linking episodes without automatic merge. "
+                                "Never infer historical truth or independence from a mere quote match.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True,
+                                                destructive_hint=False, open_world_hint=False))
+                async def story_reconcile(request: ReconcileRequest, idempotency_key: Key) -> dict[str,Any]:
+                    from .story_reconcile import StoryReconciler
+                    return await story_call(StoryReconciler(registry).dispatch, request, idempotency_key)
 
             if profile in {"full", "story_editor"}:
                 @mcp.tool(name="story_transition", title="Review or approve chosen story variants",
