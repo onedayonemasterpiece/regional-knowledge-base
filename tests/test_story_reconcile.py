@@ -636,3 +636,128 @@ def test_reconcile_does_not_invent_independent_corroboration(fixture):
     assert error.value.code == "validation_failed"
     assert registry.get(owner, anchor[0])["revision"] == 3
     assert registry.job_get(owner, start["job_id"])["processed_pairs"] == 0
+
+
+def test_overflow_resumes_three_source_pairs_as_separate_bounded_model_packets(fixture):
+    """One-card run cap is not a total corpus cap; continuation survives new sessions."""
+    registry, owner, _ = fixture
+    anchor_source = source(registry, owner, "Синтетический островной мост был реконструирован.")
+    anchor = grounded_story(registry, owner, anchor_source, "overflow-anchor")
+    books = [
+        source(registry, owner, f"Письменное сообщение {i} об отдельном этапе моста.")
+        for i in range(3)
+    ]
+    candidates = [
+        grounded_story(registry, owner, book, f"overflow-candidate-{i}")
+        for i,book in enumerate(books)
+    ]
+    reconcile = StoryReconciler(registry)
+    first = reconcile.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=anchor[0],
+        expected_story_revision=3, max_candidate_pairs=1,
+        refs=[ReconcileCandidateRef(kind="story", ref_id=c[0]) for c in candidates],
+    ), "overflow-first-run")
+    assert first["candidate_count"] == 1
+    assert first["overflow_pending"] == 2
+    assert first["next_action"] == "claim"
+    channels = reconcile.dispatch(owner, ReconcileEnqueue(
+        command="enqueue", run_id=first["job_id"], expected_job_revision=1,
+        searched_channels=["story_lexical", "source_bge"],
+    ), "overflow-search-attested")
+    assert channels["candidate_count"] == 1
+    assert channels["overflow_pending"] == 2
+
+    run = {"job_id": first["job_id"], "job_revision": 2}
+    parent_id = first["job_id"]
+    for index in range(3):
+        claimed = reconcile.dispatch(owner, ReconcileClaim(
+            command="claim", run_id=run["job_id"],
+            expected_job_revision=run["job_revision"],
+        ), f"overflow-claim-{index}")
+        assert claimed["candidate"]["id"] == candidates[index][0]
+        decision = refs(books[index], anchor_source,
+                        [books[index], anchor_source], [candidates[index], anchor])
+        staged = reconcile.dispatch(owner, ReconcileStage(
+            command="stage", run_id=run["job_id"],
+            expected_job_revision=run["job_revision"] + 1,
+            work_id=claimed["work_id"], lease_token=claimed["lease_token"],
+            decision=decision,
+        ), f"overflow-stage-{index}")
+        applied = reconcile.dispatch(owner, ReconcileApply(
+            command="apply", run_id=run["job_id"],
+            expected_job_revision=run["job_revision"] + 2,
+            expected_target_revision=3,
+            proposal_id=staged["proposal_id"],
+            reviewer_note="Each independent synthetic proof was compared in a bounded packet.",
+        ), f"overflow-apply-{index}")
+        if index == 0:
+            assert applied["state"] == "partial_budget_exhausted"
+            assert applied["next_action"] == "continue_overflow"
+            assert applied["overflow_pending"] == 2
+        else:
+            assert applied["state"] == "completed_under_policy"
+            assert applied["overflow_pending"] == 0
+        if index < 2:
+            next_run = reconcile.dispatch(owner, ReconcileNext(
+                command="next", max_candidate_pairs=1,
+            ), f"overflow-next-{index}")
+            assert next_run["state"] == "awaiting_agent"
+            assert next_run["origin_run_id"] == parent_id
+            assert next_run["candidate_count"] == 1
+            assert next_run["overflow_pending"] == (1-index)
+            run = next_run
+    page = registry.get(owner, anchor[0], view="relations_page", limit=10)
+    assert {e["related_story_id"] for e in page["items"]} == {c[0] for c in candidates}
+    parent = registry.job_get(owner, parent_id)
+    assert parent["overflow_pending"] == 0
+    assert parent["overflow_continued"] == 2
+    assert parent["next_action"] is None
+    registry.migrate()
+    assert registry.job_get(owner, parent_id)["overflow_continued"] == 2
+
+
+def test_50_frontier_slots_can_spill_51st_and_cancel_durably(fixture):
+    registry, owner, _ = fixture
+    anchor_doc = source(registry, owner, "Первая синтетическая запись о мосте.")
+    anchor = grounded_story(registry, owner, anchor_doc, "overflow-50-anchor")
+    book = source(registry, owner, "Вторая синтетическая запись о мосте.")
+    chunk_ids = [book[3], *(str(uuid4()) for _ in range(50))]
+    key = sha256(book[4].encode()).hexdigest()
+    registry.corpus.put("rkb_chunks", [
+        {
+            "id": cid, "document_id": book[0], "revision": 1,
+            "title": f"Separate synthetic retrieval pointer {i}",
+            "source_text": book[4], "text_sha256": key,
+            "search_material_sha256": key,
+            "page_ids": [book[1]], "region_ids": [book[2]],
+        } for i,cid in enumerate(chunk_ids[1:], start=1)
+    ])
+    rec = StoryReconciler(registry)
+    start = rec.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=anchor[0],
+        expected_story_revision=3, max_candidate_pairs=50,
+        refs=[ReconcileCandidateRef(kind="chunk", ref_id=x) for x in chunk_ids[:50]],
+    ), "overflow-50-start")
+    assert start["candidate_count"] == 50
+    assert start["overflow_pending"] == 0
+    extra = rec.dispatch(owner, ReconcileEnqueue(
+        command="enqueue", run_id=start["job_id"], expected_job_revision=1,
+        refs=[ReconcileCandidateRef(kind="chunk", ref_id=chunk_ids[50])],
+        searched_channels=["story_lexical", "source_bge"],
+    ), "overflow-51st-admission")
+    assert extra["candidate_count"] == 50 and extra["overflow_pending"] == 1
+    assert extra["next_action"] == "claim"
+    same = rec.dispatch(owner, ReconcileEnqueue(
+        command="enqueue", run_id=start["job_id"], expected_job_revision=2,
+        refs=[ReconcileCandidateRef(kind="chunk", ref_id=chunk_ids[50])],
+    ), "overflow-repeat-51st")
+    assert same["overflow_pending"] == 1  # stable dedup, not a second pending row
+    cancelled = rec.dispatch(owner, ReconcileCancel(
+        command="cancel", run_id=start["job_id"], expected_job_revision=3,
+    ), "overflow-explicit-cancel")
+    assert cancelled["state"] == "cancelled"
+    with registry.corpus.connect() as db:
+        rows = db.execute("""SELECT state FROM story_reconcile_overflow
+            WHERE origin_run_id=?""", (start["job_id"],)).fetchall()
+    assert [x["state"] for x in rows] == ["cancelled"]
+    assert registry.job_get(owner, start["job_id"])["overflow_pending"] == 0
