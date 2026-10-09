@@ -208,14 +208,51 @@ def enqueue_mention(db, actor, mention, node, *, policy=POLICY):
     input_hash = _hash({"request":request_id, "dependency":"source",
                         "revision":mention["revision"],"hash":mention_hash})
     attempt_id = "geoa_" + input_hash[:32]
+    # Graph staging can precede book activation by hours/days while vector
+    # publication is pending. A still-inactive revision is NOT stale. Keep its
+    # intent durable but unclaimable until the source's acceptance transaction
+    # wakes it (never through polling an unaccepted chapter).
+    active=int(doc.get("active_revision") or 0)
+    staged_rev=int(mention["revision"])
+    initial=("awaiting_activation" if staged_rev>active else
+             "pending" if staged_rev==active else "stale_source")
     db.execute("""INSERT OR IGNORE INTO rkb_geo_attempts(
         attempt_id,request_id,dependency_kind,dependency_ref,
         dependency_revision,input_hash,state,available_at,
         created_at,updated_at
-    ) VALUES(?,?,?,?,?,?,'pending',?,?,?)""",
+    ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
         (attempt_id,request_id,"source",doc_id,str(mention["revision"]),
-         input_hash,now,now,now))
+         input_hash,initial,now,now,now))
     return request_id
+
+
+def geo_revision_activated(db, document_id, revision):
+    """Wake source-backed geo work in SAME SQLite tx as book activation.
+
+    The accepted source revision, not the asynchronous map/POI owner, controls
+    when a geographic mention first becomes eligible. Superseded source
+    attempts lose their leases, while earlier receipts remain immutable.
+    Never calls Street Story, Cartography, vectors or a model.
+    """
+    now=time.time()
+    activated=db.execute("""UPDATE rkb_geo_attempts
+        SET state='pending',reason=NULL,available_at=?,updated_at=?
+        WHERE state='awaiting_activation'
+        AND request_id IN (
+          SELECT request_id FROM rkb_geo_intents
+          WHERE document_id=? AND source_revision=?)""",
+        (now,now,str(document_id),int(revision))).rowcount
+    stale=db.execute("""UPDATE rkb_geo_attempts SET
+        state='stale_source',reason='superseded_source_revision',
+        lease_token=NULL,lease_until=NULL,proposal_json=NULL,
+        proposal_hash=NULL,updated_at=?
+        WHERE state IN ('awaiting_activation','pending','retry_wait',
+                        'leased','staged')
+        AND request_id IN (
+          SELECT request_id FROM rkb_geo_intents
+          WHERE document_id=? AND source_revision<?)""",
+        (now,str(document_id),int(revision))).rowcount
+    return {"newly_eligible":activated,"superseded_attempts":stale}
 
 
 class GeoQueue:
@@ -245,8 +282,13 @@ class GeoQueue:
         if not ctx.readable(intent["document_id"]):
             raise GeoError("not_found_or_not_accessible")
         doc=ctx.one("rkb_documents",intent["document_id"])
-        if (not doc or doc.get("active_revision") != intent["source_revision"]
-                or str(doc.get("source_sha256") or "") != intent["source_sha256"]):
+        if not doc or str(doc.get("source_sha256") or "") != intent["source_sha256"]:
+            raise GeoError("stale_source")
+        active=int(doc.get("active_revision") or 0)
+        requested=int(intent["source_revision"])
+        if active<requested:
+            raise GeoError("source_not_activated")
+        if active>requested:
             raise GeoError("stale_source")
         mention=ctx.one("rkb_entity_mentions",intent["mention_id"])
         entity=ctx.one("rkb_entities",intent["entity_id"])
@@ -411,9 +453,13 @@ class GeoQueue:
                 documents.add(row["document_id"])
                 try:self._live(db,ctx,row)
                 except GeoError as exc:
-                    db.execute("UPDATE rkb_geo_attempts SET state=?,reason=?,updated_at=? WHERE attempt_id=?",
-                               ("stale_source" if exc.code=="stale_source" else "blocked_access",
-                                exc.code,now,row["attempt_id"]))
+                    outcome=("awaiting_activation" if exc.code=="source_not_activated"
+                             else "stale_source" if exc.code=="stale_source"
+                             else "blocked_access")
+                    db.execute("""UPDATE rkb_geo_attempts SET state=?,reason=?,
+                        lease_token=NULL,lease_until=NULL,updated_at=?
+                        WHERE attempt_id=?""",
+                        (outcome,exc.code,now,row["attempt_id"]))
                     continue
                 token=secrets.token_hex(16)
                 fence=int(row["lease_fence"])+1
