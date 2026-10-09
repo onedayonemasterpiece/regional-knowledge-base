@@ -354,3 +354,43 @@ def test_next_reconciliation_from_accepted_story_is_resumable_without_old_chat(f
             command="next", document_id=one[0],
         ), "reconcile-next-denied-other")
     assert err.value.code == "not_found_or_not_accessible"
+
+
+def test_cancelled_reconciliation_cannot_apply_abandoned_proposal(fixture):
+    """Correction/cancellation preserves audit but never permits a stale effect."""
+    registry, owner, _ = fixture
+    first = source(registry, owner, "В 1535 году жители построили мост.")
+    second = source(registry, owner, "В 1535 году мост соединил два берега.")
+    sa = grounded_story(registry, owner, first, "cancel-left")
+    sb = grounded_story(registry, owner, second, "cancel-right")
+    rec = StoryReconciler(registry)
+    started = rec.dispatch(owner, ReconcileStart(
+        command="start", anchor_story_id=sb[0], expected_story_revision=3,
+        refs=[ReconcileCandidateRef(kind="story", ref_id=sa[0])],
+    ), "cancel-first-start")
+    claimed = rec.dispatch(owner, ReconcileClaim(
+        command="claim", run_id=started["job_id"], expected_job_revision=1,
+    ), "cancel-first-claim")
+    proposed = rec.dispatch(owner, ReconcileStage(
+        command="stage", run_id=started["job_id"], expected_job_revision=2,
+        work_id=claimed["work_id"], lease_token=claimed["lease_token"],
+        decision=refs(first, second, [first, second], [sa, sb]),
+    ), "cancel-first-stage")
+    cancelled = rec.dispatch(owner, ReconcileCancel(
+        command="cancel", run_id=started["job_id"], expected_job_revision=3,
+    ), "cancel-first-cancel")
+    assert cancelled["state"] == "cancelled"
+    status = registry.job_get(owner, started["job_id"])
+    assert status["pending_proposals"] == 0
+    assert status["next_action"] is None
+    assert status["proposals"][0]["state"] == "cancelled"
+    with pytest.raises(StoryError) as exc:
+        rec.dispatch(owner, ReconcileApply(
+            command="apply", run_id=started["job_id"],
+            proposal_id=proposed["proposal_id"], expected_job_revision=4,
+            expected_target_revision=3,
+            reviewer_note="Discarded earlier comparison, do not apply it.",
+        ), "cancel-first-invalid-apply")
+    assert exc.value.code == "validation_failed"
+    assert registry.get(owner, sb[0])["revision"] == 3
+    assert not registry.get(owner, sb[0], view="relations_page")["items"]

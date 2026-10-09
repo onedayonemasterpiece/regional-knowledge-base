@@ -384,6 +384,8 @@ class StoryReconciler:
                         "next_action":"claim" if pos<len(frontier) else "review_proposals"}
 
             if isinstance(request, ReconcileApply):
+                if run["state"] == "cancelled":
+                    fail("validation_failed", "Cancelled comparison cannot be applied")
                 proposal = db.execute("SELECT * FROM story_reconcile_proposals WHERE id=? AND run_id=?",
                                       (request.proposal_id,run["id"])).fetchone()
                 if not proposal:
@@ -483,6 +485,11 @@ class StoryReconciler:
                         "next_action":"claim" if state=="awaiting_agent" else "review_or_expand"}
 
             if isinstance(request, ReconcileCancel):
+                # Preserve the full comparison/audit as a cancelled proposal,
+                # not an unreviewed actionable orphan after correction.
+                db.execute("""UPDATE story_reconcile_proposals
+                    SET state='cancelled' WHERE run_id=? AND state='pending_review'""",
+                    (run["id"],))
                 db.execute("""UPDATE story_reconcile_runs
                     SET revision=?,state='cancelled',work_id=NULL,
                         lease_token=NULL,lease_deadline=NULL,updated_at=?
@@ -503,10 +510,11 @@ class StoryReconciler:
             applied = db.execute("""SELECT COUNT(*) FROM story_reconcile_proposals
                 WHERE run_id=? AND state='applied'""",(run_id,)).fetchone()[0]
             next_action = (
-                "claim" if run["position"]<len(frontier) else
-                "search_then_enqueue" if not frontier else
-                "review_proposals" if pending else
-                "expand_or_finish_under_policy"
+                None if run["state"] in {"cancelled","completed_under_policy","no_match_found_under_policy"}
+                else "claim" if run["position"]<len(frontier)
+                else "search_then_enqueue" if not frontier
+                else "review_proposals" if pending
+                else "expand_or_finish_under_policy"
             )
             after = str(cursor or "")
             if len(after)>128:
