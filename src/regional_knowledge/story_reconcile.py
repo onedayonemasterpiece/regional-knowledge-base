@@ -364,6 +364,8 @@ class StoryReconciler:
                         skipped_decided += 1
                         continue
                     refs.append(item)
+                cap = min(MAX_FRONTIER, request.max_candidate_pairs)
+                first_frontier, overflow_refs = refs[:cap], refs[cap:]
                 query = (request.query or snap["metadata"]["title"]).strip()
                 run_id = str(uuid4())
                 plan = {"policy_version": request.policy_version,
@@ -373,24 +375,28 @@ class StoryReconciler:
                         "index_generation": None,
                         "candidate_budget": request.max_candidate_pairs,
                         "skipped_decided_pairs": skipped_decided}
-                state = "awaiting_agent" if refs else "awaiting_search"
+                state = "awaiting_agent" if first_frontier else "awaiting_search"
                 db.execute("""INSERT INTO story_reconcile_runs(
                     id,owner_id,anchor_story_id,anchor_story_revision,policy_version,
                     query,search_plan,frontier,position,max_candidate_pairs,revision,
                     state,work_id,lease_token,lease_deadline,updated_at)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (run_id, actor, request.anchor_story_id, record["revision"],
-                     request.policy_version, query, canonical(plan), canonical(refs), 0,
+                     request.policy_version, query, canonical(plan), canonical(first_frontier), 0,
                      request.max_candidate_pairs, 1, state, None, None, None, now()))
+                self._overflow_enqueue(db, run_id, overflow_refs)
                 db.execute("""UPDATE story_reconcile_queue SET state='run_started'
                     WHERE story_id=? AND story_revision<=?""",
                     (request.anchor_story_id, record["revision"]))
                 return {"resource_type": "reconciliation", "resource_ids": [run_id],
                         "job_id": run_id, "job_revision": 1, "state": state,
-                        "candidate_count": len(refs),
+                        "candidate_count": len(first_frontier),
+                        "overflow_pending": len(overflow_refs),
+                        "coverage_state": "partial_budget_exhausted" if overflow_refs else
+                                          "bounded_frontier_only",
                         "skipped_decided_pairs": skipped_decided,
                         "search_plan": plan,
-                        "next_action": "claim" if refs else "search_then_enqueue",
+                        "next_action": "claim" if first_frontier else "search_then_enqueue",
                         "commit_state": "queued"}
             return registry._mutation(principal, "story_reconcile", idempotency_key, data, authorize, apply)
 
