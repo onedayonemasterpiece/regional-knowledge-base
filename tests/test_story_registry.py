@@ -619,3 +619,60 @@ def test_entity_list_acl_keyset_reaches_sources_beyond_first_hundred(setup):
         registry.entity_list(other, cursor=cursor, limit=9)
     assert exc.value.code == "validation_failed"
 
+
+
+def test_bounded_cross_book_evidence_reader_keeps_source_after_merge(setup):
+    """Merged evidence retains its original assertion/source ownership and ACL."""
+    registry, owner, other = setup
+    sources = [document(registry, owner) for _ in range(2)]
+    story_ids = []
+    for i, (doc, page, region, chunk, text) in enumerate(sources):
+        created = registry.create(
+            owner, SeedInput(text=f"Синтетический эпизод {i}"), None, None,
+            None, f"cross-book-seed-{i}",
+        )
+        sid = created["story_id"]
+        registry.edit(owner, sid, 1, [UpsertAssertion(
+            op="upsert_assertion", kind="attributed_account",
+            account_kind="other", attributed_to=f"Автор книги {i}",
+            proposition=f"Автор {i} описывает встречу ремесленников.",
+        )], f"cross-book-claim-{i}")
+        claim = registry.get(owner, sid, view="evidence")["snapshot"]["assertions"][0]
+        registry.edit(owner, sid, 2, [AttachEvidence(
+            op="attach_evidence", assertion_id=claim["assertion_id"], assertion_revision=1,
+            source_kind="document", source_id=doc, source_revision=1, relation="reports",
+            original_excerpt="У старого фонаря днём собирались мастера.",
+            locator=EvidenceLocator(page_id=page, region_id=region, chunk_id=chunk),
+        )], f"cross-book-proof-{i}")
+        story_ids.append(sid)
+    registry.merge(
+        owner, story_ids[0], [story_ids[1]],
+        {story_ids[0]: 3, story_ids[1]: 3},
+        "True duplicated synthetic event only", "cross-book-merge-1",
+    )
+    first = registry.get(owner, story_ids[0], view="evidence_page", limit=1)
+    assert len(first["items"]) == 1 and first["has_more"]
+    second = registry.get(owner, story_ids[0], view="evidence_page",
+                          limit=1, cursor=first["next_cursor"])
+    assert len(second["items"]) == 1 and not second["has_more"]
+    items = first["items"] + second["items"]
+    assert {x["source_id"] for x in items} == {x[0] for x in sources}
+    assert all(x["text_match"] == "exact" and x["source_state"] == "unchanged"
+               and x["relation"] == "reports" for x in items)
+    assert all(x["proposition"] for x in items)
+
+    source_page = registry.get(owner, story_ids[0], view="sources_page", limit=1)
+    assert source_page["has_more"] and len(source_page["items"]) == 1
+    last_page = registry.get(owner, story_ids[0], view="sources_page",
+                             limit=1, cursor=source_page["next_cursor"])
+    assert len(last_page["items"]) == 1
+    assert {x["source_id"] for x in [*source_page["items"], *last_page["items"]]} == {
+        d for d, *_ in sources
+    }
+    assertion_page = registry.get(owner, story_ids[0], view="assertion_page", limit=1)
+    assert assertion_page["has_more"]
+    expect("not_found_or_not_accessible", registry.get, other, story_ids[0],
+           view="evidence_page", limit=1)
+    with pytest.raises(StoryError) as mismatch:
+        registry.get(owner, story_ids[0], view="evidence_page", cursor="3:anything")
+    assert mismatch.value.code == "validation_failed"
