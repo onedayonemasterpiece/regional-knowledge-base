@@ -19,7 +19,7 @@ from .sqlite_corpus import canonical
 from .story_contracts import (
     AttachEvidence, EvidenceLocator, StageStoryCandidateInput, UpsertAssertion,
 )
-from .story_registry import StoryRegistry, digest, now
+from .story_registry import StoryRegistry, StoryError, digest, now
 
 
 def _resolve_candidates(graph, candidates):
@@ -224,7 +224,7 @@ def activate_stories(ctx, document, ingestion_id, revision):
                       WHERE ingestion_id=? AND candidate_key=?""",
                        (story_id, now(), ingestion_id, row["candidate_key"]))
             db.execute("RELEASE story_candidate")
-        except (ValueError, KeyError, sqlite3.IntegrityError):
+        except (ValueError, KeyError, sqlite3.IntegrityError, StoryError):
             db.execute("ROLLBACK TO story_candidate")
             db.execute("RELEASE story_candidate")
             db.execute("""UPDATE story_ingest_candidates SET state='needs_review',at=?
