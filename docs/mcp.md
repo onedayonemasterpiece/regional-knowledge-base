@@ -251,8 +251,19 @@ semantic regions. Parsing/recognizing scans remains ChatGPT's work.
 
 `book_ingest(stage)` accepts one `entity_candidates` bundle (up to 32 typed nodes
 and 64 evidenced relations). Each quote must match its exact staged chunk and
-region. Node kinds: person/event/historical_thread/poi_ref. Relation shapes are
-restricted to participated_in, occurred_at and member_of.
+region. Node kinds: person/organization/event/historical_thread/poi_ref. Relations
+include participated_in, occurred_at, member_of, affiliated_with, operated_at,
+predecessor_of, founded_by and located_in (place → containing place).
+
+Source-side locations use `poi_ref` without mandatory coordinates, maps or an
+external owner ID. The importing model first searches `entity_list` (labels,
+authorized aliases and literal mentions), inspects `graph_fetch`, and supplies
+an existing `entity_id` or a distinct new source key. Optional `place_kind` and
+`place_context` explain the type and geographical context. `entity_refs` supplies
+existing relation endpoints without fabricated mentions. Web clarification is
+separately attributed in `research_sources`; later `map_refs` or an explicitly
+selected `canonical_poi_ref` enrich the same ID. No name match selects identity.
+See [location registry](location-registry.md) for the normal workflow.
 
 `graph_stage(document_id, revision, candidates)` adds model-authored bounded
 candidates to an owned active revision; it does not reimport or declare the full

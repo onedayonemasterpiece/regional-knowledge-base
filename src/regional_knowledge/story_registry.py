@@ -2230,6 +2230,10 @@ class StoryRegistry:
             take = max(1, min(int(limit), 50))
             docs = [str(x) for x in (document_ids or [])]
             kind_list = [str(x) for x in (kinds or [])]
+            if 'place' in kind_list and 'poi_ref' not in kind_list:
+                kind_list.append('poi_ref')
+            from .entity_graph import normalize_alias
+            db.create_function('rkb_namefold',1,lambda value:normalize_alias(value or ''),deterministic=True)
             if len(docs) > 400 or len(kind_list) > 40:
                 fail("validation_failed", "Limit one explicit scope to 400 documents and 40 kinds")
             query = str(query or "")
@@ -2273,9 +2277,19 @@ class StoryRegistry:
             if kind_list:
                 where.append("json_extract(e.payload,'$.kind') IN (" + ",".join("?" for _ in kind_list) + ")")
                 params.extend(kind_list)
+            alias_visible=visible.replace('d.payload','ad.payload').replace('d.row_key','ad.row_key')
+            alias_scope="""a.table_name IN ('rkb_entity_aliases','rkb_entity_mentions')
+                AND json_extract(a.payload,'$.entity_id')=e.row_key
+                AND a.revision=CAST(json_extract(ad.payload,'$.active_revision') AS INTEGER)
+                AND """+alias_visible
             if query:
-                where.append("instr(lower(json_extract(e.payload,'$.canonical_label')),lower(?))>0")
-                params.append(query)
+                where.append("""(instr(rkb_namefold(json_extract(e.payload,'$.canonical_label')),rkb_namefold(?))>0
+                    OR EXISTS(SELECT 1 FROM corpus_rows a JOIN corpus_rows ad
+                      ON ad.table_name='rkb_documents' AND ad.row_key=a.document_id
+                      WHERE """+alias_scope+""" AND
+                      instr(rkb_namefold(coalesce(json_extract(a.payload,'$.value'),
+                         json_extract(a.payload,'$.exact_source_spelling'),'')),rkb_namefold(?))>0))""")
+                params.extend([query,actor,actor,actor,actor,query])
             where_sql = " AND ".join(where)
             if cursor is None:
                 upper = db.execute(
@@ -2308,9 +2322,26 @@ class StoryRegistry:
             items = []
             for row in rows[:take]:
                 item = json.loads(row["payload"])
+                # Context is model-authored owner metadata, not a public canonical
+                # POI assertion. Don't expose enrichment from another private book.
+                metadata=item.get('metadata') or {} if str(item.get('owner_user_id'))==actor else {}
+                aliases=db.execute("""SELECT a.payload FROM corpus_rows a
+                    JOIN corpus_rows ad ON ad.table_name='rkb_documents' AND ad.row_key=a.document_id
+                    JOIN corpus_rows e ON e.table_name='rkb_entities' AND e.row_key=?
+                    WHERE """+alias_scope+" ORDER BY a.row_key LIMIT 12",
+                    [row['row_key'],actor,actor,actor,actor]).fetchall()
+                names=list(dict.fromkeys(value for a in aliases
+                    for record in [json.loads(a[0])]
+                    for value in [record.get('value') or record.get('exact_source_spelling')]
+                    if value))
                 items.append({"entity_id": row["row_key"], "kind": item.get("kind"),
                               "label": item.get("canonical_label"),
-                              "document_id": row["document_id"], "revision": row["revision"]})
+                              "document_id": row["document_id"], "revision": row["revision"],
+                              "aliases":names,"state":item.get('state'),
+                              "place_kind":metadata.get('place_kind'),
+                              "place_context":metadata.get('place_context'),
+                              "external_ref":item.get('external_ref'),
+                              "map_refs":metadata.get('map_refs',[])})
             more = len(rows) > take
             next_cursor = None
             if more and items:

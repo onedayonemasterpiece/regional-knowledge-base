@@ -1,9 +1,9 @@
-"""Evidence-scoped graph persistence/navigation over the existing Postgres plane."""
+"""Evidence-scoped graph persistence over the existing authorized data adapter."""
 from __future__ import annotations
 import asyncio,json,logging,hashlib
 from uuid import UUID,uuid5
 from psycopg.types.json import Jsonb
-from .entity_graph import GraphBundle,GraphAlias,entity_id,normalize_alias,digest
+from .entity_graph import GraphBundle,GraphAlias,entity_id,normalize_alias,digest,valid_relation_shape
 from .poi_reference import StreetStoryPoiResolver,canonical_poi_key
 log=logging.getLogger(__name__)
 
@@ -12,7 +12,7 @@ def locator(e):
 
 class GraphService:
     def __init__(self,backend,resolver=None):
-        if not hasattr(backend,'data_client'):raise RuntimeError('graph requires the production Postgres data plane')
+        if not hasattr(backend,'data_client'):raise RuntimeError('graph requires the authorized data adapter')
         self.backend=backend;self.resolver=resolver or StreetStoryPoiResolver();self._regions={}
     def connection(self,principal):return self.backend.data_client._connection(self.backend._headers(principal))
 
@@ -65,25 +65,43 @@ class GraphService:
         evidence.update({digest(e.model_dump(mode='json')):e for r in bundle.relations for e in r.evidence})
         for e in evidence.values():await self.evidence(principal,document_id,revision,e,staged_texts=staged_texts)
         nodes={n.key:n for n in bundle.entities};ids={n.key:n.entity_id or entity_id(UUID(str(document_id)),n.key) for n in bundle.entities}
+        ids.update(bundle.entity_refs)
         resolved={}
         for n in bundle.entities:
             if n.exact_source_spelling not in n.evidence.exact_quote:raise ValueError('source spelling absent from exact quote')
             if n.kind=='poi_ref':
-                try:resolved[n.key]=await asyncio.to_thread(self.resolver.resolve,n.poi_locator)
-                except Exception as error:
-                    # Materialization must not depend on external POI availability.
-                    resolved[n.key]={'state':'unavailable','external_ref':None}
-                    log.info(json.dumps({'event':'graph_poi_resolution_deferred','error_type':type(error).__name__}))
+                resolved[n.key]={'state':'awaiting_model_selection','external_ref':None}
+                # A name/geocoder hit is only a search candidate. The importing
+                # model chooses an existing owner ID explicitly, or leaves it
+                # absent. Ordinary location creation makes NO external call.
+                if n.canonical_poi_ref:
+                    identity=await asyncio.to_thread(self.resolver.version,n.canonical_poi_ref)
+                    if not identity:raise LookupError('selected canonical POI not found')
+                    resolved[n.key]={'state':'model_selected','external_ref':n.canonical_poi_ref}
         async with self.connection(principal) as db:
             # Recheck exact locators and owner inside the committing transaction.
             doc=await(await db.execute('select id,active_revision from rkb_documents where id=%s and owner_user_id=rkb_current_actor_id() for update',(UUID(str(document_id)),))).fetchone()
             if not doc or (staged_texts is None and doc['active_revision']!=revision):raise ValueError('document revision changed')
+            kinds={n.key:n.kind for n in bundle.entities}
+            for key,nid in bundle.entity_refs.items():
+                other=await(await db.execute('select * from rkb_entities where id=%s and rkb_graph_active(document_id,revision)',(nid,))).fetchone()
+                if not other or str(other['owner_user_id'])!=principal.subject:
+                    raise LookupError('owned active referenced entity not found')
+                kinds[key]=other['kind']
+            for edge in bundle.relations:
+                if not valid_relation_shape(edge.kind,kinds[edge.source_key],kinds[edge.target_key],same_entity=ids[edge.source_key]==ids[edge.target_key]):
+                    raise ValueError('invalid relation endpoints')
             for n in bundle.entities:
                 nid=ids[n.key];old=await(await db.execute('select * from rkb_entities where id=%s',(nid,))).fetchone()
                 if old and (old['owner_user_id']!=UUID(principal.subject) or old['kind']!=n.kind):raise PermissionError('explicit identity reuse requires same owner/kind')
                 if n.entity_id and not old:raise LookupError('entity not found')
                 result=resolved.get(n.key,{});ref=result.get('external_ref');state='unresolved' if n.kind=='poi_ref' and not ref else n.state
                 metadata={'review_note':n.review_note,'poi_locator':n.poi_locator.model_dump(mode='json') if n.poi_locator else None,'resolution':result.get('state')}
+                metadata.update({k:v for k,v in {
+                    'place_kind':n.place_kind,'place_context':n.place_context,
+                    'research_sources':[s.model_dump(mode='json') for s in n.research_sources],
+                    'map_refs':n.map_refs,
+                }.items() if v})
                 if old and n.kind=='poi_ref' and ref and old['external_ref'] and str(old['external_ref'])!=ref:
                     raise ValueError('canonical POI identity conflict; explicit editorial review required')
                 if old is None:
@@ -105,7 +123,23 @@ class GraphService:
                             raise ValueError('Only unresolved POI references support identity refresh')
                         await db.execute('update rkb_entities set external_ref=%s,state=%s,metadata=%s where id=%s and external_ref is null',
                                          (ref,state,Jsonb(metadata),nid))
-                # Explicit reuse does not overwrite seed identity/metadata from another book.
+                # Enrich the SAME source-side location when the model explicitly
+                # supplies new context or selects a later external/map reference.
+                # No identity is selected by spelling and absent fields erase nothing.
+                if old and n.entity_id:
+                    if ref and old.get('external_ref') and old['external_ref']!=ref:
+                        raise ValueError('canonical POI identity conflict')
+                    merged={**old['metadata']}
+                    for key,value in (('place_kind',n.place_kind),('place_context',n.place_context)):
+                        if value:merged[key]=value
+                    for key,values in (('research_sources',metadata.get('research_sources',[])),('map_refs',n.map_refs)):
+                        if values:merged[key]=list({digest(v):v for v in [*merged.get(key,[]),*values]}.values())[:20]
+                    if ref:
+                        merged['resolution']='model_selected'
+                    if merged!=old['metadata'] or (ref and not old.get('external_ref')):
+                        await db.execute('update rkb_entities set metadata=%s,external_ref=%s,state=%s where id=%s',
+                            (Jsonb(merged),ref or old.get('external_ref'),n.state if ref else old['state'],nid))
+                # Reuse preserves seed label; this source gets its own mention.
                 mid=uuid5(nid,f'mention:{document_id}:{revision}:{digest(locator(n.evidence))}')
                 await db.execute('insert into rkb_entity_mentions(id,entity_id,document_id,revision,chunk_id,page_id,region_id,exact_source_spelling,evidence,state) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) on conflict(id) do nothing',(mid,nid,UUID(str(document_id)),revision,n.evidence.chunk_id,n.evidence.page_id,n.evidence.region_id,n.exact_source_spelling,Jsonb(locator(n.evidence)),n.state))
                 for a in n.aliases:await self._alias(db,nid,document_id,revision,a)
@@ -120,7 +154,7 @@ class GraphService:
         normal=normalize_alias(a.value)
         if not normal:raise ValueError('empty alias')
         aid=uuid5(nid,f'alias:{doc}:{rev}:{normal}')
-        await db.execute('insert into rkb_entity_aliases(id,entity_id,value,normalized_value,language,alias_type,time_scope,document_id,revision,evidence) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) on conflict(entity_id,normalized_value,document_id,revision) do nothing',(aid,nid,a.value,normal,a.language,a.alias_type,a.time_scope,UUID(str(doc)),rev,Jsonb(locator(a.evidence))))
+        await db.execute('insert into rkb_entity_aliases(id,entity_id,value,normalized_value,language,alias_type,time_scope,document_id,revision,evidence) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) on conflict(entity_id,normalized_value,document_id,revision) do nothing',(aid,nid,a.value,normal,a.language,a.alias_type,a.time_scope,UUID(str(doc)),rev,Jsonb({**locator(a.evidence),**({'research_sources':[s.model_dump(mode='json') for s in a.research_sources],'alias_basis':'external_research'} if a.research_sources else {})})))
 
     async def enqueue(self,db,actor,nid,payload,document_id=None,revision=None):
         boundary=await(await db.execute("select md5(coalesce(string_agg(id::text||active_revision::text,',' order by id),'')) version from rkb_documents where active_revision>0")).fetchone()
@@ -167,8 +201,10 @@ class GraphService:
     async def read(self,principal,nid,limit=20):
         nid=UUID(str(nid));limit=max(1,min(int(limit),20))
         async with self.connection(principal) as db:
-            node=await(await db.execute('select id,kind,canonical_label,external_ref,state from rkb_entities where id=%s and rkb_graph_active(document_id,revision)',(nid,))).fetchone()
+            node=await(await db.execute('select id,kind,canonical_label,external_ref,state,metadata,owner_user_id from rkb_entities where id=%s and rkb_graph_active(document_id,revision)',(nid,))).fetchone()
             if not node:raise LookupError('entity not found')
+            if str(node.pop('owner_user_id'))!=principal.subject:
+                node.pop('metadata',None)
             aliases=await(await db.execute('select value,language,alias_type,time_scope,evidence from rkb_entity_aliases where entity_id=%s and rkb_graph_active(document_id,revision) order by id limit %s',(nid,limit))).fetchall()
             mentions=await(await db.execute('select state,exact_source_spelling,evidence,signals from rkb_entity_mentions where entity_id=%s and rkb_graph_active(document_id,revision) order by id limit %s',(nid,limit))).fetchall()
             jobs=await(await db.execute('select id,state,attempts,error_code from rkb_graph_discovery_jobs where entity_id=%s order by created_at desc limit 5',(nid,))).fetchall()
