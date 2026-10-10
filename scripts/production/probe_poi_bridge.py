@@ -117,11 +117,32 @@ if __name__=="__main__":
         ids=[x.get("entity_id") for x in locations]
         story_ids=[story.get("story_id") for x in locations for story in x.get("stories",[])]
         exact_sources=[loc.get("evidence_refs",[]) for loc in locations]
+        expected_fields={"entity_id","label","place_kind","place_context",
+                         "map_refs","map_ref_verification","historical_geometry",
+                         "evidence_refs","relations","stories"}
+        fields_present=bool(locations) and all(
+            expected_fields.issubset(loc) and
+            loc["map_ref_verification"]=="not_verified" and
+            loc["historical_geometry"]=="not_verified"
+            and isinstance(loc["map_refs"],list)
+            for loc in locations)
+        not_accepted=payload.get("cartography_acceptance_claimed") is False
+        relations_scoped=all(all(
+            {"source_relation_state","source_time_scope","neighbor_poi_ref"}.issubset(edge)
+            for edge in loc.get("relations",[])) for loc in locations)
+        if "--assert-projection" in sys.argv and not (
+                status==200 and internal==200 and payload==status_payload and
+                ids and story_ids and fields_present and not_accepted and relations_scoped):
+            raise RuntimeError("RKB/Street Story source geography projection contract failed")
         print(json.dumps({"owner_device_http":status,"rkb_service_http":internal,
                           "responses_equal":payload==status_payload,
                           "poi_ref":ref,"locations":len(ids),
                           "story_ids":story_ids,
                           "has_exact_source_evidence":all(bool(x) for x in exact_sources),
+                          "place_projection_fields_present":fields_present,
+                          "cartography_acceptance_claimed":payload.get("cartography_acceptance_claimed"),
+                          "relation_provenance_fields_present":relations_scoped,
+                          "has_more":payload.get("has_more"),
                           "readback": "passed" if payload==status_payload and ids and story_ids else "partial"},
                           ensure_ascii=False))
     elif "--diagnose" in sys.argv:
