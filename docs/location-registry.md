@@ -10,6 +10,10 @@ Use `book_ingest(stage).entity_candidates` alongside the ordinary source chunks 
 
 A geographical attachment is not necessarily a coordinate. “On the island”, “at the market square”, “in Königsberg”, an address, or a now-lost building are valid levels of source description. Preserve that level. Do not invent a point or assign an entire passage to the nearest modern house. Several places may be mentioned in one chunk; a mention is not automatically the setting of every claim in that chunk.
 
+## Physical POI integration
+
+A source place which identifies a standing building, ruins, memorial, plaque or known lost-building site can also be a Street Story POI. The importing model uses `poi_registry(search)` and explicitly selects/creates the canonical owner POI with the existing RKB entity ID; it does **not** create a second owner catalog. Street Story then finds source stories, people and original evidence through `poi_context` and its read-only `/v1/pois/{id}/knowledge` bridge. See [model-selected POI linking](poi-model-link.md). Ordinary book activation never waits for this optional owner network call.
+
 ## Reuse the existing graph
 
 There is no new database or parallel location catalog. Source-side locations use the existing `rkb_entities` table and legacy wire kind `poi_ref`. `entity_list(kinds=["place"])` also finds these nodes. An RKB entity UUID identifies the source-side place; it exists independently of a Street Story POI or a map feature.
