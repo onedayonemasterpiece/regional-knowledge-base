@@ -601,17 +601,9 @@ class GeoQueue:
             })
 
     def _owner_match(self, intent, proposed):
-        """External catalog read only. Nothing is auto-verified by this lookup."""
-        from .contracts import PoiLocatorInput
-        locator=json.loads(intent["locator_json"])
-        input_locator=PoiLocatorInput.model_validate({
-            "names":locator["names"],"external_ids":locator["external_ids"],
-            "latitude":locator.get("latitude"),"longitude":locator.get("longitude")
-        })
-        match=self.resolver.resolve(input_locator)
+        """Validate the model-selected ID, without overriding it by spelling."""
         ref=proposed.get("canonical_poi_ref")
-        if match.get("external_ref")!=ref:
-            raise GeoError("owner_identity_unresolved_or_ambiguous")
+        canonical_poi_key(ref)
         identity=self.resolver.version(ref)
         if not identity:
             raise GeoError("owner_identity_unavailable")
@@ -1034,7 +1026,7 @@ class GeoQueue:
                     "retry_exhausted":exhausted,"max_batch":64}
 
     def worker_tick(self,limit=2):
-        """Low-cost owner-local consumer, isolated from remote map/provider failures."""
+        """Low-cost shortlist discovery only; the MCP model decides identity."""
         from .contracts import Principal
         # Worker crashes leave leased/staged rows that were previously ignored
         # by the actor preselection, even though claim() can re-lease them.
@@ -1075,27 +1067,24 @@ class GeoQueue:
                         self.defer(principal,job["attempt_id"],job["lease_token"],
                                    job["lease_fence"],reason="owner_unavailable")
                         continue
-                    ref=match.get("external_ref")
-                    if ref:
-                        proposal={"status":"candidate","canonical_poi_ref":ref,
-                                  "reason":"Exact name or external-ID match in Street Story owner catalog; candidate identity only."}
-                    else:
-                        status="ambiguous" if match.get("state")=="ambiguous" else "unresolved"
-                        proposal={"status":status,
-                                  "reason":"Owner catalog has no unique matching identity; map coverage is not established."}
-                    prefix=job["attempt_id"]+":"+str(job["lease_fence"])
-                    self.stage(principal,job["attempt_id"],job["lease_token"],
-                               job["lease_fence"],proposal,
-                               "geo-worker-stage:"+_hash(prefix)[:32])
-                    try:
-                        result=self.apply(principal,job["attempt_id"],job["lease_token"],
-                                          job["lease_fence"],
-                                          "geo-worker-apply:"+_hash(prefix)[:32])
-                    except (OSError,sqlite3.Error,RuntimeError):
-                        self.defer(principal,job["attempt_id"],job["lease_token"],
-                                   job["lease_fence"],reason="owner_unavailable")
-                        continue
-                    results.append(result["state"])
+                    # Discovery is allowed; identity selection is model work.
+                    # Persist the shortlist on the existing attempt and stop.
+                    # Never call stage/apply automatically, even for one exact name.
+                    proposal={"status":"candidate_discovery",
+                              "candidate_refs":[match['external_ref']] if match.get('external_ref') else [],
+                              "lookup_state":match.get('state'),
+                              "decision_required":"model", "identity_selected":False}
+                    with self.corpus.connect() as db:
+                        db.execute('BEGIN IMMEDIATE')
+                        updated=db.execute("""UPDATE rkb_geo_attempts SET
+                            state='awaiting_agent',reason='model_identity_selection_required',
+                            proposal_json=?,proposal_hash=NULL,lease_token=NULL,
+                            lease_until=NULL,updated_at=?
+                            WHERE attempt_id=? AND state='leased' AND lease_token=?
+                              AND lease_fence=? AND lease_until>?""",
+                            (_json(proposal),time.time(),job['attempt_id'],
+                             job['lease_token'],job['lease_fence'],time.time())).rowcount
+                    if updated:results.append('awaiting_agent')
             except (GeoError, ValueError, LookupError, sqlite3.Error):
                 # Failed source/auth must not block normal indexing or reading.
                 continue

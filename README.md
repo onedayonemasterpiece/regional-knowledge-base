@@ -1,67 +1,32 @@
 # Regional Knowledge Base
 
-Multimodal RAG and MCP service for books, journals and historical regional sources.
+A source-backed knowledge and MCP service for regional books, articles and other attributed materials.
 
-## Product goal
+A user attaches a source and asks to add it. The MCP-calling model reads the material, preserves its text and illustrations, identifies people, organizations, stories and locations, and reuses existing identities. The backend handles files, storage, access control, source references, indexing and replay safety. It does not infer historical identity from matching names.
 
-A non-technical user can attach a book to ChatGPT and say “add this to the regional knowledge base”. ChatGPT performs semantic/layout work through MCP; the service performs deterministic file handling, provenance, storage, ACL enforcement and indexing. The same knowledge is then reusable from ChatGPT, Live models, Wonderful Lections, Street Story and Projects Hub.
+## Current storage boundary
 
-## Architecture
+SQLite owns the accepted corpus, source/page/region graph, lexical search, catalog, ACL, stories, entity mentions and source-side location registry. Supabase holds the vector search plane and minimal identity/scope anchors, not another full text corpus. Original sources remain in the configured private archive. GitHub holds public code and documentation only.
 
-```text
-                      application/platform OAuth 2.1
-                         independent from Supabase
-                                    |
-                                    v
-ChatGPT / Codex / Live adapter -> Regional Knowledge MCP
-                                    |
-                +-------------------+-------------------+
-                |                                       |
-                v                                       v
-      Supabase Postgres                         S3-compatible object storage
- vector + FTS + ACL/catalog                 original PDF + pages + crops + graph
-                |
-                v
-        compact evidence results
-```
+Retrieval uses the existing multilingual vector spaces with bounded lexical support. Entity enrichment does not require re-embedding unchanged chunks. See [storage](docs/storage.md) and [architecture](docs/architecture.md) for deployment-specific details.
 
-GitHub stores **code and documentation only**. Corpus data is never committed.
+## Source ingestion and locations
 
-### Retrieval
+The model follows `start → pages → stage → validate → finalize`. During the same source review it supplies `entity_candidates` and `story_candidates`. It searches `entity_list`, inspects `graph_fetch`, then explicitly reuses an entity ID or creates a distinct source-backed entity. `graph_stage` enriches already accepted material without importing it again.
 
-Fast search is hybrid: vector/HNSW + lexical/GIN inside Supabase, fused before the model answers. The gateway stays thin. Deep enrichment and image fetches are optional.
+A location may be a city, island, street, square, building, bridge or less precisely identified area. It exists before coordinates or cartographic coverage. Historical/current names are sourced aliases, `located_in` connects places, and exact mentions connect them to passages. Later cartographic and Street Story references enrich the same location. See the current [location-registry policy](docs/location-registry.md).
 
-### Ingestion
+The existing background geo adapter can discover candidates but does not select identity. The model decides. Maps, source interpretation and accepted external physical identities remain separate; missing maps do not block source import.
 
-The canonical model is a page/region graph with first-class captions, footnotes, reading order and illustrations. Retrieval chunks are derived from that graph, so rechunking never requires repeating document vision.
+## Access and product boundaries
 
-### Media
+MCP OAuth is independent of Supabase and uses a stable application user identity. Source access and all writes are checked server-side. Private sources and derivatives are not made public by import. Live exposes only the bounded retrieval surface, not ingestion and graph writes.
 
-Object storage is authoritative. VibePublish MediaBank is an optional secondary media mirror/catalog for reusable illustrations; it is not the source of truth and private uploads are not mirrored by default.
+This repository implements ingestion, retrieval and graph operations. Software tests, a deployed version, completeness of a particular book and broad mass-ingestion readiness are separate statements. The protected capacity, source-fidelity and latency requirements remain in `.devcoveer/requirements.json`.
 
-## OAuth and multi-service identity
+## Documentation
 
-Supabase is only the data plane. MCP authentication uses an application/platform
-OAuth 2.1 authorization server and a stable application user UUID. Every MCP
-remains a separate OAuth resource. See [docs/auth.md](docs/auth.md).
-
-## Status
-
-The public scaffold now includes hybrid retrieval plus deterministic
-`start -> pages -> stage -> validate -> finalize` ingestion with multimodal
-provenance and a Live-optimized MCP profile. Local tests cover the full
-materialization flow. The producer side of the Street Story POI bridge also
-stages evidence-backed POI candidates and writes a durable authorization-aware
-outbox at finalize; network delivery is still an explicit gate. Supabase/S3 are configured, but the product is intentionally not considered
-ready until the independent MCP auth plane and direct Postgres RLS actor bridge
-are implemented and a real book is imported end-to-end. No public corpus is implied by the code repository.
-
-See:
-- [Architecture](docs/architecture.md)
-- [Storage and privacy](docs/storage.md)
-- [OAuth resource-server contract](docs/auth.md)
-- [Platform identity: one user, many MCPs](docs/platform-identity.md)
-- [Rights model](docs/rights.md)
-- [MCP surface and Live profile](docs/mcp.md)
-- [Cross-project integrations](docs/integrations.md)
-- [Street Story POI evidence bridge](docs/poi-integration.md)
+- [Ingestion](docs/ingestion.md), [MCP](docs/mcp.md), [location registry](docs/location-registry.md)
+- [Stories and integrations](docs/integrations.md), [Street Story evidence bridge](docs/poi-integration.md)
+- [Storage](docs/storage.md), [rights](docs/rights.md), [OAuth](docs/auth.md)
+- [Mass-ingestion readiness](docs/mass-ingestion-readiness.md)

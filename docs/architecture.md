@@ -110,16 +110,22 @@ See
 
 ## Evidence-backed entity graph MVP
 
-Migration 012 adds owner-scoped people, events, historical threads and canonical
-Street Story POI references. Mentions, aliases and three structural edge kinds
-retain exact chunk/page/region locators and source quotes. Reads are evidence-RLS
+The existing owner-scoped graph stores people, organizations, events, historical
+threads and source-side places (legacy wire kind `poi_ref`). Places exist without
+coordinates, a map or a Street Story ID. Mentions and aliases retain exact
+chunk/page/region locators and source quotes; `located_in` connects places into
+source-supported geographical hierarchies. Historical/current spellings are
+aliases, not new identities. See [location-first ingestion](location-registry.md). Reads are evidence-RLS
 filtered, active-revision filtered and limited to one hop/20 edges. Identity keys
 are explicit; Unicode alias normalization never merges people or places.
 
 ChatGPT submits bounded typed `entity_candidates` during staging, or
 `graph_stage` on an owned active revision. The backend validates source bytes,
 region attribution, shape and idempotency; it performs no semantic extraction.
-Unresolved POI locators remain reviewable and do not block book activation.
+The model searches `entity_list`, inspects `graph_fetch`, and explicitly reuses
+an ID or creates a new location. Unresolved external references do not block book
+activation. Later model-selected map or canonical POI references enrich the same
+source-side entity; no name-based worker binding is allowed.
 
 The migrated SQLite discovery job table drives one bounded background worker.
 It reuses accepted E5/BGE/lexical retrieval and exact alias branches. Candidates

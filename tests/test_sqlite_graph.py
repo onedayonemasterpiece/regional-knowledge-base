@@ -229,6 +229,11 @@ async def test_graph_links_street_story_real_opaque_poi_without_local_identity_c
         },
         'evidence':proof,
     }]}
+    # The same exact name/external-ID hint still does not select identity.
+    name_only=await graph.stage(actor,document,1,payload)
+    assert name_only['unresolved_pois']==1
+    assert (await graph.read(actor,first['entities']['zoo-site']))['entity']['external_ref'] is None
+    payload['entities'][0]['canonical_poi_ref']='streetstory://poi/'+opaque
     saved=await graph.stage(actor,document,1,payload)
     assert saved['unresolved_pois']==0
     assert saved['entities']==first['entities']

@@ -22,7 +22,7 @@ def test_relation_shapes(kind,pair):
     GraphBundle(entities=[a,b],relations=[{'source_key':'a','target_key':'b','kind':kind,'evidence':[evidence()]}])
     with pytest.raises(ValidationError):GraphBundle(entities=[a,b],relations=[{'source_key':'b','target_key':'a','kind':kind,'evidence':[evidence()]}])
 
-@pytest.mark.parametrize('changes',[{'kind':'poi_ref'},{'state':'reviewed'},{'canonical_label':' '},{'metadata':{'arbitrary':True}}])
+@pytest.mark.parametrize('changes',[{'kind':'person','place_kind':'island'},{'state':'reviewed'},{'canonical_label':' '},{'metadata':{'arbitrary':True}}])
 def test_invalid_candidates_fail_closed(changes):
     with pytest.raises(ValidationError):GraphBundle(entities=[node(**changes)])
 

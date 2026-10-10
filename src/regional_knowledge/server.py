@@ -267,9 +267,24 @@ def build_server(
             "Complete page-by-page story review in the existing ingestion workflow without a second prompt. " +
             "In that SAME page-and-passage review, identify historical place names, "
             "toponyms and old addresses grounded in actually printed source text. "
+            "Before adding a person, organization or place, use entity_list and graph_fetch "
+            "to inspect existing identities, aliases and context. For locations use kinds=['poi_ref'] "
+            "(or ['place']); compare place_kind, containing place, source time and narrative, "
+            "not just spelling. Reuse the model-selected entity_id across pages and books; "
+            "a new name for an existing place is an alias, not a new entity. "
             "Put a bounded set of DISTINCT, evidence-backed poi_ref graph nodes in "
             "book_ingest(stage).entity_candidates, with exact_source_spelling, "
             "poi_locator names and source chunk/page/region/exact_quote references. "
+            "Set place_kind (for example city, island, street, square or building) and "
+            "a short disambiguating place_context. Link places with located_in relations "
+            "when the source supports them. entity_refs can refer to existing parent IDs "
+            "without inventing another mention. Do not infer contains/located_in merely "
+            "because two names share a passage. A chunk may mention several places, or "
+            "only a broad island/city; keep that granularity instead of guessing a house. "
+            "Web research can clarify current/historical names: record its URL and note "
+            "in research_sources on the entity/alias, separately from exact book evidence. "
+            "Map and coordinate fields are optional. Later model-selected map_refs or "
+            "canonical_poi_ref enrich the SAME entity_id; they are not new local identities. "
             "Do not generate one place per chunk or duplicate names. A unique "
             "Street Story POI is NOT required at book ingestion time: unresolved "
             "identity stays queued and must not block the source or Story Registry. "
@@ -277,7 +292,10 @@ def build_server(
             "canonical POI IDs or time precision. If the page has no suitable "
             "sourced place, an empty graph candidate batch is fine. The accepted "
             "source activates the durable geo queue without a second model prompt, "
-            "and Cartography/Street Story complete downstream review separately. " +
+            "but this queue never decides identity automatically. The model selects existing "
+            "local entities and external POI references explicitly; name matches remain search "
+            "candidates. For already accepted material, graph_stage adds mentions and relations "
+            "without reimporting, re-chunking or re-embedding the source. " +
             "Never infer that a source is public."
         ),
         **kwargs,
@@ -514,7 +532,7 @@ def build_server(
                     return await geo_call(geo_queue.recheck,name,dependency_kind,
                                           dependency_ref,dependency_revision,limit)
 
-            @mcp.tool(name="entity_list", title="List accepted graph mentions",
+            @mcp.tool(name="entity_list", title="Find existing people, organizations and locations",
                 description="Authorized bounded entity list, not a complete claim of book coverage.",
                 annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
             async def entity_list(document_ids: list[str] | None = None, kinds: list[str] | None = None,

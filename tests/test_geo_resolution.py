@@ -260,7 +260,12 @@ async def test_automatic_owner_alias_watermark_and_backfill_on_old_source(tmp_pa
     assert changed["seen"]==1 and changed["scheduled"]==1
     assert geo.poll_owner_updates(limit=8)["scheduled"]==0
     handled=geo.worker_tick(limit=1)
-    assert handled["processed"]==1 and handled["states"]==["linked_candidate"]
+    assert handled["processed"]==1 and handled["states"]==["awaiting_agent"]
+    assert (await graph.read(actor,node))["entity"]["external_ref"] is None
+    selected=json.loads(json.dumps(bundle))
+    selected['entities'][0]['entity_id']=node
+    selected['entities'][0]['canonical_poi_ref']='streetstory://poi/poi_ss_2d0ab75849ea3099ea17193a'
+    await graph.stage(actor,doc,1,selected)
     fetched=await graph.read(actor,node)
     assert fetched["entity"]["external_ref"]=="streetstory://poi/poi_ss_2d0ab75849ea3099ea17193a"
     assert len(b.corpus.rows("rkb_entities"))==1
@@ -315,7 +320,12 @@ async def test_transient_owner_failure_is_bounded_then_relevant_revision_recover
     assert geo.recheck(actor,"Кёнигсбергский зоопарк","owner_poi",
                        "streetstory://poi/"+pid,"owner-new-generation")["new_attempts"]==1
     resolved=geo.worker_tick(1)
-    assert resolved["states"]==["linked_candidate"]
+    assert resolved["states"]==["awaiting_agent"]
+    assert (await graph.read(actor,saved['entities']['historical-zoo-site']))['entity']['external_ref'] is None
+    selected=json.loads(json.dumps(bundle))
+    selected['entities'][0]['entity_id']=saved['entities']['historical-zoo-site']
+    selected['entities'][0]['canonical_poi_ref']='streetstory://poi/'+pid
+    await graph.stage(actor,doc,1,selected)
     fetched=await graph.read(actor,saved["entities"]["historical-zoo-site"])
     assert fetched["entity"]["external_ref"]=="streetstory://poi/"+pid
     assert geo.status(actor)["state_counts"]["dependency_unavailable"]==1
@@ -497,18 +507,21 @@ async def test_geo_worker_autoreclaims_expired_staged_lease_after_restart(tmp_pa
     outcome=restarted.worker_tick(limit=1)
     assert outcome["recovered_expired_leases"]==1
     assert outcome["processed"]==1
-    assert outcome["states"]==["linked_candidate"]
+    assert outcome["states"]==["awaiting_agent"]
     with b.corpus.connect() as db:
         row=db.execute("""SELECT state,attempts,lease_fence,lease_token,
                        proposal_json,canonical_poi_ref
                        FROM rkb_geo_attempts WHERE attempt_id=?""",
                        (old["attempt_id"],)).fetchone()
-    assert row["state"]=="linked_candidate" and row["attempts"]==2
+    assert row["state"]=="awaiting_agent" and row["attempts"]==2
     assert row["lease_fence"]==old["lease_fence"]+1
     assert row["lease_token"] is None
-    assert row["canonical_poi_ref"]=="streetstory://poi/"+pid
-    assert json.loads(row["proposal_json"])["status"]=="candidate"
-    assert (await graph.read(actor,eid))["entity"]["external_ref"]=="streetstory://poi/"+pid
+    assert row["canonical_poi_ref"] is None
+    discovery=json.loads(row['proposal_json'])
+    assert discovery['status']=='candidate_discovery'
+    assert discovery['candidate_refs']==['streetstory://poi/'+pid]
+    assert discovery['identity_selected'] is False
+    assert (await graph.read(actor,eid))["entity"]["external_ref"] is None
     assert len(b.corpus.rows("rkb_entities"))==1
     assert len(b.corpus.rows("rkb_entity_mentions"))==1
     with pytest.raises(GeoError,match="stale_lease"):
@@ -668,7 +681,7 @@ async def test_staged_book_geo_intent_is_dormant_until_actual_vector_activation(
     assert geo.lookup(actor,"Кёнигсбергский зоопарк")["items"][0]["entity_id"]==node
     # The first resolver call may only run AFTER the source was accepted.
     completed=geo.worker_tick(1)
-    assert completed["processed"]==1 and completed["states"]==["unresolved"]
+    assert completed["processed"]==1 and completed["states"]==["awaiting_agent"]
     assert len(b.corpus.rows("rkb_entities"))==1
     await b.aclose()
 

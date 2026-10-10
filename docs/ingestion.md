@@ -219,6 +219,20 @@ Standalone article PDFs use the same start/stage/validate/finalize MCP flow.
 Issue-internal article components share the original and exact semantic ranges;
 activation waits for both unchanged embedding spaces.
 
+## People, stories and locations in the same review
+
+Follow [location-first ingestion](location-registry.md). The model searches the
+existing `entity_list`/`graph_fetch` registry, reuses an ID or adds a distinct
+source-side place, and includes `entity_candidates` with `story_candidates`
+during ordinary staging. Coordinates, maps and a canonical external POI are
+optional. Preserve each exact source mention; use `located_in` for source-backed
+place hierarchy and `entity_refs` for existing parents. Current/historical names
+from web research are separately attributed, not inserted into the book quote.
+Do not run a second semantic pass solely because cartography is unavailable.
+For accepted books, `graph_stage` enriches the same revision without reimport or
+re-embedding. Link appropriate Story Registry episodes through existing
+`link_entity` operations using these same IDs.
+
 ## Local activation and issue articles
 
 Finalization stores pages, regions, relations and exact chunks locally. It persists

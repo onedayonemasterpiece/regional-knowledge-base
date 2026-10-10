@@ -34,6 +34,8 @@ ENV = STATE / "service.env"
 BACKUPS = STATE / "backups" / "story-registry"
 SERVICE = "regional-knowledge-base.service"
 INDEXER_SERVICE = "regional-knowledge-indexing.service"
+GRAPH_SERVICE = "regional-knowledge-graph-discovery.service"
+GRAPH_OVERRIDE = UNIT_DIR / "regional-knowledge-graph-discovery.service.d/90-model-led-locations.conf"
 INDEXER_OVERRIDE = UNIT_DIR / "regional-knowledge-indexing.service.d/90-story-ingestion.conf"
 BRANCH = "chatgpt/auto-story-extract-on-book-ingest-20261009"
 
@@ -173,7 +175,7 @@ asyncio.run(main())
                    env=env, check=True, timeout=35, capture_output=True)
 
 
-def configure(source, sha, *, with_indexer=False):
+def configure(source, sha, *, with_indexer=False, with_graph_worker=False):
     # An isolated per-service override: changing the global service.env would
     # inadvertently alter BGE/graph/indexing workers after their next restart.
     override = """[Service]
@@ -189,6 +191,8 @@ EnvironmentFile={extra}
         # The existing indexing worker can activate revisions asynchronously.
         # Both it and the importing MCP must run the SAME Story activation hook.
         atomically(INDEXER_OVERRIDE, override, 0o644)
+    if with_graph_worker:
+        atomically(GRAPH_OVERRIDE, override, 0o644)
 
 
 def health():
@@ -226,7 +230,7 @@ def verify_pid(source, sha, unit=SERVICE):
     return pid
 
 
-def run(sha, apply, *, with_indexer=False):
+def run(sha, apply, *, with_indexer=False, with_graph_worker=False):
     os.environ["XDG_RUNTIME_DIR"] = "/run/user/" + str(os.getuid())
     os.environ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + os.environ["XDG_RUNTIME_DIR"] + "/bus"
     source = materialize(sha)
@@ -234,6 +238,10 @@ def run(sha, apply, *, with_indexer=False):
     existing_override = OVERRIDE.read_bytes() if OVERRIDE.exists() else None
     existing_env = OVERRIDE_ENV.read_bytes() if OVERRIDE_ENV.exists() else None
     existing_indexer = INDEXER_OVERRIDE.read_bytes() if INDEXER_OVERRIDE.exists() else None
+    existing_graph = GRAPH_OVERRIDE.read_bytes() if GRAPH_OVERRIDE.exists() else None
+    if with_graph_worker and existing_graph and b"story-registry" not in existing_graph:
+        raise RuntimeError("unexpected graph worker override: refusing overwrite")
+    units = [SERVICE] + ([INDEXER_SERVICE] if with_indexer else []) + ([GRAPH_SERVICE] if with_graph_worker else [])
     if with_indexer and not (source / "src/regional_knowledge/story_ingestion.py").is_file():
         raise RuntimeError("Candidate release has no story ingestion hook")
     if with_indexer and existing_indexer and b"story-registry" not in existing_indexer:
@@ -242,38 +250,38 @@ def run(sha, apply, *, with_indexer=False):
         raise RuntimeError("unexpected unrelated systemd override: refusing overwrite")
     print(json.dumps({"phase": "preflight", "candidate_sha": sha, "source": str(source),
                       "preflight": "passed", "sqlite_runtime": sqlite3.sqlite_version,
-                      "will_restart": [SERVICE, INDEXER_SERVICE] if with_indexer else [SERVICE]},
+                      "will_restart": units},
                      ensure_ascii=False), flush=True)
     if not apply:
         return
     backup = offline_backup()
     print(json.dumps({"phase": "backup", **backup}, ensure_ascii=False), flush=True)
     try:
-        configure(source, sha, with_indexer=with_indexer)
+        configure(source, sha, with_indexer=with_indexer, with_graph_worker=with_graph_worker)
         systemctl("daemon-reload")
-        systemctl("restart", SERVICE)
-        if with_indexer:
-            systemctl("restart", INDEXER_SERVICE)
+        for unit in units:
+            systemctl("restart", unit)
         health()
         pid = verify_pid(source, sha)
         indexer_pid = verify_pid(source, sha, INDEXER_SERVICE) if with_indexer else None
+        graph_pid = verify_pid(source, sha, GRAPH_SERVICE) if with_graph_worker else None
         print(json.dumps({"phase": "deployed", "sha": sha, "service": SERVICE,
-                          "pid": pid, "indexer_pid": indexer_pid,
+                          "pid": pid, "indexer_pid": indexer_pid, "graph_pid": graph_pid,
                           "public_health": "ok",
                           "backup_file": backup["db_backup"]}, ensure_ascii=False), flush=True)
     except BaseException:
         for path, previous, mode in ((OVERRIDE, existing_override, 0o644),
                                      (OVERRIDE_ENV, existing_env, 0o600),
-                                     (INDEXER_OVERRIDE, existing_indexer, 0o644)):
+                                     (INDEXER_OVERRIDE, existing_indexer, 0o644),
+                                     (GRAPH_OVERRIDE, existing_graph, 0o644)):
             if previous is None:
                 path.unlink(missing_ok=True)
             else:
                 atomically(path, previous.decode("utf8"), mode)
         try:
             systemctl("daemon-reload")
-            systemctl("restart", SERVICE)
-            if with_indexer:
-                systemctl("restart", INDEXER_SERVICE)
+            for unit in units:
+                systemctl("restart", unit)
             health()
             print(json.dumps({"phase": "rolled_back_previous_services", "health": "ok"}), flush=True)
         except Exception as rollback_error:
@@ -288,5 +296,7 @@ if __name__ == "__main__":
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--with-indexer", action="store_true",
                         help="Update both MCP and the accepted-revision activation worker")
+    parser.add_argument("--with-graph-worker", action="store_true",
+                        help="Update candidate-discovery policy in the existing graph worker")
     args = parser.parse_args()
-    run(args.sha, args.apply, with_indexer=args.with_indexer)
+    run(args.sha, args.apply, with_indexer=args.with_indexer, with_graph_worker=args.with_graph_worker)
