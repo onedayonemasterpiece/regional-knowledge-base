@@ -110,3 +110,95 @@ async def test_model_can_create_new_candidate_but_not_without_evidence(tmp_path)
         await bridge.act(wrong,"create",entity_id=eid,site_state="lost_site",
                          site_context="Address",model_reason="The original documented site.")
     assert len(fake.requests)==1
+
+
+
+@pytest.mark.asyncio
+async def test_poi_context_projects_place_hierarchy_and_unverified_map_refs_without_geometry(tmp_path):
+    """Street Story sees source-side geography, not fake accepted cartography.
+
+    The owner connector only needs one authenticated read-only POI context
+    endpoint. No cartography or Street Story DB writes occur on context reads.
+    """
+    b,actor,doc,e=fixture(tmp_path)
+    g=GraphService(b,NoOwnerLookups())
+    cart_ref="cartography://place/place_0123456789abcdef01234567"
+    staged=await g.stage(actor,doc,1,{"entities":[
+        {"key":"site","kind":"poi_ref","canonical_label":"Собор",
+         "place_kind":"building","place_context":"Каменный собор острова; не старый деревянный",
+         "exact_source_spelling":"Собор","evidence":e,
+         "map_refs":[cart_ref]},
+        {"key":"island","kind":"poi_ref","canonical_label":"Остров",
+         "place_kind":"island","exact_source_spelling":"острове","evidence":e},
+    ],"relations":[
+        {"source_key":"site","target_key":"island","kind":"located_in",
+         "time_scope":"Период, описанный в синтетическом источнике",
+         "evidence":[e]},
+    ]})
+    entity=staged["entities"]["site"]
+    poi_id="poi_ss_3a81064258bae2c9b8c41f44"
+    bridge=PoiRegistry(b,owner_url="http://owner.test",
+                       owner_token="testing-owner-secret",client=Owner(poi_id))
+    receipt=await bridge.act(
+        actor,"select",entity_id=entity,poi_id=poi_id,
+        model_reason="An explicitly chosen physical building, not an address-only guess.")
+    ref=receipt["poi_ref"]
+    response=await bridge.context(actor,ref,limit=1)
+    assert response["poi_ref"]==ref
+    assert response["source_scope"]=="actor_authorized"
+    assert response["cartography_acceptance_claimed"] is False
+    assert response["complete_extraction_claimed"] is False
+    assert response["has_more"] is False # exactly one, not a phantom next page
+    assert len(response["locations"])==1
+    item=response["locations"][0]
+    assert item["place_kind"]=="building"
+    assert item["place_context"].startswith("Каменный собор")
+    assert item["map_refs"]==[cart_ref]
+    assert item["map_ref_verification"]=="not_verified"
+    assert item["historical_geometry"]=="not_verified"
+    assert item["evidence_refs"][0]["exact_quote"]==e["exact_quote"]
+    assert item["relations"]==[{
+        "kind":"located_in","neighbor_kind":"poi_ref",
+        "neighbor_label":"Остров","neighbor_id":staged["entities"]["island"],
+        "neighbor_poi_ref":None,"source_relation_state":"candidate",
+        "source_time_scope":"Период, описанный в синтетическом источнике",
+    }]
+    # The evidence-bearing entity and the owner canonical POI did not fork.
+    assert len(b.corpus.rows("rkb_entities"))==2
+    assert (await g.read(actor,entity))["entity"]["external_ref"]==ref
+    assert b.corpus.one("rkb_documents",doc)["active_revision"]==1
+    # Another principal cannot read this private source even by guessing POI ID.
+    another=Principal(subject=str(uuid4()),issuer="test",
+                      client_id="test",access_token="test")
+    restricted=await bridge.context(another,ref)
+    assert restricted["locations"]==[] and restricted["has_more"] is False
+    assert "Собор" not in str(restricted)
+    await b.aclose()
+
+
+@pytest.mark.asyncio
+async def test_poi_context_more_flag_means_actual_extra_authorized_location(tmp_path):
+    """At most limit locations are returned, with one extra ACL-scoped probe."""
+    b,actor,doc,e=fixture(tmp_path)
+    g=GraphService(b,NoOwnerLookups())
+    saved=await g.stage(actor,doc,1,{"entities":[
+        {"key":key,"kind":"poi_ref","canonical_label":label,
+         "exact_source_spelling":"Собор","evidence":e}
+        for key,label in (("physical","Собор"),("related-site","Собор: участок башни"))]})
+    poi_id="poi_ss_3a81064258bae2c9b8c41f44"
+    bridge=PoiRegistry(b,owner_url="http://owner.test",
+                       owner_token="testing-owner-secret",client=Owner(poi_id))
+    # Two distinct source-side records can temporarily refer to one reviewed
+    # physical site pending later editorial deduplication.
+    for eid in saved["entities"].values():
+        await bridge.act(actor,"select",entity_id=eid,poi_id=poi_id,
+                         model_reason="Same physical building site, explicitly verified by model.")
+    ref="streetstory://poi/"+poi_id
+    page=await bridge.context(actor,ref,limit=1)
+    assert len(page["locations"])==1
+    assert page["has_more"] is True
+    full=await bridge.context(actor,ref,limit=2)
+    assert len(full["locations"])==2
+    assert full["has_more"] is False
+    assert sorted(x["entity_id"] for x in full["locations"])==sorted(saved["entities"].values())
+    await b.aclose()
