@@ -95,7 +95,36 @@ def main():
     print(json.dumps(result,ensure_ascii=False))
 if __name__=="__main__":
     import sys
-    if "--diagnose" in sys.argv:
+    if "--poi-id" in sys.argv:
+        import re
+        pos=sys.argv.index("--poi-id")
+        pid=sys.argv[pos+1]
+        if not re.fullmatch(r"poi_ss_[0-9a-f]{24}",pid):
+            raise RuntimeError("exact canonical POI ID required")
+        file=Path("/home/dev/.local/state/street-story/device-token.txt")
+        if file.stat().st_mode & 0o077:
+            raise RuntimeError("device token is not private")
+        private_device_token=file.read_text(encoding="utf8").strip()
+        bridge_token=setting(BRIDGE_ENV,"RKB_STREET_STORY_POI_TOKEN")
+        status,payload=http("GET",BASE+"/v1/pois/"+pid+"/knowledge",private_device_token)
+        ref="streetstory://poi/"+pid
+        internal,status_payload=http("GET",RKB+"/internal/street-story/poi-context?"+
+            urllib.parse.urlencode({"poi_ref":ref}),bridge_token)
+        if status!=200 or internal!=200:
+            raise RuntimeError("RKB/Street Story bidirectional POI readback failed "+
+                               str({"device_http":status,"rkb_http":internal}))
+        locations=payload.get("locations",[])
+        ids=[x.get("entity_id") for x in locations]
+        story_ids=[story.get("story_id") for x in locations for story in x.get("stories",[])]
+        exact_sources=[loc.get("evidence_refs",[]) for loc in locations]
+        print(json.dumps({"owner_device_http":status,"rkb_service_http":internal,
+                          "responses_equal":payload==status_payload,
+                          "poi_ref":ref,"locations":len(ids),
+                          "story_ids":story_ids,
+                          "has_exact_source_evidence":all(bool(x) for x in exact_sources),
+                          "readback": "passed" if payload==status_payload and ids and story_ids else "partial"},
+                          ensure_ascii=False))
+    elif "--diagnose" in sys.argv:
         env={**os.environ,"XDG_RUNTIME_DIR":"/run/user/"+str(os.getuid())}
         env["DBUS_SESSION_BUS_ADDRESS"]="unix:path="+env["XDG_RUNTIME_DIR"]+"/bus"
         p=subprocess.run(["journalctl","--user",
