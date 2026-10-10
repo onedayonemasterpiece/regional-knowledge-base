@@ -13,12 +13,14 @@ def main():
   for role in ('anon','authenticated','service_role','rkb_app'):
    if not db.execute('select 1 from pg_roles where rolname=%s',(role,)).fetchone():db.execute('create role '+role)
   for path in sorted(Path('sql').glob('0*.sql')):
-   if path.name.endswith('rollback.sql') or path.name.startswith(('012','013','024')):continue
+   if path.name.endswith('rollback.sql') or path.name.startswith(('012','013','024','025')):continue
    db.execute(path.read_text())
   migration=Path('sql/012_entity_graph.sql').read_text();db.execute(migration);db.execute(migration)
   finalize_guard=Path('sql/013_async_finalize_guard.sql').read_text();db.execute(finalize_guard);db.execute(finalize_guard)
   org_extension=Path('sql/024_organization_graph.sql').read_text()
   db.execute(org_extension);db.execute(org_extension)
+  location_extension=Path('sql/025_location_graph.sql').read_text()
+  db.execute(location_extension);db.execute(location_extension)
   owner,other,doc,page,region,chunk,obj,nid=([uuid4() for _ in range(8)])
   db.execute('insert into rkb_users(id) values(%s),(%s)',(owner,other))
   db.execute("insert into rkb_documents(id,owner_user_id,title,source_sha256,active_revision,page_count) values(%s,%s,'Synthetic graph source',%s,1,1)",(doc,owner,'a'*64))
@@ -46,6 +48,11 @@ def main():
     values(%s,%s,%s,'participated_in',%s,1,%s::jsonb,'candidate')""",
     (uuid4(),oid,eid,doc,json.dumps([e])))
   assert db.execute("select count(*) from rkb_entity_relations").fetchone()[0]==2
+  street,island=uuid4(),uuid4()
+  for key,label in ((street,'Synthetic street'),(island,'Synthetic island')):
+   db.execute("insert into rkb_entities values(%s,%s,'poi_ref',%s,null,%s,1,'unresolved','{}')",(key,owner,label,doc))
+  db.execute("insert into rkb_entity_relations(id,source_id,target_id,kind,document_id,revision,evidence,state) values(%s,%s,%s,'located_in',%s,1,%s::jsonb,'candidate')",(uuid4(),street,island,doc,json.dumps([e])))
+  assert db.execute("select count(*) from rkb_entity_relations where kind='located_in'").fetchone()[0]==1
   try:
    db.execute("""insert into rkb_entity_relations
      (id,source_id,target_id,kind,document_id,revision,evidence,state)
@@ -67,7 +74,8 @@ def main():
   assert db.execute('select count(*) from rkb_graph_discovery_jobs where document_id=%s',(doc,)).fetchone()[0]==1
   db.execute('update rkb_documents set active_revision=2 where id=%s',(doc,));assert db.execute('select count(*) from rkb_graph_discovery_jobs where document_id=%s',(doc,)).fetchone()[0]==1
   db.execute('set role rkb_app');db.execute("select set_config('rkb.actor_id',%s,false)",(str(owner),));assert db.execute('select count(*) from rkb_entity_mentions where rkb_graph_active(document_id,revision)').fetchone()[0]==0
- result={'organization_extension_sha256':hashlib.sha256(org_extension.encode()).hexdigest(),
+ result={'location_extension_twice':True,'map_free_location_relation':True,
+         'organization_extension_sha256':hashlib.sha256(org_extension.encode()).hexdigest(),
          'organization_extension_twice':True,
          'organization_relation_shapes_guarded':True,
          'migration_sha256':hashlib.sha256(migration.encode()).hexdigest(),'migration_twice':True,'owner_write_read':True,'acl_denied':True,'forged_evidence_rejected':True,'idempotent_mentions':True,'revision_enqueue_idempotent':True,'stale_mentions_hidden':True}
