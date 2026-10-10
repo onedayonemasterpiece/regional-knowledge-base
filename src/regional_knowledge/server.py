@@ -285,6 +285,16 @@ def build_server(
             "in research_sources on the entity/alias, separately from exact book evidence. "
             "Map and coordinate fields are optional. Later model-selected map_refs or "
             "canonical_poi_ref enrich the SAME entity_id; they are not new local identities. "
+            "For visitable or memorialized physical sites, also identify POIs during the "
+            "same review. After source activation call poi_registry(search) for candidate "
+            "real objects, then poi_registry(select or create) with the accepted RKB entity_id. "
+            "Select an existing Street Story POI or create a Street Story candidate for "
+            "a standing building, ruins, plaque, lost site or other grounded physical site. "
+            "Do not turn every island, street or abstract topic into a POI. No automatic "
+            "name-based merge; a candidate is not a verified historic assertion. "
+            "For connected POIs use poi_context to retrieve related stories, people, events "
+            "and exact source evidence under actor permissions. Missing geometry or a delayed "
+            "POI owner must never block book activation. "
             "Do not generate one place per chunk or duplicate names. A unique "
             "Street Story POI is NOT required at book ingestion time: unresolved "
             "identity stays queued and must not block the source or Story Registry. "
@@ -317,6 +327,33 @@ def build_server(
             return JSONResponse({k:status[k] for k in ("configured","ready","retrieval_mode")},headers={"Cache-Control":"no-store"})
         return JSONResponse({"configured":False,"ready":False,"retrieval_mode":"lexical_only"},headers={"Cache-Control":"no-store"})
 
+
+    @mcp.custom_route("/internal/street-story/poi-context", methods=["GET"])
+    async def street_story_poi_context(request: Request):
+        # Explicit single-owner service grant. Never accept the Street Story
+        # device token, arbitrary actor IDs or forwarded end-user OAuth bearers.
+        import hmac
+        from .poi_registry_bridge import _owner_service, PoiRegistry
+        try:
+            _url, expected = _owner_service()
+        except ValueError:
+            return JSONResponse({"error":"bridge_unavailable"},status_code=503)
+        bearer = request.headers.get("Authorization","")
+        supplied = bearer[7:] if bearer.startswith("Bearer ") else ""
+        if not supplied or not hmac.compare_digest(supplied,expected):
+            return JSONResponse({"error":"service_auth_required"},status_code=401)
+        actor=os.getenv("RKB_OWNER_SUBJECT","")
+        if not actor or not hasattr(backend,"corpus"):
+            return JSONResponse({"error":"scope_unavailable"},status_code=503)
+        from .contracts import Principal
+        principal=Principal(subject=actor,client_id="street-story-poi-reader",
+                            issuer="trusted-service-grant",access_token="")
+        try:
+            poi_ref=str(request.query_params.get("poi_ref",""))[:140]
+            value=await PoiRegistry(backend).context(principal,poi_ref,limit=8)
+            return JSONResponse(value,headers={"Cache-Control":"no-store"})
+        except (ValueError,LookupError):
+            return JSONResponse({"error":"invalid_poi_ref"},status_code=422)
 
     # Optional narrow function-call bundles for the client application's own Live agent.
     # The default read-only Live surface above remains unchanged.
@@ -890,6 +927,37 @@ def build_server(
     @mcp.tool(title="Find related entity evidence",description="One authorized entity context and bounded related evidence through the existing E5/BGE/lexical retrieval. Hits are identity candidates, not facts.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
     async def graph_related(entity_id:str,query:str|None=None,limit:int=8)->dict[str,Any]:
         return await GraphService(backend).related(_principal(),entity_id,query,limit)
+
+    @mcp.tool(name="poi_context",title="Historical knowledge linked to a Street Story POI",
+        description="Read actor-authorized source passages, linked people/events and editorial stories "
+                    "for an existing physical POI identity. Missing links are not proof of no history.",
+        annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+    async def poi_context(poi_ref:str,limit:Annotated[int,Field(ge=1,le=10)]=5)->dict[str,Any]:
+        from .poi_registry_bridge import PoiRegistry
+        return await PoiRegistry(backend).context(_principal(),poi_ref,limit=limit)
+
+    @mcp.tool(name="poi_registry",title="Find, select or create Street Story POI for a source place",
+        description="The calling model searches first, then explicitly selects an existing physical POI "
+                    "or creates a candidate for a standing, ruined, commemorated or lost site. "
+                    "Street Story alone owns POI IDs. One operation links the SAME RKB source entity "
+                    "to the owner receipt. Requires accepted exact book evidence; no auto name merge.",
+        annotations=ToolAnnotations(read_only_hint=False,destructive_hint=False,
+                                    idempotent_hint=True,open_world_hint=False))
+    async def poi_registry(
+        action:Literal["search","get","select","create"],
+        entity_id:str|None=None,query:str|None=None,poi_id:str|None=None,
+        site_state:Literal["standing","ruins","memorial","lost_site","historic_site"]|None=None,
+        site_context:str|None=None,model_reason:str|None=None,
+        external_ids:dict[str,str]|None=None,aliases:list[str]|None=None,
+        idempotency_key:str|None=None,limit:Annotated[int,Field(ge=1,le=12)]=8
+    )->dict[str,Any]:
+        from .poi_registry_bridge import PoiRegistry,PoiRegistryError
+        if profile not in {"full","story_contributor","story_editor"}:
+            raise PermissionError("POI mutations unavailable in reader profile")
+        return await PoiRegistry(backend).act(_principal(),action,entity_id=entity_id,
+            query=query,poi_id=poi_id,site_state=site_state,site_context=site_context,
+            model_reason=model_reason,external_ids=external_ids,aliases=aliases,
+            idempotency_key=idempotency_key,limit=limit)
 
     @mcp.tool(title="Active source indexing status",description="Authorized active chunk/vector counts and automatic indexing/readiness state. Optional document scope; no private titles, text or other actors' inventory.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
     async def indexing_status(document_id:str|None=None)->dict[str,Any]:
