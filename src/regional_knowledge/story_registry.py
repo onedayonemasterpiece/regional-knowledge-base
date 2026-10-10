@@ -2279,6 +2279,7 @@ class StoryRegistry:
                 params.extend(kind_list)
             alias_visible=visible.replace('d.payload','ad.payload').replace('d.row_key','ad.row_key')
             alias_scope="""a.table_name IN ('rkb_entity_aliases','rkb_entity_mentions')
+                AND coalesce(json_extract(a.payload,'$.signals.identity_unresolved'),0)=0
                 AND json_extract(a.payload,'$.entity_id')=e.row_key
                 AND a.revision=CAST(json_extract(ad.payload,'$.active_revision') AS INTEGER)
                 AND """+alias_visible

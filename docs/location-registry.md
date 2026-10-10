@@ -33,6 +33,8 @@ A bundle can use `entity_refs: {"parent": "existing UUID"}` for an existing endp
 
 Repeated writes with the same source keys and evidence are idempotent. Cross-book sameness uses an explicit `entity_id`; a different spelling is appended as an alias/mention. Later maps and canonical POI references enrich that ID, preserving mentions and relations. This prevents duplicates on the intended workflow; it is not a claim that a model can never make a mistaken identity decision. There is no automatic name-based merge or destructive history rewrite.
 
+Reverse discovery stores possible passages on its existing discovery job, not as source mentions. `graph_fetch(discovery_job_id=...)` exposes those suggestions for model review. Legacy machine-only mention candidates are excluded from the normal location card and alias search. Alias synchronization may update an already selected external ID, but never selects an ID for an unbound entity.
+
 The background geo worker may discover catalog candidates. It leaves `awaiting_agent` with `identity_selected=false`; it never calls semantic stage/apply on behalf of the model. The older multi-call geo interface remains an optional downstream adapter, not the routine import path. Ordinary ingestion with no selected external ID makes no owner-catalog call and does not depend on Retromap, OSM or Street Story availability.
 
 ## Chunks, stories and later maps

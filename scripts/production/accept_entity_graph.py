@@ -64,5 +64,48 @@ async def run(a):
   a.output.write_text(json.dumps(out,ensure_ascii=False,indent=2,default=str));a.output.chmod(0o600)
  out['temporary_families_revoked']=all([await provider.load_access_token(t.access_token) is None for t in families]);a.output.write_text(json.dumps(out,ensure_ascii=False,indent=2,default=str));a.output.chmod(0o600)
  print(json.dumps({k:v for k,v in out.items() if k not in ('thread','related','canonical_entities','person_alias_job')},ensure_ascii=False,indent=2))
+async def model_calls(parts):
+ """Apply an explicit operator-supplied packet through the real OAuth MCP.
+
+ Used when a client caches old input schemas. No entity/evidence inference,
+ direct corpus writes, credential export or automatic promotion is performed.
+ """
+ import base64
+ raw=base64.b64decode(''.join(parts),validate=True)
+ if len(raw)>64000:raise ValueError('bounded model packet required')
+ calls=json.loads(raw)
+ if not isinstance(calls,list) or not 1<=len(calls)<=8:raise ValueError('1..8 explicit calls required')
+ allowed={'graph_stage','graph_fetch','entity_list','fetch'}
+ if any(c.get('name') not in allowed for c in calls):raise ValueError('graph/source tools only')
+ load_service_env()
+ resource=os.environ['RKB_RESOURCE_URL'];issuer=os.environ['RKB_AUTH_ISSUER']
+ provider=oauth_provider_from_env(issuer=issuer,resource=resource)
+ credentials=provider.store.mutate(lambda state:provider._mint_family(state,
+     client_id=os.environ['RKB_OAUTH_CLIENT_ID'],scopes=[KNOWLEDGE_SCOPE],
+     resource=resource,subject=os.environ['RKB_OWNER_SUBJECT']))
+ results=[]
+ try:
+  async with httpx.AsyncClient(timeout=25,trust_env=False) as client:
+   for i,call in enumerate(calls):
+    response=await client.post(resource,headers={
+      'Authorization':'Bearer '+credentials.access_token,
+      'Accept':'application/json, text/event-stream'},json={
+      'jsonrpc':'2.0','id':i+1,'method':'tools/call','params':call})
+    response.raise_for_status()
+    message=json.loads(next(line[6:] for line in response.text.splitlines() if line.startswith('data: '))) if response.headers.get('content-type','').startswith('text/event-stream') else response.json()
+    if 'error' in message:raise RuntimeError('MCP protocol error: '+call['name'])
+    result=message['result']
+    if result.get('isError'):raise RuntimeError('MCP validation error: '+str(result.get('content'))[:1500])
+    result=result.get('structuredContent') or json.loads(result['content'][0]['text'])
+    results.append({'tool':call['name'],'result':result})
+ finally:
+  access=await provider.load_access_token(credentials.access_token)
+  if access:await provider.revoke_token(access)
+ print(json.dumps({'transport':'existing_public_oauth_mcp','model_authored':True,
+   'direct_corpus_writes':False,'temporary_credentials_revoked':True,'results':results},ensure_ascii=False,default=str))
+
 if __name__=='__main__':
- p=argparse.ArgumentParser();p.add_argument('fixture',type=Path);p.add_argument('output',type=Path);p.add_argument('--poi-alias-update',nargs='+');a=p.parse_args();asyncio.run(run(a))
+ p=argparse.ArgumentParser();p.add_argument('fixture',type=Path,nargs='?');p.add_argument('output',type=Path,nargs='?');p.add_argument('--poi-alias-update',nargs='+');p.add_argument('--model-calls-base64',nargs='+');a=p.parse_args()
+ if a.model_calls_base64:asyncio.run(model_calls(a.model_calls_base64))
+ elif a.fixture and a.output:asyncio.run(run(a))
+ else:p.error('a model-call packet or fixture and output are required')

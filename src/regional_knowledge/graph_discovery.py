@@ -86,17 +86,17 @@ class GraphDiscoveryWorker:
             if not quote or quote not in text:continue
             async with self.graph.connection(actor) as db:
                 e=GraphEvidence(chunk_id=row['id'],page_id=pair['page_id'],region_id=pair['region_id'],exact_quote=quote)
-                if job['entity_id'] is None:
-                    poi_candidates.append({'evidence':locator(e),'exact_source_spelling':spelling,'state':'candidate','ranking':signals[str(row['id'])],'identity_unresolved':True,'external_ref':job['payload']['external_ref']})
-                    written+=1
-                    continue
-                mid=uuid5(job['entity_id'],f"discovery:{row['id']}:{row['revision']}:{digest(names)}")
-                await db.execute('insert into rkb_entity_mentions(id,entity_id,document_id,revision,chunk_id,page_id,region_id,exact_source_spelling,evidence,state,signals) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,\'candidate\',%s) on conflict(id) do nothing',(mid,job['entity_id'],row['document_id'],row['revision'],row['id'],pair['page_id'],pair['region_id'],spelling,Jsonb(locator(e)),Jsonb({'ranking':signals[str(row['id'])],'exact_alias_match':bool(spelling),'normalized_alias_match':bool(matching),'identity_unresolved':True,'retrieval_mode':result.retrieval_mode})))
+                # Retrieval does not establish that this passage mentions this
+                # identity. Keep suggestions on the existing discovery job;
+                # only model-authored graph_stage creates source mentions.
+                poi_candidates.append({'evidence':locator(e),'exact_source_spelling':spelling,
+                    'state':'candidate','ranking':signals[str(row['id'])],
+                    'identity_unresolved':True,'entity_id':str(job['entity_id']) if job['entity_id'] else None,
+                    'external_ref':job['payload'].get('external_ref')})
                 written+=1
-        if job['entity_id'] is None:
-            async with self.graph.connection(actor) as db:
-                current=await(await db.execute('select payload from rkb_graph_discovery_jobs where id=%s and claim=%s',(job['id'],job['claim']))).fetchone()
-                if current:await db.execute('update rkb_graph_discovery_jobs set payload=%s where id=%s and claim=%s',(Jsonb({**current['payload'],'candidates':poi_candidates}),job['id'],job['claim']))
+        async with self.graph.connection(actor) as db:
+            current=await(await db.execute('select payload from rkb_graph_discovery_jobs where id=%s and claim=%s',(job['id'],job['claim']))).fetchone()
+            if current:await db.execute('update rkb_graph_discovery_jobs set payload=%s where id=%s and claim=%s',(Jsonb({**current['payload'],'candidates':poi_candidates}),job['id'],job['claim']))
         log.info(json.dumps({'event':'graph_discovery_complete','job_id':str(job['id']),'candidates':written,'retrieval_mode':result.retrieval_mode,'automatic_merges':0}))
 
     async def sync_pois(self):
@@ -108,9 +108,7 @@ class GraphDiscoveryWorker:
         for node in nodes:
             try:
                 ref=node['external_ref']
-                if not ref:
-                    result=await asyncio.to_thread(self.graph.resolver.resolve,PoiLocatorInput.model_validate(node['metadata']['poi_locator']));ref=result['external_ref']
-                    if not ref:continue
+                if not ref:continue # Only the model may select a physical identity.
                 version=await asyncio.to_thread(self.graph.resolver.version,ref)
                 if not version or version['version']==node['metadata'].get('poi_alias_version'):continue
                 actor=self.actor({'actor_id':node['owner_user_id']})
