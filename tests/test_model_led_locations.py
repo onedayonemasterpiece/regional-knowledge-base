@@ -68,6 +68,24 @@ async def test_locations_reuse_alias_hierarchy_cross_book_and_later_map(tmp_path
     assert found['items'][0]['place_kind']=='island'
     island=await g.read(actor,saved['entities']['island'])
     assert len(island['neighbors'])==2
+    # Old broad discovery suggestions must not appear as model-linked mentions
+    # or become aliases in the registry (for example another island).
+    from uuid import uuid5,UUID
+    automatic=deepcopy(b.corpus.rows('rkb_entity_mentions')[0])
+    automatic.update(id=str(uuid5(UUID(saved['entities']['island']),'old-discovery')),
+        entity_id=saved['entities']['island'],exact_source_spelling='Other island',
+        signals={'identity_unresolved':True,'retrieval_mode':'vector_only'})
+    b.corpus.put('rkb_entity_mentions',[automatic])
+    assert len((await g.read(actor,saved['entities']['island']))['mentions'])==1
+    assert not catalog.entity_list(actor,kinds=['place'],query='Other island')['items']
+    # Alias synchronization is not permission to select an unlinked identity.
+    from regional_knowledge.graph_discovery import GraphDiscoveryWorker
+    worker=GraphDiscoveryWorker(b);calls=[]
+    class Tracker:
+        def resolve(self,*args):calls.append('resolve');return {'external_ref':None}
+    worker.graph.resolver=Tracker()
+    await worker.sync_pois()
+    assert calls==[]
     assert island['entity']['external_ref'] is None
     assert island['aliases'][0]['evidence']['alias_basis']=='external_research'
 

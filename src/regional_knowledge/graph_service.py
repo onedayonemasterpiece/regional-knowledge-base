@@ -206,7 +206,7 @@ class GraphService:
             if str(node.pop('owner_user_id'))!=principal.subject:
                 node.pop('metadata',None)
             aliases=await(await db.execute('select value,language,alias_type,time_scope,evidence from rkb_entity_aliases where entity_id=%s and rkb_graph_active(document_id,revision) order by id limit %s',(nid,limit))).fetchall()
-            mentions=await(await db.execute('select state,exact_source_spelling,evidence,signals from rkb_entity_mentions where entity_id=%s and rkb_graph_active(document_id,revision) order by id limit %s',(nid,limit))).fetchall()
+            mentions=await(await db.execute("select state,exact_source_spelling,evidence,signals from rkb_entity_mentions where entity_id=%s and rkb_graph_active(document_id,revision) and cast(coalesce(signals->>'identity_unresolved','false') as text) not in ('true','1') order by id limit %s",(nid,limit))).fetchall()
             jobs=await(await db.execute('select id,state,attempts,error_code from rkb_graph_discovery_jobs where entity_id=%s order by created_at desc limit 5',(nid,))).fetchall()
             edges=await(await db.execute('''select e.id,e.source_id,e.target_id,e.kind,e.state,e.time_scope,e.evidence,
              n.id neighbor_id,n.kind neighbor_kind,n.canonical_label neighbor_label,n.external_ref

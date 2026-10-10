@@ -27,7 +27,10 @@ async def test_graph_stage_read_discovery_and_revocation(tmp_path):
  worker=GraphDiscoveryWorker(b);job=await worker.claim();assert job and job['state']=='pending'
  await worker.entity(job,actor)
  await worker.finish(job)
- assert any(m["signals"].get("ranking") for m in b.corpus.rows("rkb_entity_mentions"))
+ assert not any(m["signals"].get("ranking") for m in b.corpus.rows("rkb_entity_mentions"))
+ suggestions=await g.job_read(actor,job['id'])
+ assert suggestions['candidates'] and suggestions['candidates'][0]['identity_unresolved'] is True
+ assert len((await g.read(actor,node))['mentions'])==1
  b.corpus.put('rkb_users',[{**defaults('rkb_users'),'id':owner,'status':'disabled'}])
  with pytest.raises(PermissionError):await g.read(actor,node,20)
 
