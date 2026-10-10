@@ -163,24 +163,41 @@ class PoiRegistry:
             rows=await(await db.execute(
                 "SELECT id FROM rkb_entities WHERE external_ref=%s "
                 "AND rkb_graph_active(document_id,revision) ORDER BY id LIMIT %s",
-                ("streetstory://poi/"+key,take))).fetchall()
+                ("streetstory://poi/"+key,take+1))).fetchall()
         registry=StoryRegistry(self.graph.backend.corpus)
         result=[]
-        for row in rows:
+        for row in rows[:take]:
             eid=str(row["id"])
             graph=await self.graph.read(principal,eid,20)
             stories=registry.search(principal,filters={"entity_ref":eid},limit=take)
+            metadata=graph["entity"].get("metadata") or {}
+            # Only source-side model-selected cross-project references.
+            # Do not advertise map geometry or physical POI identity as
+            # accepted: Cartography and Street Story issue those verdicts.
+            raw_refs=metadata.get("map_refs") or []
+            map_refs=[ref for ref in raw_refs if isinstance(ref,str)
+                      and ref.startswith("cartography://")][:20]
             result.append({
                 "entity_id":eid,
                 "label":graph["entity"]["canonical_label"],
                 "aliases":[a["value"] for a in graph["aliases"]][:12],
+                "place_kind":metadata.get("place_kind"),
+                "place_context":metadata.get("place_context"),
+                "map_refs":map_refs,
+                "map_ref_verification":"not_verified",
+                "historical_geometry":"not_verified",
                 "evidence_refs":[m["evidence"] for m in graph["mentions"][:take]],
                 "relations":[{"kind":e["kind"],"neighbor_kind":e["neighbor_kind"],
                               "neighbor_label":e["neighbor_label"],
-                              "neighbor_id":str(e["neighbor_id"])} for e in graph["neighbors"][:take]],
+                              "neighbor_id":str(e["neighbor_id"]),
+                              "neighbor_poi_ref":e.get("external_ref"),
+                              "source_relation_state":e.get("state"),
+                              "source_time_scope":e.get("time_scope")}
+                             for e in graph["neighbors"][:take]],
                 "stories":[{"story_id":s["story_id"],"title":s["title"],
                             "state":s["state"]} for s in stories.get("results",[])[:take]],
             })
         return {"poi_ref":"streetstory://poi/"+key,"locations":result,
-                "has_more":len(rows)==take,"source_scope":"actor_authorized",
-                "complete_extraction_claimed":False}
+                "has_more":len(rows)>take,"source_scope":"actor_authorized",
+                "complete_extraction_claimed":False,
+                "cartography_acceptance_claimed":False}

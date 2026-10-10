@@ -59,3 +59,38 @@ in all books remain separately testable as additional material is ingested.
 
 Source location graph semantics remain in [location-registry.md](location-registry.md).
 Physical POI identity and candidate lifecycle remain Street Story authority.
+
+## One-hop geographic projection available to Street Story
+
+The owner-authorized `poi_context` / `GET /v1/pois/{id}/knowledge` pair
+also returns each linked RKB source location's `place_kind`,
+`place_context`, and any model-selected `map_refs`. Its relations now carry
+the neighbor's selected Street Story POI ref (if any), the **source relation**
+review state and its source time scope. This reuses RKB's existing source
+graph — it does **not** create, merge or rename any owner-side POI, invent
+coordinates, transmit private passages to Cartography, or add a second
+location register.
+
+**Historical evidence separation is explicit:** every projected item has
+`map_ref_verification=not_verified` and
+`historical_geometry=not_verified`; the response itself sets
+`cartography_acceptance_claimed=false`. A Cartography place/group URI is
+a navigation/reference hint chosen by the model, **not** proof of accepted
+footprint, surveyed location, physical-building generation, source rights,
+or a live map ready for distribution. The source context and relation time
+scope do not imply physical validity dates. Missing map refs are returned
+as `[]`, not generated from a name or today's OSM location.
+
+The bounded response queries one extra *authorized* RKB location to set
+`has_more` correctly. Exactly `limit` accessible locations means
+`has_more=false`; an actual `limit+1`-th source location means
+`has_more=true`. There is no cross-owner pagination or leakage.
+
+**Before a new map ref is staged**, the importing model must verify
+Cartography's current context at its producer authority, confirm the
+precise cartographic **site vs physical part/generation vs street corridor**
+semantics, and save the same source RKB entity UUID. When the producer
+returns `cartographic context is stale; review changed source observations`,
+do **not** attach the previous link. Cartography's source observations,
+independent semantic QA and owner POI binding remain separate acceptance
+gates; attaching a candidate link in RKB cannot waive any of them.
