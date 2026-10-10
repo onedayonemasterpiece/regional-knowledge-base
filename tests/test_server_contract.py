@@ -36,6 +36,10 @@ def test_model_surface_stays_small_and_goal_oriented(monkeypatch):
     assert tools["fetch"].annotations.read_only_hint is True
     assert tools["poi_context"].annotations.read_only_hint is True
     assert tools["poi_registry"].annotations.read_only_hint is False
+    # Regression: defining the exposed tool named `profile` must not shadow
+    # the server capability profile captured by poi_registry.
+    import inspect
+    assert inspect.getclosurevars(tools["poi_registry"].fn).nonlocals["profile"] == "full"
     assert "select" in str(tools["poi_registry"].fn_metadata.arg_model.model_json_schema())
     assert "create" in str(tools["poi_registry"].fn_metadata.arg_model.model_json_schema())
 

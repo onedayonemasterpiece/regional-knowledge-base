@@ -34,7 +34,9 @@ def atomic(path: Path, content: str, mode: int):
         tmp.unlink(missing_ok=True)
 
 
-def run(apply: bool):
+def run(apply: bool, restart: bool = False):
+    if restart and not apply:
+        raise ValueError('--restart requires --apply')
     if not apply:
         return {"status":"preflight","scope":"loopback_service_credential",
                 "units":list(UNITS),"ready_to_install":True}
@@ -68,16 +70,45 @@ def run(apply: bool):
             raise RuntimeError("conflicting service override: "+unit)
         if not target.exists():
             atomic(target,content,0o644)
+    bus="/run/user/"+str(os.getuid())
+    env={**os.environ,"XDG_RUNTIME_DIR":bus,
+         "DBUS_SESSION_BUS_ADDRESS":"unix:path="+bus+"/bus"}
     subprocess.run(["systemctl","--user","daemon-reload"],check=True,timeout=20,
-                   stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-    return {"status":"configured","units":list(UNITS),
-            "scope":"shared_private_loopback_poi_only",
-            "requires_service_restart":True,"credential":"redacted"}
+                   env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    if restart:
+        # Existing units and source revisions only: no new deployment or jobs.
+        import json
+        import time
+        import urllib.error
+        import urllib.request
+        for unit in UNITS:
+            subprocess.run(["systemctl","--user","restart",unit],check=True,
+                           timeout=40,env=env,stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        for address,expected in (("http://127.0.0.1:8000/health","status"),
+                                 ("http://127.0.0.1:8188/healthz","ok")):
+            # systemctl restart returns before the new HTTP listener is ready.
+            deadline=time.monotonic()+30
+            while True:
+                try:
+                    with urllib.request.urlopen(address,timeout=3) as response:
+                        state=json.load(response)
+                    if state.get(expected)==("ok" if expected=="status" else True):
+                        break
+                except (urllib.error.URLError,ValueError):
+                    pass
+                if time.monotonic()>=deadline:
+                    raise RuntimeError('configured service health failed')
+                time.sleep(0.5)
+    return {"status":"configured" if not restart else "restarted_healthy",
+            "units":list(UNITS),"scope":"shared_private_loopback_poi_only",
+            "requires_service_restart":not restart,"credential":"redacted"}
 
 
 if __name__=="__main__":
     parser=argparse.ArgumentParser()
     parser.add_argument("--apply",action="store_true")
+    parser.add_argument("--restart",action="store_true")
     args=parser.parse_args()
     import json
-    print(json.dumps(run(args.apply)))
+    print(json.dumps(run(args.apply,args.restart)))
