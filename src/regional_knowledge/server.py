@@ -1036,12 +1036,15 @@ def build_server(
         )
 
     @mcp.tool(
+        name="profile",
         title="Connected knowledge profile",
         description="Return the stable connected Regional Knowledge account identity.",
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         meta={"openai/profile": True},
     )
-    def profile() -> ProfileOutput:
+    def connected_profile() -> ProfileOutput:
+        # Distinct Python name: don't overwrite build_server(profile=...) captured
+        # by capability authorization for other MCP tools.
         return ProfileOutput(id=_principal().subject)
 
     return mcp

@@ -75,7 +75,7 @@ async def model_calls(parts):
  if len(raw)>64000:raise ValueError('bounded model packet required')
  calls=json.loads(raw)
  if not isinstance(calls,list) or not 1<=len(calls)<=8:raise ValueError('1..8 explicit calls required')
- allowed={'graph_stage','graph_fetch','entity_list','fetch'}
+ allowed={'graph_stage','graph_fetch','entity_list','fetch','poi_registry','poi_context'}
  if any(c.get('name') not in allowed for c in calls):raise ValueError('graph/source tools only')
  load_service_env()
  resource=os.environ['RKB_RESOURCE_URL'];issuer=os.environ['RKB_AUTH_ISSUER']
