@@ -44,6 +44,20 @@ class PdfProcessor(Protocol):
     ) -> tuple[int, tuple[PdfRenderedPage, ...]]: ...
 
 
+def native_encoding_notice(document, page):
+    """Flag absent CID-to-Unicode information, never guess replacement characters."""
+    fonts = sorted({font[0] for font in page.get_fonts(full=True)
+                    if font[2] == 'Type0'
+                    and document.xref_get_key(font[0], 'ToUnicode')[0] == 'null'})
+    if not fonts:
+        return None
+    return {'code': 'cid_font_without_unicode_map', 'font_count': len(fonts),
+            'font_xrefs': fonts[:16],
+            'guidance': 'Native characters may be wrong even when page images are readable. '
+                        'Transcribe or recover source glyph mappings with visual review; '
+                        'do not index native strings blindly or replace the original PDF.'}
+
+
 class PyMuPdfProcessor:
     """Deterministic PDF inspection/rendering; semantic layout stays with the model."""
 
@@ -182,6 +196,7 @@ class PyMuPdfProcessor:
                             "blocks_truncated": text_part is None and len(raw_blocks) > MAX_NATIVE_BLOCKS,
                             "blocks_continuation": f"text:{index}:{MAX_NATIVE_BLOCKS}:0" if text_part is None and len(raw_blocks) > MAX_NATIVE_BLOCKS else (f"text:{index}:{block_index + 1}:0" if text_part is not None and block_index + 1 < len(raw_blocks) else None),
                             "requires_visual_review": True,
+                            "encoding_notice": native_encoding_notice(document, page),
                         },
                     )
                 )

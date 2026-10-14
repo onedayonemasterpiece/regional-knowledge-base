@@ -148,7 +148,7 @@ def sha256_file(path: Path) -> tuple[str, int]:
 class ChatFileDownloader:
     """Download one ephemeral client attachment to a bounded local staging file."""
 
-    async def download(self, url: str, directory: Path) -> DownloadedFile:
+    async def download(self, url: str, directory: Path, *, max_bytes: int | None = None) -> DownloadedFile:
         import aiohttp
         from yarl import URL
 
@@ -163,6 +163,11 @@ class ChatFileDownloader:
         size = 0
         digest = hashlib.sha256()
         maximum = _max_bytes()
+        if max_bytes is not None:
+            if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1:
+                temp.unlink(missing_ok=True)
+                raise ValueError('invalid download byte limit')
+            maximum = min(maximum, max_bytes)
         try:
             resolver = _PinnedResolver(host, addresses)
             connector = aiohttp.TCPConnector(

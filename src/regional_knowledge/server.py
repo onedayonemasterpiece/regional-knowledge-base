@@ -828,6 +828,11 @@ def build_server(
             "Resume existing state after interruptions; when the user explicitly "
             "asks to replace a still-pending reprocess, pass metadata.duplicate_policy=new_revision "
             "to start one newer archived-source revision instead of resuming the pending job. "
+            "For a large model-authored batch, stage may use file=one UTF-8 JSON attachment "
+            "instead of inline arrays. That JSON must contain ingestion_id, source_revision and "
+            "the same stage fields, with at most 8 pages, 100 chunks and 12 stories, <=1 MiB. "
+            "Never mix a stage file with inline metadata/arrays or put an original PDF in stage. "
+            "File transport does not replace model source review or automatically mark pages reviewed. "
             "Finalization alone activates "
             "the revision. If next_action is wait, return control to the user and check status "
             "later instead of tight polling. Stage coherent semantic retrieval passages near "
@@ -924,6 +929,15 @@ def build_server(
                 ],
             }
         principal = _principal()
+        stage_file_sha = None
+        if file is not None and command == 'stage':
+            if payload is not None:
+                raise ValueError('stage_file_cannot_mix_with_inline_payload')
+            from .stage_file import read_stage_file
+            payload, stage_file_sha = await read_stage_file(backend, principal, ingestion_id, file)
+            file = None
+        elif file is not None and command not in {'start', 'reprocess'}:
+            raise ValueError('file_only_supported_for_start_reprocess_or_stage')
         result = await backend.book_ingest(
             command=command,
             principal=principal,
@@ -933,6 +947,8 @@ def build_server(
             payload=payload,
             document_id=document_id,
         )
+        if stage_file_sha:
+            result = result.model_copy(update={'message': result.message + '; stage_file_sha256=' + stage_file_sha})
         return await _attach_story_extraction(backend, principal, result)
 
     @mcp.tool(title="Stage evidence-backed entity graph", description="Submit bounded model-authored graph candidates on an owned active document, or add a sourced alias to one owned entity. No automatic identity merge. Exact source chunk/page/region evidence required.", annotations=ToolAnnotations(read_only_hint=False,open_world_hint=False))
