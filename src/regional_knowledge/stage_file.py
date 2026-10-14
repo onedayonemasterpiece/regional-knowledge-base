@@ -96,7 +96,8 @@ async def read_stage_file(backend, principal, ingestion_id, file):
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(prefix='rkb-stage-', dir=root) as directory:
         downloaded = await backend.file_downloader.download(
-            str(file.download_url), Path(directory), max_bytes=MAX_STAGE_FILE_BYTES)
+            str(file.download_url), Path(directory), max_bytes=MAX_STAGE_FILE_BYTES,
+            content_kind='stage_json')
         def parse():
             with downloaded.path.open('rb') as source:
                 data = source.read(MAX_STAGE_FILE_BYTES + 1)

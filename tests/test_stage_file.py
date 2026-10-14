@@ -77,7 +77,8 @@ class Downloader:
         self.data = data
         self.calls = []
         self.path = None
-    async def download(self, url, directory, *, max_bytes=None):
+    async def download(self, url, directory, *, max_bytes=None, content_kind='source'):
+        assert content_kind == 'stage_json'
         self.calls.append((url, max_bytes))
         self.path = Path(directory)/'stage.json'
         self.path.write_bytes(self.data)
@@ -141,6 +142,46 @@ async def test_mcp_file_and_inline_stage_share_backend_and_cannot_mix(batch, mon
     await server._tool_manager.call_tool('book_ingest', {
         'command': 'stage', 'ingestion_id': batch['ingestion_id'], 'pages': batch['pages']}, None)
     assert len(calls) == 2 and calls[1]['payload']['pages'][0]['knowledge_reviewed'] is True
+
+
+@pytest.mark.asyncio
+async def test_real_downloader_stage_json_does_not_run_pdf_sniffer(batch, tmp_path, monkeypatch):
+    import aiohttp
+    from regional_knowledge import file_ingress
+    async def addresses(_host):
+        return ('8.8.8.8',)
+    monkeypatch.setattr(file_ingress, '_public_addresses', addresses)
+    payload = encode(batch)
+    class Response:
+        status = 200
+        headers = {}
+        content_length = len(payload)
+        def __init__(self):
+            self.content = self
+        async def iter_chunked(self, _size):
+            yield payload
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): pass
+    class Session:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): pass
+        def get(self, *args, **kwargs): return Response()
+    monkeypatch.setattr(aiohttp, 'TCPConnector', lambda **kwargs: None)
+    monkeypatch.setattr(aiohttp, 'ClientSession', Session)
+    reader = file_ingress.ChatFileDownloader()
+    # Exercise the ACTUAL stream/post-download contract, not a downloader stub.
+    with pytest.raises(file_ingress.FileIngressError, match='unsupported_source_container'):
+        await reader.download('https://example.org/stage.json', tmp_path)
+    assert not list(tmp_path.iterdir())
+    downloaded = await reader.download('https://example.org/stage.json', tmp_path,
+                                       max_bytes=MAX_STAGE_FILE_BYTES, content_kind='stage_json')
+    assert parse_stage_file(downloaded.path.read_bytes(), batch['ingestion_id'], 1)['pages']
+    downloaded.path.unlink()
+    with pytest.raises(file_ingress.FileIngressError, match='size_limit'):
+        await reader.download('https://example.org/stage.json', tmp_path,
+                              max_bytes=10, content_kind='stage_json')
+    assert not list(tmp_path.iterdir())
 
 
 def test_missing_cid_unicode_warns_without_guessing_or_blocking():

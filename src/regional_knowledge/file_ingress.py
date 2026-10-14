@@ -148,10 +148,13 @@ def sha256_file(path: Path) -> tuple[str, int]:
 class ChatFileDownloader:
     """Download one ephemeral client attachment to a bounded local staging file."""
 
-    async def download(self, url: str, directory: Path, *, max_bytes: int | None = None) -> DownloadedFile:
+    async def download(self, url: str, directory: Path, *, max_bytes: int | None = None,
+                       content_kind: str = 'source') -> DownloadedFile:
         import aiohttp
         from yarl import URL
 
+        if content_kind not in {'source', 'stage_json'}:
+            raise ValueError('unsupported_download_content_kind')
         host = validated_public_https_host(url)
         addresses = await _public_addresses(host)
         directory.mkdir(parents=True, exist_ok=True)
@@ -211,11 +214,14 @@ class ChatFileDownloader:
                                 out.write(chunk)
             if size < 5:
                 raise FileIngressError("invalid_pdf")
-            from .source_adapter import source_format
-            try:
-                source_format(temp)
-            except ValueError as exc:
-                raise FileIngressError("unsupported_source_container") from exc
+            if content_kind == 'source':
+                from .source_adapter import source_format
+                try:
+                    source_format(temp)
+                except ValueError as exc:
+                    raise FileIngressError("unsupported_source_container") from exc
+            # stage_json is decoded and validated by StageFile immediately after
+            # this bounded download. Default book ingress still requires PDF/DjVu.
             return DownloadedFile(temp, digest.hexdigest(), size)
         except FileIngressError:
             temp.unlink(missing_ok=True)
