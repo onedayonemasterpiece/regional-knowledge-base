@@ -52,7 +52,7 @@ def _constant(_value):
     raise ValueError('nonfinite stage JSON value')
 
 
-def parse_stage_file(data: bytes, ingestion_id: str, revision: int) -> dict:
+def parse_stage_file(data: bytes, ingestion_id: str | UUID, revision: int) -> dict:
     if not data or len(data) > MAX_STAGE_FILE_BYTES:
         raise ValueError('stage_file_size_limit')
     try:
@@ -77,7 +77,7 @@ def parse_stage_file(data: bytes, ingestion_id: str, revision: int) -> dict:
             path = '.'.join(str(part) if isinstance(part,int) or part in allowed else '*' for part in issue['loc'])
             issues.append(path + ':' + issue['type'])
         raise StageFileError('stage_file_schema: ' + '; '.join(issues)) from exc
-    if str(staged.ingestion_id) != str(UUID(ingestion_id)) or staged.source_revision != revision:
+    if str(staged.ingestion_id) != str(UUID(str(ingestion_id))) or staged.source_revision != revision:
         raise StageFileError('stage_file_ingestion_or_revision_mismatch')
     return staged.model_dump(mode='json', exclude={'ingestion_id', 'source_revision'}, exclude_none=True)
 

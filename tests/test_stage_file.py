@@ -3,7 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -28,8 +28,9 @@ def encode(value):
     return json.dumps(value, ensure_ascii=False).encode('utf-8')
 
 
-def test_parse_retains_exact_model_content_and_never_infers_review(batch):
-    payload = parse_stage_file(encode(batch), batch['ingestion_id'], 1)
+@pytest.mark.parametrize('identity_type', [str, UUID])
+def test_parse_retains_exact_model_content_and_never_infers_review(batch, identity_type):
+    payload = parse_stage_file(encode(batch), identity_type(batch['ingestion_id']), 1)
     assert payload['pages'][0]['regions'][0]['source_text'] == batch['pages'][0]['regions'][0]['source_text']
     assert payload['pages'][0]['knowledge_reviewed'] is True
     assert 'ingestion_id' not in payload and 'source_revision' not in payload
@@ -86,10 +87,11 @@ class Downloader:
 
 
 @pytest.mark.asyncio
-async def test_authority_precedes_download_and_temp_is_removed(batch, tmp_path, monkeypatch):
+@pytest.mark.parametrize('identity_type', [str, UUID])
+async def test_authority_precedes_download_and_temp_is_removed(batch, tmp_path, monkeypatch, identity_type):
     monkeypatch.setenv('RKB_WORK_DIR', str(tmp_path))
     actor = Principal(subject=str(uuid4()), client_id='synthetic', issuer='synthetic', access_token='not-a-secret')
-    row = {'id': batch['ingestion_id'], 'staged_revision': 1, 'owner_user_id': actor.subject}
+    row = {'id': identity_type(batch['ingestion_id']), 'staged_revision': 1, 'owner_user_id': actor.subject}
     downloader = Downloader(encode(batch))
     async def lookup(**kwargs):
         return row
