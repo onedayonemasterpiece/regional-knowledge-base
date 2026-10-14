@@ -22,7 +22,7 @@ from .story_contracts import (
 from .story_registry import StoryRegistry, StoryError, digest, now
 
 
-def _resolve_candidates(graph, candidates):
+def _resolve_candidates(graph, candidates, document_id):
     regions = {
         (str(page.page_id), region.region_key):
             (page, region)
@@ -60,6 +60,9 @@ def _resolve_candidates(graph, candidates):
             })
         data = candidate.model_dump(mode="json", exclude={"evidence_refs"})
         data["evidence"] = proof
+        from .ingestion_enrichment import resolve_entity_keys
+        data["entity_links"], data["enrichment_issues"] = resolve_entity_keys(
+            graph, document_id, candidate.entity_keys)
         # Model-authored title is not a factual assertion; excerpt and location
         # are explicit, immutable provenance of what was observed.
         data["fingerprint"] = digest({
@@ -75,7 +78,7 @@ def _resolve_candidates(graph, candidates):
     return resolved
 
 
-def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates):
+def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates, *, allow_finalized=False):
     """Bounded DB transaction after the canonical staged-page graph is stored.
 
     If this call crashes between graph storage and this checkpoint, book
@@ -94,7 +97,7 @@ def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates):
     collected, invalid = [], []
     for candidate in candidates:
         try:
-            collected.extend(_resolve_candidates(graph, [candidate]))
+            collected.extend(_resolve_candidates(graph, [candidate], doc_id))
         except ValueError:
             # Never derail a valid book import because one OPTIONAL model-
             # authored story failed source proof. Persist a bounded review
@@ -117,8 +120,12 @@ def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates):
         job = json.loads(job_row[0])
         if (str(job.get("owner_user_id")) != actor or str(job.get("document_id")) != doc_id
                 or int(job.get("staged_revision") or 0) != revision
-                or job["state"] == "finalized"):
+                or (job["state"] == "finalized" and not allow_finalized)):
             raise ValueError("ingestion changed, was finalized or actor lacks rights")
+        if allow_finalized:
+            document = StoryRegistry._corpus_row(db, 'rkb_documents', doc_id)
+            if pages or job['state'] != 'finalized' or not document or int(document.get('active_revision') or 0) != revision:
+                raise ValueError('metadata-only enrichment requires the exact active finalized source')
         if changed:
             marks = ",".join("?" for _ in changed)
             db.execute(f"""DELETE FROM story_ingest_candidates
@@ -129,11 +136,13 @@ def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates):
                     )""", [ing_id, *changed])
             for page in pages:
                 db.execute("""INSERT INTO story_ingest_coverage
-                  (ingestion_id,document_id,source_revision,physical_page_index,state,at)
-                  VALUES(?,?,?,?,?,?) ON CONFLICT(ingestion_id,physical_page_index)
-                  DO UPDATE SET state=excluded.state,at=excluded.at""",
+                  (ingestion_id,document_id,source_revision,physical_page_index,state,at,knowledge_reviewed)
+                  VALUES(?,?,?,?,?,?,?) ON CONFLICT(ingestion_id,physical_page_index)
+                  DO UPDATE SET state=excluded.state,at=excluded.at,
+                                knowledge_reviewed=excluded.knowledge_reviewed""",
                            (ing_id, doc_id, revision, page.physical_page_index,
-                            "reviewed" if page.story_candidates_reviewed else "unreviewed", now()))
+                            "reviewed" if page.story_candidates_reviewed else "unreviewed", now(),
+                            int(page.knowledge_reviewed)))
         for candidate in invalid:
             db.execute("""INSERT INTO story_ingest_candidates
                     (ingestion_id,candidate_key,document_id,source_revision,
@@ -148,7 +157,7 @@ def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates):
             key = candidate["candidate_key"]
             existing = db.execute("""SELECT payload,state FROM story_ingest_candidates
                     WHERE ingestion_id=? AND candidate_key=?""", (ing_id, key)).fetchone()
-            if existing and existing["state"] == "accepted":
+            if existing and existing["state"] == "accepted" and not allow_finalized:
                 continue
             db.execute("""INSERT INTO story_ingest_candidates
                     (ingestion_id,candidate_key,document_id,source_revision,
@@ -202,6 +211,23 @@ def activate_stories(ctx, document, ingestion_id, revision):
                                 data["fingerprint"])).fetchone()
             if prior:
                 story_id = prior["story_id"]
+                rec, snap = registry._read_story(db, actor, story_id)
+                if any(data.get(k) for k in ('event_dates', 'observations', 'entity_links', 'enrichment_issues')):
+                    # Reimport never overwrites an independently edited assertion.
+                    claim = next((a for a in snap['assertions']
+                                  if a['kind'] == 'attributed_account'
+                                  and a['proposition'] == data['proposition']
+                                  and a.get('attributed_to') == data.get('attributed_to')
+                                  and a.get('reported_by') == data.get('reported_by')), None)
+                    if claim is None or rec['archived'] or rec['merged_into']:
+                        data['enrichment_issues'] = [{'kind': 'story', 'reason': 'existing_story_changed'}]
+                    else:
+                        from .ingestion_enrichment import apply_inline_enrichment
+                        changed, data['enrichment_issues'] = apply_inline_enrichment(
+                            registry, db, application_actor, snap, claim, document['id'], data)
+                        if changed:
+                            registry._snapshot(db, story_id, rec['revision'] + 1, snap,
+                                               application_actor, 'automated_source_candidate')
                 reused += 1
             else:
                 seed = {"text": data["summary"], "origin_status": "known",
@@ -235,6 +261,9 @@ def activate_stories(ctx, document, ingestion_id, revision):
                             physical_page_index=evidence["physical_page_index"],
                             printed_page_number=evidence["printed_page_number"],
                             start=evidence["start"], end=evidence["end"])))
+                from .ingestion_enrichment import apply_inline_enrichment
+                _changed, data['enrichment_issues'] = apply_inline_enrichment(
+                    registry, db, application_actor, snap, claim, document['id'], data)
                 snap["state"] = "candidate"
                 registry._snapshot(db, story_id, 2, snap, application_actor,
                                    "automated_source_candidate")
@@ -244,9 +273,12 @@ def activate_stories(ctx, document, ingestion_id, revision):
                            (document["id"], document["source_sha256"],
                             data["fingerprint"], story_id, now()))
                 accepted += 1
-            db.execute("""UPDATE story_ingest_candidates SET state='accepted',story_id=?,at=?
+            partial = bool(data.get('enrichment_issues'))
+            db.execute("""UPDATE story_ingest_candidates SET state=?,story_id=?,at=?,payload=?,payload_hash=?
                       WHERE ingestion_id=? AND candidate_key=?""",
-                       (story_id, now(), ingestion_id, row["candidate_key"]))
+                       ('needs_review' if partial else 'accepted', story_id, now(),
+                        canonical(data), digest(data), ingestion_id, row["candidate_key"]))
+            skipped += int(partial)
             db.execute("RELEASE story_candidate")
         except (ValueError, KeyError, sqlite3.IntegrityError, StoryError):
             db.execute("ROLLBACK TO story_candidate")
@@ -274,9 +306,11 @@ def extraction_status(corpus, ingestion_row):
         states = db.execute("""SELECT state,COUNT(*) AS n FROM story_ingest_candidates
                     WHERE ingestion_id=? GROUP BY state""", (str(ing_id),)).fetchall()
         candidate_states = {row["state"]: row["n"] for row in states}
+        saved = db.execute("""SELECT count(*) FROM story_ingest_candidates
+            WHERE ingestion_id=? AND story_id IS NOT NULL""", (str(ing_id),)).fetchone()[0]
     reviewed = coverage.get("reviewed", 0)
     staged = candidate_states.get("staged", 0)
-    accepted = candidate_states.get("accepted", 0)
+    accepted = saved
     needs_review = candidate_states.get("needs_review", 0)
     if total > 0 and reviewed >= total and not staged and not needs_review and ingestion_row.get("state") == "finalized":
         state = "completed"

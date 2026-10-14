@@ -94,12 +94,19 @@ async def _attach_story_extraction(
         return result
     from .story_ingestion import extraction_status
 
-    status = extraction_status(backend.corpus, row)
+    from .contracts import KnowledgeExtractionStatus
+    from .ingestion_enrichment import knowledge_status
+    # SQLite reads run off-loop; no source graph load or network under a write lock.
+    status = await asyncio.to_thread(extraction_status, backend.corpus, row)
     if status is None:
         return result
-    return result.model_copy(update={
-        "story_extraction": StoryExtractionStatus.model_validate(status),
-    })
+    knowledge = await asyncio.to_thread(knowledge_status, backend.corpus, row)
+    update = {"story_extraction": StoryExtractionStatus.model_validate(status)}
+    if knowledge is not None:
+        update['knowledge_extraction'] = KnowledgeExtractionStatus.model_validate(knowledge)
+        if result.next_action == 'done' and knowledge['state'] != 'pass_completed':
+            update['message'] = result.message + '; source ready, semantic extraction still requires model work'
+    return result.model_copy(update=update)
 
 
 def _transport_security(resource_url: str | None = None) -> TransportSecuritySettings:
@@ -281,6 +288,17 @@ def build_server(
             "without inventing another mention. Do not infer contains/located_in merely "
             "because two names share a passage. A chunk may mention several places, or "
             "only a broad island/city; keep that granularity instead of guessing a house. "
+            "For EVERY source page, review all applicable stories, people, organizations, events, "
+            "dates, places, quantities, captions and footnotes in the SAME semantic pass. "
+            "Set knowledge_reviewed=true only after this work, including a genuinely empty page. "
+            "Do not populate just poi_ref: include person, organization, event and historical_thread "
+            "nodes where the source supports them, preserving aliases and relations. "
+            "A story candidate can include event_dates and observations with evidence_indexes "
+            "(zero-based positions in its own evidence_refs, default [0]); dates must retain "
+            "precision, explicit calendar or unspecified, and exact printed date text. "
+            "Use story candidate entity_keys to link only model-selected GraphBundle keys. "
+            "These fields are stored with that same attributed story at source activation; "
+            "no later copying of already read dates/numbers is needed. "
             "Web research can clarify current/historical names: record its URL and note "
             "in research_sources on the entity/alias, separately from exact book evidence. "
             "Map and coordinate fields are optional. Later model-selected map_refs or "
@@ -817,11 +835,21 @@ def build_server(
             "mechanical page-sized chunks. Exact E5/BGE token counts are validated over the "
             "final augmented search material before finalization. During existing book_pages/stage " +
             "model review also extract story candidates by episode (not per retrieval chunk). " +
+            "For every page review stories, dates, people, organizations, events, places, quantities " +
+            "and source media in the SAME pass; set knowledge_reviewed=true when considered. " +
+            "This also sets story_candidates_reviewed. In story_candidates send event_dates and " +
+            "observations with zero-based evidence_indexes into that candidate's evidence_refs; " +
+            "link selected graph nodes via entity_keys. Do not invent exact days or calendars. " +
             "Mark each staged page story_candidates_reviewed=true after reviewing it; an empty " +
             "story_candidates list is a valid explicit no-candidate review. Submit exact region excerpts " +
             "as story_candidates in the SAME stage call, without a separate prompt or LLM request. " +
             "They are saved when the accepted book revision activates; they are attributed candidates " +
-            "and never automatically publish_ready. Review story_extraction progress in status. " +
+            "and never automatically publish_ready. Review story_extraction and knowledge_extraction " +
+            "in status; status(document_id) finds the owned book's latest checkpoint. " +
+            "Source next_action=done is not completion of semantic extraction or retrieval acceptance. " +
+            "After activation stage accepts ONLY metadata (story_candidates/entity_candidates), " +
+            "so a corrected candidate can clear its pending checkpoint without changing source/vectors. " +
+            "Never restage accepted pages or chunks; use reprocess/rechunk for changed source layout. " +
             "After successful finalization, continue the SAME user goal by calling " +
             "story_reconcile(next, document_id=...) to claim accepted story candidates; " +
             "search existing story_search assertions and knowledge_search original sources, " +
@@ -830,8 +858,9 @@ def build_server(
             "persist pending frontier and report unfinished work explicitly rather than pretending " +
             "that acceptance of the book completed reconciliation. " +
             "During the SAME model page-review pass, use existing entity_candidates " +
-            "for a bounded GraphBundle of source-backed poi_ref place/toponym/" +
-            "historical-address nodes: include exact_source_spelling and locator names " +
+            "for a bounded GraphBundle of source-backed poi_ref place/toponym/historical-address " +
+            "nodes and person, organization, event, historical_thread nodes: " +
+            "include exact_source_spelling and locator names where applicable " +
             "plus matching chunk_id/page_id/region_id/exact_quote. " +
             "Prefer distinct physical places, not a new node for every occurrence. " +
             "Do not guess historical geography, modern coordinates or canonical IDs. " +
