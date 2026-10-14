@@ -167,14 +167,27 @@ def activate(ctx,p):
     ctx.activation=True
     ctx.corpus.put('rkb_documents',[{**d,'active_revision':rev}],connection=ctx.db)
     ctx.corpus.put('rkb_ingestion_jobs',[{**j,'state':'finalized','cursor':None,'error_code':None}],connection=ctx.db)
-    # Same short SQLite transaction: candidates are source-backed stories only
-    # after accepted book activation. No network/model call under the write lock.
+    # Promote source-owned identities BEFORE stories resolve their graph links.
+    # One indexed source slice, not entities x all mentions across the corpus.
+    nodes = ctx.db.execute("""SELECT payload FROM corpus_rows
+        WHERE table_name='rkb_entities' AND document_id=?
+          AND json_extract(payload,'$.metadata._next_revision')=?
+          AND row_key IN (SELECT json_extract(payload,'$.entity_id') FROM corpus_rows
+            WHERE table_name='rkb_entity_mentions' AND document_id=? AND revision=?)""",
+        (d['id'], rev, d['id'], rev)).fetchall()
+    from .graph_service import _merge_source_metadata
+    for row in nodes:
+        node = json.loads(row[0]); m = node['metadata']
+        projected = _merge_source_metadata(
+            {k:v for k,v in m.items() if not k.startswith('_next_')},
+            {k:v for k,v in m.get('_next_metadata', {}).items() if not k.startswith('_next_')})
+        ctx.corpus.put('rkb_entities', [{**node, 'revision': rev,
+            'state': m.get('_next_state', node['state']),
+            'external_ref': m.get('_next_external_ref', node.get('external_ref')),
+            'metadata': projected}], connection=ctx.db)
+    # Same short SQLite transaction; no network/model call under the write lock.
     from .story_ingestion import activate_stories
     activate_stories(ctx,d,j['id'],rev)
-    for node in ctx.rows('rkb_entities'):
-        m=node.get('metadata') or {}
-        if node['document_id']==d['id'] and m.get('_next_revision')==rev and any(x['entity_id']==node['id'] and x['document_id']==d['id'] and x['revision']==rev for x in ctx.rows('rkb_entity_mentions')):
-            ctx.corpus.put('rkb_entities',[{**node,'revision':rev,'state':m.get('_next_state',node['state']),'external_ref':m.get('_next_external_ref',node.get('external_ref')),'metadata':m.get('_next_metadata',m)}],connection=ctx.db)
     key='document:'+d['id']+':'+str(rev)
     if not any(x['job_key']==key for x in ctx.rows('rkb_graph_discovery_jobs')):
         ctx.corpus.put('rkb_graph_discovery_jobs',[{**defaults('rkb_graph_discovery_jobs'),'actor_id':d['owner_user_id'],'document_id':d['id'],'revision':rev,'job_key':key,'payload':{'kind':'document','offset':0}}],connection=ctx.db)

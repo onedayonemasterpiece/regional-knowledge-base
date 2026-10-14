@@ -10,6 +10,19 @@ log=logging.getLogger(__name__)
 def locator(e):
     return {**e.model_dump(mode='json'),'evidence_ref':'knowledge://chunks/'+str(e.chunk_id)}
 
+def _merge_source_metadata(previous, updates):
+    """Absent source fields cannot erase already selected geography/owner links."""
+    merged = dict(previous)
+    for key, value in updates.items():
+        if value is None or value == [] or value == {}:
+            continue
+        if key in {'map_refs', 'research_sources'}:
+            merged[key] = list({digest(item): item for item in [*merged.get(key, []), *value]}.values())[:20]
+        else:
+            merged[key] = value
+    return merged
+
+
 class GraphService:
     def __init__(self,backend,resolver=None):
         if not hasattr(backend,'data_client'):raise RuntimeError('graph requires the authorized data adapter')
@@ -102,6 +115,11 @@ class GraphService:
                     'research_sources':[s.model_dump(mode='json') for s in n.research_sources],
                     'map_refs':n.map_refs,
                 }.items() if v})
+                if old:
+                    metadata = _merge_source_metadata(old['metadata'], metadata)
+                    if old.get('external_ref') and not ref:
+                        metadata['resolution'] = old['metadata'].get('resolution', 'model_selected')
+                        state = old['state']
                 if old and n.kind=='poi_ref' and ref and old['external_ref'] and str(old['external_ref'])!=ref:
                     raise ValueError('canonical POI identity conflict; explicit editorial review required')
                 if old is None:
@@ -110,10 +128,10 @@ class GraphService:
                     if old['canonical_label']!=n.canonical_label or old['document_id']!=UUID(str(document_id)):raise ValueError('entity key payload conflict')
                     if old['revision']!=revision:
                         if staged_texts is not None:
-                            pending={**old['metadata'],'_next_revision':revision,'_next_metadata':metadata,'_next_state':state,'_next_external_ref':ref or old['external_ref']}
+                            pending={**old['metadata'],'_next_revision':revision,'_next_metadata':{k:v for k,v in metadata.items() if not k.startswith('_next_')},'_next_state':state,'_next_external_ref':ref or old['external_ref']}
                             await db.execute('update rkb_entities set metadata=%s where id=%s',(Jsonb(pending),nid))
                         else:
-                            await db.execute('update rkb_entities set revision=%s,external_ref=%s,state=%s,metadata=%s where id=%s',(revision,ref,state,Jsonb(metadata),nid))
+                            await db.execute('update rkb_entities set revision=%s,external_ref=%s,state=%s,metadata=%s where id=%s',(revision,ref or old.get('external_ref'),state,Jsonb(metadata),nid))
                     elif n.kind=='poi_ref' and ref and not old['external_ref']:
                         # A POI missing during the first source stage can become
                         # known to Street Story after asynchronous owner review.
@@ -129,14 +147,23 @@ class GraphService:
                 if old and n.entity_id:
                     if ref and old.get('external_ref') and old['external_ref']!=ref:
                         raise ValueError('canonical POI identity conflict')
-                    merged={**old['metadata']}
-                    for key,value in (('place_kind',n.place_kind),('place_context',n.place_context)):
-                        if value:merged[key]=value
-                    for key,values in (('research_sources',metadata.get('research_sources',[])),('map_refs',n.map_refs)):
-                        if values:merged[key]=list({digest(v):v for v in [*merged.get(key,[]),*values]}.values())[:20]
+                    merged = metadata
                     if ref:
                         merged['resolution']='model_selected'
-                    if merged!=old['metadata'] or (ref and not old.get('external_ref')):
+                    if old['document_id'] == UUID(str(document_id)) and old['revision'] != revision:
+                        # Same source reimport reuses an explicit UUID just as it reuses
+                        # a source key. Keep the old active entity until source cutover.
+                        if staged_texts is not None:
+                            pending = {**old['metadata'], '_next_revision': revision,
+                                '_next_metadata': {k:v for k,v in merged.items() if not k.startswith('_next_')},
+                                '_next_state': n.state if ref else old['state'],
+                                '_next_external_ref': ref or old.get('external_ref')}
+                            await db.execute('update rkb_entities set metadata=%s where id=%s',
+                                             (Jsonb(pending), nid))
+                        else:
+                            await db.execute('update rkb_entities set revision=%s,external_ref=%s,state=%s,metadata=%s where id=%s',
+                                (revision, ref or old.get('external_ref'), n.state if ref else old['state'], Jsonb(merged), nid))
+                    elif merged!=old['metadata'] or (ref and not old.get('external_ref')):
                         await db.execute('update rkb_entities set metadata=%s,external_ref=%s,state=%s where id=%s',
                             (Jsonb(merged),ref or old.get('external_ref'),n.state if ref else old['state'],nid))
                 # Reuse preserves seed label; this source gets its own mention.
