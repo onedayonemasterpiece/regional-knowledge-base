@@ -49,6 +49,20 @@ def test_file_binds_exact_job_revision_and_rejects_control_fields(batch):
             parse_stage_file(encode({**batch, key: 'not-a-stage-field'}), batch['ingestion_id'], 1)
 
 
+def test_schema_diagnostic_does_not_echo_private_input_or_extra_keys(batch):
+    from regional_knowledge.stage_file import StageFileError
+    private = 'DO-NOT-RETURN-PRIVATE-SOURCE'
+    bad = {**batch, private: private}
+    with pytest.raises(StageFileError) as error:
+        parse_stage_file(encode(bad), batch['ingestion_id'], 1)
+    assert private not in str(error.value)
+    assert 'extra_forbidden' in str(error.value)
+    batch['pages'][0]['physical_page_index'] = -1
+    with pytest.raises(StageFileError) as error:
+        parse_stage_file(encode(batch), batch['ingestion_id'], 1)
+    assert 'pages.0.physical_page_index' in str(error.value)
+
+
 def test_file_is_bounded_and_json_is_unambiguous(batch):
     with pytest.raises(ValueError):
         parse_stage_file(encode({**batch, 'pages': batch['pages']*9}), batch['ingestion_id'], 1)

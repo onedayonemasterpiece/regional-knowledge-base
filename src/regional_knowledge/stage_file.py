@@ -13,7 +13,7 @@ from pathlib import Path
 import tempfile
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .contracts import (StagePageInput, StageChunkInput, StagePoiFactInput,
                         StagePoiMediaLinkInput)
@@ -21,6 +21,10 @@ from .entity_graph import GraphBundle
 from .story_contracts import StageStoryCandidateInput
 
 MAX_STAGE_FILE_BYTES = 1024 * 1024
+
+
+class StageFileError(ValueError):
+    """Safe generated diagnostic: field paths/types only, never input values."""
 
 
 class StageFile(BaseModel):
@@ -56,9 +60,25 @@ def parse_stage_file(data: bytes, ingestion_id: str, revision: int) -> dict:
                            parse_constant=_constant)
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ValueError('stage_file_must_be_utf8_json') from exc
-    staged = StageFile.model_validate(value)
+    try:
+        staged = StageFile.model_validate(value)
+    except ValidationError as exc:
+        issues = []
+        allowed = set(StageFile.model_fields) | {'region_key','kind','bbox','reading_order',
+            'source_text','normalized_text','page_id','physical_page_index','printed_page_number',
+            'layout_kind','source_material','source_review_note','knowledge_reviewed',
+            'story_candidates_reviewed','regions','relations','illustrations','excluded_figure_regions',
+            'left','top','right','bottom','entity_id','key','entities','entity_refs','canonical_label',
+            'exact_source_spelling','evidence','aliases','candidate_key','title','summary',
+            'proposition','account_kind','material_type','attributed_to','reported_by','evidence_refs',
+            'event_dates','observations','entity_keys','original_excerpt','start','end',
+            'year','month','day','precision','calendar','date_role','evidence_indexes','rationale'}
+        for issue in exc.errors(include_input=False, include_context=False, include_url=False)[:8]:
+            path = '.'.join(str(part) if isinstance(part,int) or part in allowed else '*' for part in issue['loc'])
+            issues.append(path + ':' + issue['type'])
+        raise StageFileError('stage_file_schema: ' + '; '.join(issues)) from exc
     if str(staged.ingestion_id) != str(UUID(ingestion_id)) or staged.source_revision != revision:
-        raise ValueError('stage_file_ingestion_or_revision_mismatch')
+        raise StageFileError('stage_file_ingestion_or_revision_mismatch')
     return staged.model_dump(mode='json', exclude={'ingestion_id', 'source_revision'}, exclude_none=True)
 
 
@@ -71,7 +91,7 @@ async def read_stage_file(backend, principal, ingestion_id, file):
         raise PermissionError('owned_ingestion_required')
     mime = (file.mime_type or '').lower().split(';', 1)[0]
     if mime not in {'', 'application/json', 'text/plain', 'application/octet-stream'}:
-        raise ValueError('stage_file_must_be_json_not_original_source')
+        raise StageFileError('stage_file_must_be_json_not_original_source')
     root = Path(os.getenv('RKB_WORK_DIR') or Path.home()/'.local/state/regional-knowledge-base/work')
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(prefix='rkb-stage-', dir=root) as directory:
