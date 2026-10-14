@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from mcp.server.mcpserver import Image, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import (
@@ -932,12 +933,19 @@ def build_server(
         stage_file_sha = None
         if file is not None and command == 'stage':
             if payload is not None:
-                raise ValueError('stage_file_cannot_mix_with_inline_payload')
+                raise ToolError('stage_file_cannot_mix_with_inline_payload')
             from .stage_file import read_stage_file
-            payload, stage_file_sha = await read_stage_file(backend, principal, ingestion_id, file)
+            try:
+                payload, stage_file_sha = await read_stage_file(backend, principal, ingestion_id, file)
+            except PermissionError as exc:
+                raise ToolError('owned_ingestion_required') from exc
+            except ValueError as exc:
+                # Pydantic details can contain private source text. Surface only a
+                # fixed actionable category; never stringify the supplied payload.
+                raise ToolError('stage_file_invalid: use one bounded UTF-8 JSON batch for this exact ingestion and revision') from exc
             file = None
         elif file is not None and command not in {'start', 'reprocess'}:
-            raise ValueError('file_only_supported_for_start_reprocess_or_stage')
+            raise ToolError('file_only_supported_for_start_reprocess_or_stage')
         result = await backend.book_ingest(
             command=command,
             principal=principal,
