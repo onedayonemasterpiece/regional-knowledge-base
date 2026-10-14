@@ -934,9 +934,11 @@ def build_server(
         if file is not None and command == 'stage':
             if payload is not None:
                 raise ToolError('stage_file_cannot_mix_with_inline_payload')
-            from .stage_file import read_stage_file
+            from .stage_file import read_stage_file, StageFileError
             try:
                 payload, stage_file_sha = await read_stage_file(backend, principal, ingestion_id, file)
+            except StageFileError as exc:
+                raise ToolError(str(exc)) from exc
             except PermissionError as exc:
                 raise ToolError('owned_ingestion_required') from exc
             except ValueError as exc:
