@@ -422,6 +422,50 @@ async def _store_graph(
     return rows[0] if rows else {**row, **values}
 
 
+async def _stage_accepted_enrichment(service, principal, row, payload):
+    """Reuse stage for metadata-only repair; accepted source/vector bytes never change."""
+    if getattr(service, 'corpus', None) is None:
+        raise RuntimeError('accepted enrichment requires SQLite authority')
+    if not payload or any(payload.get(key) for key in ('pages', 'chunks', 'poi_facts', 'poi_media_links')):
+        raise ValueError('finalized stage accepts metadata only, never source changes')
+    raw = payload.get('story_candidates') or []
+    if not isinstance(raw, list) or len(raw) > 12:
+        raise ValueError('at most 12 source-bound story candidates')
+    bundle = GraphBundle.model_validate(payload['entity_candidates']) if payload.get('entity_candidates') else None
+    if not raw and bundle is None:
+        raise ValueError('metadata-only stage requires story or entity candidates')
+    from .story_contracts import StageStoryCandidateInput
+    candidates = [StageStoryCandidateInput.model_validate(item) for item in raw]
+    document = await _document_row(service, principal, str(row['document_id']))
+    revision = int(row['staged_revision'])
+    if int(document.get('active_revision') or 0) != revision:
+        raise ValueError('metadata-only stage requires the exact active source revision')
+    graph = await _load_graph(service, row)
+    if bundle is not None:
+        validate_staged_bundle(bundle, graph)
+        await GraphService(service).stage(principal, str(row['document_id']), revision, bundle)
+        graph = graph.model_copy(update={'entity_candidates': [*graph.entity_candidates, bundle]})
+    from .story_ingestion import persist_stage, activate_stories
+    await asyncio.to_thread(persist_stage, service.corpus, principal, row, graph, [], candidates,
+                            allow_finalized=True)
+    def apply():
+        from .sqlite_data import LocalContext
+        from .story_registry import StoryRegistry
+        with service.corpus.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current = StoryRegistry._corpus_row(db, 'rkb_documents', row['document_id'])
+            if (not current or str(current['owner_user_id']) != str(principal.subject)
+                    or int(current.get('active_revision') or 0) != revision):
+                raise ValueError('source revision or ownership changed')
+            return activate_stories(LocalContext(service.corpus, db, principal.subject),
+                                    current, row['id'], revision)
+    result = await asyncio.to_thread(apply)
+    output = service._ingestion_output(row, 'Source unchanged; inline knowledge metadata saved')
+    if result['needs_review']:
+        output.warnings.append('knowledge_metadata:needs_review:' + str(result['needs_review']))
+    return output
+
+
 async def stage_ingestion(
     service,
     *,
@@ -437,7 +481,7 @@ async def stage_ingestion(
     if not row:
         raise LookupError("ingestion_not_found")
     if row["state"] == "finalized":
-        raise RuntimeError("ingestion_already_finalized")
+        return await _stage_accepted_enrichment(service, principal, row, payload)
     if not row.get("document_id") or not row.get("source_object_id"):
         raise RuntimeError("ingestion_source_not_ready")
     if payload is None:

@@ -195,6 +195,9 @@ class StagePageInput(BaseModel):
     # Same-pass semantic episode review; true with no candidates is an explicit
     # reviewed-empty page, not a claim that all possible stories were found.
     story_candidates_reviewed: bool = False
+    # One same-pass attestation for stories, dates, entities, places and quantities.
+    # It records model work, not an assertion of exhaustive semantic recall.
+    knowledge_reviewed: bool = False
     excluded_figure_regions: dict[str, str] = Field(default_factory=dict, max_length=100)
     source_material: Literal["unreviewed", "preview", "full_native", "visual_reviewed", "accepted_reuse"] = "unreviewed"
     source_review_note: str | None = Field(default=None, min_length=1, max_length=500)
@@ -210,6 +213,10 @@ class StagePageInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_local_graph(self) -> "StagePageInput":
+        if self.knowledge_reviewed:
+            if self.source_material not in {"visual_reviewed", "accepted_reuse"}:
+                raise ValueError("knowledge_reviewed requires reviewed original source material")
+            self.story_candidates_reviewed = True
         keys = [region.region_key for region in self.regions]
         if len(keys) != len(set(keys)):
             raise ValueError("region_key must be unique within a page")
@@ -465,8 +472,22 @@ class StoryExtractionStatus(BaseModel):
     coverage_note: str
 
 
+class KnowledgeExtractionStatus(BaseModel):
+    state: Literal["not_reviewed", "reviewing", "awaiting_agent", "pass_completed"]
+    reviewed_pages: int = Field(ge=0)
+    total_pages: int = Field(ge=0)
+    next_page_index: int | None = Field(default=None, ge=0)
+    needs_review_candidates: int = Field(default=0, ge=0)
+    staged_candidates: int = Field(default=0, ge=0)
+    pending_candidates: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
+    follow_up: list[str] = Field(default_factory=list, max_length=5)
+    complete_extraction_claimed: bool = False
+    retrieval_acceptance: Literal["not_evaluated"] = "not_evaluated"
+
+
 class BookIngestOutput(BaseModel):
     story_extraction: StoryExtractionStatus | None = None
+    knowledge_extraction: KnowledgeExtractionStatus | None = None
     ingestion_id: str | None = None
     state: Literal["staged", "processing", "needs_review", "ready", "finalized", "failed"]
     message: str

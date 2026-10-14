@@ -256,6 +256,25 @@ class SQLiteBackend(PostgresBackend):
         )
 
     async def book_ingest(self,**kwargs):
+        # Resume from a stable owned book identity; do not require an old chat's job UUID.
+        if kwargs.get('command') == 'status' and not kwargs.get('ingestion_id') and kwargs.get('document_id'):
+            actor = str(kwargs['principal'].subject)
+            document_id = str(UUID(str(kwargs['document_id'])))
+            def resolve_job():
+                self.corpus.authorize(actor, document_id, owner=True)
+                with self.corpus.connect() as db:
+                    found = db.execute("""SELECT row_key FROM corpus_rows
+                        WHERE table_name='rkb_ingestion_jobs'
+                          AND json_extract(payload,'$.document_id')=?
+                          AND json_extract(payload,'$.owner_user_id')=?
+                        ORDER BY CAST(json_extract(payload,'$.staged_revision') AS INTEGER) DESC,
+                                 json_extract(payload,'$.created_at') DESC,row_key DESC LIMIT 1""",
+                        (document_id, actor)).fetchone()
+                    return found[0] if found else None
+            ingestion_id = await asyncio.to_thread(resolve_job)
+            if not ingestion_id:
+                raise LookupError('no_ingestion_checkpoint_for_owned_document')
+            kwargs = {**kwargs, 'ingestion_id': ingestion_id}
         payload=kwargs.get('payload') or {}
         if kwargs.get('command')=='start' and (payload.get('catalog') or {}).get('parent_id') and kwargs.get('file') is None:
             from .catalog_components import create

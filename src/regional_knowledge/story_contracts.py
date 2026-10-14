@@ -71,7 +71,7 @@ class SetAngle(Strict):
 class LinkEntity(Strict):
     op: Literal["link_entity"]
     entity_ref: Identifier
-    kind: Literal["person", "place", "event", "thread", "poi_ref", "other"]
+    kind: Literal["person", "organization", "place", "event", "thread", "poi_ref", "other"]
     time_scope: str | None = Field(default=None, max_length=100)
 
 
@@ -144,12 +144,8 @@ class AttachEvidence(Strict):
     derived_from: str | None = Field(default=None, max_length=250)
 
 
-class RecordEventDate(Strict):
-    """Source-attributed date, not a historical-truth or calendar conversion claim."""
-    op: Literal["record_event_date"]
-    assertion_id: Identifier
-    assertion_revision: int = Field(ge=1)
-    evidence_ids: list[Identifier] = Field(min_length=1, max_length=8)
+class SourceDateFields(Strict):
+    """One model-interpreted source date, shared by staging and editorial writes."""
     original_date_text: Annotated[str, Field(min_length=1, max_length=150)]
     precision: Literal["day", "month", "year", "approximate_day", "range", "unknown"]
     calendar: Literal["gregorian", "julian", "unspecified"] = "unspecified"
@@ -158,7 +154,6 @@ class RecordEventDate(Strict):
     month: int | None = Field(default=None, ge=1, le=12)
     day: int | None = Field(default=None, ge=1, le=31)
     rationale: Annotated[str, Field(min_length=10, max_length=500)]
-    supersedes_date_id: Identifier | None = None
 
     @model_validator(mode="after")
     def date_shape(self):
@@ -180,17 +175,25 @@ class RecordEventDate(Strict):
             raise ValueError("Year precision must not invent a month/day")
         elif self.precision in {"range", "unknown"} and triple != (False, False, False):
             raise ValueError("Unresolved range/unknown precision is not a calendar day")
+        return self
+
+
+class RecordEventDate(SourceDateFields):
+    op: Literal["record_event_date"]
+    assertion_id: Identifier
+    assertion_revision: int = Field(ge=1)
+    evidence_ids: list[Identifier] = Field(min_length=1, max_length=8)
+    supersedes_date_id: Identifier | None = None
+
+    @model_validator(mode="after")
+    def unique_evidence(self):
         if len(self.evidence_ids) != len(set(self.evidence_ids)):
             raise ValueError("Duplicate evidence identifiers")
         return self
 
 
-class RecordObservation(Strict):
-    """A sourced NUMBER, not an assertion that all like-looking figures compare."""
-    op: Literal["record_observation"]
-    assertion_id: Identifier
-    assertion_revision: int = Field(ge=1)
-    evidence_ids: list[Identifier] = Field(min_length=1,max_length=8)
+class SourceObservationFields(Strict):
+    """One model-interpreted source quantity; no implicit unit conversion."""
     original_value_text: Annotated[str,Field(min_length=1,max_length=100)]
     value: Decimal = Field(max_digits=20,decimal_places=6)
     metric_key: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{1,63}$")]
@@ -203,12 +206,9 @@ class RecordObservation(Strict):
     method_note: Annotated[str, Field(min_length=10,max_length=350)]
     precision: Literal["as_reported","approximate","lower_bound","upper_bound"] = "as_reported"
     rationale: Annotated[str, Field(min_length=10,max_length=500)]
-    supersedes_observation_id: Identifier | None = None
 
     @model_validator(mode="after")
     def shape(self):
-        if len(self.evidence_ids) != len(set(self.evidence_ids)):
-            raise ValueError("Duplicate evidence identifiers")
         if (self.period_start_year is None) != (self.period_end_year is None):
             raise ValueError("Period interval requires both year endpoints")
         if (self.period_start_year is not None
@@ -219,6 +219,20 @@ class RecordObservation(Strict):
             raise ValueError("Unknown period cannot assert exact years")
         if not self.value.is_finite():
             raise ValueError("Observation must be a finite decimal number")
+        return self
+
+
+class RecordObservation(SourceObservationFields):
+    op: Literal["record_observation"]
+    assertion_id: Identifier
+    assertion_revision: int = Field(ge=1)
+    evidence_ids: list[Identifier] = Field(min_length=1, max_length=8)
+    supersedes_observation_id: Identifier | None = None
+
+    @model_validator(mode="after")
+    def unique_evidence(self):
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("Duplicate evidence identifiers")
         return self
 
 
@@ -421,6 +435,17 @@ class StageStoryEvidenceInput(Strict):
         return self
 
 
+class StageEventDateInput(SourceDateFields):
+    # Zero-based positions in this candidate's evidence_refs; no future DB IDs.
+    evidence_indexes: list[Annotated[int, Field(ge=0, le=3)]] = Field(
+        default_factory=lambda: [0], min_length=1, max_length=4)
+
+
+class StageObservationInput(SourceObservationFields):
+    evidence_indexes: list[Annotated[int, Field(ge=0, le=3)]] = Field(
+        default_factory=lambda: [0], min_length=1, max_length=4)
+
+
 class StageStoryCandidateInput(Strict):
     candidate_key: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")]
     title: Annotated[str, Field(min_length=3, max_length=250)]
@@ -436,6 +461,11 @@ class StageStoryCandidateInput(Strict):
     attributed_to: str | None = Field(default=None, max_length=250)
     reported_by: str | None = Field(default=None, max_length=250)
     evidence_refs: list[StageStoryEvidenceInput] = Field(min_length=1, max_length=4)
+    event_dates: list[StageEventDateInput] = Field(default_factory=list, max_length=8)
+    observations: list[StageObservationInput] = Field(default_factory=list, max_length=8)
+    # Explicit model-selected GraphBundle entity keys, never automatic co-occurrence.
+    entity_keys: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
+        default_factory=list, max_length=32)
 
 
 # Bounded cross-book comparison. Model-authored conclusions are proposals,

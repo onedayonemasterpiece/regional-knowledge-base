@@ -443,6 +443,18 @@ class StoryRegistry:
                 """)
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(11,datetime('now'))")
                 db.commit()
+            if not db.execute("SELECT 1 FROM story_schema_migrations WHERE version=12").fetchone():
+                # Reuse the existing per-page checkpoint; old reviews are not backfilled.
+                columns = {r["name"] for r in db.execute("PRAGMA table_info(story_ingest_coverage)")}
+                if "knowledge_reviewed" not in columns:
+                    db.execute("ALTER TABLE story_ingest_coverage ADD COLUMN knowledge_reviewed INTEGER NOT NULL DEFAULT 0 CHECK(knowledge_reviewed IN (0,1))")
+                db.execute("""CREATE INDEX IF NOT EXISTS ingestion_status_by_source
+                    ON corpus_rows(json_extract(payload,'$.document_id'),
+                                   json_extract(payload,'$.owner_user_id'),
+                                   CAST(json_extract(payload,'$.staged_revision') AS INTEGER) DESC)
+                    WHERE table_name='rkb_ingestion_jobs'""")
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(12,datetime('now'))")
+                db.commit()
 
     @staticmethod
     def _row(db, table, ident):
