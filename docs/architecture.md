@@ -24,7 +24,7 @@ model -> MCP -> SQLite FTS + E5/BGE Supabase pgvector -> authorized evidence
 
 INGESTION / throughput-insensitive
 PDF/DjVu source -> thin format adapter -> page image/native hints -> ChatGPT vision/reading
-               -> typed staged graph -> validate/finalize -> SQLite staged state -> both remote vector acknowledgments -> activation
+               -> typed staged graph -> validate/finalize -> SQLite staged state -> configured required-vector acknowledgments (BGE by default) -> activation
                -> original source archive through VibePublish Telegram /2
                -> illustration archive through VibePublish Telegram /4
 ```
@@ -101,9 +101,11 @@ The graph uses the persistent SQLite data plane, not a separate graph database. 
 semantic node/edge returned to a user must remain traceable to authorized
 page/region/chunk evidence.
 
-Street Story remains canonical owner of POI identity, aliases, lifecycle and
-POI-to-POI relations. Regional Knowledge references stable POI IDs rather than
-creating a second POI catalogue.
+Street Story remains canonical owner of physical POI identity, aliases, lifecycle
+and POI-to-POI relations. RKB independently owns source-side place entities,
+including places without coordinates or an external POI. Model-selected Street
+Story references enrich those same entities; they do not create a second physical
+POI catalogue. See [location-first ingestion](location-registry.md).
 
 See
 [accumulative knowledge graph decision](reports/accumulative-knowledge-graph-decision-20261004.md).

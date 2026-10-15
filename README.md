@@ -22,7 +22,7 @@ The existing background geo adapter can discover candidates but does not select 
 
 MCP OAuth is independent of Supabase and uses a stable application user identity. Source access and all writes are checked server-side. Private sources and derivatives are not made public by import. Live exposes only the bounded retrieval surface, not ingestion and graph writes.
 
-This repository implements ingestion, retrieval and graph operations. Software tests, a deployed version, completeness of a particular book and broad mass-ingestion readiness are separate statements. The protected capacity, source-fidelity and latency requirements remain in `.devcoveer/requirements.json`.
+This repository implements ingestion, retrieval and graph operations. Software tests, a deployed version, completeness of a particular book and broad mass-ingestion readiness are separate statements. Catalog `active_revision` identifies the searchable source revision; the latest ingestion job may be preparing a newer revision. Source activation, required-vector readiness, semantic extraction, cross-book reconciliation and retrieval acceptance are distinct checkpoints. A job with `next_action=done` does not certify the latter three. The protected capacity, source-fidelity and latency requirements remain in `.devcoveer/requirements.json`.
 
 ## Documentation
 

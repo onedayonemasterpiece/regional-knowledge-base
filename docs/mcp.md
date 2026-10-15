@@ -181,7 +181,7 @@ Interactive Live consumers use a separate optimized server profile
 (`RKB_MCP_PROFILE=live`) that exposes **one tool only**:
 
 ```text
-knowledge_search(query, max_evidence=3)
+knowledge_search(query, max_evidence=3, document_ids?, main_job_id?)
 ```
 
 Fast path:
@@ -191,7 +191,7 @@ Live
   -> knowledge_search
       -> BGE-first semantic retrieval in a compact authorized document scope
       -> optional bounded lexical/alias branch when explicitly selected
-      -> parallel exact evidence range fetches from object storage
+      -> authorized exact evidence hydration from the SQLite corpus
   -> compact evidence pack
   -> Live answer
 ```
@@ -289,10 +289,22 @@ at most 20 still-authorized source candidates for the requesting actor. No
 entity/fact is automatically materialized from these hits. A later ChatGPT
 review may stage their exact evidence through the normal contract.
 
+## Source and story search profiles
+
+The full profile exposes source search as `search` followed by `fetch`;
+`knowledge_search` is the Live profile equivalent. Reconciliation clients use
+the source-evidence surface available in their profile, separately from
+`story_search`. Story semantic/hybrid requests currently report lexical fallback
+and `local_fts_ready_vector_awaiting_worker`; source BGE readiness does not
+certify a separate story-vector index.
+
 ## Automatic indexing readiness
 
-A finalized active revision is indexed automatically in E5 and BGE; source
-activation does not wait for Kaggle. Normal imports require no backfill command.
+Finalization persists a pending publication; the indexing owner reconciles exact
+source/revision/hash coverage in the configured required vector spaces before
+activation. `RKB_REQUIRED_VECTOR_SPACES` defaults to BGE; optional diagnostic E5
+does not block activation. A previous active revision remains available while its
+replacement waits. Normal imports require no manual vector backfill command.
 `book_ingest(status)` on a finalized ingestion and search/Live evidence outputs
 include actor-scoped `indexing` counts/state. Regular MCP `indexing_status` accepts
 an optional authorized document ID and returns active/ready/missing counts,
@@ -330,7 +342,8 @@ The server checks text equivalence, convex in-page bounds, order and stripe area
 then paints transparent yellow polygons. Ambiguity, mismatches and provider
 failures return explicit unavailability; confidence/echo never authorizes exact.
 
-The Live profile retains its existing read-only knowledge search/fetch adapter.
+The Live profile retains its single read-only `knowledge_search` tool;
+`search`/`fetch` belong to the full profile.
 No ingestion, catalog or proof tools are added to the default Live bundle.
 
 Catalog list/find/get preserve unknown fields and contributor roles. `catalog_cover`

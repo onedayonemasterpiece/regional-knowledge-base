@@ -299,7 +299,7 @@ annotation provenance and actual cover/title-page references. Unknown values
 remain absent. These additions are stored only in SQLite and do not re-embed text.
 Standalone article PDFs use the same start/stage/validate/finalize MCP flow.
 Issue-internal article components share the original and exact semantic ranges;
-activation waits for both unchanged embedding spaces.
+activation waits for exact acknowledgments from the configured required vector spaces (BGE by default; E5 is optional unless explicitly required). Both tokenizer limits still apply to final search material.
 
 ## People, stories and locations in the same review
 
@@ -314,6 +314,18 @@ Do not run a second semantic pass solely because cartography is unavailable.
 For accepted books, `graph_stage` enriches the same revision without reimport or
 re-embedding. Link appropriate Story Registry episodes through existing
 `link_entity` operations using these same IDs.
+
+## Reading progress without losing the active revision
+
+`catalog`/`book_find` report the active source revision.
+`book_ingest(status, document_id=...)` reports the latest owned ingestion job,
+which may be an unfinished replacement while an earlier revision remains searchable.
+Do not treat that job as the active revision or restart it merely because its
+checkpoint is incomplete. Inspect `next_action`, `story_extraction` and
+`knowledge_extraction` separately. `awaiting_agent` requires model work;
+`pass_completed` is a recorded review pass, not a completeness or retrieval certificate.
+After activation, perform source-grounded retrieval checks on that exact revision
+and report unfinished reconciliation explicitly.
 
 ## Local activation and issue articles
 
