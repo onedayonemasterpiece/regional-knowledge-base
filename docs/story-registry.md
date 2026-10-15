@@ -82,10 +82,15 @@ SQLite WAL, foreign_keys=ON, для story write synchronous=FULL и коротк
    `next_action=search_then_enqueue`. Можно также начать с выбранной истории
    через `start` и явно отобранные refs.
 2. Основная модель делает **два поиска** по разрешённой области:
-   `story_search` по именам/проверяемым утверждениям и `knowledge_search`
-   (BGE) по старому исходному корпусу. Первая ветка находит прежние
+   `story_search` по именам/проверяемым утверждениям и поиск исходного
+   корпуса: `search` → `fetch` в полном MCP либо `knowledge_search`
+   в Live-профиле. Live сам не предоставляет команды reconciliation;
+   меняющий клиент должен иметь соответствующий полный/редакторский доступ.
+   Первая ветка находит прежние
    карточки; вторая — источник без карточки. Реально выполненные каналы
-   указываются при `story_reconcile(enqueue)`, max 50 различных refs на run.
+   указываются при `story_reconcile(enqueue)`: `story_lexical` и `source_bge`.
+   Lexical fallback исходного поиска не засчитывается как выполненный BGE-канал.
+   Максимум — 50 различных refs на run.
 3. `claim` выдаёт lease и одну сравниваемую пару, не весь корпус.
    `story_get(view="evidence_page", limit<=10)`,
    `story_get(view="sources_page")` и `corpus_read` возвращают исходные
@@ -170,8 +175,9 @@ typed assessment, `assertion_id` и `assertion_revision` сохраняются.
 `assessor_claim_verified=false` и `actual_executor=application`. Отсутствие
 assessment сохраняет старую семантику (добавить reports, не оценивать смысл).
 
-Следующая независимая поставка: revision-guarded correction/retraction,
-durable frontier/corpus watermark, реальный story-vector worker. Пока `story_search(semantic|hybrid)` сообщает
+Revision-guarded correction/retraction уже описана и реализована в schema v8
+ниже; повторное сравнение неизменных пар — в v9. Полный durable frontier/
+corpus watermark и реальный story-vector worker остаются отдельными этапами. Пока `story_search(semantic|hybrid)` сообщает
 lexical fallback и не считается прошедшим semantic recall.
 
 
@@ -294,8 +300,9 @@ authority, без второй базы. Она не извлекает даты
 самостоятельно: calling model при чтении/обогащении должна явно
 выполнить typed запись. Bounded backfill, event-entity linking,
 source version invalidation beyond current assertion revision,
-общие интервалы/статистические observations и продакшн календарное
-наполнение остаются отдельными этапами. Массовые protected
+общие интервалы и полнота календарного наполнения остаются отдельными этапами.
+Атрибутированные числовые observations реализованы отдельно в v11 ниже;
+это не автоматическая статистическая агрегация. Массовые protected
 BGE/capacity/latency gates не смягчены.
 
 

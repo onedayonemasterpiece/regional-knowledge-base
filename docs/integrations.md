@@ -21,8 +21,10 @@ expert arbitration state.
 
 Knowledge Base remains the authority for book/journal provenance and exact
 page/region evidence. It also owns the small accumulative knowledge projection for
-non-POI historical entities: people, events and reusable historical threads, with
-stable references to Street Story POIs. During book ingestion it may extract
+historical entities: people, organizations, events, historical threads and
+source-side places. A source-side place can exist without a map, coordinates or
+a Street Story POI. Model-selected physical POI references enrich the same entity;
+see the current [location-first policy](location-registry.md). During book ingestion it may extract
 evidence-backed POI fact candidates and evidence-backed person/event relations and
 deliver POI evidence asynchronously after a successful finalize.
 
@@ -42,7 +44,7 @@ Projects Hub is the natural user-facing orchestration surface:
 - project selection/routing;
 - Knowledge Base read capability alongside other project tools.
 
-It consumes the Knowledge Base Live profile (`search`, `fetch`) through `live-interaction`. For private knowledge, Projects Hub holds a user-approved, resource-bound Knowledge OAuth delegation; it never forwards its own bearer token. Projects Hub does not become the identity provider.
+It consumes the Knowledge Base Live profile (`knowledge_search`, a compact evidence pack in one call) through `live-interaction`. The full profile separately exposes `search` and `fetch`. For private knowledge, Projects Hub holds a user-approved, resource-bound Knowledge OAuth delegation; it never forwards its own bearer token. Projects Hub does not become the identity provider.
 
 ## VibePublish
 
@@ -117,10 +119,16 @@ relations; `graph_related` reuses accepted retrieval around its authorized alias
 three narrow tools are available only in the regular MCP profile; Live stays
 search/evidence-only. No graph dump or automatic narrative service exists.
 
-Production uses a read-only adapter to Street Story's local canonical identity
+The background discovery adapter reads Street Story's local canonical identity
 projection (`RKB_STREET_STORY_POI_DB`), reading only POI identity/name aliases.
 No end-user bearer, book text or private claim is sent to another MCP. The adapter
 never creates POIs and never copies claims/location/lifecycle records. Alias-set
 versions on already referenced canonical POIs schedule bounded reverse discovery.
-A remote resolver/delegated intake transport remains a future integration; no
-unauthorized private-source delivery is enabled by this local adapter.
+Separately, the implemented `poi_registry(search|get|select|create)` bridge calls
+the configured Street Story owner service with its dedicated service credential,
+never an end-user MCP bearer. The calling model explicitly selects/creates a
+physical POI from an evidence-backed RKB entity; the owner receipt links the
+same entity to its canonical POI. `poi_context` provides authorized evidence
+for an existing POI. This optional integration is not an activation prerequisite;
+a missing configuration or owner service is an explicit integration blocker,
+not a reason to invent an identity. See [model-selected POI linking](poi-model-link.md).

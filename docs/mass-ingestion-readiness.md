@@ -87,7 +87,7 @@ Deployment must keep the MCP, indexer and BGE controller on one exact release SH
 mixed runtime releases are a failed deployment, not an acceptable compatibility
 mode.
 
-## Latest production stress: current dense-quality gate FAIL (2026-10-08)
+## Latest documented production stress: dense-quality gate FAIL (2026-10-08)
 
 The live RLS-v5 retrieval stress on the **actual accepted source revisions**
 found all 64 original proof passages in active chunks, but the production
@@ -110,11 +110,14 @@ using precomputed vectors completed, confirming distinct encoding versus
 retrieval concerns. The 20 experimental boundary-pair cases recovered
 both adjoining evidence chunks within Top-5 only 40% of the time.
 
-**Current release decision: mass book filling is not approved.** A
+**Release decision from this test: mass book filling is not approved.**
+No later passing production acceptance is established by this document.
+Documentation cleanup, a newer code SHA or ready vector counts do not replace
+a dated benchmark on identified active revisions. A
 non-destructive staged, semantically coherent ~256-token re-chunk/re-embed
 trial and BGE query-sidecar resilience tests are the next retrieval gates.
 The existing 100k compact-halfvec capacity numbers are synthetic and do
-not indicate a deployed compact index: today's Supabase BGE column is still
+not indicate a deployed compact index: on 2026-10-08 the Supabase BGE column was
 `vector(1024)` with ordinary HNSW. The actual Supabase DB was 75.8 MB
 against the project's 500 MB *planning* quota on 2026-10-08. Preserve
 the full-scale 100k/source headroom and latency requirements unchanged.
@@ -124,9 +127,10 @@ This latest live result supersedes any inference of **production acceptance**
 from the earlier frozen t256 experiment; the historical experiment itself
 remains useful design evidence.
 
-## Current evidence and remaining proof
+## Historical experimental evidence and remaining proof
 
-The two-book dense-only stress work now strengthens the small-passage BGE decision.
+The frozen two-book t256 experiment summarized by the 2026-10-08 stress report
+supports the small-passage BGE design decision; it is not the active-production result above.
 On the frozen held-out original questions, t256+BGE reaches Hit@5 **87.5%** and
 Hit@10 **90.625%**. The held-out Russian-query -> German-source slice reaches
 Hit@5/Hit@10 **91.67% / 91.67%**. E5 is materially weaker on the same corpus and
@@ -143,7 +147,7 @@ Compact pgvector storage has also been measured, not merely estimated. At
 100,000 synthetic rows backed by real BGE vectors, halfvec(1024) plus a
 binary-quantized HNSW candidate index and halfvec rerank projects the migrated
 database to about **345 MB** steady state and **352 MB** with a 2,000-row pending
-revision, against the current 500 MB planning quota. Candidate+rerank p95 is
+revision, against the 500 MB planning quota used for that experiment. Candidate+rerank p95 is
 about **35-42 ms** in that temporary-table stress. This passes the storage
 headroom gate for the benchmark shape, but still requires production migration
 acceptance.
@@ -155,8 +159,8 @@ critical proof includes:
 - end-to-end p95 MCP/backend latency, including query embedding, at production-like
   scale and concurrency;
 - repeatable per-book active-revision retrieval acceptance on real imports,
-  including the current Brünneck reprocess;
-- continued quality after corpus growth beyond the current two-book design corpus.
+  including any newly activated replacement revision;
+- continued quality after corpus growth beyond the historical two-book design corpus.
 
 Until these gates pass together, treat the system as retrieval-hardening /
 mass-ingestion-preparation rather than approved for unattended bulk filling.
