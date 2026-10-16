@@ -320,9 +320,9 @@ class SupabaseRestBackend(KnowledgeBackend):
         )
         select s.*,
           prev.id prev_id,prev.title prev_title,prev.source_text prev_text,
-          prev.illustration_ids prev_illustrations,
+          prev.illustration_ids prev_illustrations,prev.end_page prev_page,
           nxt.id next_id,nxt.title next_title,nxt.source_text next_text,
-          nxt.illustration_ids next_illustrations
+          nxt.illustration_ids next_illustrations,nxt.start_page next_page
         from active s
         left join lateral (
           select p.*
@@ -359,6 +359,7 @@ class SupabaseRestBackend(KnowledgeBackend):
             STRONG_THRESHOLD,
             continuation_signal,
             query_allows_continuation_expansion,
+            same_page_topic_support,
             strong_continuation_boundary,
         )
         context={str(row["id"]):dict(row) for row in rows}
@@ -374,7 +375,7 @@ class SupabaseRestBackend(KnowledgeBackend):
 
         def annotated(item: SearchResult, signal: dict[str, Any]) -> SearchResult:
             if any(
-                value.get("branch")=="continuation_neighbor"
+                value.get("branch")==signal["branch"]
                 and value.get("source_chunk_id")==signal["source_chunk_id"]
                 and value.get("direction")==signal["direction"]
                 for value in item.ranking_signals
@@ -396,16 +397,26 @@ class SupabaseRestBackend(KnowledgeBackend):
                     left_has_illustrations=left_visual,
                     right_has_illustrations=bool(row.get("next_illustrations")),
                 )
-                if (
+                grammatical = (
                     strength>=STRONG_THRESHOLD
                     and query_allows_continuation_expansion(
                         query,row.get("source_text"),row.get("next_text"),
                         neighbor_side="right",
                     )
-                ):
+                )
+                topical = (
+                    not left_visual
+                    and not row.get("next_illustrations")
+                    and row.get("end_page") is not None
+                    and row.get("end_page")==row.get("next_page")
+                    and same_page_topic_support(
+                        query,row.get("source_text"),row.get("next_text"))
+                )
+                if grammatical or topical:
                     choices.append((
-                        strength,1,"next",str(row["next_id"]),
+                        strength if grammatical else 1,1,"next",str(row["next_id"]),
                         str(row.get("next_title") or ""),
+                        "continuation_neighbor" if grammatical else "same_page_context",
                     ))
             if row.get("prev_id"):
                 strength=strong_continuation_boundary(
@@ -413,16 +424,26 @@ class SupabaseRestBackend(KnowledgeBackend):
                     left_has_illustrations=bool(row.get("prev_illustrations")),
                     right_has_illustrations=left_visual,
                 )
-                if (
+                grammatical = (
                     strength>=STRONG_THRESHOLD
                     and query_allows_continuation_expansion(
                         query,row.get("prev_text"),row.get("source_text"),
                         neighbor_side="left",
                     )
-                ):
+                )
+                topical = (
+                    not left_visual
+                    and not row.get("prev_illustrations")
+                    and row.get("start_page") is not None
+                    and row.get("start_page")==row.get("prev_page")
+                    and same_page_topic_support(
+                        query,row.get("source_text"),row.get("prev_text"))
+                )
+                if grammatical or topical:
                     choices.append((
-                        strength,0,"previous",str(row["prev_id"]),
+                        strength if grammatical else 1,0,"previous",str(row["prev_id"]),
                         str(row.get("prev_title") or ""),
+                        "continuation_neighbor" if grammatical else "same_page_context",
                     ))
             return max(choices) if choices else None
 
@@ -448,9 +469,10 @@ class SupabaseRestBackend(KnowledgeBackend):
             candidate=candidates.get(source.id)
             if candidate is None:
                 continue
-            strength,_,direction,neighbor_id,neighbor_title=candidate
+            strength,_,direction,neighbor_id,neighbor_title,branch=candidate
             signal=continuation_signal(
-                direction=direction,source_chunk_id=source.id,strength=strength
+                direction=direction,source_chunk_id=source.id,
+                strength=strength,branch=branch,
             )
             source_index=next(
                 (i for i,item in enumerate(working) if item.id==source.id),None
