@@ -214,3 +214,44 @@ async def test_local_bge_selector_reads_pending_revision_without_actor_visibilit
     with pytest.raises(PermissionError):
         await worker.local_bge_rows(SimpleNamespace(subject=foreign), document)
     await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_story_outbox_backlog_defers_unrelated_archive_work(tmp_path,monkeypatch):
+    """A blocked optional provider must not stall semantic story backfill."""
+    from uuid import uuid4
+    from regional_knowledge.contracts import Principal
+    from regional_knowledge.sqlite_corpus import SQLiteCorpus
+    from regional_knowledge.story_contracts import SeedInput
+    from regional_knowledge.story_registry import StoryRegistry
+
+    monkeypatch.delenv("RKB_REQUIRED_VECTOR_SPACES",raising=False)
+    monkeypatch.delenv("RKB_INDEX_E5_DIAGNOSTIC",raising=False)
+    monkeypatch.delenv("RKB_STORAGE_GC_ENABLED",raising=False)
+    monkeypatch.setenv("RKB_VIBEPUBLISH_GRANT_FILE",str(tmp_path/"not-a-grant"))
+    corpus=SQLiteCorpus(tmp_path/"story-queue.sqlite3")
+    registry=StoryRegistry(corpus)
+    principal=Principal(subject=str(uuid4()),client_id="test",issuer="test",
+                        access_token="synthetic")
+    registry.create(principal,SeedInput(text="Синтетический мост"),
+                    None,None,None,"story-backlog-seed")
+
+    class Backend:
+        def __init__(self):
+            self.corpus=corpus
+            self.bge_query_embedder=object()
+            self.embedder=None
+        async def activate_pending(self):
+            pass
+
+    indexer=IndexReconciler(Backend(),None)
+    indexer.documents=AsyncMock(return_value=[])
+    indexer.story_indexer=SimpleNamespace(tick=AsyncMock(return_value=1))
+    indexer.last_original_gc=time.time()
+    indexer.last_gc=time.time()
+    stats=await indexer.tick()
+    assert stats["stories_written"]==1
+    assert stats["archive_deferred_for_story_index"] is True
+    indexer.story_indexer.tick.assert_awaited_once()
+    assert indexer.archive is None
+    assert indexer.mirror is None
