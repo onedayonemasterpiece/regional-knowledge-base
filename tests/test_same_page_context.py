@@ -94,3 +94,77 @@ async def test_same_page_context_never_crosses_pages():
         query=QUESTION,match_count=2,
     )
     assert [r.id for r in actual.results]==[first,other]
+
+
+@pytest.mark.asyncio
+async def test_second_neighbor_on_same_page_is_found_without_displacing_top_two():
+    first, second, tail, middle, answer=(str(uuid4()) for _ in range(5))
+    def neighbors(_actor,_selected):
+        return [{
+            "id":first,"source_text":RANKED,"illustration_ids":[],
+            "start_page":10,"end_page":10,
+            "next_id":middle,"next_text":"На набережной торговали фруктами.",
+            "next_title":"Intermediate passage","next_illustrations":[],
+            "next_page":10,
+            "next2_id":answer,"next2_text":TARGET,
+            "next2_title":"Second passage","next2_illustrations":[],
+            "next2_page":10,
+        }]
+    backend=SimpleNamespace(
+        corpus=SimpleNamespace(neighbors=neighbors),client=SimpleNamespace(),
+        _evidence_url=lambda ident:"knowledge://"+ident,
+    )
+    result=await SupabaseRestBackend._expand_continuation_results(
+        backend,SearchOutput(results=[
+            SearchResult(id=first,title="Anchor",url="knowledge://first"),
+            SearchResult(id=second,title="Another anchor",url="knowledge://second"),
+            SearchResult(id=tail,title="Low-ranked evidence",url="knowledge://tail"),
+        ],retrieval_mode="bge",main_state="ready"),
+        SimpleNamespace(subject=str(uuid4())),query=QUESTION,match_count=3,
+    )
+    assert [h.id for h in result.results]==[first,second,answer]
+    assert result.results[-1].ranking_signals[-1]["branch"]=="same_page_context"
+    assert result.results[-1].ranking_signals[-1]["hops"]==2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intervening_page,intervening_images,target_page",[
+    (11,False,10),     # A discontinuous page sequence is never context.
+    (10,True,10),      # Do not skip an illustration-bearing intermediate chunk.
+    (10,False,11),     # Neighbor lies outside the accepted original page.
+])
+async def test_second_neighbor_cannot_jump_a_boundary(
+    intervening_page,intervening_images,target_page
+):
+    first, second, tail, middle, answer=(str(uuid4()) for _ in range(5))
+    def neighbors(_actor,_selected):
+        return [{
+            "id":first,"source_text":RANKED,"illustration_ids":[],
+            "start_page":10,"end_page":10,
+            "next_id":middle,"next_text":"Рынок в торговом квартале.",
+            "next_title":"Middle","next_illustrations":(["figure"] if intervening_images else []),
+            "next_page":intervening_page,
+            "next2_id":answer,"next2_text":TARGET,
+            "next2_title":"Answer","next2_illustrations":[],
+            "next2_page":target_page,
+        }]
+    backend=SimpleNamespace(
+        corpus=SimpleNamespace(neighbors=neighbors),client=SimpleNamespace(),
+        _evidence_url=lambda ident:"knowledge://"+ident,
+    )
+    response=await SupabaseRestBackend._expand_continuation_results(
+        backend,SearchOutput(results=[
+            SearchResult(id=first,title="Anchor",url="knowledge://first"),
+            SearchResult(id=second,title="Anchor two",url="knowledge://second"),
+            SearchResult(id=tail,title="Tail",url="knowledge://tail"),
+        ],retrieval_mode="bge",main_state="ready"),
+        SimpleNamespace(subject=str(uuid4())),query=QUESTION,match_count=3
+    )
+    assert [h.id for h in response.results]==[first,second,tail]
+
+
+def test_strength_prefers_more_query_cues_over_merely_nearest_segment():
+    from regional_knowledge.continuation_context import same_page_topic_score
+    lower="На острове возник рынок рядом с торговыми рядами."
+    assert same_page_topic_score(QUESTION,RANKED,TARGET) > same_page_topic_score(
+        QUESTION,RANKED,lower)
