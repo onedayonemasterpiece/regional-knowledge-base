@@ -30,3 +30,5 @@ This repository implements ingestion, retrieval and graph operations. Software t
 - [Stories and integrations](docs/integrations.md), [Street Story evidence bridge](docs/poi-integration.md)
 - [Storage](docs/storage.md), [rights](docs/rights.md), [OAuth](docs/auth.md)
 - [Mass-ingestion readiness](docs/mass-ingestion-readiness.md)
+- [ПМИ: импорт, поиск и извлечение](docs/testing.md), [журнал испытаний и доработок](docs/testing-journal.md)
+
