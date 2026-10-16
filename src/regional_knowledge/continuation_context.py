@@ -155,17 +155,13 @@ def strong_continuation_boundary(
     return score
 
 
-def same_page_topic_support(
+def same_page_topic_score(
     query: str, source_text: str | None, adjacent_text: str | None,
-) -> bool:
-    """Conservative extra answer context on the SAME printed source page.
+) -> int:
+    """How much stronger the nearby printed context matches the question.
 
-    A query often names the neighboring subject but not the chunk that ranked
-    highest. Only permit one contextual slot when >=3 question cues occur in
-    the missing passage and it matches *more* cues than the ranked passage.
-    Prefixes normalize common Russian/German inflections without adding
-    known authors, places, book IDs, query templates or external models.
-    The caller must independently verify adjacency, page and source ACL.
+    Only useful on a source/ACL-verified same-page neighbor. Character prefixes
+    normalize common inflections; no curated terms, known questions or books.
     """
     def cues(value: str | None) -> set[str]:
         return {word[:5] for word in _word_terms(value)
@@ -173,10 +169,17 @@ def same_page_topic_support(
 
     question = cues(query)
     if len(question) < 4:
-        return False
+        return 0
     neighbor = len(cues(adjacent_text) & question)
     source = len(cues(source_text) & question)
-    return neighbor >= 3 and neighbor > source
+    return neighbor if neighbor >= 3 and neighbor > source else 0
+
+
+def same_page_topic_support(
+    query: str, source_text: str | None, adjacent_text: str | None,
+) -> bool:
+    """Backward-compatible same-page question-support predicate."""
+    return same_page_topic_score(query, source_text, adjacent_text) > 0
 
 
 def continuation_signal(
