@@ -157,11 +157,12 @@ def strong_continuation_boundary(
 
 def same_page_topic_score(
     query: str, source_text: str | None, adjacent_text: str | None,
-) -> int:
-    """How much stronger the nearby printed context matches the question.
+) -> float:
+    """Length-normalized question evidence in a nearby authorized source chunk.
 
-    Only useful on a source/ACL-verified same-page neighbor. Character prefixes
-    normalize common inflections; no curated terms, known questions or books.
+    Long background passages naturally match more general question words.
+    Normalize overlap by passage length (a bounded BM25-style length penalty)
+    before choosing among eligible neighbors; no known-query or book lexicon.
     """
     def cues(value: str | None) -> set[str]:
         return {word[:5] for word in _word_terms(value)
@@ -169,10 +170,13 @@ def same_page_topic_score(
 
     question = cues(query)
     if len(question) < 4:
-        return 0
+        return 0.0
     neighbor = len(cues(adjacent_text) & question)
     source = len(cues(source_text) & question)
-    return neighbor if neighbor >= 3 and neighbor > source else 0
+    if neighbor < 3 or neighbor <= source:
+        return 0.0
+    words = max(16, len(_word_terms(adjacent_text)))
+    return neighbor / (words ** 0.75)
 
 
 def same_page_topic_support(
@@ -183,7 +187,7 @@ def same_page_topic_support(
 
 
 def continuation_signal(
-    *, direction: str, source_chunk_id: str, strength: int,
+    *, direction: str, source_chunk_id: str, strength: int | float,
     branch: str = "continuation_neighbor",
 ) -> dict[str, Any]:
     if branch not in {"continuation_neighbor", "same_page_context"}:
