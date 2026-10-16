@@ -306,13 +306,18 @@ class IndexReconciler:
         # Drain the existing durable story_outbox only after source indexing.
         # A single local BGE call per pass cannot monopolize the query encoder.
         phase=time.monotonic()
+        story_backlog=False
         if hasattr(self.backend,'corpus') and getattr(self.backend,'bge_query_embedder',None):
             try:
                 if self.story_indexer is None:
                     from .story_vector_index import StoryVectorIndexer
                     self.story_indexer=StoryVectorIndexer(
                         self.backend.corpus,self.backend.bge_query_embedder)
-                stats['stories_written']=await self.story_indexer.tick()
+                from .story_vector_index import pending as pending_story
+                story_backlog=(await asyncio.to_thread(
+                    pending_story,self.backend.corpus)) is not None
+                if story_backlog:
+                    stats['stories_written']=await self.story_indexer.tick()
             except Exception as error:
                 stats['errors'].append(type(error).__name__)
                 log.warning(json.dumps({
@@ -332,7 +337,11 @@ class IndexReconciler:
             self.last_original_gc=time.time()
         stats['phase_seconds']['cache_gc']=time.monotonic()-phase
         phase=time.monotonic()
-        if not documents and os.getenv('RKB_VIBEPUBLISH_GRANT_FILE'):
+        # An unrelated archive/provider outage must not delay existing
+        # story-vector catch-up. Resume optional mirror after the outbox drains.
+        if story_backlog:
+            stats['archive_deferred_for_story_index']=True
+        if not documents and not story_backlog and os.getenv('RKB_VIBEPUBLISH_GRANT_FILE'):
             try:
                 if self.mirror is None:
                     from .illustration_mirror import IllustrationMirror,VibePublishClient
