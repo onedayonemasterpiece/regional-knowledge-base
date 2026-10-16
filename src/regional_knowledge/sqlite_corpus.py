@@ -279,8 +279,10 @@ class SQLiteCorpus:
                 if component:
                     clause=' and chunk_id in(select chunk_id from component_chunks where component_id=?)';params.append(component['component_id'])
                 else:clause=' and not exists(select 1 from component_chunks cc where cc.chunk_id=chunk_positions.chunk_id)'
-                previous=db.execute('select chunk_id from chunk_positions where document_id=? and revision=? and article_id is ?'+clause+' and end_position<? order by end_position desc,chunk_id desc limit 1',(*params,position['start_position'])).fetchone()
-                following=db.execute('select chunk_id from chunk_positions where document_id=? and revision=? and article_id is ?'+clause+' and start_position>? order by start_position,chunk_id limit 1',(*params,position['end_position'])).fetchone()
+                # Two nearest positions are enough to bridge a short paragraph
+                # on one accepted page; never enumerate the whole book.
+                previous=db.execute('select chunk_id from chunk_positions where document_id=? and revision=? and article_id is ?'+clause+' and end_position<? order by end_position desc,chunk_id desc limit 2',(*params,position['start_position'])).fetchall()
+                following=db.execute('select chunk_id from chunk_positions where document_id=? and revision=? and article_id is ?'+clause+' and start_position>? order by start_position,chunk_id limit 2',(*params,position['end_position'])).fetchall()
                 # Same-page expansion requires exact accepted page provenance.
                 # Missing fragment metadata cannot establish page adjacency.
                 def page_bounds(chunk_id):
@@ -293,12 +295,17 @@ class SQLiteCorpus:
                 result=dict(current)
                 result.update({"start_page":bounds["first_page"],
                                "end_page":bounds["last_page"]})
-                for prefix,pair in (('prev',previous),('next',following)):
-                    if pair:
+                for prefix,candidates in (('prev',previous),('next',following)):
+                    for distance,pair in enumerate(candidates,1):
+                        label=prefix if distance==1 else prefix+"2"
                         value=self.one('rkb_chunks',pair[0])
+                        if value is None:continue
                         adjacent=page_bounds(pair[0])
-                        result.update({prefix+'_id':value['id'],prefix+'_title':value['title'],prefix+'_text':value['source_text'],prefix+'_illustrations':value.get('illustration_ids'),
-                                       prefix+'_page':adjacent["last_page"] if prefix=="prev" else adjacent["first_page"]})
+                        result.update({label+'_id':value['id'],
+                                       label+'_title':value['title'],
+                                       label+'_text':value['source_text'],
+                                       label+'_illustrations':value.get('illustration_ids'),
+                                       label+'_page':adjacent["last_page"] if prefix=="prev" else adjacent["first_page"]})
                 output.append(result)
         return output
 
