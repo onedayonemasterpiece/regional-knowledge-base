@@ -3,6 +3,10 @@
 This is the human-readable companion to the protected requirements contract in
 `.devcoveer/requirements.json`.
 
+The executable test plan is [ПМИ: импорт, поиск и извлечение](testing.md);
+record dated runs, defects and retests in the [testing journal](testing-journal.md).
+Neither document preparation nor an indexing snapshot constitutes a passing gate.
+
 ## Product outcome
 
 Regional Knowledge Base is being built so the owner can move from one-off book
