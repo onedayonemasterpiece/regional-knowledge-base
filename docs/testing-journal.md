@@ -46,3 +46,19 @@ Defect ID / severity / PR или commit / ответственный / след�
 ```
 
 Для privacy/quote/semantic дефекта публично описать тип ошибки без исходной цитаты. Незавершённый запуск сохраняет фактические числа и INCONCLUSIVE/BLOCKED, а не PASS. Неисполненные проверки остаются NOT RUN. Закрытие дефекта требует нового evidence, не только merged PR.
+
+## RKB-20261016-2023
+
+16.10.2026, 20:23–20:27 UTC. [Подробный отчёт](reports/rkb-live-acceptance-20261016.md). Read-only действующий MCP, новый импорт и изменения корпуса не выполнялись. Точный deployed SHA неизвестен, remote main2067f2b; полный PRE-01 INCONCLUSIVE.
+
+- Уборка: подтверждено удаление 27 старых release/source, +130,6 МиБ. Используемые checkout и уникальные изменения сохранены.
+- INDEX: 2434/2434 BGE, required=[bge], query ready; не свидетельство свежей активации.
+- SRC-01 diagnostic: 6 семейств, 12 positive attempts, 11 ответов; Hit@5 10/11, вся программа 10/12. RU→DE 3/3 rank1. Один подтверждённый semantic miss, RKB-LIVE-02. Hit@10 не измерен (8 результатов).
+- Истории: semantic → lexical_degraded, целевая история отсутствует top5 естественного вопроса, присутствует rank1 точного lexical: FAIL RKB-LIVE-01.
+- LAT diagnostic: 11 positive success backend p50/p95 408,3/1871,4 мс; observed MCP wall3571/8364 мс. Cold/warm и глобальная concurrency не контролировались; формальный LAT-01 INCONCLUSIVE, RKB-LIVE-03.
+- Два out-of-corpus negatives дают нерелевантных кандидатов, не ответы. Нельзя считать их доказательством.
+- POI → entity/story PASS ограниченного чтения. Полная семантика свидетельств INCONCLUSIVE, RKB-LIVE-04. Новые EXT-01…03 NOT RUN.
+- Четыре вызова в двух блоках отменены с user cancelled MCP tool call, без повторов; не отнесены к server errors.
+- IMP-01…06, полный holdout/ablations/ACL/CAP NOT RUN. Итог не GREEN: следующий одиночный импорт возможен как диагностический, не как принятая эксплуатация. Исправления не выполнялись.
+
+Старые записи выше сохраняют историческое значение. Текущий ограниченный прогон не закрывает полный gate из отчёта 08.10.
