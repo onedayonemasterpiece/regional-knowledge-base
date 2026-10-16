@@ -35,7 +35,7 @@ def test_topic_context_requires_more_query_evidence_on_missing_side():
 
 @pytest.mark.asyncio
 async def test_same_page_context_uses_one_slot_and_keeps_ranked_anchor():
-    first, second, neighbor = (str(uuid4()) for _ in range(3))
+    first, second, third, neighbor = (str(uuid4()) for _ in range(4))
     requested=[]
 
     def neighbors(actor, selected):
@@ -57,14 +57,15 @@ async def test_same_page_context_uses_one_slot_and_keeps_ranked_anchor():
     output=SearchOutput(results=[
         SearchResult(id=first,title="Anchor",url="knowledge://first"),
         SearchResult(id=second,title="Other",url="knowledge://second"),
+        SearchResult(id=third,title="Lower rank",url="knowledge://third"),
     ],retrieval_mode="bge",main_state="ready")
     result=await SupabaseRestBackend._expand_continuation_results(
-        backend,output,principal,query=QUESTION,match_count=2
+        backend,output,principal,query=QUESTION,match_count=3
     )
     assert requested == [(principal.subject, [first, second])]
-    assert [h.id for h in result.results] == [first,neighbor]
-    assert result.results[1].ranking_signals[0]["branch"]=="same_page_context"
-    assert result.results[1].ranking_signals[0]["direction"]=="previous"
+    assert [h.id for h in result.results] == [first,second,neighbor]
+    assert result.results[2].ranking_signals[0]["branch"]=="same_page_context"
+    assert result.results[2].ranking_signals[0]["direction"]=="previous"
     assert result.retrieval_mode=="bge"
 
 
