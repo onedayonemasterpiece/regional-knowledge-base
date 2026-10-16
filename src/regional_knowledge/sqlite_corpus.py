@@ -281,11 +281,24 @@ class SQLiteCorpus:
                 else:clause=' and not exists(select 1 from component_chunks cc where cc.chunk_id=chunk_positions.chunk_id)'
                 previous=db.execute('select chunk_id from chunk_positions where document_id=? and revision=? and article_id is ?'+clause+' and end_position<? order by end_position desc,chunk_id desc limit 1',(*params,position['start_position'])).fetchone()
                 following=db.execute('select chunk_id from chunk_positions where document_id=? and revision=? and article_id is ?'+clause+' and start_position>? order by start_position,chunk_id limit 1',(*params,position['end_position'])).fetchone()
+                # Same-page expansion requires exact accepted page provenance.
+                # Missing fragment metadata cannot establish page adjacency.
+                def page_bounds(chunk_id):
+                    return db.execute("""
+                        select min(physical_page_index) first_page,
+                               max(physical_page_index) last_page
+                        from chunk_fragments where chunk_id=?
+                    """,(str(chunk_id),)).fetchone()
+                bounds=page_bounds(ident)
                 result=dict(current)
+                result.update({"start_page":bounds["first_page"],
+                               "end_page":bounds["last_page"]})
                 for prefix,pair in (('prev',previous),('next',following)):
                     if pair:
                         value=self.one('rkb_chunks',pair[0])
-                        result.update({prefix+'_id':value['id'],prefix+'_title':value['title'],prefix+'_text':value['source_text'],prefix+'_illustrations':value.get('illustration_ids')})
+                        adjacent=page_bounds(pair[0])
+                        result.update({prefix+'_id':value['id'],prefix+'_title':value['title'],prefix+'_text':value['source_text'],prefix+'_illustrations':value.get('illustration_ids'),
+                                       prefix+'_page':adjacent["last_page"] if prefix=="prev" else adjacent["first_page"]})
                 output.append(result)
         return output
 

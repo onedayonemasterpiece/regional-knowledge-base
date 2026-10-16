@@ -46,3 +46,35 @@ Defect ID / severity / PR или commit / ответственный / след�
 ```
 
 Для privacy/quote/semantic дефекта публично описать тип ошибки без исходной цитаты. Незавершённый запуск сохраняет фактические числа и INCONCLUSIVE/BLOCKED, а не PASS. Неисполненные проверки остаются NOT RUN. Закрытие дефекта требует нового evidence, не только merged PR.
+
+## RKB-20261016-2023
+
+16.10.2026, 20:23–20:27 UTC. [Подробный отчёт](reports/rkb-live-acceptance-20261016.md). Read-only действующий MCP, новый импорт и изменения корпуса не выполнялись. Точный deployed SHA неизвестен, remote main2067f2b; полный PRE-01 INCONCLUSIVE.
+
+- Уборка: подтверждено удаление 27 старых release/source, +130,6 МиБ. Используемые checkout и уникальные изменения сохранены.
+- INDEX: 2434/2434 BGE, required=[bge], query ready; не свидетельство свежей активации.
+- SRC-01 diagnostic: 6 семейств, 12 positive attempts, 11 ответов; Hit@5 10/11, вся программа 10/12. RU→DE 3/3 rank1. Один подтверждённый semantic miss, RKB-LIVE-02. Hit@10 не измерен (8 результатов).
+- Истории: semantic → lexical_degraded, целевая история отсутствует top5 естественного вопроса, присутствует rank1 точного lexical: FAIL RKB-LIVE-01.
+- LAT diagnostic: 11 positive success backend p50/p95 408,3/1871,4 мс; observed MCP wall3571/8364 мс. Cold/warm и глобальная concurrency не контролировались; формальный LAT-01 INCONCLUSIVE, RKB-LIVE-03.
+- Два out-of-corpus negatives дают нерелевантных кандидатов, не ответы. Нельзя считать их доказательством.
+- POI → entity/story PASS ограниченного чтения. Полная семантика свидетельств INCONCLUSIVE, RKB-LIVE-04. Новые EXT-01…03 NOT RUN.
+- Четыре вызова в двух блоках отменены с user cancelled MCP tool call, без повторов; не отнесены к server errors.
+- IMP-01…06, полный holdout/ablations/ACL/CAP NOT RUN. Итог не GREEN: следующий одиночный импорт возможен как диагностический, не как принятая эксплуатация. Исправления не выполнялись.
+
+Старые записи выше сохраняют историческое значение. Текущий ограниченный прогон не закрывает полный gate из отчёта 08.10.
+
+## RETEST-20261016-SEARCH-PREDEPLOY
+
+**Тип:** новый bounded read-only live run + отдельная source/CI verification, не замена прежнего RUN из docs-ветки. **Исходный run:** `RKB-20261016-2023` (остался выше без перезаписи). **Полный безопасный отчёт:** [rkb-search-repair-predeploy-20261016.md](reports/rkb-search-repair-predeploy-20261016.md). **Исправление:** [PR #122](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/122).
+
+| ID | Причина | Фактический результат до выпуска | Новый код / ретест | Статус |
+| --- | --- | --- | --- | --- |
+| STORY-SEM-01 | У реестра историй была только FTS ветка, обещанная векторная индексация не исполнялась | 2/2 вызовов `story_search(semantic)` вернули `lexical_degraded` | Версионный BGE-кэш из существующего outbox, ACL до ранжирования; синтетические тесты/CI PASS, deploy не выполнялся | **SOURCE PASS, LIVE FAIL** |
+| BOOK-GOLD-01 | Соседняя исходная страница не расширяла выдачу без грамматического продолжения | Естественный gold отсутствует top-8 в 2/2 попыток BGE; полный правильный источник прочитан отдельно | Один ограниченный same-page contextual slot с сохранением top-2 и ACL; синтетические проверки PASS | **SOURCE PASS, LIVE FAIL**; Hit@5 не доказан |
+| PROOF-OWN-01 | Короткий excerpt не доказывал все утверждения | Полный связный фрагмент о свайных основаниях и трудности строительства собора проверен в действующей редакции Гаузе | Исторический account отделён от независимого факта | **SOURCE PASS**, не mass-quality |
+| PROOF-CROSS-01 | Источники в compact snapshot неполны; контекст Бруннека был не прочитан | Собственные Gause/Brünneck страницы прочитаны; обе книги присутствуют в авторитетном sources_page, свидетельствуют о разных деталях арбитража | Не выполнять авто-слияние/ложную независимость | **SOURCE PASS**, старый точный B3 **NOT REPLAYED** |
+| LAT-01 | Разность backend/tool wall в старом N=11 | В новом N=5: backend p50/p95 429,1/1 032,1 мс, MCP/connector wall p50/p95 1 270/1 561 мс. Конкурентность 1, не cold-start benchmark | Транспорт не менялся; границы измерений разделены | **DIAGNOSTIC**, не новый latency gate PASS |
+| UNIT-REF-01 | Статические unit override содержат ссылку на релиз, не подтверждённый среди существующих каталогов | `service_config` отклонён `target_denied: service is not registered`; штатный read-only user-systemd вернул `unavailable` | Никаких сервисов/конфигураций не меняли | **UNVERIFIED** до effective release readback |
+| NEG-01 | Выдача кандидатов не равна ответу | Два контрфактических вопроса дали кандидатов, но подтверждённых ответов не предъявлено | Не засчитывать кандидатов за доказательства | **NO ANSWER PROVEN**, не ответный hallucination PASS |
+
+Четыре прежних `user cancelled MCP tool call` остаются **CANCELLED, причина неизвестна**, не переименованы в отказ безопасности. Приватные UUID, оригинальные исходные тексты и трассы не опубликованы. Текущие книги/редакции, Supabase/SQLite, права доступа и незавершённый импорт KA10 не изменялись. **Post-deploy продуктовый retest — NOT RUN, mass-readiness — NOT RUN.** Для live PASS требуется отдельное разрешение на production deploy, точная аттестация работающего SHA и повторение естественных вопросов.

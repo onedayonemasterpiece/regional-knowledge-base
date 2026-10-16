@@ -399,7 +399,19 @@ def build_server(
                     order: Literal["updated","potential"] = "updated",
                     limit: Annotated[int, Field(ge=1,le=20)] = 3,
                     cursor: str | None = None) -> dict[str,Any]:
-                return await story_call(registry.search, query, filters, mode, order, limit, cursor)
+                vector = None
+                if mode != "lexical" and query.strip():
+                    encoder = getattr(backend, "bge_query_embedder", None)
+                    if encoder is not None:
+                        try:
+                            vector = await encoder.embed(query.strip())
+                        except Exception as error:
+                            # Preserve query privacy and signal real degradation.
+                            logging.getLogger(__name__).warning(json.dumps({
+                                "event": "story_query_encoder_degraded",
+                                "error_type": type(error).__name__,
+                            }))
+                return await story_call(registry.search, query, filters, mode, order, limit, cursor, vector)
 
             @mcp.tool(name="story_calendar", title="Historical events on a calendar day",
                 description="SQL exact-day filter over CURRENT source-attributed event dates; "

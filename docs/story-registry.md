@@ -14,7 +14,7 @@ Story → StoryRevision → VariantRevision. Assertion → AssertionRevision →
 
 В SQLite отдельные нормализованные таблицы story_records, story_revisions, story_sources, story_assertion_versions, story_evidence, story_assessments, story_variants, story_variant_versions, story_review_decisions, story_publications, story_dependencies, story_grants, story_audit, story_receipts, story_jobs, story_outbox и story_schema_migrations. Изменения атомарны: версия, аудит, receipt и outbox фиксируются в одной транзакции с существующим корпусом.
 
-Изменения векторного/книжного retrieval и требования из .devcoveer/requirements.json не затрагиваются. Story index сейчас локальный FTS, а очередь проекции векторов обозначается awaiting_worker, пока не подключён проверенный внешний исполнитель.
+Книжные E5/BGE-пространства и защищённые требования `.devcoveer/requirements.json` не изменяются. **Schema v13** добавляет восстановимый BGE-кэш редакционных карточек (`story_bge_index`) в том же SQLite: только версия, хэш материала и вектор, без второго источника правды или исходных страниц. Старый `story_outbox` обслуживается существующим индексатором RKB после публикации книжных векторов, с ограничением одного задания на проход и прежним локальным BGE-query encoder. FTS остаётся независимым рабочим поиском, а `semantic` не выдаёт lexical fallback за векторный ответ.
 
 ## MCP/function-call профили
 
@@ -122,8 +122,15 @@ Exact quote подтверждает наличие текста у автора
 авторства и прежних оценок. Approval другого варианта не наследуется.
 
 `story_search(mode=lexical)` ищет заголовки, summary и актуальные assertion
-phrases. Если story semantic/vector branch не запущен, он не объявляется
-запущенным: source BGE поиск остаётся отдельным каналом межкнижного discovery.
+phrases. `mode=semantic` при наличии BGE-вектора запроса ищет по версии
+карточки и применяет **полные actor/source ACL до ранжирования**; stale
+revision, архив и несовпадение хэша карточки не допускаются. Результат
+`story_bge` означает, что весь доступный отфильтрованный набор был
+проиндексирован; `story_bge_partial` — только неполное покрытие; при
+недоступном query-энкодере/индексе — явный `lexical_degraded`.
+`hybrid` в текущей реализации использует ту же BGE-ветку, когда векторы
+доступны, и честно сообщает `story_bge` (а не фиктивное смешение).
+Source BGE-книга остаётся отдельным каналом межкнижного discovery.
 `completed_under_policy` относится только к зафиксированному конечному
 набору сравнений и объявленным каналам, **не** доказывает отсутствие
 других сквозных историй. При получении нового источника допустим
@@ -177,8 +184,11 @@ assessment сохраняет старую семантику (добавить 
 
 Revision-guarded correction/retraction уже описана и реализована в schema v8
 ниже; повторное сравнение неизменных пар — в v9. Полный durable frontier/
-corpus watermark и реальный story-vector worker остаются отдельными этапами. Пока `story_search(semantic|hybrid)` сообщает
-lexical fallback и не считается прошедшим semantic recall.
+corpus watermark остаётся отдельным этапом. Story BGE worker с v13
+обрабатывает существующий outbox в основном процессе индексации, без
+нового демона/очереди. Наличие индекса и зелёный CI сами по себе
+не подтверждают semantic recall действующего MCP: требуется post-deploy
+проверка исходным естественным вопросом, evidence и latency.
 
 
 ### Редакционное исправление межкнижных связей — schema v8
