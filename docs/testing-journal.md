@@ -78,3 +78,19 @@ Defect ID / severity / PR или commit / ответственный / след�
 | NEG-01 | Выдача кандидатов не равна ответу | Два контрфактических вопроса дали кандидатов, но подтверждённых ответов не предъявлено | Не засчитывать кандидатов за доказательства | **NO ANSWER PROVEN**, не ответный hallucination PASS |
 
 Четыре прежних `user cancelled MCP tool call` остаются **CANCELLED, причина неизвестна**, не переименованы в отказ безопасности. Приватные UUID, оригинальные исходные тексты и трассы не опубликованы. Текущие книги/редакции, Supabase/SQLite, права доступа и незавершённый импорт KA10 не изменялись. **Post-deploy продуктовый retest — NOT RUN, mass-readiness — NOT RUN.** Для live PASS требуется отдельное разрешение на production deploy, точная аттестация работающего SHA и повторение естественных вопросов.
+
+
+## RKB-20261016-POSTFIX — source search restored, story catch-up in progress
+
+**Связанная запись:** RKB-20261016-2023 и RETEST-20261016-SEARCH-PREDEPLOY выше. **Источник новых результатов:** [пострелизная приёмка](reports/rkb-search-postdeploy-acceptance-20261016.md). **Точный served SHA:** `f4b08bc426ba9fee71886a4aae5c4772bfd420cb` (RKB MCP и indexing unit), подтверждён штатным PID/env readback и двойной health после SHA-pinned release deploy. Две отдельные консистентные SQLite резервные копии от 16.10 с integrity/FK PASS. Основная рабочая копия не переключалась; книг, graph unit и ACL не меняли.
+
+| Дефект → причина → изменение → retest | Итог |
+| --- | --- |
+| STORY-SEM-01 → отсутствовала исполняемая story-vector branch → PR #122: BGE story outbox/revision/ACL search → живой `story_bge_partial`, обычный lexical не подменяет dense режим; story index выполняет backfill через текущий worker | **LIVE PARTIAL, NOT YET PASS** до полной готовности и исходного естественного запроса |
+| BOOK-GOLD-01 → нужный абзац через один промежуточный чанк и длинная общая соседняя выдержка переоценивалась по числу совпадений → PR #123: две ближайшие позиции той же страницы, один protected context slot, length-normalized question cues → исходный дословный естественный вопрос нашёл gold Гаузе rank 8/8, без лексического fallback | **LIVE PASS@8, MISS@5**, общая dense quality не считается прошедшей |
+| STORY-INDEX-LATENCY → optional provider archive иногда давал HTTP 400/Timeout и удерживал pass → PR #123: откладывать лишь ancillary archive/mirror пока есть текущий story outbox → логи подтверждают последовательные `stories_written=1`, `archive_deferred_for_story_index=true` | **PASS текущего catch-up**, причина отдельного OAuth 400 не исправлялась |
+| SOURCE-REF → короткие excerpts и частичный compact snapshot → полное чтение собственных свидетельств и авторитетный `sources_page` → Гаузе rev4, Бруннек rev3, обе зависимости сохранены | **PASS provenance в проверенном объёме**, не source-truth consensus |
+| LAT-01 → backend и MCP wall ранее смешивались → шесть backend-only измерений p50 489,8 мс, p95 1285,7 мс, другие boundaries отдельно | **INCONCLUSIVE formal LAT** (N=6, concurrency/host load not controlled) |
+| NEG → отрицательные вопросы возвращают retrieval-кандидатов → source fetch top-1 не подтверждает выдуманные технологии | **No affirmative source proof**, не generation-level no-hallucinations PASS |
+
+Текущая bounded выборка двух принятых книг: 6/6 Hit@8, 4/6 Hit@5; query mode BGE на всех; двусторонние source ACL/исторические права не ослаблялись. Это НЕ тот же независимый holdout и НЕ массовая программа. Четыре старые `user cancelled MCP tool call` остаются UNKNOWN cancellation и не стали «отказами безопасности». Полный story semantic retest ждёт индексации всех 68 карточек; внешний archive OAuth, необязательный E5 auto-restart и строгие требования к latency/scale не объявлены закрытыми.
