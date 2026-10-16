@@ -455,6 +455,34 @@ class StoryRegistry:
                     WHERE table_name='rkb_ingestion_jobs'""")
                 db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(12,datetime('now'))")
                 db.commit()
+            if not db.execute("SELECT 1 FROM story_schema_migrations WHERE version=13").fetchone():
+                # Derived, rebuildable story BGE cache: never a second editorial
+                # authority or source store. Existing outbox drives catch-up.
+                db.executescript("""
+                CREATE TABLE IF NOT EXISTS story_bge_index(
+                    story_id TEXT PRIMARY KEY REFERENCES story_records(id),
+                    story_revision INTEGER NOT NULL,
+                    embedding_space TEXT NOT NULL,
+                    encoder_revision TEXT NOT NULL,
+                    material_sha256 TEXT NOT NULL,
+                    vector_blob BLOB NOT NULL,
+                    updated_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS story_bge_revision
+                    ON story_bge_index(story_revision,embedding_space);
+                """)
+                db.execute("""INSERT OR IGNORE INTO story_outbox(
+                    id,story_id,story_revision,payload_hash,state,created_at)
+                    SELECT 'story-bge-v13:' || s.id || ':' || s.revision,
+                           s.id,s.revision,'rebuildable_story_material',
+                           'awaiting_worker',datetime('now')
+                    FROM story_records s
+                    WHERE s.archived=0 AND s.merged_into IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM story_outbox o
+                          WHERE o.story_id=s.id AND o.story_revision=s.revision)
+                """)
+                db.execute("INSERT OR IGNORE INTO story_schema_migrations VALUES(13,datetime('now'))")
+                db.commit()
 
     @staticmethod
     def _row(db, table, ident):
@@ -587,7 +615,8 @@ class StoryRegistry:
                     content["seed"]["text"], meta["material_type"], canonical(content), now(), story_id))
         db.execute("""INSERT OR IGNORE INTO story_outbox(id,story_id,story_revision,payload_hash,created_at)
                       VALUES(?,?,?,?,?)""", (str(uuid4()), story_id, revision,
-                                               digest({"title": meta["title"], "summary": meta.get("summary")}),
+                                               __import__("regional_knowledge.story_vector_index", fromlist=["material_hash", "material"]).material_hash(
+                                                   __import__("regional_knowledge.story_vector_index", fromlist=["material"]).material(content)),
                                                now()))
         # Keep the current assertion/alias projection in the same SQLite
         # transaction as the canonical story revision. Stale assertion revisions
