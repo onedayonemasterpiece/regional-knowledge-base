@@ -91,6 +91,17 @@ looking healthy. Logs record activation wakeups, vector writes, enqueue counts,
 retry error types and correlation IDs; they contain no source text or credentials.
 While required vector publication is pending, unrelated archive/mirror and storage
 GC work is deferred so external maintenance cannot hold the import critical path.
+
+The existing `story_outbox` uses the same indexing service and pinned local BGE
+query encoder for a bounded, one-card-per-pass derived index. While a current
+story revision still needs its BGE vector, optional VibePublish archive/mirror
+verification is **deferred**, not cancelled, to keep a failing external token
+request or archive timeout from blocking editorial-story search readiness.
+Corpus publication takes precedence over story indexing; source archive work
+resumes automatically once the story outbox has caught up. The progress log
+records `stories_written` and `archive_deferred_for_story_index`; no private
+source text or bearer token is logged. Retryable BGE query overload does not
+mark a story indexed or silently pass semantic acceptance.
 Missing required vectors remain recoverable after any transient failure. Missing
 optional E5 vectors are diagnostic debt, not a publication blocker. Persistent
 source hash mismatch, disabled owner, DB/provider outage or disk/queue failure

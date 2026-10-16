@@ -22,3 +22,25 @@ representative concurrency; public MCP p95 <=1500 ms and hard evidence deadline
 If unstable with co-located developer jobs, a 4-vCPU or dedicated retrieval
 allocation may be required. Do not claim 100-book/100k chunk readiness from this
 two-book acceptance, which has separate capacity and retrieval-quality gates.
+
+## Nearby source context (bounded, not a second search service)
+
+When a top-ranked accepted chunk is contextually incomplete, the existing
+retrieval post-pass may examine at most **two adjacent source-position chunks**
+on either side of each of the top two hits. A two-position context hop is
+allowed only within one authorized original document, active revision,
+article/component and physical page, with its intervening chunk also on that
+page and no illustration-bearing content crossed. The same actor/source
+authorization is applied *before* fetching any neighbor.
+
+Only **one** contextual source result can be added to the requested result
+window; top-two ranked evidence is protected. Grammatical continuation retains
+priority on the immediate hop. Otherwise at least three question cues and more
+overlap than the anchor are required, with a passage-length normalization to
+avoid over-favoring long general background. Context signals mark direction,
+hop count and `same_page_context` distinctly from primary BGE ranking.
+No user-specific titles, named places, entity IDs or question rewrites are used.
+
+The original natural gold and independent questions must still be verified
+against the **deployed** MCP and full source evidence. This bounded supplement
+does not make weak BGE dense retrieval a passing general holdout.

@@ -155,17 +155,14 @@ def strong_continuation_boundary(
     return score
 
 
-def same_page_topic_support(
+def same_page_topic_score(
     query: str, source_text: str | None, adjacent_text: str | None,
-) -> bool:
-    """Conservative extra answer context on the SAME printed source page.
+) -> float:
+    """Length-normalized question evidence in a nearby authorized source chunk.
 
-    A query often names the neighboring subject but not the chunk that ranked
-    highest. Only permit one contextual slot when >=3 question cues occur in
-    the missing passage and it matches *more* cues than the ranked passage.
-    Prefixes normalize common Russian/German inflections without adding
-    known authors, places, book IDs, query templates or external models.
-    The caller must independently verify adjacency, page and source ACL.
+    Long background passages naturally match more general question words.
+    Normalize overlap by passage length (a bounded BM25-style length penalty)
+    before choosing among eligible neighbors; no known-query or book lexicon.
     """
     def cues(value: str | None) -> set[str]:
         return {word[:5] for word in _word_terms(value)
@@ -173,14 +170,24 @@ def same_page_topic_support(
 
     question = cues(query)
     if len(question) < 4:
-        return False
+        return 0.0
     neighbor = len(cues(adjacent_text) & question)
     source = len(cues(source_text) & question)
-    return neighbor >= 3 and neighbor > source
+    if neighbor < 3 or neighbor <= source:
+        return 0.0
+    words = max(16, len(_word_terms(adjacent_text)))
+    return neighbor / (words ** 0.75)
+
+
+def same_page_topic_support(
+    query: str, source_text: str | None, adjacent_text: str | None,
+) -> bool:
+    """Backward-compatible same-page question-support predicate."""
+    return same_page_topic_score(query, source_text, adjacent_text) > 0
 
 
 def continuation_signal(
-    *, direction: str, source_chunk_id: str, strength: int,
+    *, direction: str, source_chunk_id: str, strength: int | float,
     branch: str = "continuation_neighbor",
 ) -> dict[str, Any]:
     if branch not in {"continuation_neighbor", "same_page_context"}:
