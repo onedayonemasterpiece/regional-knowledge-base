@@ -168,3 +168,51 @@ def test_strength_prefers_more_query_cues_over_merely_nearest_segment():
     lower="На острове возник рынок рядом с торговыми рядами."
     assert same_page_topic_score(QUESTION,RANKED,TARGET) > same_page_topic_score(
         QUESTION,RANKED,lower)
+
+
+def test_sqlite_source_positions_expose_two_nearby_chunks_under_actor_scope(tmp_path):
+    from hashlib import sha256
+    from regional_knowledge.sqlite_corpus import SQLiteCorpus
+    from regional_knowledge.sqlite_data import defaults
+
+    corpus=SQLiteCorpus(tmp_path/"synthetic-evidence.sqlite3")
+    owner,document=(str(uuid4()) for _ in range(2))
+    corpus.put("rkb_users",[{**defaults("rkb_users"),"id":owner,"status":"active"}])
+    corpus.put("rkb_documents",[{
+        **defaults("rkb_documents"),"id":document,
+        "owner_user_id":owner,"active_revision":1,
+        "source_sha256":"a"*64,"title":"Synthetic source",
+    }])
+    ids=[]
+    for position,text in enumerate((RANKED,"Торговые лавки на острове.",TARGET)):
+        chunk_id=str(uuid4())
+        digest=sha256(text.encode()).hexdigest()
+        corpus.put("rkb_chunks",[{
+            **defaults("rkb_chunks"),"id":chunk_id,
+            "document_id":document,"revision":1,
+            "title":"Synthetic passage", "source_text":text,
+            "search_material":text,
+            "text_sha256":digest,"search_material_sha256":digest,
+        }])
+        with corpus.connect() as db:
+            db.execute("""INSERT INTO chunk_positions(
+                chunk_id,document_id,revision,start_position,end_position,article_id)
+                VALUES(?,?,?,?,?,NULL)""",
+                (chunk_id,document,1,position*1000,position*1000+len(text)))
+            db.execute("""INSERT INTO chunk_fragments(
+                chunk_id,ordinal,page_id,physical_page_index,region_id,
+                text_start,text_end,source_sha256,revision)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (chunk_id,0,str(uuid4()),10,str(uuid4()),0,len(text),"a"*64,1))
+        ids.append(chunk_id)
+
+    results=corpus.neighbors(owner,[ids[0]])
+    assert len(results)==1
+    assert results[0]["next_id"]==ids[1]
+    assert results[0]["next2_id"]==ids[2]
+    assert results[0]["next_page"]==results[0]["next2_page"]==10
+
+    outsider=str(uuid4())
+    import pytest
+    with pytest.raises((LookupError,PermissionError)):
+        corpus.neighbors(outsider,[ids[0]])
