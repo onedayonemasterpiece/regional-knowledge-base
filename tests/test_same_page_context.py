@@ -216,3 +216,18 @@ def test_sqlite_source_positions_expose_two_nearby_chunks_under_actor_scope(tmp_
     import pytest
     with pytest.raises((LookupError,PermissionError)):
         corpus.neighbors(outsider,[ids[0]])
+
+
+def test_length_normalization_prefers_answer_dense_over_long_background():
+    from regional_knowledge.continuation_context import same_page_topic_score
+    # A broad descriptive page can mention more of a question's words than a
+    # concise, answer-bearing passage; raw term-count bias is not answer quality.
+    broad=("На восточном краю острова начали возводить башню. "
+           "Здание задумывалось важным объектом. "
+           + "Жители обсуждали рынки, улицы, мосты и товары. "*45)
+    concise=TARGET
+    source="Жители острова обсуждали новые сооружения."
+    assert same_page_topic_score(QUESTION,source,broad)>0
+    assert same_page_topic_score(QUESTION,source,concise)>0
+    assert same_page_topic_score(QUESTION,source,concise)>same_page_topic_score(
+        QUESTION,source,broad)
