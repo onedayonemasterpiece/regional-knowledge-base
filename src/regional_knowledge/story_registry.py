@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from .sqlite_corpus import canonical
+from .story_vector_index import ENCODER_REVISION, material, material_hash, similarity
+from .bge_contract import SPACE as STORY_BGE_SPACE, validate_vector
 from .story_contracts import (
     AddGap, AttachEvidence, EvidenceLocator, ExtractCancel, ExtractClaim, ExtractStage, ExtractStart,
     UpsertAssertion, LinkEntity, RecordAssessment, RecordInterest, ResolveGap, SetAngle,
@@ -615,8 +617,7 @@ class StoryRegistry:
                     content["seed"]["text"], meta["material_type"], canonical(content), now(), story_id))
         db.execute("""INSERT OR IGNORE INTO story_outbox(id,story_id,story_revision,payload_hash,created_at)
                       VALUES(?,?,?,?,?)""", (str(uuid4()), story_id, revision,
-                                               __import__("regional_knowledge.story_vector_index", fromlist=["material_hash", "material"]).material_hash(
-                                                   __import__("regional_knowledge.story_vector_index", fromlist=["material"]).material(content)),
+                                               material_hash(material(content)),
                                                now()))
         # Keep the current assertion/alias projection in the same SQLite
         # transaction as the canonical story revision. Stale assertion revisions
@@ -1849,13 +1850,13 @@ class StoryRegistry:
                     "source_version": 1, "change_summary": "Внешнее свидетельство зарегистрировано"}
         return self._mutation(principal, "story_source_register", idempotency_key, data, authorize, apply)
 
-    def search(self, principal, query="", filters=None, mode="lexical", order="updated", limit=3, cursor=None):
+    def search(self, principal, query="", filters=None, mode="lexical", order="updated", limit=3, cursor=None, query_vector=None):
         filters = filters or {}
         if any(k not in {"state", "material_type", "workspace_id", "assertion_kind", "source_id", "entity_ref", "format", "audience", "min_potential"} for k in filters):
             fail("validation_failed", "Unsupported story search filter")
-        # The vector plane is deliberately not used until a separately scoped
-        # index is installed. Never silently call a hybrid query semantic.
+        # An unavailable or partially indexed vector never masquerades as full semantic retrieval.
         actual_mode = "lexical_only" if mode == "lexical" else "lexical_degraded"
+        vector_state = "local_fts_ready_vector_awaiting_worker"
         with self.corpus.connect() as db:
             actor = self._actor(db, principal)
             offset = max(0, int(cursor or 0))
@@ -1953,37 +1954,71 @@ class StoryRegistry:
                     fail("validation_failed", "min_potential must be 0..100")
                 predicates.append(score + ">=?")
                 params.append(min_score)
-            tokens = re.findall(r"[^\W_]+", str(query), re.UNICODE)[:12]
-            expression = " OR ".join('"' + t + '"' for t in tokens)
-            if tokens:
-                # Retrieve from current story headings AND separately indexed
-                # assertion language. Do not expand every story snapshot into
-                # the calling model. Apply the identical ACL before ordering.
-                sql = """WITH who(actor_id) AS (VALUES (?)),
-                matched AS (
-                    SELECT s.id AS id, bm25(story_fts) AS score
-                    FROM story_fts JOIN story_records s ON s.rowid=story_fts.rowid
-                    WHERE story_fts MATCH ?
-                    UNION ALL
-                    SELECT a.story_id AS id, bm25(story_assertion_fts) + 0.5 AS score
-                    FROM story_assertion_fts
-                    JOIN story_assertion_search a
-                      ON a.rowid=story_assertion_fts.rowid
-                    WHERE story_assertion_fts MATCH ?
-                ),
-                ranked AS (SELECT id,MIN(score) AS relevance FROM matched GROUP BY id)
-                SELECT s.* FROM ranked r JOIN story_records s ON s.id=r.id
-                WHERE """ + " AND ".join(predicates)
-                sql += (" ORDER BY COALESCE(" + score + ",-1) DESC,r.relevance,s.id LIMIT ? OFFSET ?"
-                        if order == "potential" else " ORDER BY r.relevance,s.id LIMIT ? OFFSET ?")
-                args = [actor, expression, expression, *params[1:], limit + 1, offset]
-            else:
+            rows = None
+            if mode in {"semantic", "hybrid"} and str(query).strip() and query_vector is not None:
+                # Reuse the lexical SQL's full source/actor visibility predicate;
+                # apply it BEFORE reading any derived vectors for ranking.
+                query_embedding = validate_vector(query_vector)
                 sql = """WITH who(actor_id) AS (VALUES (?))
-                    SELECT s.* FROM story_records s WHERE """ + " AND ".join(predicates)
-                sql += (" ORDER BY COALESCE(" + score + ",-1) DESC,s.updated_at DESC,s.id LIMIT ? OFFSET ?"
-                        if order == "potential" else " ORDER BY s.updated_at DESC,s.id LIMIT ? OFFSET ?")
-                args = [*params, limit + 1, offset]
-            rows = db.execute(sql, args).fetchall()
+                    SELECT s.*,v.story_revision vector_revision,
+                           v.embedding_space vector_space,
+                           v.encoder_revision vector_encoder,
+                           v.material_sha256 vector_hash,
+                           v.vector_blob vector_blob
+                    FROM story_records s
+                    LEFT JOIN story_bge_index v ON v.story_id=s.id
+                    WHERE """ + " AND ".join(predicates)
+                admitted = db.execute(sql, [actor, *params[1:]]).fetchall()
+                scored = []
+                for record in admitted:
+                    if (record["vector_revision"] != record["revision"]
+                            or record["vector_space"] != STORY_BGE_SPACE
+                            or record["vector_encoder"] != ENCODER_REVISION
+                            or record["vector_blob"] is None):
+                        continue
+                    snapshot = json.loads(record["snapshot"])
+                    if record["vector_hash"] != material_hash(material(snapshot)):
+                        continue
+                    scored.append((similarity(record["vector_blob"], query_embedding), record))
+                if scored:
+                    scored.sort(key=lambda pair: (-pair[0], pair[1]["id"]))
+                    rows = [record for _, record in scored[offset:offset + limit + 1]]
+                    complete = len(scored) == len(admitted)
+                    actual_mode = "story_bge" if complete else "story_bge_partial"
+                    vector_state = "story_bge_ready" if complete else "story_bge_partial"
+            if rows is None:
+                tokens = re.findall(r"[^\W_]+", str(query), re.UNICODE)[:12]
+                expression = " OR ".join('"' + t + '"' for t in tokens)
+                if tokens:
+                    # Retrieve from current story headings AND separately indexed
+                    # assertion language. Do not expand every story snapshot into
+                    # the calling model. Apply the identical ACL before ordering.
+                    sql = """WITH who(actor_id) AS (VALUES (?)),
+                    matched AS (
+                        SELECT s.id AS id, bm25(story_fts) AS score
+                        FROM story_fts JOIN story_records s ON s.rowid=story_fts.rowid
+                        WHERE story_fts MATCH ?
+                        UNION ALL
+                        SELECT a.story_id AS id, bm25(story_assertion_fts) + 0.5 AS score
+                        FROM story_assertion_fts
+                        JOIN story_assertion_search a
+                          ON a.rowid=story_assertion_fts.rowid
+                        WHERE story_assertion_fts MATCH ?
+                    ),
+                    ranked AS (SELECT id,MIN(score) AS relevance FROM matched GROUP BY id)
+                    SELECT s.* FROM ranked r JOIN story_records s ON s.id=r.id
+                    WHERE """ + " AND ".join(predicates)
+                    sql += (" ORDER BY COALESCE(" + score + ",-1) DESC,r.relevance,s.id LIMIT ? OFFSET ?"
+                            if order == "potential" else " ORDER BY r.relevance,s.id LIMIT ? OFFSET ?")
+                    args = [actor, expression, expression, *params[1:], limit + 1, offset]
+                else:
+                    sql = """WITH who(actor_id) AS (VALUES (?))
+                        SELECT s.* FROM story_records s WHERE """ + " AND ".join(predicates)
+                    sql += (" ORDER BY COALESCE(" + score + ",-1) DESC,s.updated_at DESC,s.id LIMIT ? OFFSET ?"
+                            if order == "potential" else " ORDER BY s.updated_at DESC,s.id LIMIT ? OFFSET ?")
+                    args = [*params, limit + 1, offset]
+                rows = db.execute(sql, args).fetchall()
+
             hits = []
             for r in rows[:limit]:
                 try:
@@ -2024,7 +2059,7 @@ class StoryRegistry:
             return {"results": hits, "has_more": more,
                     "next_cursor": str(offset + limit) if more else None,
                     "retrieval_mode": actual_mode,
-                    "indexing_state": "local_fts_ready_vector_awaiting_worker"}
+                    "indexing_state": vector_state}
 
     def access(self, principal, story_id, expected_revision, grantee_user_id, capability, idempotency_key):
         grantee = str(UUID(grantee_user_id))
