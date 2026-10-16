@@ -155,9 +155,38 @@ def strong_continuation_boundary(
     return score
 
 
-def continuation_signal(*, direction: str, source_chunk_id: str, strength: int) -> dict[str, Any]:
+def same_page_topic_support(
+    query: str, source_text: str | None, adjacent_text: str | None,
+) -> bool:
+    """Conservative extra answer context on the SAME printed source page.
+
+    A query often names the neighboring subject but not the chunk that ranked
+    highest. Only permit one contextual slot when >=3 question cues occur in
+    the missing passage and it matches *more* cues than the ranked passage.
+    Prefixes normalize common Russian/German inflections without adding
+    known authors, places, book IDs, query templates or external models.
+    The caller must independently verify adjacency, page and source ACL.
+    """
+    def cues(value: str | None) -> set[str]:
+        return {word[:5] for word in _word_terms(value)
+                if len(word) >= 5 and word not in _QUERY_STOPWORDS}
+
+    question = cues(query)
+    if len(question) < 4:
+        return False
+    neighbor = len(cues(adjacent_text) & question)
+    source = len(cues(source_text) & question)
+    return neighbor >= 3 and neighbor > source
+
+
+def continuation_signal(
+    *, direction: str, source_chunk_id: str, strength: int,
+    branch: str = "continuation_neighbor",
+) -> dict[str, Any]:
+    if branch not in {"continuation_neighbor", "same_page_context"}:
+        raise ValueError("unknown contextual evidence signal")
     return {
-        "branch": "continuation_neighbor",
+        "branch": branch,
         "direction": direction,
         "source_chunk_id": source_chunk_id,
         "strength": strength,
