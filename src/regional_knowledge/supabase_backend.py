@@ -321,8 +321,12 @@ class SupabaseRestBackend(KnowledgeBackend):
         select s.*,
           prev.id prev_id,prev.title prev_title,prev.source_text prev_text,
           prev.illustration_ids prev_illustrations,prev.end_page prev_page,
+          prev2.id prev2_id,prev2.title prev2_title,prev2.source_text prev2_text,
+          prev2.illustration_ids prev2_illustrations,prev2.end_page prev2_page,
           nxt.id next_id,nxt.title next_title,nxt.source_text next_text,
-          nxt.illustration_ids next_illustrations,nxt.start_page next_page
+          nxt.illustration_ids next_illustrations,nxt.start_page next_page,
+          nxt2.id next2_id,nxt2.title next2_title,nxt2.source_text next2_text,
+          nxt2.illustration_ids next2_illustrations,nxt2.start_page next2_page
         from active s
         left join lateral (
           select p.*
@@ -334,6 +338,15 @@ class SupabaseRestBackend(KnowledgeBackend):
           limit 1
         ) prev on true
         left join lateral (
+          select p.*
+          from active p
+          where p.document_id=s.document_id and p.revision=s.revision
+            and (p.end_page,p.end_order) < (s.start_page,s.start_order)
+          order by p.end_page desc,p.end_order desc,
+                   p.start_page desc,p.start_order desc,p.id
+          limit 1 offset 1
+        ) prev2 on true
+        left join lateral (
           select n.*
           from active n
           where n.document_id=s.document_id and n.revision=s.revision
@@ -341,6 +354,14 @@ class SupabaseRestBackend(KnowledgeBackend):
           order by n.start_page,n.start_order,n.end_page,n.end_order,n.id
           limit 1
         ) nxt on true
+        left join lateral (
+          select n.*
+          from active n
+          where n.document_id=s.document_id and n.revision=s.revision
+            and (n.start_page,n.start_order) > (s.end_page,s.end_order)
+          order by n.start_page,n.start_order,n.end_page,n.end_order,n.id
+          limit 1 offset 1
+        ) nxt2 on true
         where s.id=any(%s::uuid[])"""
         try:
             if corpus is not None:
@@ -359,7 +380,7 @@ class SupabaseRestBackend(KnowledgeBackend):
             STRONG_THRESHOLD,
             continuation_signal,
             query_allows_continuation_expansion,
-            same_page_topic_support,
+            same_page_topic_score,
             strong_continuation_boundary,
         )
         context={str(row["id"]):dict(row) for row in rows}
@@ -391,60 +412,62 @@ class SupabaseRestBackend(KnowledgeBackend):
                 return None
             left_visual=bool(row.get("illustration_ids"))
             choices=[]
-            if row.get("next_id"):
-                strength=strong_continuation_boundary(
-                    row.get("source_text"),row.get("next_text"),
-                    left_has_illustrations=left_visual,
-                    right_has_illustrations=bool(row.get("next_illustrations")),
-                )
-                grammatical = (
-                    strength>=STRONG_THRESHOLD
-                    and query_allows_continuation_expansion(
-                        query,row.get("source_text"),row.get("next_text"),
-                        neighbor_side="right",
+            # Scan only the two nearest positions in each direction. The second
+            # hop is eligible solely as same-page context: never skip a chunk
+            # to manufacture a grammatical or cross-page continuation.
+            for direction,side in (("next","right"),("prev","left")):
+                anchor_page=row.get("end_page" if side=="right" else "start_page")
+                for hops in (1,2):
+                    prefix=direction if hops==1 else direction+"2"
+                    if not row.get(prefix+"_id"):
+                        continue
+                    neighbor_text=row.get(prefix+"_text")
+                    neighbor_visual=bool(row.get(prefix+"_illustrations"))
+                    grammatical_strength=0
+                    grammatical=False
+                    if hops==1:
+                        left=row.get("source_text") if side=="right" else neighbor_text
+                        right=neighbor_text if side=="right" else row.get("source_text")
+                        grammatical_strength=strong_continuation_boundary(
+                            left,right,
+                            left_has_illustrations=(left_visual if side=="right" else neighbor_visual),
+                            right_has_illustrations=(neighbor_visual if side=="right" else left_visual),
+                        )
+                        grammatical=(
+                            grammatical_strength>=STRONG_THRESHOLD
+                            and query_allows_continuation_expansion(
+                                query,left,right,neighbor_side=side)
+                        )
+                    same_page=(
+                        not left_visual and not neighbor_visual
+                        and anchor_page is not None
+                        and row.get(prefix+"_page")==anchor_page
+                        and (hops==1 or (
+                            row.get(direction+"_id") is not None
+                            and not row.get(direction+"_illustrations")
+                            and row.get(direction+"_page")==anchor_page))
                     )
-                )
-                topical = (
-                    not left_visual
-                    and not row.get("next_illustrations")
-                    and row.get("end_page") is not None
-                    and row.get("end_page")==row.get("next_page")
-                    and same_page_topic_support(
-                        query,row.get("source_text"),row.get("next_text"))
-                )
-                if grammatical or topical:
-                    choices.append((
-                        strength if grammatical else 1,1,"next",str(row["next_id"]),
-                        str(row.get("next_title") or ""),
-                        "continuation_neighbor" if grammatical else "same_page_context",
-                    ))
-            if row.get("prev_id"):
-                strength=strong_continuation_boundary(
-                    row.get("prev_text"),row.get("source_text"),
-                    left_has_illustrations=bool(row.get("prev_illustrations")),
-                    right_has_illustrations=left_visual,
-                )
-                grammatical = (
-                    strength>=STRONG_THRESHOLD
-                    and query_allows_continuation_expansion(
-                        query,row.get("prev_text"),row.get("source_text"),
-                        neighbor_side="left",
+                    topic_score=(
+                        same_page_topic_score(
+                            query,row.get("source_text"),neighbor_text)
+                        if same_page else 0
                     )
-                )
-                topical = (
-                    not left_visual
-                    and not row.get("prev_illustrations")
-                    and row.get("start_page") is not None
-                    and row.get("start_page")==row.get("prev_page")
-                    and same_page_topic_support(
-                        query,row.get("source_text"),row.get("prev_text"))
-                )
-                if grammatical or topical:
-                    choices.append((
-                        strength if grammatical else 1,0,"previous",str(row["prev_id"]),
-                        str(row.get("prev_title") or ""),
-                        "continuation_neighbor" if grammatical else "same_page_context",
-                    ))
+                    if grammatical or topic_score:
+                        branch=(
+                            "continuation_neighbor" if grammatical
+                            else "same_page_context"
+                        )
+                        score=grammatical_strength if grammatical else topic_score
+                        # Preserve strong grammatical continuation preference;
+                        # among topical candidates prefer the one with more
+                        # question evidence, then the closer hop.
+                        priority=100+score if grammatical else score
+                        choices.append((
+                            priority,-hops,"next" if side=="right" else "previous",
+                            str(row[prefix+"_id"]),
+                            str(row.get(prefix+"_title") or ""),
+                            branch,score,hops,
+                        ))
             return max(choices) if choices else None
 
         ranked_sources=list(output.results[:source_budget])
@@ -469,11 +492,13 @@ class SupabaseRestBackend(KnowledgeBackend):
             candidate=candidates.get(source.id)
             if candidate is None:
                 continue
-            strength,_,direction,neighbor_id,neighbor_title,branch=candidate
-            signal=continuation_signal(
-                direction=direction,source_chunk_id=source.id,
-                strength=strength,branch=branch,
-            )
+            _,_,direction,neighbor_id,neighbor_title,branch,strength,hops=candidate
+            signal={
+                **continuation_signal(
+                    direction=direction,source_chunk_id=source.id,
+                    strength=strength,branch=branch),
+                "hops":hops,
+            }
             source_index=next(
                 (i for i,item in enumerate(working) if item.id==source.id),None
             )
