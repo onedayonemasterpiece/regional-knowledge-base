@@ -43,6 +43,7 @@ class IndexReconciler:
         self.archive=None
         self.last_gc=0
         self.last_original_gc=0
+        self.story_indexer=None
 
     def actor(self,owner):return Principal(subject=str(owner),client_id='index-maintenance',issuer='internal-actor-bridge',access_token='internal-actor-bridge')
 
@@ -283,7 +284,7 @@ class IndexReconciler:
         return len(items)
 
     async def tick(self):
-        stats={'e5_written':0,'bge_submitted':0,'bge_written':0,'errors':[],'pending_documents':0,'phase_seconds':{}}
+        stats={'e5_written':0,'bge_submitted':0,'bge_written':0,'stories_written':0,'errors':[],'pending_documents':0,'phase_seconds':{}}
         started=time.monotonic()
         phase=time.monotonic();documents=await self.documents();stats['pending_documents']=len(documents);stats['phase_seconds']['document_scan']=time.monotonic()-phase
         phase=time.monotonic()
@@ -301,6 +302,24 @@ class IndexReconciler:
                     log.warning(json.dumps({'event':'indexing_retry','space':space,'document_id':str(document['id']),'error_type':type(error).__name__}))
         if hasattr(self.backend,'corpus'):await self.backend.activate_pending()
         stats['phase_seconds']['publication']=time.monotonic()-phase
+
+        # Drain the existing durable story_outbox only after source indexing.
+        # A single local BGE call per pass cannot monopolize the query encoder.
+        phase=time.monotonic()
+        if hasattr(self.backend,'corpus') and getattr(self.backend,'bge_query_embedder',None):
+            try:
+                if self.story_indexer is None:
+                    from .story_vector_index import StoryVectorIndexer
+                    self.story_indexer=StoryVectorIndexer(
+                        self.backend.corpus,self.backend.bge_query_embedder)
+                stats['stories_written']=await self.story_indexer.tick()
+            except Exception as error:
+                stats['errors'].append(type(error).__name__)
+                log.warning(json.dumps({
+                    'event':'story_vector_index_retry',
+                    'error_type':type(error).__name__,
+                }))
+        stats['phase_seconds']['story_vectors']=time.monotonic()-phase
 
         # Ancillary maintenance follows publication so unrelated provider
         # latency cannot delay this pass's vector progress or activation.
@@ -332,7 +351,7 @@ class IndexReconciler:
             await collect(self.backend,apply=True);self.last_gc=time.time()
         stats['phase_seconds']['storage_gc']=time.monotonic()-phase
         stats['phase_seconds']['total']=time.monotonic()-started
-        if any(stats[k] for k in ('e5_written','bge_submitted','bge_written')) or stats['errors']:
+        if any(stats[k] for k in ('e5_written','bge_submitted','bge_written','stories_written')) or stats['errors']:
             log.info(json.dumps({'event':'indexing_progress',**stats,'external_embedding_api_calls':0}))
         return stats
 
@@ -341,7 +360,7 @@ def write_health(stats):
     now=time.time();previous={}
     try:previous=json.loads(path.read_text())
     except (OSError,ValueError):pass
-    progress=sum(int(stats.get(k,0)) for k in ('e5_written','bge_submitted','bge_written'))
+    progress=sum(int(stats.get(k,0)) for k in ('e5_written','bge_submitted','bge_written','stories_written'))
     pending=int(stats.get('pending_documents',0))
     if progress or not previous.get('pending_documents'):last_progress=now
     else:last_progress=float(previous.get('last_progress_at',now))
