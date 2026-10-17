@@ -197,7 +197,7 @@ class SQLiteCorpus:
             result.append(doc)
         return result
 
-    def lexical(self,actor,query,*,depth=100,phrase=False,allowed=None,timeout_ms=150):
+    def lexical(self,actor,query,*,depth=100,phrase=False,allowed=None,timeout_ms=150,scope=None):
         # No SQL or FTS syntax from user input is executed. Literal terms only.
         terms=re.findall(r'[^\W_]+',query,flags=re.UNICODE)[:64]
         if not terms:return []
@@ -218,6 +218,8 @@ class SQLiteCorpus:
             expression=' OR '.join('"'+t+'"' for t in useful)
         docs=allowed if allowed is not None else {d['id']:d['active_revision'] for d in self.visible_documents(actor)}
         if not docs:return []
+        from .retrieval_scope import scope_clause
+        clause,scope_params=scope_clause(scope)
         with self.connect() as db:
             db.execute('create temp table allowed(document_id text primary key,revision integer)')
             db.executemany('insert into allowed values(?,?)',docs.items())
@@ -227,8 +229,8 @@ class SQLiteCorpus:
                 rows=db.execute(f'''select t.chunk_id,t.revision,t.text_sha256,t.search_material_sha256
                   from chunk_fts join chunk_text t on t.rowid=chunk_fts.rowid
                   join allowed a on a.document_id=t.document_id and a.revision=t.revision
-                  where chunk_fts match ? and {retrieval_clause('t.chunk_id')} order by bm25(chunk_fts),t.chunk_id limit ?''',
-                  (expression,max(1,min(depth,100)))).fetchall()
+                  where chunk_fts match ? and {retrieval_clause('t.chunk_id')} and {clause} order by bm25(chunk_fts),t.chunk_id limit ?''',
+                  (expression,*scope_params,max(1,min(depth,100)))).fetchall()
             except sqlite3.OperationalError as exc:
                 if 'interrupted' not in str(exc).casefold():raise
                 rows=[]
@@ -281,10 +283,12 @@ class SQLiteCorpus:
             db.executemany('insert into selected_docs values(?,?)',allowed.items())
             return [dict(r) for r in db.execute(f"select t.chunk_id,t.document_id,t.revision,t.text_sha256,t.search_material_sha256 from selected_docs a cross join chunk_text t on t.document_id=a.document_id and t.revision=a.revision where {retrieval_clause('t.chunk_id')}")]
 
-    def candidate_metadata_ids(self,chunk_ids,allowed):
+    def candidate_metadata_ids(self,chunk_ids,allowed,*,scope=None):
         """Validate only returned vector candidates against local actor scope."""
         ids=list(dict.fromkeys(str(value) for value in chunk_ids))[:200]
         if not ids or not allowed:return []
+        from .retrieval_scope import scope_clause
+        clause,scope_params=scope_clause(scope)
         with self.connect() as db:
             db.execute('create temp table selected_docs(document_id text primary key,revision integer)')
             db.executemany('insert into selected_docs values(?,?)',allowed.items())
@@ -293,7 +297,7 @@ class SQLiteCorpus:
             return [dict(r) for r in db.execute(f'''select t.chunk_id,t.document_id,t.revision,t.text_sha256,t.search_material_sha256
               from selected_chunks s join chunk_text t on t.chunk_id=s.chunk_id
               join selected_docs a on a.document_id=t.document_id and a.revision=t.revision
-              where {retrieval_clause('t.chunk_id')}''')]
+              where {retrieval_clause('t.chunk_id')} and {clause}''',scope_params)]
 
     def neighbors(self,actor,selected):
         output=[]
