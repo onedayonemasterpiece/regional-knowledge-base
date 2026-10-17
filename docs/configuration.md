@@ -91,7 +91,10 @@ from different models are never compared even when their dimensions are equal.
 Lexical-only degradation is allowed as a failure mode, not as the final hybrid
 beta acceptance.
 
-### Current local semantic retrieval controls
+### Current BGE-on-Kaggle and E5-local controls
+**Inference placement is not configurable:** BGE-M3 embedding inference runs solely on Kaggle via `RKB_BGE_QUEUE_PATH` and the existing controller/worker; it is not legal to deploy a local ONNX BGE sidecar or download its weights to DevCoveer. Historical flags `RKB_BGE_QUERY_LOCAL_ENABLED` and `RKB_BGE_QUERY_MODEL_DIR` have been retired and are ignored/removed, not supported. The previous BGE query systemd unit is masked. The pinned BGE tokenizer stored in `fast-e5/bge-m3-tokenizer.json` is required exclusively to check token counts during source ingestion and contains no neural model weights. E5 remains optional for vector-publication readiness but is the accepted local fast tier. See [Kaggle-only BGE operations](operations/bge-kaggle-only.md).
+
+
 
 | Name | Purpose |
 |---|---|

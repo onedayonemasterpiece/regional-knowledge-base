@@ -8,8 +8,9 @@ some 30–55%) is significant, while IO pressure is low.
 
 **Current owner architecture (2026-10-17): BGE inference runs ONLY in the
 Kaggle worker**, via the existing durable, owner-bound BGE queue on DevCoveer.
-The legacy local ONNX BGE query unit must be **disabled and stopped**, not
-started as a remedy for latency. The main MCP and story indexer enqueue
+The legacy local ONNX BGE query unit is **removed and systemd-masked**; its
+585,569,350-byte dedicated model directory has been deleted. Do not unmask or
+reinstall it in response to Kaggle latency. See [hard placement boundary](bge-kaggle-only.md). The main MCP and story indexer enqueue
 deduplicated BGE jobs and report Kaggle warming/pending truthfully; zero
 local BGE model bytes should be loaded.
 E5 remains a separate **local** CPU sidecar, restored and assessed independently.

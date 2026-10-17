@@ -33,7 +33,7 @@ from regional_knowledge.search_material import graph_material
 from regional_knowledge.bge_contract import MAX_TOKENS as BGE_MAX
 from regional_knowledge.e5_contract import MAX_TOKENS as E5_MAX
 
-BGE_TOKENIZER=Path("/home/dev/.local/share/regional-knowledge-base/bge-m3-int8/tokenizer.json")
+BGE_TOKENIZER=Path("/home/dev/.local/share/regional-knowledge-base/fast-e5/bge-m3-tokenizer.json")  # metadata only, NEVER local BGE inference
 E5_TOKENIZER=Path("/home/dev/.local/share/regional-knowledge-base/fast-e5/models/tokenizer.json")
 TEXT_KINDS=frozenset(("body","heading","caption","footnote","table","marginalia"))
 

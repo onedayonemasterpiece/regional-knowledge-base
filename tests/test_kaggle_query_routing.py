@@ -1,4 +1,4 @@
-"""Regression: BGE query inference runs on Kaggle, never the host."""
+"""Kaggle-only BGE query routing; no local model inference."""
 from types import SimpleNamespace
 
 import pytest
