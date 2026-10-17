@@ -1,4 +1,7 @@
 # Local E5 fast tier
+> **Current status (2026-10-17):** E5 was explicitly benchmarked, implemented and accepted as an always-ready local fast tier on 2026-10-04; it was **not intentionally deprecated** by the 2026-10-16 story changes. Broken runtime/source symlinks and missing model weights were recovered without changing the pinned model revision. E5 is distinct from forbidden local BGE inference. Its `/token-count` endpoint uses a token-only BGE tokenizer to prevent silent truncation when importing sources. The BGE model itself always executes on Kaggle. Do not run an optional E5 whole-corpus backfill without a separate quality/capacity reason. See [the current Kaggle-only placement policy](operations/bge-kaggle-only.md).
+
+
 
 The fast encoder runs as a separate user systemd service. The MCP process imports
 only the local HTTP client, never ONNX/tokenizer/numpy or model weights. Explicit
