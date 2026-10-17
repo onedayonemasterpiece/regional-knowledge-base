@@ -36,6 +36,37 @@ def row_key(table,row):
     return canonical([row[k] for k in fields])
 
 
+def retrieval_clause(chunk_id):
+    """Exclude only proven service-only passages, preserving unknown legacy data.
+
+    Called with internal SQL identifiers, never caller input. Exact corpus keys
+    keep this a bounded lookup per candidate, not a full source-text scan.
+    Source rows, fragments and explicit evidence fetches remain untouched.
+    """
+    if not re.fullmatch(r"[a-z_]+(?:\.[a-z_]+)?", chunk_id):
+        raise ValueError("internal chunk identifier required")
+    return f"""NOT EXISTS (
+      SELECT 1 FROM corpus_rows service_chunk
+      WHERE service_chunk.table_name='rkb_chunks'
+        AND service_chunk.row_key={chunk_id}
+        AND coalesce(json_array_length(service_chunk.payload,'$.illustration_ids'),0)=0
+        AND (coalesce(json_array_length(service_chunk.payload,'$.region_ids'),0)
+             + coalesce(json_array_length(service_chunk.payload,'$.footnote_region_ids'),0))>0
+        AND NOT EXISTS (
+          SELECT 1 FROM (
+            SELECT value FROM json_each(service_chunk.payload,'$.region_ids')
+            UNION ALL
+            SELECT value FROM json_each(service_chunk.payload,'$.footnote_region_ids')
+          ) refs
+          LEFT JOIN corpus_rows region ON region.table_name='rkb_regions'
+                                      AND region.row_key=refs.value
+          WHERE region.row_key IS NULL
+             OR coalesce(json_extract(region.payload,'$.kind'),'')
+                NOT IN ('header','footer','page_number')
+        )
+    )"""
+
+
 class SQLiteCorpus:
     def __init__(self,path):
         self.path=Path(path)
@@ -193,10 +224,10 @@ class SQLiteCorpus:
             deadline=time.monotonic()+max(10,min(int(timeout_ms),1000))/1000
             db.set_progress_handler(lambda: 1 if time.monotonic()>=deadline else 0,1000)
             try:
-                rows=db.execute('''select t.chunk_id,t.revision,t.text_sha256,t.search_material_sha256
+                rows=db.execute(f'''select t.chunk_id,t.revision,t.text_sha256,t.search_material_sha256
                   from chunk_fts join chunk_text t on t.rowid=chunk_fts.rowid
                   join allowed a on a.document_id=t.document_id and a.revision=t.revision
-                  where chunk_fts match ? order by bm25(chunk_fts),t.chunk_id limit ?''',
+                  where chunk_fts match ? and {retrieval_clause('t.chunk_id')} order by bm25(chunk_fts),t.chunk_id limit ?''',
                   (expression,max(1,min(depth,100)))).fetchall()
             except sqlite3.OperationalError as exc:
                 if 'interrupted' not in str(exc).casefold():raise
@@ -248,7 +279,7 @@ class SQLiteCorpus:
         with self.connect() as db:
             db.execute('create temp table selected_docs(document_id text primary key,revision integer)')
             db.executemany('insert into selected_docs values(?,?)',allowed.items())
-            return [dict(r) for r in db.execute('select t.chunk_id,t.document_id,t.revision,t.text_sha256,t.search_material_sha256 from selected_docs a cross join chunk_text t on t.document_id=a.document_id and t.revision=a.revision')]
+            return [dict(r) for r in db.execute(f"select t.chunk_id,t.document_id,t.revision,t.text_sha256,t.search_material_sha256 from selected_docs a cross join chunk_text t on t.document_id=a.document_id and t.revision=a.revision where {retrieval_clause('t.chunk_id')}")]
 
     def candidate_metadata_ids(self,chunk_ids,allowed):
         """Validate only returned vector candidates against local actor scope."""
@@ -259,9 +290,10 @@ class SQLiteCorpus:
             db.executemany('insert into selected_docs values(?,?)',allowed.items())
             db.execute('create temp table selected_chunks(chunk_id text primary key)')
             db.executemany('insert into selected_chunks values(?)',((value,) for value in ids))
-            return [dict(r) for r in db.execute('''select t.chunk_id,t.document_id,t.revision,t.text_sha256,t.search_material_sha256
+            return [dict(r) for r in db.execute(f'''select t.chunk_id,t.document_id,t.revision,t.text_sha256,t.search_material_sha256
               from selected_chunks s join chunk_text t on t.chunk_id=s.chunk_id
-              join selected_docs a on a.document_id=t.document_id and a.revision=t.revision''')]
+              join selected_docs a on a.document_id=t.document_id and a.revision=t.revision
+              where {retrieval_clause('t.chunk_id')}''')]
 
     def neighbors(self,actor,selected):
         output=[]
@@ -279,6 +311,7 @@ class SQLiteCorpus:
                 if component:
                     clause=' and chunk_id in(select chunk_id from component_chunks where component_id=?)';params.append(component['component_id'])
                 else:clause=' and not exists(select 1 from component_chunks cc where cc.chunk_id=chunk_positions.chunk_id)'
+                clause+=' and '+retrieval_clause('chunk_positions.chunk_id')
                 # Two nearest positions are enough to bridge a short paragraph
                 # on one accepted page; never enumerate the whole book.
                 previous=db.execute('select chunk_id from chunk_positions where document_id=? and revision=? and article_id is ?'+clause+' and end_position<? order by end_position desc,chunk_id desc limit 2',(*params,position['start_position'])).fetchall()

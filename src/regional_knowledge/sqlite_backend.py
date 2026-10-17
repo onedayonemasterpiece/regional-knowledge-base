@@ -281,6 +281,19 @@ class SQLiteBackend(PostgresBackend):
                 raise LookupError('no_ingestion_checkpoint_for_owned_document')
             kwargs = {**kwargs, 'ingestion_id': ingestion_id}
         payload=kwargs.get('payload') or {}
+        if 'catalog_update' in payload:
+            if (kwargs.get('command') != 'stage' or set(payload) != {'catalog_update'}
+                    or kwargs.get('file') is not None or not kwargs.get('ingestion_id')):
+                raise ValueError('catalog_update_requires_metadata_only_stage')
+            row = await self._ingestion_row(
+                principal=kwargs['principal'], ingestion_id=kwargs['ingestion_id'])
+            if not row or row['state'] != 'finalized':
+                raise ValueError('catalog_update_requires_finalized_owned_source')
+            if kwargs.get('document_id') and str(kwargs['document_id']) != str(row['document_id']):
+                raise ValueError('catalog_update_source_mismatch')
+            await self.catalog_update(kwargs['principal'], row['document_id'],
+                                      payload['catalog_update'])
+            return self._ingestion_output(row, 'Catalog metadata corrected; source and vectors unchanged')
         if kwargs.get('command')=='start' and (payload.get('catalog') or {}).get('parent_id') and kwargs.get('file') is None:
             from .catalog_components import create
             return create(self.corpus,kwargs['principal'].subject,payload)
