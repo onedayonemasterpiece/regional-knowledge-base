@@ -7,6 +7,7 @@ from .sqlite_data import defaults
 from .e5_contract import SPACE as E5_SPACE
 from .bge_contract import SPACE as BGE_SPACE,REVISION
 from .vector_policy import required_vector_spaces
+from .region_policy import RETRIEVAL_TEXT_KINDS
 
 
 def start(ctx,p):
@@ -79,7 +80,7 @@ def validate(ctx,d,rev,events):
         refs=c['region_ids']+c['footnote_region_ids'];covered.update(refs)
         if not set(c['page_ids'])<=pages.keys() or not set(refs)<=regions.keys() or not set(c['illustration_ids'])<=illustrations.keys():raise ValueError('chunk provenance escapes revision')
         if any(regions[r]['page_id'] not in c['page_ids'] for r in refs):raise ValueError('chunk region/page mismatch')
-    if any(r.get('text_sha256') and r['id'] not in covered for r in regions.values()):raise ValueError('textual region not covered')
+    if any(r.get('kind') in RETRIEVAL_TEXT_KINDS and r.get('text_sha256') and r['id'] not in covered for r in regions.values()):raise ValueError('textual region not covered')
     for i in illustrations.values():
         r=regions.get(i['source_region_id'])
         if not r or r['kind']!='figure' or r['page_id']!=i['page_id'] or any(regions.get(x,{}).get('page_id')!=i['page_id'] for x in i['caption_region_ids']+i['nearby_region_ids']):raise ValueError('illustration provenance escapes page')

@@ -167,7 +167,8 @@ def test_metadata_schema_uses_same_date_rules_and_never_invents_precision():
 
 
 @pytest.mark.asyncio
-async def test_finalized_metadata_repair_uses_same_stage_and_clears_checkpoint(fixture, monkeypatch):
+@pytest.mark.parametrize("uuid_row", [False, True])
+async def test_finalized_metadata_repair_uses_same_stage_and_clears_checkpoint(fixture, monkeypatch, uuid_row):
     from types import SimpleNamespace
     from regional_knowledge import stage_service
     from regional_knowledge.contracts import BookIngestOutput
@@ -187,8 +188,10 @@ async def test_finalized_metadata_repair_uses_same_stage_and_clears_checkpoint(f
     monkeypatch.setattr(stage_service, '_load_graph', load)
     monkeypatch.setattr(stage_service, '_document_row', document)
     service = SimpleNamespace(corpus=corpus, _ingestion_output=lambda row, message: BookIngestOutput(
-        state='finalized', ingestion_id=row['id'], document_id=row['document_id'],
+        state='finalized', ingestion_id=str(row['id']), document_id=str(row['document_id']),
         next_action='done', message=message))
+    if uuid_row:
+        finalized = {**finalized, 'id': UUID(finalized['id']), 'document_id': UUID(finalized['document_id'])}
     payload = {'story_candidates': [candidate.model_dump(mode='json')]}
     out = await stage_service._stage_accepted_enrichment(service, principal, finalized, payload)
     assert out.next_action == 'done' and not out.warnings

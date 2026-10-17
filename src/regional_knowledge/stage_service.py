@@ -446,17 +446,17 @@ async def _stage_accepted_enrichment(service, principal, row, payload):
         await GraphService(service).stage(principal, str(row['document_id']), revision, bundle)
         graph = graph.model_copy(update={'entity_candidates': [*graph.entity_candidates, bundle]})
     from .story_ingestion import persist_stage, activate_stories
-    await asyncio.to_thread(persist_stage, service.corpus, principal, row, graph, [], candidates,
-                            allow_finalized=True)
     def apply():
         from .sqlite_data import LocalContext
         from .story_registry import StoryRegistry
         with service.corpus.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            current = StoryRegistry._corpus_row(db, 'rkb_documents', row['document_id'])
+            current = StoryRegistry._corpus_row(db, 'rkb_documents', str(row['document_id']))
             if (not current or str(current['owner_user_id']) != str(principal.subject)
                     or int(current.get('active_revision') or 0) != revision):
                 raise ValueError('source revision or ownership changed')
+            persist_stage(service.corpus, principal, row, graph, [], candidates,
+                          allow_finalized=True, connection=db)
             return activate_stories(LocalContext(service.corpus, db, principal.subject),
                                     current, row['id'], revision)
     result = await asyncio.to_thread(apply)

@@ -67,3 +67,40 @@ async def cover(backend,principal,document_id):
         _,pages=await backend.pdf_processor.render_file(path,start=reference,count=1)
         image=Image.open(io.BytesIO(pages[0].data)).convert('RGB');image.thumbnail((1800,1800));out=io.BytesIO();image.save(out,'WEBP',quality=92)
         return {'status':'ok','document_id':document_id,'source_document_id':doc['id'],'source_sha256':doc['source_sha256'],'physical_page_index':reference,'kind':kind,'revision':entry['active_revision']},out.getvalue()
+
+
+
+def update_metadata(corpus, actor, document_id, payload):
+    """Correct an owned accepted source without changing its immutable corpus."""
+    from .contracts import CatalogUpdateInput
+    from .sqlite_data import LocalContext
+    metadata = CatalogUpdateInput.model_validate(payload)
+    document_id = str(UUID(str(document_id)))
+    actor = str(UUID(str(actor)))
+    corpus.authorize(actor, document_id, owner=True)
+    with corpus.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        ctx = LocalContext(corpus, db, actor)
+        current = ctx.one('rkb_documents', document_id)
+        if not current or str(current['owner_user_id']) != actor:
+            raise PermissionError('catalog correction requires source owner')
+        if int(current.get('active_revision') or 0) != metadata.expected_revision:
+            raise ValueError('catalog source revision changed')
+        changes = metadata.model_dump(mode='json', exclude_unset=True)
+        changes.pop('expected_revision')
+        catalog = changes.pop('catalog', None)
+        if catalog is not None:
+            catalog = CatalogMetadata.model_validate({**(current.get('catalog') or {}),
+                                                       **catalog}).model_dump(mode='json', exclude_none=True)
+            if catalog['kind'] != 'journal_issue' and db.execute(
+                    'SELECT 1 FROM catalog_components WHERE parent_id=? LIMIT 1',
+                    (document_id,)).fetchone():
+                raise ValueError('source with articles must remain a journal issue')
+            for key in ('cover_page', 'annotation_page'):
+                if catalog.get(key) is not None and catalog[key] >= current['page_count']:
+                    raise ValueError('catalog page outside source')
+            changes['catalog'] = catalog
+        updated = {**current, **changes}
+        ctx.check_write('rkb_documents', current, updated)
+        corpus.put('rkb_documents', [updated], connection=db)
+    return updated

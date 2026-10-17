@@ -46,6 +46,7 @@ from .contracts import (
     StagePoiFactInput,
     StagePoiMediaLinkInput,
     StartMetadataInput,
+    CatalogUpdateInput,
     Visibility,
 )
 from .oauth_provider import (
@@ -793,11 +794,17 @@ def build_server(
         return [TextContent(type='text', text=json.dumps(metadata, ensure_ascii=False)),
                 ImageContent(type='image', data=base64.b64encode(data).decode(), mimeType=mime)]
 
-    @mcp.tool(title="Browse the source catalog", description="List/find/get accessible books, journal issues and articles; cover returns a registered real cover/title page. Empty query lists sources; cursor paginates. Detailed metadata is stored in SQLite.", annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
-    async def catalog(command: Literal['list','find','get','cover'] = 'list', query: str = '', document_id: str | None = None, kind: Literal['book','journal_issue','article'] | None = None, cursor: str | None = None, limit: Annotated[int, Field(ge=1,le=100)] = 20) -> dict[str,Any] | list[TextContent | ImageContent]:
+    @mcp.tool(title="Browse and correct the source catalog", description="List/find/get accessible books, journal issues and articles; cover returns a real cover/title page. Update corrects owned source descriptive metadata at expected_revision without reimport or changing source/ACL/vectors. For fragments label form explicitly; do not invent issue details. Article boundaries use book_ingest start with parent_id and exact region_ids. Empty query lists sources; cursor paginates.", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
+    async def catalog(command: Literal['list','find','get','cover','update'] = 'list', query: str = '', document_id: str | None = None, kind: Literal['book','journal_issue','article'] | None = None, cursor: str | None = None, limit: Annotated[int, Field(ge=1,le=100)] = 20, metadata: CatalogUpdateInput | None = None) -> dict[str,Any] | list[TextContent | ImageContent]:
         method=getattr(backend,'catalog',None)
         if method is None:raise RuntimeError('SQLite catalog is not enabled')
-        if command in ('get','cover') and not document_id:raise ValueError('document_id required')
+        if command in ('get','cover','update') and not document_id:raise ValueError('document_id required')
+        if command == 'update':
+            if metadata is None:raise ValueError('metadata correction required')
+            update = getattr(backend, 'catalog_update', None)
+            if update is None:raise RuntimeError('catalog updates require SQLite authority')
+            return await update(_principal(), document_id, metadata)
+        if metadata is not None:raise ValueError('metadata is only accepted by update')
         if command=='cover':
             import base64
             from .catalog_components import cover
