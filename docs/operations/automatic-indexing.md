@@ -93,7 +93,9 @@ While required vector publication is pending, unrelated archive/mirror and stora
 GC work is deferred so external maintenance cannot hold the import critical path.
 
 The existing `story_outbox` uses the same indexing service and durable Kaggle
-BGE queue as book chunks, with one current story per worker pass. **No BGE
+BGE queue as book chunks, with one current story per worker pass. **This is
+mandatory:** see [BGE/Kaggle-only operations](bge-kaggle-only.md) for the
+host-side model ban and the separate local E5/tokenizer boundaries. **No BGE
 model is run or loaded on DevCoveer.** Both query and document embeddings
 for stories use the same pinned Kaggle model space and revision. The old
 local-ONNX story vectors are version-invalidated and regenerated asynchronously;
