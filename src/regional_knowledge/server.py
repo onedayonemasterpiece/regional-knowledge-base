@@ -883,7 +883,7 @@ def build_server(
             "and never automatically publish_ready. Review story_extraction and knowledge_extraction " +
             "in status; status(document_id) finds the owned book's latest checkpoint. " +
             "Source next_action=done is not completion of semantic extraction or retrieval acceptance. " +
-            "After activation stage accepts ONLY metadata (story_candidates/entity_candidates), " +
+            "For descriptive catalog corrections after activation, stage may instead accept metadata.catalog_update with expected_revision, exclusively without file/source/semantic payloads; it uses the same owner-authorized catalog update and preserves source/vectors. After activation stage otherwise accepts ONLY metadata (story_candidates/entity_candidates), " +
             "so a corrected candidate can clear its pending checkpoint without changing source/vectors. " +
             "Never restage accepted pages or chunks; use reprocess/rechunk for changed source layout. " +
             "After successful finalization, continue the SAME user goal by calling " +
@@ -931,6 +931,15 @@ def build_server(
         payload: dict[str, Any] | None = None
         if metadata is not None:
             payload = metadata.model_dump(mode="json", exclude_none=True)
+            if metadata.catalog_update is not None:
+                if command != 'stage' or file is not None or any(
+                    value is not None for value in
+                    (pages, chunks, poi_facts, poi_media_links, entity_candidates, story_candidates)
+                ) or metadata.model_fields_set != {'catalog_update'}:
+                    raise ToolError('catalog_update_requires_metadata_only_stage')
+                payload = {'catalog_update': metadata.catalog_update.model_dump(
+                    mode='json', exclude_unset=True)}
+
         if (
             pages is not None
             or chunks is not None

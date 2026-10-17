@@ -33,7 +33,8 @@ class VibePublishClient:
             'grant_type':'refresh_token', 'refresh_token':self.grant['refresh_token'],
             'client_id':self.grant['client_id'], 'scope':'vibepublish',
             'resource':self.issuer+'/mcp/'})
-        response.raise_for_status()
+        from .oauth_diagnostics import check_refresh_response
+        check_refresh_response(response)
         token = response.json()
         self.grant.update(access_token=token['access_token'], refresh_token=token['refresh_token'],
                           expires_at=time.time()+token['expires_in'])

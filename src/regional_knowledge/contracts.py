@@ -173,6 +173,7 @@ class CatalogUpdateInput(BaseModel):
 
 
 class StartMetadataInput(BaseModel):
+    catalog_update: CatalogUpdateInput | None = None
     catalog: CatalogMetadata | None = None
     duplicate_policy: Literal['reuse', 'new_revision'] = 'reuse'
     title: str | None = Field(default=None, max_length=500)
