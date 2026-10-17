@@ -129,14 +129,15 @@ class SQLiteBackend(PostgresBackend):
             docs=await(await db.execute('select id,active_revision from rkb_documents')).fetchall()
         allowed={str(d['id']):d['active_revision'] for d in docs if self.search_visible(d['id'])}
         document_ids=payload.get('document_ids')
+        scope=None
         if document_ids is not None:
             if not isinstance(document_ids,list) or not 1<=len(document_ids)<=20:
                 raise ValueError('document scope requires 1-20 document IDs')
             try:requested=[str(UUID(str(value))) for value in document_ids]
             except (TypeError,ValueError) as exc:raise ValueError('invalid document scope') from exc
             if len(set(requested))!=len(requested):raise ValueError('duplicate document scope')
-            if not set(requested).issubset(allowed):raise PermissionError('document scope not readable or searchable')
-            allowed={key:allowed[key] for key in requested}
+            from .retrieval_scope import resolve_scope
+            allowed,scope=resolve_scope(self.corpus,requested,allowed)
         depth=max(1,min(int(payload.get('depth',100)),100)) if name=='rkb_multilingual_rankings' else max(20,max(1,min(int(payload.get('match_count',8)),20))*5)
         query=payload.get('query_text','')
         include_lexical=bool(payload.get('include_lexical',True))
@@ -144,12 +145,12 @@ class SQLiteBackend(PostgresBackend):
         rows=[]
         if include_lexical:
             rows.extend(await asyncio.to_thread(
-                self.corpus.lexical,str(actor),query,depth=depth,allowed=allowed,timeout_ms=timeout_ms
+                self.corpus.lexical,str(actor),query,depth=depth,allowed=allowed,timeout_ms=timeout_ms,scope=scope
             ))
         for alias in (payload.get('aliases') or [])[:20]:
             for row in await asyncio.to_thread(
                 self.corpus.lexical,str(actor),alias['name'],depth=depth,phrase=True,
-                allowed=allowed,timeout_ms=timeout_ms
+                allowed=allowed,timeout_ms=timeout_ms,scope=scope
             ):
                 rows.append({**row,'branch':'exact_current_alias' if alias.get('kind')=='current' else 'exact_historical_alias' if alias.get('kind')=='historical' else 'exact_alias','matched_alias':alias['name']})
         e5=payload.get('e5_vector') if name=='rkb_multilingual_rankings' else payload.get('query_embedding')
@@ -163,7 +164,7 @@ class SQLiteBackend(PostgresBackend):
                 metadata=await asyncio.to_thread(
                     self.corpus.candidate_metadata_ids,
                     [candidate['chunk_id'] for candidate in candidates],
-                    allowed,
+                    allowed,scope=scope,
                 )
                 by_id={c['chunk_id']:c for c in metadata}
                 for candidate in candidates:
