@@ -1,98 +1,112 @@
-import asyncio
+"""Regression: BGE query inference runs on Kaggle, never the host."""
 from types import SimpleNamespace
 
 import pytest
 
 from regional_knowledge.bge_contract import SPACE as BGE_SPACE
-from regional_knowledge.bge_query_service import QueryQueue
 from regional_knowledge.contracts import Principal
 from regional_knowledge import multilingual_retrieval as retrieval
 
 
 @pytest.mark.asyncio
-async def test_query_queue_returns_bounded_local_timing():
-    queue=QueryQueue(lambda text:[1.0]+[0.0]*1023,capacity=2)
-    result=await queue.submit("query")
-    assert result["space"]==BGE_SPACE
-    assert len(result["vectors"])==1
-    assert result["encoder_revision"].startswith("onnx-community/bge-m3-ONNX:int8:")
-    assert result["queue_wait_seconds"]>=0
-    assert result["encoder_seconds"]>=0
-    queue.worker.cancel()
-    await asyncio.gather(queue.worker,return_exceptions=True)
-    queue.executor.shutdown(wait=True)
+async def test_main_search_uses_kaggle_queue_even_with_legacy_local_encoder(monkeypatch):
+    actor = Principal(subject="actor", client_id="test", issuer="test",
+                      access_token="synthetic")
+    monkeypatch.setenv("RKB_BGE_WARM_MODE", "bge")
+    monkeypatch.setenv("RKB_BGE_QUEUE_PATH", "unused")
+    calls = []
 
+    class Queue:
+        def status(self):
+            return {"state": "ready"}
 
-@pytest.mark.asyncio
-async def test_main_search_prefers_local_bge_without_durable_query_job(monkeypatch):
-    actor=Principal(subject="actor",client_id="test",issuer="test",access_token="token")
-    monkeypatch.setenv("RKB_BGE_WARM_MODE","bge")
-    monkeypatch.setattr(retrieval,"BgeQueue",lambda *_:(_ for _ in ()).throw(AssertionError("durable queue must not be used")))
+        def enqueue(self, actor_id, key, texts, *, identity):
+            assert actor_id == actor.subject
+            assert texts == ["Kulmer Handfeste"]
+            assert identity["query_sha256"]
+            calls.append(key)
+            return "kaggle-job"
 
-    class Local:
-        async def embed(self,text):
-            assert text=="Kulmer Handfeste"
-            retrieval.query_timings.set({
-                "bge_queue_seconds":0.01,
-                "bge_encoder_seconds":0.06,
-                "bge_query_local":1.0,
-            })
-            return [1.0]+[0.0]*1023
+        def result(self, actor_id, job_id):
+            assert actor_id == actor.subject and job_id == "kaggle-job"
+            return {
+                "state": "done",
+                "identity": {},
+                "result": {"space": BGE_SPACE,
+                           "vectors": [[1.0] + [0.0]*1023],
+                           "encoder_seconds": 0.04},
+            }
+
+    monkeypatch.setattr(retrieval, "BgeQueue", lambda *_args: Queue())
+
+    class ForbiddenLocal:
+        async def embed(self, _text):
+            raise AssertionError("Local BGE inference is forbidden")
 
     class Response:
-        def raise_for_status(self):pass
+        def raise_for_status(self):
+            pass
+
         def json(self):
-            return [{
-                "chunk_id":"hit","branch":"bge","rank":1,"revision":1,
-                "text_sha256":"a"*64,"search_material_sha256":"b"*64,
-            }]
+            return [{"chunk_id": "hit", "branch": "bge", "rank": 1,
+                     "revision": 1, "text_sha256": "a"*64,
+                     "search_material_sha256": "b"*64}]
 
     class Client:
-        async def post(self,url,headers=None,json=None):
+        async def post(self, url, headers=None, json=None):
             assert json["bge_vector"].startswith("[1")
-            assert json["bge_space"]==BGE_SPACE
+            assert json["bge_space"] == BGE_SPACE
             return Response()
 
     class Corpus:
-        def one(self,table,ident):
-            assert table=="rkb_chunks" and ident=="hit"
-            return {"id":"hit","title":"Evidence"}
+        def one(self, table, ident):
+            assert table == "rkb_chunks" and ident == "hit"
+            return {"id": "hit", "title": "Evidence"}
 
     class Backend:
-        bge_query_embedder=Local()
-        client=Client()
-        corpus=Corpus()
-        embedder=SimpleNamespace()
-        config=SimpleNamespace(url="sqlite://regional-knowledge.internal")
-        def _headers(self,principal):return {"x-rkb-actor":principal.subject}
-        def _evidence_url(self,ident):return "knowledge://evidence/"+ident
-        async def search(self,*args,**kwargs):
-            raise AssertionError("local BGE ready path must not fall back")
+        bge_query_embedder = ForbiddenLocal()
+        client = Client()
+        corpus = Corpus()
+        embedder = SimpleNamespace()
+        config = SimpleNamespace(url="sqlite://regional-knowledge.internal")
 
-    result=await retrieval.main_search(Backend(),"Kulmer Handfeste",actor)
-    assert result.main_state=="ready"
-    assert result.retrieval_mode=="bge"
-    assert result.main_job_id is None
-    assert result.results[0].id=="hit"
-    assert result.timings["bge_query_local"]==1.0
+        def _headers(self, principal):
+            return {"x-rkb-actor": principal.subject}
+
+        def _evidence_url(self, ident):
+            return "knowledge://evidence/" + ident
+
+        async def search(self, *args, **kwargs):
+            raise AssertionError("ready Kaggle BGE must not fall back")
+
+    result = await retrieval.main_search(Backend(), "Kulmer Handfeste", actor)
+    assert result.main_state == "ready"
+    assert result.retrieval_mode == "bge"
+    assert result.main_job_id == "kaggle-job"
+    assert result.results[0].id == "hit"
+    assert result.timings["bge_query_local"] == 0.0
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_main_search_uses_remote_queue_when_local_bge_fails(monkeypatch,tmp_path):
-    actor=Principal(subject="actor",client_id="test",issuer="test",access_token="token")
-    monkeypatch.setenv("RKB_BGE_WARM_MODE","bge")
-    monkeypatch.setenv("RKB_BGE_QUEUE_PATH",str(tmp_path/"queue.sqlite"))
+async def test_kaggle_cold_start_returns_pending_not_local_inference(monkeypatch, tmp_path):
+    actor = Principal(subject="actor", client_id="test", issuer="test",
+                      access_token="synthetic")
+    monkeypatch.setenv("RKB_BGE_WARM_MODE", "bge")
+    monkeypatch.setenv("RKB_BGE_QUEUE_PATH", str(tmp_path/"queue.sqlite"))
 
-    class Local:
-        async def embed(self,text):raise RuntimeError("local unavailable")
+    class ForbiddenLocal:
+        async def embed(self, _text):
+            raise AssertionError("Local BGE inference is forbidden")
 
     class Backend:
-        bge_query_embedder=Local()
-        async def search(self,query,principal,**kwargs):
+        bge_query_embedder = ForbiddenLocal()
+
+        async def search(self, query, principal, **kwargs):
             from regional_knowledge.contracts import SearchOutput
             assert kwargs["_fast_only"] is True
-            return SearchOutput(results=[],retrieval_mode="lexical_only")
+            return SearchOutput(results=[], retrieval_mode="lexical_only")
 
-    result=await retrieval.main_search(Backend(),"new query",actor)
-    assert result.main_state in ("starting","pending","unavailable")
-    assert result.main_job_id is not None
+    response = await retrieval.main_search(Backend(), "new question", actor)
+    assert response.main_state in {"starting", "pending", "unavailable"}
+    assert response.main_job_id is not None
