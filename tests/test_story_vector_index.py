@@ -115,20 +115,42 @@ async def test_existing_outbox_is_drained_one_at_a_time(tmp_path):
     first = seed(registry, owner, "Большой деревянный причал", "w1")
     second = seed(registry, owner, "Площадь с рынком", "w2")
 
-    class Encoder:
+    class KaggleQueue:
         def __init__(self):
-            self.calls = 0
+            self.jobs = {}
+            self.done = False
+            self.actors = []
+            self.retired = []
 
-        async def embed(self, text):
-            self.calls += 1
-            return vector(0)
+        def enqueue(self, actor_id, key, texts, *, kind, identity):
+            assert kind == "document"
+            assert len(texts) == 1 and "story_id" in identity
+            self.actors.append(actor_id)
+            self.jobs[key] = identity
+            return key
 
-    encoder = Encoder()
-    worker = StoryVectorIndexer(registry.corpus, encoder)
+        def result(self, actor_id, job_id):
+            assert job_id in self.jobs
+            return {
+                "state": "done" if self.done else "pending",
+                "identity": self.jobs[job_id],
+                "result": {"space": "bge-m3:5617a9f:t211-tr5161:cls-l2-512:q1-d1:v1",
+                           "vectors": [vector(0)]} if self.done else None,
+            }
+
+        def retire_done_documents(self, actor_id, ids):
+            self.retired.extend(ids)
+            return 1
+
+    queue = KaggleQueue()
+    worker = StoryVectorIndexer(registry.corpus, queue)
+    assert await worker.tick() == 0  # enqueue only: no fabricated local vector
+    queue.done = True
     assert await worker.tick() == 1
     assert await worker.tick() == 1
     assert await worker.tick() == 0
-    assert encoder.calls == 2
+    assert len(queue.retired) == 2
+    assert queue.actors and all(queue.actors)
     with registry.corpus.connect() as db:
         assert db.execute("SELECT COUNT(*) FROM story_bge_index").fetchone()[0] == 2
         assert db.execute("SELECT COUNT(*) FROM story_outbox WHERE state='indexed'").fetchone()[0] >= 2
@@ -136,6 +158,59 @@ async def test_existing_outbox_is_drained_one_at_a_time(tmp_path):
         registry.search(owner, "другие слова", mode="semantic",
                         query_vector=vector(0), limit=10)["results"]}
 
+
+@pytest.mark.asyncio
+async def test_kaggle_story_query_is_actor_scoped_durable_and_degraded_while_pending():
+    from regional_knowledge.story_vector_index import query_vector, ENCODER_REVISION
+    from regional_knowledge.bge_contract import SPACE as BGE_SPACE, REVISION
+    assert ENCODER_REVISION == REVISION  # do not reuse local ONNX embeddings
+
+    class Queue:
+        def __init__(self):
+            self.identity = None
+            self.actor_id = None
+            self.job_key = None
+            self.complete = False
+
+        def enqueue(self, actor_id, key, texts, *, kind, identity):
+            assert kind == "query" and texts == ["где старинный мост"]
+            self.actor_id, self.identity, self.job_key = actor_id, identity, key
+            return "one-durable-id"
+
+        def result(self, actor_id, job_id):
+            assert actor_id == self.actor_id and job_id == "one-durable-id"
+            return {"identity": self.identity,
+                    "state": "done" if self.complete else "pending",
+                    "result": {"space": BGE_SPACE, "vectors": [vector(7)]} if self.complete else None}
+
+        def status(self):
+            return {"state": "starting"}
+
+    queue = Queue()
+    assert await query_vector(queue, "authorized-actor", "где старинный мост") == (
+        None, "kaggle_starting")
+    queue.complete = True
+    values, state = await query_vector(queue, "authorized-actor", "где старинный мост")
+    assert state == "kaggle_ready" and values == vector(7)
+    assert queue.job_key.startswith("story-query:" + BGE_SPACE + ":")
+
+
+def test_legacy_local_onnx_revision_is_not_claimed_as_kaggle_story_readiness(tmp_path):
+    from regional_knowledge.story_vector_index import ENCODER_REVISION
+    registry, owner, _ = setup(tmp_path)
+    target = seed(registry, owner, "Старый островной рынок", "legacy")
+    assert install(registry.corpus, item(registry, target), vector(2))
+    with registry.corpus.connect() as db:
+        db.execute("UPDATE story_bge_index SET encoder_revision=? WHERE story_id=?",
+                   ("onnx-community/bge-m3-ONNX:int8:2237f770", target))
+    assert pending(registry.corpus)["story_id"] == target
+    response = registry.search(owner, "не ключевой вопрос", mode="semantic",
+                               query_vector=vector(2))
+    assert response["retrieval_mode"] == "lexical_degraded"
+    with registry.corpus.connect() as db:
+        row = db.execute("SELECT encoder_revision FROM story_bge_index WHERE story_id=?",
+                         (target,)).fetchone()
+    assert row["encoder_revision"] != ENCODER_REVISION
 
 def test_invalid_vectors_fail_closed(tmp_path):
     registry, owner, _ = setup(tmp_path)

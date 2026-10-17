@@ -304,15 +304,15 @@ class IndexReconciler:
         stats['phase_seconds']['publication']=time.monotonic()-phase
 
         # Drain the existing durable story_outbox only after source indexing.
-        # A single local BGE call per pass cannot monopolize the query encoder.
+        # BGE runs exclusively on Kaggle, using the same durable queue as books.
         phase=time.monotonic()
         story_backlog=False
-        if hasattr(self.backend,'corpus') and getattr(self.backend,'bge_query_embedder',None):
+        if hasattr(self.backend,'corpus') and self.queue is not None:
             try:
                 if self.story_indexer is None:
                     from .story_vector_index import StoryVectorIndexer
                     self.story_indexer=StoryVectorIndexer(
-                        self.backend.corpus,self.backend.bge_query_embedder)
+                        self.backend.corpus,self.queue)
                 from .story_vector_index import pending as pending_story
                 story_backlog=(await asyncio.to_thread(
                     pending_story,self.backend.corpus)) is not None

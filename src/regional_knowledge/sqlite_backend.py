@@ -17,10 +17,9 @@ class SQLiteBackend(PostgresBackend):
         self.story_registry=StoryRegistry(self.corpus)
         self.data_client=SQLiteDataClient(self.corpus,self)
         self.vector_client=RemoteVectorClient(dsn,min_size=0,max_size=pool_max_size) if dsn else None
+        # BGE inference is Kaggle-only. Ignore legacy local-BGE config,
+        # including stale service.env from older release deployments.
         self.bge_query_embedder=None
-        if os.getenv('RKB_BGE_QUERY_LOCAL_ENABLED')=='1':
-            from .local_bge import LocalBGEQueryEmbedder
-            self.bge_query_embedder=LocalBGEQueryEmbedder()
         SupabaseRestBackend.__init__(self,SupabaseConfig(url='sqlite://regional-knowledge.internal',anon_key='local',service_role_key='local',public_base_url=public_base_url),embedder=embedder,object_store=object_store,client=self.data_client)
 
     async def aclose(self):

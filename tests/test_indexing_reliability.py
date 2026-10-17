@@ -244,7 +244,7 @@ async def test_story_outbox_backlog_defers_unrelated_archive_work(tmp_path,monke
         async def activate_pending(self):
             pass
 
-    indexer=IndexReconciler(Backend(),None)
+    indexer=IndexReconciler(Backend(),object())  # existing Kaggle queue
     indexer.documents=AsyncMock(return_value=[])
     indexer.story_indexer=SimpleNamespace(tick=AsyncMock(return_value=1))
     indexer.last_original_gc=time.time()

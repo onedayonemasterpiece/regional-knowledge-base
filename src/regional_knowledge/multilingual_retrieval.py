@@ -6,7 +6,6 @@ from .e5_contract import SPACE as E5_SPACE
 from .contracts import SearchOutput,SearchResult
 from .rank_fusion import MODES,fuse
 from .local_e5 import encoding_timings
-from .local_bge import query_timings
 logger=logging.getLogger(__name__)
 
 async def wait_result(queue,actor,job_id,seconds):
@@ -22,31 +21,29 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
     mode=os.environ.get('RKB_BGE_WARM_MODE','bge')
     if mode not in ('bge','bge_lexical','e5_bge','e5_bge_lexical'):raise RuntimeError('invalid BGE warm path')
     query_hash=hashlib.sha256(query.encode()).hexdigest()
-    queue=None;status={'state':'unavailable'};job=None;bge_vector=None;bge_times={}
-    local=getattr(backend,'bge_query_embedder',None)
-    if local is not None and not main_job_id:
-        try:
-            bge_vector=await local.embed(query)
-            bge_times=dict(query_timings.get())
-            status={'state':'ready'}
-        except Exception as error:
-            logger.warning(json.dumps({'event':'local_bge_query_fallback','error_type':type(error).__name__}))
-    if bge_vector is None:
-        queue=BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
-        status=await asyncio.to_thread(queue.status)
-        try:
-            if main_job_id:
-                job=await asyncio.to_thread(queue.result,principal.subject,main_job_id)
-                if job['identity'].get('query_sha256')!=query_hash:raise ValueError('main job query mismatch')
-            else:
-                cache_key='query:'+BGE_SPACE+':'+query_hash
-                main_job_id=await asyncio.to_thread(queue.enqueue,principal.subject,cache_key,[query],identity={'query_sha256':query_hash})
-        except RuntimeError:
-            fast=await backend.search(query,principal,match_count=match_count,_fast_only=True,**({'document_ids':document_ids} if document_ids is not None else {}))
-            logger.info(json.dumps({'event':'main_retrieval_degraded','state':'unavailable','retrieval_mode':fast.retrieval_mode}))
-            return fast.model_copy(update={'main_state':'unavailable'})
-    else:
-        main_job_id=None
+    # Kaggle is the sole BGE encoder for queries and documents.
+    # The remote worker is launched only via the existing durable queue.
+    queue=BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
+    status=await asyncio.to_thread(queue.status)
+    job=None;bge_vector=None;bge_times={}
+    try:
+        if main_job_id:
+            job=await asyncio.to_thread(queue.result,principal.subject,main_job_id)
+            if job['identity'].get('query_sha256')!=query_hash:
+                raise ValueError('main job query mismatch')
+        else:
+            cache_key='query:'+BGE_SPACE+':'+query_hash
+            main_job_id=await asyncio.to_thread(
+                queue.enqueue,principal.subject,cache_key,[query],
+                identity={'query_sha256':query_hash})
+    except RuntimeError:
+        fast=await backend.search(
+            query,principal,match_count=match_count,_fast_only=True,
+            **({'document_ids':document_ids} if document_ids is not None else {}))
+        logger.info(json.dumps({
+            'event':'main_retrieval_degraded','state':'unavailable',
+            'retrieval_mode':fast.retrieval_mode}))
+        return fast.model_copy(update={'main_state':'unavailable'})
     e5_task=None;e5_times={}
     async def encode_e5():
         vector=await backend.embedder.embed(query)
@@ -59,9 +56,8 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
                     wait_seconds=float(os.environ.get('RKB_BGE_QUERY_WAIT_SECONDS','0.8'))
                 except ValueError:
                     wait_seconds=.8
-                # When the local encoder has already consumed most of the
-                # interaction budget, never add a second implicit wait on
-                # the durable fallback. Emit an explicit pending/degraded state.
+                # Preserve the fixed interaction budget while Kaggle warms.
+                # Do not replace a pending BGE vector with lexical evidence.
                 remaining=max(0.0,1.65-(time.monotonic()-started))
                 wait_seconds=max(0.0,min(wait_seconds,remaining,0.8))
                 job=await wait_result(

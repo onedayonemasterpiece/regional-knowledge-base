@@ -6,11 +6,19 @@ Postdeployment on 2026-10-08, a strict backend test on main b2d0b415 yielded p95
 Direct public MCP HTTPS search p95 was 987.8 ms (12 serial calls). CPU pressure (PSI
 some 30–55%) is significant, while IO pressure is low.
 
-The BGE query unit is CPUWeight=300 and CPUQuota=100%, without single-core CPUAffinity.
+**Current owner architecture (2026-10-17): BGE inference runs ONLY in the
+Kaggle worker**, via the existing durable, owner-bound BGE queue on DevCoveer.
+The legacy local ONNX BGE query unit must be **disabled and stopped**, not
+started as a remedy for latency. The main MCP and story indexer enqueue
+deduplicated BGE jobs and report Kaggle warming/pending truthfully; zero
+local BGE model bytes should be loaded.
+E5 remains a separate **local** CPU sidecar, restored and assessed independently.
 The MCP unit receives CPUWeight=250 via the versioned override in ops.
 The indexing unit retains CPUQuota=50% and has CPUWeight=70.
 These are relative CPU weights, not absolute guarantees. They do not stop or
 change unrelated applications. This preserves resumability of background indexing.
+A previous local BGE service in 1.7 GiB RAM repeatedly reached ~1 GiB and was
+OOM-killed; increasing VM memory is not authorization to violate Kaggle-only BGE.
 
 ## Verification
 

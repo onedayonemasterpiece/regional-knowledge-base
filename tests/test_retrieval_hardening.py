@@ -260,10 +260,15 @@ async def test_main_retrieval_defaults_to_bge_without_e5_or_lexical(monkeypatch)
         async def embed(self, value):
             raise AssertionError("default BGE mode must not encode E5")
 
+    class ForbiddenLocalBGE:
+        async def embed(self, value):
+            raise AssertionError("BGE must be encoded by Kaggle, never the local sidecar")
+
     class Backend:
         client = Client()
         corpus = Corpus()
         embedder = NoE5()
+        bge_query_embedder = ForbiddenLocalBGE()  # stale legacy attribute
         config = SimpleNamespace(url="sqlite://regional-knowledge.internal")
 
         def _headers(self, principal):

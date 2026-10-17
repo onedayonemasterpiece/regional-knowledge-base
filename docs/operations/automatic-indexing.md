@@ -92,16 +92,23 @@ retry error types and correlation IDs; they contain no source text or credential
 While required vector publication is pending, unrelated archive/mirror and storage
 GC work is deferred so external maintenance cannot hold the import critical path.
 
-The existing `story_outbox` uses the same indexing service and pinned local BGE
-query encoder for a bounded, one-card-per-pass derived index. While a current
+The existing `story_outbox` uses the same indexing service and durable Kaggle
+BGE queue as book chunks, with one current story per worker pass. **No BGE
+model is run or loaded on DevCoveer.** Both query and document embeddings
+for stories use the same pinned Kaggle model space and revision. The old
+local-ONNX story vectors are version-invalidated and regenerated asynchronously;
+during catch-up semantic search states its partial/pending status explicitly. While a current
 story revision still needs its BGE vector, optional VibePublish archive/mirror
 verification is **deferred**, not cancelled, to keep a failing external token
 request or archive timeout from blocking editorial-story search readiness.
 Corpus publication takes precedence over story indexing; source archive work
 resumes automatically once the story outbox has caught up. The progress log
 records `stories_written` and `archive_deferred_for_story_index`; no private
-source text or bearer token is logged. Retryable BGE query overload does not
-mark a story indexed or silently pass semantic acceptance.
+source text or bearer token is logged. A pending Kaggle job does not
+mark a story indexed or silently pass semantic acceptance. Repeated story
+queries deduplicate by actor, model space and SHA-256 and return an explicit
+Kaggle warming/pending state while the worker is provisioning; clients may
+retry the same question without duplicating BGE inference.
 Missing required vectors remain recoverable after any transient failure. Missing
 optional E5 vectors are diagnostic debt, not a publication blocker. Persistent
 source hash mismatch, disabled owner, DB/provider outage or disk/queue failure
