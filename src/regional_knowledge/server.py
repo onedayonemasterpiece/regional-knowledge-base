@@ -400,18 +400,29 @@ def build_server(
                     limit: Annotated[int, Field(ge=1,le=20)] = 3,
                     cursor: str | None = None) -> dict[str,Any]:
                 vector = None
+                kaggle_state = None
                 if mode != "lexical" and query.strip():
-                    encoder = getattr(backend, "bge_query_embedder", None)
-                    if encoder is not None:
-                        try:
-                            vector = await encoder.embed(query.strip())
-                        except Exception as error:
-                            # Preserve query privacy and signal real degradation.
-                            logging.getLogger(__name__).warning(json.dumps({
-                                "event": "story_query_encoder_degraded",
-                                "error_type": type(error).__name__,
-                            }))
-                return await story_call(registry.search, query, filters, mode, order, limit, cursor, vector)
+                    try:
+                        from .bge_queue import BgeQueue
+                        from .story_vector_index import query_vector
+                        queue = BgeQueue(os.environ["RKB_BGE_QUEUE_PATH"])
+                        vector, kaggle_state = await query_vector(
+                            queue, _principal().subject, query.strip())
+                    except Exception as error:
+                        # Local BGE is deliberately forbidden. If Kaggle has
+                        # not answered, never label a lexical result semantic.
+                        kaggle_state = "kaggle_unavailable"
+                        logging.getLogger(__name__).warning(json.dumps({
+                            "event": "story_kaggle_query_degraded",
+                            "error_type": type(error).__name__,
+                        }))
+                result = await story_call(
+                    registry.search, query, filters, mode, order, limit, cursor, vector)
+                if kaggle_state and isinstance(result, dict) and "error" not in result:
+                    result["kaggle_query_state"] = kaggle_state
+                    if vector is None:
+                        result["indexing_state"] = kaggle_state
+                return result
 
             @mcp.tool(name="story_calendar", title="Historical events on a calendar day",
                 description="SQL exact-day filter over CURRENT source-attributed event dates; "
