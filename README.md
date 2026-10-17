@@ -9,6 +9,8 @@ A user attaches a source and asks to add it. The MCP-calling model reads the mat
 SQLite owns the accepted corpus, source/page/region graph, lexical search, catalog, ACL, stories, entity mentions and source-side location registry. Supabase holds the vector search plane and minimal identity/scope anchors, not another full text corpus. Original sources remain in the configured private archive. GitHub holds public code and documentation only.
 
 Retrieval uses the existing multilingual vector spaces with bounded lexical support. Entity enrichment does not require re-embedding unchanged chunks. See [storage](docs/storage.md) and [architecture](docs/architecture.md) for deployment-specific details.
+**Embedding resource boundary:** BGE-M3 neural inference is **Kaggle-only** for every query and document, including editorial stories; the DevCoveer host must not contain or install BGE model weights or run a BGE model process. The older local ONNX BGE sidecar was retired and its service masked. E5-small INT8 remains the separate pinned local fast encoder and tokenizer-budget validator, as accepted in October 2026. A BGE tokenizer used for token counting is not a BGE inference model. Follow the [canonical Kaggle-only BGE operations policy](docs/operations/bge-kaggle-only.md); historical experiments and older deployment snippets never override it.
+
 
 ## Source ingestion and locations
 
