@@ -839,18 +839,11 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reu
                 f"retrieval_quality:open_continuation_boundaries:{open_boundaries}"
             )
 
+    from .region_policy import RETRIEVAL_TEXT_KINDS
     required_coverage = {
         region_id
         for region_id, region in regions.items()
-        if region.kind
-        in {
-            RegionKind.HEADING,
-            RegionKind.BODY,
-            RegionKind.CAPTION,
-            RegionKind.FOOTNOTE,
-            RegionKind.TABLE,
-            RegionKind.MARGINALIA,
-        }
+        if region.kind.value in RETRIEVAL_TEXT_KINDS
         and region.source_text.strip()
     }
     uncovered = sorted(required_coverage - covered_regions)

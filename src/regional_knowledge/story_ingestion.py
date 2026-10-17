@@ -8,6 +8,7 @@ no second corpus store and no independent long-running story assistant.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 import hashlib
 import json
 import sqlite3
@@ -78,7 +79,7 @@ def _resolve_candidates(graph, candidates, document_id):
     return resolved
 
 
-def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates, *, allow_finalized=False):
+def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates, *, allow_finalized=False, connection=None):
     """Bounded DB transaction after the canonical staged-page graph is stored.
 
     If this call crashes between graph storage and this checkpoint, book
@@ -109,9 +110,14 @@ def persist_stage(corpus, principal, ingestion_row, graph, pages, candidates, *,
             ]
             invalid.append(item)
     changed = [page.page_id for page in pages]
-    with corpus.connect() as db:
-        db.execute("PRAGMA synchronous=FULL")
-        db.execute("BEGIN IMMEDIATE")
+    # A caller-owned transaction lets accepted-source repair checkpoint and
+    # activate together. Never commit or change pragmas in that transaction.
+    with (corpus.connect() if connection is None else nullcontext(connection)) as db:
+        if connection is None:
+            db.execute("PRAGMA synchronous=FULL")
+            db.execute("BEGIN IMMEDIATE")
+        elif not db.in_transaction:
+            raise ValueError("candidate persistence requires an active transaction")
         # Revision and owner are checked inside the same write transaction.
         job_row = db.execute("""SELECT payload FROM corpus_rows
                  WHERE table_name='rkb_ingestion_jobs' AND row_key=?""", (ing_id,)).fetchone()
@@ -180,6 +186,9 @@ def activate_stories(ctx, document, ingestion_id, revision):
     Import and vector activation remain authoritative even if a story needs
     model review. A successful candidate cannot appear before book activation.
     """
+    # Both the SQLite data adapter (UUID) and JSON adapter (str) call here.
+    # Normalize once before ALL reads/writes, including error checkpoints.
+    ingestion_id = str(UUID(str(ingestion_id)))
     db = ctx.db
     corpus = ctx.corpus
     actor = str(UUID(str(document["owner_user_id"])))

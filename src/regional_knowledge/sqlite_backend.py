@@ -187,6 +187,12 @@ class SQLiteBackend(PostgresBackend):
         result=await self.catalog(principal,query,limit=max(1,min(limit,8)))
         return BookFindOutput(query=query,results=[BookFindResult(document_id=r['id'],title=r['title'],authors=r.get('authors') or [],publication_year=r.get('publication_year'),active_revision=r['active_revision'],source_format=r.get('source_format'),source_archive_status=r.get('source_archive_status')) for r in result['items']])
 
+    async def catalog_update(self, principal, document_id, metadata):
+        from .catalog_components import update_metadata
+        row = await asyncio.to_thread(update_metadata, self.corpus, principal.subject,
+                                      document_id, metadata)
+        return self.catalog_details(row)
+
     async def catalog(self,principal,query='',*,limit=20,cursor=None,kind=None,document_id=None):
         from .catalog_components import visible
         components=visible(self.corpus,principal.subject)

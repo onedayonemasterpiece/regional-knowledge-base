@@ -138,6 +138,40 @@ class CatalogMetadata(BaseModel):
         return self
 
 
+class CatalogCorrectionMetadata(CatalogMetadata):
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def provenance(self):
+        # A patch may inherit provenance from the saved catalog. Validate the
+        # complete merged CatalogMetadata inside the guarded transaction.
+        return self
+
+
+class CatalogUpdateInput(BaseModel):
+    """Descriptive metadata only; source identity, ACL and revision are immutable."""
+    model_config = {"extra": "forbid"}
+    expected_revision: int = Field(ge=1)
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    authors: list[str] | None = Field(default=None, max_length=50)
+    publication_year: int | None = Field(default=None, ge=1, le=3000)
+    language: str | None = Field(default=None, max_length=80)
+    catalog: CatalogCorrectionMetadata | None = None
+
+    @model_validator(mode='after')
+    def bounded_correction(self):
+        if not self.model_fields_set - {'expected_revision'}:
+            raise ValueError('metadata correction required')
+        if 'title' in self.model_fields_set and not (self.title or '').strip():
+            raise ValueError('nonempty title required')
+        if 'authors' in self.model_fields_set and self.authors is None:
+            raise ValueError('authors must be an array')
+        if self.catalog is not None and self.catalog.model_fields_set & {
+            'parent_id', 'region_ids', 'physical_page_start', 'physical_page_end'}:
+            raise ValueError('article boundaries use the existing component registration')
+        return self
+
+
 class StartMetadataInput(BaseModel):
     catalog: CatalogMetadata | None = None
     duplicate_policy: Literal['reuse', 'new_revision'] = 'reuse'
