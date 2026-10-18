@@ -90,3 +90,20 @@ revision, journal operation key, existing `pending` state and media evidence.
 Implement/verify provider-side target enforcement before switching credentials.
 A green PR or healthy server does not prove archived bytes. Acceptance requires
 provider get/readback and byte-for-byte original SHA-256 match; then mark verified.
+
+## Dedicated loopback service bearer — code support (2026-10-18)
+
+The archived-grant file may use `auth_mode=local_service` instead of user OAuth,
+with `issuer=https://mcp-vibepublish.kenigevents.ru`,
+`local_endpoint=http://127.0.0.1:18765`, a pinned HTTP `Host`, and a dedicated
+non-owner `service_token`. Source/illustration code retains the same archive
+URI, request key and native readback protocol. This mode rejects an HTTP endpoint
+outside loopback and never calls OAuth refresh. Credentials stay in a private
+mode-0600 file, never documentation, logs, GitHub or chat.
+
+Prerequisites before switching the production file: VibePublish's exact topic
+grants (2/4), a non-owner principal with scoped `media.store`, protected
+service-token provisioning, current provider worker and hash-verified original
+retrieval. **Code support is not deployment**. The previously accepted article,
+10 stories and source revision must stay unchanged. Verify source_archive_status
+by live MCP only after the original archive document is actually retrieved.
