@@ -43,7 +43,13 @@ class IndexReconciler:
         self.archive=None
         self.last_gc=0
         self.last_original_gc=0
+        self.last_archive_tick=time.monotonic()
         self.story_indexer=None
+
+    def archive_due(self,documents,story_backlog,now):
+        # A perpetual story-vector backlog must not starve archival of originals.
+        # One bounded archive pass each minute preserves normal story priority.
+        return not documents and (not story_backlog or now-self.last_archive_tick>=60)
 
     def actor(self,owner):return Principal(subject=str(owner),client_id='index-maintenance',issuer='internal-actor-bridge',access_token='internal-actor-bridge')
 
@@ -337,11 +343,13 @@ class IndexReconciler:
             self.last_original_gc=time.time()
         stats['phase_seconds']['cache_gc']=time.monotonic()-phase
         phase=time.monotonic()
-        # An unrelated archive/provider outage must not delay existing
-        # story-vector catch-up. Resume optional mirror after the outbox drains.
-        if story_backlog:
+        # Give story vectors priority on most passes without indefinitely starving
+        # exact-source archival when the story outbox never fully drains.
+        archive_due=self.archive_due(documents,story_backlog,time.monotonic())
+        if story_backlog and not archive_due:
             stats['archive_deferred_for_story_index']=True
-        if not documents and not story_backlog and os.getenv('RKB_VIBEPUBLISH_GRANT_FILE'):
+        if archive_due and os.getenv('RKB_VIBEPUBLISH_GRANT_FILE'):
+            self.last_archive_tick=time.monotonic()
             try:
                 if self.mirror is None:
                     from .illustration_mirror import IllustrationMirror,VibePublishClient

@@ -107,3 +107,14 @@ service-token provisioning, current provider worker and hash-verified original
 retrieval. **Code support is not deployment**. The previously accepted article,
 10 stories and source revision must stay unchanged. Verify source_archive_status
 by live MCP only after the original archive document is actually retrieved.
+
+## Archive fairness under a sustained story-vector backlog (2026-10-18)
+
+Story vectors retain normal priority, but their backlog must not starve
+original-document archiving indefinitely. The existing indexing owner admits
+one archive/mirror maintenance pass at least once per 60 seconds when no source
+vector publication is pending, even if story-vector jobs remain queued. A
+failed provider call retains the exact original and existing request identity;
+it never causes a second publication. This is the existing indexer loop, not
+an extra scheduler or service. A green CI does not replace live PDF SHA-256
+provider readback and the `source_archive_status=verified` acceptance gate.
