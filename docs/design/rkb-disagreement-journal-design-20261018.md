@@ -125,6 +125,8 @@ flowchart TD
 
 Пауза, потеря чата или истечение lease не разрешают незаметно начать следующую книгу. Продолжается тот же job; старый исполнитель теряет право записывать после передачи управления новому. Слот освобождается после полного окончания либо явно оформленного прекращения импорта. Отмена не удаляет уже сохранённые пригодные дела; их фактическое основание и связь с неполным импортом остаются видимыми.
 
+Договор о полном job принадлежит существующему `book_ingest`. Его контракт потребуется расширить явными `pause/resume/cancel` и статусом окончания обязательного анализа; в текущем перечислении команд эти действия не объявлены. `disagreement_scan` продолжает исследовательскую часть того же job и не создаёт второго владельца слота. Сериализация коротких start-транзакций, описанная сейчас в документации, сама по себе не является договором о последовательном исполнении полных импортов.
+
 Если при внедрении уже есть несколько незавершённых jobs, их нельзя автоматически удалять или объявлять завершёнными. Новые старты ограничиваются, для существующих определяется порядок продолжения с сохранением состояния. Это задача внедрения, не действие настоящего исследования.
 
 Несколько специалистов могут одновременно читать и пополнять дела. Их короткие записи не являются параллельным импортом книг. Изменение одного заключения защищается проверкой ревизии; независимые мнения не теряются из-за последней записи.
@@ -485,7 +487,7 @@ SQLite поддерживает одного writer одновременно; п
 - **[R1]** [AGENTS.md и архитектурные границы](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/926b8564d7d444cf144301ed68f88689f2ebda46/AGENTS.md); [защищённые требования](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/926b8564d7d444cf144301ed68f88689f2ebda46/.devcoveer/requirements.json).
 - **[R2]** [Storage, privacy and lifecycle](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/926b8564d7d444cf144301ed68f88689f2ebda46/docs/storage.md).
 - **[R3]** [Ingestion](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/926b8564d7d444cf144301ed68f88689f2ebda46/docs/ingestion.md).
-- **[R4]** Доступные MCP contracts: `search`, `fetch`, `corpus_read`, `source_proof`, `book_ingest`, `book_pages`, `story_*`; [server.py](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/926b8564d7d444cf144301ed68f88689f2ebda46/src/regional_knowledge/server.py).
+- **[R4]** Доступные MCP contracts: `search`, `fetch`, `corpus_read`, `source_proof`, `book_ingest`, `book_pages`, `story_*`; [server.py](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/926b8564d7d444cf144301ed68f88689f2ebda46/src/regional_knowledge/server.py); [quote_proof.py](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/926b8564d7d444cf144301ed68f88689f2ebda46/src/regional_knowledge/quote_proof.py).
 
 ### Первичные внешние источники
 
