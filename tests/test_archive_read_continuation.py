@@ -93,9 +93,16 @@ async def test_verified_expired_asset_allows_new_attempt_only_after_definitive_r
     provider=Provider();provider.pending=False;provider.asset_status=status
     with pytest.raises(RuntimeError,match='archive_source_cache_expired'):
         await source_archive.archive_payload(provider,'entry-a')
+    # The first call itself performs only two bounded GET admissions (one
+    # initial 404/410 plus one expired continuation). Both are distinct keys.
+    assert len(provider.admissions)==2 and len(provider.calls)==2
+    assert provider.calls[0][0]!=provider.calls[1][0]
+    # A later, separate user call is allowed to try again after the definitive
+    # second expiry. Do not mistake that independent call for an in-call loop.
     provider.asset_status=None
     await source_archive.archive_payload(provider,'entry-a')
-    assert len(provider.admissions)==2 and provider.calls[0][0]!=provider.calls[1][0]
+    assert len(provider.admissions)==3 and len(provider.calls)==3
+    assert len({call[0] for call in provider.calls})==3
 
 
 @pytest.mark.asyncio
