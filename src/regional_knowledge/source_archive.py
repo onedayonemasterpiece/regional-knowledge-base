@@ -121,7 +121,10 @@ class SourceArchive:
              join rkb_objects o on o.document_id=d.id and o.kind='source_pdf' and o.sha256=d.source_sha256 and o.deleted_at is null
              where d.owner_user_id=%s and d.source_archive_status='pending' and not exists(select 1 from rkb_documents other where other.owner_user_id=d.owner_user_id and other.source_sha256=d.source_sha256 and other.id<d.id)
              and (d.source_archive_attempt_at is null or d.source_archive_error is null or d.source_archive_attempt_at<now()-interval '30 seconds')
-             order by d.source_archive_attempt_at nulls first,d.id limit 1""",(UUID(self.client.owner),))).fetchall()
+             order by case when d.source_archive_read_id is not null then 0
+                           when d.source_archive_operation_id is not null then 1
+                           else 2 end,
+                      d.source_archive_attempt_at nulls first,d.id limit 4""",(UUID(self.client.owner),))).fetchall()
         count=0
         for doc in docs:
             try:
