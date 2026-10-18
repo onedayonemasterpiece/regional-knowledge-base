@@ -55,3 +55,23 @@ outcomes are refused by that gate; they are never replaced with a fresh send.
 Failed retries use a 30-second minimum retry interval. A deliberate new revision
 after source-cache GC reserves capacity again, revives the existing cache metadata
 under the document lifecycle lock and starts a fresh cache grace period.
+
+## Private mirror OAuth rotation and recovery
+
+All RKB clients sharing `RKB_VIBEPUBLISH_GRANT_FILE` must serialize refresh-token
+rotation with a private, permanent sibling `.refresh.lock` file. A client
+adopts an already-refreshed on-disk grant rather than reusing an old refresh
+token; after HTTP 401 it first checks whether another client already replaced
+the rejected access token. The grant stays owner/client/issuer bound and is
+atomically written mode 0600. No credential contents are logged.
+
+A lock prevents concurrent replay; it cannot repair a refresh-token family that
+VibePublish already revoked, nor extend the OAuth family's fixed lifetime.
+Recover only through normal PKCE authorization and **explicit owner consent**,
+with the registered callback for a legitimate RKB client and its previously
+authorized scope/bindings. Do not redirect a RKB grant into the ChatGPT
+connector callback, modify registrations or issue a grant in SQLite as a
+workaround. A missing/incompatible RKB callback needs a separately authorized
+registration correction or dedicated RKB client first. Until provider DOCUMENT
+readback and matching original SHA-256 succeed, source archive status remains
+`pending`; unchanged book contents must not be reimported.
