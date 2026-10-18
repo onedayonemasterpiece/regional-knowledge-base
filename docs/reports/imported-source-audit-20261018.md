@@ -133,6 +133,48 @@ No retry, alternate principal, upload or permission change was attempted.
 This archive-backed illustration path is an explicit failed acceptance case,
 not a successful visual end-to-end demonstration.
 
+## Visual retrieval and private delivery acceptance
+
+Three fresh specified searches completed the full product chain:
+`search → fetch → illustration_fetch`. The requested historical zoo plan,
+monkey photograph and cross-potent diagram appeared at BGE ranks 1, 2 and 3
+respectively. All three returned real PNG `ImageContent` with
+`delivered_crop_origin=object_store`. Independently calculated byte SHA-256
+matched the returned delivered/source crop hashes in all three cases. All three
+images were visually inspected and matched their requested subjects.
+
+Printed captions were kept separate from model observations: the plan has no
+printed caption text in its returned metadata, while the photograph and diagram
+have populated caption text. The lack of a caption was not replaced by a model
+observation presented as source evidence.
+
+The three PNG files were sent privately to the owner. Independent Slack thread
+readback confirmed the actual attachments in the requested existing owner DM
+thread. This proves attachment delivery, not that the owner opened or viewed
+those images. Private files, file IDs, source text and delivery links are omitted
+from this public report.
+
+Two additional generic queries tested discovery without diagnostic image IDs:
+
+- A zoo-opening query returned relevant prose at rank 1 without linked images,
+  but a historical postcard at rank 5 in the same result set. The postcard was
+  successfully fetched, its actual PNG hash matched, and it was visually checked.
+  This is a successful agent-led image discovery, not a guarantee that the first
+  prose result contains every useful image.
+- A bridge-construction query returned relevant prose at rank 3 without images.
+  A broader bridge text result at rank 7 contained a figure-caption region but
+  returned an empty `illustrations` list. A caption-focused follow-up found the
+  separate registered illustration chunk at rank 1 on the same page and caption
+  region. Thus the image exists, but the related-image linkage exposed by that
+  general text result is incomplete. The underlying code cause was not inspected
+  and must not be asserted from these observations alone.
+
+These results accept three concrete Object Storage visual-delivery paths and
+one additional generic discovery path. They do NOT accept the archive fallback
+that failed above, close the 121-item mirror backlog, or establish complete
+related-image recall for arbitrary prose queries. No code, production runtime,
+archive permissions or private publication destinations were changed.
+
 ## Open actions and authority boundaries
 
 1. Restore exact legacy archive read continuity under the existing dedicated
