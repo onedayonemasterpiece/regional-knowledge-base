@@ -18,3 +18,15 @@ This repository contains only public source code, schemas, tests and documentati
 - The protected product contract is `.devcoveer/requirements.json`. Mass-ingestion readiness is a critical product requirement, not an optimization: preserve the capacity, dense-retrieval-quality, latency, per-book acceptance and change-gate thresholds there. The human-readable companion is `docs/mass-ingestion-readiness.md`. Do not claim bulk-ingestion readiness from successful indexing or vector counts alone.
 
 - Do not reintroduce implicit MCP-auth defaults from `KB_SUPABASE_URL`, Supabase JWKS, Supabase OAuth Server or `auth.uid()`. Production RLS must use the application actor bridge.
+
+## Same-host service integration (mandatory)
+
+Follow the [DevCoveer local interservice policy](https://github.com/onedayonemasterpiece/codex-devcoveer-mcp/blob/main/docs/operations/local-service-connections.md)
+and [devserver-interservice skill](https://github.com/onedayonemasterpiece/codex-devcoveer-mcp/blob/main/skills/devserver-interservice/SKILL.md) for every RKB ↔ Street Story/VibePublish link.
+On the same Linux host use loopback-only HTTP or an existing Unix socket with a
+dedicated, target-scoped technical identity; never introduce user/browser OAuth
+or a public HTTPS path just to connect internal services. Do not reuse a full
+owner credential or bypass source ACL. Use stable operation keys, durable
+pending, native provider readback and SHA-256 before archival success.
+The existing RKB→VibePublish OAuth archive is an unfinished migration: never
+claim `source_archive_status=verified` or a finished product without live proof.
