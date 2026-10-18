@@ -7,6 +7,7 @@ import shutil
 import stat
 import time
 from pathlib import Path
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from uuid import UUID
 import httpx
@@ -163,10 +164,45 @@ class MirrorAdmissionDeferred(RuntimeError):
     """Keep queued crops intact while the local archive filesystem is low."""
 
 
+# A provider GET has no publication side effect. Only a proved terminal,
+# transient transport error permits a NEW, request-keyed read of the SAME
+# immutable archive entry. All uncertain/pending outcomes retain the old ID.
+_TRANSIENT_READ_CODES = frozenset({'telegram_transport_unhealthy', 'provider_read_deadline'})
+_READ_RETRY_COOLDOWN_SECONDS = 15 * 60
+
+
+def _read_retry_due(item, now):
+    if item.get('mirror_error_type') != 'MirrorReadTransient':
+        return True
+    previous = item.get('mirror_attempt_at')
+    try:
+        if isinstance(previous, str):
+            previous = datetime.fromisoformat(previous.replace('Z', '+00:00'))
+        if not isinstance(previous, datetime):
+            return False
+        if previous.tzinfo is None:
+            previous = previous.replace(tzinfo=timezone.utc)
+        elapsed = (now - previous).total_seconds()
+        return elapsed >= _READ_RETRY_COOLDOWN_SECONDS
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
 class IllustrationMirror:
     def __init__(self, backend, client):
         self.backend = backend
         self.client = client
+
+    async def _entry_ref(self, item):
+        uri = 'knowledge://illustrations/' + str(item['id'])
+        listed = await self.client.call('vibepublish_media_store', {
+            'command': {'kind': 'search', 'text': uri}, 'limit': 25})
+        matches = [r for r in listed['media_store_items']
+                   if r.get('origin') == {'system': 'regional_knowledge', 'ref': uri}
+                   and r.get('thread_ref') == self.client.grant['thread_ref']]
+        if len(matches) != 1:
+            raise RuntimeError('mirror resource readback missing')
+        return matches[0]['entry_ref']
 
     async def update(self, item, **values):
         # Frozen owner/active revision guard also fences results after revocation.
@@ -179,15 +215,18 @@ class IllustrationMirror:
         from .contracts import Principal
         actor=Principal(subject=self.client.owner,client_id='private-mirror',issuer='internal-actor-bridge',access_token='internal-actor-bridge')
         async with self.backend.data_client._connection(self.backend._headers(actor)) as db:
-            items=await(await db.execute("""select i.id,i.document_id,p.revision,i.mirror_operation_id,i.mirror_read_operation_id,i.display_crop_sha256,i.source_crop_sha256,i.provider_crop_sha256 from rkb_illustrations i
+            items=await(await db.execute("""select i.id,i.document_id,p.revision,i.mirror_operation_id,i.mirror_read_operation_id,i.mirror_attempt_at,i.mirror_error_type,i.display_crop_sha256,i.source_crop_sha256,i.provider_crop_sha256 from rkb_illustrations i
              join rkb_pages p on p.id=i.page_id join rkb_documents d on d.id=i.document_id
              where d.owner_user_id=%s and p.revision=d.active_revision and i.visibility='private'
               and i.vibepublish_entry_ref is null and i.crop_object_id is not null order by i.mirror_attempt_at nulls first,i.id limit 4""",(UUID(self.client.owner),))).fetchall()
         verified=0
         for item in items:
             try:
-                from datetime import datetime,timezone
-                await self.update(item,mirror_attempt_at=datetime.now(timezone.utc))
+                now = datetime.now(timezone.utc)
+                # Preserve the recorded last GET admission time while backing
+                # off after a terminal FloodWait. A receipt poll is safe.
+                if item.get('mirror_error_type') != 'MirrorReadTransient':
+                    await self.update(item, mirror_attempt_at=now)
                 operation=item['mirror_operation_id']
                 if not operation:
                     # SQLite and the loopback Vibe archive share the host's state
@@ -208,14 +247,39 @@ class IllustrationMirror:
                     raise RuntimeError('mirror outcome not verified')
                 read_operation=item['mirror_read_operation_id']
                 if not read_operation:
-                    listed=await self.client.call('vibepublish_media_store',{'command':{'kind':'search','text':'knowledge://illustrations/'+str(item['id'])},'limit':25})
-                    matches=[r for r in listed['media_store_items'] if r.get('origin')=={'system':'regional_knowledge','ref':'knowledge://illustrations/'+str(item['id'])}]
-                    if len(matches)!=1:
-                        raise RuntimeError('mirror resource readback missing')
-                    read=await self.client.call('vibepublish_media_store',{'command':{'kind':'get','entry_ref':matches[0]['entry_ref']}})
-                    read_operation=read['operation_id'];await self.update(item,mirror_read_operation_id=read_operation)
-                read=await self.client.receipt(read_operation)
+                    entry_ref = await self._entry_ref(item)
+                    admitted = await self.client.call('vibepublish_media_store', {
+                        'command': {'kind': 'get', 'entry_ref': entry_ref}})
+                    read_operation = admitted['operation_id']
+                    await self.update(item, mirror_read_operation_id=read_operation)
+                read = await self.client.receipt(read_operation)
                 if not read['operation_complete']:
+                    continue
+                # A terminal provider read is NOT an uncertain publication.
+                # Repeat a GET only for a known transient code and only after
+                # preserving the original verified PUT. The key derived from
+                # the old terminal read makes a lost reply safe to replay.
+                error = read.get('error') or {}
+                code = error.get('code') if isinstance(error, dict) else None
+                if read['state'] == 'blocked' and code in _TRANSIENT_READ_CODES:
+                    if not _read_retry_due(item, now):
+                        continue
+                    entry_ref = await self._entry_ref(item)
+                    recovered = await self.client.call('vibepublish_media_store', {
+                        'request_key': 'rkb:mirror:read-retry:' + str(read_operation),
+                        'command': {'kind': 'get', 'entry_ref': entry_ref}})
+                    next_id = recovered['operation_id']
+                    if not next_id or next_id == read_operation:
+                        raise RuntimeError('mirror read recovery identity unchanged')
+                    await self.update(item, mirror_read_operation_id=next_id,
+                                      mirror_attempt_at=now,
+                                      mirror_error_type='MirrorReadTransient')
+                    import logging
+                    logging.getLogger(__name__).info(json.dumps({
+                        'event': 'illustration_mirror_read_recovered',
+                        'illustration_id': str(item['id']),
+                        'previous_read_operation': str(read_operation),
+                        'read_operation': str(next_id)}))
                     continue
                 entries=read.get('media_store_items') or []
                 evidence=[e for r in read.get('items',[]) for e in r.get('media_evidence',[]) if e.get('media_kind')=='document']
