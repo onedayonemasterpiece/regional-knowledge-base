@@ -33,7 +33,7 @@ async def _install_http(client, handler):
 
 
 @pytest.mark.asyncio
-async def test_two_process_style_clients_refresh_shared_grant_once(tmp_path):
+async def test_two_clients_refresh_shared_grant_once(tmp_path):
     path, original = _grant(tmp_path)
     clients = [VibePublishClient(path), VibePublishClient(path)]
     rotations = []
@@ -119,8 +119,9 @@ async def test_invalid_grant_does_not_replace_on_disk_credentials(tmp_path):
 
     try:
         await _install_http(client, handler)
-        with pytest.raises(Exception):
+        with pytest.raises(httpx.HTTPStatusError) as error:
             await client.refresh()
+        assert error.value.response.status_code == 400
         assert json.loads(path.read_text()) == original
         assert not path.with_name(path.name + ".new").exists()
     finally:
