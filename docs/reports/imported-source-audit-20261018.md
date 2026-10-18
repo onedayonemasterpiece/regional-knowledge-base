@@ -148,7 +148,8 @@ printed caption text in its returned metadata, while the photograph and diagram
 have populated caption text. The lack of a caption was not replaced by a model
 observation presented as source evidence.
 
-The three PNG files were sent privately to the owner. Independent Slack thread
+The three specified PNG files and the additional generic-query postcard below
+were sent privately to the owner: four images in total. Independent Slack thread
 readback confirmed the actual attachments in the requested existing owner DM
 thread. This proves attachment delivery, not that the owner opened or viewed
 those images. Private files, file IDs, source text and delivery links are omitted
