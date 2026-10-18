@@ -1,6 +1,9 @@
 """Bounded private mirror reconciliation through VibePublish's own provider lane."""
+import asyncio
+import fcntl
 import json
 import os
+import stat
 import time
 from pathlib import Path
 from uuid import UUID
@@ -24,32 +27,68 @@ class VibePublishClient:
     async def close(self):
         await self.http.aclose()
 
-    async def refresh(self):
-        latest=json.loads(self.path.read_text())
-        if latest['client_id']!=self.grant['client_id'] or latest['rkb_owner_id']!=self.owner or latest['issuer'].rstrip('/')!=self.issuer:
-            raise PermissionError('mirror grant binding changed; restart required')
-        self.grant=latest
-        response = await self.http.post(self.issuer+'/token', data={
-            'grant_type':'refresh_token', 'refresh_token':self.grant['refresh_token'],
-            'client_id':self.grant['client_id'], 'scope':'vibepublish',
-            'resource':self.issuer+'/mcp/'})
-        from .oauth_diagnostics import check_refresh_response
-        check_refresh_response(response)
-        token = response.json()
-        self.grant.update(access_token=token['access_token'], refresh_token=token['refresh_token'],
-                          expires_at=time.time()+token['expires_in'])
-        temp = self.path.with_name(self.path.name+'.new')
-        temp.write_text(json.dumps(self.grant));temp.chmod(0o600);temp.replace(self.path)
+    async def refresh(self, *, refused_access_token=None):
+        """Serialize refresh-token rotation across processes sharing one grant file.
+
+        A replayed refresh token revokes its entire OAuth family. Always re-read
+        the atomic on-disk grant under a stable cross-process lock, and adopt a
+        fresh rotation performed by another client instead of replaying it.
+        """
+        lock_path = self.path.with_name(self.path.name + '.refresh.lock')
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            lock_stat = os.fstat(fd)
+            if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_mode & 0o077:
+                raise PermissionError('mirror refresh lock must be private')
+            await asyncio.to_thread(fcntl.flock, fd, fcntl.LOCK_EX)
+            latest = json.loads(self.path.read_text())
+            if (latest['client_id'] != self.grant['client_id']
+                    or latest['rkb_owner_id'] != self.owner
+                    or latest['issuer'].rstrip('/') != self.issuer):
+                raise PermissionError('mirror grant binding changed; restart required')
+            # An expired local snapshot may already have a fresh on-disk grant.
+            # On a 401, reuse it only when its access token differs from the
+            # exact token rejected by the provider.
+            if (latest['expires_at'] >= time.time() + 60
+                    and (refused_access_token is None
+                         or latest['access_token'] != refused_access_token)):
+                self.grant = latest
+                return
+            response = await self.http.post(self.issuer + '/token', data={
+                'grant_type': 'refresh_token',
+                'refresh_token': latest['refresh_token'],
+                'client_id': latest['client_id'],
+                'scope': 'vibepublish',
+                'resource': self.issuer + '/mcp/'})
+            from .oauth_diagnostics import check_refresh_response
+            check_refresh_response(response)
+            token = response.json()
+            updated = {**latest,
+                       'access_token': token['access_token'],
+                       'refresh_token': token['refresh_token'],
+                       'expires_at': time.time() + token['expires_in']}
+            temp = self.path.with_name(self.path.name + '.new')
+            temp.write_text(json.dumps(updated))
+            temp.chmod(0o600)
+            temp.replace(self.path)
+            self.grant = updated
+        finally:
+            # The lock file stays in place: removing it would make simultaneous
+            # clients lock different inodes.
+            await asyncio.to_thread(fcntl.flock, fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     async def request(self, method, url, **kwargs):
-        if self.grant['expires_at'] < time.time()+60:
+        if self.grant['expires_at'] < time.time() + 60:
             await self.refresh()
-        headers=kwargs.pop('headers', {})
-        response = await self.http.request(method, url, headers={'Authorization':'Bearer '+self.grant['access_token'],
-                                           **headers}, **kwargs)
+        headers = kwargs.pop('headers', {})
+        attempted_access = self.grant['access_token']
+        response = await self.http.request(method, url, headers={
+            'Authorization': 'Bearer ' + attempted_access, **headers}, **kwargs)
         if response.status_code == 401:
-            await self.refresh()
-            response = await self.http.request(method, url, headers={'Authorization':'Bearer '+self.grant['access_token'], **headers}, **kwargs)
+            await self.refresh(refused_access_token=attempted_access)
+            response = await self.http.request(method, url, headers={
+                'Authorization': 'Bearer ' + self.grant['access_token'], **headers}, **kwargs)
         response.raise_for_status()
         return response
 
