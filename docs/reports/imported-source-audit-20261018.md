@@ -93,6 +93,32 @@ do not measure search quality.
 PR121 is already merged. Its test programme and test-results journal are project
 documents, not an additional imported historical source or a still-open draft.
 
+## Illustration completeness defect
+
+The active real-source revisions contain 151 illustrations. Thirty already have
+archive references. The other 121 are eligible private crops but have no archive
+operation or readback IDs and no attempt timestamps. Object Storage HEAD confirms
+121/121 present; four representative crop downloads, one from each affected
+source, match both the object SHA-256 and displayed-image SHA-256. This is four
+actual byte checks, not a claim that all 121 bytes were downloaded.
+
+The indexing worker repeatedly logs `illustration_mirror_pass_retry` with
+`OperationalError`. A minimal in-memory reproduction and a regression through
+the real SQLite adapter confirm the cause: PostgreSQL-style
+`UPDATE rkb_illustrations i SET ...` lacks SQLite's required `AS` keyword. It fails
+before storing the first attempt; the error-status update encounters the same
+problem. This explains the empty attempt/error metadata, not missing crop bytes.
+
+A one-line `AS i` correction with 13 passing SQLite tests has been prepared and
+independently reviewed. The new test fails on the unchanged baseline with
+`sqlite3.OperationalError: near "i": syntax error` and passes with the fix.
+The PostgreSQL integration fixture was skipped without an isolated DSN; no live
+PostgreSQL validation is claimed. Owner, active-user, active-revision and private
+visibility predicates are unchanged. This patch is NOT yet published, merged or
+deployed. Restarting the corrected worker would allow its existing queue to
+publish the 121 private crops, so specific owner authorization remains pending.
+No new archive operations or grants were made in this investigation.
+
 ## Open actions and authority boundaries
 
 1. Restore exact legacy archive read continuity under the existing dedicated
@@ -105,7 +131,9 @@ documents, not an additional imported historical source or a still-open draft.
    do not delete it blindly.
 4. Finish the two unactivated imports only after reviewing their existing staged
    work. Do not mass-reimport or replace active revisions with incomplete work.
-5. Continue source-specific quality and completeness checks. Synthetic controls
+5. After specific approval, apply the illustration SQL correction and verify the
+   existing private mirror queue end to end without duplicate publications.
+6. Continue source-specific quality and completeness checks. Synthetic controls
    are listed separately; their existence is not historical-corpus acceptance.
 
 The full audit remains open while the production archive path has these defects.
