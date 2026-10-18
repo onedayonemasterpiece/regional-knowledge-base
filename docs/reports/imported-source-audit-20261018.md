@@ -1,5 +1,56 @@
 # Imported-source audit, 18 October 2026
 
+## Production update, 18:02 UTC
+
+This update supersedes the earlier deployment and pending-authorization statements
+below; those sections are retained as dated investigation evidence, not current
+runtime status. This remains a partial acceptance report.
+
+- The owner deployed RKB `926b8564d7d444cf144301ed68f88689f2ebda46`
+  earlier today, including the SQLite mirror fix, durable archive reads, exact
+  text-to-illustration linkage, canonical runbook and disk-admission guard.
+- [PR143](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/143)
+  fixes recovery of explicitly terminal transient Telegram archive GET failures.
+  It preserves the verified PUT and exact archive entry, uses a stable retry key
+  derived from the previous GET, and persists a 15-minute cooldown. In-flight,
+  unknown-outcome and authorization failures are not eligible.
+  Exact head `3f13e5182eaac56ea60bab4f68fbda4517b7326e` passed
+  [CI 39150981613](https://github.com/onedayonemasterpiece/regional-knowledge-base/actions/runs/39150981613)
+  and merged as `70b77babb38aff0c77314caf434f13d4f88a9d6a`.
+- At 18:00 UTC, one official RKB API + indexer apply from a clean exact-head
+  checkout succeeded. The preflight job was `job_40942ed8d47e00329deb3a27`;
+  the apply job was `job_172e7852aa7fb7dd0ca7fb6b`, exit 0.
+  The official helper verified candidate process working directories,
+  PYTHONPATH and release labels. API PID **480103**, indexer PID **480107**;
+  public health **OK**.
+- The pre-apply SQLite recovery snapshot is **114008064 bytes**, with SHA-256
+  `5b853a207129440fc76719854881a602e15de6574358921faca3cb4350276331`;
+  integrity and foreign-key checks passed. It is recovery evidence, not proof of
+  a restore drill. The helper's automatic rollback restores service configuration,
+  not database contents.
+- Independent post-apply service reads at 18:01 UTC confirmed VibePublish API PID
+  **246618**, worker PID **212399**, and Street Story PID **467693** with unchanged
+  start times. This RKB release did not restart those services.
+- At 18:00:42 UTC, the indexing journal recorded
+  `illustration_mirror_read_recovered` for the one remaining active illustration.
+  The new read was initiated by the normal indexer, not a manual PUT or GET.
+  This event proves recovery admission, **not** successful provider bytes/hash
+  acceptance. Final receipt and SHA verification remain pending here.
+- The owner's preceding independent census reported **150/151** active
+  illustrations with archive references and provider hashes, including the
+  **30 legacy** entries. That count is not this audit's independent byte-level
+  acceptance of all entries. The old 30 service-identity read continuity cases
+  remain separate from the newly processed mirror queue.
+- VibePublish [PR84](https://github.com/onedayonemasterpiece/vibepublish/pull/84)
+  remains a separate draft/schema-11 stage. No migration or legacy read grants
+  were applied by this release. A fresh consistent backup and restore test,
+  coordinated API/worker window, schema-compatible rollback, and exact-entry
+  provenance/byte verification remain required before that stage.
+
+The existing operational guide remains
+[docs/operations/illustration-pipeline.md](../operations/illustration-pipeline.md).
+No second runbook is introduced.
+
 ## Scope and outcome
 
 This is an operational audit, not a claim of mass-ingestion readiness. The private
