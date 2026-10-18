@@ -3,6 +3,7 @@ import asyncio
 import fcntl
 import json
 import os
+import shutil
 import stat
 import time
 from pathlib import Path
@@ -158,6 +159,10 @@ class VibePublishClient:
             'origin':{'system':'regional_knowledge','ref':metadata['uri']}}})
 
 
+class MirrorAdmissionDeferred(RuntimeError):
+    """Keep queued crops intact while the local archive filesystem is low."""
+
+
 class IllustrationMirror:
     def __init__(self, backend, client):
         self.backend = backend
@@ -185,6 +190,12 @@ class IllustrationMirror:
                 await self.update(item,mirror_attempt_at=datetime.now(timezone.utc))
                 operation=item['mirror_operation_id']
                 if not operation:
+                    # SQLite and the loopback Vibe archive share the host's state
+                    # filesystem. Only NEW puts pause; persisted puts/readbacks
+                    # must still reconcile. No process kill or grant mutation.
+                    corpus = getattr(self.backend, 'corpus', None)
+                    if corpus is not None and shutil.disk_usage(corpus.path.parent).free < 2 * 1024**3:
+                        raise MirrorAdmissionDeferred('archive filesystem below 2 GiB reserve')
                     metadata,crop,mime=await fetch_crop(self.backend,actor,str(item['id']))
                     key=f"rkb:mirror:{self.client.owner}:{item['document_id']}:{item['revision']}:{item['id']}"
                     receipt=await self.client.put(key,metadata,crop,mime)
@@ -222,3 +233,4 @@ class IllustrationMirror:
                 import logging
                 logging.getLogger(__name__).warning(json.dumps({'event':'illustration_mirror_retry','illustration_id':str(item['id']),'error_type':type(error).__name__}))
         return verified
+
