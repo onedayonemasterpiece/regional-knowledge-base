@@ -44,6 +44,10 @@ def visible(corpus,actor):
         try:parent=corpus.authorize(actor,row['parent_id'])
         except (PermissionError,LookupError):continue
         # Catalog can preserve an old issue component, with its frozen revision.
+        # Archive state belongs to the shared bytes, not the component snapshot.
+        # Never project a replacement original's state onto historical evidence.
+        if row.get('source_sha256') and row['source_sha256']==parent.get('source_sha256'):
+            row['source_archive_status']=parent.get('source_archive_status')
         rows.append(row)
     return rows
 
