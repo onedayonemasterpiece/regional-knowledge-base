@@ -716,17 +716,19 @@ class SupabaseRestBackend(KnowledgeBackend):
         # region as a figure but omit illustration_ids. Recover only these exact
         # RLS-scoped source links; never attach a figure by vague page proximity
         # or inferred subject (e.g. Green Gate vs Wooden Bridge).
-        for illustration_id in await linked_caption_illustration_ids(
-            self, principal,
-            document_id=str(row['document_id']),
-            page_ids=page_ids,
-            region_ids=region_ids,
-            excluded_ids=explicit_figure_ids,
-            limit=max(1, 12 - len(figures)),
-        ) if len(figures) < 12 else []:
-            info = await descriptor(self, principal, illustration_id, row['document_id'])
-            info['association_basis'] = 'exact_shared_region'
-            figures.append(info)
+        if region_ids and len(figures) < 12:
+            linked_ids = await linked_caption_illustration_ids(
+                self, principal,
+                document_id=str(row['document_id']),
+                page_ids=page_ids,
+                region_ids=region_ids,
+                excluded_ids=explicit_figure_ids,
+                limit=12 - len(figures),
+            )
+            for illustration_id in linked_ids:
+                info = await descriptor(self, principal, illustration_id, row['document_id'])
+                info['association_basis'] = 'exact_shared_region'
+                figures.append(info)
         revision=row.get("revision")
         if revision is None and page_meta:
             revision=next(iter(page_meta.values())).get("revision")
