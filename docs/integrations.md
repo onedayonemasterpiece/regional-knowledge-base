@@ -37,6 +37,14 @@ with stable knowledge:// references and inherited access scope.
 
 See [POI evidence bridge](poi-integration.md).
 
+### Source facts actually reaching a POI (designed integration completion)
+
+The `poi_registry` bridge and `poi_context` have a verified *POI identity/source navigation* scope only. A linked source entity **does not prove that any atomic POI fact has been ingested**. RKB already creates `poi.fact_evidence.v1` and `rkb_integration_outbox` at source activation; Street Story already implements candidate `poi_external.ingest_poi_evidence`, `poi_claims`, evidence and model-owned semantic review. The checked source has not established the full **outbox worker → authorized Street Story fact-intake API → canonical claim/evidence receipt** path. The existing `/v1/internal/rkb-poi` command is for identity, not this fact intake.
+
+Complete the existing path, without a second POI owner: owner-approved accepted-source POI candidates (including later facts found in mandatory phase 2) → provenance/evidence resolver → authorized idempotent delivery → Street Story model review/claim state. The reverse route, Street Story canonical POI → RKB evidence research, returns **candidates** with exact book/article/contributor-role/source revision/page/region and privacy rather than declaring facts based on alias similarity. Make a `knowledge://evidence/<candidate-id>` usable through real source proof; current generic `fetch` doesn't prove it is resolvable. Reprocessing or revoking source rights must invalidate active evidence projections without erasing independent evidence or history. Only a durable Street Story fact receipt supports the outcome “POI enriched”; outbox pending and identity linked remain separate statuses.
+
+See [participant identity and POI-fact delivery project](design/rkb-participants-poi-fact-bridge-20261018.md) and [PMI](testing/rkb-disagreement-pmi-20261018.md); these capabilities are designed, **not live-accepted**.
+
 ### Source disagreement cases (designed; not yet implemented)
 
 The [RKB disagreement-journal design](design/rkb-disagreement-journal-design-20261018.md)
@@ -59,7 +67,7 @@ Projects Hub is the natural user-facing orchestration surface:
 - project selection/routing;
 - Knowledge Base read capability alongside other project tools.
 
-It consumes the Knowledge Base Live profile (`knowledge_search`, a compact evidence pack in one call) through `live-interaction`. The full profile separately exposes `search` and `fetch`. For private knowledge, Projects Hub holds a user-approved, resource-bound Knowledge OAuth delegation; it never forwards its own bearer token. Projects Hub does not become the identity provider.
+It consumes the Knowledge Base Live profile (`knowledge_search`, a compact evidence pack in one call) through `live-interaction`. The full profile separately exposes `search` and `fetch`. For private knowledge, Projects Hub holds a user-approved, resource-bound Knowledge OAuth delegation; it never forwards its own bearer token. Projects Hub does not become the identity provider. **Current multi-user caveat:** the existing Projects Hub actor ID is a `usr_...` identifier and its tested invite is for the platform owner, while RKB resource actor is a UUID and its current OAuth issuance is owner-oriented. Do not reuse owner-only invite/owner bearer for historical experts or cast PH ID directly to RKB UUID. Owner-managed RKB participant profiles use a stable RKB UUID, with separately **verified** external IDs for Slack, VK and PH; longer-term multi-user first-party identity remains a future enhancement. Being a researcher/guide or having academic credentials is not itself resource authorization. See [participant mapping design](design/rkb-participants-poi-fact-bridge-20261018.md).
 
 For the planned disagreement workflow, Mira, personal MCP connections and
 registered Slack threads provide authorized contributions to RKB-owned cases.
@@ -70,7 +78,7 @@ a planned narrow contract, not implied by the existence of generic tasks.
 
 ### Planned Kaliningrad Base Slack expert interface
 
-The end-user Slack app **Kaliningrad Base** is not dot's public alias. Users interact only with the dedicated app. It receives trusted Slack events, stores an identity-bound request with the RKB backend, wakes dot via an MCP Events-style contract, and delivers correlated replies as Kaliningrad Base. The previously accepted Projects Hub MCP Events flow is a reference for the protocol only: its owner_actor_id and dot-as-Slack-sender are not reusable for multiple experts. No additional IAM or mandatory Projects Hub intermediary is introduced.
+The end-user Slack app **Kaliningrad Base** is not dot's public alias. **Do not install, invite or expose dot as an app/member in the experts' Slack workspace**; only the independently authenticated Kaliningrad Base bot is present to users, with internal MCP-event wake-up routed outside their workspace. Users interact only with the dedicated app. It receives trusted Slack events, stores an identity-bound request with the RKB backend, wakes dot via an MCP Events-style contract, and delivers correlated replies as Kaliningrad Base. The previously accepted Projects Hub MCP Events flow is a reference for the protocol only: its owner_actor_id and dot-as-Slack-sender are not reusable for multiple experts. No additional IAM or mandatory Projects Hub intermediary is introduced.
 
 RKB remains the authorization authority for delegated actor, requested action, source/case ACL, original-scan proof and outgoing projections. Import remains **owner-only through owner-specific ChatGPT/MCP/dot paths**, never through the Slack expert app, including when the owner sends the message. The bot's service profile cannot assume the owner's privileges. Slack actor, model executor and source-comment author remain separate. The client stores no case copy; Projects Hub/Mira/mobile will later use the same RKB contract with their platform actor and resource-specific delegation.
 
