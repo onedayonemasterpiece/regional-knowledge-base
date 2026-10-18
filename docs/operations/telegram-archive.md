@@ -12,8 +12,10 @@ graph evidence prefer authorized Postgres text; legacy object reads remain a
 migration fallback only. New finalize writes neither text projections nor page
 renders. It writes exact region text, chunks and temporary crop bytes.
 
-The existing single indexing owner archives one source per pass and reconciles
-illustrations independently of embedding work. Use the mode-0600 resource grant
+The existing single indexing owner reconciles at most four sources per bounded
+archive pass, prioritizing already recorded Telegram readbacks, then admitted
+publications, then new uploads. Illustrations reconcile independently of embedding
+work, with VibePublish enforcing the shared native media rate budget. Use the mode-0600 resource grant
 `RKB_VIBEPUBLISH_GRANT_FILE` with the dedicated KB destination alias,
 `source_thread_ref=https://t.me/c/4368830579/2` and
 `thread_ref=https://t.me/c/4368830579/4`. VibePublish must already run the distinct

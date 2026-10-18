@@ -106,6 +106,17 @@ async def download_source(backend, principal, document_id, obj, path, *, require
         await asyncio.to_thread(shutil.copyfile,original,path)
 
 
+_PENDING_SOURCES_SQL="""select d.*,o.object_key,o.id object_id,o.mime_type from rkb_documents d
+             join rkb_objects o on o.document_id=d.id and o.kind='source_pdf' and o.sha256=d.source_sha256 and o.deleted_at is null
+             where d.owner_user_id=%s and d.source_archive_status='pending' and not exists(select 1 from rkb_documents other where other.owner_user_id=d.owner_user_id and other.source_sha256=d.source_sha256 and other.id<d.id)
+             and (d.source_archive_attempt_at is null or d.source_archive_error is null or d.source_archive_attempt_at<now()-interval '30 seconds')
+             order by case when d.source_archive_read_id is not null then 0
+                           when d.source_archive_operation_id is not null then 1
+                           else 2 end,
+                      d.source_archive_attempt_at nulls first,d.id limit 4"""
+
+
+
 class SourceArchive:
     def __init__(self,backend,client):self.backend=backend;self.client=client
     async def update(self,document,**values):
@@ -117,11 +128,7 @@ class SourceArchive:
     async def tick(self):
         actor=Principal(subject=self.client.owner,client_id='source-archive',issuer='internal-actor-bridge',access_token='internal-actor-bridge')
         async with self.backend.data_client._connection({'x-rkb-service':'1'}) as db:
-            docs=await(await db.execute("""select d.*,o.object_key,o.id object_id,o.mime_type from rkb_documents d
-             join rkb_objects o on o.document_id=d.id and o.kind='source_pdf' and o.sha256=d.source_sha256 and o.deleted_at is null
-             where d.owner_user_id=%s and d.source_archive_status='pending' and not exists(select 1 from rkb_documents other where other.owner_user_id=d.owner_user_id and other.source_sha256=d.source_sha256 and other.id<d.id)
-             and (d.source_archive_attempt_at is null or d.source_archive_error is null or d.source_archive_attempt_at<now()-interval '30 seconds')
-             order by d.source_archive_attempt_at nulls first,d.id limit 1""",(UUID(self.client.owner),))).fetchall()
+            docs=await(await db.execute(_PENDING_SOURCES_SQL,(UUID(self.client.owner),))).fetchall()
         count=0
         for doc in docs:
             try:
