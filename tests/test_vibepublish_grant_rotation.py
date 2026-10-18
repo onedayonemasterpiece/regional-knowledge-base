@@ -126,3 +126,71 @@ async def test_invalid_grant_does_not_replace_on_disk_credentials(tmp_path):
         assert not path.with_name(path.name + ".new").exists()
     finally:
         await client.close()
+
+@pytest.mark.asyncio
+async def test_local_service_bearer_uses_only_loopback_with_fixed_host(tmp_path):
+    path = tmp_path / "service.json"
+    owner = str(uuid4())
+    binding = {
+        "rkb_owner_id": owner,
+        "client_id": "rkb-archive-technical",
+        "issuer": "https://mcp-vibepublish.kenigevents.ru",
+        "auth_mode": "local_service",
+        "local_endpoint": "http://127.0.0.1:18765",
+        "service_token": "private_local_machine_token_123456789",
+        "destination_alias": "rkb_archive",
+        "source_thread_ref": "https://t.me/c/4368830579/2",
+        "thread_ref": "https://t.me/c/4368830579/4",
+    }
+    path.write_text(json.dumps(binding))
+    path.chmod(0o600)
+    client = VibePublishClient(path)
+    requests = []
+
+    async def handler(request):
+        requests.append((str(request.url), request.headers["host"],
+                         request.headers["authorization"]))
+        if request.url.path == "/token" or request.url.scheme != "http":
+            raise AssertionError("Unexpected OAuth or external call")
+        return httpx.Response(200, json={"operation_id": "op_test"})
+
+    try:
+        await _install_http(client, handler)
+        response = await client.request(
+            "POST", binding["issuer"] + "/v1/assets",
+            headers={"Content-Type": "application/pdf"}, content=b"%PDF-1.7 test")
+        assert response.json() == {"operation_id": "op_test"}
+        assert requests == [(
+            "http://127.0.0.1:18765/v1/assets",
+            "mcp-vibepublish.kenigevents.ru",
+            "Bearer " + binding["service_token"],
+        )]
+        with pytest.raises(PermissionError):
+            await client.request("GET", "https://other.example/v1/assets")
+        with pytest.raises(RuntimeError):
+            await client.refresh()
+        assert len(requests) == 1
+        assert json.loads(path.read_text()) == binding
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("endpoint", [
+    "https://mcp-vibepublish.kenigevents.ru",
+    "http://localhost:18765", "http://127.0.0.1:80",
+    "http://0.0.0.0:18765", "http://127.0.0.1:18765/other",
+    "http://127.0.0.1:18765/?redirect=1",
+])
+def test_local_service_rejects_untrusted_transports(tmp_path, endpoint):
+    path = tmp_path / "service.json"
+    data = {
+        "rkb_owner_id": str(uuid4()), "client_id": "rkb-archive-technical",
+        "issuer": "https://mcp-vibepublish.kenigevents.ru",
+        "auth_mode": "local_service",
+        "local_endpoint": endpoint,
+        "service_token": "private_local_machine_token_123456789",
+    }
+    path.write_text(json.dumps(data))
+    path.chmod(0o600)
+    with pytest.raises(ValueError):
+        VibePublishClient(path)
