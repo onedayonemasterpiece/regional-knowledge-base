@@ -140,7 +140,8 @@ Three fresh specified searches completed the full product chain:
 monkey photograph and cross-potent diagram appeared at BGE ranks 1, 2 and 3
 respectively. All three returned real PNG `ImageContent` with
 `delivered_crop_origin=object_store`. Independently calculated byte SHA-256
-matched the returned delivered/source crop hashes in all three cases. All three
+matched the returned delivered/source crop hashes in all three cases. These are
+hashes of the original RKB ImageContent bytes, not Slack transport-file hashes. All three
 images were visually inspected and matched their requested subjects.
 
 Printed captions were kept separate from model observations: the plan has no
@@ -154,6 +155,22 @@ readback confirmed the actual attachments in the requested existing owner DM
 thread. This proves attachment delivery, not that the owner opened or viewed
 those images. Private files, file IDs, source text and delivery links are omitted
 from this public report.
+
+The owner independently verified the three specified Slack PNG attachments and
+confirmed the correct RKB images were readable. According to that independent
+check, each Slack transport file is 21 bytes shorter because only the ancillary
+PNG `pHYs` chunk (physical resolution/DPI metadata) was removed. The owner reported
+matching IHDR, dimensions, IDAT length and CRC32, and IEND against the exact RKB
+`illustration_fetch` outputs, confirming unchanged pixel content for these three
+images. Whole-file SHA-256 therefore differs between the RKB source and Slack
+transport; byte-for-byte transport identity is NOT claimed.
+
+This transport comparison is attributed to the owner's independent verification.
+The audit agent did not independently compute Slack transport hashes and received
+no numeric transport SHA-256 values. The resulting visual smoke acceptance is
+3/3 for the specified images. It does not extend the pixel-preservation claim to
+the fourth postcard, for which only the separately described RKB byte/visual
+checks and Slack thread/file delivery readback are established.
 
 Two additional generic queries tested discovery without diagnostic image IDs:
 
