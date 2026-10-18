@@ -706,8 +706,29 @@ class SupabaseRestBackend(KnowledgeBackend):
 
         page_meta=await related_rows("rkb_pages",page_ids,"id,physical_page_index,revision")
         region_meta=await related_rows("rkb_regions",region_ids,"id,page_id,kind,reading_order")
-        from .illustrations import descriptor
-        figures = [await descriptor(self, principal, str(value), row['document_id']) for value in row.get('illustration_ids') or []]
+        from .illustrations import descriptor, linked_caption_illustration_ids
+        explicit_figure_ids = [str(value) for value in row.get('illustration_ids') or []]
+        figures = [
+            await descriptor(self, principal, value, row['document_id'])
+            for value in explicit_figure_ids
+        ]
+        # Some accepted legacy text chunks contain the SAME printed caption
+        # region as a figure but omit illustration_ids. Recover only these exact
+        # RLS-scoped source links; never attach a figure by vague page proximity
+        # or inferred subject (e.g. Green Gate vs Wooden Bridge).
+        if region_ids and len(figures) < 12:
+            linked_ids = await linked_caption_illustration_ids(
+                self, principal,
+                document_id=str(row['document_id']),
+                page_ids=page_ids,
+                region_ids=region_ids,
+                excluded_ids=explicit_figure_ids,
+                limit=12 - len(figures),
+            )
+            for illustration_id in linked_ids:
+                info = await descriptor(self, principal, illustration_id, row['document_id'])
+                info['association_basis'] = 'exact_shared_region'
+                figures.append(info)
         revision=row.get("revision")
         if revision is None and page_meta:
             revision=next(iter(page_meta.values())).get("revision")

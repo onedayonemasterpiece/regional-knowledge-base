@@ -47,6 +47,51 @@ async def descriptor(backend, principal, illustration_id, document_id=None):
     return output
 
 
+async def linked_caption_illustration_ids(
+    backend, principal, *, document_id, page_ids, region_ids,
+    excluded_ids=(), limit=12,
+):
+    """Discover exact accepted figure/caption links when chunk IDs omit the figure.
+
+    Only user-authorized illustrations on the same accepted source page are
+    considered. The shared figure-region or printed caption-region ID is
+    positive evidence of linkage; mere document/page/topic similarity is not.
+    This is a bounded read-time projection, not a new index or data mutation.
+    """
+    match_regions = {str(value) for value in region_ids}
+    if not match_regions:
+        return []
+    selected = set(map(str, excluded_ids))
+    found = []
+    for page_id in list(dict.fromkeys(str(value) for value in page_ids))[:8]:
+        response = await backend.client.get(
+            backend.config.url.rstrip('/') + '/rest/v1/rkb_illustrations',
+            headers=backend._headers(principal),
+            params={
+                'document_id': 'eq.' + str(document_id),
+                'page_id': 'eq.' + page_id,
+                'select': 'id,source_region_id,caption_region_ids',
+                'limit': '200',
+            },
+        )
+        response.raise_for_status()
+        for item in response.json():
+            ident = str(item['id'])
+            if ident in selected:
+                continue
+            printed_captions = {
+                str(value) for value in item.get('caption_region_ids') or []
+            }
+            if (str(item.get('source_region_id')) not in match_regions
+                    and not printed_captions.intersection(match_regions)):
+                continue
+            found.append(ident)
+            selected.add(ident)
+            if len(found) >= limit:
+                return found
+    return found
+
+
 async def fetch_crop(backend, principal, illustration_id):
     item = await row(backend, principal, illustration_id)
     # Scope a service-only locator to the exact actor-authorized document/object.
