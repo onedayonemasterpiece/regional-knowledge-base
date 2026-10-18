@@ -43,7 +43,7 @@ class IndexReconciler:
         self.archive=None
         self.last_gc=0
         self.last_original_gc=0
-        self.last_archive_tick=0
+        self.last_archive_tick=time.monotonic()
         self.story_indexer=None
 
     def archive_due(self,documents,story_backlog,now):
