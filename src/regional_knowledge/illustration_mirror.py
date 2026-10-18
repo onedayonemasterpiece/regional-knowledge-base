@@ -167,7 +167,7 @@ class IllustrationMirror:
         # Frozen owner/active revision guard also fences results after revocation.
         from psycopg import sql
         async with self.backend.data_client._connection({'x-rkb-service':'1'}) as db:
-            query=sql.SQL('update rkb_illustrations i set {} from rkb_pages p,rkb_documents d,rkb_users u where i.id=%s and p.id=i.page_id and d.id=i.document_id and p.revision=d.active_revision and d.owner_user_id=%s and u.id=d.owner_user_id and u.status=\'active\' and i.visibility=\'private\'').format(sql.SQL(',').join(sql.SQL('{}=%s').format(sql.Identifier(k)) for k in values))
+            query=sql.SQL('update rkb_illustrations AS i set {} from rkb_pages p,rkb_documents d,rkb_users u where i.id=%s and p.id=i.page_id and d.id=i.document_id and p.revision=d.active_revision and d.owner_user_id=%s and u.id=d.owner_user_id and u.status=\'active\' and i.visibility=\'private\'').format(sql.SQL(',').join(sql.SQL('{}=%s').format(sql.Identifier(k)) for k in values))
             await db.execute(query, (*values.values(),item['id'],UUID(self.client.owner)))
 
     async def tick(self):
