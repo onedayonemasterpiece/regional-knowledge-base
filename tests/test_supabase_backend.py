@@ -174,6 +174,9 @@ async def test_fetch_authorizes_with_user_rls_then_reads_exact_object_range():
             )
         if request.url.path == '/rest/v1/rkb_illustrations':
             assert request.headers['authorization']=='Bearer user-jwt'
+            if 'page_id' in request.url.params:
+                assert request.url.params['page_id'] == 'eq.44444444-4444-4444-4444-444444444444'
+                assert request.url.params['document_id'] == 'eq.33333333-3333-3333-3333-333333333333'
             return httpx.Response(200,json=[{'id':'55555555-5555-5555-5555-555555555555','document_id':'33333333-3333-3333-3333-333333333333','page_id':'44444444-4444-4444-4444-444444444444','source_region_id':'77777777-7777-7777-7777-777777777777','kind':'drawing','caption_text':'Printed caption','visual_description':'A model description','visual_description_provenance':'model_observation'}])
         if request.url.path == '/rest/v1/rkb_pages':
             return httpx.Response(200,json=[{'id':'44444444-4444-4444-4444-444444444444','document_id':'33333333-3333-3333-3333-333333333333','physical_page_index':0,'revision':1}])
@@ -211,6 +214,8 @@ async def test_fetch_authorizes_with_user_rls_then_reads_exact_object_range():
         ('/rest/v1/rkb_illustrations', 'Bearer user-jwt'),
         ('/rest/v1/rkb_pages', 'Bearer user-jwt'),
         ('/rest/v1/rkb_regions', 'Bearer user-jwt'),
+        # New exact page/document scoped lookup for caption-linked illustrations.
+        ('/rest/v1/rkb_illustrations', 'Bearer user-jwt'),
     ]
 
 
