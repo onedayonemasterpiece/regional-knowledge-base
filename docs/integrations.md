@@ -68,6 +68,14 @@ assignment, deadline and execution tracking. A completed task does not establish
 that the historical question is resolved. The research-specific task bridge is
 a planned narrow contract, not implied by the existence of generic tasks.
 
+### Planned Kaliningrad Base Slack expert interface
+
+The end-user Slack app **Kaliningrad Base** is not dot's public alias. Users interact only with the dedicated app. It receives trusted Slack events, stores an identity-bound request with the RKB backend, wakes dot via an MCP Events-style contract, and delivers correlated replies as Kaliningrad Base. The previously accepted Projects Hub MCP Events flow is a reference for the protocol only: its owner_actor_id and dot-as-Slack-sender are not reusable for multiple experts. No additional IAM or mandatory Projects Hub intermediary is introduced.
+
+RKB remains the authorization authority for delegated actor, requested action, source/case ACL, original-scan proof and outgoing projections. Import remains **owner-only through owner-specific ChatGPT/MCP/dot paths**, never through the Slack expert app, including when the owner sends the message. The bot's service profile cannot assume the owner's privileges. Slack actor, model executor and source-comment author remain separate. The client stores no case copy; Projects Hub/Mira/mobile will later use the same RKB contract with their platform actor and resource-specific delegation.
+
+See [collaboration design](design/rkb-kaliningrad-base-collaboration-20261018.md) and [product acceptance methods](testing/rkb-disagreement-pmi-20261018.md). These describe planned capabilities; no new bot or multi-user wake-up acceptance is claimed.
+
 ## VibePublish
 
 VibePublish is a secondary media mirror/catalog and publication layer. Regional Knowledge Base owns:
@@ -108,6 +116,8 @@ registered case-discussion posts. RKB owns the case, participant identities and
 weights, allowed participation policy, observed contributions and conclusions.
 These comment capabilities are planned; generic thread or reply commands must not
 be treated as proof of VK support.
+
+VK case posts are planned as **one ordinary new case-discussion post per Europe/Kaliningrad calendar day per community+RKB series**. Urgent posts are a separate bounded editor-approved lane (initial proposal: at most two additional posts/day), not a bypass for expert requests. RKB owns priority, slot reservation, public projection and case→VK binding; VibePublish owns provider-native scheduling, actual send/edit/cancel/comment operations and receipts. A reserved/scheduled item is not a published URL; a lost provider response is reconciled before any retry. Native VK scheduling and comment rights require live acceptance before launch.
 
 Transport uses the existing local, target-scoped service connection. Provider
 author identity, message revisions and native delivery receipts remain distinct
