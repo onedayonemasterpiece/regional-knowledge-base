@@ -28,5 +28,19 @@ dedicated, target-scoped technical identity; never introduce user/browser OAuth
 or a public HTTPS path just to connect internal services. Do not reuse a full
 owner credential or bypass source ACL. Use stable operation keys, durable
 pending, native provider readback and SHA-256 before archival success.
-The existing RKB→VibePublish OAuth archive is an unfinished migration: never
-claim `source_archive_status=verified` or a finished product without live proof.
+The deployed RKB→VibePublish machine identity replaces the old human OAuth
+archive path. Do not claim `source_archive_status=verified` without actual native
+provider receipt, correct forum topic and SHA readback.
+
+## Illustration pipeline (mandatory)
+
+Before changing source figures, search/fetch linkage, image indexing,
+private Telegram mirrors or archive fallback, read
+[illustration-pipeline.md](docs/operations/illustration-pipeline.md).
+There is **one** accepted source→figure→evidence→crop→private mirror chain,
+with exact page/region provenance and actor-scoped retrieval.
+Do not add a second index, scheduler or authentication proxy, confuse
+printed captions with model observations, treat private unknown-rights
+figures as public, or infer that a nearby text passage depicts a picture.
+Tests and live acceptance must separately prove real MCP ImageContent,
+Telegram topic-4 provider readback, and no-local-crop archive fallback.
