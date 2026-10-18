@@ -75,3 +75,18 @@ workaround. A missing/incompatible RKB callback needs a separately authorized
 registration correction or dedicated RKB client first. Until provider DOCUMENT
 readback and matching original SHA-256 succeed, source archive status remains
 `pending`; unchanged book contents must not be reimported.
+
+## Mandatory unified on-host connection policy (2026-10-18)
+
+Design decision **Fixed**; M2M archive migration **Not done** until deployed and
+the original document is recovered. Canonical: [DevCoveer same-host S2S](https://github.com/onedayonemasterpiece/codex-devcoveer-mcp/blob/main/docs/operations/local-service-connections.md).
+The previous VibePublish OAuth grant/ChatGPT callback is legacy failure state,
+not a sanctioned cross-service connector. RKB's indexer should use an existing
+loopback VibePublish endpoint with a dedicated service principal restricted to
+archive operations on the KB group, topic 2 (original PDF/DjVu) and topic 4
+(illustration files). No owner session/bearer, browser, refresh token, local
+HTTPS roundtrip or new gateway. Preserve source UUID/SHA, 1st-pass extraction,
+revision, journal operation key, existing `pending` state and media evidence.
+Implement/verify provider-side target enforcement before switching credentials.
+A green PR or healthy server does not prove archived bytes. Acceptance requires
+provider get/readback and byte-for-byte original SHA-256 match; then mark verified.
