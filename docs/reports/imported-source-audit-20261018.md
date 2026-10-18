@@ -48,7 +48,7 @@ runtime status. This remains a partial acceptance report.
   provenance/byte verification remain required before that stage.
 
 The existing operational guide remains
-[docs/operations/illustration-pipeline.md](../operations/illustration-pipeline.md).
+[docs/operations/illustration-pipeline.md](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/70b77babb38aff0c77314caf434f13d4f88a9d6a/docs/operations/illustration-pipeline.md).
 No second runbook is introduced.
 
 ## Scope and outcome
