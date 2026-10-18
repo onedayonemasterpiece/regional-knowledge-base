@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -38,6 +39,9 @@ GRAPH_SERVICE = "regional-knowledge-graph-discovery.service"
 GRAPH_OVERRIDE = UNIT_DIR / "regional-knowledge-graph-discovery.service.d/90-model-led-locations.conf"
 INDEXER_OVERRIDE = UNIT_DIR / "regional-knowledge-indexing.service.d/90-story-ingestion.conf"
 BRANCH = "chatgpt/auto-story-extract-on-book-ingest-20261009"
+ARCHIVE_ENV = STATE / "archive-s2s-pythonpath.env"
+LATE_PIN_NAME = "zzzzzzzzzzzzzz-local-archive-20261018.conf"
+_UNSET = object()
 
 
 def cmd(*args, capture=True, timeout=90):
@@ -54,7 +58,9 @@ def private_setting(name):
     raise RuntimeError(name + " missing from service environment")
 
 
-def atomically(path, contents, mode):
+def atomically(path, contents, mode, *, expected=_UNSET):
+    if expected is not _UNSET and snapshot(path) != expected:
+        raise RuntimeError("configuration changed before write: " + path.name)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".new-" + str(os.getpid()))
     with open(tmp, "x", encoding="utf8") as out:
@@ -62,6 +68,9 @@ def atomically(path, contents, mode):
         out.flush()
         os.fsync(out.fileno())
     os.chmod(tmp, mode)
+    if expected is not _UNSET and snapshot(path) != expected:
+        tmp.unlink()
+        raise RuntimeError("configuration changed during write: " + path.name)
     os.replace(tmp, path)
 
 
@@ -175,24 +184,119 @@ asyncio.run(main())
                    env=env, check=True, timeout=35, capture_output=True)
 
 
-def configure(source, sha, *, with_indexer=False, with_graph_worker=False):
-    # An isolated per-service override: changing the global service.env would
-    # inadvertently alter BGE/graph/indexing workers after their next restart.
-    override = """[Service]
-WorkingDirectory={source}
-EnvironmentFile=
-EnvironmentFile={env}
-EnvironmentFile={extra}
-""".format(source=source, env=ENV, extra=OVERRIDE_ENV)
-    metadata = "PYTHONPATH=\"{}\"\nRKB_RELEASE_SHA=\"{}\"\n".format(source / "src", sha)
-    atomically(OVERRIDE_ENV, metadata, 0o600)
-    atomically(OVERRIDE, override, 0o644)
+def snapshot(path):
+    if path.is_symlink():
+        raise RuntimeError("refusing symlink configuration: " + path.name)
+    return path.read_bytes() if path.exists() else None
+
+
+def release_environment(previous, source, sha):
+    """Change only release keys; keep credentials and unrelated settings intact."""
+    values = {"PYTHONPATH": str(source / "src"), "RKB_RELEASE_SHA": sha}
+    lines = (previous or b"").decode("utf8").splitlines(keepends=True)
+    seen = set()
+    for index, line in enumerate(lines):
+        match = re.match(r"^\s*(PYTHONPATH|RKB_RELEASE_SHA)\s*=", line)
+        if match:
+            key = match.group(1)
+            if key in seen or line.rstrip("\r\n").endswith("\\"):
+                raise RuntimeError("ambiguous release environment key: " + key)
+            seen.add(key)
+            lines[index] = key + '="' + values[key] + '"\n'
+    if lines and not lines[-1].endswith(("\n", "\r")):
+        lines[-1] += "\n"
+    lines.extend(key + '="' + value + '"\n' for key, value in values.items() if key not in seen)
+    return "".join(lines)
+
+
+def retarget_override(previous, source, *, late=False):
+    """Preserve every unrelated directive, especially M2M EnvironmentFile links."""
+    lines = previous.decode("utf8").splitlines(keepends=True)
+    service = False
+    working = pythonpath = 0
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("["):
+            service = stripped == "[Service]"
+        if not service:
+            continue
+        if re.match(r"^\s*WorkingDirectory\s*=", line):
+            working += 1
+            lines[index] = "WorkingDirectory=" + str(source) + "\n"
+        elif late and re.match(r"^\s*Environment\s*=", line):
+            value = line.split("=", 1)[1].strip()
+            tokens = shlex.split(value)
+            if any(token.startswith("PYTHONPATH=") for token in tokens):
+                if len(tokens) != 1:
+                    raise RuntimeError("mixed late PYTHONPATH assignment: refusing rewrite")
+                pythonpath += 1
+                lines[index] = "Environment=PYTHONPATH=" + str(source / "src") + "\n"
+    if working != 1 or (late and pythonpath != 1):
+        raise RuntimeError("unexpected release pin configuration")
+    return "".join(lines)
+
+
+def configuration_plan(source, sha, *, with_indexer=False, with_graph_worker=False):
+    """One candidate, all existing pins, exact snapshots before any service change.
+
+    EnvironmentFile overrides Environment regardless of drop-in order. The
+    existing late archive envfile and WorkingDirectory pins must follow the
+    canonical release too; adding another zzz drop-in would only hide the drift.
+    """
+    override = ("[Service]\nWorkingDirectory={source}\nEnvironmentFile=\n"
+                "EnvironmentFile={env}\nEnvironmentFile={extra}\n").format(
+                    source=source, env=ENV, extra=OVERRIDE_ENV)
+    plan = {}
+
+    def add(path, rendered, default_mode):
+        previous = snapshot(path)
+        mode = path.stat().st_mode & 0o777 if previous is not None else default_mode
+        plan[path] = (previous, rendered(previous).encode("utf8"), mode)
+
+    add(OVERRIDE_ENV, lambda old: release_environment(old, source, sha), 0o600)
+    selected = [(SERVICE, OVERRIDE)]
     if with_indexer:
-        # The existing indexing worker can activate revisions asynchronously.
-        # Both it and the importing MCP must run the SAME Story activation hook.
-        atomically(INDEXER_OVERRIDE, override, 0o644)
+        selected.append((INDEXER_SERVICE, INDEXER_OVERRIDE))
     if with_graph_worker:
-        atomically(GRAPH_OVERRIDE, override, 0o644)
+        selected.append((GRAPH_SERVICE, GRAPH_OVERRIDE))
+    for unit, path in selected:
+        previous = snapshot(path)
+        if previous is not None and b"story-registry" not in previous:
+            raise RuntimeError("unexpected unrelated systemd override: refusing overwrite")
+        add(path, lambda old: retarget_override(old, source) if old is not None else override, 0o644)
+        late = UNIT_DIR / (unit + ".d") / LATE_PIN_NAME
+        if late.exists():
+            add(late, lambda old: retarget_override(old, source, late=True), 0o644)
+    if with_indexer and ARCHIVE_ENV.exists():
+        add(ARCHIVE_ENV, lambda old: release_environment(old, source, sha), 0o600)
+    return plan
+
+
+def configure(plan, changed):
+    # Validate the whole snapshot first, then CAS every individual replacement.
+    for path, (previous, _new, _mode) in plan.items():
+        if snapshot(path) != previous:
+            raise RuntimeError("configuration changed after preflight: " + path.name)
+    for path, (previous, new, mode) in plan.items():
+        if new != previous:
+            atomically(path, new.decode("utf8"), mode, expected=previous)
+            changed.append(path)
+
+
+def restore_configuration(plan, changed):
+    # Never overwrite another operator's subsequent change during rollback.
+    conflicts = []
+    for path in reversed(changed):
+        previous, new, mode = plan[path]
+        if snapshot(path) != new:
+            conflicts.append(path.name)
+            continue
+        if previous is None:
+            path.unlink()
+        else:
+            atomically(path, previous.decode("utf8"), mode, expected=new)
+    if conflicts:
+        raise RuntimeError("concurrent configuration change prevents rollback: " + ", ".join(conflicts))
 
 
 def health():
@@ -219,7 +323,11 @@ def verify_pid(source, sha, unit=SERVICE):
     pid = int(cmd("systemctl", "--user", "show", unit, "--value", "-p", "MainPID"))
     if pid < 1:
         raise RuntimeError("MCP process not alive")
-    environment = Path("/proc") / str(pid) / "environ"
+    process = Path("/proc") / str(pid)
+    configured = cmd("systemctl", "--user", "show", unit, "--value", "-p", "WorkingDirectory")
+    if process.joinpath("cwd").resolve() != source.resolve() or configured != str(source):
+        raise RuntimeError(unit + " working directory not pointed at candidate")
+    environment = process / "environ"
     # This verifies ONLY the non-secret release keys; never print environment.
     variables = dict(entry.split(b"=", 1) for entry in environment.read_bytes().split(b"\0")
                      if b"=" in entry)
@@ -235,19 +343,11 @@ def run(sha, apply, *, with_indexer=False, with_graph_worker=False):
     os.environ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + os.environ["XDG_RUNTIME_DIR"] + "/bus"
     source = materialize(sha)
     verify_imports(source)
-    existing_override = OVERRIDE.read_bytes() if OVERRIDE.exists() else None
-    existing_env = OVERRIDE_ENV.read_bytes() if OVERRIDE_ENV.exists() else None
-    existing_indexer = INDEXER_OVERRIDE.read_bytes() if INDEXER_OVERRIDE.exists() else None
-    existing_graph = GRAPH_OVERRIDE.read_bytes() if GRAPH_OVERRIDE.exists() else None
-    if with_graph_worker and existing_graph and b"story-registry" not in existing_graph:
-        raise RuntimeError("unexpected graph worker override: refusing overwrite")
     units = [SERVICE] + ([INDEXER_SERVICE] if with_indexer else []) + ([GRAPH_SERVICE] if with_graph_worker else [])
     if with_indexer and not (source / "src/regional_knowledge/story_ingestion.py").is_file():
         raise RuntimeError("Candidate release has no story ingestion hook")
-    if with_indexer and existing_indexer and b"story-registry" not in existing_indexer:
-        raise RuntimeError("unexpected indexing override: refusing overwrite")
-    if existing_override and b"story-registry" not in existing_override:
-        raise RuntimeError("unexpected unrelated systemd override: refusing overwrite")
+    plan = configuration_plan(source, sha, with_indexer=with_indexer,
+                              with_graph_worker=with_graph_worker)
     print(json.dumps({"phase": "preflight", "candidate_sha": sha, "source": str(source),
                       "preflight": "passed", "sqlite_runtime": sqlite3.sqlite_version,
                       "will_restart": units},
@@ -256,10 +356,17 @@ def run(sha, apply, *, with_indexer=False, with_graph_worker=False):
         return
     backup = offline_backup()
     print(json.dumps({"phase": "backup", **backup}, ensure_ascii=False), flush=True)
+    changed = []
+    restart_started = False
     try:
-        configure(source, sha, with_indexer=with_indexer, with_graph_worker=with_graph_worker)
+        configure(plan, changed)
         systemctl("daemon-reload")
         for unit in units:
+            configured = cmd("systemctl", "--user", "show", unit, "--value", "-p", "WorkingDirectory")
+            if configured != str(source):
+                raise RuntimeError(unit + " effective working directory still pinned elsewhere")
+        for unit in units:
+            restart_started = True
             systemctl("restart", unit)
         health()
         pid = verify_pid(source, sha)
@@ -270,18 +377,12 @@ def run(sha, apply, *, with_indexer=False, with_graph_worker=False):
                           "public_health": "ok",
                           "backup_file": backup["db_backup"]}, ensure_ascii=False), flush=True)
     except BaseException:
-        for path, previous, mode in ((OVERRIDE, existing_override, 0o644),
-                                     (OVERRIDE_ENV, existing_env, 0o600),
-                                     (INDEXER_OVERRIDE, existing_indexer, 0o644),
-                                     (GRAPH_OVERRIDE, existing_graph, 0o644)):
-            if previous is None:
-                path.unlink(missing_ok=True)
-            else:
-                atomically(path, previous.decode("utf8"), mode)
         try:
+            restore_configuration(plan, changed)
             systemctl("daemon-reload")
-            for unit in units:
-                systemctl("restart", unit)
+            if restart_started:
+                for unit in units:
+                    systemctl("restart", unit)
             health()
             print(json.dumps({"phase": "rolled_back_previous_services", "health": "ok"}), flush=True)
         except Exception as rollback_error:
