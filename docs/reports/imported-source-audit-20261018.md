@@ -54,6 +54,24 @@ The rollout receipt reports public health OK and a consistent backup with integr
 and foreign-key checks passing. Live catalogue reads show all four affected
 components verified. No source content or access grant was changed.
 
+Fresh 10:27–10:30 UTC readback again returned `verified` on all four cards.
+The API process (PID 127256) owns the loopback TCP port 8000 and runs
+`regional_knowledge.server`. Its working directory remains the older `215b3b79`
+release, while the allowlisted process `PYTHONPATH` and `RKB_RELEASE_SHA` point
+to `f042d8c2`. The configured catalogue module file matches the merged release
+(SHA-256 `b86d0e489b6b00a4ebc8855b125c646e765f5d6a807ecaedb9b3540a5df039ea`).
+This is process configuration plus disk-hash evidence, not direct inspection
+of Python's in-memory `sys.modules`; the four live MCP responses establish the
+observed catalogue behavior. The public tunnel-to-listener mapping was not
+independently verified: the registered manifest probe was unavailable.
+
+The separate indexing process (PID 107990) was NOT updated by this API-only
+rollout. It runs `regional_knowledge.indexing`, has no listening socket, and
+uses the older `215b3b79` source path. Its `77d46bb` release environment label
+is stale and must not be treated as proof of loaded code. Stored component JSON
+still contains the historical snapshot status by design; projection on read
+does not rewrite those records. No blind restart or rollback was performed.
+
 ## Search and linkage checks
 
 Four older active sources passed focused BGE search-to-fetch probes with the
