@@ -48,7 +48,28 @@ class ArchiveReadPending(RuntimeError):
         super().__init__('archive_source_pending: retry the same source to resume '+operation_id)
 
 
+class ArchiveSourceCacheExpired(RuntimeError):
+    """Only a definitive expired/missing temporary asset allows one new GET."""
+
+
 async def archive_payload(client, entry_ref):
+    """Recover once within the same actor-authorized call after proven cache expiry.
+
+    A provider 404/410 for an already verified ephemeral asset retires only its
+    request key. The next GET is newly keyed but addresses the SAME immutable
+    archive entry, rechecking current provider rights. Network uncertainty,
+    pending work and authorization failures never create another operation.
+    """
+    for attempt in range(2):
+        try:
+            return await _archive_payload_once(client, entry_ref)
+        except ArchiveSourceCacheExpired:
+            if attempt:
+                raise
+    raise AssertionError("unreachable archive continuation")
+
+
+async def _archive_payload_once(client, entry_ref):
     from .original_cache import OriginalCache
     cache=OriginalCache.from_env()
     # Store only an opaque scope, admission key and receipt ID, never credentials.
@@ -78,7 +99,7 @@ async def archive_payload(client, entry_ref):
         import httpx
         if isinstance(error,httpx.HTTPStatusError) and error.response.status_code in (404,410):
             cache.archive_finished(scope,request_key)
-            raise RuntimeError('archive_source_cache_expired: retry the same source') from error
+            raise ArchiveSourceCacheExpired('archive_source_cache_expired: retry the same source') from error
         raise
     data=response.content
     actual_sha=hashlib.sha256(data).hexdigest()
