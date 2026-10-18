@@ -119,6 +119,20 @@ deployed. Restarting the corrected worker would allow its existing queue to
 publish the 121 private crops, so specific owner authorization remains pending.
 No new archive operations or grants were made in this investigation.
 
+## Fresh archive-backed illustration check, 11:13 UTC
+
+A single existing archive-backed Gause illustration was requested through the
+normal product `illustration_fetch` path. Its original crop-object pointer was
+already absent before this check; no production object was deleted to force the
+fallback. The tool returned `isError: true` and exactly
+`Error executing tool illustration_fetch`, without image bytes or metadata.
+Consequently delivered-crop origin, actual image SHA-256, caption and page-link
+presentation were not verified through this call. The cause is currently unknown
+and must not be assumed to match the separate legacy-original access problem.
+No retry, alternate principal, upload or permission change was attempted.
+This archive-backed illustration path is an explicit failed acceptance case,
+not a successful visual end-to-end demonstration.
+
 ## Open actions and authority boundaries
 
 1. Restore exact legacy archive read continuity under the existing dedicated
