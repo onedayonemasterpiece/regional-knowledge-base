@@ -16,8 +16,8 @@ Wonderful Lections already has a verified VibePublish asset bridge. For media mi
 ## Street Story
 
 Street Story is the canonical owner of the regional POI graph, POI aliases,
-POI lifecycle/location identity, atomic POI claims, contradiction ledger and
-expert arbitration state.
+POI lifecycle/location identity, atomic POI claims, and the contradiction ledger
+and expert arbitration state **within its canonical POI model**.
 
 Knowledge Base remains the authority for book/journal provenance and exact
 page/region evidence. It also owns the small accumulative knowledge projection for
@@ -37,6 +37,21 @@ with stable knowledge:// references and inherited access scope.
 
 See [POI evidence bridge](poi-integration.md).
 
+### Source disagreement cases (designed; not yet implemented)
+
+The [RKB disagreement-journal design](design/rkb-disagreement-journal-design-20261018.md)
+introduces a separate research process for disagreements in sources, facts and
+interpretations. RKB owns those cases, exact evidence, attributed contributions
+and revisions of preliminary conclusions. Story Registry consumes a case result
+by stable ID and conclusion revision for stories and publication materials; it
+does not own the research case.
+
+A Street Story POI conflict may reference an RKB case and a particular conclusion
+revision, and the RKB case may retain the external conflict reference. Applying a
+research conclusion to canonical POI data remains an explicit Street Story
+decision. Existing POI conflicts do not need to be migrated into RKB, and creating
+an RKB case does not automatically change POI claims or identity.
+
 ## Projects Hub
 
 Projects Hub is the natural user-facing orchestration surface:
@@ -45,6 +60,13 @@ Projects Hub is the natural user-facing orchestration surface:
 - Knowledge Base read capability alongside other project tools.
 
 It consumes the Knowledge Base Live profile (`knowledge_search`, a compact evidence pack in one call) through `live-interaction`. The full profile separately exposes `search` and `fetch`. For private knowledge, Projects Hub holds a user-approved, resource-bound Knowledge OAuth delegation; it never forwards its own bearer token. Projects Hub does not become the identity provider.
+
+For the planned disagreement workflow, Mira, personal MCP connections and
+registered Slack threads provide authorized contributions to RKB-owned cases.
+A source/research need remains in the RKB case; an optional Projects Hub task owns
+assignment, deadline and execution tracking. A completed task does not establish
+that the historical question is resolved. The research-specific task bridge is
+a planned narrow contract, not implied by the existence of generic tasks.
 
 ## VibePublish
 
@@ -77,6 +99,22 @@ leave missing mirrors recoverable without holding activation or vector indexing.
 Only the RKB owner named in the private resource-specific OAuth grant is eligible.
 Destination alias/topic stay in that runtime grant, and token rotation is written
 atomically. RKB owns no Telegram session or second provider limiter.
+
+### Planned VK case discussions
+
+VibePublish is the intended owner of VK post publication and the required
+extension for reading, replying to and moderating comments under explicitly
+registered case-discussion posts. RKB owns the case, participant identities and
+weights, allowed participation policy, observed contributions and conclusions.
+These comment capabilities are planned; generic thread or reply commands must not
+be treated as proof of VK support.
+
+Transport uses the existing local, target-scoped service connection. Provider
+author identity, message revisions and native delivery receipts remain distinct
+from model-authored interpretation. Public discussion exports inherit source
+rights and require a separately allowed public projection. Whitelist moderation
+deletes disallowed comments after publication; it is not a platform guarantee
+that outsiders cannot post.
 
 ## Cross-service references
 
