@@ -38,21 +38,54 @@ def _source_display_metadata(document, uri=None):
     return filename, body[:1000]
 
 
+_ARCHIVE_READ_POLLS=60
+
+
+class ArchiveReadPending(RuntimeError):
+    """Provider work is durable and still running, not an unavailable original."""
+    def __init__(self, operation_id):
+        self.operation_id=operation_id
+        super().__init__('archive_source_pending: retry the same source to resume '+operation_id)
+
+
 async def archive_payload(client, entry_ref):
-    read=await client.call('vibepublish_media_store',{'command':{'kind':'get','entry_ref':entry_ref}})
-    for _ in range(60):
-        receipt=await client.receipt(read['operation_id'])
+    from .original_cache import OriginalCache
+    cache=OriginalCache.from_env()
+    # Store only an opaque scope, admission key and receipt ID, never credentials.
+    scope=hashlib.sha256(json.dumps([client.owner,client.issuer,entry_ref],separators=(',',':')).encode()).hexdigest()
+    request_key,operation_id=cache.archive_attempt(scope)
+    # Keyed replay rechecks current provider authorization/binding even on resume.
+    read=await client.call('vibepublish_media_store',{'request_key':request_key,
+        'command':{'kind':'get','entry_ref':entry_ref}})
+    if operation_id is not None and read['operation_id']!=operation_id:
+        raise RuntimeError('archive_read_operation_conflict')
+    operation_id=read['operation_id']
+    cache.archive_admitted(scope,request_key,operation_id)
+    for _ in range(_ARCHIVE_READ_POLLS):
+        receipt=await client.receipt(operation_id)
         if receipt['operation_complete']:break
         await asyncio.sleep(.5)
+    if not receipt['operation_complete']:raise ArchiveReadPending(operation_id)
     if receipt['state']!='verified':raise RuntimeError('archive_source_unavailable')
     assets=[m for item in receipt.get('items',[]) for m in item.get('media',[]) if m.get('source',{}).get('kind')=='asset']
     evidence=[e for item in receipt.get('items',[]) for e in item.get('media_evidence',[]) if e.get('media_kind')=='document']
     if len(assets)!=1 or len(evidence)!=1:raise RuntimeError('archive_download_binding_missing')
-    response=await client.request('GET',client.issuer+'/v1/assets/'+assets[0]['source']['id'])
+    try:
+        response=await client.request('GET',client.issuer+'/v1/assets/'+assets[0]['source']['id'])
+    except Exception as error:
+        # Only a definitive expired/missing asset permits a new retrieval attempt.
+        # Unknown/network/auth failures retain the SAME durable read operation.
+        import httpx
+        if isinstance(error,httpx.HTTPStatusError) and error.response.status_code in (404,410):
+            cache.archive_finished(scope,request_key)
+            raise RuntimeError('archive_source_cache_expired: retry the same source') from error
+        raise
     data=response.content
     actual_sha=hashlib.sha256(data).hexdigest()
     provider_sha=evidence[0].get('sha256')
     if provider_sha and provider_sha!=actual_sha:raise RuntimeError('archive_provider_digest_mismatch')
+    # Keep the verified receipt until its asset definitively expires. A crash
+    # before the caller installs these bytes must not admit another provider get.
     return data,provider_sha or actual_sha
 
 

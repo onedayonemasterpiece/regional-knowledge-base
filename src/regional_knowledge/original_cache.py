@@ -12,6 +12,7 @@ import re
 import shutil
 import sqlite3
 import time
+from uuid import uuid4
 from contextlib import asynccontextmanager,contextmanager
 from pathlib import Path
 
@@ -20,7 +21,9 @@ class OriginalCache:
         if idle_seconds<=0 or max_bytes<=0:raise ValueError('positive cache limits required')
         self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
         self.idle_seconds=idle_seconds;self.max_bytes=max_bytes;self.clock=clock
-        with self.db() as db:db.execute('create table if not exists entries(sha text primary key,size integer not null,last_used real not null)')
+        with self.db() as db:
+            db.execute('create table if not exists entries(sha text primary key,size integer not null,last_used real not null)')
+            db.execute('create table if not exists archive_reads(scope text primary key,request_key text not null unique,operation_id text)')
         (self.root/'cache.sqlite3').chmod(0o600)
 
     @classmethod
@@ -53,6 +56,37 @@ class OriginalCache:
             if not (self.root/sha).is_file():return False
             with self.db() as db:
                 return db.execute('update entries set last_used=? where sha=?',(self.clock(),sha)).rowcount==1
+
+    def archive_attempt(self, scope):
+        """Persist admission identity before I/O; concurrent/restarted callers reuse it."""
+        if not re.fullmatch('[a-f0-9]{64}', scope):raise ValueError('invalid archive scope')
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('insert into archive_reads values(?,?,null) on conflict(scope) do nothing',
+                       (scope, 'rkb:archive-read:' + uuid4().hex))
+            request_key, operation_id = db.execute(
+                'select request_key,operation_id from archive_reads where scope=?', (scope,)).fetchone()
+        return request_key, operation_id
+
+    def archive_admitted(self, scope, request_key, operation_id):
+        if not isinstance(operation_id, str) or not operation_id or len(operation_id)>200:
+            raise ValueError('invalid archive operation')
+        with self.db() as db:
+            changed=db.execute('update archive_reads set operation_id=? where scope=? and request_key=? '
+                               'and (operation_id is null or operation_id=?)',
+                               (operation_id,scope,request_key,operation_id)).rowcount
+            if changed!=1:
+                row=db.execute('select request_key,operation_id from archive_reads where scope=?', (scope,)).fetchone()
+                if row and row[0]==request_key:
+                    raise RuntimeError('archive_read_operation_conflict')
+                # A concurrent reader may already have retired an expired
+                # attempt. Its receipt is still valid; never overwrite a new one.
+            return changed==1
+
+    def archive_finished(self, scope, request_key):
+        # Compare-and-delete cannot retire a newer concurrent attempt.
+        with self.db() as db:
+            db.execute('delete from archive_reads where scope=? and request_key=?', (scope,request_key))
 
     def cleanup(self,*,reserve=0):
         deleted=0
