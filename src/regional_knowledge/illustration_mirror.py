@@ -6,6 +6,7 @@ import os
 import stat
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import UUID
 import httpx
 from .illustrations import fetch_crop
@@ -20,7 +21,25 @@ class VibePublishClient:
         self.owner = str(UUID(self.grant['rkb_owner_id']))
         self.issuer = self.grant['issuer'].rstrip('/')
         if not self.issuer.startswith('https://'):
-            raise ValueError('VibePublish grant must use HTTPS')
+            raise ValueError('VibePublish issuer must be HTTPS')
+        self.local_service = self.grant.get('auth_mode') == 'local_service'
+        self.endpoint = self.issuer
+        self.local_host = None
+        if self.local_service:
+            endpoint = self.grant.get('local_endpoint', '')
+            parsed = urlsplit(endpoint)
+            issuer_host = urlsplit(self.issuer)
+            if (parsed.scheme != 'http' or parsed.hostname != '127.0.0.1'
+                    or parsed.port is None or parsed.port < 1024
+                    or parsed.username or parsed.password or parsed.path not in ('', '/')
+                    or parsed.query or parsed.fragment or not issuer_host.hostname
+                    or issuer_host.port not in (None, 443)
+                    or not isinstance(self.grant.get('service_token'), str)
+                    or len(self.grant['service_token']) < 20
+                    or any(k in self.grant for k in ('access_token','refresh_token'))):
+                raise ValueError('Invalid dedicated loopback VibePublish service binding')
+            self.endpoint = endpoint.rstrip('/')
+            self.local_host = issuer_host.netloc
         self.http = httpx.AsyncClient(timeout=120, trust_env=False)
         self.sequence = 0
 
@@ -28,6 +47,8 @@ class VibePublishClient:
         await self.http.aclose()
 
     async def refresh(self, *, refused_access_token=None):
+        if self.local_service:
+            raise RuntimeError('Local service bearer never enters OAuth refresh')
         """Serialize refresh-token rotation across processes sharing one grant file.
 
         A replayed refresh token revokes its entire OAuth family. Always re-read
@@ -79,6 +100,20 @@ class VibePublishClient:
             os.close(fd)
 
     async def request(self, method, url, **kwargs):
+        if self.local_service:
+            # Existing source_archive and illustration paths compose URLs using
+            # the immutable public issuer; route ONLY those exact paths to the
+            # loopback process. Never send the technical bearer through DNS.
+            if not url.startswith(self.issuer + '/'):
+                raise PermissionError('VibePublish service URL outside pinned issuer')
+            headers = kwargs.pop('headers', {})
+            response = await self.http.request(
+                method, self.endpoint + url[len(self.issuer):],
+                headers={**headers, 'Host': self.local_host,
+                         'Authorization': 'Bearer ' + self.grant['service_token']},
+                **kwargs)
+            response.raise_for_status()
+            return response
         if self.grant['expires_at'] < time.time() + 60:
             await self.refresh()
         headers = kwargs.pop('headers', {})
