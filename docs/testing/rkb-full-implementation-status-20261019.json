@@ -384,7 +384,11 @@
         "src/regional_knowledge/expert_executor.py",
         "src/regional_knowledge/expert_events.py",
         "tests/test_expert_executor.py",
-        "tests/test_expert_events.py"
+        "tests/test_expert_events.py",
+        "src/regional_knowledge/personal_auth.py",
+        "src/regional_knowledge/personal_auth_cli.py",
+        "src/regional_knowledge/oauth_provider.py",
+        "tests/test_personal_auth.py"
       ]
     },
     {
@@ -409,7 +413,13 @@
       "action": "Попросить «покажи мои разногласия и где обсуждать» в одном сообщении",
       "oracle": "Бот находит конкретные attributed/assigned/followed дела, для каждого показывает разрешённый следующий шаг и только реально существующую VK-ссылку либо статус очереди",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/personal_auth.py",
+        "src/regional_knowledge/personal_auth_cli.py",
+        "src/regional_knowledge/oauth_provider.py",
+        "tests/test_personal_auth.py"
+      ]
     },
     {
       "id": "KB-29",
@@ -475,7 +485,11 @@
         "src/regional_knowledge/request_authority.py",
         "src/regional_knowledge/slack_expert.py",
         "tests/test_expert_requests.py",
-        "tests/test_slack_expert.py"
+        "tests/test_slack_expert.py",
+        "src/regional_knowledge/personal_auth.py",
+        "src/regional_knowledge/personal_auth_cli.py",
+        "src/regional_knowledge/oauth_provider.py",
+        "tests/test_personal_auth.py"
       ]
     },
     {
@@ -774,7 +788,11 @@
         "src/regional_knowledge/expert_executor.py",
         "src/regional_knowledge/expert_events.py",
         "tests/test_expert_executor.py",
-        "tests/test_expert_events.py"
+        "tests/test_expert_events.py",
+        "src/regional_knowledge/personal_auth.py",
+        "src/regional_knowledge/personal_auth_cli.py",
+        "src/regional_knowledge/oauth_provider.py",
+        "tests/test_personal_auth.py"
       ]
     },
     {
@@ -783,7 +801,13 @@
       "line": 158,
       "description": "один человек через несколько подтверждённых каналов (этапы A/D, P0)",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/personal_auth.py",
+        "src/regional_knowledge/personal_auth_cli.py",
+        "src/regional_knowledge/oauth_provider.py",
+        "tests/test_personal_auth.py"
+      ]
     },
     {
       "id": "E2E-7",
@@ -1574,6 +1598,18 @@
       ],
       "validation": "Full local unified-resource candidate: 626 passed, 31 skipped, 2 dependency/schema warnings. HTTP auth/catalog/direct forbidden calls, modern discovery/events, source isolation, same case/ACL and revocation, request/wake generation recovery, owner bootstrap, real SQLite lock contention. Synthetic fixtures; no live expert product acceptance.",
       "limits": "Embedded OAuth is owner-only; live non-owner personal enrollment/consent and individual external AI-client compatibility remain unverified. No production expert runtime deployment or full PMI acceptance."
+    },
+    {
+      "id": "personal_oauth",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/personal_auth.py",
+        "src/regional_knowledge/personal_auth_cli.py",
+        "src/regional_knowledge/oauth_provider.py",
+        "tests/test_personal_auth.py"
+      ],
+      "validation": "Full local suite639 passed/31 skipped/2 dependency-schema warnings. Native non-owner HTTP login/consent/PKCE/MCP/source ACL/refresh/revoke, raw code rejected as MCP bearer, private-file CLI recovery without printing codes, stable-owner grant continuity and explicit changed-owner denial, account switch/expiry/HTML escaping, file-lock contention, one-tool Live cap revocation.",
+      "limits": "No real expert credential issued or delivered, no production auth deployment, no real AI-client UI acceptance or full Slack/dot live cycle. Requires actual registered participant and controlled private delivery before live non-owner acceptance."
     }
   ],
   "requirement_clarification": "docs/requirements/unified-expert-access-20261019.md"

@@ -464,10 +464,15 @@ def build_server(
 
     # Optional narrow function-call bundles for the client application's own Live agent.
     # The default read-only Live surface above remains unchanged.
-    if profile == "full" and hasattr(backend, "corpus") and os.getenv("RKB_OWNER_SUBJECT", "").strip():
+    if profile in {"full", "live"} and hasattr(backend, "corpus") and os.getenv("RKB_OWNER_SUBJECT", "").strip():
         from .participants import Participants, RequestAuthority
         from .disagreement_tools import register_research_tools
         participants = Participants(backend.corpus, os.environ["RKB_OWNER_SUBJECT"].strip())
+        if embedded_provider is not None:
+            if embedded_provider.owner_subject != participants.owner:
+                raise RuntimeError("OAuth owner must match the configured corpus owner")
+            from .personal_auth import PersonalPolicy
+            embedded_provider.personal_policy = PersonalPolicy(participants)
 
         def research_authority():
             principal = _principal()
@@ -475,8 +480,9 @@ def build_server(
             return RequestAuthority(principal, route)
 
         mcp.research_participants = participants
-        register_research_tools(mcp, participants, research_authority)
-        if os.getenv("RKB_EXPERT_REQUESTS_ENABLED")=="1":
+        if profile == "full":
+            register_research_tools(mcp, participants, research_authority)
+        if profile == "full" and os.getenv("RKB_EXPERT_REQUESTS_ENABLED")=="1":
             from .expert_requests import ExpertRequests
             from .expert_mcp import register_executor_tools
             from .mcp_authority import ResourceTokenVerifier

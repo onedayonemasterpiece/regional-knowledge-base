@@ -227,7 +227,7 @@ The claim checks the wake event ID when supplied, then fences all work with the
 new execution generation/token. Native delivery results and Slack outbox remain
 separate. A webhook HTTP200 is not a completed research request or Slack answer.
 
-The current embedded OAuth still authenticates only the owner. The external
+At the18f16cb checkpoint, embedded OAuth authenticated only the owner. The native personal login continuation below extends it in source; production has not adopted this candidate. The external
 JWT/resource verifier can identify independent personal UUIDs, but live
 non-owner enrollment/resource consent and specific ChatGPT/Grok compatibility
 have not been accepted. HTTP tests with synthetic verified personal tokens prove
@@ -244,3 +244,35 @@ source/case rights and request dependencies, lease/event reclaim, encrypted
 subscription restart, revoked grants, owner bootstrap/disabled-account denial,
 and a real SQLite writer contention check. Synthetic fixtures make no provider
 calls. Full live PMI and external-client acceptance remain NOT_RUN.
+
+
+## Native personal OAuth continuation
+
+The subsequent candidate extends the same embedded authorization server with
+personal credentials for existing registered people. `PersonalPolicy` checks the
+current canonical profile; no separate identity registry or public issuance tool
+is introduced. The local owner CLI writes the original code to a0600 file before
+persisting its hash/receipt and supports exact-file recovery after interruption.
+Sessions and grants retain credential ID/epoch; revocation removes every derived
+session/code/access/refresh family. Current profile expiry/disable is checked on
+login, consent, use and refresh. The consent UI shows the authenticated person,
+escapes names and allows logout/account switching. Browser-supplied actor fields
+cannot select the subject. Owner-only import/admin checks remain server-side.
+
+The previous section's owner-only limitation describes deployed production and
+the earlier18f16cb candidate; native personal authentication is now implemented
+in source, with synthetic full HTTP protocol tests. Live expert enrollment,
+individual AI-client UI compatibility and full channel acceptance are still
+unverified. Operator instructions and protocol references are in [auth.md](../auth.md).
+OAuth CLI/web-worker state mutations now share a stable OS file lock; file-lock
+waits execute off the HTTP loop and a real contention test verifies this.
+
+
+Native personal-auth validation: full local suite **639 passed,31 skipped,
+2 dependency/schema warnings**. Focused native OAuth/MCP/CLI tests also passed;
+HTTP tests admit both ChatGPT/Grok callback shapes but do not claim real client
+UI or real non-owner acceptance. The earlier owner regression test failure was
+an inconsistent fixture: reopening the same OAuth store generated a different
+owner UUID. Its fixture now retains the same synthetic configured owner; a new
+negative test explicitly proves that actually changing the owner UUID invalidates
+previous owner tokens. The guard was preserved.

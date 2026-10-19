@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
-from uuid import uuid4
+from uuid import uuid4, uuid5, NAMESPACE_URL
 
 import pytest
 from mcp.server.auth.provider import AuthorizationParams, AuthorizeError, RegistrationError
@@ -19,14 +19,14 @@ from regional_knowledge.oauth_provider import (
 from regional_knowledge.server import build_server, _transport_security
 
 
-def _provider(tmp_path: Path) -> RegionalOAuthProvider:
+def _provider(tmp_path: Path, *, owner_subject: str | None = None) -> RegionalOAuthProvider:
     return RegionalOAuthProvider(
         issuer="https://knowledge.example.test",
         resource="https://knowledge.example.test/mcp",
         client_id="chatgpt-regional-knowledge",
         client_secret="client-secret-" + "x" * 40,
         redirect_uris=["https://chatgpt.com/connector_platform_oauth_redirect"],
-        owner_subject=str(uuid4()),
+        owner_subject=owner_subject or str(uuid5(NAMESPACE_URL, "synthetic-owner:" + str(tmp_path))),
         owner_login_secret="owner-login-secret-12345",
         state_file=tmp_path / "oauth.state",
         key_file=tmp_path / "oauth.key",
