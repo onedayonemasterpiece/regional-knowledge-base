@@ -5,7 +5,7 @@ selects the executor; the immutable inbox binding selects the human principal.
 """
 import asyncio
 
-from .disagreement_contracts import ConclusionAdd,ContributionAdd,ContributionCorrect
+from .disagreement_contracts import ConclusionAdd,ContributionAdd,ContributionCorrect,PersonalDraft,DraftPublication
 from .expert_requests import ExpertRequestError
 from .expert_source_scope import ExpertSourceScope,current_source_scope,public_document
 from .request_authority import track_resources
@@ -98,3 +98,14 @@ class ExpertExecutor:
     async def conclude(self,credentials,request_id,generation,execution_token,case_id,expected_revision,operation_key,command:ConclusionAdd):
         context=await self.context(credentials,request_id,generation,execution_token)
         return await asyncio.to_thread(self.requests.journal.conclude,context,str(case_id),expected_revision,command,operation_key)
+
+    async def draft(self,credentials,request_id,generation,execution_token,case_id,draft_id,operation,*,command=None,expected_version=None,operation_key=None,after_id='',limit=20):
+        context=await self.context(credentials,request_id,generation,execution_token)
+        if operation=='draft_list':return await asyncio.to_thread(self.requests.drafts.list,context,str(case_id),after_id=after_id,limit=limit)
+        if operation=='draft_get':return await asyncio.to_thread(self.requests.drafts.get,context,str(case_id),str(draft_id),version=expected_version)
+        if expected_version is None or not operation_key:raise ExpertRequestError('invalid_arguments')
+        if operation=='draft_save' and type(command) is PersonalDraft:
+            return await asyncio.to_thread(self.requests.drafts.save,context,str(case_id),str(draft_id),expected_version,command,operation_key)
+        if operation=='draft_publish' and type(command) is DraftPublication:
+            return await asyncio.to_thread(self.requests.drafts.publish,context,str(case_id),str(draft_id),expected_version,command,operation_key)
+        raise ExpertRequestError('invalid_arguments')

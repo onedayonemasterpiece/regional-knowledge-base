@@ -14,8 +14,9 @@ from pydantic import Field
 
 from .disagreement_contracts import (
     CaseCreate, CaseGrant, CaseRevise, CaseState, ConclusionAdd,
-    ContributionAdd, ContributionCorrect, EvidenceAdd,
+    ContributionAdd, ContributionCorrect, EvidenceAdd, PersonalDraft, DraftPublication,
 )
+from .disagreement_drafts import PersonalDrafts
 from .disagreement_journal import DisagreementJournal, JournalError
 from .participant_contracts import (
     AccountBegin, AccountConfirm, AccountUnlink, DomainWeight,
@@ -26,6 +27,7 @@ from .participants import ParticipantError
 
 def register_research_tools(mcp, participants, authority_provider):
     journal = DisagreementJournal(participants.corpus, participants=participants)
+    drafts = PersonalDrafts(journal)
 
     async def call(fn, *args, **kwargs):
         # Resolve inside each call: no cached actor or shared channel context.
@@ -95,8 +97,21 @@ def register_research_tools(mcp, participants, authority_provider):
         return invalid()
 
     @mcp.tool(name="disagreement_conclusion",title="Record a versioned research conclusion",
-        description="Record a shared model synthesis or separate individual opinion with exact evidence/contribution versions and material event boundary. Current shared synthesis requires curator case access and maintain_shared_summary. A new contribution after the reviewed boundary stays unreviewed. Recording from a user's MCP does not imply human support.",
+        description="Record a shared model synthesis or separate individual opinion with exact evidence/contribution versions and material event boundary. Current synthesis requires curator and maintain_shared_summary. draft_list/get/save keep own private analysis versions (first expected_version=0, stable draft UUID/key); case history exposes none. draft_publish explicitly copies only the selected exact text span into a normal contribution, retaining the private draft. Requires current case/source ACL and case_contribute as well as personal_conclusion; extra private dependencies cannot be laundered by selecting a substring. Neither a draft nor publication implies human reading or support.",
         annotations=ToolAnnotations(read_only_hint=False,open_world_hint=False))
-    async def conclusion_tool(case_id:UUID,expected_revision:Annotated[int,Field(ge=1)],
-        command:ConclusionAdd,operation_key:str) -> dict[str,Any]:
-        return await call(journal.conclude,str(case_id),expected_revision,command,operation_key)
+    async def conclusion_tool(case_id:UUID,expected_revision:Annotated[int,Field(ge=1)]|None=None,
+        command:ConclusionAdd|PersonalDraft|DraftPublication|None=None,operation_key:str|None=None,
+        action:Literal['record','draft_list','draft_get','draft_save','draft_publish']='record',
+        draft_id:UUID|None=None,expected_version:Annotated[int,Field(ge=0)]|None=None,
+        after_id:str='',limit:Annotated[int,Field(ge=1,le=100)]=20) -> dict[str,Any]:
+        if action=='record' and type(command) is ConclusionAdd and expected_revision is not None and operation_key:
+            return await call(journal.conclude,str(case_id),expected_revision,command,operation_key)
+        if action=='draft_list':return await call(drafts.list,str(case_id),after_id=after_id,limit=limit)
+        if draft_id is None:return invalid()
+        if action=='draft_get':return await call(drafts.get,str(case_id),str(draft_id),version=expected_version)
+        if expected_version is None or not operation_key:return invalid()
+        if action=='draft_save' and type(command) is PersonalDraft:
+            return await call(drafts.save,str(case_id),str(draft_id),expected_version,command,operation_key)
+        if action=='draft_publish' and type(command) is DraftPublication:
+            return await call(drafts.publish,str(case_id),str(draft_id),expected_version,command,operation_key)
+        return invalid()

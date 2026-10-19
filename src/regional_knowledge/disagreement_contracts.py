@@ -96,6 +96,27 @@ class CaseState(JournalInput):
     reason: str = Field(min_length=1, max_length=3000)
 
 
+class PersonalDraft(JournalInput):
+    text: str = Field(min_length=1, max_length=16000)
+    based_on_seq: int = Field(ge=0)
+    evidence_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    position_ids: list[str] = Field(default_factory=list, max_length=40)
+
+
+class DraftPublication(JournalInput):
+    text_start: int = Field(ge=0)
+    text_end: int = Field(gt=0)
+    kind: Literal["argument", "opinion", "question"] = "opinion"
+    evidence_ids: list[UUID] = Field(default_factory=list, max_length=40)
+    position_ids: list[str] = Field(default_factory=list, max_length=40)
+
+    @model_validator(mode="after")
+    def nonempty_span(self):
+        if self.text_end <= self.text_start:
+            raise ValueError("nonempty draft span required")
+        return self
+
+
 class CaseGrant(JournalInput):
     grantee: UUID
     capability: Literal["viewer", "contributor", "curator", "manager"] | None

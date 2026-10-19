@@ -216,7 +216,15 @@
       "action": "E1 просит провести **личный анализ** выбранного C1 и сохранить черновик; E2 пытается прочитать его; затем E1 явно публикует одну позицию в общее дело",
       "oracle": "До явного подтверждения черновик доступен только E1, не считается мнением сообщества и не попадает в VK/дайджест. После публикации виден лишь подтверждённый вариант с actor/version/receipt; двойной click не создаёт второго вклада",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/disagreement_drafts.py",
+        "src/regional_knowledge/disagreement_tools.py",
+        "src/regional_knowledge/expert_mcp.py",
+        "tests/test_disagreement_drafts.py",
+        "docs/operations/personal-research-drafts.md"
+      ],
+      "partial_component_note": "Private own versions/CAS/receipts and bounded list, isolated from case history; explicit selected span publication through same atomic contribution writer. Synthetic domain/MCP/actual HTTP and request/group/current ACL tests; prescribed real Slack actors/owner-directed publication remain NOT_RUN."
     },
     {
       "id": "KB-11",
@@ -1514,7 +1522,9 @@
       "line": 263,
       "action": "Real clients/actors including second-client result sink+ACK, burst10+1, multiple dialogs and dependent context, every material import phase with at least one search, resource increase/decrease, actual supported-source evidence, restart and unchanged active revision.",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_executor_contract_evidence": "docs/reports/executor-client-contract-check-20261019.md",
+      "partial_executor_contract_note": "Real dot acknowledgment and sourced report received in authorized Slack thread. PH pinned source independently checked; existing search adapter lacks concrete RKB transport/request/result mapping, PH sink requires its own binding. No complete isolated executor or Mira result/hash-ACK E2E verified."
     },
     {
       "id": "LOAD-LATENCY-QUALITY",
@@ -1927,6 +1937,17 @@
       ],
       "validation": "Final complete local suite705 passed/31 skipped/2 dependency warnings; prior focused61 passed before the final added revoked-source test. Exact recheck, unresolved immutable receipts, concurrent replay, current person/source access, stale generation/hash, actor/body/kind/closed parent and UNKNOWN-delivery fences. No provider calls.",
       "limits": "Only original retained BGE dependency repair/recheck is implemented. General poison-stage recovery, proved-outage policy, measured stage admission/ETA and live repair acceptance remain open."
+    },
+    {
+      "id": "personal_research_drafts",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/disagreement_drafts.py",
+        "tests/test_disagreement_drafts.py",
+        "docs/operations/personal-research-drafts.md"
+      ],
+      "validation": "Final full local717 passed/31 skipped/2 dependency warnings;41 targeted passed. Synthetic identities/provider observations include actual HTTP save/list/get/selected publication, independent case_contribute/personal_conclusion fences, inherited private dependencies, atomic rollback/concurrent replay and group/request generation isolation.",
+      "limits": "No real non-owner Slack PMI; human exact-version support and full journal E2E remain open. Publication cannot launder private context outside the case evidence boundary."
     }
   ],
   "requirement_clarification": "docs/requirements/unified-expert-access-20261019.md",

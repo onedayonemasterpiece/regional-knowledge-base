@@ -129,7 +129,7 @@ class DisagreementJournal:
                    (case_id, seq, actor, kind, canonical(payload), now()))
         return seq
 
-    def _mutate(self, principal, case_id, key, action, payload, apply, *, capability="contributor", expected=None, policy_capability="case_contribute"):
+    def _mutate(self, principal, case_id, key, action, payload, apply, *, capability="contributor", expected=None, policy_capability="case_contribute", authorize=None):
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", key):
             fail("invalid_operation_key")
         request_hash = hashlib.sha256(canonical([case_id, action, payload, expected]).encode()).hexdigest()
@@ -140,6 +140,7 @@ class DisagreementJournal:
             db.execute("BEGIN IMMEDIATE")
             actor = self._actor(db, principal, policy_capability)
             case = self._case(db, actor, case_id, capability) if case_id else None
+            if authorize is not None:authorize(db,actor,case)
             if case:
                 track_resources(db,principal,case_ids=[case_id],document_ids=[r[0] for r in db.execute("SELECT DISTINCT document_id FROM disagreement_evidence WHERE case_id=?",(case_id,))])
             saved = db.execute("SELECT * FROM disagreement_operations WHERE actor_id=? AND operation_key=?", (actor, key)).fetchone()
@@ -257,19 +258,24 @@ class DisagreementJournal:
     def contribute(self, principal, case_id, command: ContributionAdd, operation_key):
         payload = command.model_dump(mode="json")
         def apply(db, actor, case):
-            self._references(db, case, command.evidence_ids, command.position_ids)
-            if command.reply_to and not db.execute("SELECT 1 FROM disagreement_contributions WHERE id=? AND case_id=?", (str(command.reply_to), case_id)).fetchone():
-                fail("invalid_reply")
-            ident = str(uuid4())
-            seq = self._event(db, case_id, actor, "contribution_added", {"contribution_id": ident, "version": 1})
-            value = {**payload, "origin": "authenticated_mcp_account", "human_reading_confirmed": False, "withdrawn": False}
-            if self.participants is not None:
-                value["attribution"] = self.participants.attribution(db, principal)
-                value["origin"] = "verified_external_account" if principal.route == "expert" else "authenticated_mcp_account"
-            recorded_by=getattr(principal,"executor_id",None) or actor
-            db.execute("INSERT INTO disagreement_contributions VALUES(?,1,?,?,?,?,?,?)", (ident, case_id, actor, recorded_by, canonical(value), seq, now()))
-            return {"case_id": case_id, "case_revision": case["revision"], "contribution_id": ident, "version": 1, "event_seq": seq}
+            return self._append_contribution(db,principal,actor,case,command)
         return self._mutate(principal, case_id, operation_key, "contribute", payload, apply)
+
+    def _append_contribution(self,db,principal,actor,case,command):
+        """One atomic writer shared by direct and explicit draft publication."""
+        case_id=case['id']
+        self._references(db, case, command.evidence_ids, command.position_ids)
+        if command.reply_to and not db.execute("SELECT 1 FROM disagreement_contributions WHERE id=? AND case_id=?", (str(command.reply_to), case_id)).fetchone():
+            fail("invalid_reply")
+        ident = str(uuid4())
+        seq = self._event(db, case_id, actor, "contribution_added", {"contribution_id": ident, "version": 1})
+        value = {**command.model_dump(mode='json'), "origin": "authenticated_mcp_account", "human_reading_confirmed": False, "withdrawn": False}
+        if self.participants is not None:
+            value["attribution"] = self.participants.attribution(db, principal)
+            value["origin"] = "verified_external_account" if principal.route == "expert" else "authenticated_mcp_account"
+        recorded_by=getattr(principal,"executor_id",None) or actor
+        db.execute("INSERT INTO disagreement_contributions VALUES(?,1,?,?,?,?,?,?)", (ident, case_id, actor, recorded_by, canonical(value), seq, now()))
+        return {"case_id": case_id, "case_revision": case["revision"], "contribution_id": ident, "version": 1, "event_seq": seq}
 
     def correct_contribution(self, principal, case_id, contribution_id, expected_version, command: ContributionCorrect, operation_key):
         payload = {**command.model_dump(mode="json"), "id": str(contribution_id), "expected_version": expected_version}

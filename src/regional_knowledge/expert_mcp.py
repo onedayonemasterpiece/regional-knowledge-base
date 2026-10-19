@@ -11,7 +11,7 @@ from uuid import UUID
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from .disagreement_contracts import ConclusionAdd,ContributionAdd,ContributionCorrect
+from .disagreement_contracts import ConclusionAdd,ContributionAdd,ContributionCorrect,PersonalDraft,DraftPublication
 from .disagreement_journal import JournalError
 from .expert_executor import ExpertExecutor
 from .expert_requests import ExpertRequestError,ExpertResult
@@ -75,18 +75,19 @@ def register_executor_tools(mcp,requests,backend):
         return invalid()
 
     @mcp.tool(name="expert_research",title="Research within one expert request",
-        description="Bound source_search/source_fetch/case_get/contribute/conclude. No actor or owner field. Source reads use current source ACL and the saved personal/public route; server-known dependencies survive omitted result references. Group case reads require a future approved public projection and currently return a clear denial. No import, access grants, admin, arbitrary SQL or provider send.",
+        description="Bound source_search/source_fetch/case_get/contribute/conclude/draft_get/draft_save/draft_publish. Drafts stay personal; explicit publication copies only a selected exact span to the case. Source reads and drafts use current ACL, person, route and request generation/token. No actor/owner field. Server-known dependencies survive omitted result references. Group case/draft reads require a future approved public projection and currently deny. No import, grants, admin, SQL or provider send.",
         annotations=ToolAnnotations(read_only_hint=False,open_world_hint=False))
-    async def research_tool(operation:Literal["source_search","source_fetch","case_get","contribute","conclude"],
+    async def research_tool(operation:Literal["source_search","source_fetch","case_get","contribute","conclude","draft_list","draft_get","draft_save","draft_publish"],
         request_id:UUID,generation:Annotated[int,Field(ge=1)],
         execution_token:Annotated[str,Field(min_length=16,max_length=256)],
         query:Annotated[str,Field(max_length=3000)]="",chunk_id:UUID|None=None,
         case_id:UUID|None=None,main_job_id:str|None=None,
         section:Literal["case","evidence","contributions","conclusions","history"]="case",
         after_seq:Annotated[int,Field(ge=0)]=0,limit:Annotated[int,Field(ge=1,le=20)]=8,
-        command:ContributionAdd|ContributionCorrect|ConclusionAdd|None=None,
+        after_id:str='',
+        command:ContributionAdd|ContributionCorrect|ConclusionAdd|PersonalDraft|DraftPublication|None=None,
         operation_key:Annotated[str,Field(min_length=8,max_length=128)]|None=None,
-        contribution_id:UUID|None=None,expected_version:Annotated[int,Field(ge=1)]|None=None,
+        contribution_id:UUID|None=None,draft_id:UUID|None=None,expected_version:Annotated[int,Field(ge=0)]|None=None,
         expected_revision:Annotated[int,Field(ge=1)]|None=None) -> dict[str,Any]:
         credentials=current_service()
         base=(credentials,str(request_id),generation,execution_token)
@@ -101,5 +102,8 @@ def register_executor_tools(mcp,requests,backend):
             return await call(executor.contribute,*base,str(case_id),operation_key,command,contribution_id=contribution_id,expected_version=expected_version)
         if operation=="conclude" and isinstance(command,ConclusionAdd) and operation_key and expected_revision:
             return await call(executor.conclude,*base,str(case_id),expected_revision,operation_key,command)
+        if operation=='draft_list' or (operation in {'draft_get','draft_save','draft_publish'} and draft_id):
+            return await call(executor.draft,*base,str(case_id),str(draft_id),operation,
+                command=command,expected_version=expected_version,operation_key=operation_key,after_id=after_id,limit=limit)
         return invalid()
 

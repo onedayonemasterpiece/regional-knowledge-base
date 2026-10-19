@@ -87,6 +87,8 @@ class ExpertRequests:
         self.allowed_channels=frozenset(allowed_channels)
         self.dependencies=None
         self.journal=DisagreementJournal(self.corpus,participants=participants)
+        from .disagreement_drafts import PersonalDrafts
+        self.drafts=PersonalDrafts(self.journal)
         with self.corpus.connect() as db:
             db.executescript("""
             CREATE TABLE IF NOT EXISTS rkb_expert_services(
