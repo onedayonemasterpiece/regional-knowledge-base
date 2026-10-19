@@ -1,5 +1,24 @@
 # BGE-M3 только на Kaggle — действующая архитектурная граница
 
+## Применение в переработке 19.10.2026
+
+Нормативный целевой контракт: [единый файл агенту](../prompts/rkb-scalable-kaggle-implementation-20261019.md) и [архитектура](../designs/rkb-scalable-kaggle-architecture-20261019.md). Текущий runtime ещё не перенесён этой документационной задачей.
+
+- Один PostgreSQL/pgvector corpus в Kaggle, BGE-only (1024 FP32 baseline, exact pinned BGE input≤512); небольшой durable control journal на DevCoveer.
+- Прямой исходящий WSS notebook→existing DevCoveer ASGI с двусторонними заданиями/результатами, durable ACK/RESUME и одной BgeQueue authority. Старые polling/локальный E5/Supabase инструкции не целевой deployment.
+- Fresh MCP import книг; перенос только historical/cartographic layers и согласованных зависимостей, со stable IDs/provenance и проверенным reanchor. Ручная работа не уничтожается из-за отказа от старого corpus.
+- Source-bound facts/dates/observations сохраняются без обязательной Story; эпизод/досье/Variant/private draft/independent case различаются. Один persisted research workflow, bounded compose, без квот и выдуманной драматургии.
+- Поиск accepted active book text и bibliography без per-book owner ACL; current withdrawal/revision, pixels/original/private draft grants и delivery audience остаются обязательными.
+- One canonical person/request/dialog, fair admission и confirmed result/hash ACK; Мира в PH расширяет existing typed adapter, не создаёт отдельный voice/IAM/queue.
+
+Численные protected gates сохранены: backend p95≤1000ms, MCP p95≤1500ms/hard2000ms, BGE Hit@5≥85%/@10≥90%, RU→DE@10≥85%, ≥30 held-out families, ≥100 sources/100000 chunks, storage≤80% steady/≤90% peak. Документ не является доказательством PASS.
+
+## Граница старого runbook
+
+Ниже — runbook исходного runtime до cutover, а не инструкция устанавливать прежнюю архитектуру заново. Не удалять shared runtime files/данные до проверенного переключения. Новое восстановление использует schema/codec compatibility, exact command/result hashes, snapshot+tail; TTL accepted jobs не может удалить данные незавершённого consumer. 10-секундная политика waiting notice не увеличивает 2000ms evidence deadline.
+
+### Исходный runtime
+
 **Обязательное решение владельца (17.10.2026):** никакого локального инференса BGE на DevCoveer. BGE-M3 вычисляет **и запросы, и документы, включая редакционные истории, только в Kaggle CPU notebook**. В DevCoveer находятся лишь долговечная очередь заданий BGE, проверка идентичности actor/model/revision, контроллер удалённого запуска и результаты векторного поиска. Новые сервисы, локальные копии весов, локальный ONNX BGE, платные API или обход Kaggle при недоступности запрещены.
 
 Эта инструкция имеет приоритет перед прежними пилотами, временными deployment-скриптами и историческими отчётами, в которых могли фигурировать локальная модель или `regional-knowledge-bge-query.service`. Изменять это архитектурное решение без нового согласования нельзя.

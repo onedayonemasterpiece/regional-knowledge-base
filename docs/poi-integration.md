@@ -1,5 +1,36 @@
 # Regional Knowledge → Street Story POI integration
 
+## Current target and historical baseline — 2026-10-19
+
+The [scalable Kaggle architecture](designs/rkb-scalable-kaggle-architecture-20261019.md) and [implementation handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md) take precedence over historical storage, private-book visibility and mandatory-client assumptions below. Dated checkpoints preserve evidence of existing capabilities; they do not establish the current deployed SHA or target acceptance.
+
+RKB domain data/outbox move to one PostgreSQL/pgvector with BGE on Kaggle. E5 and the former Supabase retrieval plane are removed. DevCoveer retains MCP/ASGI, authorization, durable request/receipt control and the existing BgeQueue/controller. The notebook connects outbound WSS to the existing DevCoveer ASGI broker; no second queue is introduced.
+
+Street Story remains the owner of canonical POI IDs, aliases, location/lifecycle state, atomic POI claims and arbitration of **its canonical POI state**. RKB owns exact source provenance, historical entities, source-bound factual findings and **independent disagreement cases**, including cases without a Story or mapped place. Typed links and owner receipts connect these domains; do not create competing case authorities or automatically duplicate an RKB case as a Street Story review task.
+
+### Facts and source visibility
+
+Accepted book text and bibliography are publicly searchable without a book-owner ACL. Owner/uploader identity can remain provenance without becoming an owner-only read filter. Exact originals, PDF/page/crop pixels, reproduction rights, private drafts and writes retain separate authorization. The private/workspace envelopes below continue to apply to genuinely restricted resources; they must not silently reinstate private-book filtering for accepted public text.
+
+A POI fact, date or quantity does not require an artificial Story parent. Preserve source-bound assertions/evidence before optional dossier/episode links, including calendar precision, people/roles, geographic time scope and quantities/units/periods/methods. Facts, episodes, POI and disagreement candidates use the same source reading pass, searches and comparison receipts. Sparse chronology/statistics may yield zero new episodes. See [story quality](story-registry.md).
+
+Only agreed historical/cartographic layers migrate. Books/chunks/embeddings are imported afresh. Old layer-to-book references retain minimal immutable provenance and an unresolved/reanchor state until exact new source SHA/page/context is verified; do not relabel an old source ID as a newly accepted source. Canonical Street Story POI keys are preserved.
+
+### Delivery and expert work
+
+Activation and its domain/outbox event commit together; Street Story delivery is asynchronous and idempotent. A missing owner service, identity or grant cannot make an accepted source fail or authorize an invented POI. Reuse the existing same-host machine identity and loopback bridge. Kaggle localhost is not Street Story's host; delivery must execute or route where the owner endpoint is reachable. A service credential does not impersonate a human or replace a restricted-resource grant.
+
+Mira remains the Projects Hub client; the baseline PH adapter is search/evidence-only and must be extended on the same RKB resource for pending/request/result/ACK, proof, stories and cases. The single Kaliningrad Base Slack bot is another client of the same request lifecycle. Mira is optional, and no universal two-expert review gate is introduced. Typed decisions go to the actual case owner and are announced only after its durable receipt/readback.
+
+Preserve author/contributor attribution, source-family independence, versioned score components and null-for-unknown. A score does not settle a contradiction, create independent corroboration or expand visibility. Different dates can describe different event phases. Append-only decisions, scope/temporal distinctions and reopen remain supported.
+
+An independent RKB case page is a desktop/mobile static public projection without login, with a permanent opaque slug. Return its first URL only after actual publication/readback; failed updates retain last-good unless revoked, with desired/published revision and stale-builder fencing. Private drafts and restricted proof pixels are excluded.
+
+Target acceptance preserves all nine [protected requirements](../.devcoveer/requirements.json), with the approved E5 removal/public-text change. Verify facts and calendar/observations without Story, exact reanchoring, no competing case authority, idempotent receipts and one usable search during import. New Telegram sessions are not prerequisites for domain or direct-download/proof tests.
+
+## Preserved implementation and historical record
+
+
 ## Ownership boundary
 
 Regional Knowledge Base does **not own the canonical POI database**.

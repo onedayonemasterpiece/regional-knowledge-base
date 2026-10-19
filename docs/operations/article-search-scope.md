@@ -1,5 +1,16 @@
 # Article-scoped search (2026-10-17)
 
+## Target scope and historical measurements — 2026-10-19
+
+Use the [implementation handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md) for the PostgreSQL/pgvector+BGE target. Article scope remains a semantic projection of one exact accepted parent revision; it does not duplicate the source, vectors or evidence identities.
+
+Accepted book text and bibliography are searchable without book-owner filtering. This change does not reactivate hidden/withdrawn material, remove article/revision validation or authorize originals, proof pixels, private drafts or writes. Apply current eligibility and explicit scope before results and again after delayed delivery or a stale reader. Preserve parent/article union semantics and exact source/page references.
+
+The implementation limitations and 2026-10-17 measurements below are historical evidence. New scoped dense retrieval must measure real recall and distinguish BGE, lexical and fusion results; a parent-level ANN shortlist filtered afterwards does not establish exhaustive article coverage. Re-run only the applicable protected retrieval gates for the actual target implementation; these old figures do not certify it.
+
+## Preserved implementation and historical record
+
+
 Catalog article IDs returned by book_find can be supplied to search and
 knowledge_search document_ids. The local corpus resolves an article to its
 readable, searchable parent and selected revision, then restricts retrieval to

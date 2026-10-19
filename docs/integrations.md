@@ -1,5 +1,42 @@
 # Cross-project integrations
 
+## Target integration contract — 2026-10-19
+
+Use [the scalable Kaggle architecture](designs/rkb-scalable-kaggle-architecture-20261019.md) and [implementation handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md) as the normative target. The original body below preserves baseline capabilities and dated reports, not proof of a current production deployment.
+
+One PostgreSQL/pgvector with BGE on Kaggle owns the RKB domain data. E5 and the former Supabase retrieval plane are removed. DevCoveer retains MCP/ASGI, authorization, durable request/receipt control and the existing BgeQueue/controller. The notebook opens outbound WSS to the existing DevCoveer ASGI broker. This connection reuses existing request identity/recovery and does not add a second queue, relay service or corpus authority.
+
+Accepted book text and bibliography are publicly searchable without a book-owner ACL. Original files/pixels, reproduction rights, private drafts and writes are separately authorized. A public source does not make a personal request or draft public. Stable references carry identity, not authority, secrets or permanent signed URLs.
+
+### Clients and delivery receipts
+
+Mira remains the Projects Hub assistant and an external RKB client. The current PH/live-interaction adapter is search/evidence-only; extend that existing adapter and RKB resource to support pending/request/result/ACK, authorized proof, stories/dossiers and independent cases. Existing search support does not establish conversational completion or case-edit capability. Restricted operations use real resource-bound grants; PH never forwards its own bearer token or invents an owner identity.
+
+Kaliningrad Base is the single RKB Slack bot. Mira is an optional additional client, not a required intermediary. All clients share verified person/dialog identity, fairness, sequence and resource admission; there is no Slack-only scheduler.
+
+Reuse late draft PR151 at `adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4`: person fairness, dialog/explicit-ID guards, native client result ACK, BGE consumer checkpoints and private drafts are branch-level material to verify during integration, not production PASS. Intake ACK, result commit and final delivery ACK/readback are distinct. Reconnect/retry resumes the accepted request and saved result, not a new Variant, case or publication. An uncertain external send is reconciled before resend.
+
+### Domain boundaries
+
+Street Story owns canonical POI identity/state and its POI arbitration. RKB owns source evidence, historical entities and independent disagreement cases with optional POI/Story links. The client submits a typed decision to the actual owner and records its receipt; it does not create another truth copy. Existing graph_fetch/related/stage, poi_registry/context, bounded discovery and finalized-source delivery remain capabilities to preserve.
+
+Source facts, dates/observations, episodes, entities, POI and disagreements use one research pass and shared search/read receipts. A useful fact does not require a narrative Story. Existing angle/gaps/Variant serve editorial work; private drafts remain private. Only agreed historical/cartographic layers migrate, with checked source reanchoring; books/chunks/embeddings are freshly imported.
+
+Same-host owner calls use the existing machine identity/loopback contract. Kaggle localhost cannot stand in for Street Story's host. Source activation commits its outbox event and remains independent of downstream availability.
+
+### Media and public projections
+
+Wonderful Lections retains sourced research, historical illustrations and page provenance. VibePublish remains the actual provider/uploader and secondary media mirror. Reuse its binary ingress, stable operation/media-entry receipts and resource/destination grants. RKB does not acquire a second Telegram session or provider limiter; VibePublish owns provider/account limits.
+
+Direct downloads, authorized source/proof reads and case construction do not depend on new Telegram sessions. Mirror acceptance uses resource identity and native receipts, not source/delivered image SHA equality or compulsory visual matching; exact PDF SHA remains a distinct source-deduplication rule.
+
+Public disagreement pages are static desktop/mobile projections without login, with stable opaque slugs and no private drafts or restricted pixels. The first URL requires actual upload/readback. Failed updates retain last-good unless revoked; desired/published revision and generation fences prevent stale publication. Domain acceptance, client E2E, provider delivery and page readback are separate checks.
+
+Preserve all nine [protected requirements](../.devcoveer/requirements.json) with the approved BGE/public-accepted-text revision; branch metadata and historical reports do not replace exact-SHA restore/load/client acceptance.
+
+## Preserved implementation and historical record
+
+
 ## Principle
 
 Synergy comes from shared identity + stable resource references + narrow service contracts, not from one database or one giant MCP.

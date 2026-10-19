@@ -1,5 +1,22 @@
 # Rights, collection provenance and visibility
 
+## Target visibility and pixel policy (2026-10-19)
+
+**Target policy, not a migrated-corpus claim.** Follow the [single handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md).
+
+Accepted active book bibliography and searchable source text form the approved public research projection without per-book reader ACL. Retain active-revision, withdrawal and source-policy checks. This does not publish original PDF/DjVu, whole rendered pages, private notes/draft history or every case contribution. Public searchability and a public POI are not pixel grants.
+
+Proof/image operations bind exact source SHA/revision, permitted page/figure or smaller pixel scope, actor and audience. Authorize before fetching bytes; constrain both model input and final composited output. A region grant must not reveal a full private page beneath a highlight. Recheck permission on warm cache, retry, callback and delivery. Archive entry, signed URL or historic receipt is not permanent authorization.
+
+Private draft versions remain separate from shared Story variants and case arguments. Owner/case-manager role does not allow reading another actor's draft. Selective publication releases the selected payload with its dependencies; remainder/history stay private. One member's personal access does not authorize a whole channel.
+
+Gateway revocation remains effective while a snapshot is stale; correctness does not depend on a revocation list staying small. Preserve source/media rights evidence. The technical public-text projection is not a finding about permission to distribute original files.
+
+## Retained rights baseline
+
+Following sections retain rights vocabulary/provenance/evidence requirements. Blanket private-content defaults do not reinstate per-book reader ACL for the approved book-text projection. Originals, private external materials, pixels and media retain separate policy.
+
+
 The system must distinguish four different questions:
 
 1. who owns or controls the physical/source copy;

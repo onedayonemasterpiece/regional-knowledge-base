@@ -1,5 +1,24 @@
 # Book ingestion
 
+## Target contract — fresh imports on Kaggle (2026-10-19)
+
+**Implementation target, not deployed acceptance.** The [single implementation handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md) supersedes earlier SQLite/Supabase/E5 choices. Kaggle hosts PostgreSQL/pgvector, BGE-M3 and source/image processing; DevCoveer retains the authenticated entry point and durable request/change/delivery journal.
+
+Freshly reimport old books from verified original PDF/DjVu bytes. Do not copy old chunks, inferred transcriptions or visual-review stamps and describe that as a fresh import. Preserve historical/cartographic identities, provenance and manual dependencies through the cutover inventory; active transfer follows agreed scope. Old evidence without verified new-source mapping remains an explicit legacy dependency. Title, filename or page number is not sufficient mapping.
+
+Preserve bounded start/pages/stage/validate/finalize/status, exact source SHA, page/region geometry, figures, captions and visual review. The same model pass extracts source-bound facts, dates, measurements, entities and useful episodes. A fact does not require a Story card. Stories may describe an episode, person, place, everyday practice, process or connected explanation; no compulsory change/choice/consequence formula or quota.
+
+Preserve event_dates/calendar/precision/role/history and observations with exact decimal, metric, unit, subject, period, method and evidence, including facts without Story. Contested evidence is independent of editorial readiness. Private drafts/history are not replaced by shared variants.
+
+Accepted transcription, semantic spans and figure decisions are immutable payloads, not reproducible from source SHA plus parser version. Replay restores accepted values and IDs. Count exact final BGE input including prefixes: hard limit512, coherent-passage target about256. E5 is not a target gate or fallback.
+
+Source acceptance, index readiness and research coverage are separate states. Activation atomically saves its research continuation. Maps, unresolved POIs and Street Story outages do not invalidate an otherwise valid import. Preserve partial accepted work and applicable protected gates.
+
+## Retained implementation baseline
+
+Following sections retain earlier implementation/measurement history. Their storage, E5 and old accepted-reuse migration paths do not override fresh-book cutover. Unchanged evidence and lifecycle contracts remain.
+
+
 ## SQLite / Supabase v2 implementation boundary (2026-10-05)
 
 The canonical task is [SQLite corpus + Supabase vectors + on-demand proof](prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md).

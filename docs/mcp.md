@@ -1,5 +1,31 @@
 # MCP surface and model optimization
 
+## Target MCP and consumer compatibility (2026-10-19)
+
+**Target requirements, not deployed functionality.** Follow the [single handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md). Keep the existing DevCoveer MCP resource; Kaggle PostgreSQL owns domain state, pgvector and BGE-M3. Port every corpus consumer, including source_proof, catalog, graph, Story Registry, cases and history. Changing a connection string or launching SQLite-dependent code on Kaggle is not that port.
+
+| Capability | Preservation requirement |
+|---|---|
+| Import/search | Resumable book tools, search/fetch/catalog, compact knowledge_search, bibliography and exact revision/page/region evidence. |
+| Source facts | Facts, event_dates and observations remain queryable without a Story; shared references do not duplicate identity/calendar/numeric results. |
+| Stories | Search/get/history, source registration, extract/reconcile, edits, assessments/variants, merge/archive/restore, exact-version approval, export and publication record. |
+| Dates/numbers | Calendar/precision/date-role predicates, competing/superseded dates; exact decimal, metric/unit/subject/period/method and comparability diagnostics. |
+| Graph/POI | People, organizations, events, threads, aliases/toponyms, source-place relations, owner-selected POI links and async evidence/readback. |
+| Research | Independent cases/contributions/conclusions/support, participants/grants, private draft versions/selective publication, source needs and discussions. |
+| Continuation | Personal/Slack saved requests, stable operation/result IDs, bounded pending/status/readback and current authorization at delivery. |
+| Images | source_proof/illustration_fetch, real MIME/ImageContent, pixel scope, exact provenance and item-level partial outcomes. |
+
+Accepted active book text/bibliography is searchable without per-book reader ACL. Originals, pixels, private history and restricted research retain separate permissions. Empty preliminary hits are not completed negative search. Continue the same saved work within the applicable remaining budget and return explicit degraded/pending; the hard evidence-search deadline remains2000ms. E5 is not fallback.
+
+Reuse Mira in Projects Hub and shared live-interaction. Its verified adapter currently exposes only search_evidence, contains no OAuth/network transport and normalizes only {evidence, mode}, with hybrid|lexical_degraded. Extend the existing typed adapter for real resource-bound grants, compatible result envelopes, remaining deadlines, pending/readback/result ACK and authorized progressive capabilities. A new endpoint alone does not connect stories/cases/proof. Keep default Live capabilities small; tool visibility never grants permissions and import remains an owner personal operation.
+
+Spoken answers may select relevant detail but preserve material values, attribution and qualifications; exact bibliography/evidence remains visible. Test the actual PH/RKB candidate, separate users, Stop/reconnect and late results. Old emulator/WSS checks are separate evidence.
+
+## Retained implementation baseline
+
+Following sections describe earlier tool/runtime contracts. Their SQLite/Supabase/E5 choices and narrower profile limitations are baseline, not target completion. Preserve compatible APIs and explicitly version changes.
+
+
 ## SQLite / Supabase v2 implementation boundary (2026-10-05)
 
 The canonical task is [SQLite corpus + Supabase vectors + on-demand proof](prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md).

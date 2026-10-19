@@ -1,5 +1,40 @@
 # РКБ: технический проект управления пользовательской нагрузкой
 
+## Нормативное уточнение target и reuse PR151 — 19 октября 2026
+
+Этот блок имеет приоритет над прежними проектными рекомендациями ниже. Полный порядок реализации: [каноническая архитектура](rkb-scalable-kaggle-architecture-20261019.md) и [handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md).
+
+Ранний анализ main `a753a4e` / PR151 `18f16cb` сохраняется как историческое чтение исходников. Его утверждения «нет fairness/dialog sequence/ACK» нельзя переносить на поздний draft PR151 `adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4`. Поздние branch body/contracts фиксируют person fairness, dialog sequence/explicit-ID guard, native result ACK, BGE consumer checkpoint recovery, private drafts и load requirements. Это материал для reuse, не live PASS. Перед интеграцией сравнить актуальный head, migrations и tests; не разрабатывать заново уже реализованные guards и не запускать двух request owners/controllers.
+
+### Принятая физическая граница
+
+Один PostgreSQL/pgvector и BGE находятся на Kaggle. DevCoveer сохраняет MCP/ASGI, authorization, durable request/receipt control journal и существующий BgeQueue/controller. Notebook устанавливает исходящий WSS к существующему ASGI broker. Прежние рекомендации сохранить запросы только в corpus SQLite, оптимизировать E5 query-first или строить новый scheduler отозваны. E5 удаляется; control journal не становится копией domain data.
+
+На Kaggle совместно учитывать PG connections/transactions/buffers, BGE inference/tokenizer, proof/render, source/archive I/O, импорт и snapshot. На Dev — MCP/event loop, control commits и bounded WSS/request buffers. Раздельный API не означает независимую RAM/CPU/IO ёмкость.
+
+Сохранять один поисковый резерв и кооперативный допуск следующего import batch; дополнительно proof/import получают положительное продвижение с bounded aging. Не ждать permit внутри SQL write transaction. Если измеренный минимальный этап не помещается вместе с serving reserve, уменьшить checkpointed batch или изменить ресурсный envelope и зафиксировать failure; не объявлять starvation нормальной реализацией гарантии.
+
+### Общий lifecycle и клиенты
+
+Fairness — по verified person и eligible dialog heads. Все claim пути, включая explicit ID, wake и resumed checkpoint, используют тот же guard. Контекст следующей реплики строится из durable результата предыдущей; stale generation не может записать новый итог. Dependency wait сохраняет consumer checkpoint и освобождает реально неиспользуемый permit.
+
+Native intake ACK, result commit и final-delivery ACK/readback различаются. При result_ready повторяется доставка/получение, а не исследование и генерация. Unknown send требует reconciliation; отсутствие readback не доказывает неотправку. Capacity wait не расходует outage retry budget. Retry не создаёт новую Story/Variant/case; изменившийся payload под прежним ключом конфликтует.
+
+Сохранить arithmetic ETA: ≤10 секунд без notices, >10 секунд/существенное изменение — durable coalescing только ближайшего вопроса человека; final приоритетнее waiting. Отдельный evidence-search соблюдает защищённый deadline, даже когда полный вопрос ожидает в очереди.
+
+Мира остаётся клиентом Projects Hub; текущий adapter search/evidence-only расширяется на pending/request/result/ACK/proof/stories/cases. Slack использует единственный Kaliningrad Base bot. Второй клиент проверяется реальным result sink/ACK, без нового Slack-only lifecycle.
+
+### Research и приёмка
+
+Facts, dates/calendar, observations, люди/роли и география сохраняются без обязательного Story-parent; main8799 такого независимого пути ещё не даёт. Один research frontier и source/search receipts используются для facts, episodes, POI и независимых disagreements. Связное объяснение практики допустимо без героя, точной даты или конфликта; квот историй нет. Существующие angle/gaps/Variant сохраняются. Частный draft не становится общим вариантом автоматически.
+
+Статический case build учитывается в resource admission. Failure обновления сохраняет разрешённый last-good; desired/published revision и generation fence защищают от stale builder. Отзыв публикации отменяет last-good разрешение. Первый URL требует actual upload/readback.
+
+Проверять exact deployed SHA, WSS reconnect/run replacement, restore/replay, consumer checkpoint, person/dialog fairness, native второй-client ACK, no-repeat Variant, позитивное продвижение proof/import и поиск при каждом тяжёлом этапе. Accepted book text/bibliography публичны без owner ACL; restricted originals/drafts/writes сохраняют отдельную проверку. Девять protected requirements, включая quality/capacity/latency, не ослабляются. Telegram-сессии не блокируют domain/direct-download/proof tests. Публикация документации не означает выполнения этих проверок.
+
+## Preserved implementation and historical record
+
+
 Дата анализа: 19 октября 2026. Статус: **предлагаемый проект по чтению исходников**, не реализация и не нагрузочная приёмка.
 
 ## Короткий вывод

@@ -1,5 +1,26 @@
 # Source-backed semantic passage draft — safe staged import
 
+## Target accepted-source and semantic contract (2026-10-19)
+
+**Target requirements; historical measurements remain unchanged.** Follow the [single handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md). Fresh book imports use Kaggle PG/pgvector/BGE. Accepted_reuse/rechunk is a maintenance path for accepted unchanged sources, not fresh cutover or a substitute for missing visual review.
+
+Preserve exact accepted transcription, reading order, geometry, captions, figure links and semantic spans as immutable payloads. SHA/parser version cannot reconstruct them. A compiler may rebuild chunks from exact accepted spans; recovery cannot request new model boundaries and call them the same accepted result.
+
+Keep Unicode codepoint offsets, complete-region hashes, exact page/region IDs, word boundaries, non-overlap and complete non-whitespace source coverage. Assemble source text from cited excerpts. Interpretation, translation and model observations remain separately labelled.
+
+Count the complete final augmented material, including applicable prefixes, with the pinned BGE tokenizer: target about256 tokens, strict maximum512 without truncation. E5 tokenization is no longer a target gate. Preserve real cross-page continuations; page edges/character heuristics are not semantic boundaries.
+
+In the same review retain source-bound facts/dates/measurements without Story cards. Preserve calendar/precision/role/history and decimal/metric/unit/subject/period/method/evidence. A fact referenced by several stories keeps one identity; no silent calendar conversion or unreviewed arithmetic.
+
+Stories may describe episodes/practices/processes/connected explanations; no required drama/quotas. Contested and readiness are independent, private drafts are not shared variants. Concise voice may select relevant detail while preserving material values/attribution/uncertainty; canonical records retain accepted details.
+
+Validate actual source/revision boundaries, figures, BGE quality, facts without stories, date/unit semantics and exact accepted-payload recovery. Source acceptance, index readiness and research coverage are separate. Convenience samples are not original rereads or calibrated automatic quality tests. Preserve protected capacity/quality/latency gates. Re-embedding after loss is degraded recovery, not rapid ready-index restore.
+
+## Retained experiment and maintenance baseline
+
+Following sections preserve prior measurements/span/review-retention contracts. Old two-tokenizer/reuse instructions do not override target BGE-only fresh import. Historical numbers retain their original scope.
+
+
 The production retrieval stress measured 1,914 active chunks for Gause and Brünneck, with **26.5% longer than 1,100 characters**, against 2,343 shorter passages in the frozen t256 experiment. Current active BGE-only held-out Hit@5/Hit@10 is **78.1%/84.4%** with frozen FP32 queries, below the protected **85%/90%** gates. This feature enables smaller coherent passages without fabricating page/region offsets or replacing active revisions.
 
 ## Contract
