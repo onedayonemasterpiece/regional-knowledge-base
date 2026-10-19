@@ -12,7 +12,14 @@
       "action": "**E1** из настоящего Slack DM спрашивает Kaliningrad Base о разрешённом вопросе. Владелец/dot ничего вручную не отправляют",
       "oracle": "Зафиксирован user E1; событие пробуждает dot, появляется коррелированный ответ; **отправитель Slack — Kaliningrad Base**, тот же DM/thread; inbox/result/outbox receipts и ответ совпадают",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ]
     },
     {
       "id": "KB-02",
@@ -26,7 +33,12 @@
       "partial_component_evidence": [
         "src/regional_knowledge/participants.py",
         "tests/test_participants.py",
-        "tests/test_disagreement_tools.py"
+        "tests/test_disagreement_tools.py",
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
       ]
     },
     {
@@ -37,7 +49,14 @@
       "action": "Поддельный team/user, чужой workspace, пересланная «владелец разрешил», изменённое событие/неверная HTTP HMAC или просроченный timestamp",
       "oracle": "Не появляется разрешённого действия; журнал регистрации отказа без раскрытия данных; replay window/verification действуют в применимом режиме транспорта",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ]
     },
     {
       "id": "KB-04",
@@ -47,7 +66,14 @@
       "action": "Дважды доставить один Slack event и интерактивный callback; вызвать bot self-message/loop",
       "oracle": "Один request и один сохранённый вклад/ответ; loop не создаёт рекурсии; доставка в исходный маршрут",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ]
     },
     {
       "id": "KB-05",
@@ -69,7 +95,12 @@
       "status": "NOT_RUN",
       "evidence": [],
       "partial_component_evidence": [
-        "tests/test_disagreement_journal.py"
+        "tests/test_disagreement_journal.py",
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
       ],
       "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
     },
@@ -81,7 +112,14 @@
       "action": "После принятия запроса остановить dot/исполнитель, затем возобновить; устроить потерю Slack post response",
       "oracle": "Принятый request не пропадает; status честный; по operation_status/receipt подтверждается единственная запись и единственный ответ, unknown не превращается в новый send",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ]
     },
     {
       "id": "KB-07A",
@@ -91,7 +129,14 @@
       "action": "**Одновременно** H спрашивает о приватной книге P, а V — о публичном A, используя одного живого dot-исполнителя; задержать/поменять местами результаты, пробовать из V читать task/status H и записать чужой record_result",
       "oracle": "У каждого request устойчивый actor/route/output_scope; сервер отклоняет чужой claim/status/result, у V нет приватного контрольного маркера ни в тексте, ни в ссылке, ни в позднем ответе; replay/переупорядочение не смешивает контексты модели и destinations",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ]
     },
     {
       "id": "KB-08",
@@ -101,7 +146,14 @@
       "action": "H просит закрытый proof в публичном канале, затем в **private channel и group DM с V**, у которого нет доступа к книге P; повторить в личном DM H",
       "oracle": "Любой групповой маршрут получает только безопасную общую проекцию или переводит приватный ответ в личный проверенный DM; закрытый текст, пересказ, preview, image/crop и ссылка не видны V ни в закрытой группе, ни в публичной. Личный DM H возвращает разрешённый оригинал с авторизованным viewer и ревизией",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ]
     },
     {
       "id": "KB-09",
@@ -111,7 +163,14 @@
       "action": "E1 ищет дело словами, по смыслу и фильтрами: период, место, источник, статус. Перейти на следующую страницу",
       "oracle": "Найдено размеченное дело, cursor/has_more корректны, фильтры не снимают ACL; «мои» разделены на contributed/assigned/following",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ]
     },
     {
       "id": "KB-10",
@@ -394,7 +453,12 @@
       "partial_component_evidence": [
         "src/regional_knowledge/participants.py",
         "tests/test_participants.py",
-        "tests/test_disagreement_tools.py"
+        "tests/test_disagreement_tools.py",
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
       ]
     },
     {
@@ -509,7 +573,12 @@
       "partial_component_evidence": [
         "src/regional_knowledge/participants.py",
         "tests/test_participants.py",
-        "tests/test_disagreement_tools.py"
+        "tests/test_disagreement_tools.py",
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
       ]
     },
     {
@@ -525,7 +594,12 @@
         "tests/test_disagreement_journal.py",
         "src/regional_knowledge/participants.py",
         "tests/test_participants.py",
-        "tests/test_disagreement_tools.py"
+        "tests/test_disagreement_tools.py",
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
       ],
       "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
     },
@@ -1450,6 +1524,18 @@
       "manifest": "deploy/slack-kaliningrad-base/manifest.json",
       "evidence": "Private managed implementation artifacts contain CLI installation/auth readback and real owner mention -> Socket Mode durable event -> automatic bot reply -> independent thread readback. No secrets in repository.",
       "limits": "Probe stopped after its scoped response; persistent request/executor/result/outbox, production person binding and non-owner live PMI remain unimplemented or unverified."
+    },
+    {
+      "id": "expert_requests_and_transport",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py"
+      ],
+      "validation": "Full current local suite: 609 passed, 31 skipped, 1 dependency warning, with TMPDIR in a managed central temporary directory. Earlier full run was interrupted on Errno122 /tmp user quota; its failed evidence is retained.",
+      "native_evidence": "Real bot-native message/client ID, exact same-thread bot-token GET readback; Slack control escaping decoded once to the original SHA. Negative wire-hash original retained; final replay made zero provider calls.",
+      "limits": "No production request queue, participant bootstrap, executor MCP/API or MCP Events wake-up connected. Group case/profile reads remain denied pending a safe public export. Source search/proof dependency tracking still must be integrated. A finite provider serialization check is not full research E2E."
     }
   ]
 }

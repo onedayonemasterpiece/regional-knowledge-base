@@ -6,7 +6,7 @@ are stored here. Source ACL remains independently enforced by corpus readers.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -43,6 +43,11 @@ class RequestAuthority:
     route: str
     link_id: str | None = None
     link_revision: int | None = None
+    request_id: str | None = None
+    request_generation: int | None = None
+    executor_id: str | None = None
+    execution_token: str | None = field(default=None,repr=False)
+    public_only: bool = False
 
 
 class Participants:
@@ -119,6 +124,12 @@ class Participants:
             fail("capability_denied")
         if admin and (actor != self.owner or context.route != "owner"):
             fail("capability_denied")
+        if context.request_id is not None:
+            from .request_authority import execution_allowed
+            if context.route != "expert" or not execution_allowed(db, context, self._time().timestamp()):
+                fail("request_fence_denied")
+        elif any((context.request_generation, context.executor_id, context.execution_token, context.public_only)):
+            fail("request_fence_denied")
         return actor
 
     def require(self, context, capability, *, connection=None):
@@ -130,6 +141,10 @@ class Participants:
                 db.execute("BEGIN")
                 return self.require(context, capability, connection=db)
         actor = self._authority(connection, context)
+        # Group channels cannot inherit a personal projection. Case/public
+        # exports must acquire their own audience-safe path before enabling it.
+        if context.public_only and capability != "public_search":
+            fail("public_projection_required")
         if context.route == "expert" and capability not in EXPERT_CAPABILITIES:
             fail("capability_denied")
         if actor == self.owner:
@@ -158,6 +173,8 @@ class Participants:
         with self.corpus.connect() as db:
             db.execute("BEGIN")
             actor = self._authority(db, context)
+            if context.public_only:
+                fail("public_projection_required")
             if person_id != actor:
                 self._authority(db, context, admin=True)
             return self._snapshot(db, person_id)
@@ -291,15 +308,17 @@ class Participants:
             db.execute("INSERT INTO rkb_identity_observations VALUES(?,?,?,?,?,?,?,?,?,NULL)",(identity,provider,tenant,provider_subject,str(link_id),link_revision,audience,expires_at.isoformat(),receipt_id))
             return identity
 
-    def resolve_external(self, *, provider, tenant, provider_subject, principal_factory):
+    def resolve_external(self, *, provider, tenant, provider_subject, principal_factory, connection=None):
         """Adapter calls only after verifying provider transport; never for a raw payload."""
-        with self.corpus.connect() as db:
-            db.execute("BEGIN")
-            link=db.execute("SELECT * FROM rkb_external_identities WHERE provider=? AND tenant=? AND provider_subject=? AND state='verified'",(provider,tenant,provider_subject)).fetchone()
-            if not link: fail("identity_unverified")
-            context=RequestAuthority(principal_factory(link["person_id"]),"expert",link["id"],link["revision"])
-            self._authority(db,context)
-            return context
+        if connection is None:
+            with self.corpus.connect() as db:
+                db.execute("BEGIN")
+                return self.resolve_external(provider=provider,tenant=tenant,provider_subject=provider_subject,principal_factory=principal_factory,connection=db)
+        link=connection.execute("SELECT * FROM rkb_external_identities WHERE provider=? AND tenant=? AND provider_subject=? AND state='verified'",(provider,tenant,provider_subject)).fetchone()
+        if not link: fail("identity_unverified")
+        context=RequestAuthority(principal_factory(link["person_id"]),"expert",link["id"],link["revision"])
+        self._authority(connection,context)
+        return context
 
     def attribution(self, db, context):
         """Immutable assignment snapshot, not a scientific or human verdict."""
@@ -312,4 +331,6 @@ class Participants:
                 weights.append({**value,"assigned_at_revision":weight["revision"]})
         return {"person_id":actor,"profile_revision":row[0] if row else None,
                 "route":context.route,"external_link_id":context.link_id,
-                "external_link_revision":context.link_revision,"domain_weights":weights}
+                "external_link_revision":context.link_revision,"domain_weights":weights,
+                "request_id":context.request_id,"request_generation":context.request_generation,
+                "executor_id":context.executor_id}

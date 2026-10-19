@@ -80,8 +80,11 @@ the scanner's writes still requires the generation/fragment fences.
 
 [Kaliningrad Base manifest](../../deploy/slack-kaliningrad-base/manifest.json)
 defines a separate Socket Mode bot for mentions and personal messages. It has
-no user scopes, channel-history access or permission to write to unjoined public
-channels. Socket Mode additionally needs an app-level `connections:write`
+no user scopes or permission to write to unjoined public channels. Private-channel
+history/events are enabled for observed reply receipts and registered thread
+reconciliation; application intake still requires an explicitly allowed channel.
+Membership and history scopes never grant access to private RKB sources.
+Socket Mode additionally needs an app-level `connections:write`
 token, and the app must be installed in the intended workspace. Store bot/app
 tokens in protected service configuration, never the identity table, repository
 or chat. The manifest alone is not proof of app creation or installation.
@@ -107,6 +110,66 @@ This finite check is **transport acceptance**, not a continuously running bot,
 dot wake-up, verified participant binding in production or full research E2E.
 The persistent authenticated request/executor/result/outbox adapter remains
 required; app creation and the test response do not waive it.
+
+## Durable expert request implementation
+
+`expert_requests.ExpertRequests` adds inbox, execution/result/outbox states and
+per-request events to the same corpus SQLite file. This implementation is still
+source-only; the executor MCP/API and production supervisor have not been wired.
+It does not replace the complete channel or importer acceptance.
+
+- Accept resolves the exact verified Slack tuple inside the same transaction,
+  rechecks current participant rights, and deduplicates both event ID and the
+  observed message/version. Sender/route/scope never come from message text.
+- Narrow executor, delivery and notifier service identities are scoped to the
+  fixed application/team. Only hashes of their credentials are stored in SQLite;
+  rotation/revocation uses an audited epoch. No owner OAuth bearer is forwarded.
+- A lease returns one opaque execution capability bound to the request,
+  initiator, original external binding revision, executor and generation. These
+  fences apply inside participant authorization on every journal read/write.
+  Expiry, reclaim, completed results and service revocation reject late actions.
+- Journal write keys are scoped to the bound request. Contributions preserve
+  the separate human initiator and actual executor; a result does not create
+  human approval. Concurrent requests cannot accidentally replay each other's
+  domain receipts merely by choosing the same short operation key.
+- Resource dependencies observed by journal reads/writes are retained by the
+  server. Omitting their IDs from a result does not remove their ACL from the
+  next readback or delivery check. Source-search/proof adapters must add the same
+  tracking before exposing those operations; they are not wired yet.
+- Every group route is public-only, including private channels and MPIMs.
+  Until a reviewed public case export exists, the bound group context refuses
+  personal case/profile operations rather than exposing their private fields.
+  Full public projections remain an explicit required implementation item.
+- Result commit and delivery are separate. A stable delivery identity is
+  persisted before native I/O. A second claim for `sending`/`unknown` requires
+  reconciliation and never authorizes another send. Native 429/no-effect replies
+  retain the same identity and honor Retry-After without shortening its value.
+- Actual source/case rights are checked again immediately before sending.
+  A blocked result is retained and does not starve later permitted requests.
+  A genuine observed receipt records what occurred even after access changed;
+  it does not make revoked content readable again.
+
+`slack_expert.SlackExpertAdapter` supplies independent reconnect/intake and
+outbox/readback loops with bounded native calls, jitter, provider identity checks
+and structured correlation-only logging. It verifies raw HTTP HMAC/timestamps
+where that transport is used; Socket Mode verifies the configured bot/team and
+accepts only matching app events. Durable commit precedes event ACK. Self-messages
+cannot create recursive research requests; matching native echoes can confirm
+an uncertain outgoing effect. Paged thread readback resumes by cursor and backs
+off durably; absent/incomplete history never permits a resend.
+
+Outgoing text uses plain-text blocks with exact character-preserving portions,
+so model text cannot activate Slack mentions. The receipt compares their exact
+content after decoding **only once** Slack's three control escapes (`amp`, `lt`,
+`gt`). This is wire decoding, not general/recursive HTML normalization.
+
+A real native block test initially returned a different wire hash for `<`, `>`
+and `&`. That negative original is retained. Independent bot-token GET readback
+of the same provider message established the exact escaping and matching client
+ID; final mechanical decoding matches the intended SHA without editing or
+resending the original message. The bot's private-thread readback permission is
+therefore observed, not inferred solely from a scope declaration. This proves
+native serialization/correlation only, not full expert research acceptance.
 
 ## Verification
 

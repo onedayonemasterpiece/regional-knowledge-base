@@ -19,6 +19,7 @@ from .disagreement_contracts import (
 )
 from .sqlite_corpus import canonical
 from .story_registry import StoryRegistry
+from .request_authority import track_resources
 
 ROLES = {"viewer": 1, "contributor": 2, "curator": 3, "manager": 4}
 
@@ -92,6 +93,8 @@ class DisagreementJournal:
               operation_id TEXT NOT NULL UNIQUE, case_id TEXT NOT NULL REFERENCES disagreement_cases(id),
               result TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(actor_id,operation_key));
             """)
+            if "request_id" not in {r["name"] for r in db.execute("PRAGMA table_info(disagreement_operations)")}:
+                db.execute("ALTER TABLE disagreement_operations ADD COLUMN request_id TEXT")
 
     def _actor(self, db, principal, policy_capability="case_read"):
         if self.participants is not None:
@@ -130,11 +133,15 @@ class DisagreementJournal:
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", key):
             fail("invalid_operation_key")
         request_hash = hashlib.sha256(canonical([case_id, action, payload, expected]).encode()).hexdigest()
+        request_id=getattr(principal,"request_id",None)
+        key=request_id+":"+key if request_id else key
         with self.corpus.connect() as db:
             db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN IMMEDIATE")
             actor = self._actor(db, principal, policy_capability)
             case = self._case(db, actor, case_id, capability) if case_id else None
+            if case:
+                track_resources(db,principal,case_ids=[case_id],document_ids=[r[0] for r in db.execute("SELECT DISTINCT document_id FROM disagreement_evidence WHERE case_id=?",(case_id,))])
             saved = db.execute("SELECT * FROM disagreement_operations WHERE actor_id=? AND operation_key=?", (actor, key)).fetchone()
             if saved:
                 # Authorization precedes both receipt disclosure and exact replay.
@@ -146,18 +153,21 @@ class DisagreementJournal:
                 fail("revision_conflict")
             result = apply(db, actor, case)
             result.update(operation_id=str(uuid4()), state="applied")
-            db.execute("INSERT INTO disagreement_operations VALUES(?,?,?,?,?,?,?)",
-                       (actor, key, request_hash, result["operation_id"], result["case_id"], canonical(result), now()))
+            db.execute("INSERT INTO disagreement_operations(actor_id,operation_key,request_hash,operation_id,case_id,result,created_at,request_id) VALUES(?,?,?,?,?,?,?,?)",
+                       (actor, key, request_hash, result["operation_id"], result["case_id"], canonical(result), now(),request_id))
             return result
 
     def operation_status(self, principal, operation_key):
+        request_id=getattr(principal,"request_id",None)
+        operation_key=request_id+":"+operation_key if request_id else operation_key
         with self.corpus.connect() as db:
-            db.execute("BEGIN")
+            db.execute("BEGIN IMMEDIATE" if request_id else "BEGIN")
             actor = self._actor(db, principal)
             saved = db.execute("SELECT * FROM disagreement_operations WHERE actor_id=? AND operation_key=?", (actor, operation_key)).fetchone()
             if not saved:
                 return {"state": "not_found"}
             self._case(db, actor, saved["case_id"])
+            track_resources(db,principal,case_ids=[saved["case_id"]])
             return json.loads(saved["result"])
 
     def create(self, principal, command: CaseCreate, operation_key):
@@ -233,6 +243,7 @@ class DisagreementJournal:
             text = region.get("source_text", "")
             if text[command.text_start:command.text_start + len(command.quote)] != command.quote:
                 fail("quote_mismatch")
+            track_resources(db,principal,document_ids=[command.document_id])
             ident = str(uuid4())
             seq = self._event(db, case_id, actor, "evidence_added", {"evidence_id": ident, "version": 1})
             value = {**payload, "text_end": command.text_start + len(command.quote),
@@ -255,7 +266,8 @@ class DisagreementJournal:
             if self.participants is not None:
                 value["attribution"] = self.participants.attribution(db, principal)
                 value["origin"] = "verified_external_account" if principal.route == "expert" else "authenticated_mcp_account"
-            db.execute("INSERT INTO disagreement_contributions VALUES(?,1,?,?,?,?,?,?)", (ident, case_id, actor, actor, canonical(value), seq, now()))
+            recorded_by=getattr(principal,"executor_id",None) or actor
+            db.execute("INSERT INTO disagreement_contributions VALUES(?,1,?,?,?,?,?,?)", (ident, case_id, actor, recorded_by, canonical(value), seq, now()))
             return {"case_id": case_id, "case_revision": case["revision"], "contribution_id": ident, "version": 1, "event_seq": seq}
         return self._mutate(principal, case_id, operation_key, "contribute", payload, apply)
 
@@ -270,7 +282,8 @@ class DisagreementJournal:
             version = expected_version + 1
             value = {**json.loads(old["payload"]), **command.model_dump(mode="json")}
             seq = self._event(db, case_id, actor, "contribution_corrected", {"contribution_id": str(contribution_id), "version": version})
-            db.execute("INSERT INTO disagreement_contributions VALUES(?,?,?,?,?,?,?,?)", (str(contribution_id), version, case_id, actor, actor, canonical(value), seq, now()))
+            recorded_by=getattr(principal,"executor_id",None) or actor
+            db.execute("INSERT INTO disagreement_contributions VALUES(?,?,?,?,?,?,?,?)", (str(contribution_id), version, case_id, actor, recorded_by, canonical(value), seq, now()))
             return {"case_id": case_id, "case_revision": case["revision"], "contribution_id": str(contribution_id), "version": version, "event_seq": seq}
         return self._mutate(principal, case_id, operation_key, "correct_contribution", payload, apply)
 
@@ -307,9 +320,10 @@ class DisagreementJournal:
         tables = {"evidence": "disagreement_evidence", "contributions": "disagreement_contributions",
                   "conclusions": "disagreement_conclusions", "history": "disagreement_events"}
         with self.corpus.connect() as db:
-            db.execute("BEGIN")
+            db.execute("BEGIN IMMEDIATE" if getattr(principal,"request_id",None) else "BEGIN")
             actor = self._actor(db, principal)
             case = self._case(db, actor, case_id)
+            track_resources(db,principal,case_ids=[case_id],document_ids=[r[0] for r in db.execute("SELECT DISTINCT document_id FROM disagreement_evidence WHERE case_id=?",(case_id,))])
             header = {**json.loads(case["payload"]), "case_id": case_id, "case_revision": case["revision"],
                       "state": case["state"], "event_seq": case["event_seq"], "current_conclusion_id": case["current_conclusion_id"]}
             if section == "case":
