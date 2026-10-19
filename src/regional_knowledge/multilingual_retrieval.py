@@ -1,6 +1,6 @@
 """Main-tier query jobs, explicit rank fusion and ACL-bound result hydration."""
 import asyncio,hashlib,json,logging,os,time
-from .bge_queue import BgeQueue
+from .bge_queue import BgeQueue,BgeQueueCapacityError
 from .bge_contract import SPACE as BGE_SPACE,validate_vector
 from .e5_contract import SPACE as E5_SPACE
 from .contracts import SearchOutput,SearchResult
@@ -36,6 +36,13 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
             main_job_id=await asyncio.to_thread(
                 queue.enqueue,principal.subject,cache_key,[query],
                 identity={'query_sha256':query_hash})
+    except BgeQueueCapacityError:
+        fast=await backend.search(
+            query,principal,match_count=match_count,_fast_only=True,
+            **({'document_ids':document_ids} if document_ids is not None else {}))
+        logger.info(json.dumps({'event':'main_retrieval_deferred','state':'pending',
+            'reason_code':'capacity_wait','retrieval_mode':fast.retrieval_mode}))
+        return fast.model_copy(update={'main_state':'pending','wait_reason':'capacity_wait'})
     except RuntimeError:
         fast=await backend.search(
             query,principal,match_count=match_count,_fast_only=True,

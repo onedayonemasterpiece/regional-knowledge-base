@@ -782,12 +782,12 @@ class SupabaseRestBackend(KnowledgeBackend):
         found = await self.search(query, principal, **({'main_job_id': main_job_id} if main_job_id else {}), **({'document_ids':document_ids} if document_ids is not None else {}))
         selected = found.results[:limit]
         if not selected:
-            return EvidenceSearchOutput(evidence=[], mode=found.mode, retrieval_mode=found.retrieval_mode, retrieval_policy=found.retrieval_policy, main_state=found.main_state, main_job_id=found.main_job_id, indexing=found.indexing, latency_ms=round(1000*(time.monotonic()-started),1), timings={**found.timings,"hydration_seconds":0,"total_seconds":time.monotonic()-started})
+            return EvidenceSearchOutput(evidence=[], mode=found.mode, retrieval_mode=found.retrieval_mode, retrieval_policy=found.retrieval_policy, main_state=found.main_state, main_job_id=found.main_job_id, wait_reason=found.wait_reason, indexing=found.indexing, latency_ms=round(1000*(time.monotonic()-started),1), timings={**found.timings,"hydration_seconds":0,"total_seconds":time.monotonic()-started})
         hydration_start = time.monotonic()
         evidence = await asyncio.gather(
             *(self.fetch(item.id, principal) for item in selected)
         )
-        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode, retrieval_mode=found.retrieval_mode, retrieval_policy=found.retrieval_policy, main_state=found.main_state, main_job_id=found.main_job_id, indexing=found.indexing, latency_ms=round(1000*(time.monotonic()-started),1), timings={**found.timings,"hydration_seconds":time.monotonic()-hydration_start,"total_seconds":time.monotonic()-started})
+        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode, retrieval_mode=found.retrieval_mode, retrieval_policy=found.retrieval_policy, main_state=found.main_state, main_job_id=found.main_job_id, wait_reason=found.wait_reason, indexing=found.indexing, latency_ms=round(1000*(time.monotonic()-started),1), timings={**found.timings,"hydration_seconds":time.monotonic()-hydration_start,"total_seconds":time.monotonic()-started})
 
     async def document_access(
         self,

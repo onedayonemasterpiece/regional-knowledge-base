@@ -22,6 +22,12 @@ JOB_SECONDS = 180
 DONE_QUERY_RETENTION_SECONDS = 24 * 3600
 DONE_AUDIT_RETENTION_SECONDS = 24 * 3600
 
+
+class BgeQueueCapacityError(RuntimeError):
+    """No computational slot yet; this does not establish provider outage."""
+    code = "capacity_wait"
+
+
 class BgeQueue:
     def __init__(self, path, *, clock=time.time):
         self.path = Path(path)
@@ -119,7 +125,7 @@ class BgeQueue:
                 if previous['state']!='done':self._ensure(db,now)
                 return previous['id']
             if db.execute("select count(*) from jobs where state!='done'").fetchone()[0]>=256:
-                raise RuntimeError('BGE queue full')
+                raise BgeQueueCapacityError('BGE queue full')
             self._ensure(db,now);job_id=str(uuid.uuid4())
             db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)',
                        (job_id,actor,idempotency,kind,json.dumps(texts),json.dumps(identity),'pending',now,now))

@@ -5,7 +5,9 @@ Status: **in progress**, against the complete owner scope in
 [PMI](../testing/rkb-disagreement-pmi-20261018.md) and
 [60-item audit](../reports/illustration-critical-audit-claude-20261019.md).
 The [acceptance matrix](../testing/rkb-full-implementation-status-20261019.json)
-retains all 58 KB checks, nine E2E routes and 60 audit entries. Partial component
+retains all 58 KB checks, nine E2E routes and 60 audit entries, plus the
+[owner-added load-management scope](../designs/user-request-load-management-20261019.md)
+and its deterministic/calibration/live acceptance records. Partial component
 evidence is not a PMI PASS or live acceptance.
 
 ## Current implementation
@@ -336,3 +338,41 @@ readback and the prescribed non-owner live PMI remain unverified. Enabling the
 MCP Events worker additionally uses the existing event configuration described
 above, including the exact existing loopback callback allowlist and stable
 private encryption key; no gateway is introduced.
+
+
+## Owner-added user-request load management
+
+The active implementation scope now includes the [technical design at 8cf70e0](../designs/user-request-load-management-20261019.md)
+and [agreed product requirements at a753a4e](../user-request-load-management.md).
+Their exact two document changes were merged from current `origin/main` without
+replacing ongoing expert development. All original protected requirements stay
+unchanged; `CORE-REQUEST-LOAD-MANAGEMENT` was added through the authorized typed
+requirements update. The existing request runtime is the owner of lifecycle;
+there is no second Slack scheduler, broker or control database.
+
+One concrete defect identified by the design is fixed: a full existing bounded
+BGE computational queue previously raised generic RuntimeError and was reported
+as provider `unavailable`. It now raises typed `BgeQueueCapacityError` and returns
+`main_state=pending`, `wait_reason=capacity_wait`, retaining authorized fast
+results. The optional reason survives `knowledge_search` evidence hydration.
+No extra job/worker launch is created on overflow. The original 256 cap and exact
+idempotency/replay remain unchanged. Targeted tests use the actual full queue
+and current source ACL; they do not run BGE locally or contact a provider.
+
+This is a partial classification correction, not shared admission or complete
+load acceptance. The next change must generalize the same `ExpertRequests`
+identity/origin/dialog/context/result contract for Slack and a second client,
+make eligible-head/person fairness unavoidable even for claim(request_id) and
+wake events, then add measured stage permits and persistent wait/checkpoint/
+notification handling. All search paths must share stage admission while the
+protected evidence-search deadline remains 2 seconds. Resource limits and ETA
+seeds require actual calibration; they will not be guessed from RAM size or a
+unit-test constant. The added load checks remain NOT_RUN until their specified
+scope is proved, alongside the existing full journal/audit/PMI objective.
+
+
+Integrated local validation after native OAuth, persistent runtime/admin and the
+capacity classification change: **651 passed,31 skipped,2 dependency/schema
+warnings**. Full load-management/calibration/live checks remain open; these
+results prove the current component regressions, not measured resource capacity
+or final conversational delivery.

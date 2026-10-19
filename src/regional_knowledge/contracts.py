@@ -439,6 +439,7 @@ class SearchOutput(BaseModel):
     latency_ms: float | None = Field(default=None,ge=0)
     main_state: Literal['disabled','starting','pending','ready','unavailable'] = 'disabled'
     main_job_id: str | None = None
+    wait_reason: Literal['capacity_wait'] | None = None
     indexing: IndexingStatus | None = None
     timings: dict[str, float] = Field(default_factory=dict, exclude=True)
 
@@ -459,6 +460,7 @@ class EvidenceSearchOutput(BaseModel):
     latency_ms: float | None = Field(default=None,ge=0)
     main_state: Literal['disabled','starting','pending','ready','unavailable'] = 'disabled'
     main_job_id: str | None = None
+    wait_reason: Literal['capacity_wait'] | None = None
     indexing: IndexingStatus | None = None
     timings: dict[str, float] = Field(default_factory=dict, exclude=True)
 

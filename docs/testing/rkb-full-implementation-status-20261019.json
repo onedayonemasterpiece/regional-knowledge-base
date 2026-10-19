@@ -1,5 +1,5 @@
 {
-  "objective": "Implement all referenced designs, full PMI and60-item audit; completion requires evidence for every requirement.",
+  "objective": "Implement the complete journal/collaboration/participants/POI/static-pages design, full PMI, all60 audit findings, and the owner-added user-request load-management design and agreed requirements; completion requires matching evidence for every scope.",
   "source_design_commit": "9d56b10c65d7c867f47f3d9f77fc002d60278b46",
   "audit_commit": "93e79ca246b200635026d09e56ef7b8a150b4785",
   "status": "IN_PROGRESS",
@@ -425,13 +425,7 @@
       "action": "Попросить «покажи мои разногласия и где обсуждать» в одном сообщении",
       "oracle": "Бот находит конкретные attributed/assigned/followed дела, для каждого показывает разрешённый следующий шаг и только реально существующую VK-ссылку либо статус очереди",
       "status": "NOT_RUN",
-      "evidence": [],
-      "partial_component_evidence": [
-        "src/regional_knowledge/personal_auth.py",
-        "src/regional_knowledge/personal_auth_cli.py",
-        "src/regional_knowledge/oauth_provider.py",
-        "tests/test_personal_auth.py"
-      ]
+      "evidence": []
     },
     {
       "id": "KB-29",
@@ -1277,6 +1271,131 @@
       "line": 878,
       "status": "REQUIRES_CURRENT_EVIDENCE",
       "evidence": []
+    },
+    {
+      "id": "LOAD-D01",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 251,
+      "action": "Два зависимых вопроса одного диалога: B не claimable до результата/доставки A; B получает ответ A в контексте, в том числе после restart.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-D02",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 252,
+      "action": "A отправляет десять запросов, B один; B входит в ближайший fair круг. A создаёт десять диалогов: это не десять fairness subjects.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-D03",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 253,
+      "action": "Несколько клиентов одного verified человека имеют общий fairness subject; spoofed dialog/person/tenant отвергнуты.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-D04",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 254,
+      "action": "Явный claim(request_id), wake event, duplicate delivery и retry не обходят admission.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-D05",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 255,
+      "action": "Разные диалоги реально параллельны при свободных ресурсах; один blocked/unknown dialog не останавливает остальных.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-D06",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 256,
+      "action": "Рестарт на каждой границе: до/после intake commit, claim, dependency enqueue, result commit, before/after external send. Ни потерянных accepted inputs, ни stale generation writes, ни слепого повторного send.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-D07",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 257,
+      "action": "ETA 10 секунд включительно даёт ноль notices; >10 — один. Значительное увеличение finish, coalescing, no spam after restart, только ближайший person request; final подавляет ещё не отправленное waiting.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-D08",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 258,
+      "action": "BGE queue full/E5 queue full → capacity_wait, не outage. Provider failure → ограниченный retry или явный финальный unavailable. pending не считается failed sample.",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/multilingual_retrieval.py",
+        "tests/test_load_capacity_wait.py"
+      ]
+    },
+    {
+      "id": "LOAD-D09",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 259,
+      "action": "Реальное уменьшение available budget: новых тяжёлых starts нет, текущая bounded работа корректно завершает транзакцию, все accepted requests остаются.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-D10",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 260,
+      "action": "Импортный producer, включая story vectors, не забирает query reserve. Memory reservation атомарна при двух конкурентных claimers.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-D11",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 261,
+      "action": "ACL revoke после enqueue/после source read/до delivery: приватная информация не утекает; safe recovery не подменяет человека owner credential.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-CALIBRATION",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 263,
+      "action": "Measure every specified cold/warm/cache/retrieval/fetch/answer/proof/import/E5-token/vector class, actual resource envelope and exact candidate/corpus/models; n, stage/queue/e2e duration, RSS/HWM, pressure, SQLite/WAL, concurrency and useful authorized result.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-LIVE",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 263,
+      "action": "Real clients/actors including second-client result sink+ACK, burst10+1, multiple dialogs and dependent context, every material import phase with at least one search, resource increase/decrease, actual supported-source evidence, restart and unchanged active revision.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-LATENCY-QUALITY",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 263,
+      "action": "Preserve protected latency/quality gates and report queue wait separately from public evidence-search and time-to-final-answer; pending alone is not acceptance.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-ETA-HOLDOUT",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 263,
+      "action": "Measured calibrated ETA on unseen holdout requests: signed/absolute error, interval coverage, cold/warm/resource-resize slices; establish/document a technical accuracy goal only after baseline, not an invented owner requirement.",
+      "status": "NOT_RUN",
+      "evidence": []
     }
   ],
   "design_sections": [
@@ -1648,7 +1767,22 @@
       ],
       "validation": "Full runtime regression646 passed/31 skipped/2 warnings before additive service-admin CLI; focused tests cover native sender identity before claim/send, late-token race, session cancellation, offline Slack with actual OAuth+MCP read still available. Private installed credential syntax checked without exposing values. Additional admin CLI replay/revoke/secret-output checks run separately. Final additive runtime/admin/adapter focused set23 passed, including revocation after loss of the original credential file; no secret values printed.",
       "limits": "Production flags, service grants and canonical Slack owner binding not enabled; no persistent live process or actual dot wake/answer readback. Non-owner/VK live fixtures still needed for prescribed acceptance."
+    },
+    {
+      "id": "load_capacity_reason",
+      "status": "PARTIAL_SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/multilingual_retrieval.py",
+        "src/regional_knowledge/contracts.py",
+        "src/regional_knowledge/supabase_backend.py",
+        "tests/test_load_capacity_wait.py"
+      ],
+      "validation": "31 targeted tests passed, then full integrated local suite651 passed/31 skipped/2 warnings. Real full256-job queue, exact replay while full, authorized fallback and current ACL through evidence hydration; no provider/model calls. Shared admission/ETA acceptance is not inferred.",
+      "limits": "Only BGE queue-full classification fixed. Shared cross-client dialogs/fair heads/permits/checkpoints, E5 handling, measured resource reserve/resize, durable ETA notices, actual second-client delivery and calibration remain open."
     }
   ],
-  "requirement_clarification": "docs/requirements/unified-expert-access-20261019.md"
+  "requirement_clarification": "docs/requirements/unified-expert-access-20261019.md",
+  "load_design_commit": "8cf70e00ce2e1dfa19e909eb51bb94b9bdc09fdc",
+  "load_requirements_commit": "a753a4ef84291e73c8cff2c80ef69352d43b2b8e"
 }
