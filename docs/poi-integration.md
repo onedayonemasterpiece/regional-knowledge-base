@@ -545,3 +545,20 @@ observations with separate IDs. It cannot write into RKB's SQLite or
 replace `streetstory://poi/...` IDs. No accepted Kneiphof layer is
 available on this documented checkpoint; map/vector feature acceptance
 remains pending without a real immutable layer+geometry revision.
+
+
+## Follow-up: evidence delivery and POI source facts — 2026-10-18 (designed)
+
+**Do not equate an owner POI identity link with an admitted, source-backed POI fact.** The implemented `poi_registry`/Street Story `/v1/internal/rkb-poi` pair creates or selects a canonical POI and links the unchanged RKB source entity. Its successful receipt is not a fact-evidence acceptance. `poi_context` projects source locations and stories; it is not the complete atomized fact query.
+
+The RKB producer already stages POI facts, creates versioned `poi.fact_evidence.v1` envelopes and atomically writes `rkb_integration_outbox`. Street Story has `poi_external.ingest_poi_evidence`, `poi_claims`, `poi_claim_evidence` and semantic review. **The checked code does not yet provide a verified outbox worker → authenticated fact-intake endpoint → durable claim evidence receipt chain.** Wire those existing pieces, not a second POI knowledge database. Public deliveries and private resource-authorized deliveries remain separate; no fallback to Android device token or global owner impersonation.
+
+Facts found later by the model's mandatory post-activation disagreement scan must be registerable against the **same accepted source revision and exact page/region**, without reimporting the book or mutating immutable OCR. Conversely, a Street Story query starting from a canonical POI should ask RKB for additional authorized, evidence-backed candidates and let the model decide whether to enrich an existing claim, create a candidate or preserve an incompatible version. Name proximity is not a canonical POI match.
+
+**Missing evidence resolution:** current `knowledge://evidence/<candidate-id>` is not proved fetchable through the normal RKB chunk-fetch route. Before claiming a fact is reviewable, the producer must provide an authorized resolver for document/revision, source component/article/author role, physical and printed page, original quote, page/region/chunk and `source_proof` highlight. Street Story should show a legible bibliographic citation rather than using a document URI as the title; unknown article authors stay unknown, not silently attributed to collection editors. The strict v1 event schema should not be modified by adding unexpected fields without a coordinated producer/consumer contract.
+
+Reprocess, deleted or restricted sources and changed contributor/grant state must update the **active evidence projection**, retaining historical receipts but excluding superseded/retracted/unavailable evidence from current public fact selection. One independently supported claim must survive revocation of a different supporting book. Conflicts are model-reviewed under Street Story's existing POI fact-conflict owner; a linked RKB disagreement case is reference/support, not another arbiter.
+
+The import/report contract separates `source_activated`, `disagreement_scan_complete`, `poi_identity_linked`, `poi_evidence_pending/delivered`, and `poi_claim_candidate/accepted/contested`. A Street Story outage does not roll back source acceptance; it also does **not** justify the claim "POI successfully enriched" before a real native receipt.
+
+Full proposed implementation, owner-managed participant identity and minimal tool list: [participants and POI fact bridge](design/rkb-participants-poi-fact-bridge-20261018.md). Acceptance scenarios are in [PMI](testing/rkb-disagreement-pmi-20261018.md). This section is a design gap audit; not a completed live acceptance.
