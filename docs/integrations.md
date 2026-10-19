@@ -134,6 +134,16 @@ rights and require a separately allowed public projection. Whitelist moderation
 deletes disallowed comments after publication; it is not a platform guarantee
 that outsiders cannot post.
 
+## Public static disagreement case pages on kenigevents.ru (planned)
+
+RKB owns the case, its changing contents, source/evidence provenance and a **public-page projection** of one selected case revision. It provides a permanent stable random slug, a versioned public snapshot and page publication status/receipts through disagreement_get/export; it does not serve viewer requests.
+
+The existing events-bot-new/site Astro SSG (`output: static`) consumes **only public-ready snapshot data** in its normal build/publish pipeline for kenigevents.ru. This creates a shareable route such as `/raznoglasiya/<slug>/` with sources/book covers/authors/reviews, positions, public expert contributions and tentative conclusions, responsive on desktop and mobile. **The page has no authentication**: any visitor with the URL may read it. Random-looking slugs and optional noindex are not access controls; private scans, unapproved material, unpublished expert identity or derived private assertions must never be exported as page input, HTML, JS, image files, OpenGraph metadata or sitemap.
+
+The site does not embed RKB owner credentials, fetch private RKB data from the browser or deploy a second case service. The existing static-build mechanism owns the release; MCP returns the actual page URL only after successful generated-artifact/provider readback. A new public revision keeps the same URL; failed builds leave last-good with its actual timestamp; withdrawal clears the released object/CDN as far as controllable. VK links are presented only once the VK post is published, never from a draft reservation.
+
+Specification and acceptance: [public Astro case-page requirement](requirements/disagreement-case-static-pages-20261019.md), [RKB disagreement PMI](testing/rkb-disagreement-pmi-20261018.md). This integration is designed, **not already shipped**.
+
 ## Cross-service references
 
 Use typed stable opaque references, for example:
