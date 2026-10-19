@@ -398,10 +398,40 @@ Regional Knowledge now has a local implementation slice for the producer side:
   `pending_authorization`;
 - outbox insertion and `active_revision` activation share one DB transaction.
 
-This checkpoint deliberately stops **before** network delivery. A Street Story
-ingest endpoint, authorization/grant resolver and retry worker remain separate
-acceptance gates. Their absence cannot make book finalization fail after the DB
-transaction succeeds.
+This checkpoint deliberately stops **before** network delivery; delivery is the
+separate worker below. Its absence or a Street Story outage cannot make book
+finalization fail after the DB transaction succeeds.
+
+## Delivery to Street Story — 2026-10-19
+
+Owner decision (2026-10-19): when RKB imports a book, its POI facts must reach
+Street Story's POI registry, creating a POI there when the place is new. Until this
+date no event had ever been delivered: the outbox was written, but there was no
+sender and Street Story exposed no intake.
+
+- Worker: `python -m regional_knowledge.street_story_delivery`
+  (`src/regional_knowledge/street_story_delivery.py`), a user systemd service on the
+  same host as Street Story.
+- Target: Street Story loopback intake `POST http://127.0.0.1:8188/v1/internal/rkb-poi-evidence`
+  (`RKB_STREET_STORY_POI_URL`), one event per request, with the dedicated service key
+  from `RKB_STREET_STORY_POI_TOKEN_FILE` (0600; the same key Street Story holds as
+  `STREET_STORY_RKB_POI_SERVICE_TOKEN`). No user bearer or OAuth token is sent.
+- States: `pending_authorization` → `pending_delivery` → `delivering` → `delivered`
+  (Street Story receipt in `remote_receipt`); failures go to `retry_wait` with
+  exponential backoff (30 s … 1 h); `409/413/422` and 12 exhausted attempts go to
+  `dead_letter` with `last_error_code`. Street Story is idempotent by `event_id` and
+  `idempotency_key`, so a retry after a lost reply returns the stored receipt.
+- Private evidence: an event leaves `pending_authorization` only when its owner is in
+  `RKB_STREET_STORY_GRANTED_OWNERS`. The owner of the corpus granted delivery of their
+  private book evidence to their own Street Story on 2026-10-19; nothing private of
+  other users is sent. Street Story keeps the event's visibility and owner scope.
+- Readback: `GET /v1/internal/rkb-poi-evidence/{event_id}` on Street Story returns
+  delivered / POI resolved / claim and review state / superseded by a newer revision.
+- Street Story side contract: `docs/rkb-poi-link.md` in onedayonemasterpiece/street-story.
+
+Observed on 2026-10-19: 19 finalized private books, 409 `poi_ref` entities, but a single
+outbox event — book finalization rarely produces POI fact candidates. Delivery is now
+wired end to end; the volume of POI facts depends on extraction at staging.
 
 ## Acceptance gates
 
