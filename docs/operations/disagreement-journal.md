@@ -251,7 +251,7 @@ calls. Full live PMI and external-client acceptance remain NOT_RUN.
 The subsequent candidate extends the same embedded authorization server with
 personal credentials for existing registered people. `PersonalPolicy` checks the
 current canonical profile; no separate identity registry or public issuance tool
-is introduced. The local owner CLI writes the original code to a0600 file before
+is introduced. The local owner CLI writes the original code to a 0600 file before
 persisting its hash/receipt and supports exact-file recovery after interruption.
 Sessions and grants retain credential ID/epoch; revocation removes every derived
 session/code/access/refresh family. Current profile expiry/disable is checked on
@@ -268,7 +268,7 @@ OAuth CLI/web-worker state mutations now share a stable OS file lock; file-lock
 waits execute off the HTTP loop and a real contention test verifies this.
 
 
-Native personal-auth validation: full local suite **639 passed,31 skipped,
+Native personal-auth validation: full local suite **639 passed, 31 skipped,
 2 dependency/schema warnings**. Focused native OAuth/MCP/CLI tests also passed;
 HTTP tests admit both ChatGPT/Grok callback shapes but do not claim real client
 UI or real non-owner acceptance. The earlier owner regression test failure was
@@ -276,3 +276,63 @@ an inconsistent fixture: reopening the same OAuth store generated a different
 owner UUID. Its fixture now retains the same synthetic configured owner; a new
 negative test explicitly proves that actually changing the owner UUID invalidates
 previous owner tokens. The guard was preserved.
+
+
+## Persistent Slack lifecycle in the existing backend
+
+`RKB_EXPERT_REQUESTS_ENABLED=1` plus `RKB_SLACK_RUNTIME_ENABLED=1` attaches the
+installed app's intake/outbox loops to the existing backend lifespan. The same
+private `RKB_SLACK_CONFIG_PATH` includes `credentials_file` (the existing
+`SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` file), `delivery_service_id` and
+`delivery_service_token_file`. All credential inputs must be private regular
+files; user tokens and extra credential aliases are rejected. A current audited
+app/team-scoped **delivery** grant is required. No startup action grants rights,
+links a person or substitutes an owner credential.
+
+Prepare the narrow service grant under the existing RKB environment and actual
+installation config, using a pre-existing private 0700 directory:
+
+```bash
+regional-knowledge-expert-admin --service-id rkb_expert_delivery --kind delivery \
+  --token-file /home/dev/.local/state/regional-knowledge-base/slack-delivery.token \
+  --expected-epoch 0 --generate
+```
+
+The command writes a 0600 token file before the audited DB mutation and prints
+only its service/epoch receipt. Repeating the same command reconciles the same
+file/token/epoch; it never replaces an existing token. To revoke, reuse the file
+and current epoch with `--disable`. If the old credential file is lost, an
+explicit `--generate --disable` with a new private file revokes the old grant
+without requiring possession of the lost secret. An old bootstrap replay cannot
+undo that revocation. Provision an **independent executor** grant for dot with the same
+command and `--kind executor`; give it only to the protected executor MCP
+connection. This is the same RKB resource through loopback on this host, not a
+new MCP registration, owner bearer or daemon. Exact app/team/channel values come
+from the verified installation; no example ID is an identity proof. Native
+human bindings are still established through the participant policy separately.
+
+The supervisor starts asynchronously, so Slack/provider failure leaves the
+canonical MCP and source ingestion available. Existing requests/results remain
+in SQLite; reconnect preserves their IDs. Shutdown cancels socket/outbox tasks
+and closes owned HTTP sessions. Actual sender `auth.test` is checked before a
+result can be claimed or posted, not only by a receipt after the effect. A late
+auth response cannot validate a replaced bot token. Invalid sender configuration
+leaves the result queued without a native send. Existing unknown-outcome
+reconciliation and native Retry-After protections remain in force.
+
+Source tests cover the actual lifecycle through HTTP OAuth+MCP source reads,
+including an unavailable Slack provider; private config, wrong service kind,
+sender mismatch, replaced-token races and cancellation are separate checks.
+The installed private bot/app credential file also passes a read-only syntax and
+permissions check; its values were not copied into reports. The runtime source
+regression set passed **646 tests, 31 skipped, 2 warnings** before the additive
+service-admin CLI; the latter has additional focused replay/revoke/no-secret
+checks (23 runtime/adapter tests passed after the additive CLI changes). Exact final-head CI is tracked in PR151.
+
+This remains source implementation: the production expert flags/grants/bindings
+have not been enabled, and no new real Slack message or expert credential was
+sent in this step. Real dot subscription/wake, model execution, native answer
+readback and the prescribed non-owner live PMI remain unverified. Enabling the
+MCP Events worker additionally uses the existing event configuration described
+above, including the exact existing loopback callback allowlist and stable
+private encryption key; no gateway is introduced.

@@ -33,6 +33,7 @@ benchmarks = ["tokenizers>=0.21,<0.24"]
 [project.scripts]
 regional-knowledge-mcp = "regional_knowledge.server:main"
 regional-knowledge-personal-auth = "regional_knowledge.personal_auth_cli:main"
+regional-knowledge-expert-admin = "regional_knowledge.expert_admin:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/regional_knowledge"]

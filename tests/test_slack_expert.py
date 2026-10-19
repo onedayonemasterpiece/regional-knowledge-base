@@ -19,8 +19,18 @@ def payload(*,user='U1',channel='DU1',text='Synthetic request'):
             'event':{'type':'message','channel_type':'im','channel':channel,'user':user,'ts':'1792400000.1','text':text}}
 
 
-def adapter(q):
-    return SlackExpertAdapter(q.requests,q.delivery,bot_token='synthetic-bot',app_token='synthetic-app')
+async def adapter(q):
+    # These delivery tests begin after a successful native auth boundary;
+    # sender mismatch/rotation before first send have separate negative tests.
+    value=SlackExpertAdapter(q.requests,q.delivery,bot_token='synthetic-bot',app_token='synthetic-app')
+    original=value._api
+    async def authenticate(method,body,**kwargs):
+        assert method=='auth.test'
+        return {'team_id':'T111','user_id':'UBOT'}
+    value._api=authenticate
+    await value.authenticate()
+    value._api=original
+    return value
 
 
 def test_http_signature_exact_bytes_replay_and_injected_owner_fields():
@@ -52,7 +62,7 @@ def test_group_is_public_and_bot_self_message_never_becomes_a_request():
 
 @pytest.mark.asyncio
 async def test_socket_ack_after_durable_commit_and_duplicate_does_not_add_work(queue):
-    q=queue;a=adapter(q);seen=[]
+    q=queue;a=await adapter(q);seen=[]
     async def ack(value):
         with q.corpus.connect() as db:
             assert db.execute('SELECT count(*) FROM rkb_expert_requests').fetchone()[0]==1
@@ -67,7 +77,7 @@ async def test_socket_ack_after_durable_commit_and_duplicate_does_not_add_work(q
 
 @pytest.mark.asyncio
 async def test_failed_durable_accept_is_not_acknowledged(queue,monkeypatch):
-    q=queue;a=adapter(q);seen=[]
+    q=queue;a=await adapter(q);seen=[]
     def failure(_): raise RuntimeError('simulated storage unavailable')
     monkeypatch.setattr(q.requests,'accept',failure)
     async def ack(value):seen.append(value)
@@ -88,7 +98,7 @@ def native_body(q,body):
 @pytest.mark.asyncio
 async def test_native_verified_send_once_and_all_characters_retained(queue,monkeypatch):
     q=queue;lease,_=claim(q);text=('Synthetic <@U1> & literal &lt; and &amp; https://example.org/\n'*100)
-    save_result(q,lease,ExpertResult(text=text));a=adapter(q);calls=[]
+    save_result(q,lease,ExpertResult(text=text));a=await adapter(q);calls=[]
     async def api(method,body,**kwargs):
         calls.append((method,body));return native_body(q,body)
     monkeypatch.setattr(a,'_api',api)
@@ -103,7 +113,7 @@ async def test_native_verified_send_once_and_all_characters_retained(queue,monke
 
 @pytest.mark.asyncio
 async def test_timeout_after_possible_native_effect_never_reposts(queue,monkeypatch):
-    q=queue;lease,_=claim(q);save_result(q,lease);a=adapter(q);calls=[]
+    q=queue;lease,_=claim(q);save_result(q,lease);a=await adapter(q);calls=[]
     async def api(method,body,**kwargs):
         calls.append(body);raise asyncio.TimeoutError('simulated lost response')
     monkeypatch.setattr(a,'_api',api)
@@ -116,7 +126,7 @@ async def test_timeout_after_possible_native_effect_never_reposts(queue,monkeypa
 @pytest.mark.asyncio
 async def test_native_rate_limit_respects_retry_after_and_reuses_delivery_identity(queue,monkeypatch):
     from datetime import timedelta
-    q=queue;lease,_=claim(q);save_result(q,lease);a=adapter(q);calls=[]
+    q=queue;lease,_=claim(q);save_result(q,lease);a=await adapter(q);calls=[]
     async def api(method,body,**kwargs):
         calls.append(body)
         if len(calls)==1: raise SlackRateLimited(17)
@@ -136,7 +146,7 @@ async def test_access_revocation_does_not_starve_next_allowed_result(queue,monke
     q=queue;first,_=claim(q,observation('U1',1));second,_=claim(q,observation('U2',2))
     save_result(q,first);save_result(q,second)
     q.change(q.actors[0].subject,ParticipantGrant(capability='public_search',granted=False,reason='revoked'))
-    a=adapter(q);calls=[]
+    a=await adapter(q);calls=[]
     async def api(method,body,**kwargs):calls.append(body);return native_body(q,body)
     monkeypatch.setattr(a,'_api',api)
     assert not await a.send_one(first['request_id'])
@@ -157,7 +167,7 @@ def test_receipt_cannot_use_arbitrary_fallback_text_or_wrong_bot():
 
 @pytest.mark.asyncio
 async def test_lost_http_response_is_reconciled_by_verified_echo_without_new_request(queue,monkeypatch):
-    q=queue;lease,_=claim(q);save_result(q,lease);a=adapter(q)
+    q=queue;lease,_=claim(q);save_result(q,lease);a=await adapter(q)
     send=q.requests.claim_delivery(q.delivery,lease['request_id'])
     q.requests.unknown_delivery(q.delivery,lease['request_id'],send['delivery_id'])
     event={'type':'message','subtype':'bot_message','app_id':'A111','user':'UBOT','bot_id':'B111',
@@ -178,7 +188,7 @@ async def test_lost_http_response_is_reconciled_by_verified_echo_without_new_req
 @pytest.mark.asyncio
 async def test_unknown_delivery_native_readback_pages_resume_without_resend(queue,monkeypatch):
     from datetime import timedelta
-    q=queue;lease,_=claim(q);save_result(q,lease);a=adapter(q)
+    q=queue;lease,_=claim(q);save_result(q,lease);a=await adapter(q)
     send=q.requests.claim_delivery(q.delivery,lease['request_id'])
     q.requests.unknown_delivery(q.delivery,lease['request_id'],send['delivery_id'])
     calls=[]
@@ -200,7 +210,7 @@ async def test_unknown_delivery_native_readback_pages_resume_without_resend(queu
 
 @pytest.mark.asyncio
 async def test_empty_native_history_is_not_a_license_to_retry(queue,monkeypatch):
-    q=queue;lease,_=claim(q);save_result(q,lease);a=adapter(q)
+    q=queue;lease,_=claim(q);save_result(q,lease);a=await adapter(q)
     send=q.requests.claim_delivery(q.delivery,lease['request_id'])
     q.requests.unknown_delivery(q.delivery,lease['request_id'],send['delivery_id'])
     calls=[]

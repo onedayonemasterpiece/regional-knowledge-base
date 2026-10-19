@@ -18,7 +18,10 @@
         "src/regional_knowledge/request_authority.py",
         "src/regional_knowledge/slack_expert.py",
         "tests/test_expert_requests.py",
-        "tests/test_slack_expert.py"
+        "tests/test_slack_expert.py",
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
       ]
     },
     {
@@ -55,7 +58,10 @@
         "src/regional_knowledge/request_authority.py",
         "src/regional_knowledge/slack_expert.py",
         "tests/test_expert_requests.py",
-        "tests/test_slack_expert.py"
+        "tests/test_slack_expert.py",
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
       ]
     },
     {
@@ -123,7 +129,10 @@
         "src/regional_knowledge/expert_executor.py",
         "src/regional_knowledge/expert_events.py",
         "tests/test_expert_executor.py",
-        "tests/test_expert_events.py"
+        "tests/test_expert_events.py",
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
       ]
     },
     {
@@ -145,7 +154,10 @@
         "src/regional_knowledge/expert_executor.py",
         "src/regional_knowledge/expert_events.py",
         "tests/test_expert_executor.py",
-        "tests/test_expert_events.py"
+        "tests/test_expert_events.py",
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
       ]
     },
     {
@@ -489,7 +501,10 @@
         "src/regional_knowledge/personal_auth.py",
         "src/regional_knowledge/personal_auth_cli.py",
         "src/regional_knowledge/oauth_provider.py",
-        "tests/test_personal_auth.py"
+        "tests/test_personal_auth.py",
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
       ]
     },
     {
@@ -750,7 +765,12 @@
       "line": 128,
       "description": "чужой эксперт, публичное/закрытое, bot→dot без владельца (этап A, P0)",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
+      ]
     },
     {
       "id": "E2E-2",
@@ -823,7 +843,12 @@
       "line": 170,
       "description": "автоматизированный owner Slack research route (этапы A/B, P0/P1)",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
+      ]
     },
     {
       "id": "E2E-9",
@@ -1610,6 +1635,19 @@
       ],
       "validation": "Full local suite639 passed/31 skipped/2 dependency-schema warnings. Native non-owner HTTP login/consent/PKCE/MCP/source ACL/refresh/revoke, raw code rejected as MCP bearer, private-file CLI recovery without printing codes, stable-owner grant continuity and explicit changed-owner denial, account switch/expiry/HTML escaping, file-lock contention, one-tool Live cap revocation.",
       "limits": "No real expert credential issued or delivered, no production auth deployment, no real AI-client UI acceptance or full Slack/dot live cycle. Requires actual registered participant and controlled private delivery before live non-owner acceptance."
+    },
+    {
+      "id": "persistent_slack_runtime",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/slack_expert.py",
+        "src/regional_knowledge/expert_admin.py",
+        "src/regional_knowledge/server.py",
+        "tests/test_slack_runtime.py"
+      ],
+      "validation": "Full runtime regression646 passed/31 skipped/2 warnings before additive service-admin CLI; focused tests cover native sender identity before claim/send, late-token race, session cancellation, offline Slack with actual OAuth+MCP read still available. Private installed credential syntax checked without exposing values. Additional admin CLI replay/revoke/secret-output checks run separately. Final additive runtime/admin/adapter focused set23 passed, including revocation after loss of the original credential file; no secret values printed.",
+      "limits": "Production flags, service grants and canonical Slack owner binding not enabled; no persistent live process or actual dot wake/answer readback. Non-owner/VK live fixtures still needed for prescribed acceptance."
     }
   ],
   "requirement_clarification": "docs/requirements/unified-expert-access-20261019.md"

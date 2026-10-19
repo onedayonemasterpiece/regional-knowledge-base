@@ -124,6 +124,7 @@ class SlackExpertAdapter:
         self.bot_token=bot_token
         self.app_token=app_token
         self.session=session
+        self._verified_token_digest=None
 
     async def _api(self,method,payload,*,app_token=False):
         if self.session is None: raise SlackBoundaryError("slack_session_missing")
@@ -148,11 +149,16 @@ class SlackExpertAdapter:
             return body
 
     async def authenticate(self):
+        used_token=self.bot_token
         data=await self._api("auth.test",{})
-        if data.get("team_id")!=self.requests.team_id or data.get("user_id")!=self.requests.bot_user_id:
+        if (used_token!=self.bot_token or data.get("team_id")!=self.requests.team_id
+            or data.get("user_id")!=self.requests.bot_user_id):
             raise SlackBoundaryError("slack_bot_identity_mismatch")
+        self._verified_token_digest=hashlib.sha256(used_token.encode()).hexdigest()
 
     async def send_one(self,request_id=None):
+        if self._verified_token_digest!=hashlib.sha256(self.bot_token.encode()).hexdigest():
+            await self.authenticate()
         request_id=request_id or await asyncio.to_thread(self.requests.next_delivery,self.delivery_credentials)
         if not request_id: return False
         try:
@@ -167,6 +173,8 @@ class SlackExpertAdapter:
             return False
         origin=checked["origin"]
         try:
+            if self._verified_token_digest!=hashlib.sha256(self.bot_token.encode()).hexdigest():
+                await self.authenticate()
             body=await self._api("chat.postMessage",{"channel":origin["channel_id"],"thread_ts":origin["thread_ts"],
                 "text":checked["text"],"blocks":result_blocks(checked["text"]),"mrkdwn":False,"parse":"none",
                 "client_msg_id":checked["delivery_id"],"unfurl_links":False,"unfurl_media":False})
@@ -281,6 +289,10 @@ class SlackExpertAdapter:
                 try: await self.run()
                 finally:self.session=None
             return
+
+        # Verify the actual native sender before either loop can send a result.
+        # A readback rejection after chat.postMessage would be too late.
+        await self.authenticate()
 
         async def receive_loop():
             delay=1

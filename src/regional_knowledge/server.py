@@ -152,13 +152,20 @@ def _transport_security(resource_url: str | None = None) -> TransportSecuritySet
 @asynccontextmanager
 async def _research_runtime(server):
     events = getattr(server, "expert_events", None)
-    task = asyncio.create_task(events.run()) if events is not None else None
+    tasks = []
+    if events is not None:
+        tasks.append(asyncio.create_task(events.run(), name="rkb-expert-wake"))
+    slack = getattr(server, "expert_slack", None)
+    if slack is not None:
+        from .slack_runtime import supervise
+        tasks.append(asyncio.create_task(supervise(slack), name="rkb-expert-slack"))
     try:
         yield
     finally:
-        if task is not None:
+        for task in tasks:
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class KnowledgeMCPServer(MCPServer):
@@ -464,6 +471,10 @@ def build_server(
 
     # Optional narrow function-call bundles for the client application's own Live agent.
     # The default read-only Live surface above remains unchanged.
+    if (profile == "full" and os.getenv("RKB_SLACK_RUNTIME_ENABLED") == "1"
+        and (os.getenv("RKB_EXPERT_REQUESTS_ENABLED") != "1" or not hasattr(backend, "corpus")
+            or not os.getenv("RKB_OWNER_SUBJECT", "").strip())):
+        raise RuntimeError("Slack runtime requires the existing expert request authority")
     if profile in {"full", "live"} and hasattr(backend, "corpus") and os.getenv("RKB_OWNER_SUBJECT", "").strip():
         from .participants import Participants, RequestAuthority
         from .disagreement_tools import register_research_tools
@@ -495,6 +506,9 @@ def build_server(
             mcp._token_verifier=ResourceTokenVerifier(mcp._token_verifier,requests,resource_url)
             mcp.expert_requests=requests
             register_executor_tools(mcp,requests,backend)
+            if os.getenv("RKB_SLACK_RUNTIME_ENABLED") == "1":
+                from .slack_runtime import configured_adapter
+                mcp.expert_slack = configured_adapter(requests, config)
             if os.getenv("RKB_EXPERT_EVENTS_ENABLED") == "1":
                 from .expert_events import ExpertEvents
                 from .expert_event_mcp import register_event_methods
