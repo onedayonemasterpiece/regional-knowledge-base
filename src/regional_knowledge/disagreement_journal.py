@@ -38,8 +38,9 @@ def now():
 
 
 class DisagreementJournal:
-    def __init__(self, corpus):
+    def __init__(self, corpus, *, participants=None):
         self.corpus = corpus
+        self.participants = participants
         self.sources = StoryRegistry(corpus, migrate=False)
         with corpus.connect() as db:
             db.executescript("""
@@ -92,7 +93,9 @@ class DisagreementJournal:
               result TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(actor_id,operation_key));
             """)
 
-    def _actor(self, db, principal):
+    def _actor(self, db, principal, policy_capability="case_read"):
+        if self.participants is not None:
+            return self.participants.require(principal, policy_capability, connection=db)
         actor = str(UUID(str(principal.subject)))
         user = self.sources._corpus_row(db, "rkb_users", actor)
         if not user or user.get("status") != "active":
@@ -123,14 +126,14 @@ class DisagreementJournal:
                    (case_id, seq, actor, kind, canonical(payload), now()))
         return seq
 
-    def _mutate(self, principal, case_id, key, action, payload, apply, *, capability="contributor", expected=None):
+    def _mutate(self, principal, case_id, key, action, payload, apply, *, capability="contributor", expected=None, policy_capability="case_contribute"):
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", key):
             fail("invalid_operation_key")
         request_hash = hashlib.sha256(canonical([case_id, action, payload, expected]).encode()).hexdigest()
         with self.corpus.connect() as db:
             db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN IMMEDIATE")
-            actor = self._actor(db, principal)
+            actor = self._actor(db, principal, policy_capability)
             case = self._case(db, actor, case_id, capability) if case_id else None
             saved = db.execute("SELECT * FROM disagreement_operations WHERE actor_id=? AND operation_key=?", (actor, key)).fetchone()
             if saved:
@@ -149,6 +152,7 @@ class DisagreementJournal:
 
     def operation_status(self, principal, operation_key):
         with self.corpus.connect() as db:
+            db.execute("BEGIN")
             actor = self._actor(db, principal)
             saved = db.execute("SELECT * FROM disagreement_operations WHERE actor_id=? AND operation_key=?", (actor, operation_key)).fetchone()
             if not saved:
@@ -183,7 +187,7 @@ class DisagreementJournal:
             db.execute("INSERT INTO disagreement_case_versions VALUES(?,?,?,?,?)", (case_id, revision, canonical(snapshot), actor, now()))
             seq = self._event(db, case_id, actor, "revised", {"revision": revision, "reason": command.reason})
             return {"case_id": case_id, "case_revision": revision, "event_seq": seq}
-        return self._mutate(principal, case_id, operation_key, "revise", payload, apply, capability="curator", expected=expected_revision)
+        return self._mutate(principal, case_id, operation_key, "revise", payload, apply, capability="curator", expected=expected_revision, policy_capability="maintain_shared_summary")
 
     def grant(self, principal, case_id, expected_revision, command: CaseGrant, operation_key):
         payload = command.model_dump(mode="json")
@@ -202,7 +206,7 @@ class DisagreementJournal:
             db.execute("INSERT INTO disagreement_case_versions VALUES(?,?,?,?,?)", (case_id, revision, canonical(snapshot), actor, now()))
             seq = self._event(db, case_id, actor, "access_changed", payload)
             return {"case_id": case_id, "case_revision": revision, "event_seq": seq}
-        return self._mutate(principal, case_id, operation_key, "grant", payload, apply, capability="manager", expected=expected_revision)
+        return self._mutate(principal, case_id, operation_key, "grant", payload, apply, capability="manager", expected=expected_revision, policy_capability="maintain_shared_summary")
 
     @staticmethod
     def _references(db, case, evidence_ids, position_ids=()):
@@ -248,6 +252,9 @@ class DisagreementJournal:
             ident = str(uuid4())
             seq = self._event(db, case_id, actor, "contribution_added", {"contribution_id": ident, "version": 1})
             value = {**payload, "origin": "authenticated_mcp_account", "human_reading_confirmed": False, "withdrawn": False}
+            if self.participants is not None:
+                value["attribution"] = self.participants.attribution(db, principal)
+                value["origin"] = "verified_external_account" if principal.route == "expert" else "authenticated_mcp_account"
             db.execute("INSERT INTO disagreement_contributions VALUES(?,1,?,?,?,?,?,?)", (ident, case_id, actor, actor, canonical(value), seq, now()))
             return {"case_id": case_id, "case_revision": case["revision"], "contribution_id": ident, "version": 1, "event_seq": seq}
         return self._mutate(principal, case_id, operation_key, "contribute", payload, apply)
@@ -291,7 +298,8 @@ class DisagreementJournal:
                 db.execute("INSERT INTO disagreement_case_versions VALUES(?,?,?,?,?)", (case_id, revision, canonical({**json.loads(case["payload"]), "current_conclusion_id": ident, "state": case["state"]}), actor, now()))
             return {"case_id": case_id, "case_revision": revision, "conclusion_id": ident, "conclusion_ordinal": ordinal, "event_seq": seq}
         return self._mutate(principal, case_id, operation_key, "conclude", payload, apply,
-                            capability="curator" if command.make_current else "contributor", expected=expected_revision)
+                            capability="curator" if command.make_current else "contributor", expected=expected_revision,
+                            policy_capability="personal_conclusion" if command.kind == "individual_opinion" else "maintain_shared_summary")
 
     def get(self, principal, case_id, *, section="case", after_seq=0, limit=20, revision=None):
         if not isinstance(after_seq, int) or after_seq < 0 or not 1 <= limit <= 100:
@@ -321,6 +329,11 @@ class DisagreementJournal:
             col = "seq" if section == "history" else "event_seq"
             rows = db.execute(f"SELECT * FROM {tables[section]} WHERE case_id=? AND {col}>? ORDER BY {col} LIMIT ?", (case_id, after_seq, limit + 1)).fetchall()
             items = [{**dict(r), "payload": json.loads(r["payload"])} for r in rows[:limit]]
+            if self.participants is not None and section == "contributions":
+                for item in items:
+                    link_id = item["payload"].get("attribution", {}).get("external_link_id")
+                    review = db.execute("SELECT attribution_review_required FROM rkb_external_identities WHERE id=?", (link_id,)).fetchone() if link_id else None
+                    item["attribution_review_required"] = bool(review and review[0])
             return {"case_id": case_id, "case_revision": case["revision"], "items": items,
                     "has_more": len(rows) > limit, "next_after_seq": items[-1][col] if len(rows) > limit else None,
                     "snapshot_seq": case["event_seq"]}

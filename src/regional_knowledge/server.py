@@ -377,6 +377,18 @@ def build_server(
 
     # Optional narrow function-call bundles for the client application's own Live agent.
     # The default read-only Live surface above remains unchanged.
+    if profile == "full" and hasattr(backend, "corpus") and os.getenv("RKB_OWNER_SUBJECT", "").strip():
+        from .participants import Participants, RequestAuthority
+        from .disagreement_tools import register_research_tools
+        participants = Participants(backend.corpus, os.environ["RKB_OWNER_SUBJECT"].strip())
+
+        def research_authority():
+            principal = _principal()
+            route = "owner" if principal.subject == participants.owner else "personal"
+            return RequestAuthority(principal, route)
+
+        register_research_tools(mcp, participants, research_authority)
+
     story_profiles = {"full", "story_reader", "story_contributor", "story_editor"}
     if profile in story_profiles:
         if not hasattr(backend, "corpus"):

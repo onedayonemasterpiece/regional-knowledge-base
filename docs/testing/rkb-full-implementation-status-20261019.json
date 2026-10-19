@@ -22,7 +22,12 @@
       "action": "E1 просит импорт PDF, resume/reprocess/scan через естественный текст, кнопку и прямой MCP expert route. O пробует ту же команду через экспертного бота",
       "oracle": "Все expert-route попытки denied без создания import/job, в том числе запрос O в боте; владельческий импорт работает **только** в отдельном owner-route",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py"
+      ]
     },
     {
       "id": "KB-03",
@@ -338,7 +343,12 @@
       "action": "O через owner MCP создаёт участника с категориями demo/student/research_staff/expert/guide/local_historian, именем и expiry, назначает узкий grant",
       "oracle": "Создан ровно один RKB UUID; категории могут сочетаться, право назначается отдельно и версионируется; вызов создания через экспертный бот и импорт в нём отклонены",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py"
+      ]
     },
     {
       "id": "KB-30",
@@ -348,7 +358,12 @@
       "action": "Один субъект связывает Slack + VK user + PH usr_... с тем же UUID через независимые доказательства владения; другой с тем же именем пытается получить доступ",
       "oracle": "Уникальные verified(provider,tenant,subject) у одного actor; имя не связывает, owner-only PH invite не создаёт профиль эксперта, неподтверждённый provider pending без специальных прав; в PH требуется персональная RKB delegation",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py"
+      ]
     },
     {
       "id": "KB-31",
@@ -360,7 +375,10 @@
       "status": "NOT_RUN",
       "evidence": [],
       "partial_component_evidence": [
-        "tests/test_disagreement_journal.py"
+        "tests/test_disagreement_journal.py",
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py"
       ],
       "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
     },
@@ -372,7 +390,12 @@
       "action": "Завершился demo grant, владелец отозвал Slack link во время dot analysis; пришёл event с прежней привязкой/с другого workspace",
       "oracle": "Доступ повторно проверен при действии и доставке; поздняя операция denied, не раскрывает старую приватную проекцию; прежние мнения остаются со своей историей",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py"
+      ]
     },
     {
       "id": "KB-33",
@@ -482,7 +505,12 @@
       "action": "Подать контролируемые события: другой user в T0C82495TK5; U0C8C1QKWAG в другом team; текст с owner=true/actor_id, пересланным разрешением, одинаковым именем или упоминанием U0C8A9GM76D; pending/отсутствующий mapping",
       "oracle": "Ни один случай не разрешается как O; неподтверждённый/поддельный запрос denied, иной проверенный участник действует только со своими правами. Trusted event, tuple и verified mapping обязательны; нет автосоздания owner, fallback, скрытых данных или запрещённых side effects",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py"
+      ]
     },
     {
       "id": "KB-44",
@@ -494,7 +522,10 @@
       "status": "NOT_RUN",
       "evidence": [],
       "partial_component_evidence": [
-        "tests/test_disagreement_journal.py"
+        "tests/test_disagreement_journal.py",
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py"
       ],
       "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
     },
@@ -1401,6 +1432,24 @@
       ],
       "live": "NOT_DEPLOYED",
       "scope": "Append-only case/evidence/contribution/conclusion storage and atomic ACL-checked receipts; no claim of full PMI completion."
+    },
+    {
+      "id": "participants_and_mcp",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/participant_contracts.py",
+        "src/regional_knowledge/participants.py",
+        "src/regional_knowledge/disagreement_tools.py"
+      ],
+      "validation": "13 participant tests + 3 actual MCP surface tests; full local suite 581 passed, 31 skipped, 1 dependency warning",
+      "limits": "Existing owner OAuth is not a multi-user onboarding service; real identity verifier adapters, scan fencing and complete research workflow remain required."
+    },
+    {
+      "id": "slack_transport",
+      "status": "FINITE_LIVE_TRANSPORT_VERIFIED",
+      "manifest": "deploy/slack-kaliningrad-base/manifest.json",
+      "evidence": "Private managed implementation artifacts contain CLI installation/auth readback and real owner mention -> Socket Mode durable event -> automatic bot reply -> independent thread readback. No secrets in repository.",
+      "limits": "Probe stopped after its scoped response; persistent request/executor/result/outbox, production person binding and non-owner live PMI remain unimplemented or unverified."
     }
   ]
 }
