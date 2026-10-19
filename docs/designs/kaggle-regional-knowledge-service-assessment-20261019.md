@@ -618,3 +618,22 @@ Sessions/auth keys являются секретами: не помещать и
 4. Native text/quads и пригодная существующая OCR geometry остаются первым путём. Client VLM вызывается только при необходимости, не заменяет deterministic path и не делает dot обязательным worker. Неуспех координат/чтения возвращает typed unavailable/pending; нельзя фабриковать proof или терять уже успешные страницы других книг.
 
 Это дополнительный transport существующего locator/validation pipeline, а не отказ от его проверок. Оба этапа должны продолжать тот же durable request/proof child, иметь idempotency и bounded lifetime/cache. Partial text/proof delivery, revoked ACL и immutable result/per-artifact ACK из §§17–20 сохраняются. Следующая разрешённая проверка должна сравнить native, существующий server-side locator и client-assisted путь по latency/quality/стоимости, включая повторный callback, неправильный hash/crop, rotation и revoke между этапами; новые численные обещания не вводятся.
+
+
+## 29. Качество BGE-поиска: не увеличивать размерность ради числа
+
+**Перенос на PostgreSQL/Kaggle сам по себе не увеличивает качество embeddings.** Текущий BAAI/bge-m3 уже выдаёт полную native dense-размерность **1024**; добавление координат или zero-padding не добавляет смысловой информации. В проверенном [контракте RKB](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/aa4ae9595e1957260100114c627c5ac9fd39c2d4/src/regional_knowledge/bge_contract.py) закреплены revision 5617a9f61b028005a4858fdac845db406aefb181, FP32 CPU, CLS + L2, 4 threads и вход до 512 tokens.
+
+У model card BGE-M3 заявлен вход до 8192 tokens. Это **длина контекста, не размерность вектора**. Текущие 512 tokens — отдельный quality/latency trade-off: надо проверить truncation и покрытие passages; механическое увеличение до 8192 не гарантирует лучший поиск и может увеличить CPU latency. Не менять accepted text/chunks и текущий input contract одновременно с миграцией без отдельной проверки. [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3).
+
+Рекомендуемый порядок улучшений, только после baseline:
+1. Проверить полноту индекса/покрытие текста, passage boundaries и truncation; lexical RU/DE/simple, проверенные aliases и fusion из §23.
+2. Измерить ANN recall против exact search на **том же разрешённом actor/revision subset**: потерю релевантных кандидатов из-за индекса/фильтра нельзя исправить обещанием более крупного embedding.
+3. Проверить dense + sparse возможности BGE-M3 как отдельный эксперимент: в текущем RKB sparse path не реализован и не появляется автоматически от PostgreSQL.
+4. Рассматривать multi-vector или reranker, только если выигрыш на held-out evidence оправдывает CPU, память и end-to-end latency с одновременной PDF нагрузкой.
+
+Модель с большей native dimension — отдельный кандидат, а не настройка нынешнего BGE-M3. Ей понадобятся versioned embedding space, совместимые query/document embeddings, re-embedding корпуса и сравнение grounded retrieval качества, recall, latency и ресурсов. Векторы разных models/spaces нельзя смешивать; **E5 не возвращается в target**.
+
+Технические границы тоже проверять до выбора: pgvector HNSW поддерживает vector до 2000 dimensions и halfvec до 4000; текущие 1024 укладываются без смены типа. Half precision и большая dimension — разные решения. Уже измеренная экономия storage от halfvec не доказывает сохранение retrieval качества; quantization не включается в миграцию молча. [pgvector](https://github.com/pgvector/pgvector).
+
+**Вывод:** дополнительный ресурс целесообразнее сначала направить на покрытие, гибридный retrieval, recall и проверенный reranking, а не на искусственное увеличение 1024. Новый model/space принимать лишь при измеренном выигрыше; в этой работе benchmark, re-embedding и runtime изменения не выполнялись.
