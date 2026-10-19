@@ -1,5 +1,24 @@
 # Storage, privacy and lifecycle
 
+## Approved target storage — 2026-10-19
+
+The [canonical Kaggle architecture](designs/rkb-scalable-kaggle-architecture-20261019.md) and [handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md) supersede conflicting placement/E5 instructions below. Existing SQLite/Supabase, cache values and old provider quotas remain baseline/recovery documentation, not claims that the target is deployed.
+
+Kaggle PostgreSQL+pgvector owns accepted corpus, catalog, provenance, stories, cases and BGE/lexical projections. DevCoveer control SQLite holds durable request/typed-command/result/delivery metadata and verified references, not a second permanent corpus or PDF/vector BLOB store. Exact accepted model/human payloads must survive notebook loss; the original PDF plus another model call cannot reproduce them.
+
+One persistent outbound WSS connection carries bounded commands/results/progress and artifact references. Socket buffers are transient, not a second durable journal. Application ACK follows durable commit. Reconnect reconciles existing IDs/hashes; no acknowledged payload is deleted merely because send/Pong succeeded. Full originals/images/snapshots use existing bounded byte transport.
+
+Private Kaggle Dataset snapshots and one latest verified independent Yandex backup have explicit internal applied watermarks, immutable versions and hashes. Verify restore before selecting a new canonical version or deleting the last good backup. Retain journal/payload tail through the older retained Dataset/Yandex watermark and all unresolved consumers. Budget overlap, WAL/temp, downloads and deliveries. Pressure triggers checkpoint/backpressure, never deletion of accepted uncovered changes. A daily database copy alone does not establish zero loss if the control journal itself is lost.
+
+The [layers-only cutover](migrations/rkb-layers-only-cutover-20261019.md) preserves stable historical/cartographic IDs, geometry/CRS, temporal intervals, aliases, human corrections and provenance. Old searchable book text/chunks/vectors are excluded. Minimal legacy bibliography/SHA/page/locator anchors remain until exact re-anchoring; do not fabricate new evidence or silently match another edition.
+
+Target text search covers all active accepted books without owner filtering. Original files and scan/illustration pixels retain separate permissions, including both localization preview and final proof after caches/queues. Direct Kaggle download uses independent Telegram authorizations supplied at implementation; account FLOOD_WAIT still applies. VibePublish remains the single archive uploader unless that separate change is approved.
+
+Source-format, exact-byte integrity and provenance safeguards below remain applicable while their storage adapters move.
+
+## Preserved implementation and historical record
+
+
 ## SQLite / Supabase v2 implementation boundary (2026-10-05)
 
 The canonical task is [SQLite corpus + Supabase vectors + on-demand proof](prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md).
@@ -234,9 +253,7 @@ Only `finalize` materializes a staged revision into SQLite. It creates:
 - illustration provenance rows;
 - local FTS and pending vector-publication metadata.
 
-The existing indexers publish E5/BGE remotely without holding a SQLite writer
-lock. Activation requires both spaces and exact source/revision/ID/text hashes;
-a pending replacement leaves the previous active revision searchable.
+The current default publication gate requires BGE; E5 is optional diagnostic support, not a mandatory second space. The target removes E5. Exact source/revision/ID/text hashes remain required, the previous active revision stays searchable during replacement, and target activation atomically records pending research.
 
 The activation RPC independently checks complete page indexes, unresolved review
 flags, textual-region coverage and cross-document provenance before changing

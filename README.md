@@ -4,12 +4,24 @@ A source-backed knowledge and MCP service for regional books, articles and other
 
 A user attaches a source and asks to add it. The MCP-calling model reads the material, preserves its text and illustrations, identifies people, organizations, stories and locations, and reuses existing identities. The backend handles files, storage, access control, source references, indexing and replay safety. It does not infer historical identity from matching names.
 
-## Current storage boundary
+## Approved next architecture — 2026-10-19
+
+The [canonical architecture](docs/designs/rkb-scalable-kaggle-architecture-20261019.md) unifies corpus, catalog, source graph, stories, disagreement cases and search in **PostgreSQL + pgvector with BGE-M3 on Kaggle**. DevCoveer retains stable MCP, identity, durable request/typed-command/result/delivery state and worker control. One writer applies accepted changes; additional readers use verified snapshots. E5 is removed from the target, preserving independent BGE token validation.
+
+Each notebook maintains a direct authenticated **outbound WSS** connection to the existing DevCoveer service. Jobs/control and results/progress flow both ways. Reconnect reconciles persisted operations and preserves the warm model while the same Kaggle session is alive; provider termination still requires restore and warmup. No public notebook endpoint or second broker is introduced.
+
+Use the single [coding-agent handoff](docs/prompts/rkb-scalable-kaggle-implementation-20261019.md), [acceptance plan](docs/testing/rkb-scalable-kaggle-acceptance-20261019.md) and [layers-only cutover](docs/migrations/rkb-layers-only-cutover-20261019.md). Historical/cartographic layers and inventoried human work are preserved. Old books/chunks/vectors are not migrated: books are imported again with research and disagreement cases.
+
+Target text search covers all active accepted books and returns bibliography, printed-page references and evidence IDs. Scan/original rights remain separate. Cases have public desktop/mobile Astro pages with stable opaque URLs and no viewer login.
+
+**This is the approved implementation target, not a claim of completed deployment, migration or production acceptance.** SQLite/Supabase and optional E5 descriptions below record the existing baseline; their older implementation instructions do not override this target. See the [documentation map](docs/README.md).
+
+## Current implementation baseline
 
 SQLite owns the accepted corpus, source/page/region graph, lexical search, catalog, ACL, stories, entity mentions and source-side location registry. Supabase holds the vector search plane and minimal identity/scope anchors, not another full text corpus. Original sources remain in the configured private archive. GitHub holds public code and documentation only.
 
 Retrieval uses the existing multilingual vector spaces with bounded lexical support. Entity enrichment does not require re-embedding unchanged chunks. See [storage](docs/storage.md) and [architecture](docs/architecture.md) for deployment-specific details.
-**Embedding resource boundary:** BGE-M3 neural inference is **Kaggle-only** for every query and document, including editorial stories; the DevCoveer host must not contain or install BGE model weights or run a BGE model process. The older local ONNX BGE sidecar was retired and its service masked. E5-small INT8 remains the separate pinned local fast encoder and tokenizer-budget validator, as accepted in October 2026. A BGE tokenizer used for token counting is not a BGE inference model. Follow the [canonical Kaggle-only BGE operations policy](docs/operations/bge-kaggle-only.md); historical experiments and older deployment snippets never override it.
+**Embedding resource boundary:** BGE-M3 neural inference is **Kaggle-only** for every query and document, including editorial stories; the DevCoveer host must not contain or install BGE model weights or run a BGE model process. The older local ONNX BGE sidecar was retired and its service masked. E5-small INT8 is legacy baseline support and is retired by the new implementation; its historical acceptance does not make it a target dependency. Preserve the independently required BGE tokenizer and shared runtime consumers during retirement. A BGE tokenizer used for token counting is not a BGE inference model. Follow the [canonical Kaggle-only BGE operations policy](docs/operations/bge-kaggle-only.md); historical experiments and older deployment snippets never override it.
 
 
 ## Source ingestion and locations

@@ -1,5 +1,30 @@
 # Architecture
 
+## Canonical target and precedence — 2026-10-19
+
+New work follows the [unified Kaggle architecture](designs/rkb-scalable-kaggle-architecture-20261019.md) and the single [implementation/debugging handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md). The SQLite/Supabase sections below describe the existing implementation. Their former “canonical task”, local-database prohibition and E5 guidance do not override the new target.
+
+| Component | Target responsibility |
+|---|---|
+| DevCoveer | Stable MCP, verified identity/scope, durable requests, exact typed-command journal, result/delivery receipts and writer/snapshot authority |
+| Kaggle writer | PostgreSQL+pgvector working domain state, BGE, ordered apply/receipts and snapshots |
+| Kaggle readers | Verified snapshot, BGE/search, authorized proof/render and bounded computation; no independent domain writes |
+| Telegram and recovery storage | Exact originals/illustrations, immutable accepted payloads and verified snapshots with explicit retention |
+| Astro | Selected public case projection, stable URL, desktop/mobile, no viewer auth |
+
+The notebook opens one authenticated outbound **WSS** connection to the existing DevCoveer HTTPS/ASGI broker. Both sides send jobs/control or progress/results immediately. Reuse BgeQueue/controller/request ownership; no second broker or public notebook listener. HTTP compatibility cannot become a parallel dispatcher for the same run.
+
+Application ACK follows durable commit/readback of the exact outcome. Resume reconciles bounded existing job/claim/result hashes; new connection generation fences old attachment. Stale claims are scoped failures; run revocation is separate. Keep loaded BGE/PG across a temporary socket failure while the same Kaggle session is alive. Session termination requires new run/restore/warmup. Bound frames, buffers, credits and reconnect; keep blocking compute off the connection loop. Large artifacts use existing byte paths and references, while actual MCP ImageContent remains required.
+
+Current source has HTTP claim polling, 50 ms result polling and BEGIN IMMEDIATE even for queue result/status reads. Remove that avoidable contention: notify after commits and use bounded read-only reconciliation for reconnect and separate producers. An in-process Event alone does not observe indexer/controller enqueues.
+
+One writer applies exact accepted commands in continuous order. Snapshot manifests bind the restored internal cursor and exact Dataset version; old writers cannot select canonical copies or deliver late authoritative results. Retain required tail through both verified recovery baselines. BGE-only replaces E5; public text search retains bibliography, active revision and withdrawal checks, with separate pixel/original rights.
+
+Only historical/cartographic and inventoried human assets transfer; books are freshly imported with atomic research enqueue. Case identity, provenance and existing source/location/illustration safeguards remain intact. This documentation does not certify deployment or performance; use the [acceptance plan](testing/rkb-scalable-kaggle-acceptance-20261019.md).
+
+## Preserved implementation and historical record
+
+
 ## SQLite / Supabase v2 implementation boundary (2026-10-05)
 
 The canonical task is [SQLite corpus + Supabase vectors + on-demand proof](prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md).

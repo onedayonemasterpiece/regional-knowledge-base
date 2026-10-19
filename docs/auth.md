@@ -1,5 +1,26 @@
 # MCP authentication and database identity
 
+## Target identity, delegation and route scope (2026-10-19)
+
+**Implementation target, not multi-user acceptance.** Follow the [single handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md). Existing application-owned OAuth/MCP stays on DevCoveer; PostgreSQL/pgvector are not identity providers. No second IAM or expert MCP.
+
+Resolve actions to the existing canonical RKB UUID. PH actor and Slack provider/tenant/subject require verified bindings. Email, display name, mention, model JSON or expertise cannot select the actor. Qualifications/weights do not grant capabilities.
+
+Keep exact resource/audience binding and transaction-scoped authorization. Never forward PH/ChatGPT/owner bearer to another resource as delegation. Same-host integrations use scoped technical identities and loopback; Kaggle is another host and uses authenticated TLS with constrained operations. Executor and human author remain separate.
+
+Import/participant administration remain owner-personal-route operations. An expert bot cannot perform them just because its Slack initiator is the owner. Owner/case-manager does not read another actor's private draft or rewrite another contribution's original text. Preserve versions, selective publication and current dependency checks on history/receipt replay.
+
+Fencing rejects stale new submissions while preserving commands already durably accepted in an earlier generation; replay retains their IDs and attribution. Current revocation governs cached/delayed private results and audiences, including after restore.
+
+Mira needs a real target-resource provider/progressive grants; its search-only adapter is not OAuth, transport or research E2E. Test non-owner onboarding, isolation, revocation and personal/Slack continuation. Owner login/bot transport alone is insufficient.
+
+The owner supplies genuine independent Telegram authorization sessions at implementation. Do not clone a StringSession/auth key, borrow owner bearer or rotate identities to evade provider limits. No credentials/sessions are provisioned by this docs change.
+
+## Retained authentication baseline
+
+Following sections preserve existing client/OAuth and secret contracts. Supabase/beta-owner setup describes earlier architecture, not target storage or complete expert/Slack/Mira acceptance.
+
+
 ## Decision
 
 Regional Knowledge Base must not use Supabase OAuth as its MCP authorization

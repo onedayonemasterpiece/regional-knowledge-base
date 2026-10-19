@@ -1,5 +1,26 @@
 # RKB illustration pipeline — operator and agent contract
 
+## Target illustration and proof chain on Kaggle (2026-10-19)
+
+**Required implementation, not new live acceptance.** Follow the [single handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md). Move PG corpus access, BGE retrieval, original loading and rendering/proof processing to Kaggle using this chain. Port source_proof authorization/corpus adapter; no second image index, OCR pipeline, scheduler or generative replacement.
+
+Figure identity retains source revision, page, region and accepted caption links. Printed captions and labelled model observations stay separate. Same-page proximity/name/vector similarity do not prove image/POI association. Street Story retains canonical POI ownership.
+
+Reuse native PDF quads where valid. For scans/DjVu, calling-model coordinates refer to the authorized render; deterministic code validates and paints stripes. Preserve existing locator/validation adapters and bounded independent strip reading where visual confirmation is promised. Transcript match, plausible bbox or confidence alone is not visual/human proof.
+
+Bind locator to source SHA/revision, physical page, render dimensions/hash, crop offset/rotation/transform, quote/span and pixel scope. Persist exact accepted locator and dependencies. Retain preview/render or an exact recoverable descriptor until callbacks are terminal; preview/image delivery ACK alone is not permission to GC outstanding locator input. Lost exact preview requires a new generation/localization.
+
+Authorize pixels before retrieval and on final output; recheck source/grant/capability/audience on cache hits and delayed delivery. A crop grant does not expose the full page. Return real MCP ImageContent and actual MIME, not hardcoded PNG. Keep source/display/provider-rendition/delivery hashes distinct. Multi-item proof returns ready/pending/unavailable/denied/failed per item without discarding completed allowed results.
+
+Direct Kaggle archive reads use genuine new owner-provided sessions. VibePublish remains uploader unless explicitly changed; originals topic2, images topic4. Preserve stable operation IDs, bounded capacity, hashes and receipt-before-GC.
+
+The [released remediation](../reports/illustration-audit-remediation-20261019.md) fixed keyed verification GET, guarded recovery/cooldown/fairness, missing provider digest and source admission reserve. Preserve these repairs. Separately verify new direct reads, PG proof, actual images, scopes/partial outputs, stale callback and reset/revoke behavior.
+
+## Retained deployed-chain baseline
+
+Following sections retain prior topology and exact release evidence. New placement/transport does not reopen repaired defects automatically or make old measurements a new PASS.
+
+
 Canonical product path: **source/page/figure → indexed evidence → canonical crop → private Telegram mirror → verified restoration**. This document applies equally to new and already imported sources. Preserve the existing SQLite corpus, single indexing owner, VibePublish worker and current BGE/Kaggle boundary. No new service, vector index, scheduler or source import is required.
 
 ## Three separately testable capabilities

@@ -1,5 +1,24 @@
 # RKB v2 — SQLite для корпуса, Supabase для векторов, подтверждение цитаты по запросу
 
+## Применение в переработке 19.10.2026
+
+Нормативный целевой контракт: [единый файл агенту](rkb-scalable-kaggle-implementation-20261019.md) и [архитектура](../designs/rkb-scalable-kaggle-architecture-20261019.md). Текущий runtime ещё не перенесён этой документационной задачей.
+
+- Один PostgreSQL/pgvector corpus в Kaggle, BGE-only (1024 FP32 baseline, exact pinned BGE input≤512); небольшой durable control journal на DevCoveer.
+- Прямой исходящий WSS notebook→existing DevCoveer ASGI с двусторонними заданиями/результатами, durable ACK/RESUME и одной BgeQueue authority. Старые polling/локальный E5/Supabase инструкции не целевой deployment.
+- Fresh MCP import книг; перенос только historical/cartographic layers и согласованных зависимостей, со stable IDs/provenance и проверенным reanchor. Ручная работа не уничтожается из-за отказа от старого corpus.
+- Source-bound facts/dates/observations сохраняются без обязательной Story; эпизод/досье/Variant/private draft/independent case различаются. Один persisted research workflow, bounded compose, без квот и выдуманной драматургии.
+- Поиск accepted active book text и bibliography без per-book owner ACL; current withdrawal/revision, pixels/original/private draft grants и delivery audience остаются обязательными.
+- One canonical person/request/dialog, fair admission и confirmed result/hash ACK; Мира в PH расширяет existing typed adapter, не создаёт отдельный voice/IAM/queue.
+
+Численные protected gates сохранены: backend p95≤1000ms, MCP p95≤1500ms/hard2000ms, BGE Hit@5≥85%/@10≥90%, RU→DE@10≥85%, ≥30 held-out families, ≥100 sources/100000 chunks, storage≤80% steady/≤90% peak. Документ не является доказательством PASS.
+
+## Статус прежнего задания
+
+Ниже сохранён исторический prompt для происхождения требований и применимых продуктовых сценариев. **Для новой реализации передавать один актуальный handoff выше.** SQLite/Supabase/E5, отдельные повторные research scans и polling worker из старого задания не восстанавливать. Продуктовые операции, source provenance, exact versions и scoped delivery сохраняются в новом контракте; старое упоминание generic ACL не отменяет новое правило public accepted text search.
+
+### Исходный текст
+
 **Исполнительная постановка от 5 октября 2026. Полностью заменяет предыдущую постановку `catalog-evidence-capacity-implementation-20261005` и `design/catalog-evidence-page-archive-v1`.** При противоречии действует эта версия. Старые схемы хранения и архивирования страниц не являются альтернативами.
 
 Репозиторий: `onedayonemasterpiece/regional-knowledge-base`. Используй GitHub и Codex DevCoveer; VibePublish — только существующий транспорт исходников/иллюстраций. Задача — доработать действующий продукт, не построить новую платформу. Прочитай текущие main/runtime и сохрани уже работающие решения. Реализуй, протестируй и проверь после развёртывания; не останавливайся на очередном плане.

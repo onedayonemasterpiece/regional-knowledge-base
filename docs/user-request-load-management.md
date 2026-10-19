@@ -1,5 +1,26 @@
 # Управление нагрузкой пользовательских запросов РКБ
 
+## Уточнение согласованной цели — 19 октября 2026
+
+Нормативные документы: [архитектура PG/pgvector+BGE на Kaggle](designs/rkb-scalable-kaggle-architecture-20261019.md), [технический проект нагрузки](designs/user-request-load-management-20261019.md), [handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md). Ниже сохраняются продуктовые требования; прежние открытые вопросы о выборе новой очереди/брокера уже не означают необходимость нового проектирования.
+
+Используется существующий request lifecycle и BgeQueue/controller. DevCoveer сохраняет MCP/ASGI и долговечный control journal; PostgreSQL/pgvector, BGE, импорт, proof/render и snapshot работают на Kaggle. Notebook подключается исходящим WSS к существующему ASGI broker. E5 исключён. Измерять общий CPU/RAM/I/O/PG/BGE envelope, а не считать эти этапы независимыми ресурсами.
+
+Fairness действует по проверенному человеку, включая разные диалоги/клиенты; порядок внутри диалога сохраняется. Claim по явному ID, wake, retry и resume не обходят общий guard. Поздний draft PR151 `adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4` содержит материал для reuse, не доказательство production PASS.
+
+ETA вычисляется арифметически по измерениям и реальному порядку. При ETA ≤10 секунд уведомления не нужны; при >10 секунд и существенном изменении прогноз сохраняется и отправляется с durable coalescing только для ближайшего вопроса человека. Итоговый ответ имеет приоритет. Ordinary capacity wait не расходует outage retry budget и не удаляет принятый запрос по TTL.
+
+ACK приёма, сохранение результата и native ACK/readback итоговой доставки — разные события. Retry возвращает прежний результат; иной payload под прежним ключом конфликтует. Частные drafts не становятся общими Variant, и повтор запроса не создаёт новую публикационную версию.
+
+Сохраняется измеренный резерв хотя бы одного поиска во время импорта; новые тяжёлые этапы допускаются между durable checkpoints. Proof и импорт получают положительное продвижение/aging. Если минимальные этапы физически несовместимы с резервом, это capacity incident, а не достигнутая гарантия.
+
+В Slack один бот Kaliningrad Base; Мира остаётся необязательным клиентом Projects Hub. Её текущий search-only adapter расширяется на pending/request/result/ACK/proof/stories/cases. Оба клиента используют одинаковый lifecycle.
+
+Facts, dates/calendar, observations, роли, география и disagreements сохраняются одним исследовательским проходом даже без Story. Accepted book text/bibliography публичны без owner-book ACL; оригиналы/пиксели, private drafts и запись защищены отдельно. Все девять protected requirements сохраняются с принятой поправкой BGE/public text. Это docs-only уточнение, не отчёт о внедрении или нагрузочной приёмке.
+
+## Preserved implementation and historical record
+
+
 Дата: 19 октября 2026 года.
 Статус: согласованные продуктовые требования; техническое проектирование и реализация не выполнены этим документом.
 

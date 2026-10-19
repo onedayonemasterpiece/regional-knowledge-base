@@ -1,5 +1,24 @@
 # Telegram source archive and bounded staging
 
+## Target archive and fresh-source boundary (2026-10-19)
+
+**Target requirements; no credential/runtime/archive mutation here.** Follow the [single handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md). Kaggle reads approved originals/media directly and processes sources. DevCoveer retains durable request/change/delivery state without another full-corpus/PDF staging host.
+
+Genuine independent Telegram sessions are supplied at implementation. Cloned StringSession/auth keys are not independent; account-wide FloodWait/provider limits still apply. Keep secrets out of code/reports. VibePublish remains uploader unless explicitly reassigned. Retrieval changes do not require a new publication/mirror index/daemon.
+
+Read exact registered chat/topic/message/archive identity: original PDF/DjVu topic2, images topic4. Compare bytes to retained trusted source/provider hashes. A self-calculated digest is not independent verification; archive URL grants no access.
+
+Freshly review books from verified originals. Old backfill below is not target cutover; do not present old transcription/review stamps as fresh acceptance. Preserve exact accepted semantic payloads beyond Kaggle-local commits; SHA/parser version cannot reproduce model work.
+
+Reserve bounded staging/cache capacity before I/O; count concurrent download/render copies. Persist attempt, retry-after/cooldown and fair pending work. Read recovery does not create replacement publications or source identities. GC requires verified recovery/archival proof and no active ingest/read/render/locator dependency; byte eviction does not erase unresolved attempt identity. Image ACK does not finish an outstanding locator.
+
+The [remediation report](../reports/illustration-audit-remediation-20261019.md) records deployed service-principal retrieval and repaired behavior. Older OAuth/M2M-not-done passages are historical. Direct Kaggle reads/new sessions/reset recovery require new acceptance.
+
+## Retained chronological baseline
+
+Following sections retain older migrations/topology/credential transition. Migration017/backfill and human archive OAuth are not the fresh-book or current service-auth target. Actual release receipts supersede old status.
+
+
 Apply migration 017 only after `verify_telegram_storage_migration.py` passes in
 the isolated PostgreSQL database. `migrate_telegram_text.py` backfills **all**
 legacy chunks from whole-projection and range hashes, then verifies every stored

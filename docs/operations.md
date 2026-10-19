@@ -1,5 +1,28 @@
 # Operations and acceptance gates
 
+## Current delivery target — 2026-10-19
+
+The [single implementation/debugging handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md), [architecture](designs/rkb-scalable-kaggle-architecture-20261019.md), [acceptance](testing/rkb-scalable-kaggle-acceptance-20261019.md) and [layers-only cutover](migrations/rkb-layers-only-cutover-20261019.md) govern new work. The earlier beta checklist below records a historical implementation stage; do not restart Supabase OAuth setup, install its old 768-dimensional provider or restore E5 from it.
+
+Preserve the existing service and parallel work until the new path and recovery are verified. Inspect executing revision separately from Git main. BGE inference stays on Kaggle; the existing SQLite/Supabase runbooks remain useful for pre-cutover recovery.
+
+Build the useful vertical path first: authenticated durable intake → exact accepted command → one Kaggle writer apply/receipt → saved result. Establish direct persistent outbound WSS to the existing ASGI broker, then verify warm reconnect and snapshot/tail recovery. Continue with BGE-only search, fresh A/B imports and cases, real source proof, actual delivery and public case page. Transfer only inventoried historical/cartographic and human assets; reimport books.
+
+For duplex, reuse BgeQueue/controller and one dispatcher. Application ACK follows durable commit; lost ACK reconciles the same result. Temporary socket failure preserves the warm model while its Kaggle session remains alive. Expired job claims do not kill the healthy worker. Provider termination requires a new run, restore and warmup; do not promise a surviving process after session end.
+
+Focused verification must cover: proxy/network loss and reconnect; result commit before lost ACK; DevCoveer restart; competing old/new sockets; stale claim versus revoked run; heavy compute without blocked control/heartbeat; separate-process enqueue; and planned successor handover. No parallel HTTP/WSS sender or second broker. Notify after queue commit and reconcile with bounded read-only queries rather than retaining write-lock polling.
+
+Report actual BGE query readiness separately from stored vector coverage. Lexical degradation does not pass BGE quality acceptance. Separate connection health, application readiness, research completion, published revision and confirmed text/image delivery.
+
+Preserve protected thresholds, including warm backend p95 ≤1000 ms, public MCP p95 ≤1500 ms and evidence deadline ≤2000 ms. Cold 3–5 minutes is owner tolerance to verify, not a guarantee. Include cold/pending/errors in evidence; measure dispatch/transport/SQL/encoding and whole response separately. WSS does not remove CPU contention or finite Kaggle lifetime.
+
+Verify backup restore and internal watermark before canonical selection; retain required tail across Dataset and Yandex recovery baselines. Unknown provider sends require original readback. Public page update failure preserves last-good; revocation does not. Keep exact accepted human/model data and independent artifact receipts.
+
+New Telegram authorizations are supplied during implementation. Their absence blocks only dependent transfers, not domain/recovery work. Use existing focused tests and real readback for the changed boundary; no additional approval ladder, second mandatory judge or blanket retest.
+
+## Preserved implementation and historical record
+
+
 ## Current state
 
 Data infrastructure is available:

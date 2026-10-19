@@ -1,5 +1,16 @@
 # Accepted import repair
 
+## Target port and preserved repair behavior — 2026-10-19
+
+The [single implementation handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md) governs the PG/BGE target. The SQLite repair and test reports below are historical baseline behavior to preserve through the new corpus adapter; they are not target acceptance.
+
+Accepted-source extraction and fresh import use the same facts-first contract. Source-bound claims, calendar/date precision, observations and entities must be saved independently of an optional Story. Main8799 still routes these through the candidate's Story assertion, so rejecting a weak episode before introducing this path would lose useful facts. Keep exact source revision/evidence, stable finding IDs and continuation checkpoints. Repair updates a bounded metadata result and its application receipt atomically; preserve human changes, private drafts, optimistic revisions and conflict detection. Retry must not generate a new Story/Variant or rerun an already accepted model output.
+
+Semantic source-region coverage and source-format safeguards below remain required. Target BGE validation counts the exact complete input, including real prefixes, against the 512-token bound. No E5 publication gate or backfill is retained. Fresh reimport replaces old searchable books under the [layers-only cutover](../migrations/rkb-layers-only-cutover-20261019.md); minimal legacy anchors and inventoried human work must remain recoverable.
+
+## Preserved implementation and historical record
+
+
 Retrieval coverage uses the same semantic region kinds in preliminary graph validation and SQLite activation: heading, body, caption, footnote, table and marginalia. Running headers and page numbers remain preserved source regions but do not require standalone search passages. This does not waive page completeness, visual review, source spans, or provenance checks. Existing accepted revisions are not rewritten automatically.
 
 Accepted-source story metadata repair uses the existing `book_ingest` stage operation. It accepts bounded model-authored story candidates linked to the exact active source revision. SQLite adapter UUIDs and JSON string IDs are normalized at the activation boundary. Candidate checkpoint persistence and story application now share one transaction, so an unexpected activation error cannot leave a newly overwritten checkpoint committed on its own. Optional invalid candidate metadata still becomes an explicit needs-review result, not a fabricated accepted claim. Entity graph staging retains its existing separately validated transaction.

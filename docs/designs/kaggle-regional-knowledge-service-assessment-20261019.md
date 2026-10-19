@@ -1,5 +1,27 @@
 # РКБ на Kaggle: оценка и проект переноса сервиса
 
+## Решения после комплексного аудита и уточнения story/связи
+
+**Дальнейшая реализация ведётся по [единому handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md).** Этот файл сохраняет историю предложений/сравнений; разновременные статусы «рекомендация», «ещё не выбрано» и старые реализации ниже не имеют приоритета над следующей таблицей.
+
+| Вопрос | Принято для внедрения |
+|---|---|
+| Рабочая БД | Один PostgreSQL/pgvector в Kaggle, bounded control на DevCoveer. |
+| Embeddings | BGE-only, 1024 FP32/512-token baseline; E5 полностью удалён из target. |
+| Связь | Direct outbound persistent WSS к существующему ASGI/broker, same queue, durable ACK/RESUME, warm model не перезапускается из-за socket drop. |
+| Надёжность | Exact accepted payload/command, frozen defaults, external fencing, consistent snapshot+tail и exact Dataset version; Yandex safe replacement. |
+| RPO | Notebook loss и DevCoveer disk loss — разные домены; independent tail/RPO для второго требуется явно определить. |
+| Книги и слои | Старый corpus не мигрирует; fresh MCP imports. Layer IDs/provenance/geometry переносятся; legacy/manual dependencies не уничтожаются. |
+| Stories | Facts/dates/observations без обязательной Story; один research workflow с bounded compose и existing Variant/evidence. |
+| Поиск | Active accepted text + bibliography без book-owner filter, current withdrawal/revision/pixel/private grants отдельно. |
+| Пользователи | Same canonical person/request/dialog; Slack Kaliningrad Base, Dot executor; Mira/PH adapter расширяется, отдельный voice app не требуется. |
+| Proof/публикация | Existing renderer/archive owner переиспользуются, PG corpus port/actual artifact delivery проверяются; public page last-good/readback. |
+| Ограничения | 30min useful idle отдельно lease; provider quota/WSS/cold time измеряются, не обещаются по предположению. |
+
+[Сводный аудит](../reports/rkb-comprehensive-critical-audit-20261019.md) объясняет принятые и отклонённые предложения Opus55; [story-аудит](../reports/rkb-story-quality-critical-audit-20261019.md) содержит новое source-based исследование. Реализация/миграция/production tests этой документационной задачей не выполнялись.
+
+## История обсуждения и исходные оценки
+
 Дата: 19 октября 2026 года.
 
 **Статус:** проект полноценного переноса, уточнённый после обсуждения с владельцем. Архитектурные требования ниже зафиксированы; реализация, миграция, переключение production и запуск экспериментов этим документом не выполняются и не объявляются согласованными. По итогам дополнительной оценки единый PostgreSQL + pgvector рекомендован как целевая архитектура (§§22–26). Это инженерная рекомендация, не принятое владельцем окончательное решение и не production-ready статус. Конкретная топология и параметры остаются открытыми.
