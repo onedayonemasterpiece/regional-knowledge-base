@@ -16,8 +16,8 @@ Wonderful Lections already has a verified VibePublish asset bridge. For media mi
 ## Street Story
 
 Street Story is the canonical owner of the regional POI graph, POI aliases,
-POI lifecycle/location identity, atomic POI claims, contradiction ledger and
-expert arbitration state.
+POI lifecycle/location identity, atomic POI claims, and the contradiction ledger
+and expert arbitration state **within its canonical POI model**.
 
 Knowledge Base remains the authority for book/journal provenance and exact
 page/region evidence. It also owns the small accumulative knowledge projection for
@@ -37,6 +37,29 @@ with stable knowledge:// references and inherited access scope.
 
 See [POI evidence bridge](poi-integration.md). Since 2026-10-19 a delivery worker sends finalized book POI evidence from the outbox to Street Story's loopback intake with a dedicated service key (owner-granted for the owner's private books); see its "Delivery to Street Story" section.
 
+### Source facts actually reaching a POI (designed integration completion)
+
+The `poi_registry` bridge and `poi_context` have a verified *POI identity/source navigation* scope only. A linked source entity **does not prove that any atomic POI fact has been ingested**. RKB already creates `poi.fact_evidence.v1` and `rkb_integration_outbox` at source activation; Street Story already implements candidate `poi_external.ingest_poi_evidence`, `poi_claims`, evidence and model-owned semantic review. The checked source has not established the full **outbox worker → authorized Street Story fact-intake API → canonical claim/evidence receipt** path. The existing `/v1/internal/rkb-poi` command is for identity, not this fact intake.
+
+Complete the existing path, without a second POI owner: owner-approved accepted-source POI candidates (including later facts found in mandatory phase 2) → provenance/evidence resolver → authorized idempotent delivery → Street Story model review/claim state. The reverse route, Street Story canonical POI → RKB evidence research, returns **candidates** with exact book/article/contributor-role/source revision/page/region and privacy rather than declaring facts based on alias similarity. Make a `knowledge://evidence/<candidate-id>` usable through real source proof; current generic `fetch` doesn't prove it is resolvable. Reprocessing or revoking source rights must invalidate active evidence projections without erasing independent evidence or history. Only a durable Street Story fact receipt supports the outcome “POI enriched”; outbox pending and identity linked remain separate statuses.
+
+See [participant identity and POI-fact delivery project](design/rkb-participants-poi-fact-bridge-20261018.md) and [PMI](testing/rkb-disagreement-pmi-20261018.md); these capabilities are designed, **not live-accepted**.
+
+### Source disagreement cases (designed; not yet implemented)
+
+The [RKB disagreement-journal design](design/rkb-disagreement-journal-design-20261018.md)
+introduces a separate research process for disagreements in sources, facts and
+interpretations. RKB owns those cases, exact evidence, attributed contributions
+and revisions of preliminary conclusions. Story Registry consumes a case result
+by stable ID and conclusion revision for stories and publication materials; it
+does not own the research case.
+
+A Street Story POI conflict may reference an RKB case and a particular conclusion
+revision, and the RKB case may retain the external conflict reference. Applying a
+research conclusion to canonical POI data remains an explicit Street Story
+decision. Existing POI conflicts do not need to be migrated into RKB, and creating
+an RKB case does not automatically change POI claims or identity.
+
 ## Projects Hub
 
 Projects Hub is the natural user-facing orchestration surface:
@@ -44,7 +67,22 @@ Projects Hub is the natural user-facing orchestration surface:
 - project selection/routing;
 - Knowledge Base read capability alongside other project tools.
 
-It consumes the Knowledge Base Live profile (`knowledge_search`, a compact evidence pack in one call) through `live-interaction`. The full profile separately exposes `search` and `fetch`. For private knowledge, Projects Hub holds a user-approved, resource-bound Knowledge OAuth delegation; it never forwards its own bearer token. Projects Hub does not become the identity provider.
+It consumes the Knowledge Base Live profile (`knowledge_search`, a compact evidence pack in one call) through `live-interaction`. The full profile separately exposes `search` and `fetch`. For private knowledge, Projects Hub holds a user-approved, resource-bound Knowledge OAuth delegation; it never forwards its own bearer token. Projects Hub does not become the identity provider. **Current multi-user caveat:** the existing Projects Hub actor ID is a `usr_...` identifier and its tested invite is for the platform owner, while RKB resource actor is a UUID and its current OAuth issuance is owner-oriented. Do not reuse owner-only invite/owner bearer for historical experts or cast PH ID directly to RKB UUID. Owner-managed RKB participant profiles use a stable RKB UUID, with separately **verified** external IDs for Slack, VK and PH; longer-term multi-user first-party identity remains a future enhancement. Being a researcher/guide or having academic credentials is not itself resource authorization. See [participant mapping design](design/rkb-participants-poi-fact-bridge-20261018.md).
+
+For the planned disagreement workflow, Mira, personal MCP connections and
+registered Slack threads provide authorized contributions to RKB-owned cases.
+A source/research need remains in the RKB case; an optional Projects Hub task owns
+assignment, deadline and execution tracking. A completed task does not establish
+that the historical question is resolved. The research-specific task bridge is
+a planned narrow contract, not implied by the existence of generic tasks.
+
+### Planned Kaliningrad Base Slack expert interface
+
+The end-user Slack app **Kaliningrad Base** is not dot's public alias. **Do not install, invite or expose dot as an app/member in the experts' Slack workspace**; only the independently authenticated Kaliningrad Base bot is present to users, with internal MCP-event wake-up routed outside their workspace. Users interact only with the dedicated app. It receives trusted Slack events, stores an identity-bound request with the RKB backend, wakes dot via an MCP Events-style contract, and delivers correlated replies as Kaliningrad Base. The previously accepted Projects Hub MCP Events flow is a reference for the protocol only: its owner_actor_id and dot-as-Slack-sender are not reusable for multiple experts. No additional IAM or mandatory Projects Hub intermediary is introduced.
+
+RKB remains the authorization authority for delegated actor, requested action, source/case ACL, original-scan proof and outgoing projections. Import remains **owner-only through owner-specific ChatGPT/MCP/dot paths**, never through the Slack expert app, including when the owner sends the message. The bot's service profile cannot assume the owner's privileges. Slack actor, model executor and source-comment author remain separate. The client stores no case copy; Projects Hub/Mira/mobile will later use the same RKB contract with their platform actor and resource-specific delegation.
+
+See [collaboration design](design/rkb-kaliningrad-base-collaboration-20261018.md) and [product acceptance methods](testing/rkb-disagreement-pmi-20261018.md). These describe planned capabilities; no new bot or multi-user wake-up acceptance is claimed.
 
 ## VibePublish
 
@@ -77,6 +115,34 @@ leave missing mirrors recoverable without holding activation or vector indexing.
 Only the RKB owner named in the private resource-specific OAuth grant is eligible.
 Destination alias/topic stay in that runtime grant, and token rotation is written
 atomically. RKB owns no Telegram session or second provider limiter.
+
+### Planned VK case discussions
+
+VibePublish is the intended owner of VK post publication and the required
+extension for reading, replying to and moderating comments under explicitly
+registered case-discussion posts. RKB owns the case, participant identities and
+weights, allowed participation policy, observed contributions and conclusions.
+These comment capabilities are planned; generic thread or reply commands must not
+be treated as proof of VK support.
+
+VK case posts are planned as **one ordinary new case-discussion post per Europe/Kaliningrad calendar day per community+RKB series**. Urgent posts are a separate bounded editor-approved lane (initial proposal: at most two additional posts/day), not a bypass for expert requests. RKB owns priority, slot reservation, public projection and case→VK binding; VibePublish owns provider-native scheduling, actual send/edit/cancel/comment operations and receipts. A reserved/scheduled item is not a published URL; a lost provider response is reconciled before any retry. Native VK scheduling and comment rights require live acceptance before launch.
+
+Transport uses the existing local, target-scoped service connection. Provider
+author identity, message revisions and native delivery receipts remain distinct
+from model-authored interpretation. Public discussion exports inherit source
+rights and require a separately allowed public projection. Whitelist moderation
+deletes disallowed comments after publication; it is not a platform guarantee
+that outsiders cannot post.
+
+## Public static disagreement case pages on kenigevents.ru (planned)
+
+RKB owns the case, its changing contents, source/evidence provenance and a **public-page projection** of one selected case revision. It provides a permanent stable random slug, a versioned public snapshot and page publication status/receipts through disagreement_get/export; it does not serve viewer requests.
+
+The existing events-bot-new/site Astro SSG (`output: static`) consumes **only public-ready snapshot data** in its normal build/publish pipeline for kenigevents.ru. This creates a shareable route such as `/raznoglasiya/<slug>/` with sources/book covers/authors/reviews, positions, public expert contributions and tentative conclusions, responsive on desktop and mobile. **The page has no authentication**: any visitor with the URL may read it. Random-looking slugs and optional noindex are not access controls; private scans, unapproved material, unpublished expert identity or derived private assertions must never be exported as page input, HTML, JS, image files, OpenGraph metadata or sitemap.
+
+The site does not embed RKB owner credentials, fetch private RKB data from the browser or deploy a second case service. The existing static-build mechanism owns the release; MCP returns the actual page URL only after successful generated-artifact/provider readback. A new public revision keeps the same URL; failed builds leave last-good with its actual timestamp; withdrawal clears the released object/CDN as far as controllable. VK links are presented only once the VK post is published, never from a draft reservation.
+
+Specification and acceptance: [public Astro case-page requirement](requirements/disagreement-case-static-pages-20261019.md), [RKB disagreement PMI](testing/rkb-disagreement-pmi-20261018.md). This integration is designed, **not already shipped**.
 
 ## Cross-service references
 

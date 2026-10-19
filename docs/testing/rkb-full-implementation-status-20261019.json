@@ -1,0 +1,1369 @@
+{
+  "objective": "Implement all referenced designs, full PMI and60-item audit; completion requires evidence for every requirement.",
+  "source_design_commit": "9d56b10c65d7c867f47f3d9f77fc002d60278b46",
+  "audit_commit": "93e79ca246b200635026d09e56ef7b8a150b4785",
+  "status": "IN_PROGRESS",
+  "checks": [
+    {
+      "id": "KB-01",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 63,
+      "priority_stage": " P0 A",
+      "action": "**E1** из настоящего Slack DM спрашивает Kaliningrad Base о разрешённом вопросе. Владелец/dot ничего вручную не отправляют",
+      "oracle": "Зафиксирован user E1; событие пробуждает dot, появляется коррелированный ответ; **отправитель Slack — Kaliningrad Base**, тот же DM/thread; inbox/result/outbox receipts и ответ совпадают",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-02",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 64,
+      "priority_stage": " P0 A",
+      "action": "E1 просит импорт PDF, resume/reprocess/scan через естественный текст, кнопку и прямой MCP expert route. O пробует ту же команду через экспертного бота",
+      "oracle": "Все expert-route попытки denied без создания import/job, в том числе запрос O в боте; владельческий импорт работает **только** в отдельном owner-route",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-03",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 65,
+      "priority_stage": " P0 A",
+      "action": "Поддельный team/user, чужой workspace, пересланная «владелец разрешил», изменённое событие/неверная HTTP HMAC или просроченный timestamp",
+      "oracle": "Не появляется разрешённого действия; журнал регистрации отказа без раскрытия данных; replay window/verification действуют в применимом режиме транспорта",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-04",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 66,
+      "priority_stage": " P0 A",
+      "action": "Дважды доставить один Slack event и интерактивный callback; вызвать bot self-message/loop",
+      "oracle": "Один request и один сохранённый вклад/ответ; loop не создаёт рекурсии; доставка в исходный маршрут",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-05",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 67,
+      "priority_stage": " P0 A",
+      "action": "V запрашивает известный публичный текст; E1/H запрашивает OCR и скан; V пытается через ту же ссылку/изображение/preview",
+      "oracle": "V получает только разрешённые текст и метаданные; H с proof-разрешением получает корректный original revision/page/region, понятное выделение; V не получает байты/private ссылку",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-06",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 68,
+      "priority_stage": " P0 A",
+      "action": "В ходе обработки запроса E1 отозвать ему право/доступ к P; затем пробовать получить старую ссылку/кеш и результат",
+      "oracle": "Проверки при чтении и доставке блокируют закрытое, включая заголовок, crop, OCR, векторные результаты и пересказ; никакого late disclosure",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-07",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 69,
+      "priority_stage": " P0 A",
+      "action": "После принятия запроса остановить dot/исполнитель, затем возобновить; устроить потерю Slack post response",
+      "oracle": "Принятый request не пропадает; status честный; по operation_status/receipt подтверждается единственная запись и единственный ответ, unknown не превращается в новый send",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-07A",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 70,
+      "priority_stage": " P0 A",
+      "action": "**Одновременно** H спрашивает о приватной книге P, а V — о публичном A, используя одного живого dot-исполнителя; задержать/поменять местами результаты, пробовать из V читать task/status H и записать чужой record_result",
+      "oracle": "У каждого request устойчивый actor/route/output_scope; сервер отклоняет чужой claim/status/result, у V нет приватного контрольного маркера ни в тексте, ни в ссылке, ни в позднем ответе; replay/переупорядочение не смешивает контексты модели и destinations",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-08",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 71,
+      "priority_stage": " P0 A",
+      "action": "H просит закрытый proof в публичном канале, затем в **private channel и group DM с V**, у которого нет доступа к книге P; повторить в личном DM H",
+      "oracle": "Любой групповой маршрут получает только безопасную общую проекцию или переводит приватный ответ в личный проверенный DM; закрытый текст, пересказ, preview, image/crop и ссылка не видны V ни в закрытой группе, ни в публичной. Личный DM H возвращает разрешённый оригинал с авторизованным viewer и ревизией",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-09",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 72,
+      "priority_stage": " P1 B",
+      "action": "E1 ищет дело словами, по смыслу и фильтрами: период, место, источник, статус. Перейти на следующую страницу",
+      "oracle": "Найдено размеченное дело, cursor/has_more корректны, фильтры не снимают ACL; «мои» разделены на contributed/assigned/following",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-10",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 73,
+      "priority_stage": " P0 B",
+      "action": "E1 вносит аргумент, теряет ответ до receipt, повторяет из нового Slack треда",
+      "oracle": "Один contribution с настоящим actor; операция возвращает ту же применённую ревизию/ID; модельная интерпретация отдельно от дословного текста",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-10A",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 74,
+      "priority_stage": " P1 B",
+      "action": "E1 просит провести **личный анализ** выбранного C1 и сохранить черновик; E2 пытается прочитать его; затем E1 явно публикует одну позицию в общее дело",
+      "oracle": "До явного подтверждения черновик доступен только E1, не считается мнением сообщества и не попадает в VK/дайджест. После публикации виден лишь подтверждённый вариант с actor/version/receipt; двойной click не создаёт второго вклада",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-11",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 75,
+      "priority_stage": " P0 B",
+      "action": "E1/E2 независимо добавляют несовпадающие мнения; H обновляет сводку с expected_revision; параллельно E2 присылает новый аргумент",
+      "oracle": "Оба вклада сохранены; точный based_on snapshot; поздний аргумент непрочитанный, не притворяется учтённым; предыдущая человеческая поддержка не переносится на новый текст",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-12",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 76,
+      "priority_stage": " P0 B",
+      "action": "E1 поддерживает вывод версии N; вывод меняется на N+1; исправляется связь VK/Slack аккаунта",
+      "oracle": "Экспорт показывает текущую и последнюю поддержанную версии; поддержка точная, ошибочная идентификация flagged, прошлые записи не исчезают",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-13",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 77,
+      "priority_stage": " P0 B",
+      "action": "Reprocess/OCR active revision заменяет старую; прежнее дело имело выделенный proof",
+      "oracle": "В обычном поиске не исчезает оговорка о прежнем деле; действует reanchor_required до явной проверки конкретной связи, новый scan обязателен",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-14",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 78,
+      "priority_stage": " P1 B",
+      "action": "E2 просит статью Q; другой владелец позднее импортирует сборник с Q независимо от заявки",
+      "oracle": "Q обнаруживается кандидатом на открытый research need, модель связывает; запрос не marked fulfilled до чтения основания",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-15",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 79,
+      "priority_stage": " P0 B",
+      "action": "Владелец импортирует книгу A с известным разногласием, затем убивает чат до fragment checkpoint; другой импорт B ждёт общий слот",
+      "oracle": "Скан возобновляется с частичными эффектами без дублей; import/scan только один активный; BGE от старого поколения не даёт прав записи; protected coverage по A",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-16",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 80,
+      "priority_stage": " P0 C",
+      "action": "Два эксперта одновременно запрашивают обычный VK-пост «на завтра», при этом слот занят другой записью",
+      "oracle": "На **community+RKB series+Europe/Kaliningrad local_day** забронирован максимум 1 обычный новый post; видны выбранное дело, следующий свободный день, причина приоритета; гонка не создаёт второй слот",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-17",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 81,
+      "priority_stage": " P0 C",
+      "action": "Эксперт предлагает срочное обсуждение; без редактора пытается publish_now. Владелец/редактор одобряет две срочные заявки; третья в тот же день",
+      "oracle": "Эксперт создаёт предложение, но не публикует; не более 2 дополнительных срочных публикаций при принятой политике; 3-я отклонена, повторы/альтернативный канал не обходят общий дневной бюджет",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-18",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 82,
+      "priority_stage": " P0 C",
+      "action": "Подготовить публичный пакет только из разрешённых цитат; отправить native schedule через VibePublish",
+      "oracle": "Сохранены prepared/approved/provider_scheduled; ещё нет ложного VK URL; после настоящей публикации receipt содержит post ID и открываемую ссылку, case связывается с исходной ревизией",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-19",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 83,
+      "priority_stage": " P0 C",
+      "action": "Provider send timeout после фактической публикации; перезапуск VibePublish; повтор команды с тем же ключом",
+      "oracle": "provider reconciliation восстанавливает один VK post ID и одну ссылку; второй пост/расход второго слота не происходит",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-19A",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 84,
+      "priority_stage": " P0 C",
+      "action": "A реально **запланирован** на завтрашний ordinary-slot. Редактор пытается его перенести/отменить ради B, но ответ VibePublish/VK теряется, а A остаётся scheduled; B одновременно просит первоначальный день",
+      "oracle": "Reservation A остаётся занята (`cancellation_unknown`), B **не** занимает тот же день и не публикуется; журнал хранит native operation ID, reconcile подтверждает фактическую отмену/перенос A до любого release/передачи слота. После реального provider receipt B может занять освободившийся день один раз",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-20",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 85,
+      "priority_stage": " P0 C",
+      "action": "Поменять ACL/публичное право на источник между подготовкой и provider scheduling; отдельно — во время native-scheduled ожидания",
+      "oracle": "Неодобренный пакет не уходит; запланированная отправка отменена/карантинирована с provider receipt или поднят критический операторский сигнал **без ложного утверждения об отмене**. Private текст не появляется в новом посте",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-21",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 86,
+      "priority_stage": " P1 C",
+      "action": "Пост по C1 создан; E1 запрашивает ссылку в Slack. E2 просит «опубликуй его опять»",
+      "oracle": "Бот показывает **одну действительную** ссылку; не создаётся дубль; существенное дополнение связано с тем же обсуждением",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-22",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 87,
+      "priority_stage": " P0 C",
+      "action": "Под case-постом VK чужой пользователь пишет комментарий, эксперт отвечает веткой; whitelist временно недоступен; пост вне case реестра",
+      "oracle": "Без whitelist ничего не удаляется; незарегистрированные посты не затронуты; полезный ответ эксперта не теряется незаметно при модерации родителя; результаты теста токена/веток зафиксированы",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-23",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 88,
+      "priority_stage": " P1 C",
+      "action": "Комментарий new/edit/restore при работаете бота и в его простое, затем перезапуск/сверка",
+      "oracle": "Сохранён точный реальный VK author и наблюдённые ревизии, один вклад без дубля; пропуски недоступного или удалённого контента отмечены честно, не выдуманы",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-24",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 89,
+      "priority_stage": " P0 C",
+      "action": "O завершает импорт, V/E1/H подписаны по-разному; внутри P закрытая книга с уникальным маркером; повторить event",
+      "oracle": "O получает действительный итог scan и новые/обновлённые дела. Каждый другой получает лишь доступный ему заголовок/число/описание. Один event → не более одного сообщения одному адресату",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-25",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 90,
+      "priority_stage": " P1 C",
+      "action": "Пользователь выключает digest, включён Slack 429 или закрыта DM; сделать batch-уведомление",
+      "oracle": "Отказ/Retry-After и реальный delivery status зафиксированы, никакого спама или фальшивого sent; unsubscribe предотвращает новые уведомления",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-26",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 91,
+      "priority_stage": " P1 D",
+      "action": "Отдельный тестовый клиент PH/Mira с платформенным actor UUID открывает те же C1/доказательства",
+      "oracle": "Тот же case/revision и ACL, что из Slack после подтверждённой привязки; нет второго реестра, OAuth resource-bound и отзыв прав действуют",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-27",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 92,
+      "priority_stage": " P0 B/C",
+      "action": "Проверить backup/restore на принятом состоянии после двух экспертных вкладов и одного provider receipt",
+      "oracle": "Сохранились case, версии, вклад/actor, слот/публикация/receipt и права. Пересоздание BGE-векторов не стирает человеческий вклад",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-28",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 93,
+      "priority_stage": " P1 C",
+      "action": "Попросить «покажи мои разногласия и где обсуждать» в одном сообщении",
+      "oracle": "Бот находит конкретные attributed/assigned/followed дела, для каждого показывает разрешённый следующий шаг и только реально существующую VK-ссылку либо статус очереди",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-29",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 95,
+      "priority_stage": " P0 A",
+      "action": "O через owner MCP создаёт участника с категориями demo/student/research_staff/expert/guide/local_historian, именем и expiry, назначает узкий grant",
+      "oracle": "Создан ровно один RKB UUID; категории могут сочетаться, право назначается отдельно и версионируется; вызов создания через экспертный бот и импорт в нём отклонены",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-30",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 96,
+      "priority_stage": " P0 D",
+      "action": "Один субъект связывает Slack + VK user + PH usr_... с тем же UUID через независимые доказательства владения; другой с тем же именем пытается получить доступ",
+      "oracle": "Уникальные verified(provider,tenant,subject) у одного actor; имя не связывает, owner-only PH invite не создаёт профиль эксперта, неподтверждённый provider pending без специальных прав; в PH требуется персональная RKB delegation",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-31",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 97,
+      "priority_stage": " P0 B",
+      "action": "Участник заявляет регалии и учреждение, O проверяет только часть, задаёт предметный вес; другой читатель пытается открыть скан и дать заключение",
+      "oracle": "Claimed ≠ verified; вес ≠ право на источник/публикацию/импорт; личные регалии не появляются в публичном ответе без разрешения; счёт score не объявляется исторической истиной",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-32",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 98,
+      "priority_stage": " P0 A",
+      "action": "Завершился demo grant, владелец отозвал Slack link во время dot analysis; пришёл event с прежней привязкой/с другого workspace",
+      "oracle": "Доступ повторно проверен при действии и доставке; поздняя операция denied, не раскрывает старую приватную проекцию; прежние мнения остаются со своей историей",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-33",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 99,
+      "priority_stage": " P1 B",
+      "action": "Историк с именем, совпадающим с автором книги/рецензии, пытается получить авторские регалии или исправить свой якобы текст",
+      "oracle": "rkb_author_profiles не равен rkb_users; связывание требует отдельного доказательства; редактор сборника не называется автором главы; ложная привязка отзывается с audit",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-34",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 100,
+      "priority_stage": " P0 E",
+      "action": "Принят документ A с фактом о POI, модель явно выбрала существующий POI, подтверждены page/region; запускаем outbox delivery в разрешённый Street Story fact-intake",
+      "oracle": "RKB source/POI identity link + отдельный fact evidence event; реальный Street Story receipt содержит canonical poi_id/claim_id/evidence, в POI виден новый кандидат, не только source_context или pending row",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-35",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 101,
+      "priority_stage": " P0 E",
+      "action": "Открыть из Street Story fact knowledge://evidence/<candidate_id>, проверить конкретную книгу, автора статьи, исходный оригинал и цитату",
+      "oracle": "Authorized resolver возвращает конкретные document/revision/chapter/author-role/page/region/chunk, image highlight соответствует физической странице; частный текст без ACL не выдаётся; несуществующий ref не изображается работающей ссылкой",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-36",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 102,
+      "priority_stage": " P1 E",
+      "action": "Из Street Story вызвать поиск фактов по текущему POI; RKB находит вторую книгу и семантически похожее место с иным объектом",
+      "oracle": "Авторизованный RKB выдаёт источниковые кандидаты и alternatives, корректную identity review; модель выбирает relevant/not_relevant; не создаётся второй POI, факт не добавляется одним лишь словесным сходством",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-37",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 103,
+      "priority_stage": " P0 E",
+      "action": "В двух книгах несовместимые POI-даты, авторская authority разных уровней, часть источников зависимы",
+      "oracle": "Сохранены обе позиции и все отличимые evidence; semantic_review приводит к отдельному предметному conflict, а не автоматической победе максимального score; RKB disagreement cross-ref не подменяет решение Street Story",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-38",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 104,
+      "priority_stage": " P0 E",
+      "action": "Street Story/фактический intake недоступны; повторно отправить тот же event, затем вернуть сервис. Для private book отсутствует личный grant",
+      "oracle": "Исходный импорт не откатывается, owner видит pending/retry/pending_authorization; после восстановления одна доставленная evidence, никаких дублей, private event не уходит через общий сервисный токен",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-39",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 105,
+      "priority_stage": " P0 E",
+      "action": "Reprocess меняет цитату/дату, документ отозван или scope стал private, но у POI есть независимый второй источник",
+      "oracle": "Старое event остаётся историческим, public-проекция его не использует как current; связь требует reanchor; другая независимая опора сохраняется; старый cached proof, поисковый snippet и score не раскрывают отозванное",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-40",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 106,
+      "priority_stage": " P1 E",
+      "action": "На уже принятой книге с неизвестным POI фактом выполнить отдельный owner-approved scan/enrichment, не переимпортируя PDF; повторить после потерянного ответа",
+      "oracle": "Новое evidence прикреплено к точной **той же** accepted source revision и прошло outbox/owner receipt; original OCR не поменялся, повтор не создаёт второго факта; покрытие и остаток видимы",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-41",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 107,
+      "priority_stage": " P0 A",
+      "action": "Автоматизированный harness через поддерживаемый authenticated owner-sender transport отправляет **от O** реальное сообщение в проверенный личный Slack DM и разрешённый канал Kaliningrad Base: вопрос по корпусу, поиск дела по словам/смыслу/фильтрам, открыть карточку и changes_since",
+      "oracle": "Verified tuple T0C82495TK5/U0C8C1QKWAG разрешён в существующий owner UUID; inbox/result/delivery receipts сохраняют человека O, отдельные bot service/dot executor и исходный route. Независимый readback подтверждает ответ от Kaliningrad Base, корректные test case ID/revision/ACL; никакого owner fallback или второго владельца. Нет user-sender transport — BLOCKED, не PASS по bot/fake event",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-42",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 108,
+      "priority_stage": " P1 B",
+      "action": "Harness от O в разрешённом тестовом деле сохраняет личный черновик, явно вносит аргумент, поддерживает точную версию заключения и подписывается; теряет ответ и продолжает по case/operation ID из нового треда",
+      "oracle": "Черновик не общий до явного действия; вклады атрибутированы O, модельная интерпретация отдельно; exact revision, contribution/subscription receipts и readback совпадают. Повтор автоматизированного run с теми же operation keys не удваивает записи и не переносит поддержку на новую версию; harness сверяет эффект через отдельное чтение RKB и Slack reply; E1 не читает частный черновик",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-43",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 109,
+      "priority_stage": " P0 A",
+      "action": "Подать контролируемые события: другой user в T0C82495TK5; U0C8C1QKWAG в другом team; текст с owner=true/actor_id, пересланным разрешением, одинаковым именем или упоминанием U0C8A9GM76D; pending/отсутствующий mapping",
+      "oracle": "Ни один случай не разрешается как O; неподтверждённый/поддельный запрос denied, иной проверенный участник действует только со своими правами. Trusted event, tuple и verified mapping обязательны; нет автосоздания owner, fallback, скрытых данных или запрещённых side effects",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-44",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 110,
+      "priority_stage": " P0 A",
+      "action": "После durable accept запроса O отозвать его Slack mapping либо нужный resource grant до чтения/записи/доставки; затем повторить event и открыть cached proof",
+      "oracle": "Повторная проверка блокирует соответствующую операцию и позднюю приватную выдачу; grant revocation не затрагивает независимые разрешённые ресурсы, link revocation отключает маршрут. Старый worker/context не обходит отзыв; исторические вклады сохранены без нового доступа",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-45",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 111,
+      "priority_stage": " P0 A",
+      "action": "O просит proof закрытого P в публичном канале, private channel и group DM с V; затем повторяет в проверенном личном DM",
+      "oracle": "Права O не становятся правами группы: только безопасная общая проекция без скрытых текста/названия/счётчика/preview/crop/ссылки; частный proof только O в авторизованном DM/viewer с текущим ACL и exact revision. Нет переноса частной истории O в запрос V",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-46",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 112,
+      "priority_stage": " P0 B",
+      "action": "Harness открывает test_run_id с baseline на изолированном тестовом деле, ссылающемся на реальную книгу; выполняет обычные contribute/conclusion/support и разрешённые тестовые weight/subscription операции, затем rollback и повтор rollback",
+      "oracle": "Источник/OCR/provenance неизменны; run имеет receipts и ровно один эффект каждого operation key. Test-only мнения/веса/поддержки не влияли на live экспертный итог, уведомления/VK. Readback подтверждает отсутствие действующих тестовых эффектов в деле/search/projections/outbox; дело вновь ожидает реальных экспертов по baseline, audit/реальные данные сохранены; повтор safe",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-47",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 113,
+      "priority_stage": " P0 B",
+      "action": "В разрешённом canonical-case тесте после baseline/run-вклада реальный E1 добавляет независимый вклад/меняет ревизию; harness запускает адресную CAS-компенсацию собственных эффектов",
+      "oracle": "Ни чужой вклад, ни независимое экспертное решение не удалены/отменены. Применяются только безопасные собственные компенсации, несовместимая ревизия даёт rollback_conflict и сверку, не overwrite/whole-DB restore; состояние не называется rolled_back до readback всех эффектов",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-48",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 114,
+      "priority_stage": " P0 B",
+      "action": "Прервать rollback между эффектами, перезапустить harness; после начала/завершения отката доставить старый callback/result/outbox job и повтор исходного operation key",
+      "oracle": "Сохраняемый rollback возобновляется идемпотентно; state/generation fence отклоняет позднюю запись/отправку и не восстанавливает тестовые выводы. Нет уведомлений/публикаций из тестового outbox; pending/conflict видим до завершения. Итоговый readback дела, проекций и очередей подтверждает отсутствие остатка и сохранение реальных вкладов",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-49",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 116,
+      "priority_stage": " P0 F",
+      "action": "У дела с разрешённым публичным содержанием сформировать страницу Astro по постоянному slug; открыть ссылку обычным браузером без входа, cookie и JS",
+      "oracle": "Реальный HTML доступен на kenigevents.ru по указанному URL, читается без авторизации/JS и без отдельного backend; MCP вернул этот URL только после published/readback",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-50",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 117,
+      "priority_stage": " P0 F",
+      "action": "На странице показать две спорящие позиции, книги/статьи/рецензии с авторами и доступными обложками, хронологию экспертных материалов, статус и предварительный вывод",
+      "oracle": "В HTML есть вся структура, правильная атрибуция, source edition/page и различение модели и подтверждённых выводов; пустые обложки заменены текстовыми карточками, данные не выдуманы",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-51",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 118,
+      "priority_stage": " P0 F",
+      "action": "Открыть ту же страницу в реальном десктопном браузере и мобильном viewport; проверить без JS, увеличение шрифта, клавиатуру/ссылки и длинные имена/цитаты",
+      "oracle": "Нет горизонтального скролла и перекрытий, разделы доступны, обложки и цитаты не обрезаны неправильно, адаптивный макет сохраняет смысловую полноту; отдельный login не появляется",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-52",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 119,
+      "priority_stage": " P0 F",
+      "action": "Сформировать публичный пакет по делу с частной книгой, закрытым crop, приватным черновиком, непубличным именем участника и производным пересказом",
+      "oracle": "HTML, JSON/build input, OpenGraph, metadata, cover URLs, static assets и sitemap не раскрывают скрытые материалы, даже по прямому URL; случайный slug/noindex не использованы как защита",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-53",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 120,
+      "priority_stage": " P0 F",
+      "action": "Опубликовать новую версию после нового аргумента; повторить сборку; смоделировать сбой сайта перед публикацией и затем отменить публичный вывод",
+      "oracle": "Один slug и одна каноническая URL при всех версиях; после успешной сборки обновлены version/date, без дубликатов страниц; на сбое остаётся last-good с верной датой; при снятии file/CDN проверены и MCP state обновлён",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-54",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 121,
+      "priority_stage": " P1 F",
+      "action": "В MCP запросить public_page до создания страницы, при сборке, после публикации и после снятия; открыть ссылку VK на странице",
+      "oracle": "До publish нет выдуманного URL, после readback он совпадает с реальным HTML; на странице есть ссылка только на фактически опубликованное VK-обсуждение, нет прежних неверных адресов",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-55",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 122,
+      "priority_stage": " P1 F",
+      "action": "Проверить первую демо-страницу с вымышленными материалами, отсутствующими обложками и без экспертных заключений",
+      "oracle": "Есть явная метка «демо / вымышленные данные», вместо отсутствующих полей ясное состояние; noindex опционален и не является проверкой прав; страница остаётся доступной без входа",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-1",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 126,
+      "description": "чужой эксперт, публичное/закрытое, bot→dot без владельца (этап A, P0)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-2",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 132,
+      "description": "два независимых исследователя и потеря ответа (этап B, P0)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-3",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 138,
+      "description": "VK очередь, завтра и срочно, без двойных публикаций (этап C, P0)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-4",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 144,
+      "description": "комментарии VK, мнение специалиста, брифинг (этап C, P0/P1)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-5",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 150,
+      "description": "будущий клиент без повторной реализации (этап D)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-6",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 156,
+      "description": "один человек через несколько подтверждённых каналов (этапы A/D, P0)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-7",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 162,
+      "description": "импорт книги → сохранённый POI-факт → новый источник (этап E, P0)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-8",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 168,
+      "description": "автоматизированный owner Slack research route (этапы A/B, P0/P1)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-9",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 176,
+      "description": "публичная страница дела на Astro без авторизации (этап F, P0)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A01",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 143,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A02",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 153,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A03",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 163,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A04",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 173,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A13",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 183,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A05",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 195,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A06",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 205,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A08",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 215,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A10",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 225,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A11",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 235,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A12",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 246,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A14",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 255,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A15",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 265,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A16",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 274,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A18",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 283,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A19",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 293,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A32",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 302,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A36",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 311,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A07",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 323,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A09",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 332,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A17",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 341,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A20",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 348,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A21",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 355,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A22",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 362,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A23",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 369,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A24",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 377,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A25",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 384,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A26",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 391,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A27",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 398,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A28",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 405,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A29",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 411,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A30",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 418,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A31",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 424,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A33",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 430,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A34",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 437,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A01",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 560,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A02",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 586,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A03",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 602,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A04",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 617,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A05",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 635,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A06",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 650,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A07",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 667,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A08",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 687,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A09",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 706,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A10",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 720,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A11",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 733,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A12",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 745,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A13",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 764,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A14",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 775,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A15",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 784,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A16",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 793,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A17",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 805,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A18",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 817,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A19",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 827,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A20",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 835,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A21",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 844,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A22",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 853,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A23",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 861,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A24",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 869,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A25",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 878,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    }
+  ],
+  "design_sections": [
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 1,
+      "section": "Журнал и дела о разногласиях: самостоятельный исследовательский процесс РКБ",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 11,
+      "section": "1. Принятое направление",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 30,
+      "section": "2. Какой результат должен получить пользователь",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 52,
+      "section": "3. Что считать делом",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 91,
+      "section": "4. Минимальная SQL-модель",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 122,
+      "section": "5. Последовательный импорт с обязательной второй фазой",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 204,
+      "section": "6. Три разных поиска",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 265,
+      "section": "7. Оригинал и выделенная цитата",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 289,
+      "section": "8. MCP-инструментарий: полный рабочий цикл, компактная поверхность",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 338,
+      "section": "9. Участники, персональный вес и заключения",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 402,
+      "section": "10. VK, рецензии и продолжение исследования",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 468,
+      "section": "11. Что получает общий поиск и Story Registry",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 499,
+      "section": "12. Решение по БД и условия пересмотра",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 527,
+      "section": "13. Спецификация обязательного навыка модели",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 567,
+      "section": "14. Первый полезный выпуск и проверка результата",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 618,
+      "section": "15. Встречные вопросы для принятия рабочих настроек",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 637,
+      "section": "16. Зафиксированные ограничения настоящего исследования",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 649,
+      "section": "17. Kaliningrad Base: реальная экспертная работа, очередь VK и ПМИ",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 665,
+      "section": "18. Участники и POI-факты: обязательная связность без нового IAM",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 679,
+      "section": "19. Открытая статическая страница дела на kenigevents.ru",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 693,
+      "section": "Источники",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 1,
+      "section": "Kaliningrad Base — экспертная коллаборация, Slack и VK",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 5,
+      "section": "1. Продукт и пользователи",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 15,
+      "section": "2. Архитектура — один backend РКБ, один процесс данных",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 28,
+      "section": "3. Атрибуция, полномочия и конфиденциальность",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 49,
+      "section": "4. Пользовательский маршрут",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 73,
+      "section": "5. VK-публикации: последовательный редакционный поток",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 85,
+      "section": "6. Уведомления и брифинги",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 91,
+      "section": "7. Достаточность MCP-инструментов",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 107,
+      "section": "8. Будущее Projects Hub/Mira/mobile",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 111,
+      "section": "8.1. Создание участника и объединение его внешних аккаунтов",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 119,
+      "section": "9. Решения и доказательства",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 1,
+      "section": "Участники и доказательные POI-факты — дополнение РКБ v3.2",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 5,
+      "section": "1. Два независимых результата",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 11,
+      "section": "2. Что действительно существует",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 22,
+      "section": "3. Создание и сопровождение пользователей — без админ-панели",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 71,
+      "section": "4. POI: два рабочих маршрута, один факт-регистр",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 88,
+      "section": "5. Читабельная и открываемая доказательная цепочка",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 111,
+      "section": "6. Минимум операций MCP",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 124,
+      "section": "7. Проверяемый первый результат",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 134,
+      "section": "8. Основания и честные границы",
+      "status": "UNVERIFIED",
+      "evidence": []
+    }
+  ]
+}
