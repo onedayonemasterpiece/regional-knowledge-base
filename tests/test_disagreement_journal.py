@@ -129,6 +129,9 @@ def test_precise_conclusion_snapshot_does_not_consume_late_argument(journal):
     assert got["new_material_since_conclusion"]
     assert got["current_conclusion"]["payload"]["human_support"]==[]
     assert got["current_conclusion"]["payload"]["based_on_seq"]==old["event_seq"]
+    j.store.revise(j.owner,j.case,got["case_revision"],CaseState(state="paused",reason="Дочитать аргумент"),"pause-after-synthesis")
+    retained=j.store.get(j.owner,j.case,revision=got["case_revision"]+1)
+    assert retained["current_conclusion_id"]==got["current_conclusion_id"]
 
 
 def test_shared_cas_history_and_cursor_never_drop_older_content(journal):

@@ -178,7 +178,8 @@ class DisagreementJournal:
             revision = case["revision"] + 1
             db.execute("UPDATE disagreement_cases SET revision=?,state=?,payload=? WHERE id=?",
                        (revision, state, canonical(current), case_id))
-            snapshot = {**current, "state": state, "reason": command.reason}
+            snapshot = {**current, "state": state, "reason": command.reason,
+                        "current_conclusion_id": case["current_conclusion_id"]}
             db.execute("INSERT INTO disagreement_case_versions VALUES(?,?,?,?,?)", (case_id, revision, canonical(snapshot), actor, now()))
             seq = self._event(db, case_id, actor, "revised", {"revision": revision, "reason": command.reason})
             return {"case_id": case_id, "case_revision": revision, "event_seq": seq}
