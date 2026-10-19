@@ -14,6 +14,15 @@ Canonical product path: **source/page/figure → indexed evidence → canonical 
 
 **Search is over evidence chunks, not a separate image gallery.** At staging, `search_material` includes accepted printed captions and explicitly labelled visual descriptions without overwriting source text. E5/BGE revision hashes fence stale embeddings. `search` may rank an illustrated chunk rather than put an image into the result JSON. The agent calls `fetch`, follows returned exact illustration descriptors, and calls `illustration_fetch` for the image. Fetch can project an omitted legacy illustration ID only if a user-authorized figure and the chunk share the **same accepted caption/figure region** on the same document/page; the projection is marked `association_basis=exact_shared_region`. Mere co-occurrence on a page, nearby place name or inferred visual similarity is **not** proof of linkage. Never identify a Green Gate figure as a Wooden Bridge.
 
+## Asynchronous search: a pending result is not an empty archive
+
+The **first** `Kalinigrad_base.search(query)` can return `main_state=pending` or `starting`, a `main_job_id`, and `mode=lexical_degraded` with **zero preliminary hits** even while `indexing.bge_ready` equals all active chunks. That is **not** a completed semantic search and not proof that no illustration exists.
+
+- Reuse the **same query and the returned `main_job_id`** in `search(query, main_job_id=...)`; the BGE/Kaggle queue is already working on that job. Do not create a new job or claim no results because the preliminary list was empty.
+- Make bounded follow-up calls while `main_state` is `starting`/`pending` (normally a short wait between checks, up to the client/agent's task budget), and report whether `main_state=ready` has been reached. Once ready, use the ranked evidence IDs as usual: `fetch` and then `illustration_fetch` for the source image.
+- If `main_state=unavailable` or the budget expires, describe the **unresolved semantic retrieval** separately from any lexical hits; do not present a provisional empty result as a definitive absence. Reusing a job ID is for continuing the same search, not bypassing access checks.
+- Same-page proximity or keyword resemblance never authorizes attaching a picture. Follow only the explicit `metadata.illustrations` descriptors and the exact accepted region associations.
+
 ## Transport and durable boundaries
 
 - RKB and VibePublish share DevCoveer: existing authenticated **loopback HTTP**, independent least-privileged technical service principal, narrow Telegram KB destination and exact topic grants. See [canonical interservice policy](https://github.com/onedayonemasterpiece/codex-devcoveer-mcp/blob/main/docs/operations/local-service-connections.md). Do not use a human OAuth/browser owner token, unscoped owner rights, public network hop or additional local daemon.
