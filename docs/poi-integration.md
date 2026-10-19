@@ -413,9 +413,17 @@ sender and Street Story exposed no intake.
   (`src/regional_knowledge/street_story_delivery.py`), a user systemd service on the
   same host as Street Story.
 - Target: Street Story loopback intake `POST http://127.0.0.1:8188/v1/internal/rkb-poi-evidence`
-  (`RKB_STREET_STORY_POI_URL`), one event per request, with the dedicated service key
-  from `RKB_STREET_STORY_POI_TOKEN_FILE` (0600; the same key Street Story holds as
-  `STREET_STORY_RKB_POI_SERVICE_TOKEN`). No user bearer or OAuth token is sent.
+  (`RKB_STREET_STORY_POI_URL`, set in the unit's ExecStart because the shared bridge
+  file uses the same name for the identity-command endpoint), one event per request,
+  with the existing RKB↔Street Story bridge key `RKB_STREET_STORY_POI_TOKEN` from
+  `~/.local/state/rkb-street-story-poi/bridge.env` (0600; Street Story holds the same
+  key as `STREET_STORY_RKB_POI_SERVICE_TOKEN`). No user bearer or OAuth token is sent.
+- Unit: `regional-knowledge-street-story-delivery.service` (user systemd), release
+  source under `~/.local/share/regional-knowledge-base/releases/<sha>/source`.
+- First delivery 2026-10-19: the single outbox event (pending since 2026-10-03) was
+  delivered; Street Story answered `unresolved_identity` because the locator had only a
+  name. A POI is created only from external ids (OSM/Wikidata/Wikipedia); name-only
+  locators wait for identity resolution.
 - States: `pending_authorization` → `pending_delivery` → `delivering` → `delivered`
   (Street Story receipt in `remote_receipt`); failures go to `retry_wait` with
   exponential backoff (30 s … 1 h); `409/413/422` and 12 exhausted attempts go to
