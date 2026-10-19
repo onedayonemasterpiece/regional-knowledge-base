@@ -4,6 +4,8 @@
 
 **Статус:** проект полноценного переноса, уточнённый после обсуждения с владельцем. Архитектурные требования ниже зафиксированы; реализация, миграция, переключение production и запуск экспериментов этим документом не выполняются и не объявляются согласованными. PostgreSQL, размещение векторов и конкретная топология остаются кандидатами.
 
+**Дополнение по цитатам на сканах:** разделы 15–21 описывают существующий source_proof, перенос тяжёлых стадий в Kaggle, отдельную доставку текста/изображений и реальные gaps Slack/Миры. dot не требуется как обязательный renderer; внедрение не выполнялось.
+
 ## 1. Главный вывод и изменение первоначальной оценки
 
 Цель: разгрузить DevCoveer с 8 ГБ RAM, разделяемыми с голосовым сервисом, перенести рабочую БД и основную обработку РКБ в Kaggle. На DevCoveer оставить лёгкий MCP/control-plane и небольшое долговечное хранилище операций и доставки, но не полную копию корпуса.
@@ -302,3 +304,167 @@ C/D сравниваются независимо от выбора A/B. Кол�
 Зафиксированы исходный анализ, официальные свойства платформы и последующие требования владельца. Код, production, данные, notebook, доступы и расписания не изменены. Runtime benchmarks, live quota inspection, restore/replay и нагрузочная приёмка не выполнялись.
 
 Следующий этап после отдельного поручения: уточнить неизмеренные параметры и реализовать ограниченный проверочный вертикальный сценарий с явным rollback, не переключая production authority до успешной приёмки. Этот документ сам по себе не является разрешением на внедрение.
+
+## 15. Дополнение: поиск и подтверждение цитат на сканах
+
+Продолжение анализа от 19 октября 2026 года по сценарию историка: один ответ опирается на несколько книг, для точных цитат нужны изображения страниц с выделением. Требование: не передавать клиенту целые PDF/DjVu ради отдельных страниц и не делать dot обязательным вычислительным посредником. Разделы 15–21 дополняют основной проект, не разрешают его внедрение.
+
+**Ключевой факт: нужный renderer уже существует.** В main source_proof принимает evidence ID, точную цитату и optional physical_page_index; сервер получает оригинал, находит координаты, рисует stripe и возвращает metadata плюс настоящий WebP ImageContent. dot не обязан самостоятельно скачивать PDF, вызывать отдельную модель для bbox или рисовать выделение. [MCP tool](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/server.py#L817-L824), [действующий контракт](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/docs/mcp.md#L325-L358).
+
+### Что уже реализовано
+
+- search возвращает идентификаторы и цитируемые ссылки; fetch возвращает точный текст с проверкой text_sha256, документом/revision, page/region locators и связанными illustrations. Это достаточный вход для выбора цитат без PDF в контексте модели. [fetch](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/supabase_backend.py#L636-L769).
+- source_proof проверяет вхождение цитаты в accepted text, однозначность, physical page, revision и source SHA. Цитата с нескольких страниц обрабатывается page-by-page, сейчас максимум четыре страницы; результаты последовательно склеиваются в одно изображение. Если одна страница не готова, текущий combined path возвращает отсутствие общего изображения; новый batch должен сохранять и выдавать уже успешные page artifacts отдельно.
+- Для PDF сначала используются PyMuPDF native text/quads, обработка переносов и преобразование координат при повороте. При скане либо DjVu допускается настроенный Flash-Lite locator: локализация и независимое чтение полос без переданной ожидаемой цитаты, не более двух вызовов на страницу. Код проверяет текст, геометрию и границы mapped region union; Pillow наносит полупрозрачный жёлтый stripe. Новая модель рисования не нужна. [quote_proof](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/quote_proof.py).
+- source_archive использует существующий VibePublish media-store/receipt контур для Telegram, проверяет provider SHA и исходный SHA. Есть bounded originals cache 512 MiB/4 часа, file leases и durable archive read identity; proof bundles отдельно ограничены 64 MiB/4 часами. Это текущие defaults, не подобранные для новой нагрузки размеры. [archive](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/source_archive.py#L81-L177), [cache](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/original_cache.py).
+- book_pages является инструментом чтения **staged ingestion**, а не правильным API для доказательства цитаты в принятой книге. illustration_fetch возвращает уже связанную иллюстрацию, не заменяет source_proof. [tool boundaries](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/server.py#L763-L824), [book_pages](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/server.py#L1061-L1105).
+
+### Реальные пробелы и задержки
+
+1. Вызов source_proof ожидает всю работу внутри текущего MCP request. Отдельного durable proof task/result/artifact контракта в main нет.
+2. Single-flight использует процессный словарь и lock. Предел 128 ключей не является ресурсным admission; разные quotes могут одновременно потреблять CPU/RAM/API. Между notebook такой dedupe не действует.
+3. При proof-cache miss source скачивается либо копируется из originals cache во временный файл и снова полностью хешируется. Несколько новых цитат из одного 50-МБ PDF могут повторять копирование и hashing, хотя Telegram-download уже закэширован. Готовый proof-cache учитывает quote, но отдельного общего render cache страницы не видно.
+4. Telegram asset сейчас читается как response.content, затем записывается целиком. Это не streaming-to-file: несколько больших cold sources создают heap и сетевую нагрузку даже вне dot.
+5. Archive read может ждать 60 итераций по 0,5 секунды плюс network. Каждый из двух последовательных Flash-Lite вызовов имеет HTTP timeout 25 секунд. Эти значения не складываются в гарантированный end-to-end deadline, но доказывают, что cold proof нельзя включать в двухсекундный search.
+6. ArchiveReadPending содержит operation_id и внутреннее продолжение, но в proof path попадает в общий RuntimeError catch: наружу выходит highlight_unavailable с типом ошибки, не typed pending с пригодным task reference. Живую работу следует продолжать, а не выдавать её за окончательно отсутствующий оригинал.
+7. Возвращается inline base64 ImageContent. Нет устойчивой ссылки на уже подготовленное изображение для независимого fetch, отложенной Slack-доставки и повторного получения после завершения notebook.
+
+Это выводы из кода на SHA 031d415, не замеры deployed процесса.
+
+## 16. Рекомендуемый контур без обязательного dot worker
+
+Один пользовательский запрос имеет быстрый текстовый результат и отдельные дочерние proof tasks. Их состояние хранится в том же durable request lifecycle; не создаётся второй независимый планировщик.
+
+1. Клиент или разрешённый semantic executor вызывает существующие search/fetch, выбирает точные цитаты и составляет ответ с evidence references.
+2. Текст и citations становятся доступны независимо от тяжёлых изображений. Ответ обозначает, какие proof ещё готовятся. Если сам вывод зависит от визуальной проверки, этот вывод остаётся предварительным: ранняя выдача текста не объявляет скан проверенным.
+3. Для выбранных цитат создаётся bounded proof plan. Элемент содержит evidence/document/revision/source hash, exact quote/hash, physical page/region, render/locator version и проверенный actor scope. Свободный URL, filename или произвольный bbox от клиента не дают доступа к источнику.
+4. Подходящий Kaggle worker выполняет существующий source_proof pipeline: source resolve → bounded download/cache → page render/text localization → optional Flash-Lite verification → deterministic paint → private artifact.
+5. Каждое изображение публикуется по готовности с собственным status и citation. Ошибка одной книги не задерживает полезный текст и готовые proof других книг; полный запрос не считается успешно законченным, пока выбранные proofs не имеют явного терминального состояния.
+6. Канальный adapter доставляет текст/готовые изображения. dot может быть одним из semantic executors или клиентом, но не обязательным download/render/paint hop.
+
+Мира, ChatGPT/Grok и другие direct clients могут сами собирать ответ из evidence. Для Slack нужен semantic executor, поскольку Slack transport не рассуждает сам. Если единственным подписчиком request execution всё ещё остаётся один dot, bottleneck рассуждения сохранится; перенос proof устраняет тяжёлую бинарную работу, но не доказывает масштабирование генерации ответа. Следует использовать уже проектируемые claim/lease/fencing для bounded пула разрешённых executors, не заводить отдельную очередь на каждый канал и не подразумевать невыбранный платный LLM.
+
+## 17. Передача файлов, cache и локализация
+
+### 17.1. Оригинал остаётся внутри сервисного контура
+
+Первый cold download может требовать целый оригинал: в проверенном Telegram/archive API нет доказанного page-range retrieval. Обещать скачивание только байтов одной страницы нельзя. Экономия достигается тем, что оригинал один раз попадает в сервисный cache, а клиент получает только нужную производную картинку. При использовании текущего VibePublish оригинальные bytes могут физически проходить через DevCoveer; речь не о доказанном обходе его сети, а об исключении полного PDF из dot/модельного контекста и повторных загрузок на каждую цитату.
+
+Сохранить VibePublish владельцем Telegram session, provider pacing, keyed reads и receipts. Не копировать Telegram session, owner OAuth/grant или долговечный service token во все notebook. Текущий dedicated loopback binding рассчитан на тот же host и не становится допустимым remote bearer простым переносом файла. Для Kaggle требуется ограниченный source-read transport: проверенный gateway/asset relay либо иной согласованный scoped grant на конкретную работу. Gateway может потоково передать bytes без загрузки в модель и без полной буферизации файла. Выбор/доступы потребуют отдельной реализации и проверки. [VibePublish binding](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/illustration_mirror.py#L17-L45).
+
+Download должен писать в bounded временный файл, считать checksum по потоку и атомарно устанавливать проверенный cache entry. Сохраняются native provider receipt, SHA, uncertainty/retry policy и actor checks. Завершение notebook не должно создавать повторный provider get с новым ключом, если прежняя операция ещё имеет неизвестный результат.
+
+### 17.2. Три переиспользуемых уровня
+
+- **Source cache:** source SHA плюс авторизованный scope. Одна source lease/read copy обслуживает bounded batch цитат одного источника; не повторять full copy/hash на каждую quote при неизменяемом и проверенном cache entry.
+- **Page material cache:** source SHA + physical page + renderer/resolution/rotation version. Хранить requested page render и проверенный текстовый/координатный материал, не автоматически рендерить все страницы книги.
+- **Proof cache:** source/revision + exact quote + page/region + localization/render version + output scope. Содержит конкретные polygons, validation method, artifact hash и citation.
+
+Разделение cache не создаёт новый постоянный page archive. Все caches bounded, приватные и расходуемые; bytes/pixels/temp files учитываются в admission. Уже подготовленный artifact, обещанный к доставке, нельзя удалить только потому, что закончился notebook lease: он должен иметь доступную private retained copy до установленного delivery/retrieval retention.
+
+Группировать запросы по source SHA/page; использовать cache affinity без бесконечного ожидания занятого «тёплого» узла. Свободный другой совместимый ресурс может получить работу, если это быстрее с учётом transfer cost. Cross-worker single-flight хранит durable task identity и subscribers, а не только lock в Python; повторные клиенты получают ту же работу после собственной ACL-проверки. Внешний opaque artifact ID не раскрывает наличие чужого документа по глобальному content hash.
+
+### 17.3. Bbox до VLM и честность доказательства
+
+Порядок: точный accepted quote/page → пригодный native либо уже существующий OCR/text layer с координатами и provenance → reuse проверенной локализации → bounded Flash-Lite fallback, только если он действительно нужен и разрешён.
+
+Существующий PDF native path уже использует quads. DjVu adapter возвращает embedded text hint, но не готовые word boxes; в нынешнем proof path DjVu идёт в fallback. Accepted region bbox задаёт область доказательства, но не заменяет точные line/word polygons. Постоянная OCR word/line geometry в проверенном текущем pipeline не подтверждена. Переиспользуемая page OCR map является возможной последующей оптимизацией, а не новым обязательным этапом. Новую сплошную OCR-переобработку корпуса проект не требует. [Source adapters](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/source_adapter.py), [native material](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/ingestion.py#L47-L77).
+
+Нельзя считать визуальное совпадение доказанным только по совпадению потенциально ошибочного или скрытого OCR слоя. Текущий method=native_text означает сопоставление слоя и quads, без независимого визуального чтения. При признаках недостоверного слоя нужен visual fallback либо честный отказ. Для повторяющейся фразы, неверной страницы, другой revision, mismatched hash или отсутствующей exact quote нельзя рисовать правдоподобный stripe «рядом».
+
+Flash-Lite получает только необходимую mapped region union, а не весь PDF. Сохраняется независимое чтение полученных полос без ожидаемой цитаты. Stripe всегда наносит проверенный код на реальные source pixels; generative image editing и ручной dot repaint не входят в обычный путь.
+
+## 18. Права на proof и контракт результата
+
+**Существенный текущий барьер:** source_proof и download_source требуют owner оригинала. Доступ к parsed text не даёт права увидеть private scan. Поэтому произвольный историк с read ACL сегодня не получает proof автоматически. [owner check](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/quote_proof.py#L231-L249), [повторная проверка](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/source_archive.py#L162-L177).
+
+Нужны два допустимых режима:
+- сохранить current owner-only behavior без расширения доступа;
+- после отдельного решения владельца ввести узкий derived-proof grant, определяющий разрешённые page/region/context и аудиторию. Это не raw-source download grant и не owner impersonation.
+
+Сейчас image содержит целую страницу с выделением. Если разрешена только цитата/ограниченный контекст, output должен быть разрешённым crop/masked page; нельзя выдавать весь лист по узкому grant. Право читать текст, право видеть скан, право отправить его в Slack-аудиторию и разрешение передать область внешнему model provider проверяются отдельно.
+
+Минимальное расширение существующего source_proof/request API:
+- сохранить быстрый совместимый JSON + ImageContent ответ для готового proof;
+- добавить bounded batch/request и status/result retrieval через тот же ресурс;
+- на pending возвращать opaque proof_request_id/task reference, item statuses и retry_after, не private URLs и не произвольный sleep;
+- на ready возвращать citation, page/revision/source/text hashes, verification method, artifact ID/hash/MIME/size и разрешённый способ получения;
+- на ошибке сохранять различимые waiting_source, waiting_capacity, waiting_model, quote_not_found, ambiguous, access_denied, source_mismatch, provider_unavailable. Точные wire names предстоит закрепить.
+
+Это proposed contract, не уже существующие tools. Не требуется отдельный endpoint на каждый клиент. Artifact fetch повторно проверяет текущие actor/source/proof права и scope; наличие task ID или cache hit не является авторизацией. ACL повторно проверяется также до model transmission и доставки. Отзыв доступа после подготовки блокирует новую выдачу; уже полученную третьей стороной копию нельзя объявить ретроактивно отозванной.
+
+Успешная стадия сохраняет result manifest и checksum после проверенного artifact upload/readback. Байты больших изображений и полные PDF не записываются в маленькую control SQLite и не входят в каждый Dataset snapshot. В журнале остаются task/operation identity, зависимости, exact localization/model result, artifact receipt и delivery state. При утрате расходуемого page cache допускается безопасный повтор render/paint; он не приводит к повторной внешней доставке.
+
+## 19. Канальные adapters и актуальный PR
+
+Дополнительный source review: main 031d415ab95bd21167cd215bee1a6a044a94ce4b; [PR #151](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/151), OPEN/DRAFT, head **3948cd93153c3b57db62066463fc34870e45a273**. Это новый срез; отсутствие fairness/dialog head из раннего анализа PR не переносится как актуальный дефект. Реальный rollout PR не проверялся.
+
+### Slack
+
+В этом PR уже развиваются durable request/execution/result/outbox, identity, sequencing/fairness и delivery reconciliation. Для personal clients существует research_request(submit/result/ack) с exact result-hash ACK и проверкой текущих прав; его надо расширять, а не создавать параллельный lifecycle. Однако ExpertResult содержит text, document_ids и case_ids с запретом лишних полей; Slack delivery использует текстовые sections/chat.postMessage. Request-bound expert_research не включает source_proof. В service allowlist отсутствует request-bound source_proof, а Slack manifest не содержит file-upload permission. Поэтому ImageContent из обычного MCP не превращается автоматически в Slack-вложение. [Контракт запросов](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/3948cd93153c3b57db62066463fc34870e45a273/src/regional_knowledge/expert_requests.py), [Slack adapter](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/3948cd93153c3b57db62066463fc34870e45a273/src/regional_knowledge/slack_expert.py), [MCP routing](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/3948cd93153c3b57db62066463fc34870e45a273/src/regional_knowledge/server.py).
+
+Минимально расширить тот же result/outbox на typed proof artifact items и per-item delivery receipt. Ответ текстом идёт без ожидания всех сканов; изображения добавляются в тот же проверенный исходный thread по готовности либо ограниченной группой. Нужен native file-upload adapter или авторизованная artifact ссылка, которую адресат действительно может открыть. Не использовать public URL как обход ACL. Сообщение/файл с неизвестным исходом reconcile по provider evidence, не слепо отправлять заново.
+
+Это развитие существующего delivery adapter, не новая Slack-only очередь. Текущий PR допускает для групп только public-only evidence даже в приватном Slack-канале; permission на текст или закрытый channel не разрешает отправку приватной страницы. Новые file scopes и правила derived-proof sharing потребуют отдельного согласованного изменения. Подготовка каждого изображения не должна требовать очередного ручного turn dot. Upload и повторный message не считаются одной атомарной операцией; у каждого внешнего эффекта свой idempotency/receipt.
+
+Позднее изображение нельзя добавить переписыванием уже immutable result_json/result_hash. Предлагается сохранить immutable text result со ссылкой на proof plan, а готовность artifacts оформлять дочерними result events с отдельными ACK. Text ACK не означает proof-delivered; пропущенный image ACK не разрешает слепой resend. Правило открытия следующего dialog head должно явно учитывать существующий PR151 ACK/sequence и зависимости следующего вопроса от ещё неготовых proof. Его нельзя незаметно обойти ради раннего текста.
+
+### Мира и direct MCP
+
+Полный MCP профиль уже имеет source_proof. Default RKB Live profile возвращает только knowledge_search и завершается до регистрации proof tools; это сохраняет быстрый голосовой retrieval. [Live boundary](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/031d415ab95bd21167cd215bee1a6a044a94ce4b/src/regional_knowledge/server.py#L737-L761).
+
+Для Миры предложить opt-in asynchronous proof capability на уровне её приложения: voice получает compact evidence/статус, а готовое изображение отправляется в подходящую текстовую поверхность либо становится доступным через task/artifact reference. Не включать тяжёлый proof в обязательный голосовой search и не выдавать текущие Projects Hub tools вопросов/ответов за готовый RKB proof adapter. Конкретная deployed конфигурация Миры и поддержка ею artifact UI в этом анализе не проверены. PR acceptance также оставляет actual Mira/UI и реальную dot dispatch/ACK интеграцию открытыми; synthetic callbacks не являются пользовательской приёмкой. Projects Hub остаётся отдельным orchestration client с resource-bound delegation: его usr_ identity нельзя преобразовать в RKB UUID или заменить owner bearer. [Граница интеграции](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/3948cd93153c3b57db62066463fc34870e45a273/docs/integrations.md#L63-L85), [ограничения приёмки](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/3948cd93153c3b57db62066463fc34870e45a273/docs/operations/disagreement-journal.md#L382-L442).
+
+Direct ChatGPT/Grok клиент сам составляет текстовый ответ и получает proof через общий request/result/fetch contract, без посредничества dot. Если клиент не поддерживает push, результат сохраняется до authenticated poll/retrieval; нельзя обещать доставку в закрытое окно без реализованного транспорта. Канальная способность принимать images должна проверяться отдельно от способности вызвать MCP.
+
+## 20. Справедливая capacity для поиска и PDF
+
+Сохранить одну fair work-conserving очередь, но допуск выдавать по стадиям и ресурсам: search/FTS/vector, download/disk, page render, localization provider, paint/artifact upload. Это классы работ одного scheduler, а не новые независимые пользовательские очереди.
+
+- Резервировать измеренный serving footprint и возможность выполнить хотя бы один latency-sensitive search. BGE с четырьмя CPU threads и PDF render не получают весь доступный CPU только потому, что RAM ещё свободна.
+- Одновременно сохранять положительную долю/aging для proof, чтобы непрерывный поток коротких search не оставлял сложные запросы навечно ждать.
+- Multi-book proof fan-out ограничивать по человеку/request и общему byte/pixel budget. Один вопрос из десяти книг не получает десять независимых преимуществ в fairness.
+- Во время Telegram/model I/O освобождать CPU permit, но сохранять реальные reservations диска/памяти, если bytes всё ещё удерживаются. Не удерживать SQL writer lock до завершения proof.
+- Read-only proof job не требует corpus writer role; создание control receipt не превращает renderer во второй writer рабочей БД.
+- Между bounded page batches снова применять admission. Не прерывать небезопасно транзакцию или render ради нового запроса.
+- Существующий 128-flight предел не заменяет измеренные лимиты decode/RAM/model concurrency. Значения не назначать наугад.
+- Scale по actual queue/latency и доступным Kaggle slots; учитывать source/page cache affinity и провайдерный Telegram/model bottleneck. Добавление notebook не увеличивает чужой rate limit.
+
+Сравнить совместный DB+BGE+proof вариант с изоляцией proof/render или BGE в другом worker. Это проверка уже выбранной общей архитектуры, а не обязательство держать фиксированное число notebook. Если warm search не укладывается в прежний deadline при одновременном proof, перенос считается не прошедшим соответствующую приёмку; скрывать нарушение через общий pending нельзя.
+
+## 21. Минимальные изменения и проверка нового сценария
+
+### Что переиспользовать
+
+search/fetch и exact evidence locators; source_archive/VibePublish keyed retrieval; SourceProcessor/PyMuPDF/DjVu; native/Flash-Lite locator и независимое чтение; validators/scoped polygons/Pillow paint; existing bounded caches; PR151 request/claim/outbox и канальные adapters. Новый renderer, обязательный dot vision worker, новый публичный архив страниц или отдельный broker не нужны.
+
+### Что действительно добавить или изменить
+
+1. Тот же durable request runtime: дочерние proof stages, typed pending/dependency continuation, bounded batch и distributed dedupe.
+2. Source/page batching, streaming-to-file и reuse проверенного source lease вместо full-file copy/hash для каждой новой quote.
+3. Bounded requested-page material cache отдельно от quote-specific overlay.
+4. Проверенный remote source transport в Kaggle без копирования owner/Telegram credentials.
+5. Private artifact manifest/storage/fetch с текущей ACL и сохранением до доставки.
+6. Request-bound proof capability, узкая политика derived-proof прав и optional Live/direct async adapter.
+7. Расширение существующего Slack result/outbox на artifacts, native delivery и per-item readback.
+8. Ресурсный admission и instrumentation на каждом существенном шаге.
+
+### Измерения вместо обещаний
+
+Отдельно измерить time-to-text, time-to-first-proof, time-to-all-proofs и end-to-end delivered; warm source/page/proof hit; cold Telegram download; native и Flash-Lite пути; restore/startup и Slack upload. Считать transferred bytes, full-file copies/hashes, CPU, RSS/HWM, disk peak, pages/pixels, model calls, очередь и полезный результат. Нельзя ограничиться скоростью одного поиска без одновременного PDF.
+
+Матрица: одна/несколько цитат на одной странице; разные страницы одной книги; несколько книг примерно по 50 МБ; повтор того же набора; несколько пользователей и клиентов; поиск одновременно с proof и импортом. Численные proof latency targets установить по baseline, а не выдать выдуманные секунды за согласованное требование. Прежний search gate и cold-start tolerances сохраняются.
+
+Обязательные отрицательные и восстановительные проверки:
+- wrong/repeated quote, wrong page, changed revision/hash, rotation/cropbox, переносы, несколько колонок, ненадёжный OCR слой и disjoint region masks;
+- text-only grantee против scan owner/derived-proof grant; revoke после enqueue, render, cache hit и перед Slack delivery;
+- другой actor не получает чужой artifact или сведения о наличии cache;
+- ArchiveReadPending сохраняет operation_id и продолжение, а provider uncertainty не создаёт второй download;
+- потеря notebook после render/upload/receipt: task продолжается, already-delivered artifact не отправляется снова;
+- медленная/ошибочная книга не блокирует текст и готовые изображения; общий запрос не теряет незавершённые proof;
+- многоклиентский duplicate использует общий computation, но каждый fetch/delivery заново авторизуется;
+- bounded fan-out не ухудшает защищённый search и не голодает сам;
+- proof-cache eviction/lease expiry не удаляет единственную копию обещанного к доставке результата;
+- Slack действительно показывает нужное изображение с правильной citation в исходном thread; direct/Мира действительно получают результат через поддерживаемый канал.
+
+**Итог дополнения:** тяжёлые source/download/render/localization/paint следует перенести в Kaggle как ограниченные и возобновляемые стадии существующего proof pipeline. Текстовый ответ и клиентское рассуждение отделяются от подготовки изображений. Главные новые работы находятся в task/artifact/ACL/delivery и ресурсном допуске, а не в создании stripe с нуля. Все выводы пока основаны на source review; benchmark, runtime изменения и миграция не выполнялись.
