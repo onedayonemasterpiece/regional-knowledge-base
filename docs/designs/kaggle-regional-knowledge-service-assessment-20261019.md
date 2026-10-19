@@ -4,6 +4,8 @@
 
 **Статус:** проект полноценного переноса, уточнённый после обсуждения с владельцем. Архитектурные требования ниже зафиксированы; реализация, миграция, переключение production и запуск экспериментов этим документом не выполняются и не объявляются согласованными. По итогам дополнительной оценки единый PostgreSQL + pgvector рекомендован как целевая архитектура (§§22–26). Это инженерная рекомендация, не принятое владельцем окончательное решение и не production-ready статус. Конкретная топология и параметры остаются открытыми.
 
+**Дополнение по быстрому исполнителю:** §27 сравнивает текстовый Gemini и Live, рекомендует единый Slack-контур и фиксирует gaps маршрутизации/передачи запроса. Интеграция не реализована.
+
 **Дополнение по единому хранилищу:** §§22–26 уточняют целесообразность PostgreSQL, lexical/vector retrieval, границы reuse из my-data-hub и проверки до переключения. Ранее сформулированные требования к durable journal, единственному writer, ACL и proof delivery сохраняются.
 
 **Дополнение по цитатам на сканах:** разделы 15–21 описывают существующий source_proof, перенос тяжёлых стадий в Kaggle, отдельную доставку текста/изображений и реальные gaps Slack/Миры. dot не требуется как обязательный renderer; внедрение не выполнялось.
@@ -556,3 +558,39 @@ Colocated BGE+PG+proof и split BGE / PG+proof остаются сравнива
 6. **Controlled cutover:** только после разрешения на реализацию и успешных gates; ограниченный импорт/shadow comparison, подтверждённый restore и план возврата без split-brain, остановка старого writer на границе переключения. Не называть retired legacy remote corpus допустимым rollback; rollback нужен к проверенному checkpoint действующей системы.
 
 **Окончательный инженерный вывод:** единый PostgreSQL + pgvector здесь целесообразнее как target, чем закрепление раздельных SQLite corpus/FTS/ACL, Supabase book vectors и SQLite/Python story vectors. Он сокращает границы согласованности и даёт общий SQL/transaction/backup контур, но сам по себе не улучшает retrieval, не отменяет durable journal и не подтверждает пригодность Kaggle для всей нагрузки. Следующий шаг после принятия владельцем направления — отдельно разрешённая реализация и измеряемая проверка, не незаметная миграция в рамках этого документа.
+
+
+## 27. Быстрый Gemini-исполнитель и единый Slack-контур
+
+**Рекомендация:** для текстового Slack использовать обычный текстовый Gemini tool-calling через явный исполнитель MCP-инструментов, подключённый к общей очереди РКБ. Начать с одного существующего Slack-бота и явного предпочтения fast/deep; автоматический выбор делать до claim с учётом доступной capacity и сообщать пользователю выбранный режим, без молчаливого снижения требуемого качества. Это целевой вариант, не уже работающая интеграция и не разрешение её внедрять.
+
+### Выбор протокола и канала
+
+- Gemini Live предназначен прежде всего для низколатентного audio/video диалога. В проверенной текущей документации Gemini 3.8 Live выдаёт AUDIO с transcription, без structured output и code execution. Он поддерживает non-blocking function calls, но **все MCP/tool вызовы выполняет наш host**, а не сам Live. Возможность передать текст на вход не делает его автоматически самым быстрым текстовым Slack-executor.
+- Для новой текстовой интеграции Google рекомендует Interactions API; generateContent остаётся поддерживаемым legacy вариантом. Конкретные endpoint/model здесь не закрепляются как реализованные. В документации direct remote MCP есть противоречие между примером Gemini 3.8 и описанием ограничений Gemini 3: совместимость конкретной пары model/API требует smoke test. Явный host tool executor не зависит от обещания, что удалённый MCP уже работает автоматически.
+- Долгая Live socket-сессия и session resumption не заменяют durable job checkpoint, сохранённые tool outputs и result/delivery ledger. Потеря сессии не должна заставлять повторять подтверждённые изменения или отправлять ответ повторно.
+- Два имени вроде @KaliningradBase/@Ultra можно рассматривать как последующий UX-выбор, но не как способ ускорения или fairness. В текущем draft [tenant/lane зависит от app_id + team_id](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4/src/regional_knowledge/request_order.py#L60-L63): два Slack app создают разные lanes, если отдельно не ввести canonical intake/dialog mapping. Один бот с предпочтением режима сохраняет общий actor/thread и не требует нового bot/IAM/MCP по умолчанию.
+
+Источники Google: [Gemini 3.8 Live](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live), [Live tools](https://ai.google.dev/gemini-api/docs/live-api/tools), [Interactions overview](https://ai.google.dev/gemini-api/docs/interactions-overview), [session management](https://ai.google.dev/gemini-api/docs/live-api/session-management). Документация меняется; перечисленное не является результатом нашего runtime smoke test.
+
+### Что есть сейчас и чего недостаёт
+
+Срез архитектуры: [PR #151](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/151), head adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4, **draft и не deployed**. Есть общие request/claim/result/outbox и [generation token с service binding и lease не более 300 секунд](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4/src/regional_knowledge/expert_requests.py#L292-L322). В проверенном [executor MCP contract](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4/src/regional_knowledge/expert_mcp.py#L43-L78) claim выставляет 300 секунд, а route/cancel/yield/takeover/renew не доступны; checkpoint_wait специфичен для BGE. Это не готовый универсальный checkpoint/resume для произвольного Gemini/dot исследования; длинный executor нельзя подключать с предположением бесконечно продлеваемой аренды.
+
+Для dot не подтверждён публичный production executor API вида event → isolated request context → tools → checkpoint/resume → native ACK. Личные возможности ассистента не являются таким контрактом. Поэтому dot — необязательный кандидат deep executor после подтверждения интерфейса, а не гарантированный backend, которому уже можно передать задачу. У Миры стандартный launcher не содержит RKB transport; PH result sink нельзя подменить им без проверки RKB actor/scope/result/ACK semantics.
+
+Минимальные изменения: явный mode/route в существующем request contract и durable запись выбранного исполнителя; Gemini adapter с изолированным контекстом и узким RKB tool scope; ограниченное продолжение/передача claim для долгих задач; соответствие result/proof artifacts и ACK уже описанному outbox. Новый renderer, отдельная Gemini-очередь, новый Slack-бот и параллельный IAM не нужны как исходная конструкция.
+
+### Один запрос и одна доставка, даже при смене исполнителя
+
+Idempotent ingress создаёт один request_id. Pending request можно переназначить до claim; уже выполняемый запрос нельзя «ускорить» независимым параллельным запуском dot и Gemini с двумя доставками. Безопасный handoff требует совместимого сохранённого checkpoint/tool outputs, завершения либо ограничения внешних эффектов прежнего worker и fencing его generation **до** нового claim. Просроченная аренда не останавливает старый процесс сама по себе. Если такого контракта ещё нет, seamless in-flight handoff не обещается; поддерживается только явно реализованный путь ожидания/восстановления.
+
+Поздний completion старой generation не может принять immutable result или отправить его в канал. Side-effect tools должны иметь idempotency keys и сохранённые результаты, а только fencing финального ответа не предотвращает повтор раннего внешнего действия. Text result, дочерние proof jobs и per-artifact delivery ACK сохраняются раздельно; retry не дублирует уже доставленный текст/скан. Любой executor получает те же actor/audience/ACL ограничения; смена модели не выдаёт доступ к raw source или закрытому artifact.
+
+### Лимиты, размещение и проверка выигрыша
+
+Переиспользовать существующий общий provider limit control, а не создавать независимый лимитер на каждый notebook. Quota budget Google считается по project/model, не по API key: общий controller должен видеть приложения и workers одного quota project; смена ключей для обхода 429 не является допустимым scaling. Реальный mapping credentials → quota-project, класс ограничений и подключение нового adapter к controller ещё требуется проверить. Rate-limit wait отличается от свободного CPU и включается в fair work-conserving scheduling, не порождая вторую очередь вне общего request runtime. [Google rate limits](https://ai.google.dev/gemini-api/docs/rate-limits).
+
+В Kaggle можно разместить executor orchestration и тяжёлые RKB tools, но Gemini inference остаётся у Google. Лёгкий dispatcher на DevCoveer может не нуждаться в отдельном notebook; место исполнения выбирается по фактической памяти, сетевым переходам, cold start и доступным слотам. Не переносить voice/Slack gateway в Kaggle только потому, что там находятся proof workers, и не обещать меньший latency от нового сетевого hop.
+
+До выбора: сравнить одинаковые вопросы, tools и evidence по time-to-text/first-proof/all-proofs/delivery, grounded quality, стоимости и quota wait; отдельно тёплый путь и cold start. Проверить duplicate ingress, две конкурентные claims, lease expiry/late result, provider disconnect, interrupted tool call, unknown delivery и ACL revoke. Пока это proposed checks без benchmark: более быстрый первый токен не доказывает более быстрый правильный ответ, а ускорение semantic executor не устраняет само по себе Telegram/render/Slack bottlenecks.
