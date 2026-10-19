@@ -11,8 +11,12 @@ import hashlib
 import json
 import math
 import struct
+import logging
 
 from .bge_contract import DIMENSION, REVISION, SPACE, validate_vector
+from .bge_queue import BgeQueueCapacityError
+
+log=logging.getLogger(__name__)
 
 # Fail closed on legacy local-ONNX embeddings; Kaggle FP32 is the authority.
 ENCODER_REVISION = REVISION
@@ -150,9 +154,13 @@ class StoryVectorIndexer:
         actor = str(item["owner_id"])
         key = job_key(item)
         identity = job_identity(item)
-        job_id = await asyncio.to_thread(
-            self.queue.enqueue, actor, key, [item["text"]],
-            kind="document", identity=identity)
+        try:
+            job_id = await asyncio.to_thread(
+                self.queue.enqueue, actor, key, [item["text"]],
+                kind="document", identity=identity)
+        except BgeQueueCapacityError:
+            log.info('bge_document_capacity_wait',extra={'component':'story_indexer'})
+            return 0
         row = await asyncio.to_thread(self.queue.result, actor, job_id)
         if row["identity"] != identity:
             raise ValueError("Kaggle story document identity mismatch")

@@ -8,6 +8,17 @@ from .bge_contract import SPACE as BGE_SPACE,MAX_TOKENS as BGE_MAX_TOKENS
 
 encoding_timings = contextvars.ContextVar('e5_encoding_timings',default={})
 
+class E5QueueCapacityError(RuntimeError):
+    code='capacity_wait'
+
+
+def checked(response):
+    if response.status_code==429:
+        try:capacity=response.json().get('error')=='encoder_queue_full'
+        except (ValueError,AttributeError):capacity=False
+        if capacity:raise E5QueueCapacityError('encoder_queue_full')
+    response.raise_for_status()
+
 class LocalE5Embedder:
     embedding_space = SPACE
     def __init__(self, endpoint='http://127.0.0.1:8767'):
@@ -19,7 +30,7 @@ class LocalE5Embedder:
     async def embed(self,text):
         encoding_timings.set({})
         response = await self.client.post('/embed',json={'space':SPACE,'role':'query','texts':[text]})
-        response.raise_for_status()
+        checked(response)
         data = response.json()
         if data.get('space')!=SPACE or len(data.get('vectors',[]))!=1:raise ValueError('local E5 space/batch mismatch')
         vector = validate_vector(data['vectors'][0])
@@ -36,7 +47,7 @@ class LocalE5Embedder:
     async def embed_passages(self,texts):
         if not 1<=len(texts)<=4:raise ValueError('E5 passage batch1..4 required')
         response=await self.client.post('/embed',json={'space':SPACE,'role':'passage','texts':texts})
-        response.raise_for_status();data=response.json()
+        checked(response);data=response.json()
         if data.get('space')!=SPACE or len(data.get('vectors',[]))!=len(texts):raise ValueError('local E5 passage contract')
         return [validate_vector(v) for v in data['vectors']]
 
@@ -47,7 +58,7 @@ class LocalE5Embedder:
             raw=json.dumps({'space':SPACE,'role':'passage','texts':values},ensure_ascii=False,separators=(',',':')).encode()
             if len(raw)>240000:raise ValueError('token count request too large')
             response=await self.client.post('/token-count',content=raw,headers={'Content-Type':'application/json'})
-            response.raise_for_status();data=response.json()
+            checked(response);data=response.json()
             if data.get('e5_space')!=SPACE or data.get('bge_space')!=BGE_SPACE:raise ValueError('token count space mismatch')
             if data.get('e5_max_tokens')!=MAX_TOKENS or data.get('bge_max_tokens')!=BGE_MAX_TOKENS or data.get('target_passage_tokens')!=TARGET_PASSAGE_TOKENS:raise ValueError('token count budget mismatch')
             e5=data.get('e5_tokens');bge=data.get('bge_tokens')

@@ -76,6 +76,33 @@
         "If an implementation conflicts with a critical requirement, the conflict is surfaced instead of normalized into a weaker target.",
         "Intentional requirement changes use requirements_update with an explicit owner authorization reference."
       ]
+    },
+    {
+      "id": "CORE-UNIFIED-EXPERT-ACCESS",
+      "statement": "Experts use the existing Regional Knowledge Base MCP resource directly from any compatible AI client or through Slack with dot as a replaceable executor. Both paths resolve the same canonical person and enforce current capabilities and resource ACL server-side; no separate expert MCP service, endpoint, corpus or identity registry is required.",
+      "critical": true,
+      "acceptance": [
+        "Personal resource-bound OAuth identifies the actual expert, never an owner invite or a client-supplied actor. Supported clients are verified individually; naming ChatGPT or Grok is not a compatibility result.",
+        "Slack resolves the verified provider account to the same existing RKB person UUID. A dedicated executor service uses the same MCP endpoint and a durable request/route/generation-bound authority; it never inherits dot's or the owner's unrelated credentials.",
+        "Effective permissions are the intersection of the person's current capabilities, source/case ACL and delivery audience; service execution is additionally limited by its service grant and request fence. Import and participant administration remain owner-only and unavailable through delegated expert requests.",
+        "Concurrent actors, cross-route access, lease/link/grant revocation, delayed results and direct calls to forbidden tools are checked on the server, regardless of catalog visibility.",
+        "Acceptance demonstrates direct personal research and Slack-delegated research on the same authorized case/revision, including a real non-owner, denial and revocation; documentation and green component tests alone do not establish live support."
+      ]
+    },
+    {
+      "id": "CORE-REQUEST-LOAD-MANAGEMENT",
+      "statement": "Regional Knowledge Base uses one durable user-request lifecycle across clients, preserving per-dialog context and order, equal-person fairness, measured resource admission and honest arithmetic ETA. Ordinary load queues accepted questions rather than discarding them; imports retain capacity for at least one supported search.",
+      "critical": true,
+      "acceptance": [
+        "Slack and supported direct/Mira clients use the existing request authority and MCP resource. Verified canonical people share fairness across clients; client-supplied actors or dialog IDs cannot bypass access checks.",
+        "Accepted requests survive restart and retain a final result/delivery outcome in the original dialog. Later dialog turns use completed prior context and cannot overtake an undelivered or uncertain predecessor; other dialogs continue.",
+        "Fair selection and measured stage permits apply atomically to every claim/resume/wake path, including an explicit request ID. Local resources, E5, external Kaggle BGE and vector dependencies are distinguished; capacity is calibrated and adapts to measured resource increases/decreases.",
+        "Forecasts use measured durations and the actual fair order, not an LLM or invented concurrency limits. ETA at most ten seconds causes no waiting message; longer ETA and material increases have durable coalesced notices only for the person's nearest request. Ready final answers take precedence.",
+        "Ordinary capacity waits do not consume outage retry budgets, expire accepted inputs or ask users to resend. Proven external unavailability produces one honest terminal response; unknown provider effects reconcile without blind resend and poison stages remain recoverable.",
+        "Import stages cooperate at existing safe durable boundaries and cannot consume the measured search reserve. Required BGE publication, source fidelity, prior active revision and Kaggle-only inference remain protected; no process kill or unsafe transaction pause.",
+        "The existing evidence-search deadline and latency/quality gates remain unchanged. Report queue wait and time to final answer separately; do not hide a long HTTP search behind the durable question queue.",
+        "Acceptance includes cross-client/dialog fairness, restart and stale-generation boundaries, notification thresholds, real resource calibration/resize and import+search concurrency, actual second-client result/ACK readback and held-out ETA error. A green unit suite or pending response alone does not prove product acceptance."
+      ]
     }
   ]
 }

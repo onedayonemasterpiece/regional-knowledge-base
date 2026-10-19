@@ -4,6 +4,8 @@ import json
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -147,11 +149,110 @@ def _transport_security(resource_url: str | None = None) -> TransportSecuritySet
     )
 
 
+@asynccontextmanager
+async def _research_runtime(server):
+    events = getattr(server, "expert_events", None)
+    tasks = []
+    if events is not None:
+        tasks.append(asyncio.create_task(events.run(), name="rkb-expert-wake"))
+    slack = getattr(server, "expert_slack", None)
+    if slack is not None:
+        from .slack_runtime import supervise
+        tasks.append(asyncio.create_task(supervise(slack), name="rkb-expert-slack"))
+    try:
+        yield
+    finally:
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
 class KnowledgeMCPServer(MCPServer):
     """Advertise the public PKCE clients supported by our embedded provider."""
 
+    def _strict_arguments(self,name,arguments):
+        tool=self._tool_manager.get_tool(name)
+        if tool is not None and set(arguments or {})-set(tool.parameters.get('properties',{})):
+            raise ToolError('invalid_arguments')
+
+    async def list_tools(self):
+        from .mcp_authority import EXECUTOR_TOOLS, PERSONAL_TOOLS, is_service
+        tools = await super().list_tools()
+        participants = getattr(self, "research_participants", None)
+        if participants is None:
+            return tools
+        if is_service():
+            return [tool for tool in tools if tool.name in EXECUTOR_TOOLS]
+        principal = _principal()
+        if principal.subject == participants.owner:
+            return [tool for tool in tools if tool.name not in EXECUTOR_TOOLS]
+        return [tool for tool in tools if tool.name in PERSONAL_TOOLS]
+
+    async def call_tool(self, name, arguments, context=None):
+        from .mcp_authority import EXECUTOR_TOOLS, PERSONAL_TOOLS, SOURCE_TOOLS, is_service
+        from .participants import RequestAuthority, ParticipantError
+        from .expert_source_scope import ExpertSourceScope, current_source_scope
+        participants = getattr(self, "research_participants", None)
+        if participants is None:
+            return await super().call_tool(name, arguments, context)
+        if is_service():
+            if name not in EXECUTOR_TOOLS:
+                raise ToolError("capability_denied")
+            self._strict_arguments(name,arguments)
+            return await super().call_tool(name, arguments, context)
+        if name in EXECUTOR_TOOLS:
+            raise ToolError("service_denied")
+        if name=='research_request':self._strict_arguments(name,arguments)
+        principal = _principal()
+        authority = RequestAuthority(principal, "owner" if principal.subject == participants.owner else "personal")
+        # Catalog filtering is only convenience. Enforce direct calls as well.
+        if authority.route != "owner" and name not in PERSONAL_TOOLS:
+            raise ToolError("capability_denied")
+        capability = "scan_proof_read" if name in {"source_proof", "illustration_fetch"} else "public_search"
+        try:
+            if authority.route == "owner":
+                # Preserve the existing SQLite adapter's first-owner bootstrap.
+                # Only the verified subject matching trusted server config may
+                # create this row; never reactivate a disabled account or
+                # provision arbitrary personal users through a source read.
+                def bootstrap_owner():
+                    with participants.corpus.connect() as db:
+                        if participants.sources._corpus_row(db, "rkb_users", principal.subject) is None:
+                            db.execute("BEGIN IMMEDIATE")
+                            if participants.sources._corpus_row(db, "rkb_users", principal.subject) is None:
+                                from .sqlite_data import defaults
+                                participants.corpus.put("rkb_users", [{**defaults("rkb_users"), "id": principal.subject}], connection=db)
+                await asyncio.to_thread(bootstrap_owner)
+            # Domain journal operations enforce their exact capability inside
+            # their transaction; here check the current account/profile too.
+            if name in SOURCE_TOOLS or name == "book_ingest":
+                await asyncio.to_thread(participants.require, authority,
+                    "import" if name == "book_ingest" else capability)
+            else:
+                def validate_account():
+                    with participants.corpus.connect() as db:
+                        participants._authority(db, authority)
+                await asyncio.to_thread(validate_account)
+            if name not in SOURCE_TOOLS:
+                return await super().call_tool(name, arguments, context)
+            marker = current_source_scope.set(ExpertSourceScope(participants, authority))
+            try:
+                result = await super().call_tool(name, arguments, context)
+                await asyncio.to_thread(participants.require, authority, capability)
+                return result
+            finally:
+                current_source_scope.reset(marker)
+        except (ParticipantError, PermissionError) as exc:
+            raise ToolError(getattr(exc, "code", "capability_denied")) from None
+
     def streamable_http_app(self, **kwargs):
+        if getattr(self, "events_discovery_enabled", False):
+            kwargs["json_response"] = True
         app = super().streamable_http_app(**kwargs)
+        if getattr(self, "events_discovery_enabled", False):
+            from .expert_event_mcp import DraftEventDiscovery
+            app.add_middleware(DraftEventDiscovery)
         if isinstance(self._auth_server_provider, RegionalOAuthProvider):
             auth = self.settings.auth
             metadata = build_metadata(
@@ -207,7 +308,7 @@ def build_server(
     if auth_mode not in {"embedded", "external"}:
         raise RuntimeError("RKB_AUTH_MODE must be 'embedded' or 'external'")
 
-    kwargs: dict[str, Any] = {}
+    kwargs: dict[str, Any] = {"lifespan": _research_runtime}
     embedded_provider: RegionalOAuthProvider | None = None
     if auth_mode == "embedded":
         if not issuer or not resource_url:
@@ -377,6 +478,59 @@ def build_server(
 
     # Optional narrow function-call bundles for the client application's own Live agent.
     # The default read-only Live surface above remains unchanged.
+    if (profile == "full" and os.getenv("RKB_SLACK_RUNTIME_ENABLED") == "1"
+        and (os.getenv("RKB_EXPERT_REQUESTS_ENABLED") != "1" or not hasattr(backend, "corpus")
+            or not os.getenv("RKB_OWNER_SUBJECT", "").strip())):
+        raise RuntimeError("Slack runtime requires the existing expert request authority")
+    if profile in {"full", "live"} and hasattr(backend, "corpus") and os.getenv("RKB_OWNER_SUBJECT", "").strip():
+        from .participants import Participants, RequestAuthority
+        from .disagreement_tools import register_research_tools
+        participants = Participants(backend.corpus, os.environ["RKB_OWNER_SUBJECT"].strip())
+        if embedded_provider is not None:
+            if embedded_provider.owner_subject != participants.owner:
+                raise RuntimeError("OAuth owner must match the configured corpus owner")
+            from .personal_auth import PersonalPolicy
+            embedded_provider.personal_policy = PersonalPolicy(participants)
+
+        def research_authority():
+            principal = _principal()
+            route = "owner" if principal.subject == participants.owner else "personal"
+            return RequestAuthority(principal, route)
+
+        mcp.research_participants = participants
+        if profile == "full":
+            register_research_tools(mcp, participants, research_authority)
+        if profile == "full" and os.getenv("RKB_EXPERT_REQUESTS_ENABLED")=="1":
+            from .expert_requests import ExpertRequests
+            from .expert_mcp import register_executor_tools
+            from .mcp_authority import ResourceTokenVerifier
+            from .request_runtime import configuration
+            config=configuration(resource_url)
+            channels=config.get("allowed_channels") or ([config["authorized_test_channel_id"]] if config.get('authorized_test_channel_id') else [])
+            requests=ExpertRequests(participants,app_id=config["app_id"],team_id=config["team_id"],bot_user_id=config["bot_user_id"],allowed_channels=channels)
+            if os.getenv('RKB_BGE_ENABLED')=='1' and os.getenv('RKB_BGE_QUEUE_PATH'):
+                from .request_dependencies import RequestDependencies
+                from .bge_queue import BgeQueue
+                RequestDependencies(requests,BgeQueue(os.environ['RKB_BGE_QUEUE_PATH']))
+            mcp._token_verifier=ResourceTokenVerifier(mcp._token_verifier,requests,resource_url)
+            mcp.expert_requests=requests
+            register_executor_tools(mcp,requests,backend)
+            from .personal_request_mcp import register_personal_requests
+            register_personal_requests(mcp,requests,research_authority,resource_url)
+            if os.getenv("RKB_SLACK_RUNTIME_ENABLED") == "1":
+                from .slack_runtime import configured_adapter
+                mcp.expert_slack = configured_adapter(requests, config)
+            if os.getenv("RKB_EXPERT_EVENTS_ENABLED") == "1":
+                from .expert_events import ExpertEvents
+                from .expert_event_mcp import register_event_methods
+                key_path = Path(config["events_encryption_key_path"])
+                if key_path.stat().st_mode & 0o077:
+                    raise RuntimeError("event encryption key must be private")
+                events = ExpertEvents(requests, key_path.read_bytes().strip(),
+                    local_callbacks=config.get("local_event_callbacks", ()))
+                mcp.expert_events = events
+                register_event_methods(mcp, events)
+
     story_profiles = {"full", "story_reader", "story_contributor", "story_editor"}
     if profile in story_profiles:
         if not hasattr(backend, "corpus"):

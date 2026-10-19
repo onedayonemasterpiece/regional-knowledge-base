@@ -34,7 +34,7 @@ from .file_ingress import ChatFileDownloader, sha256_file
 from .ingestion import PdfProcessor, PyMuPdfProcessor
 from .object_store import ObjectStore, S3Config, S3ObjectStore, UnavailableObjectStore
 from .rights import assert_visibility_allowed
-from .local_e5 import LocalE5Embedder, encoding_timings
+from .local_e5 import LocalE5Embedder, E5QueueCapacityError, encoding_timings
 from .e5_contract import SPACE, validate_vector
 logger = logging.getLogger(__name__)
 
@@ -579,11 +579,15 @@ class SupabaseRestBackend(KnowledgeBackend):
             return result.model_copy(update={'latency_ms':round(1000*(time.monotonic()-started),1)})
 
         vector: list[float] | None = None
+        fast_capacity_wait=False
         from .index_readiness import enabled,counts,status
         coverage=await counts(self,principal) if enabled() else None
         if coverage is None or coverage['e5_ready']==coverage['active_chunks']:
             try:
                 vector = await self.embedder.embed(query)
+            except E5QueueCapacityError:
+                fast_capacity_wait=True
+                logger.info(json.dumps({'event':'fast_retrieval_deferred','component':'e5','reason_code':'capacity_wait'}))
             except (httpx.HTTPError, TimeoutError, RuntimeError, ValueError):
                 # Search availability is more important than vector-only perfection:
                 # the SQL RPC accepts NULL and performs RLS-protected lexical retrieval.
@@ -618,6 +622,7 @@ class SupabaseRestBackend(KnowledgeBackend):
         logger.info(json.dumps({"event":"retrieval_served","retrieval_mode":retrieval_mode,"results":len(rows),"embedding_space":self.embedder.embedding_space if vector is not None else None,**timings}))
         output=SearchOutput(
             retrieval_mode=retrieval_mode, timings=timings,indexing=readiness,
+            wait_reason='capacity_wait' if fast_capacity_wait else None,
             results=[
                 SearchResult(
                     id=str(row["chunk_id"]),
@@ -782,12 +787,12 @@ class SupabaseRestBackend(KnowledgeBackend):
         found = await self.search(query, principal, **({'main_job_id': main_job_id} if main_job_id else {}), **({'document_ids':document_ids} if document_ids is not None else {}))
         selected = found.results[:limit]
         if not selected:
-            return EvidenceSearchOutput(evidence=[], mode=found.mode, retrieval_mode=found.retrieval_mode, retrieval_policy=found.retrieval_policy, main_state=found.main_state, main_job_id=found.main_job_id, indexing=found.indexing, latency_ms=round(1000*(time.monotonic()-started),1), timings={**found.timings,"hydration_seconds":0,"total_seconds":time.monotonic()-started})
+            return EvidenceSearchOutput(evidence=[], mode=found.mode, retrieval_mode=found.retrieval_mode, retrieval_policy=found.retrieval_policy, main_state=found.main_state, main_job_id=found.main_job_id, wait_reason=found.wait_reason, indexing=found.indexing, latency_ms=round(1000*(time.monotonic()-started),1), timings={**found.timings,"hydration_seconds":0,"total_seconds":time.monotonic()-started})
         hydration_start = time.monotonic()
         evidence = await asyncio.gather(
             *(self.fetch(item.id, principal) for item in selected)
         )
-        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode, retrieval_mode=found.retrieval_mode, retrieval_policy=found.retrieval_policy, main_state=found.main_state, main_job_id=found.main_job_id, indexing=found.indexing, latency_ms=round(1000*(time.monotonic()-started),1), timings={**found.timings,"hydration_seconds":time.monotonic()-hydration_start,"total_seconds":time.monotonic()-started})
+        return EvidenceSearchOutput(evidence=list(evidence), mode=found.mode, retrieval_mode=found.retrieval_mode, retrieval_policy=found.retrieval_policy, main_state=found.main_state, main_job_id=found.main_job_id, wait_reason=found.wait_reason, indexing=found.indexing, latency_ms=round(1000*(time.monotonic()-started),1), timings={**found.timings,"hydration_seconds":time.monotonic()-hydration_start,"total_seconds":time.monotonic()-started})
 
     async def document_access(
         self,

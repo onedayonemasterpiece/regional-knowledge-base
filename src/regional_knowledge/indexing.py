@@ -8,10 +8,10 @@ import asyncio,hashlib,json,logging,os,time
 from pathlib import Path
 from uuid import UUID
 from .contracts import Principal
-from .local_e5 import LocalE5Embedder
+from .local_e5 import LocalE5Embedder,E5QueueCapacityError
 from .e5_contract import SPACE as E5_SPACE,validate_vector as validate_e5
 from .bge_contract import SPACE as BGE_SPACE,REVISION,validate_vector as validate_bge
-from .bge_queue import BgeQueue
+from .bge_queue import BgeQueue,BgeQueueCapacityError
 from .vector_policy import index_vector_spaces
 log=logging.getLogger(__name__)
 POLL_SECONDS=5
@@ -259,7 +259,11 @@ class IndexReconciler:
                     if not active:continue
             # SQLite already selected this immutable revision under the owner
             # context. A later supersede only leaves this idempotent job inert.
-            await asyncio.to_thread(self.queue.enqueue,actor.subject,key,[text],kind='document',identity=bge_identity(row));submitted+=1;capacity-=1
+            try:await asyncio.to_thread(self.queue.enqueue,actor.subject,key,[text],kind='document',identity=bge_identity(row))
+            except BgeQueueCapacityError:
+                log.info(json.dumps({'event':'bge_document_capacity_wait','component':'source_indexer','submitted':submitted}))
+                break
+            submitted+=1;capacity-=1
         written=await self.install_bge_batch(actor,ready)
         if ready_job_ids:
             retired=await asyncio.to_thread(self.queue.retire_done_documents,actor.subject,ready_job_ids)
@@ -303,6 +307,9 @@ class IndexReconciler:
                     if space=='e5':stats['e5_written']+=await self.e5(actor,document['id'])
                     else:
                         submitted,written=await self.bge(actor,document['id']);stats['bge_submitted']+=submitted;stats['bge_written']+=written
+                except E5QueueCapacityError:
+                    stats.setdefault('capacity_waits',[]).append(space)
+                    log.info(json.dumps({'event':'indexing_capacity_wait','space':space,'reason_code':'capacity_wait'}))
                 except Exception as error:
                     stats['errors'].append(type(error).__name__)
                     log.warning(json.dumps({'event':'indexing_retry','space':space,'document_id':str(document['id']),'error_type':type(error).__name__}))

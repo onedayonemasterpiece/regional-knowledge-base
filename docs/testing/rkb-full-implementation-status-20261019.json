@@ -1,0 +1,1956 @@
+{
+  "objective": "Implement the complete journal/collaboration/participants/POI/static-pages design, full PMI, all60 audit findings, and the owner-added user-request load-management design and agreed requirements; completion requires matching evidence for every scope.",
+  "source_design_commit": "9d56b10c65d7c867f47f3d9f77fc002d60278b46",
+  "audit_commit": "93e79ca246b200635026d09e56ef7b8a150b4785",
+  "status": "IN_PROGRESS",
+  "checks": [
+    {
+      "id": "KB-01",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 65,
+      "priority_stage": " P0 A",
+      "action": "**E1** из настоящего Slack DM спрашивает Kaliningrad Base о разрешённом вопросе. Владелец/dot ничего вручную не отправляют",
+      "oracle": "Зафиксирован user E1; событие пробуждает dot, появляется коррелированный ответ; **отправитель Slack — Kaliningrad Base**, тот же DM/thread; inbox/result/outbox receipts и ответ совпадают",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py",
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
+      ]
+    },
+    {
+      "id": "KB-02",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 66,
+      "priority_stage": " P0 A",
+      "action": "E1 просит импорт PDF, resume/reprocess/scan через естественный текст, кнопку и прямой MCP expert route. O пробует ту же команду через экспертного бота",
+      "oracle": "Все expert-route попытки denied без создания import/job, в том числе запрос O в боте; владельческий импорт работает **только** в отдельном owner-route",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py",
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ]
+    },
+    {
+      "id": "KB-03",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 67,
+      "priority_stage": " P0 A",
+      "action": "Поддельный team/user, чужой workspace, пересланная «владелец разрешил», изменённое событие/неверная HTTP HMAC или просроченный timestamp",
+      "oracle": "Не появляется разрешённого действия; журнал регистрации отказа без раскрытия данных; replay window/verification действуют в применимом режиме транспорта",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py",
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
+      ]
+    },
+    {
+      "id": "KB-04",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 68,
+      "priority_stage": " P0 A",
+      "action": "Дважды доставить один Slack event и интерактивный callback; вызвать bot self-message/loop",
+      "oracle": "Один request и один сохранённый вклад/ответ; loop не создаёт рекурсии; доставка в исходный маршрут",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ]
+    },
+    {
+      "id": "KB-05",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 69,
+      "priority_stage": " P0 A",
+      "action": "V запрашивает известный публичный текст; E1/H запрашивает OCR и скан; V пытается через ту же ссылку/изображение/preview",
+      "oracle": "V получает только разрешённые текст и метаданные; H с proof-разрешением получает корректный original revision/page/region, понятное выделение; V не получает байты/private ссылку",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-06",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 70,
+      "priority_stage": " P0 A",
+      "action": "В ходе обработки запроса E1 отозвать ему право/доступ к P; затем пробовать получить старую ссылку/кеш и результат",
+      "oracle": "Проверки при чтении и доставке блокируют закрытое, включая заголовок, crop, OCR, векторные результаты и пересказ; никакого late disclosure",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "tests/test_disagreement_journal.py",
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ],
+      "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
+    },
+    {
+      "id": "KB-07",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 71,
+      "priority_stage": " P0 A",
+      "action": "После принятия запроса остановить dot/исполнитель, затем возобновить; устроить потерю Slack post response",
+      "oracle": "Принятый request не пропадает; status честный; по operation_status/receipt подтверждается единственная запись и единственный ответ, unknown не превращается в новый send",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py",
+        "src/regional_knowledge/mcp_authority.py",
+        "src/regional_knowledge/expert_executor.py",
+        "src/regional_knowledge/expert_events.py",
+        "tests/test_expert_executor.py",
+        "tests/test_expert_events.py",
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
+      ]
+    },
+    {
+      "id": "KB-07A",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 72,
+      "priority_stage": " P0 A",
+      "action": "**Одновременно** H спрашивает о приватной книге P, а V — о публичном A, используя одного живого dot-исполнителя; задержать/поменять местами результаты, пробовать из V читать task/status H и записать чужой record_result",
+      "oracle": "У каждого request устойчивый actor/route/output_scope; сервер отклоняет чужой claim/status/result, у V нет приватного контрольного маркера ни в тексте, ни в ссылке, ни в позднем ответе; replay/переупорядочение не смешивает контексты модели и destinations",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py",
+        "src/regional_knowledge/mcp_authority.py",
+        "src/regional_knowledge/expert_executor.py",
+        "src/regional_knowledge/expert_events.py",
+        "tests/test_expert_executor.py",
+        "tests/test_expert_events.py",
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
+      ]
+    },
+    {
+      "id": "KB-08",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 73,
+      "priority_stage": " P0 A",
+      "action": "H просит закрытый proof в публичном канале, затем в **private channel и group DM с V**, у которого нет доступа к книге P; повторить в личном DM H",
+      "oracle": "Любой групповой маршрут получает только безопасную общую проекцию или переводит приватный ответ в личный проверенный DM; закрытый текст, пересказ, preview, image/crop и ссылка не видны V ни в закрытой группе, ни в публичной. Личный DM H возвращает разрешённый оригинал с авторизованным viewer и ревизией",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ]
+    },
+    {
+      "id": "KB-09",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 74,
+      "priority_stage": " P1 B",
+      "action": "E1 ищет дело словами, по смыслу и фильтрами: период, место, источник, статус. Перейти на следующую страницу",
+      "oracle": "Найдено размеченное дело, cursor/has_more корректны, фильтры не снимают ACL; «мои» разделены на contributed/assigned/following",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ]
+    },
+    {
+      "id": "KB-10",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 75,
+      "priority_stage": " P0 B",
+      "action": "E1 вносит аргумент, теряет ответ до receipt, повторяет из нового Slack треда",
+      "oracle": "Один contribution с настоящим actor; операция возвращает ту же применённую ревизию/ID; модельная интерпретация отдельно от дословного текста",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "tests/test_disagreement_journal.py"
+      ],
+      "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
+    },
+    {
+      "id": "KB-10A",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 76,
+      "priority_stage": " P1 B",
+      "action": "E1 просит провести **личный анализ** выбранного C1 и сохранить черновик; E2 пытается прочитать его; затем E1 явно публикует одну позицию в общее дело",
+      "oracle": "До явного подтверждения черновик доступен только E1, не считается мнением сообщества и не попадает в VK/дайджест. После публикации виден лишь подтверждённый вариант с actor/version/receipt; двойной click не создаёт второго вклада",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/disagreement_drafts.py",
+        "src/regional_knowledge/disagreement_tools.py",
+        "src/regional_knowledge/expert_mcp.py",
+        "tests/test_disagreement_drafts.py",
+        "docs/operations/personal-research-drafts.md"
+      ],
+      "partial_component_note": "Private own versions/CAS/receipts and bounded list, isolated from case history; explicit selected span publication through same atomic contribution writer. Synthetic domain/MCP/actual HTTP and request/group/current ACL tests; prescribed real Slack actors/owner-directed publication remain NOT_RUN."
+    },
+    {
+      "id": "KB-11",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 77,
+      "priority_stage": " P0 B",
+      "action": "E1/E2 независимо добавляют несовпадающие мнения; H обновляет сводку с expected_revision; параллельно E2 присылает новый аргумент",
+      "oracle": "Оба вклада сохранены; точный based_on snapshot; поздний аргумент непрочитанный, не притворяется учтённым; предыдущая человеческая поддержка не переносится на новый текст",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "tests/test_disagreement_journal.py"
+      ],
+      "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
+    },
+    {
+      "id": "KB-12",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 78,
+      "priority_stage": " P0 B",
+      "action": "E1 поддерживает вывод версии N; вывод меняется на N+1; исправляется связь VK/Slack аккаунта",
+      "oracle": "Экспорт показывает текущую и последнюю поддержанную версии; поддержка точная, ошибочная идентификация flagged, прошлые записи не исчезают",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-13",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 79,
+      "priority_stage": " P0 B",
+      "action": "Reprocess/OCR active revision заменяет старую; прежнее дело имело выделенный proof",
+      "oracle": "В обычном поиске не исчезает оговорка о прежнем деле; действует reanchor_required до явной проверки конкретной связи, новый scan обязателен",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-14",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 80,
+      "priority_stage": " P1 B",
+      "action": "E2 просит статью Q; другой владелец позднее импортирует сборник с Q независимо от заявки",
+      "oracle": "Q обнаруживается кандидатом на открытый research need, модель связывает; запрос не marked fulfilled до чтения основания",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-15",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 81,
+      "priority_stage": " P0 B",
+      "action": "Владелец импортирует книгу A с известным разногласием, затем убивает чат до fragment checkpoint; другой импорт B ждёт общий слот",
+      "oracle": "Скан возобновляется с частичными эффектами без дублей; import/scan только один активный; BGE от старого поколения не даёт прав записи; protected coverage по A",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-16",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 82,
+      "priority_stage": " P0 C",
+      "action": "Два эксперта одновременно запрашивают обычный VK-пост «на завтра», при этом слот занят другой записью",
+      "oracle": "На **community+RKB series+Europe/Kaliningrad local_day** забронирован максимум 1 обычный новый post; видны выбранное дело, следующий свободный день, причина приоритета; гонка не создаёт второй слот",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-17",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 83,
+      "priority_stage": " P0 C",
+      "action": "Эксперт предлагает срочное обсуждение; без редактора пытается publish_now. Владелец/редактор одобряет две срочные заявки; третья в тот же день",
+      "oracle": "Эксперт создаёт предложение, но не публикует; не более 2 дополнительных срочных публикаций при принятой политике; 3-я отклонена, повторы/альтернативный канал не обходят общий дневной бюджет",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-18",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 84,
+      "priority_stage": " P0 C",
+      "action": "Подготовить публичный пакет только из разрешённых цитат; отправить native schedule через VibePublish",
+      "oracle": "Сохранены prepared/approved/provider_scheduled; ещё нет ложного VK URL; после настоящей публикации receipt содержит post ID и открываемую ссылку, case связывается с исходной ревизией",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-19",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 85,
+      "priority_stage": " P0 C",
+      "action": "Provider send timeout после фактической публикации; перезапуск VibePublish; повтор команды с тем же ключом",
+      "oracle": "provider reconciliation восстанавливает один VK post ID и одну ссылку; второй пост/расход второго слота не происходит",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-19A",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 86,
+      "priority_stage": " P0 C",
+      "action": "A реально **запланирован** на завтрашний ordinary-slot. Редактор пытается его перенести/отменить ради B, но ответ VibePublish/VK теряется, а A остаётся scheduled; B одновременно просит первоначальный день",
+      "oracle": "Reservation A остаётся занята (`cancellation_unknown`), B **не** занимает тот же день и не публикуется; журнал хранит native operation ID, reconcile подтверждает фактическую отмену/перенос A до любого release/передачи слота. После реального provider receipt B может занять освободившийся день один раз",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-20",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 87,
+      "priority_stage": " P0 C",
+      "action": "Поменять ACL/публичное право на источник между подготовкой и provider scheduling; отдельно — во время native-scheduled ожидания",
+      "oracle": "Неодобренный пакет не уходит; запланированная отправка отменена/карантинирована с provider receipt или поднят критический операторский сигнал **без ложного утверждения об отмене**. Private текст не появляется в новом посте",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-21",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 88,
+      "priority_stage": " P1 C",
+      "action": "Пост по C1 создан; E1 запрашивает ссылку в Slack. E2 просит «опубликуй его опять»",
+      "oracle": "Бот показывает **одну действительную** ссылку; не создаётся дубль; существенное дополнение связано с тем же обсуждением",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-22",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 89,
+      "priority_stage": " P0 C",
+      "action": "Под case-постом VK чужой пользователь пишет комментарий, эксперт отвечает веткой; whitelist временно недоступен; пост вне case реестра",
+      "oracle": "Без whitelist ничего не удаляется; незарегистрированные посты не затронуты; полезный ответ эксперта не теряется незаметно при модерации родителя; результаты теста токена/веток зафиксированы",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-23",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 90,
+      "priority_stage": " P1 C",
+      "action": "Комментарий new/edit/restore при работаете бота и в его простое, затем перезапуск/сверка",
+      "oracle": "Сохранён точный реальный VK author и наблюдённые ревизии, один вклад без дубля; пропуски недоступного или удалённого контента отмечены честно, не выдуманы",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-24",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 91,
+      "priority_stage": " P0 C",
+      "action": "O завершает импорт, V/E1/H подписаны по-разному; внутри P закрытая книга с уникальным маркером; повторить event",
+      "oracle": "O получает действительный итог scan и новые/обновлённые дела. Каждый другой получает лишь доступный ему заголовок/число/описание. Один event → не более одного сообщения одному адресату",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-25",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 92,
+      "priority_stage": " P1 C",
+      "action": "Пользователь выключает digest, включён Slack 429 или закрыта DM; сделать batch-уведомление",
+      "oracle": "Отказ/Retry-After и реальный delivery status зафиксированы, никакого спама или фальшивого sent; unsubscribe предотвращает новые уведомления",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-26",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 93,
+      "priority_stage": " P0 D ",
+      "action": "Реальный E1 подключает тот же MCP РКБ напрямую в совместимом AI-клиенте; открывает C1/proof и сохраняет свой вклад. Повторяет через Slack; прямой путь проверяется при остановленном dot. Дополнительно PH/Mira использует подтверждённый platform binding",
+      "oracle": "Один endpoint/resource, тот же canonical person/case/revision и ACL; resource-bound не-owner OAuth, согласие и отзыв проверены. Нет отдельного экспертного сервера/owner invite. Запрещённые импорт/admin и подмена actor отвергнуты на обоих путях; параллельные запросы изолированы. ChatGPT/Grok/другие клиенты отмечены каждый отдельно как проверенный либо NOT_RUN",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/mcp_authority.py",
+        "src/regional_knowledge/expert_executor.py",
+        "src/regional_knowledge/expert_events.py",
+        "tests/test_expert_executor.py",
+        "tests/test_expert_events.py",
+        "src/regional_knowledge/personal_auth.py",
+        "src/regional_knowledge/personal_auth_cli.py",
+        "src/regional_knowledge/oauth_provider.py",
+        "tests/test_personal_auth.py",
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py",
+        "src/regional_knowledge/personal_request_mcp.py",
+        "src/regional_knowledge/request_grants.py",
+        "tests/test_personal_requests.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
+    },
+    {
+      "id": "KB-27",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 94,
+      "priority_stage": " P0 B/C",
+      "action": "Проверить backup/restore на принятом состоянии после двух экспертных вкладов и одного provider receipt",
+      "oracle": "Сохранились case, версии, вклад/actor, слот/публикация/receipt и права. Пересоздание BGE-векторов не стирает человеческий вклад",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "tests/test_disagreement_journal.py"
+      ],
+      "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
+    },
+    {
+      "id": "KB-28",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 95,
+      "priority_stage": " P1 C",
+      "action": "Попросить «покажи мои разногласия и где обсуждать» в одном сообщении",
+      "oracle": "Бот находит конкретные attributed/assigned/followed дела, для каждого показывает разрешённый следующий шаг и только реально существующую VK-ссылку либо статус очереди",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-29",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 97,
+      "priority_stage": " P0 A",
+      "action": "O через owner MCP создаёт участника с категориями demo/student/research_staff/expert/guide/local_historian, именем и expiry, назначает узкий grant",
+      "oracle": "Создан ровно один RKB UUID; категории могут сочетаться, право назначается отдельно и версионируется; вызов создания через экспертный бот и импорт в нём отклонены",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py"
+      ]
+    },
+    {
+      "id": "KB-30",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 98,
+      "priority_stage": " P0 D",
+      "action": "Один субъект связывает Slack + VK user + PH usr_... с тем же UUID через независимые доказательства владения; другой с тем же именем пытается получить доступ",
+      "oracle": "Уникальные verified(provider,tenant,subject) у одного actor; имя не связывает, owner-only PH invite не создаёт профиль эксперта, неподтверждённый provider pending без специальных прав; в PH требуется персональная RKB delegation",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py"
+      ]
+    },
+    {
+      "id": "KB-31",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 99,
+      "priority_stage": " P0 B",
+      "action": "Участник заявляет регалии и учреждение, O проверяет только часть, задаёт предметный вес; другой читатель пытается открыть скан и дать заключение",
+      "oracle": "Claimed ≠ verified; вес ≠ право на источник/публикацию/импорт; личные регалии не появляются в публичном ответе без разрешения; счёт score не объявляется исторической истиной",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "tests/test_disagreement_journal.py",
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py"
+      ],
+      "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
+    },
+    {
+      "id": "KB-32",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 100,
+      "priority_stage": " P0 A",
+      "action": "Завершился demo grant, владелец отозвал Slack link во время dot analysis; пришёл event с прежней привязкой/с другого workspace",
+      "oracle": "Доступ повторно проверен при действии и доставке; поздняя операция denied, не раскрывает старую приватную проекцию; прежние мнения остаются со своей историей",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py",
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py",
+        "src/regional_knowledge/personal_auth.py",
+        "src/regional_knowledge/personal_auth_cli.py",
+        "src/regional_knowledge/oauth_provider.py",
+        "tests/test_personal_auth.py",
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
+      ]
+    },
+    {
+      "id": "KB-33",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 101,
+      "priority_stage": " P1 B",
+      "action": "Историк с именем, совпадающим с автором книги/рецензии, пытается получить авторские регалии или исправить свой якобы текст",
+      "oracle": "rkb_author_profiles не равен rkb_users; связывание требует отдельного доказательства; редактор сборника не называется автором главы; ложная привязка отзывается с audit",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-34",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 102,
+      "priority_stage": " P0 E",
+      "action": "Принят документ A с фактом о POI, модель явно выбрала существующий POI, подтверждены page/region; запускаем outbox delivery в разрешённый Street Story fact-intake",
+      "oracle": "RKB source/POI identity link + отдельный fact evidence event; реальный Street Story receipt содержит canonical poi_id/claim_id/evidence, в POI виден новый кандидат, не только source_context или pending row",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-35",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 103,
+      "priority_stage": " P0 E",
+      "action": "Открыть из Street Story fact knowledge://evidence/<candidate_id>, проверить конкретную книгу, автора статьи, исходный оригинал и цитату",
+      "oracle": "Authorized resolver возвращает конкретные document/revision/chapter/author-role/page/region/chunk, image highlight соответствует физической странице; частный текст без ACL не выдаётся; несуществующий ref не изображается работающей ссылкой",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-36",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 104,
+      "priority_stage": " P1 E",
+      "action": "Из Street Story вызвать поиск фактов по текущему POI; RKB находит вторую книгу и семантически похожее место с иным объектом",
+      "oracle": "Авторизованный RKB выдаёт источниковые кандидаты и alternatives, корректную identity review; модель выбирает relevant/not_relevant; не создаётся второй POI, факт не добавляется одним лишь словесным сходством",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-37",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 105,
+      "priority_stage": " P0 E",
+      "action": "В двух книгах несовместимые POI-даты, авторская authority разных уровней, часть источников зависимы",
+      "oracle": "Сохранены обе позиции и все отличимые evidence; semantic_review приводит к отдельному предметному conflict, а не автоматической победе максимального score; RKB disagreement cross-ref не подменяет решение Street Story",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-38",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 106,
+      "priority_stage": " P0 E",
+      "action": "Street Story/фактический intake недоступны; повторно отправить тот же event, затем вернуть сервис. Для private book отсутствует личный grant",
+      "oracle": "Исходный импорт не откатывается, owner видит pending/retry/pending_authorization; после восстановления одна доставленная evidence, никаких дублей, private event не уходит через общий сервисный токен",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-39",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 107,
+      "priority_stage": " P0 E",
+      "action": "Reprocess меняет цитату/дату, документ отозван или scope стал private, но у POI есть независимый второй источник",
+      "oracle": "Старое event остаётся историческим, public-проекция его не использует как current; связь требует reanchor; другая независимая опора сохраняется; старый cached proof, поисковый snippet и score не раскрывают отозванное",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-40",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 108,
+      "priority_stage": " P1 E",
+      "action": "На уже принятой книге с неизвестным POI фактом выполнить отдельный owner-approved scan/enrichment, не переимпортируя PDF; повторить после потерянного ответа",
+      "oracle": "Новое evidence прикреплено к точной **той же** accepted source revision и прошло outbox/owner receipt; original OCR не поменялся, повтор не создаёт второго факта; покрытие и остаток видимы",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-41",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 109,
+      "priority_stage": " P0 A",
+      "action": "Автоматизированный harness через поддерживаемый authenticated owner-sender transport отправляет **от O** реальное сообщение в проверенный личный Slack DM и разрешённый канал Kaliningrad Base: вопрос по корпусу, поиск дела по словам/смыслу/фильтрам, открыть карточку и changes_since",
+      "oracle": "Verified tuple T0C82495TK5/U0C8C1QKWAG разрешён в существующий owner UUID; inbox/result/delivery receipts сохраняют человека O, отдельные bot service/dot executor и исходный route. Независимый readback подтверждает ответ от Kaliningrad Base, корректные test case ID/revision/ACL; никакого owner fallback или второго владельца. Нет user-sender transport — BLOCKED, не PASS по bot/fake event",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-42",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 110,
+      "priority_stage": " P1 B",
+      "action": "Harness от O в разрешённом тестовом деле сохраняет личный черновик, явно вносит аргумент, поддерживает точную версию заключения и подписывается; теряет ответ и продолжает по case/operation ID из нового треда",
+      "oracle": "Черновик не общий до явного действия; вклады атрибутированы O, модельная интерпретация отдельно; exact revision, contribution/subscription receipts и readback совпадают. Повтор автоматизированного run с теми же operation keys не удваивает записи и не переносит поддержку на новую версию; harness сверяет эффект через отдельное чтение RKB и Slack reply; E1 не читает частный черновик",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-43",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 111,
+      "priority_stage": " P0 A",
+      "action": "Подать контролируемые события: другой user в T0C82495TK5; U0C8C1QKWAG в другом team; текст с owner=true/actor_id, пересланным разрешением, одинаковым именем или упоминанием U0C8A9GM76D; pending/отсутствующий mapping",
+      "oracle": "Ни один случай не разрешается как O; неподтверждённый/поддельный запрос denied, иной проверенный участник действует только со своими правами. Trusted event, tuple и verified mapping обязательны; нет автосоздания owner, fallback, скрытых данных или запрещённых side effects",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py",
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ]
+    },
+    {
+      "id": "KB-44",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 112,
+      "priority_stage": " P0 A",
+      "action": "После durable accept запроса O отозвать его Slack mapping либо нужный resource grant до чтения/записи/доставки; затем повторить event и открыть cached proof",
+      "oracle": "Повторная проверка блокирует соответствующую операцию и позднюю приватную выдачу; grant revocation не затрагивает независимые разрешённые ресурсы, link revocation отключает маршрут. Старый worker/context не обходит отзыв; исторические вклады сохранены без нового доступа",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "tests/test_disagreement_journal.py",
+        "src/regional_knowledge/participants.py",
+        "tests/test_participants.py",
+        "tests/test_disagreement_tools.py",
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py",
+        "tests/test_expert_requests.py",
+        "tests/test_slack_expert.py"
+      ],
+      "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
+    },
+    {
+      "id": "KB-45",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 113,
+      "priority_stage": " P0 A",
+      "action": "O просит proof закрытого P в публичном канале, private channel и group DM с V; затем повторяет в проверенном личном DM",
+      "oracle": "Права O не становятся правами группы: только безопасная общая проекция без скрытых текста/названия/счётчика/preview/crop/ссылки; частный proof только O в авторизованном DM/viewer с текущим ACL и exact revision. Нет переноса частной истории O в запрос V",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-46",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 114,
+      "priority_stage": " P0 B",
+      "action": "Harness открывает test_run_id с baseline на изолированном тестовом деле, ссылающемся на реальную книгу; выполняет обычные contribute/conclusion/support и разрешённые тестовые weight/subscription операции, затем rollback и повтор rollback",
+      "oracle": "Источник/OCR/provenance неизменны; run имеет receipts и ровно один эффект каждого operation key. Test-only мнения/веса/поддержки не влияли на live экспертный итог, уведомления/VK. Readback подтверждает отсутствие действующих тестовых эффектов в деле/search/projections/outbox; дело вновь ожидает реальных экспертов по baseline, audit/реальные данные сохранены; повтор safe",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-47",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 115,
+      "priority_stage": " P0 B",
+      "action": "В разрешённом canonical-case тесте после baseline/run-вклада реальный E1 добавляет независимый вклад/меняет ревизию; harness запускает адресную CAS-компенсацию собственных эффектов",
+      "oracle": "Ни чужой вклад, ни независимое экспертное решение не удалены/отменены. Применяются только безопасные собственные компенсации, несовместимая ревизия даёт rollback_conflict и сверку, не overwrite/whole-DB restore; состояние не называется rolled_back до readback всех эффектов",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-48",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 116,
+      "priority_stage": " P0 B",
+      "action": "Прервать rollback между эффектами, перезапустить harness; после начала/завершения отката доставить старый callback/result/outbox job и повтор исходного operation key",
+      "oracle": "Сохраняемый rollback возобновляется идемпотентно; state/generation fence отклоняет позднюю запись/отправку и не восстанавливает тестовые выводы. Нет уведомлений/публикаций из тестового outbox; pending/conflict видим до завершения. Итоговый readback дела, проекций и очередей подтверждает отсутствие остатка и сохранение реальных вкладов",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-49",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 118,
+      "priority_stage": " P0 F",
+      "action": "У дела с разрешённым публичным содержанием сформировать страницу Astro по постоянному slug; открыть ссылку обычным браузером без входа, cookie и JS",
+      "oracle": "Реальный HTML доступен на kenigevents.ru по указанному URL, читается без авторизации/JS и без отдельного backend; MCP вернул этот URL только после published/readback",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-50",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 119,
+      "priority_stage": " P0 F",
+      "action": "На странице показать две спорящие позиции, книги/статьи/рецензии с авторами и доступными обложками, хронологию экспертных материалов, статус и предварительный вывод",
+      "oracle": "В HTML есть вся структура, правильная атрибуция, source edition/page и различение модели и подтверждённых выводов; пустые обложки заменены текстовыми карточками, данные не выдуманы",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-51",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 120,
+      "priority_stage": " P0 F",
+      "action": "Открыть ту же страницу в реальном десктопном браузере и мобильном viewport; проверить без JS, увеличение шрифта, клавиатуру/ссылки и длинные имена/цитаты",
+      "oracle": "Нет горизонтального скролла и перекрытий, разделы доступны, обложки и цитаты не обрезаны неправильно, адаптивный макет сохраняет смысловую полноту; отдельный login не появляется",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-52",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 121,
+      "priority_stage": " P0 F",
+      "action": "Сформировать публичный пакет по делу с частной книгой, закрытым crop, приватным черновиком, непубличным именем участника и производным пересказом",
+      "oracle": "HTML, JSON/build input, OpenGraph, metadata, cover URLs, static assets и sitemap не раскрывают скрытые материалы, даже по прямому URL; случайный slug/noindex не использованы как защита",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-53",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 122,
+      "priority_stage": " P0 F",
+      "action": "Опубликовать новую версию после нового аргумента; повторить сборку; смоделировать сбой сайта перед публикацией и затем отменить публичный вывод",
+      "oracle": "Один slug и одна каноническая URL при всех версиях; после успешной сборки обновлены version/date, без дубликатов страниц; на сбое остаётся last-good с верной датой; при снятии file/CDN проверены и MCP state обновлён",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-54",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 123,
+      "priority_stage": " P1 F",
+      "action": "В MCP запросить public_page до создания страницы, при сборке, после публикации и после снятия; открыть ссылку VK на странице",
+      "oracle": "До publish нет выдуманного URL, после readback он совпадает с реальным HTML; на странице есть ссылка только на фактически опубликованное VK-обсуждение, нет прежних неверных адресов",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "KB-55",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 124,
+      "priority_stage": " P1 F",
+      "action": "Проверить первую демо-страницу с вымышленными материалами, отсутствующими обложками и без экспертных заключений",
+      "oracle": "Есть явная метка «демо / вымышленные данные», вместо отсутствующих полей ясное состояние; noindex опционален и не является проверкой прав; страница остаётся доступной без входа",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-1",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 128,
+      "description": "чужой эксперт, публичное/закрытое, bot→dot без владельца (этап A, P0)",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
+      ]
+    },
+    {
+      "id": "E2E-2",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 134,
+      "description": "два независимых исследователя и потеря ответа (этап B, P0)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-3",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 140,
+      "description": "VK очередь, завтра и срочно, без двойных публикаций (этап C, P0)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-4",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 146,
+      "description": "комментарии VK, мнение специалиста, брифинг (этап C, P0/P1)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-5",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 152,
+      "description": "личный MCP и Slack с единой идентичностью (этап D, P0)",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/mcp_authority.py",
+        "src/regional_knowledge/expert_executor.py",
+        "src/regional_knowledge/expert_events.py",
+        "tests/test_expert_executor.py",
+        "tests/test_expert_events.py",
+        "src/regional_knowledge/personal_auth.py",
+        "src/regional_knowledge/personal_auth_cli.py",
+        "src/regional_knowledge/oauth_provider.py",
+        "tests/test_personal_auth.py",
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py",
+        "src/regional_knowledge/personal_request_mcp.py",
+        "src/regional_knowledge/request_grants.py",
+        "tests/test_personal_requests.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
+    },
+    {
+      "id": "E2E-6",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 158,
+      "description": "один человек через несколько подтверждённых каналов (этапы A/D, P0)",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/personal_auth.py",
+        "src/regional_knowledge/personal_auth_cli.py",
+        "src/regional_knowledge/oauth_provider.py",
+        "tests/test_personal_auth.py"
+      ]
+    },
+    {
+      "id": "E2E-7",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 164,
+      "description": "импорт книги → сохранённый POI-факт → новый источник (этап E, P0)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "E2E-8",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 170,
+      "description": "автоматизированный owner Slack research route (этапы A/B, P0/P1)",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/expert_admin.py",
+        "tests/test_slack_runtime.py"
+      ]
+    },
+    {
+      "id": "E2E-9",
+      "source": "docs/testing/rkb-disagreement-pmi-20261018.md",
+      "line": 178,
+      "description": "публичная страница дела на Astro без авторизации (этап F, P0)",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A01",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 143,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A02",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 153,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A03",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 163,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A04",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 173,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A13",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 183,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A05",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 195,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A06",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 205,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A08",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 215,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A10",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 225,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A11",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 235,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A12",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 246,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A14",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 255,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A15",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 265,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A16",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 274,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A18",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 283,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A19",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 293,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A32",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 302,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A36",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 311,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A07",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 323,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A09",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 332,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A17",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 341,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A20",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 348,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A21",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 355,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A22",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 362,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A23",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 369,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A24",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 377,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A25",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 384,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A26",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 391,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A27",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 398,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A28",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 405,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A29",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 411,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A30",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 418,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A31",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 424,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A33",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 430,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "RKB-A34",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 437,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A01",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 560,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A02",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 586,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A03",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 602,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A04",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 617,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A05",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 635,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A06",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 650,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A07",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 667,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A08",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 687,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A09",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 706,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A10",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 720,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A11",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 733,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A12",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 745,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A13",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 764,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A14",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 775,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A15",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 784,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A16",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 793,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A17",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 805,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A18",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 817,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A19",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 827,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A20",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 835,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A21",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 844,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A22",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 853,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A23",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 861,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A24",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 869,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "VP-A25",
+      "source": "docs/reports/illustration-critical-audit-claude-20261019.md",
+      "line": 878,
+      "status": "REQUIRES_CURRENT_EVIDENCE",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-D01",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 251,
+      "action": "Два зависимых вопроса одного диалога: B не claimable до результата/доставки A; B получает ответ A в контексте, в том числе после restart.",
+      "status": "PASS",
+      "evidence": [
+        "tests/test_request_order.py::test_dialog_waits_for_delivery_not_result_and_unknown_is_a_hold",
+        "tests/test_personal_requests.py::test_http_personal_submit_restart_result_ack_and_no_slack_send"
+      ],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py",
+        "src/regional_knowledge/personal_request_mcp.py",
+        "src/regional_knowledge/request_grants.py",
+        "tests/test_personal_requests.py",
+        "src/regional_knowledge/request_dependencies.py",
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/expert_executor.py",
+        "tests/test_request_dependencies.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open.",
+      "verification_scope": "deterministic unit/HTTP integration with synthetic identities and provider observations",
+      "verification_note": "Only the explicitly deterministic dialog/fairness/identity requirement is proved; no actual client UI, live provider actor, measured resource admission or full load acceptance is claimed."
+    },
+    {
+      "id": "LOAD-D02",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 252,
+      "action": "A отправляет десять запросов, B один; B входит в ближайший fair круг. A создаёт десять диалогов: это не десять fairness subjects.",
+      "status": "PASS",
+      "evidence": [
+        "tests/test_request_order.py::test_person_fairness_explicit_id_and_wake_cannot_jump_turn[False]",
+        "tests/test_request_order.py::test_person_fairness_explicit_id_and_wake_cannot_jump_turn[True]"
+      ],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
+      "verification_scope": "deterministic unit/HTTP integration with synthetic identities and provider observations",
+      "verification_note": "Only the explicitly deterministic dialog/fairness/identity requirement is proved; no actual client UI, live provider actor, measured resource admission or full load acceptance is claimed."
+    },
+    {
+      "id": "LOAD-D03",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 253,
+      "action": "Несколько клиентов одного verified человека имеют общий fairness subject; spoofed dialog/person/tenant отвергнуты.",
+      "status": "PASS",
+      "evidence": [
+        "tests/test_personal_requests.py::test_native_and_slack_same_human_get_one_fair_share_and_revocation_fences_active_work",
+        "tests/test_personal_requests.py::test_two_oauth_clients_cannot_read_or_ack_each_others_result",
+        "tests/test_personal_requests.py::test_http_personal_submit_restart_result_ack_and_no_slack_send",
+        "tests/test_expert_requests.py::test_durable_accept_dedup_two_collectors_and_bad_origin"
+      ],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py",
+        "src/regional_knowledge/personal_request_mcp.py",
+        "src/regional_knowledge/request_grants.py",
+        "tests/test_personal_requests.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
+      "verification_scope": "deterministic unit/HTTP integration with synthetic identities and provider observations",
+      "verification_note": "Only the explicitly deterministic dialog/fairness/identity requirement is proved; no actual client UI, live provider actor, measured resource admission or full load acceptance is claimed."
+    },
+    {
+      "id": "LOAD-D04",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 254,
+      "action": "Явный claim(request_id), wake event, duplicate delivery и retry не обходят admission.",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py",
+        "src/regional_knowledge/request_dependencies.py",
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/expert_executor.py",
+        "tests/test_request_dependencies.py",
+        "src/regional_knowledge/request_recovery.py",
+        "tests/test_request_recovery.py",
+        "docs/operations/request-recovery.md"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open.",
+      "partial_operator_recovery_note": "Audited local owner recheck of only the original repaired actor/body/query-bound BGE receipt, current ACL and expected generation/checkpoint; exact concurrent replay, no enqueue/run/send. General poison/outage recovery and actual live acceptance remain open."
+    },
+    {
+      "id": "LOAD-D05",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 255,
+      "action": "Разные диалоги реально параллельны при свободных ресурсах; один blocked/unknown dialog не останавливает остальных.",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py",
+        "src/regional_knowledge/request_dependencies.py",
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/expert_executor.py",
+        "tests/test_request_dependencies.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open."
+    },
+    {
+      "id": "LOAD-D06",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 256,
+      "action": "Рестарт на каждой границе: до/после intake commit, claim, dependency enqueue, result commit, before/after external send. Ни потерянных accepted inputs, ни stale generation writes, ни слепого повторного send.",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py",
+        "src/regional_knowledge/personal_request_mcp.py",
+        "src/regional_knowledge/request_grants.py",
+        "tests/test_personal_requests.py",
+        "src/regional_knowledge/request_dependencies.py",
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/expert_executor.py",
+        "tests/test_request_dependencies.py",
+        "src/regional_knowledge/request_recovery.py",
+        "tests/test_request_recovery.py",
+        "docs/operations/request-recovery.md"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open.",
+      "partial_operator_recovery_note": "Audited local owner recheck of only the original repaired actor/body/query-bound BGE receipt, current ACL and expected generation/checkpoint; exact concurrent replay, no enqueue/run/send. General poison/outage recovery and actual live acceptance remain open."
+    },
+    {
+      "id": "LOAD-D07",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 257,
+      "action": "ETA 10 секунд включительно даёт ноль notices; >10 — один. Значительное увеличение finish, coalescing, no spam after restart, только ближайший person request; final подавляет ещё не отправленное waiting.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-D08",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 258,
+      "action": "BGE queue full/E5 queue full → capacity_wait, не outage. Provider failure → ограниченный retry или явный финальный unavailable. pending не считается failed sample.",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/multilingual_retrieval.py",
+        "tests/test_load_capacity_wait.py",
+        "src/regional_knowledge/e5_service.py",
+        "src/regional_knowledge/indexing.py",
+        "src/regional_knowledge/story_vector_index.py",
+        "tests/test_search_reservation.py",
+        "src/regional_knowledge/local_e5.py",
+        "src/regional_knowledge/supabase_backend.py"
+      ],
+      "partial_component_note": "Atomic one-query BGE computational reserve across producers; one query-first E5/token-count worker; native queue pressure is typed capacity_wait and preserves authorized evidence. No measured RAM/CPU/stage envelope or production load acceptance is inferred."
+    },
+    {
+      "id": "LOAD-D09",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 259,
+      "action": "Реальное уменьшение available budget: новых тяжёлых starts нет, текущая bounded работа корректно завершает транзакцию, все accepted requests остаются.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-D10",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 260,
+      "action": "Импортный producer, включая story vectors, не забирает query reserve. Memory reservation атомарна при двух конкурентных claimers.",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/e5_service.py",
+        "src/regional_knowledge/indexing.py",
+        "src/regional_knowledge/story_vector_index.py",
+        "tests/test_search_reservation.py"
+      ],
+      "partial_component_note": "Atomic one-query BGE computational reserve across producers; one query-first E5/token-count worker; native queue pressure is typed capacity_wait and preserves authorized evidence. No measured RAM/CPU/stage envelope or production load acceptance is inferred."
+    },
+    {
+      "id": "LOAD-D11",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 261,
+      "action": "ACL revoke после enqueue/после source read/до delivery: приватная информация не утекает; safe recovery не подменяет человека owner credential.",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_dependencies.py",
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/expert_executor.py",
+        "tests/test_request_dependencies.py",
+        "src/regional_knowledge/request_recovery.py",
+        "tests/test_request_recovery.py",
+        "docs/operations/request-recovery.md"
+      ],
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open.",
+      "partial_operator_recovery_note": "Audited local owner recheck of only the original repaired actor/body/query-bound BGE receipt, current ACL and expected generation/checkpoint; exact concurrent replay, no enqueue/run/send. General poison/outage recovery and actual live acceptance remain open."
+    },
+    {
+      "id": "LOAD-CALIBRATION",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 263,
+      "action": "Measure every specified cold/warm/cache/retrieval/fetch/answer/proof/import/E5-token/vector class, actual resource envelope and exact candidate/corpus/models; n, stage/queue/e2e duration, RSS/HWM, pressure, SQLite/WAL, concurrency and useful authorized result.",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_component_evidence": [
+        "docs/reports/request-load-e5-stage-profile-20261019.json",
+        "docs/reports/request-load-e5-stage-profile-20261019.md"
+      ],
+      "partial_component_note": "Native stage20+20 query and20+20 passage4/token-count samples, first2s diagnostic failure retained. Older queue, synthetic corpus, no whole-search/import/context/ETA/resize/quality acceptance; NOT_RUN unchanged."
+    },
+    {
+      "id": "LOAD-LIVE",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 263,
+      "action": "Real clients/actors including second-client result sink+ACK, burst10+1, multiple dialogs and dependent context, every material import phase with at least one search, resource increase/decrease, actual supported-source evidence, restart and unchanged active revision.",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "partial_executor_contract_evidence": "docs/reports/executor-client-contract-check-20261019.md",
+      "partial_executor_contract_note": "Real dot acknowledgment and sourced report received in authorized Slack thread. PH pinned source independently checked; existing search adapter lacks concrete RKB transport/request/result mapping, PH sink requires its own binding. No complete isolated executor or Mira result/hash-ACK E2E verified."
+    },
+    {
+      "id": "LOAD-LATENCY-QUALITY",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 263,
+      "action": "Preserve protected latency/quality gates and report queue wait separately from public evidence-search and time-to-final-answer; pending alone is not acceptance.",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "LOAD-ETA-HOLDOUT",
+      "source": "docs/designs/user-request-load-management-20261019.md",
+      "line": 263,
+      "action": "Measured calibrated ETA on unseen holdout requests: signed/absolute error, interval coverage, cold/warm/resource-resize slices; establish/document a technical accuracy goal only after baseline, not an invented owner requirement.",
+      "status": "NOT_RUN",
+      "evidence": []
+    }
+  ],
+  "design_sections": [
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 1,
+      "section": "Журнал и дела о разногласиях: самостоятельный исследовательский процесс РКБ",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 11,
+      "section": "1. Принятое направление",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 30,
+      "section": "2. Какой результат должен получить пользователь",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 52,
+      "section": "3. Что считать делом",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 91,
+      "section": "4. Минимальная SQL-модель",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 122,
+      "section": "5. Последовательный импорт с обязательной второй фазой",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 204,
+      "section": "6. Три разных поиска",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 265,
+      "section": "7. Оригинал и выделенная цитата",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 289,
+      "section": "8. MCP-инструментарий: полный рабочий цикл, компактная поверхность",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 338,
+      "section": "9. Участники, персональный вес и заключения",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 402,
+      "section": "10. VK, рецензии и продолжение исследования",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 468,
+      "section": "11. Что получает общий поиск и Story Registry",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 499,
+      "section": "12. Решение по БД и условия пересмотра",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 527,
+      "section": "13. Спецификация обязательного навыка модели",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 567,
+      "section": "14. Первый полезный выпуск и проверка результата",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 618,
+      "section": "15. Встречные вопросы для принятия рабочих настроек",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 637,
+      "section": "16. Зафиксированные ограничения настоящего исследования",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 649,
+      "section": "17. Kaliningrad Base: реальная экспертная работа, очередь VK и ПМИ",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 665,
+      "section": "18. Участники и POI-факты: обязательная связность без нового IAM",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 679,
+      "section": "19. Открытая статическая страница дела на kenigevents.ru",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-disagreement-journal-design-20261018.md",
+      "line": 693,
+      "section": "Источники",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 1,
+      "section": "Kaliningrad Base — экспертная коллаборация, Slack и VK",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 5,
+      "section": "1. Продукт и пользователи",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 15,
+      "section": "2. Архитектура — один backend РКБ, один процесс данных",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 28,
+      "section": "3. Атрибуция, полномочия и конфиденциальность",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 49,
+      "section": "4. Пользовательский маршрут",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 73,
+      "section": "5. VK-публикации: последовательный редакционный поток",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 85,
+      "section": "6. Уведомления и брифинги",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 91,
+      "section": "7. Достаточность MCP-инструментов",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 107,
+      "section": "8. Будущее Projects Hub/Mira/mobile",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 111,
+      "section": "8.1. Создание участника и объединение его внешних аккаунтов",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-kaliningrad-base-collaboration-20261018.md",
+      "line": 119,
+      "section": "9. Решения и доказательства",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 1,
+      "section": "Участники и доказательные POI-факты — дополнение РКБ v3.2",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 5,
+      "section": "1. Два независимых результата",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 11,
+      "section": "2. Что действительно существует",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 22,
+      "section": "3. Создание и сопровождение пользователей — без админ-панели",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 71,
+      "section": "4. POI: два рабочих маршрута, один факт-регистр",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 88,
+      "section": "5. Читабельная и открываемая доказательная цепочка",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 111,
+      "section": "6. Минимум операций MCP",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 124,
+      "section": "7. Проверяемый первый результат",
+      "status": "UNVERIFIED",
+      "evidence": []
+    },
+    {
+      "source": "docs/design/rkb-participants-poi-fact-bridge-20261018.md",
+      "line": 134,
+      "section": "8. Основания и честные границы",
+      "status": "UNVERIFIED",
+      "evidence": []
+    }
+  ],
+  "implementation_components": [
+    {
+      "component": "journal domain authority",
+      "status": "SOURCE_IN_PROGRESS",
+      "paths": [
+        "src/regional_knowledge/disagreement_contracts.py",
+        "src/regional_knowledge/disagreement_journal.py",
+        "tests/test_disagreement_journal.py"
+      ],
+      "live": "NOT_DEPLOYED",
+      "scope": "Append-only case/evidence/contribution/conclusion storage and atomic ACL-checked receipts; no claim of full PMI completion."
+    },
+    {
+      "id": "participants_and_mcp",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/participant_contracts.py",
+        "src/regional_knowledge/participants.py",
+        "src/regional_knowledge/disagreement_tools.py"
+      ],
+      "validation": "13 participant tests + 3 actual MCP surface tests; full local suite 581 passed, 31 skipped, 1 dependency warning",
+      "limits": "Existing owner OAuth is not a multi-user onboarding service; real identity verifier adapters, scan fencing and complete research workflow remain required."
+    },
+    {
+      "id": "slack_transport",
+      "status": "FINITE_LIVE_TRANSPORT_VERIFIED",
+      "manifest": "deploy/slack-kaliningrad-base/manifest.json",
+      "evidence": "Private managed implementation artifacts contain CLI installation/auth readback and real owner mention -> Socket Mode durable event -> automatic bot reply -> independent thread readback. No secrets in repository.",
+      "limits": "Probe stopped after its scoped response; persistent request/executor/result/outbox, production person binding and non-owner live PMI remain unimplemented or unverified."
+    },
+    {
+      "id": "expert_requests_and_transport",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/expert_requests.py",
+        "src/regional_knowledge/request_authority.py",
+        "src/regional_knowledge/slack_expert.py"
+      ],
+      "validation": "At ec5a039, full local suite: 609 passed, 31 skipped, 1 dependency warning, with TMPDIR in a managed central temporary directory. Earlier full run was interrupted on Errno122 /tmp user quota; its failed evidence is retained.",
+      "native_evidence": "Real bot-native message/client ID, exact same-thread bot-token GET readback; Slack control escaping decoded once to the original SHA. Negative wire-hash original retained; final replay made zero provider calls.",
+      "limits": "No deployed production queue/participant bootstrap, live dot wake, full scan proof or non-owner E2E. Saved-request source/MCP and event handlers are implemented on the existing MCP resource; see unified_expert_resource component."
+    },
+    {
+      "id": "unified_expert_resource",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/mcp_authority.py",
+        "src/regional_knowledge/expert_executor.py",
+        "src/regional_knowledge/expert_mcp.py",
+        "src/regional_knowledge/expert_event_mcp.py",
+        "src/regional_knowledge/expert_events.py",
+        "src/regional_knowledge/expert_webhooks.py"
+      ],
+      "validation": "Full local unified-resource candidate: 626 passed, 31 skipped, 2 dependency/schema warnings. HTTP auth/catalog/direct forbidden calls, modern discovery/events, source isolation, same case/ACL and revocation, request/wake generation recovery, owner bootstrap, real SQLite lock contention. Synthetic fixtures; no live expert product acceptance.",
+      "limits": "Embedded OAuth is owner-only; live non-owner personal enrollment/consent and individual external AI-client compatibility remain unverified. No production expert runtime deployment or full PMI acceptance."
+    },
+    {
+      "id": "personal_oauth",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/personal_auth.py",
+        "src/regional_knowledge/personal_auth_cli.py",
+        "src/regional_knowledge/oauth_provider.py",
+        "tests/test_personal_auth.py"
+      ],
+      "validation": "Full local suite639 passed/31 skipped/2 dependency-schema warnings. Native non-owner HTTP login/consent/PKCE/MCP/source ACL/refresh/revoke, raw code rejected as MCP bearer, private-file CLI recovery without printing codes, stable-owner grant continuity and explicit changed-owner denial, account switch/expiry/HTML escaping, file-lock contention, one-tool Live cap revocation.",
+      "limits": "No real expert credential issued or delivered, no production auth deployment, no real AI-client UI acceptance or full Slack/dot live cycle. Requires actual registered participant and controlled private delivery before live non-owner acceptance."
+    },
+    {
+      "id": "persistent_slack_runtime",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/slack_runtime.py",
+        "src/regional_knowledge/slack_expert.py",
+        "src/regional_knowledge/expert_admin.py",
+        "src/regional_knowledge/server.py",
+        "tests/test_slack_runtime.py"
+      ],
+      "validation": "Full runtime regression646 passed/31 skipped/2 warnings before additive service-admin CLI; focused tests cover native sender identity before claim/send, late-token race, session cancellation, offline Slack with actual OAuth+MCP read still available. Private installed credential syntax checked without exposing values. Additional admin CLI replay/revoke/secret-output checks run separately. Final additive runtime/admin/adapter focused set23 passed, including revocation after loss of the original credential file; no secret values printed.",
+      "limits": "Production flags, service grants and canonical Slack owner binding not enabled; no persistent live process or actual dot wake/answer readback. Non-owner/VK live fixtures still needed for prescribed acceptance."
+    },
+    {
+      "id": "load_capacity_reason",
+      "status": "PARTIAL_SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/multilingual_retrieval.py",
+        "src/regional_knowledge/contracts.py",
+        "src/regional_knowledge/supabase_backend.py",
+        "tests/test_load_capacity_wait.py"
+      ],
+      "validation": "31 targeted tests passed, then full integrated local suite651 passed/31 skipped/2 warnings. Real full256-job queue, exact replay while full, authorized fallback and current ACL through evidence hydration; no provider/model calls. Shared admission/ETA acceptance is not inferred.",
+      "limits": "Only BGE queue-full classification fixed. Shared cross-client dialogs/fair heads/permits/checkpoints, E5 handling, measured resource reserve/resize, durable ETA notices, actual second-client delivery and calibration remain open."
+    },
+    {
+      "id": "retained_dependency_operator_recovery",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/request_recovery.py",
+        "src/regional_knowledge/bge_queue.py",
+        "tests/test_request_recovery.py",
+        "docs/operations/request-recovery.md"
+      ],
+      "validation": "Final complete local suite705 passed/31 skipped/2 dependency warnings; prior focused61 passed before the final added revoked-source test. Exact recheck, unresolved immutable receipts, concurrent replay, current person/source access, stale generation/hash, actor/body/kind/closed parent and UNKNOWN-delivery fences. No provider calls.",
+      "limits": "Only original retained BGE dependency repair/recheck is implemented. General poison-stage recovery, proved-outage policy, measured stage admission/ETA and live repair acceptance remain open."
+    },
+    {
+      "id": "personal_research_drafts",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/disagreement_drafts.py",
+        "tests/test_disagreement_drafts.py",
+        "docs/operations/personal-research-drafts.md"
+      ],
+      "validation": "Final full local717 passed/31 skipped/2 dependency warnings;41 targeted passed. Synthetic identities/provider observations include actual HTTP save/list/get/selected publication, independent case_contribute/personal_conclusion fences, inherited private dependencies, atomic rollback/concurrent replay and group/request generation isolation.",
+      "limits": "No real non-owner Slack PMI; human exact-version support and full journal E2E remain open. Publication cannot launder private context outside the case evidence boundary."
+    }
+  ],
+  "requirement_clarification": "docs/requirements/unified-expert-access-20261019.md",
+  "load_design_commit": "8cf70e00ce2e1dfa19e909eb51bb94b9bdc09fdc",
+  "load_requirements_commit": "a753a4ef84291e73c8cff2c80ef69352d43b2b8e"
+}

@@ -26,11 +26,15 @@ ingest = [
   "Pillow>=11,<13",
 ]
 dev = ["pytest>=8.4,<9", "pytest-asyncio>=1.2,<2"]
+slack = ["aiohttp>=3.12,<4"]
 # Exact BGE/E5 tokenizer counting used only by private source-grounded pilots.
 benchmarks = ["tokenizers>=0.21,<0.24"]
 
 [project.scripts]
 regional-knowledge-mcp = "regional_knowledge.server:main"
+regional-knowledge-personal-auth = "regional_knowledge.personal_auth_cli:main"
+regional-knowledge-expert-admin = "regional_knowledge.expert_admin:main"
+regional-knowledge-request-recovery = "regional_knowledge.request_recovery:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/regional_knowledge"]
