@@ -49,7 +49,10 @@ def defaults(table):
 
 
 class LocalContext:
-    def __init__(self,corpus,db,actor):self.corpus=corpus;self.db=db;self.actor=actor;self.activation=False
+    def __init__(self,corpus,db,actor):
+        self.corpus=corpus;self.db=db;self.actor=actor;self.activation=False
+        from .expert_source_scope import current_source_scope
+        self.expert_scope=current_source_scope.get()
     def rows(self,table,filters=None):
         result=[];where=['table_name=?'];args=[table]
         for key,value in (filters or {}).items():
@@ -83,12 +86,16 @@ class LocalContext:
         if self.actor is None:return True
         d=self.one('rkb_documents',doc)
         if not d:return False
+        if self.expert_scope and self.expert_scope.authority.public_only:
+            from .expert_source_scope import public_document
+            if not public_document(d):return False
         if d['owner_user_id']==self.actor:return True
         evidence=d.get('rights_evidence') or {}
         if d.get('content_visibility')=='public' and evidence.get('public_distribution') is True and d.get('rights_policy_version') and d.get('rights_status') in ('licensed','permission_granted','public_domain_verified','statutory_access_verified'):return True
         if any(g['document_id']==doc and g['grantee_user_id']==self.actor for g in self.rows('rkb_document_grants')):return True
         return bool(d.get('workspace_id') and d.get('content_visibility') in ('workspace','public') and any(m['workspace_id']==d['workspace_id'] and m['user_id']==self.actor for m in self.rows('rkb_workspace_members')))
     def asset(self,doc,visibility):
+        if self.expert_scope and self.expert_scope.authority.public_only and self.actor is not None and visibility!='public':return False
         if self.actor is None or self.owned(doc):return True
         d=self.one('rkb_documents',doc)
         if not d:return False
@@ -117,6 +124,16 @@ class LocalContext:
         if table=='rkb_workspace_members':return r.get('user_id')==self.actor or (self.one('rkb_workspaces',r['workspace_id']) or {}).get('owner_user_id')==self.actor
         doc=self.document(table,r)
         if not doc:return False
+        if self.expert_scope and self.expert_scope.authority.public_only:
+            d=self.one('rkb_documents',doc)
+            revision=r.get('revision')
+            if table=='rkb_regions':
+                page=self.one('rkb_pages',r.get('page_id'));revision=page.get('revision') if page else None
+            elif table=='rkb_region_relations':
+                region=self.one('rkb_regions',r.get('source_region_id'))
+                page=self.one('rkb_pages',region.get('page_id')) if region else None
+                revision=page.get('revision') if page else None
+            if revision is not None and (not d or revision!=d.get('active_revision')):return False
         if table=='rkb_objects':return self.asset(doc,r.get('access_class','private'))
         if table=='rkb_illustrations':return self.asset(doc,r.get('visibility','private'))
         if table=='rkb_document_grants':return self.owned(doc) or r['grantee_user_id']==self.actor
@@ -318,6 +335,11 @@ class SQLiteDataClient:
         actor=self.actor(headers)
         with self.corpus.connect() as db:
             if write:await asyncio.to_thread(db.execute,'begin immediate')
+            from .expert_source_scope import current_source_scope
+            scope=current_source_scope.get()
+            if scope:
+                if not db.in_transaction:await asyncio.to_thread(db.execute,'BEGIN')
+                scope.validate(db,actor,write=write)
             ctx=LocalContext(self.corpus,db,actor)
             if actor:
                 user=ctx.one('rkb_users',actor)

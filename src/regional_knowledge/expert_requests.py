@@ -16,10 +16,10 @@ from uuid import UUID, uuid4, uuid5, NAMESPACE_URL
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .contracts import Principal, PUBLIC_RIGHTS
+from .contracts import Principal
 from .disagreement_journal import DisagreementJournal, JournalError
 from .participants import ParticipantError, RequestAuthority
-from .request_authority import token_hash
+from .request_authority import token_hash,wake_event_id
 from .sqlite_corpus import canonical
 
 
@@ -107,7 +107,8 @@ class ExpertRequests:
               delivery_id TEXT, delivery_service_id TEXT, delivery_service_epoch INTEGER,
               delivery_receipt TEXT, delivery_attempt INTEGER NOT NULL DEFAULT 0,
               next_delivery_at REAL NOT NULL DEFAULT 0,
-              reconcile_cursor TEXT, reconcile_not_before REAL NOT NULL DEFAULT 0);
+              reconcile_cursor TEXT, reconcile_not_before REAL NOT NULL DEFAULT 0,
+              trigger_event_id TEXT);
             CREATE INDEX IF NOT EXISTS rkb_expert_requests_queue
               ON rkb_expert_requests(state,created_at,id);
             CREATE TABLE IF NOT EXISTS rkb_expert_request_events(
@@ -119,6 +120,11 @@ class ExpertRequests:
               generation INTEGER NOT NULL, kind TEXT NOT NULL,
               resource_id TEXT NOT NULL, PRIMARY KEY(request_id,generation,kind,resource_id));
             """)
+
+        # Upgrade source-only earlier queue snapshots without replacing rows.
+        with self.corpus.connect() as db:
+            if "trigger_event_id" not in {row[1] for row in db.execute("PRAGMA table_info(rkb_expert_requests)")}:
+                db.execute("ALTER TABLE rkb_expert_requests ADD COLUMN trigger_event_id TEXT")
 
     def _now(self):
         return self.people._time().timestamp()
@@ -205,11 +211,12 @@ class ExpertRequests:
             if row["result_json"]:
                 self._resources(db,row,ExpertResult.model_validate_json(row["result_json"]))
             return {"request_id":row["id"],"event_id":row["event_id"],"state":row["state"],"generation":row["generation"],
+                    "wake_event_id":row["trigger_event_id"] or wake_event_id(row["id"],row["generation"]),
                     "output_scope":row["output_scope"],"input_text":row["input_text"],"origin":json.loads(row["origin"]),
                     "result":json.loads(row["result_json"]) if row["result_json"] else None,
                     "delivery_receipt":json.loads(row["delivery_receipt"]) if row["delivery_receipt"] else None}
 
-    def claim(self,credentials,*,request_id=None,lease_seconds=120):
+    def claim(self,credentials,*,request_id=None,lease_seconds=120,event_id=None):
         if not 1<=lease_seconds<=300: fail("invalid_lease")
         with self.corpus.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -221,6 +228,8 @@ class ExpertRequests:
                 query+=" AND id=?";args.append(str(request_id))
             row=db.execute(query+" ORDER BY created_at,id LIMIT 1",args).fetchone()
             if not row: return {"state":"empty"}
+            expected_event=wake_event_id(row["id"],row["generation"])
+            if event_id is not None and str(event_id)!=expected_event:fail("event_identity_conflict")
             try:self._identity(db,row)
             except (ParticipantError,ExpertRequestError):
                 db.execute("UPDATE rkb_expert_requests SET state='blocked',updated_at=? WHERE id=?",(self._now(),row["id"]))
@@ -228,7 +237,7 @@ class ExpertRequests:
                 return {"state":"blocked","request_id":row["id"]}
             generation=row["generation"]+1;token=secrets.token_urlsafe(32)
             db.execute("""UPDATE rkb_expert_requests SET state='leased',generation=?,executor_id=?,service_epoch=?,
-                execution_token_hash=?,lease_until=?,updated_at=? WHERE id=?""",(generation,service["id"],service["epoch"],token_hash(token),self._now()+lease_seconds,self._now(),row["id"]))
+                execution_token_hash=?,lease_until=?,updated_at=?,trigger_event_id=? WHERE id=?""",(generation,service["id"],service["epoch"],token_hash(token),self._now()+lease_seconds,self._now(),expected_event,row["id"]))
             self._event(db,row["id"],"execution_claimed",{"generation":generation,"executor_id":service["id"]})
             return {"request_id":row["id"],"generation":generation,"execution_token":token,"state":"leased"}
 
@@ -257,7 +266,8 @@ class ExpertRequests:
         for ident in documents:
             doc=self.people.sources._document_allowed(db,base.principal.subject,str(ident))
             if not doc: fail("resource_access_revoked")
-            if row["output_scope"]=="public" and (doc.get("content_visibility")!="public" or doc.get("rights_status") not in PUBLIC_RIGHTS):
+            from .expert_source_scope import public_document
+            if row["output_scope"]=="public" and not public_document(doc):
                 fail("public_projection_required")
         for case_id in cases:
             if row["output_scope"]=="public": fail("public_projection_required")

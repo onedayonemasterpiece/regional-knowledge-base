@@ -115,7 +115,8 @@ required; app creation and the test response do not waive it.
 
 `expert_requests.ExpertRequests` adds inbox, execution/result/outbox states and
 per-request events to the same corpus SQLite file. This implementation is still
-source-only; the executor MCP/API and production supervisor have not been wired.
+source-only. The saved-request tools and MCP Events now register on the existing
+MCP resource when configured; the production supervisor/bindings are not deployed.
 It does not replace the complete channel or importer acceptance.
 
 - Accept resolves the exact verified Slack tuple inside the same transaction,
@@ -134,8 +135,8 @@ It does not replace the complete channel or importer acceptance.
   domain receipts merely by choosing the same short operation key.
 - Resource dependencies observed by journal reads/writes are retained by the
   server. Omitting their IDs from a result does not remove their ACL from the
-  next readback or delivery check. Source-search/proof adapters must add the same
-  tracking before exposing those operations; they are not wired yet.
+  next readback or delivery check. The request-bound source search/fetch adapter now adds the same tracking.
+  Historical original scan proof and the complete research surface remain pending.
 - Every group route is public-only, including private channels and MPIMs.
   Until a reviewed public case export exists, the bound group context refuses
   personal case/profile operations rather than exposing their private fields.
@@ -184,3 +185,62 @@ expert routes, pending/verified/revoked links, wrong attribution, consumed/expir
 proof, unique account bindings, current rights before replay, concurrent CAS,
 transaction rollback and per-call actor isolation. All full-PMI entries remain
 NOT_RUN until their prescribed actors, transport and outcomes are actually used.
+
+
+## Unified expert resource (owner clarification, 19 October)
+
+The authoritative clarification is [unified expert access](../requirements/unified-expert-access-20261019.md).
+There is one existing `/mcp` resource and no `/expert/mcp` application. Personal
+resource OAuth and dedicated executor credentials authenticate at the same
+endpoint. `ResourceTokenVerifier` preserves the personal verifier and validates
+the current executor service grant; a machine token has no human subject.
+`expert_request_delivery` and `expert_research` recover authority only from the
+saved request. A personal token cannot use those service operations. A service
+cannot call ordinary source tools, import, administration or publication with
+its own identity. Its request-bound tools use the person's current rights.
+
+`KnowledgeMCPServer.call_tool` enforces these boundaries even if a client guesses
+a hidden tool name. Personal source reads validate current participant rights;
+scan/illustration reads additionally require scan capability and source ACL.
+The verified configured owner retains the existing first-account bootstrap; disabled accounts are never reactivated by a read. Independent task-local source scopes isolate concurrent DM/group projections;
+ordinary ingestion and other requests do not inherit that scope. Request reads
+record source dependencies before result/delivery rechecks. Group case reads
+remain denied until a complete safe public projection is implemented.
+
+Source configuration: `RKB_EXPERT_REQUESTS_ENABLED=1`, private
+`RKB_SLACK_CONFIG_PATH` with app/team/bot identity and authorized channel scope.
+This adds tools to the current full MCP, rather than starting another listener.
+`RKB_EXPERT_EVENTS_ENABLED=1` also requires `events_encryption_key_path` in that
+private config: a stable Fernet key file with mode0600. Never regenerate that
+key on restart. `local_event_callbacks` explicitly enumerates exact allowed
+loopback HTTP callback URLs; other callbacks require DNS-pinned external TLS.
+No owner token is sent to another service.
+
+MCP `events/list`, `events/subscribe`, `events/unsubscribe` and modern
+`server/discover` use the same authenticated resource. Subscriptions verify a
+signed challenge, persist encrypted webhook keys, expire within one day and
+recheck service epochs. SQLite lock waits in subscription and outbox work execute off the shared HTTP/Slack event loop; a real competing-writer test checks that the loop remains responsive. The existing server lifespan owns the wake-up worker;
+there is no new gateway or independent events daemon. A thin wake-up contains
+only request ID/generation. It carries a stable Standard Webhooks event ID;
+retries retain that ID, and expired execution leases receive a new generation.
+The claim checks the wake event ID when supplied, then fences all work with the
+new execution generation/token. Native delivery results and Slack outbox remain
+separate. A webhook HTTP200 is not a completed research request or Slack answer.
+
+The current embedded OAuth still authenticates only the owner. The external
+JWT/resource verifier can identify independent personal UUIDs, but live
+non-owner enrollment/resource consent and specific ChatGPT/Grok compatibility
+have not been accepted. HTTP tests with synthetic verified personal tokens prove
+the same-resource dispatch, ACL, service revocation and direct forbidden-call
+checks; they do not prove that missing onboarding. No journal/expert runtime
+has been deployed and the finite Slack transport probe is not a persistent bot.
+
+
+Validation of the unified-resource candidate: full local suite **626 passed,
+31 skipped, 2 warnings**. The warnings are Starlette/AnyIO deprecation and the
+installed Pydantic/SDK RequestParamsMeta schema warning. The final run includes
+actual HTTP dispatch/discovery/subscription, concurrent source scopes, current
+source/case rights and request dependencies, lease/event reclaim, encrypted
+subscription restart, revoked grants, owner bootstrap/disabled-account denial,
+and a real SQLite writer contention check. Synthetic fixtures make no provider
+calls. Full live PMI and external-client acceptance remain NOT_RUN.

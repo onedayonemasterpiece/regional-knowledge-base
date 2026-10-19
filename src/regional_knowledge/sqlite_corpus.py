@@ -180,6 +180,12 @@ class SQLiteCorpus:
 
     def authorize(self,actor,document_id,*,owner=False):
         actor=str(UUID(str(actor)));doc=self.one('rkb_documents',document_id)
+        from .expert_source_scope import current_source_scope,public_document
+        scope=current_source_scope.get()
+        if scope:
+            if actor!=scope.authority.principal.subject:raise LookupError('evidence_not_found')
+            if owner:raise PermissionError('expert_scan_route_required')
+            if scope.authority.public_only and not public_document(doc):raise LookupError('evidence_not_found')
         user=self.one('rkb_users',actor)
         if not doc or not user or user.get('status')!='active':raise LookupError('evidence_not_found')
         if str(doc['owner_user_id'])==actor:return doc

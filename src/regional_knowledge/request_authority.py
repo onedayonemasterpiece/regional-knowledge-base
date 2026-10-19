@@ -2,6 +2,11 @@
 import hashlib
 import hmac
 import json
+from uuid import uuid5,NAMESPACE_URL
+
+
+def wake_event_id(request_id,generation=0):
+    return str(uuid5(NAMESPACE_URL,"rkb:expert-wake:"+str(request_id)+":"+str(generation)))
 
 
 def token_hash(value):

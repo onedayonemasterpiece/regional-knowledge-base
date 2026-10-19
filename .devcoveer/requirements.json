@@ -76,6 +76,18 @@
         "If an implementation conflicts with a critical requirement, the conflict is surfaced instead of normalized into a weaker target.",
         "Intentional requirement changes use requirements_update with an explicit owner authorization reference."
       ]
+    },
+    {
+      "id": "CORE-UNIFIED-EXPERT-ACCESS",
+      "statement": "Experts use the existing Regional Knowledge Base MCP resource directly from any compatible AI client or through Slack with dot as a replaceable executor. Both paths resolve the same canonical person and enforce current capabilities and resource ACL server-side; no separate expert MCP service, endpoint, corpus or identity registry is required.",
+      "critical": true,
+      "acceptance": [
+        "Personal resource-bound OAuth identifies the actual expert, never an owner invite or a client-supplied actor. Supported clients are verified individually; naming ChatGPT or Grok is not a compatibility result.",
+        "Slack resolves the verified provider account to the same existing RKB person UUID. A dedicated executor service uses the same MCP endpoint and a durable request/route/generation-bound authority; it never inherits dot's or the owner's unrelated credentials.",
+        "Effective permissions are the intersection of the person's current capabilities, source/case ACL and delivery audience; service execution is additionally limited by its service grant and request fence. Import and participant administration remain owner-only and unavailable through delegated expert requests.",
+        "Concurrent actors, cross-route access, lease/link/grant revocation, delayed results and direct calls to forbidden tools are checked on the server, regardless of catalog visibility.",
+        "Acceptance demonstrates direct personal research and Slack-delegated research on the same authorized case/revision, including a real non-owner, denial and revocation; documentation and green component tests alone do not establish live support."
+      ]
     }
   ]
 }
