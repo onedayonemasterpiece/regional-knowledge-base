@@ -7,7 +7,7 @@ import shutil
 import stat
 import time
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 from uuid import UUID
 import httpx
@@ -218,7 +218,9 @@ class IllustrationMirror:
             items=await(await db.execute("""select i.id,i.document_id,p.revision,i.mirror_operation_id,i.mirror_read_operation_id,i.mirror_attempt_at,i.mirror_error_type,i.display_crop_sha256,i.source_crop_sha256,i.provider_crop_sha256 from rkb_illustrations i
              join rkb_pages p on p.id=i.page_id join rkb_documents d on d.id=i.document_id
              where d.owner_user_id=%s and p.revision=d.active_revision and i.visibility='private'
-              and i.vibepublish_entry_ref is null and i.crop_object_id is not null order by i.mirror_attempt_at nulls first,i.id limit 4""",(UUID(self.client.owner),))).fetchall()
+              and i.vibepublish_entry_ref is null and i.crop_object_id is not null
+              order by case when i.mirror_error_type='MirrorReadTransient' and i.mirror_attempt_at>%s then 1 else 0 end,
+                       i.mirror_attempt_at nulls first,i.id limit 4""",(UUID(self.client.owner),datetime.now(timezone.utc)-timedelta(seconds=_READ_RETRY_COOLDOWN_SECONDS)))).fetchall()
         verified=0
         for item in items:
             try:
@@ -249,6 +251,7 @@ class IllustrationMirror:
                 if not read_operation:
                     entry_ref = await self._entry_ref(item)
                     admitted = await self.client.call('vibepublish_media_store', {
+                        'request_key': 'rkb:mirror:read:' + str(operation),
                         'command': {'kind': 'get', 'entry_ref': entry_ref}})
                     read_operation = admitted['operation_id']
                     await self.update(item, mirror_read_operation_id=read_operation)
@@ -293,7 +296,10 @@ class IllustrationMirror:
                 await self.update(item,vibepublish_entry_ref=entries[0]['entry_ref'],provider_crop_sha256=provider_sha,mirror_error_type=None)
                 verified+=1
             except Exception as error:
-                await self.update(item,mirror_error_type=type(error).__name__)
+                # An unrelated failed receipt/search call must not erase the
+                # durable retry admission time and allow a fresh GET too soon.
+                if item.get('mirror_error_type') != 'MirrorReadTransient':
+                    await self.update(item,mirror_error_type=type(error).__name__)
                 import logging
                 logging.getLogger(__name__).warning(json.dumps({'event':'illustration_mirror_retry','illustration_id':str(item['id']),'error_type':type(error).__name__}))
         return verified

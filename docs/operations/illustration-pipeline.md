@@ -31,6 +31,29 @@ The **first** `Kalinigrad_base.search(query)` can return `main_state=pending` or
 - Only after provider-backed `get` confirms exact original topic, entry, origin and provider SHA set `vibepublish_entry_ref` and provider hash. Do not garbage-collect the private Object Storage crop before this proof.
 - Actor authorization must succeed before either the private Object Storage locator **or** the Telegram fallback is consulted. An archive entry or signed URL is not authorization. Public rights remain closed unless separately verified.
 
+### Archive recovery and capacity (2026-10-19)
+
+Initial mirror and source verification GETs now use immutable keys derived from
+their original PUT operation. A lost admission reply replays that GET rather
+than downloading a second provider copy. Terminal `blocked` reads with exactly
+`telegram_transport_unhealthy` or `provider_read_deadline` can recover through
+the existing read path. Original-file/fallback reads persist the next key and
+15-minute cooldown atomically in the private cache database; concurrent callers
+and process restarts share it. Unknown, pending, failed, authorization and digest
+failures retain the original operation. Asset 404/410 retains its separate,
+bounded expiry continuation. A missing provider digest fails closed.
+
+Mirror polling errors preserve the last transient retry's cooldown. The bounded
+four-item selection gives ready work precedence over cooling reads, so four
+waiting entries cannot monopolize a pass. Both new source PUTs and new mirror
+PUTs defer below the existing 2 GiB filesystem reserve without discarding source
+bytes or crops. Already admitted operations continue their receipt/readback
+reconciliation under disk pressure. This admission check is not a global quota
+or a guarantee against concurrent unrelated filesystem writes.
+
+The [remediation report](../reports/illustration-audit-remediation-20261019.md) records which audit findings were reproduced and fixed;
+the remaining audit proposals are not presented as completed changes.
+
 ## Troubleshooting without guessing
 
 | Symptom | Inspect first | Correct response |

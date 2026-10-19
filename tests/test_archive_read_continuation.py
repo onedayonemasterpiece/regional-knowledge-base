@@ -196,3 +196,53 @@ async def test_delayed_concurrent_admission_reuses_completed_operation(cache_dir
     release.set()
     assert await first==second
     assert len(provider.calls)==2 and len(provider.admissions)==1
+
+
+@pytest.mark.asyncio
+async def test_known_terminal_transport_read_recovers_and_cooldown_survives_restart(cache_dir, monkeypatch):
+    class TransientProvider(Provider):
+        async def receipt(self, operation):
+            if operation in ('op_0', 'op_1'):
+                return {'operation_complete': True, 'state': 'blocked',
+                        'error': {'code': 'provider_read_deadline'}}
+            return await super().receipt(operation)
+    provider=TransientProvider();provider.pending=False
+    with pytest.raises(source_archive.ArchiveReadPending):
+        await source_archive.archive_payload(provider,'entry-a')
+    assert len(provider.admissions)==2
+    # Reopening the disk cache must not reset the retry budget.
+    with pytest.raises(source_archive.ArchiveReadPending):
+        await source_archive.archive_payload(provider,'entry-a')
+    assert len(provider.admissions)==2
+    cache=OriginalCache(cache_dir)
+    monkeypatch.setattr(OriginalCache,'from_env',classmethod(lambda cls: cache))
+    cache.clock=lambda: __import__('time').time()+901
+    data,_=await source_archive.archive_payload(provider,'entry-a')
+    assert data==provider.payload and len(provider.admissions)==3
+
+
+@pytest.mark.asyncio
+async def test_archive_requires_independent_provider_digest(cache_dir):
+    class MissingDigest(Provider):
+        async def receipt(self, operation):
+            receipt=await super().receipt(operation)
+            receipt['items'][0]['media_evidence'][0].pop('sha256')
+            return receipt
+    provider=MissingDigest();provider.pending=False
+    with pytest.raises(RuntimeError,match='archive_provider_digest_missing'):
+        await source_archive.archive_payload(provider,'entry-a')
+
+
+def test_terminal_retry_rotation_is_atomic_and_old_receipt_cannot_rotate_new_key(cache_dir):
+    cache=OriginalCache(cache_dir);cache.clock=lambda:1000
+    scope='a'*64
+    old,_=cache.archive_attempt(scope)
+    cache.archive_admitted(scope,old,'old')
+    assert cache.archive_retry(scope,old,'old',cooldown=900)
+    key,op=OriginalCache(cache_dir).archive_attempt(scope)
+    assert key!=old and op is None
+    assert not cache.archive_retry(scope,old,'old',cooldown=900)
+    cache.archive_admitted(scope,key,'next')
+    assert not cache.archive_retry(scope,key,'next',cooldown=900)
+    cache.clock=lambda:1901
+    assert cache.archive_retry(scope,key,'next',cooldown=900)

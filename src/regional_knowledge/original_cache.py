@@ -24,6 +24,7 @@ class OriginalCache:
         with self.db() as db:
             db.execute('create table if not exists entries(sha text primary key,size integer not null,last_used real not null)')
             db.execute('create table if not exists archive_reads(scope text primary key,request_key text not null unique,operation_id text)')
+            db.execute('create table if not exists archive_read_retries(scope text primary key,next_retry real not null)')
         (self.root/'cache.sqlite3').chmod(0o600)
 
     @classmethod
@@ -87,6 +88,24 @@ class OriginalCache:
         # Compare-and-delete cannot retire a newer concurrent attempt.
         with self.db() as db:
             db.execute('delete from archive_reads where scope=? and request_key=?', (scope,request_key))
+
+    def archive_retry(self, scope, request_key, operation_id, *, cooldown):
+        """Rotate only a proved terminal read, atomically across processes.
+
+        The caller qualifies the terminal code. Persist the cooldown separately
+        from error reporting, and the next key before any provider I/O.
+        """
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('select request_key,operation_id from archive_reads where scope=?',(scope,)).fetchone()
+            due=db.execute('select next_retry from archive_read_retries where scope=?',(scope,)).fetchone()
+            now=self.clock()
+            if row!=(request_key,operation_id) or (due and now<due[0]):return False
+            db.execute('update archive_reads set request_key=?,operation_id=null where scope=?',
+                       ('rkb:archive-read-retry:'+hashlib.sha256(request_key.encode()).hexdigest(),scope))
+            db.execute('insert into archive_read_retries values(?,?) on conflict(scope) do update set next_retry=excluded.next_retry',
+                       (scope,now+cooldown))
+            return True
 
     def cleanup(self,*,reserve=0):
         deleted=0

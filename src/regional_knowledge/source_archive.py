@@ -1,11 +1,11 @@
 """Exact-source archive on the existing maintenance owner and Vibe provider queue."""
-import asyncio, hashlib, json, logging, os
+import asyncio, hashlib, json, logging, os, shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 from .file_ingress import sha256_file
 from .contracts import Principal
-from .illustration_mirror import VibePublishClient
+from .illustration_mirror import VibePublishClient, _TRANSIENT_READ_CODES, _READ_RETRY_COOLDOWN_SECONDS
 log=logging.getLogger(__name__)
 
 
@@ -52,24 +52,33 @@ class ArchiveSourceCacheExpired(RuntimeError):
     """Only a definitive expired/missing temporary asset allows one new GET."""
 
 
+class ArchiveTerminalReadRetry(RuntimeError):
+    """A known terminal transport failure qualified a durably keyed retry."""
+
+
+class SourceAdmissionDeferred(RuntimeError):
+    """Source bytes remain intact while new archive writes lack disk reserve."""
+
+
 async def archive_payload(client, entry_ref):
-    """Recover once within the same actor-authorized call after proven cache expiry.
+    """Recover once within the same actor-authorized call after a qualified failure.
 
     A provider 404/410 for an already verified ephemeral asset retires only its
     request key. The next GET is newly keyed but addresses the SAME immutable
     archive entry, rechecking current provider rights. Network uncertainty,
     pending work and authorization failures never create another operation.
+    Known terminal transport failures share a durable 15-minute retry cooldown.
     """
     for attempt in range(2):
         try:
-            return await _archive_payload_once(client, entry_ref)
-        except ArchiveSourceCacheExpired:
+            return await _archive_payload_once(client, entry_ref, allow_transport_retry=attempt==0)
+        except (ArchiveSourceCacheExpired, ArchiveTerminalReadRetry):
             if attempt:
                 raise
     raise AssertionError("unreachable archive continuation")
 
 
-async def _archive_payload_once(client, entry_ref):
+async def _archive_payload_once(client, entry_ref, *, allow_transport_retry=True):
     from .original_cache import OriginalCache
     cache=OriginalCache.from_env()
     # Store only an opaque scope, admission key and receipt ID, never credentials.
@@ -87,6 +96,13 @@ async def _archive_payload_once(client, entry_ref):
         if receipt['operation_complete']:break
         await asyncio.sleep(.5)
     if not receipt['operation_complete']:raise ArchiveReadPending(operation_id)
+    error=receipt.get('error') or {}
+    code=error.get('code') if isinstance(error,dict) else None
+    if receipt['state']=='blocked' and code in _TRANSIENT_READ_CODES:
+        if allow_transport_retry and cache.archive_retry(scope,request_key,operation_id,cooldown=_READ_RETRY_COOLDOWN_SECONDS):
+            log.info(json.dumps({'event':'archive_read_transport_retry','previous_operation_id':operation_id,'code':code}))
+            raise ArchiveTerminalReadRetry('archive terminal transport retry')
+        raise ArchiveReadPending(operation_id)
     if receipt['state']!='verified':raise RuntimeError('archive_source_unavailable')
     assets=[m for item in receipt.get('items',[]) for m in item.get('media',[]) if m.get('source',{}).get('kind')=='asset']
     evidence=[e for item in receipt.get('items',[]) for e in item.get('media_evidence',[]) if e.get('media_kind')=='document']
@@ -104,10 +120,11 @@ async def _archive_payload_once(client, entry_ref):
     data=response.content
     actual_sha=hashlib.sha256(data).hexdigest()
     provider_sha=evidence[0].get('sha256')
-    if provider_sha and provider_sha!=actual_sha:raise RuntimeError('archive_provider_digest_mismatch')
+    if not provider_sha:raise RuntimeError('archive_provider_digest_missing')
+    if provider_sha!=actual_sha:raise RuntimeError('archive_provider_digest_mismatch')
     # Keep the verified receipt until its asset definitively expires. A crash
     # before the caller installs these bytes must not admit another provider get.
-    return data,provider_sha or actual_sha
+    return data,provider_sha
 
 
 async def archive_bytes(client, entry_ref):
@@ -198,6 +215,9 @@ class SourceArchive:
                 origin={'system':'regional_knowledge','ref':uri,'sha256':doc['source_sha256']}
                 operation=doc['source_archive_operation_id']
                 if not operation:
+                    corpus=getattr(self.backend,'corpus',None)
+                    if corpus is not None and shutil.disk_usage(corpus.path.parent).free<2*1024**3:
+                        raise SourceAdmissionDeferred('archive filesystem below 2 GiB reserve')
                     data=await self.backend.object_store.get_bytes(doc['object_key'])
                     if hashlib.sha256(data).hexdigest()!=doc['source_sha256']:raise ValueError('source_integrity_mismatch')
                     key="rkb:source:"+hashlib.sha256(f"{self.client.owner}:{doc['id']}:{doc['source_sha256']}".encode()).hexdigest()
@@ -268,7 +288,7 @@ class SourceArchive:
                     listed=await self.client.call('vibepublish_media_store',{'command':{'kind':'search','text':uri},'limit':25})
                     matches=[r for r in listed['media_store_items'] if r.get('origin')==origin]
                     if len(matches)!=1:raise RuntimeError('source_origin_readback_missing')
-                    read=await self.client.call('vibepublish_media_store',{'command':{'kind':'get','entry_ref':matches[0]['entry_ref']}})
+                    read=await self.client.call('vibepublish_media_store',{'request_key':'rkb:source:read:'+str(operation),'command':{'kind':'get','entry_ref':matches[0]['entry_ref']}})
                     read_id=read['operation_id'];await self.update(doc,source_archive_read_id=read_id)
                 read=await self.client.receipt(read_id)
                 if not read['operation_complete']:continue
