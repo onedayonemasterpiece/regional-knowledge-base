@@ -2,7 +2,9 @@
 
 Дата: 19 октября 2026 года.
 
-**Статус:** проект полноценного переноса, уточнённый после обсуждения с владельцем. Архитектурные требования ниже зафиксированы; реализация, миграция, переключение production и запуск экспериментов этим документом не выполняются и не объявляются согласованными. PostgreSQL, размещение векторов и конкретная топология остаются кандидатами.
+**Статус:** проект полноценного переноса, уточнённый после обсуждения с владельцем. Архитектурные требования ниже зафиксированы; реализация, миграция, переключение production и запуск экспериментов этим документом не выполняются и не объявляются согласованными. По итогам дополнительной оценки единый PostgreSQL + pgvector рекомендован как целевая архитектура (§§22–26). Это инженерная рекомендация, не принятое владельцем окончательное решение и не production-ready статус. Конкретная топология и параметры остаются открытыми.
+
+**Дополнение по единому хранилищу:** §§22–26 уточняют целесообразность PostgreSQL, lexical/vector retrieval, границы reuse из my-data-hub и проверки до переключения. Ранее сформулированные требования к durable journal, единственному writer, ACL и proof delivery сохраняются.
 
 **Дополнение по цитатам на сканах:** разделы 15–21 описывают существующий source_proof, перенос тяжёлых стадий в Kaggle, отдельную доставку текста/изображений и реальные gaps Slack/Миры. dot не требуется как обязательный renderer; внедрение не выполнялось.
 
@@ -24,7 +26,7 @@
 2. На DevCoveer остаётся небольшая durable SQLite для операций, восстановления и доставки. Это не резервная полная рабочая БД корпуса.
 3. Под «датасетом» имеется в виду **Kaggle Dataset**, не DataStax/Astra DB.
 4. Снимки должны иметь два места хранения: Kaggle Dataset и независимый bucket. Яндекс обсуждался как пример провайдера; провайдер и период резервирования не выбраны. Неделя/месяц были примерами, не расписанием.
-5. PostgreSQL рассматривается как кандидат для рабочей БД. Возможен перенос туда и векторного поиска с отказом от Supabase, если вариант PostgreSQL + pgvector выдержит проверку. Выбор не сделан.
+5. В исходном обсуждении PostgreSQL рассматривался как кандидат для рабочей БД, включая перенос векторного поиска и отказ от Supabase. Владелец затем запросил итоговую оценку единого PostgreSQL; результат этой оценки: рекомендованный target (§22), а не уже принятое владельцем решение.
 6. Надо сравнить совместное размещение БД/обработки и BGE в одном notebook с разделением BGE и БД/обработки между notebook. «Один» и «два» описывают варианты сравнения, а не утверждённое число всех узлов.
 7. Только один экземпляр получает право изменять рабочую БД. Readers могут масштабироваться.
 8. Импорт сейчас доступен только владельцу. Расширение права импорта другим пользователям не входит в этот проект.
@@ -221,11 +223,11 @@ Autoscaling ориентируется на queue age, time-to-service, p95 late
 
 ### A. SQLite в Kaggle с текущим внешним vector plane
 
-Минимально меняет формат corpus и FTS, позволяет сначала проверить перенос исполнения и replay. Не снимает зависимость от Supabase и не доказывает достаточную concurrency. SQLite остаётся кандидатом для первого сравнения, не обязательным окончательным решением.
+Минимально меняет формат corpus и FTS, позволяет сначала проверить перенос исполнения и replay. Не снимает зависимость от Supabase и не доказывает достаточную concurrency. SQLite сохраняется как текущий baseline и возможный промежуточный вариант проверки переноса; после дополнительной оценки (§22) это не рекомендуемый конечный target.
 
 ### B. PostgreSQL плюс pgvector в Kaggle
 
-Может объединить corpus, рабочие таблицы и vectors и позволить отказаться от Supabase. Потребует переноса SQLite-specific FTS/JSON/RPC/ACL semantics и всех новых функций, настройки памяти и пулов, резервирования и восстановления. PostgreSQL сам по себе не делает временный notebook durable.
+**Рекомендуемый target после дополнительной оценки (§§22–26), при прохождении gates.** Может объединить corpus, рабочие таблицы и vectors и позволить отказаться от Supabase. Потребует переноса SQLite-specific FTS/JSON/RPC/ACL semantics и всех новых функций, настройки памяти и пулов, резервирования и восстановления. PostgreSQL сам по себе не делает временный notebook durable.
 
 Изменение lexical retrieval, vector type/index и ranking нельзя принимать по одному health check: нужны прежние quality gates и точные evidence IDs. Исторический PostgreSQL backend не является готовой заменой текущей SQLite authority.
 
@@ -263,7 +265,7 @@ C/D сравниваются независимо от выбора A/B. Кол�
 2. На синтетическом либо отдельно разрешённом приватном fixture сравнить colocated и split Kaggle, первоначально без одновременной смены СУБД. Иначе нельзя отделить эффект переноса от эффекта миграции.
 3. Пройти минимальный вертикальный сценарий: durable accept → saved mutation → writer apply → result → delivery record → snapshot → restart → replay. Сохранять только тестовые внешние эффекты.
 4. Проверить ready reader старого и нового snapshot, задержку новых книг, отдельный ACL revoke barrier и запрет renewal старого поколения.
-5. Только после этого сравнить PostgreSQL/pgvector и SQLite-вариант на тех же данных/запросах.
+5. Проверить рекомендованный PostgreSQL/pgvector target против текущего SQLite/Supabase baseline на тех же данных/запросах. Разделение опытов нужно для атрибуции регрессий, не для повторного открытия уже сформулированной архитектурной рекомендации.
 
 Этот ограниченный опыт проверяет риски полноценного переноса, а не сужает конечную цель до read-only системы.
 
@@ -289,7 +291,7 @@ C/D сравниваются независимо от выбора A/B. Кол�
 
 ## 13. Открытые решения до реализации
 
-1. Какой вариант СУБД и vector placement проходит одинаковые quality/latency/recovery gates: SQLite + Supabase или PostgreSQL + pgvector?
+1. Принимает ли владелец PostgreSQL + pgvector как целевой вариант, и проходит ли он quality/latency/recovery gates относительно текущего SQLite + Supabase baseline? Рекомендация дана в §22; её проверка и разрешение на внедрение ещё не получены.
 2. Какая топология BGE/DB выигрывает на фактических задачах и квотах аккаунта?
 3. Как именно обеспечивать fresh ACL barrier, не размещая полный corpus/ACL duplicate на DevCoveer?
 4. Каковы период Dataset publication, период независимой копии, максимальный journal tail, retention и общий безопасный compaction watermark?
@@ -468,3 +470,89 @@ search/fetch и exact evidence locators; source_archive/VibePublish keyed retrie
 - Slack действительно показывает нужное изображение с правильной citation в исходном thread; direct/Мира действительно получают результат через поддерживаемый канал.
 
 **Итог дополнения:** тяжёлые source/download/render/localization/paint следует перенести в Kaggle как ограниченные и возобновляемые стадии существующего proof pipeline. Текстовый ответ и клиентское рассуждение отделяются от подготовки изображений. Главные новые работы находятся в task/artifact/ACL/delivery и ресурсном допуске, а не в создании stripe с нуля. Все выводы пока основаны на source review; benchmark, runtime изменения и миграция не выполнялись.
+
+
+## 22. Единый PostgreSQL + pgvector: итоговая рекомендация
+
+**Рекомендация: выбрать PostgreSQL + pgvector целевой СУБД полного переноса, а текущую SQLite/Supabase схему использовать как baseline для проверки.** Пользователь попросил оценить целесообразность; это заключение анализа, не объявление принятого им решения, разрешение миграции или доказательство production-готовности.
+
+Главный выигрыш не в самом появлении pgvector: книжные vectors уже находятся в Supabase PostgreSQL. Выигрыш в устранении нескольких представлений состояния и границ согласованности:
+
+1. SQLite: authoritative corpus, accepted text/chunks, FTS, каталог, ACL, page/region provenance, ingestion/publication, предметный журнал и stories.
+2. Supabase: книжные BGE (1024 измерения) и E5 (384 измерения), отдельные identity/revision/hash/scope anchors.
+3. SQLite story_bge_index: FP32 vector_blob и similarity в Python через math.fsum. Это ещё один путь хранения/поиска, не уже готовый SQL ANN index.
+
+Цель: одна транзакционная authority для corpus, разрешений, актуальных ревизий, публикации и соответствующих vector rows; один согласованный DB snapshot вместо отдельного согласования corpus/vector копий. При публикации новой ревизии нельзя сделать её видимой до появления обязательных производных данных. Где embedding готовится асинхронно, готовность должна быть явным publication state, а не притворной атомарностью внешнего model call.
+
+**Единый PostgreSQL не означает одну таблицу или один vector space.** Документные chunks, story/material entities, ACL и журнал остаются типизированными сущностями. BGE/E5, книжные и story embeddings сохраняют свои model/space/dimension, revision, source hash и material_version контракты. Story vector нельзя автоматически смешивать с книжным только потому, что оба называются BGE.
+
+Полные PDF/DjVu и proof изображения не надо переносить в PostgreSQL BLOB. В БД достаточно source/artifact identities, hashes, provenance, статусов и private references. Архив оригиналов, bounded source/page/proof caches и blob delivery из §§15–21 остаются отдельным контуром. Небольшая durable SQLite control-plane на DevCoveer тоже сохраняется: «единая рабочая БД» не отменяет независимый журнал восстановления и доставки.
+
+Чего это не решает само по себе: Kaggle lifecycle и durable storage, writer fencing, fresh ACL на отставшем reader, восстановление ledger tail, Telegram throughput, render/model contention и Slack delivery. PostgreSQL на том же временном диске не становится надёжнее автоматически.
+
+**E5 не закрепляется навсегда.** Наличие RKB E5-384 здесь описывает текущий baseline. Владелец отдельно запросил оценку эффективности E5 и возможности оставить только BGE. Это отдельное исследование: его результат можно учесть явно, но нельзя молча объединить удаление E5 со сменой СУБД и затем потерять возможность объяснить изменение качества/latency.
+
+## 23. Как устроить поиск без автоматического обещания «станет лучше»
+
+### 23.1. Минимальный осмысленный набор индексов
+
+- B-tree для identities, revision/material_version, ownership/scope, ссылочной целостности и действительно используемых фильтров.
+- GIN по tsvector для lexical branches; конфигурация должна соответствовать языку и способу подготовки документа/запроса.
+- pg_trgm выборочно для имён, топонимов и aliases, если нужен tolerant substring/typo поиск. Не добавлять trigram index на весь текст «на всякий случай».
+- pgvector exact search как корректностный baseline и возможный рабочий путь для небольших разрешённых subsets. HNSW вводить там, где объём/latency действительно требуют ANN; не создавать все индексы всех семейств заранее.
+
+Сначала сохранить текущие точные vectors и metric/operator semantics. Не совмещать переход со сменой embedding model, quantization, re-chunking, повторным OCR или массовым re-embedding без отдельно доказанной причины. Accepted text, physical page mapping, region geometry, revision и hashes сохраняются без переписывания; нормализация для поиска является производным представлением, не заменой оригинала.
+
+### 23.2. PostgreSQL FTS не является заменой FTS5 BM25 один к одному
+
+ts_rank/ts_rank_cd имеют другие ranking semantics; native ranking не использует corpus-global statistics как обычный BM25. Поэтому «GIN + ts_rank_cd» нельзя называть сохранением текущего BM25 качества. Кроме того, websearch_to_tsquery связывает обычные слова через AND, а текущий lexical путь использует OR semantics: слепая замена parser сужает recall. Нужны явная query policy и сравнение, а не только перенос SQL.
+
+Для регионального исторического корпуса разумный target: независимые lexical branches с RU/DE/simple конфигурациями, точные имена/фразы и проверенные aliases исторических/современных названий, плюс независимый BGE retrieval. Смешанные документы и собственные имена требуют fallback simple/exact, а не предположения, что один stemmer покрывает всё. Aliases должны иметь проверяемую связь и источник, не быть выдуманными query expansions.
+
+Сводить кандидатов rank-only RRF после scope/revision filtering и de-duplication: raw ts_rank, trigram similarity и vector distance не имеют общей шкалы. Это предложенная поисковая конструкция, а не уже реализованный и измеренный новый ranking. Сохранить существующие quality cases, добавить held-out исторические имена, RU/DE варианты, OCR-ошибки, фразы и cross-book evidence.
+
+Источники: [PostgreSQL text-search controls и ranking](https://www.postgresql.org/docs/current/textsearch-controls.html), [предпочтительные FTS indexes](https://www.postgresql.org/docs/current/textsearch-indexes.html), [pg_trgm](https://www.postgresql.org/docs/current/pgtrgm.html).
+
+### 23.3. ACL и filtered ANN
+
+Фильтрация после approximate scan может вернуть слишком мало разрешённых кандидатов даже при наличии релевантных строк. Поэтому ANN recall измерять относительно exact search **на том же разрешённом actor/scope/revision subset**, включая узкие ACL и недавно отозванный доступ. Доступный в pgvector начиная с 0.8 iterative scan может расширять поиск, но не является универсальной гарантией recall или latency. На малых subsets exact path может быть и проще, и лучше; выбирать по измерениям.
+
+Объединение в одну БД позволяет применять authorization и revision predicates в том же запросе/транзакции. Защитный слой RLS должен работать под app role без BYPASSRLS и без случайного обхода политик владельцем таблиц; service/admin credentials не выдаются клиентам и notebook workers без необходимого scope. Это не разрешение новых прав: parsed-text grant по-прежнему не равен raw-source/derived-proof grant. Устаревшая reader ACL требует прежнего fail-closed barrier перед fetch/artifact/delivery, даже если в локальном snapshot уже есть RLS.
+
+Источники: [pgvector filtering и iterative scans](https://github.com/pgvector/pgvector#filtering), [PostgreSQL row security](https://www.postgresql.org/docs/current/ddl-rowsecurity.html).
+
+## 24. Что уже доказано в my-data-hub и что можно переиспользовать
+
+Проверенный source/evidence ref: my-data-hub a26797759fe30718fc6a12206c344968dcdc80a9.
+
+- Есть non-root supervised PostgreSQL runtime, lifecycle/packaging и checkpoint подходы. Live Kaggle canary зафиксировал PostgreSQL 18.4 и vector 0.8.6.
+- Сам canary отмечен diagnostic_nonqualifying и не закрывает operational matrix. Это доказательство фактической возможности запуска данного стека, не доказательство production готовности RKB.
+- Старый CENTRAL_CHECKPOINT_UPLOAD_PATH_UNAVAILABLE нельзя объявлять текущим blocker: более поздний progress evidence фиксирует brokered split-upload 4096 B с независимой проверкой.
+- Маленький upload не доказывает передачу полного corpus/checkpoint, cold restore, replay или прохождение всей operational matrix. Нет измерения, что RKB с его объёмом и PDF нагрузкой восстановится в приемлемые 3–5 минут.
+
+Переиспользовать стоит packaging/bootstrap, non-root supervisor, корректный stop/restart, readiness и checkpoint/upload/verifier **паттерны и проверенные части**, адаптируя их к RKB. Не переносить весь master-runtime framework, schema и orchestration как зависимость только ради PostgreSQL. В частности, E5 space my-data-hub имеет 768 измерений, а текущий RKB E5 — 384: схемы и indexes не взаимозаменяемы.
+
+Источники: [актуальный operational progress](https://github.com/onedayonemasterpiece/my-data-hub/blob/a26797759fe30718fc6a12206c344968dcdc80a9/docs/operations/2026-08-11-operational-mvp-progress.md), [PostgreSQL runtime](https://github.com/onedayonemasterpiece/my-data-hub/blob/a26797759fe30718fc6a12206c344968dcdc80a9/src/my_data_hub/master_runtime/postgres.py), [diagnostic live canary receipt](https://github.com/onedayonemasterpiece/my-data-hub/blob/a26797759fe30718fc6a12206c344968dcdc80a9/docs/operations/evidence/2026-08-11-operational-mvp/kaggle-pg18-runtime-canary-live.json).
+
+## 25. Цена объединения: память, восстановление и топология
+
+30 ГБ Kaggle RAM не являются бюджетом PostgreSQL целиком. Считать совокупно: BGE и encoder buffers; PostgreSQL shared buffers и backend processes; work_mem, который расходуется несколькими plan nodes/parallel workers и сессиями; maintenance/HNSW build; OS page cache; source/page/proof decode/paint и HTTP buffers. Отдельно считать disk peak: live PG data, WAL, checkpoint/backup staging, restore unpacking, originals и artifact cache. Индекс и его rebuild тоже потребляют RAM/CPU/disk, даже когда normal search лёгкий.
+
+Поэтому pool size, memory settings и concurrent maintenance выбираются по общей admission модели §§9,20, а не настройкой PostgreSQL «на всю память машины». HNSW build, import, checkpoint и render не должны одновременно съедать защищённый search budget. Writer остаётся единственным; readers получают согласованный snapshot/generation и не приобретают право записи из-за наличия PostgreSQL.
+
+Colocated BGE+PG+proof и split BGE / PG+proof остаются сравниваемыми вариантами. SQL/vector consolidation уменьшает межхранилищные RPC и упрощает snapshot consistency, но может увеличить contention внутри notebook. Ни один из эффектов пока не измерен; полная топология не выбирается по одному успешному PG canary.
+
+Источники: [PostgreSQL resource consumption](https://www.postgresql.org/docs/current/runtime-config-resource.html), [pgvector index build](https://github.com/pgvector/pgvector#index-build-time), [PostgreSQL backup](https://www.postgresql.org/docs/current/backup.html).
+
+## 26. Проверки до решения о переключении
+
+Ниже предложенные критерии и порядок проверки, **не результаты запущенного benchmark и не новые произвольные численные SLA**.
+
+1. **Parity данных и контрактов:** inventory всех current tables/functions; одинаковые accepted text/chunks, IDs, SHA, revision/material_version, page/region provenance, ACL и publication state. Proof из прежнего evidence должен указывать на ту же страницу и цитату. Старый PostgreSQL adapter сам по себе этой полноты не даёт.
+2. **Quality parity:** текущие retrieval/grounded-evidence cases плюс held-out; раздельно lexical, BGE, текущий E5 baseline и fused ranking. Отдельно сравнить OR/AND/phrase semantics и multilingual aliases. Итоги отдельной оценки отказа от E5 учитывать как явное решение с собственной абляцией.
+3. **ANN correctness:** exact baseline против approximate на разрешённых subsets разных размеров, фильтрах и ревизиях. Оценивать recall, число возвращённых кандидатов и latency вместе; не принимать быстрый поиск пустого результата за улучшение.
+4. **Ресурсы и latency:** warm и cold; простые запросы одновременно с несколькими книгами/сканами, import и snapshot; RSS/HWM, CPU, disk/WAL peak, queue age, time-to-text/first-proof/all-proofs и delivery. Сохраняются прежние warm search gates; полный startup+restore+replay проверяется относительно пользовательских 3–5 минут.
+5. **Recovery:** реальный согласованный snapshot, Kaggle Dataset и independent bucket, проверка hashes и watermark, restore полного представительного объёма и replay журнала. Crash до/после commit, поздний старый writer, ACL revoke и повтор внешнего эффекта должны проходить прежние failure tests; маленький upload и healthy SELECT этого не заменяют.
+6. **Controlled cutover:** только после разрешения на реализацию и успешных gates; ограниченный импорт/shadow comparison, подтверждённый restore и план возврата без split-brain, остановка старого writer на границе переключения. Не называть retired legacy remote corpus допустимым rollback; rollback нужен к проверенному checkpoint действующей системы.
+
+**Окончательный инженерный вывод:** единый PostgreSQL + pgvector здесь целесообразнее как target, чем закрепление раздельных SQLite corpus/FTS/ACL, Supabase book vectors и SQLite/Python story vectors. Он сокращает границы согласованности и даёт общий SQL/transaction/backup контур, но сам по себе не улучшает retrieval, не отменяет durable journal и не подтверждает пригодность Kaggle для всей нагрузки. Следующий шаг после принятия владельцем направления — отдельно разрешённая реализация и измеряемая проверка, не незаметная миграция в рамках этого документа.
