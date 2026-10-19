@@ -1370,10 +1370,14 @@
         "src/regional_knowledge/request_dependencies.py",
         "src/regional_knowledge/bge_queue.py",
         "src/regional_knowledge/expert_executor.py",
-        "tests/test_request_dependencies.py"
+        "tests/test_request_dependencies.py",
+        "src/regional_knowledge/request_recovery.py",
+        "tests/test_request_recovery.py",
+        "docs/operations/request-recovery.md"
       ],
       "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
-      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open."
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open.",
+      "partial_operator_recovery_note": "Audited local owner recheck of only the original repaired actor/body/query-bound BGE receipt, current ACL and expected generation/checkpoint; exact concurrent replay, no enqueue/run/send. General poison/outage recovery and actual live acceptance remain open."
     },
     {
       "id": "LOAD-D05",
@@ -1411,10 +1415,14 @@
         "src/regional_knowledge/request_dependencies.py",
         "src/regional_knowledge/bge_queue.py",
         "src/regional_knowledge/expert_executor.py",
-        "tests/test_request_dependencies.py"
+        "tests/test_request_dependencies.py",
+        "src/regional_knowledge/request_recovery.py",
+        "tests/test_request_recovery.py",
+        "docs/operations/request-recovery.md"
       ],
       "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
-      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open."
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open.",
+      "partial_operator_recovery_note": "Audited local owner recheck of only the original repaired actor/body/query-bound BGE receipt, current ACL and expected generation/checkpoint; exact concurrent replay, no enqueue/run/send. General poison/outage recovery and actual live acceptance remain open."
     },
     {
       "id": "LOAD-D07",
@@ -1479,9 +1487,13 @@
         "src/regional_knowledge/request_dependencies.py",
         "src/regional_knowledge/bge_queue.py",
         "src/regional_knowledge/expert_executor.py",
-        "tests/test_request_dependencies.py"
+        "tests/test_request_dependencies.py",
+        "src/regional_knowledge/request_recovery.py",
+        "tests/test_request_recovery.py",
+        "docs/operations/request-recovery.md"
       ],
-      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open."
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open.",
+      "partial_operator_recovery_note": "Audited local owner recheck of only the original repaired actor/body/query-bound BGE receipt, current ACL and expected generation/checkpoint; exact concurrent replay, no enqueue/run/send. General poison/outage recovery and actual live acceptance remain open."
     },
     {
       "id": "LOAD-CALIBRATION",
@@ -1489,7 +1501,12 @@
       "line": 263,
       "action": "Measure every specified cold/warm/cache/retrieval/fetch/answer/proof/import/E5-token/vector class, actual resource envelope and exact candidate/corpus/models; n, stage/queue/e2e duration, RSS/HWM, pressure, SQLite/WAL, concurrency and useful authorized result.",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "docs/reports/request-load-e5-stage-profile-20261019.json",
+        "docs/reports/request-load-e5-stage-profile-20261019.md"
+      ],
+      "partial_component_note": "Native stage20+20 query and20+20 passage4/token-count samples, first2s diagnostic failure retained. Older queue, synthetic corpus, no whole-search/import/context/ETA/resize/quality acceptance; NOT_RUN unchanged."
     },
     {
       "id": "LOAD-LIVE",
@@ -1898,6 +1915,18 @@
       ],
       "validation": "31 targeted tests passed, then full integrated local suite651 passed/31 skipped/2 warnings. Real full256-job queue, exact replay while full, authorized fallback and current ACL through evidence hydration; no provider/model calls. Shared admission/ETA acceptance is not inferred.",
       "limits": "Only BGE queue-full classification fixed. Shared cross-client dialogs/fair heads/permits/checkpoints, E5 handling, measured resource reserve/resize, durable ETA notices, actual second-client delivery and calibration remain open."
+    },
+    {
+      "id": "retained_dependency_operator_recovery",
+      "status": "SOURCE_IMPLEMENTED_NOT_DEPLOYED",
+      "source": [
+        "src/regional_knowledge/request_recovery.py",
+        "src/regional_knowledge/bge_queue.py",
+        "tests/test_request_recovery.py",
+        "docs/operations/request-recovery.md"
+      ],
+      "validation": "Final complete local suite705 passed/31 skipped/2 dependency warnings; prior focused61 passed before the final added revoked-source test. Exact recheck, unresolved immutable receipts, concurrent replay, current person/source access, stale generation/hash, actor/body/kind/closed parent and UNKNOWN-delivery fences. No provider calls.",
+      "limits": "Only original retained BGE dependency repair/recheck is implemented. General poison-stage recovery, proved-outage policy, measured stage admission/ETA and live repair acceptance remain open."
     }
   ],
   "requirement_clarification": "docs/requirements/unified-expert-access-20261019.md",

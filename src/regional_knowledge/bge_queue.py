@@ -204,6 +204,21 @@ class BgeQueue:
                 raise PermissionError('BGE query identity mismatch')
             self._consumer(db,job_id,consumer)
 
+    def consumer_state(self,actor,job_id,consumer,query_sha256):
+        """Read an existing dependency without creating a ref, run or claim."""
+        if not isinstance(consumer,QueryConsumer):raise ValueError('BGE consumer contract')
+        with self.connect() as db:
+            row=db.execute('''select j.state,j.identity,j.texts from jobs j
+                join query_consumers c on c.job_id=j.id
+                join query_parents p on p.namespace=c.namespace and p.request_id=c.request_id
+                where j.id=? and j.actor=? and j.kind='query' and c.namespace=?
+                and c.request_id=? and c.active=1 and p.released=0''',
+                (str(job_id),str(actor),consumer.namespace,consumer.request_id)).fetchone()
+            if (not row or json.loads(row['identity']).get('query_sha256')!=query_sha256
+                or hashlib.sha256(json.loads(row['texts'])[0].encode()).hexdigest()!=query_sha256):
+                raise PermissionError('BGE dependency unavailable')
+            return row['state']
+
     def release_consumer(self,namespace,request_id):
         """Caller proves the canonical parent is terminal; no provider I/O."""
         with self.connect() as db:

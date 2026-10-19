@@ -1,0 +1,79 @@
+{
+  "scope": "partial native E5 stage characterization; no candidate queue, whole-search/import, protected latency/quality or ETA acceptance",
+  "candidate_ref": "3948cd93153c3b57db62066463fc34870e45a273",
+  "stage_source_ref": "ddf7499d8ceea7210a469a6222d8ca78856338f3",
+  "stage_source_note": "On-disk encode/token_counts AST hashes match candidate; live module memory was not introspected. Scheduling code is the older runtime, not the feature candidate.",
+  "space": "e5-small-int8:761b726:model-f80102d3:tok-0b44a9d7:mean-l2-512:q1-d4:v1",
+  "resources": {
+    "cpu_max": "100000 100000",
+    "cgroup_memory_max_bytes": 2147483648,
+    "host_isolated": false
+  },
+  "query_classes": {
+    "short_query": {
+      "input_chars": 24,
+      "input_sha256": "b59c1a7d5927c853bf08e16b5cdff36813b1e478c0ef691d62651a8be55d217e",
+      "e5_untruncated_tokens": 11,
+      "n": 20,
+      "wall_median": 0.01188537400594214,
+      "wall_max": 0.053853983990848064,
+      "rss_sampled_peak": 1039155200
+    },
+    "long_query_input": {
+      "input_chars": 6600,
+      "input_sha256": "efd76bcf94c9f512f75ae5bb12060bd21f5d07c535a932777f92ca7edc96fed2",
+      "e5_untruncated_tokens": 1656,
+      "n": 20,
+      "wall_median": 0.3483899869970628,
+      "wall_max": 0.7449528019933496,
+      "rss_sampled_peak": 1102569472
+    }
+  },
+  "native_import_classes": {
+    "passage4_target": {
+      "batch": 4,
+      "chars": 1656,
+      "input_sha256": "8a6a174f9e598cd4b2c1c03e27372197429a4874e7f69b650542b742ac4fa6fc",
+      "n": 20,
+      "wall_median": 1.1995014585045283,
+      "wall_max": 1.7140631639922503,
+      "rss_max_observed": 1229492224
+    },
+    "token_count32": {
+      "batch": 32,
+      "chars": 4400,
+      "input_sha256": "87e3e45005dedbc6258c41d22fa74a9d73202622049e0d617f8963f4779cad5e",
+      "n": 20,
+      "wall_median": 0.09631764200457837,
+      "wall_max": 0.21457044799171854,
+      "rss_max_observed": 1235132416
+    }
+  },
+  "initial_diagnostic": {
+    "client_timeout_seconds": 2,
+    "class": "passage4_target",
+    "successful_samples": 0,
+    "outcome": "request_TimeoutError",
+    "native_journal_encoder_seconds": 2.0096406049997313,
+    "afterward": "same service remained ready/idle; no restart or outage"
+  },
+  "followup": {
+    "client_timeout_seconds": 3.2,
+    "reason": "Characterize actual existing LocalE5Embedder client contract; earlier2s failure retained",
+    "stop_reason": null,
+    "passage_e5_tokens": 419,
+    "rss_max_observed_bytes": 1235132416,
+    "cgroup_memory_final_bytes": 1269170176,
+    "ready_idle_final": true,
+    "encoder_processes_final": 1
+  },
+  "evidence_sha256": {
+    "e5-profile-code-preflight.json": "8f0ee04f3d77fd8b1ccdcd51a8e80a859176a48dda8110859df00a8d432b8a74",
+    "e5-stage-profile.json": "a6722452a86df6bdb049ee15c2d009c7b927e9502f57dbbb1709367098200168",
+    "e5-import-stage-profile.json": "2cf1a34dec96f60d4a1a3fdf7a6101b05603d0a9e7ff30d85e6889f4ee2ae317",
+    "e5-profile-native-journal.log": "7ecab8462a5e20bf5ffb197748ff41891d322e2e5c809a4d03ef3565a4fb12eb",
+    "e5-import-contract-profile.json": "3da9491b781a65e21108aaf0538f3d01f06194386b9a919c9c0cf7674b8ffad4",
+    "profile_e5_stage.py": "280dccce6404e5c8374c321285667cc875ec75d2e2006dda5955f471cc8652b8",
+    "profile_e5_import_contract.py": "18036127cf91141683424312531ea98af1f8d36cb0fe6a394e546304d05348f4"
+  }
+}
