@@ -35,7 +35,7 @@ stable external identity.
 Never copy the whole corpus into Street Story. Deliver only typed evidence events
 with stable knowledge:// references and inherited access scope.
 
-See [POI evidence bridge](poi-integration.md).
+See [POI evidence bridge](poi-integration.md). Since 2026-10-19 a delivery worker sends finalized book POI evidence from the outbox to Street Story's loopback intake with a dedicated service key (owner-granted for the owner's private books); see its "Delivery to Street Story" section.
 
 ## Projects Hub
 
