@@ -124,7 +124,10 @@ class BgeQueue:
                     raise ValueError('idempotency payload mismatch')
                 if previous['state']!='done':self._ensure(db,now)
                 return previous['id']
-            if db.execute("select count(*) from jobs where state!='done'").fetchone()[0]>=256:
+            pending=db.execute("select count(*) from jobs where state!='done'").fetchone()[0]
+            # Every producer uses this transaction. Keep one slot for a search
+            # even if document producers raced past their advisory window.
+            if pending >= (255 if kind=='document' else 256):
                 raise BgeQueueCapacityError('BGE queue full')
             self._ensure(db,now);job_id=str(uuid.uuid4())
             db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)',

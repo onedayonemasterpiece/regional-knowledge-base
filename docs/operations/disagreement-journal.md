@@ -446,3 +446,26 @@ warnings** in the full suite; a subsequent focused set passed **30 tests**, addi
 owner-delegation and legacy pre-send head guards. The first extra-actor test
 exposed SDK argument omission; explicit rejection was added and verified. These
 are deterministic/source integration checks, not real expert or load acceptance.
+
+The next source slice moves the minimum one-search BGE queue reservation inside
+the shared atomic enqueue (documents wait at255, queries retain the original256
+cap). Both source and story indexers preserve pending work on this capacity
+wait. E5 retains its one native executor and bounded queue, prioritizes waiting
+queries, reserves a query slot against passage producers, and serializes HTTP
+token-count in the same worker. Active batches finish; cancelled queued calls
+are skipped. Focused reserve/indexing/retrieval tests: **51 passed,4 skipped**.
+This computational reservation is only one part of the design: a measured
+local RAM/CPU/disk/SQLite/search envelope, dependency checkpoints, actual resize
+and load trials, durable ETA/notices and final second-client delivery remain
+required. No live service was changed by these tests.
+
+The E5 client recognizes only the native429 `encoder_queue_full` as a typed
+capacity wait. Search retains authorized lexical evidence and the explicit
+`wait_reason`; indexing keeps the source pending without consuming its failure
+list. An arbitrary429 is still an HTTP failure, not invented queue pressure.
+Final local regression: **670 passed,31 skipped,2 dependency warnings**. A prior
+run retained two failing full-queue fixtures: they tried to add256 documents,
+which now correctly conflicts with the query reserve. Their full-pressure
+precondition is now255 documents plus one query; the same overflow rejection,
+exact replay, ACL and evidence-hydration assertions pass. No test threshold was
+relaxed, and the earlier failed log is retained.

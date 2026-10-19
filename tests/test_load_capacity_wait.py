@@ -11,9 +11,12 @@ from test_expert_executor import sources
 def full_queue(path):
     queue=BgeQueue(path)
     first=None
-    for index in range(256):
+    for index in range(255):
         ident=queue.enqueue('synthetic-indexer','document-'+str(index),['Synthetic accepted text'],kind='document')
         first=first or ident
+    # Documents preserve one query slot; fill that slot with a real query to
+    # retain this test's original full computational-queue precondition.
+    queue.enqueue('synthetic-searcher','existing-query',['Existing synthetic query'])
     return queue,first
 
 

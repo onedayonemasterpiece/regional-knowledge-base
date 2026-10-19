@@ -33,12 +33,26 @@ The MCP process still imports no tokenizer/model package. If the exact BGE
 tokenizer is unavailable or mismatched, validation of a new revision fails closed
 instead of allowing silent 512-token truncation.
 
-One process, one native inference thread, one async FIFO queue of capacity10.
-The service binds only loopback, accepts at most64KiB JSON/8000 characters per
-text, query batch1 or passage batch≤4, and fixed model/space/roles only. Queue
+The load-management candidate keeps one process and one native inference thread,
+with the existing bounded queue of capacity10. Waiting queries have priority;
+FIFO order is preserved within each priority. Passage producers cannot consume
+the last queued slot. An active passage finishes before a query starts; it is
+never interrupted. HTTP token-count operations use that same serial executor
+and priority/reserve, rather than unconstrained `to_thread` calls. Abandoned
+queued calls are skipped without native work. This candidate is not deployed.
+
+The service binds only loopback, accepts embed JSON up to64KiB, query batch1 or
+passage batch≤4; token-count accepts up to256KiB and32 texts. Query text is
+bounded at8000 characters, passage text at40000; model/space/roles are fixed. Queue
 full returns429 `encoder_queue_full`; expired queue work returns503. HTTP/read
 and client timeouts are bounded. The client never starts another process.
-Systemd limits are CPUQuota100%, CPUAffinity0, MemoryMax1GiB, MemorySwapMax0.
+Only the native429 `encoder_queue_full` becomes typed `capacity_wait`; other
+provider failures retain their original error classification. Fast search keeps
+authorized lexical results with that wait reason while the queue is busy.
+The original unit template used CPUQuota100%, CPUAffinity0, MemoryMax1GiB,
+MemorySwapMax0. Inspect actual user-unit/cgroup values before calibration or
+rollout: the live unit read on19 October reports MemoryMax2GiB and CPUQuota100%.
+Neither value is an empirically calibrated search/import concurrency envelope.
 MCP restarts do not restart this independent service.
 
 `sql/010_fast_e5.sql` adds typed `vector(384)` storage with source hash/revision and

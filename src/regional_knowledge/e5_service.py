@@ -1,4 +1,4 @@
-"""One local pinned encoder. Standard-library HTTP, bounded FIFO, one inference thread."""
+"""One local pinned encoder. Bounded query-first queue, one inference thread."""
 import os
 for key in ('OMP_NUM_THREADS','OPENBLAS_NUM_THREADS','MKL_NUM_THREADS','NUMEXPR_NUM_THREADS'):
     os.environ[key] = '1'
@@ -10,6 +10,7 @@ import concurrent.futures
 import hashlib
 import json
 import logging
+import itertools
 import time
 from pathlib import Path
 from .e5_contract import (
@@ -90,7 +91,10 @@ class QueueFull(Exception): pass
 class SerialEncoder:
     def __init__(self, encode, capacity=10):
         self.encode = encode
-        self.queue = asyncio.Queue(maxsize=capacity)
+        if type(capacity) is not int or capacity<1:raise ValueError('invalid encoder capacity')
+        self.queue = asyncio.PriorityQueue(maxsize=capacity)
+        self.sequence=itertools.count()
+        self.token_counts=None
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.busy = False
         self.max_queue = 0
@@ -101,31 +105,44 @@ class SerialEncoder:
         if self.worker is None:
             self.worker = asyncio.create_task(self.run())
 
-    async def submit(self, texts, role):
+    async def submit(self, texts, role, *, operation='encode'):
+        if role not in {'query','passage'} or operation not in {'encode','token_count'}:raise ValueError('invalid encoder operation')
+        if operation=='token_count' and self.token_counts is None:raise RuntimeError('token_budget_unavailable')
         self.start()
         future = asyncio.get_running_loop().create_future()
         future.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
-        try:self.queue.put_nowait((texts,role,time.monotonic(),future))
+        try:
+            if role=='passage' and self.queue.qsize()>=self.queue.maxsize-1:raise asyncio.QueueFull
+            self.queue.put_nowait((0 if role=='query' else 1,next(self.sequence),texts,role,time.monotonic(),future,operation))
         except asyncio.QueueFull:
             self.rejected += 1
             raise QueueFull('encoder_queue_full')
         self.max_queue = max(self.max_queue,self.queue.qsize())
-        return await asyncio.wait_for(asyncio.shield(future),3)
+        try:return await asyncio.wait_for(asyncio.shield(future),3)
+        except BaseException:
+            future.cancel()
+            raise
 
     async def run(self):
         while True:
-            texts,role,submitted,future = await self.queue.get()
+            _,_,texts,role,submitted,future,operation = await self.queue.get()
             wait = time.monotonic()-submitted
             self.busy = True
             try:
+                if future.cancelled():continue
                 if wait >= 2.5:
                     raise TimeoutError('encoder_queue_deadline')
                 start = time.monotonic()
-                vectors = await asyncio.get_running_loop().run_in_executor(self.executor,self.encode,texts,role)
-                result = {'space':SPACE,'vectors':vectors,'queue_wait_seconds':wait,'encoder_seconds':time.monotonic()-start}
+                fn=self.encode if operation=='encode' else self.token_counts
+                value = await asyncio.get_running_loop().run_in_executor(self.executor,fn,texts,role)
+                result = {'space':SPACE,'vectors':value} if operation=='encode' else value
+                result={**result,'queue_wait_seconds':wait,'encoder_seconds':time.monotonic()-start}
                 if not future.done():future.set_result(result)
                 self.completed += 1
-                log.info(json.dumps({'event':'encoded','role':role,'count':len(texts),'queue_wait_seconds':wait,'encoder_seconds':result['encoder_seconds'],'space':SPACE}))
+                log.info(json.dumps({'event':'encoded','operation':operation,'role':role,'count':len(texts),'queue_wait_seconds':wait,'encoder_seconds':result['encoder_seconds'],'space':SPACE}))
+            except asyncio.CancelledError:
+                future.cancel()
+                raise
             except Exception as exc:
                 if not future.done():future.set_exception(exc)
                 log.warning(json.dumps({'event':'encoding_failed','error_type':type(exc).__name__,'space':SPACE}))
@@ -134,13 +151,18 @@ class SerialEncoder:
                 self.queue.task_done()
 
     async def close(self):
-        if self.worker:self.worker.cancel()
-        self.executor.shutdown(wait=True)
+        if self.worker:
+            self.worker.cancel()
+            await asyncio.gather(self.worker,return_exceptions=True)
+        while not self.queue.empty():
+            item=self.queue.get_nowait();item[5].cancel();self.queue.task_done()
+        await asyncio.to_thread(self.executor.shutdown,wait=True)
 
 class LocalService:
     def __init__(self, encoder, *, token_counts=None, token_budget_ready=False):
         self.encoder = encoder
         self.token_counts = token_counts
+        self.encoder.token_counts=token_counts
         self.token_budget_ready = bool(token_budget_ready)
 
     def status(self):
@@ -169,7 +191,7 @@ class LocalService:
                 if path=='/token-count':
                     if self.token_counts is None:
                         raise RuntimeError('token_budget_unavailable')
-                    payload = await asyncio.to_thread(self.token_counts,texts,role)
+                    payload = await self.encoder.submit(texts,role,operation='token_count')
                 else:
                     payload = await self.encoder.submit(texts,role)
             else:status,payload = 404,{'error':'not_found'}

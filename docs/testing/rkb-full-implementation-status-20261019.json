@@ -1397,8 +1397,15 @@
       "partial_component_evidence": [
         "src/regional_knowledge/bge_queue.py",
         "src/regional_knowledge/multilingual_retrieval.py",
-        "tests/test_load_capacity_wait.py"
-      ]
+        "tests/test_load_capacity_wait.py",
+        "src/regional_knowledge/e5_service.py",
+        "src/regional_knowledge/indexing.py",
+        "src/regional_knowledge/story_vector_index.py",
+        "tests/test_search_reservation.py",
+        "src/regional_knowledge/local_e5.py",
+        "src/regional_knowledge/supabase_backend.py"
+      ],
+      "partial_component_note": "Atomic one-query BGE computational reserve across producers; one query-first E5/token-count worker; native queue pressure is typed capacity_wait and preserves authorized evidence. No measured RAM/CPU/stage envelope or production load acceptance is inferred."
     },
     {
       "id": "LOAD-D09",
@@ -1414,7 +1421,15 @@
       "line": 260,
       "action": "Импортный producer, включая story vectors, не забирает query reserve. Memory reservation атомарна при двух конкурентных claimers.",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/e5_service.py",
+        "src/regional_knowledge/indexing.py",
+        "src/regional_knowledge/story_vector_index.py",
+        "tests/test_search_reservation.py"
+      ],
+      "partial_component_note": "Atomic one-query BGE computational reserve across producers; one query-first E5/token-count worker; native queue pressure is typed capacity_wait and preserves authorized evidence. No measured RAM/CPU/stage envelope or production load acceptance is inferred."
     },
     {
       "id": "LOAD-D11",

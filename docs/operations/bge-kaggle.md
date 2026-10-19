@@ -63,9 +63,16 @@ On cold demand, search returns normal E5 evidence plus `main_state=starting` and
 an actor-bound `main_job_id`. Reissue the same query with that ID to obtain its
 main result. Both full `search` and Live `knowledge_search` accept it. Completed
 jobs can be replayed without inference. A different query or actor cannot reuse
-the job. Warm calls wait at most 10 seconds for BGE, then return E5 with pending
-state. Queue capacity 256; document producers hold at most 64 pending jobs;
-interactive queries are claimed before document jobs. Fast and main evidence
+the job. Warm calls wait at most0.8seconds for BGE, additionally clamped by the
+remaining interaction budget, then return E5 with pending state. The protected
+evidence-search deadline remains2seconds. Queue capacity is256; the source
+indexer has an advisory64-document window. The load-management candidate also
+reserves one computational slot for a query inside the atomic enqueue shared
+by every producer: a new document waits at255 pending jobs, while a query can
+use slot256. Exact existing-job replay is unchanged. Source and story indexers
+leave their durable work pending when this reserve is reached. This source
+change is not deployed and is not a measured RAM/CPU reserve. Interactive
+queries are claimed before document jobs. Fast and main evidence
 both undergo ordinary ACL checks and fetch authorization. Revocation remains
 effective even if a vector job completed earlier.
 
