@@ -4,6 +4,8 @@
 
 **Статус:** проект полноценного переноса, уточнённый после обсуждения с владельцем. Архитектурные требования ниже зафиксированы; реализация, миграция, переключение production и запуск экспериментов этим документом не выполняются и не объявляются согласованными. По итогам дополнительной оценки единый PostgreSQL + pgvector рекомендован как целевая архитектура (§§22–26). Это инженерная рекомендация, не принятое владельцем окончательное решение и не production-ready статус. Конкретная топология и параметры остаются открытыми.
 
+**Прямое решение владельца:** E5 полностью исключён из целевой архитектуры; BGE является единственным embedding target. Текущие E5 упоминаются ниже только как факты исходного состояния/cleanup. §28 уточняет независимые Telegram sessions и optional двухстадийный MCP для bbox. Runtime и credentials не изменялись.
+
 **Дополнение по быстрому исполнителю:** §27 сравнивает текстовый Gemini и Live, рекомендует единый Slack-контур и фиксирует gaps маршрутизации/передачи запроса. Интеграция не реализована.
 
 **Дополнение по единому хранилищу:** §§22–26 уточняют целесообразность PostgreSQL, lexical/vector retrieval, границы reuse из my-data-hub и проверки до переключения. Ранее сформулированные требования к durable journal, единственному writer, ACL и proof delivery сохраняются.
@@ -66,9 +68,9 @@
 Срез исходников: main **8cf70e00ce2e1dfa19e909eb51bb94b9bdc09fdc**. Это прочитанный GitHub SHA, не подтверждение deployed SHA.
 
 - SQLite владеет точным корпусом, FTS, каталогом, правами, page/region graph, ingestion, stories, POI и publication state.
-- Supabase PostgreSQL хранит векторы E5/BGE и минимальные identity/revision/hash/scope anchors.
+- В проверенном исходном runtime Supabase PostgreSQL хранит векторы E5/BGE и минимальные identity/revision/hash/scope anchors. После решения владельца E5 не входит в target; это описание состояния до миграции.
 - Оригиналы и иллюстрации находятся в отдельном приватном архиве через VibePublish/Telegram; временный объектный storage не является постоянным архивом корпуса.
-- BGE inference уже исполняется только на Kaggle. Локальный BGE на DevCoveer запрещён действующей границей. E5-small INT8 пока является отдельным локальным fast tier.
+- BGE inference уже исполняется только на Kaggle. Локальный BGE на DevCoveer запрещён действующей границей. E5-small INT8 присутствует в исходном runtime как отдельный локальный fast tier, но исключён из target прямым решением владельца; фактическое удаление этим документом не выполняется.
 - Существующий Kaggle worker сам обращается наружу к broker через claim/complete/heartbeat; он намеренно не имеет доступа к corpus/DB/object store. Перенос основной обработки расширяет эту границу и требует отдельного транспорта и прав.
 - Worker фиксирует четыре потока CPU для BGE. Совместное размещение с БД не создаёт дополнительных CPU.
 - После прежней миграции на SQLite старый remote-corpus runtime не является допустимым rollback. Оставшийся PostgreSQL adapter не доказывает готовность нынешних функций к обратному переносу.
@@ -255,7 +257,7 @@ C/D сравниваются независимо от выбора A/B. Кол�
 
 Пользователю сообщается измеряемое состояние ожидания и прогноз без спама. ETA включает startup, restore/replay и очередь, а не только encoder time. Честный статус недоступности отличать от нехватки capacity.
 
-Полный перенос убирает сегодняшнюю независимость локального FTS от Kaggle. Поэтому краткий аварийный простой принят как допустимый trade-off, но долю/частоту и восстановление ещё надо измерить. Локальный E5, tokenizer, архивные и межсервисные связи не удаляются автоматически до доказанного замещения их функций.
+Полный перенос убирает сегодняшнюю независимость локального FTS от Kaggle. Поэтому краткий аварийный простой принят как допустимый trade-off, но долю/частоту и восстановление ещё надо измерить. E5 полностью исключён из target; фактический вывод его runtime/index/data выполняется отдельно безопасным migration cleanup после разрешения на реализацию. Tokenizer, архивные и межсервисные связи нельзя удалять автоматически только из-за названия прежнего embedding tier.
 
 ## 12. Минимальный проверочный этап и критерии приёмки
 
@@ -447,7 +449,7 @@ search/fetch и exact evidence locators; source_archive/VibePublish keyed retrie
 1. Тот же durable request runtime: дочерние proof stages, typed pending/dependency continuation, bounded batch и distributed dedupe.
 2. Source/page batching, streaming-to-file и reuse проверенного source lease вместо full-file copy/hash для каждой новой quote.
 3. Bounded requested-page material cache отдельно от quote-specific overlay.
-4. Проверенный remote source transport в Kaggle без копирования owner/Telegram credentials.
+4. Проверенный remote source transport в Kaggle: текущий archive relay либо отдельные выделенные владельцем Telegram sessions (§28), без копирования общей активной session или раскрытия credentials.
 5. Private artifact manifest/storage/fetch с текущей ACL и сохранением до доставки.
 6. Request-bound proof capability, узкая политика derived-proof прав и optional Live/direct async adapter.
 7. Расширение существующего Slack result/outbox на artifacts, native delivery и per-item readback.
@@ -481,18 +483,18 @@ search/fetch и exact evidence locators; source_archive/VibePublish keyed retrie
 Главный выигрыш не в самом появлении pgvector: книжные vectors уже находятся в Supabase PostgreSQL. Выигрыш в устранении нескольких представлений состояния и границ согласованности:
 
 1. SQLite: authoritative corpus, accepted text/chunks, FTS, каталог, ACL, page/region provenance, ingestion/publication, предметный журнал и stories.
-2. Supabase: книжные BGE (1024 измерения) и E5 (384 измерения), отдельные identity/revision/hash/scope anchors.
+2. Supabase в исходном runtime: книжные BGE (1024 измерения) и E5 (384 измерения), отдельные identity/revision/hash/scope anchors. E5 описывает только migration source, а не целевой vector plane.
 3. SQLite story_bge_index: FP32 vector_blob и similarity в Python через math.fsum. Это ещё один путь хранения/поиска, не уже готовый SQL ANN index.
 
 Цель: одна транзакционная authority для corpus, разрешений, актуальных ревизий, публикации и соответствующих vector rows; один согласованный DB snapshot вместо отдельного согласования corpus/vector копий. При публикации новой ревизии нельзя сделать её видимой до появления обязательных производных данных. Где embedding готовится асинхронно, готовность должна быть явным publication state, а не притворной атомарностью внешнего model call.
 
-**Единый PostgreSQL не означает одну таблицу или один vector space.** Документные chunks, story/material entities, ACL и журнал остаются типизированными сущностями. BGE/E5, книжные и story embeddings сохраняют свои model/space/dimension, revision, source hash и material_version контракты. Story vector нельзя автоматически смешивать с книжным только потому, что оба называются BGE.
+**Единый PostgreSQL не означает одну таблицу или один vector space.** Документные chunks, story/material entities, ACL и журнал остаются типизированными сущностями. Книжные и story BGE embeddings сохраняют свои model/space/dimension, revision, source hash и material_version контракты; E5 tables/spaces в target не создаются. Story vector нельзя автоматически смешивать с книжным только потому, что оба называются BGE.
 
 Полные PDF/DjVu и proof изображения не надо переносить в PostgreSQL BLOB. В БД достаточно source/artifact identities, hashes, provenance, статусов и private references. Архив оригиналов, bounded source/page/proof caches и blob delivery из §§15–21 остаются отдельным контуром. Небольшая durable SQLite control-plane на DevCoveer тоже сохраняется: «единая рабочая БД» не отменяет независимый журнал восстановления и доставки.
 
 Чего это не решает само по себе: Kaggle lifecycle и durable storage, writer fencing, fresh ACL на отставшем reader, восстановление ledger tail, Telegram throughput, render/model contention и Slack delivery. PostgreSQL на том же временном диске не становится надёжнее автоматически.
 
-**E5 не закрепляется навсегда.** Наличие RKB E5-384 здесь описывает текущий baseline. Владелец отдельно запросил оценку эффективности E5 и возможности оставить только BGE. Это отдельное исследование: его результат можно учесть явно, но нельзя молча объединить удаление E5 со сменой СУБД и затем потерять возможность объяснить изменение качества/latency.
+**Решение владельца: от E5 полностью отказаться. BGE — единственный embedding target.** Это больше не кандидат и не отложенный выбор. Lexical branches сохраняются, поскольку они не являются embedding-моделью. Исторические E5 vectors, indexes, runtime/config и связанные fallback пути подлежат отдельному безопасному migration cleanup при разрешённой реализации: не переносить их в целевую схему и не оставлять скрытый E5 fallback. Документ не удаляет текущие данные/код; исходный E5 можно измерить только как исторический baseline для объяснения изменений качества/latency, не как конкурирующий target.
 
 ## 23. Как устроить поиск без автоматического обещания «станет лучше»
 
@@ -532,7 +534,7 @@ ts_rank/ts_rank_cd имеют другие ranking semantics; native ranking н�
 - Старый CENTRAL_CHECKPOINT_UPLOAD_PATH_UNAVAILABLE нельзя объявлять текущим blocker: более поздний progress evidence фиксирует brokered split-upload 4096 B с независимой проверкой.
 - Маленький upload не доказывает передачу полного corpus/checkpoint, cold restore, replay или прохождение всей operational matrix. Нет измерения, что RKB с его объёмом и PDF нагрузкой восстановится в приемлемые 3–5 минут.
 
-Переиспользовать стоит packaging/bootstrap, non-root supervisor, корректный stop/restart, readiness и checkpoint/upload/verifier **паттерны и проверенные части**, адаптируя их к RKB. Не переносить весь master-runtime framework, schema и orchestration как зависимость только ради PostgreSQL. В частности, E5 space my-data-hub имеет 768 измерений, а текущий RKB E5 — 384: схемы и indexes не взаимозаменяемы.
+Переиспользовать стоит packaging/bootstrap, non-root supervisor, корректный stop/restart, readiness и checkpoint/upload/verifier **паттерны и проверенные части**, адаптируя их к RKB. Не переносить весь master-runtime framework, schema и orchestration как зависимость только ради PostgreSQL. Например, исторический E5 space my-data-hub имеет 768 измерений, а исходный RKB E5 — 384: schemas/indexes не взаимозаменяемы. Ни один E5 space не переносится в BGE-only target.
 
 Источники: [актуальный operational progress](https://github.com/onedayonemasterpiece/my-data-hub/blob/a26797759fe30718fc6a12206c344968dcdc80a9/docs/operations/2026-08-11-operational-mvp-progress.md), [PostgreSQL runtime](https://github.com/onedayonemasterpiece/my-data-hub/blob/a26797759fe30718fc6a12206c344968dcdc80a9/src/my_data_hub/master_runtime/postgres.py), [diagnostic live canary receipt](https://github.com/onedayonemasterpiece/my-data-hub/blob/a26797759fe30718fc6a12206c344968dcdc80a9/docs/operations/evidence/2026-08-11-operational-mvp/kaggle-pg18-runtime-canary-live.json).
 
@@ -551,7 +553,7 @@ Colocated BGE+PG+proof и split BGE / PG+proof остаются сравнива
 Ниже предложенные критерии и порядок проверки, **не результаты запущенного benchmark и не новые произвольные численные SLA**.
 
 1. **Parity данных и контрактов:** inventory всех current tables/functions; одинаковые accepted text/chunks, IDs, SHA, revision/material_version, page/region provenance, ACL и publication state. Proof из прежнего evidence должен указывать на ту же страницу и цитату. Старый PostgreSQL adapter сам по себе этой полноты не даёт.
-2. **Quality parity:** текущие retrieval/grounded-evidence cases плюс held-out; раздельно lexical, BGE, текущий E5 baseline и fused ranking. Отдельно сравнить OR/AND/phrase semantics и multilingual aliases. Итоги отдельной оценки отказа от E5 учитывать как явное решение с собственной абляцией.
+2. **Quality parity:** текущие retrieval/grounded-evidence cases плюс held-out; раздельно lexical, BGE и их fused ranking. Отдельно сравнить OR/AND/phrase semantics и multilingual aliases. Решение BGE-only уже принято владельцем; сравнение с историческим E5 допустимо для объяснения регрессий, не для сохранения E5 в target. Проверить отсутствие скрытой зависимости от E5 и его fallback, не смешивая её с изменением текста/chunks.
 3. **ANN correctness:** exact baseline против approximate на разрешённых subsets разных размеров, фильтрах и ревизиях. Оценивать recall, число возвращённых кандидатов и latency вместе; не принимать быстрый поиск пустого результата за улучшение.
 4. **Ресурсы и latency:** warm и cold; простые запросы одновременно с несколькими книгами/сканами, import и snapshot; RSS/HWM, CPU, disk/WAL peak, queue age, time-to-text/first-proof/all-proofs и delivery. Сохраняются прежние warm search gates; полный startup+restore+replay проверяется относительно пользовательских 3–5 минут.
 5. **Recovery:** реальный согласованный snapshot, Kaggle Dataset и independent bucket, проверка hashes и watermark, restore полного представительного объёма и replay журнала. Crash до/после commit, поздний старый writer, ACL revoke и повтор внешнего эффекта должны проходить прежние failure tests; маленький upload и healthy SELECT этого не заменяют.
@@ -594,3 +596,25 @@ Idempotent ingress создаёт один request_id. Pending request можн�
 В Kaggle можно разместить executor orchestration и тяжёлые RKB tools, но Gemini inference остаётся у Google. Лёгкий dispatcher на DevCoveer может не нуждаться в отдельном notebook; место исполнения выбирается по фактической памяти, сетевым переходам, cold start и доступным слотам. Не переносить voice/Slack gateway в Kaggle только потому, что там находятся proof workers, и не обещать меньший latency от нового сетевого hop.
 
 До выбора: сравнить одинаковые вопросы, tools и evidence по time-to-text/first-proof/all-proofs/delivery, grounded quality, стоимости и quota wait; отдельно тёплый путь и cold start. Проверить duplicate ingress, две конкурентные claims, lease expiry/late result, provider disconnect, interrupted tool call, unknown delivery и ACL revoke. Пока это proposed checks без benchmark: более быстрый первый токен не доказывает более быстрый правильный ответ, а ускорение semantic executor не устраняет само по себе Telegram/render/Slack bottlenecks.
+
+
+## 28. Уточнение владельца: независимый Telegram download и client-assisted bbox
+
+### Telegram из Kaggle без общей активной session
+
+Владелец готов отдельно подготовить новые Telegram sessions для независимых notebook. **Прямой download в Kaggle с отдельной настоящей authorization на worker — поддерживаемый проектный вариант**, а не отвергнутая альтернатива обязательному VibePublish broker. Сравниваются текущий archive relay и direct path; ни одному не приписан измеренный throughput. Cold оригинал по-прежнему может потребовать полного скачивания, но один source SHA следует скачивать/проверять один раз на cache lease и использовать для всех нужных страниц/цитат.
+
+Важно различать независимую authorization и копию одной session: другое имя файла или копия StringSession не создаёт новый auth key. Telegram описывает AUTH_KEY_DUPLICATED для параллельного использования одной authorization в non-media DC, в том числе с одинакового или разных IP; ключ инвалидируется. У media connections есть отдельно описанные исключения. Нельзя обобщать это до «любые разные sessions блокируются». Отдельные реальные авторизации устраняют именно конфликт общего ключа, но не отменяют FLOOD_WAIT и account limits; ротация sessions для обхода ожидания не проектируется. [Telegram errors](https://core.telegram.org/api/errors), [datacenters](https://core.telegram.org/api/datacenter), [Telethon FAQ](https://docs.telethon.dev/en/stable/quick-references/faq.html), [session semantics](https://docs.telethon.dev/en/stable/concepts/sessions.html).
+
+Контракт предлагаемого direct path: exclusive session lease на активный worker с fencing/остановкой прежнего владельца перед передачей; bounded параллельные downloads с общим учётом ограничений аккаунта; source SHA validation, дедупликация, bounded cache и отсутствие retry storm. Новая Telegram session не отменяет RKB actor/ACL/source checks и не является разрешением скачать весь доступный аккаунту архив.
+
+Sessions/auth keys являются секретами: не помещать их в notebook source/output, Git, Dataset, snapshot, логи, ссылки или модельный контекст; передавать worker только разрешённым защищённым способом, исключив из обычных backups и артефактов. Создание/import credentials и настройка persistent access требуют отдельного подтверждения во время действия. Сейчас ничего не создавалось, не выдавалось и не импортировалось.
+
+### Двухстадийный MCP — optional путь локализации, не новый renderer
+
+1. Сервер проверяет actor и право на конкретную страницу/область, рендерит только разрешённое изображение и возвращает opaque task/artifact reference с immutable image hash, source SHA, revision, physical page index, quote identity и render transform (scale, rotation, crop/origin). Client/model получает картинку/разрешённый crop, не полный PDF. Право на текст само по себе не разрешает полный скан; scope и передача выбранному model provider проверяются отдельно.
+2. Клиентская vision-модель возвращает polygons **для того же exact image/task identity**, а не свободные координаты без привязки. Backend повторно проверяет ACL, freshness, hashes/page/revision, допустимое число/размер/форму и bounds polygons, правильное преобразование координат и принадлежность разрешённой области. Чужой, устаревший или подменённый render не принимается.
+3. Наличие bbox не доказывает, что там видна нужная цитата. Сохранить exact quote/page provenance и независимую проверку текста выделенной области, не подсказывающую verifier ожидаемую цитату; model echo и визуально правдоподобная полоса не считаются доказательством. Только после успешной проверки существующий deterministic Pillow renderer наносит stripe в Kaggle и создаёт private artifact с provenance.
+4. Native text/quads и пригодная существующая OCR geometry остаются первым путём. Client VLM вызывается только при необходимости, не заменяет deterministic path и не делает dot обязательным worker. Неуспех координат/чтения возвращает typed unavailable/pending; нельзя фабриковать proof или терять уже успешные страницы других книг.
+
+Это дополнительный transport существующего locator/validation pipeline, а не отказ от его проверок. Оба этапа должны продолжать тот же durable request/proof child, иметь idempotency и bounded lifetime/cache. Partial text/proof delivery, revoked ACL и immutable result/per-artifact ACK из §§17–20 сохраняются. Следующая разрешённая проверка должна сравнить native, существующий server-side locator и client-assisted путь по latency/quality/стоимости, включая повторный callback, неправильный hash/crop, rotation и revoke между этапами; новые численные обещания не вводятся.
