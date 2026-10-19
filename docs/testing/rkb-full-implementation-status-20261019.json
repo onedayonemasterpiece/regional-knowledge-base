@@ -62,7 +62,11 @@
       "action": "В ходе обработки запроса E1 отозвать ему право/доступ к P; затем пробовать получить старую ссылку/кеш и результат",
       "oracle": "Проверки при чтении и доставке блокируют закрытое, включая заголовок, crop, OCR, векторные результаты и пересказ; никакого late disclosure",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "tests/test_disagreement_journal.py"
+      ],
+      "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
     },
     {
       "id": "KB-07",
@@ -112,7 +116,11 @@
       "action": "E1 вносит аргумент, теряет ответ до receipt, повторяет из нового Slack треда",
       "oracle": "Один contribution с настоящим actor; операция возвращает ту же применённую ревизию/ID; модельная интерпретация отдельно от дословного текста",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "tests/test_disagreement_journal.py"
+      ],
+      "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
     },
     {
       "id": "KB-10A",
@@ -132,7 +140,11 @@
       "action": "E1/E2 независимо добавляют несовпадающие мнения; H обновляет сводку с expected_revision; параллельно E2 присылает новый аргумент",
       "oracle": "Оба вклада сохранены; точный based_on snapshot; поздний аргумент непрочитанный, не притворяется учтённым; предыдущая человеческая поддержка не переносится на новый текст",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "tests/test_disagreement_journal.py"
+      ],
+      "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
     },
     {
       "id": "KB-12",
@@ -302,7 +314,11 @@
       "action": "Проверить backup/restore на принятом состоянии после двух экспертных вкладов и одного provider receipt",
       "oracle": "Сохранились case, версии, вклад/actor, слот/публикация/receipt и права. Пересоздание BGE-векторов не стирает человеческий вклад",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "tests/test_disagreement_journal.py"
+      ],
+      "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
     },
     {
       "id": "KB-28",
@@ -342,7 +358,11 @@
       "action": "Участник заявляет регалии и учреждение, O проверяет только часть, задаёт предметный вес; другой читатель пытается открыть скан и дать заключение",
       "oracle": "Claimed ≠ verified; вес ≠ право на источник/публикацию/импорт; личные регалии не появляются в публичном ответе без разрешения; счёт score не объявляется исторической истиной",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "tests/test_disagreement_journal.py"
+      ],
+      "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
     },
     {
       "id": "KB-32",
@@ -472,7 +492,11 @@
       "action": "После durable accept запроса O отозвать его Slack mapping либо нужный resource grant до чтения/записи/доставки; затем повторить event и открыть cached proof",
       "oracle": "Повторная проверка блокирует соответствующую операцию и позднюю приватную выдачу; grant revocation не затрагивает независимые разрешённые ресурсы, link revocation отключает маршрут. Старый worker/context не обходит отзыв; исторические вклады сохранены без нового доступа",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "tests/test_disagreement_journal.py"
+      ],
+      "limitation": "Domain storage tests only; actual channel, provider, human identity and complete PMI scenario remain NOT_RUN."
     },
     {
       "id": "KB-45",
@@ -1364,6 +1388,19 @@
       "section": "8. Основания и честные границы",
       "status": "UNVERIFIED",
       "evidence": []
+    }
+  ],
+  "implementation_components": [
+    {
+      "component": "journal domain authority",
+      "status": "SOURCE_IN_PROGRESS",
+      "paths": [
+        "src/regional_knowledge/disagreement_contracts.py",
+        "src/regional_knowledge/disagreement_journal.py",
+        "tests/test_disagreement_journal.py"
+      ],
+      "live": "NOT_DEPLOYED",
+      "scope": "Append-only case/evidence/contribution/conclusion storage and atomic ACL-checked receipts; no claim of full PMI completion."
     }
   ]
 }
