@@ -47,7 +47,7 @@ These 151 matches are *database/native-receipt integrity checks*, not a claim th
 
 ## Boundaries and remaining independent coverage
 
-- Legacy PDF/DjVu: exact topic-2 read grants are present (4/4); the existing source-archive statuses include 27 verified entries and the earlier end-to-end original-PDF readback with byte SHA. This acceptance did **not** independently re-download all four old original PDFs; do not describe those four as newly byte-tested here.
+- Legacy originals: the independent repeat below downloaded all four approved topic-2 files through the dedicated service identity and matched each actual SHA to its immutable origin and RKB source SHA. All four returned PDF headers. This supersedes the earlier metadata-only coverage of these four grants.
 - The **151/151** native-receipt audit does not mean 151/151 image downloads were replayed in this check. Provider-readback byte equality was demonstrated by multiple active legacy and newly mirrored examples. Wrong-actor, wrong-topic, malformed-image and revoked-grant fail-closed cases are covered by merged repository regressions, not live attempts against other users' media.
 - Current rights remain private/unknown unless separately cleared. Nothing in archive verification authorizes a public post, an external URL or a model to distribute copyrighted scans.
 - The retained `original` visual candidate count and an active Street Story service show cross-product persistence, not new proof of all Original pixels; protect Street Story's independent source-frame/compositor and publishing tests.
@@ -61,4 +61,32 @@ These 151 matches are *database/native-receipt integrity checks*, not a claim th
 4. Include both a naturally GC'd **new** archive image and an active **old** exact-grant archive image, and check an unrelated same-page / unauthorized case. Do not re-upload the same bytes or temporarily delete source crops for a test.
 5. Preserve durable PUT/GET operation IDs across restarts and never interpret a missing receipt through a different principal as permission to replay publication. Confirm Street Story services and existing media remain intact.
 
-**Outcome of the scoped illustration pipeline:** the current active catalog, private Telegram topic4 native bindings, lookup-to-image flow and both old/new restoration paths have been verified on the live deployment. The exclusions above are explicit and do not invalidate this scoped product acceptance.
+## Independent final repeat, 19 October 2026
+
+The final-acceptance task was executed independently against the running services. No source import, mirror PUT, grant change, database migration, service restart, image generation or Telegram publication was performed.
+
+| Required check | Independent result |
+| --- | --- |
+| Actual API/indexer source | RKB `481241fa36db30e3f0e6c4c4b88fb3ce84964676`; both process CWD and PYTHONPATH agree; all 62 Python source files match the Git commit |
+| Actual API/worker source | VibePublish `d1f880b24788f609398a660ba53dd8c4731b7aec`; both process CWD and PYTHONPATH agree; all 72 Python source files match the Git commit; SQLite schema 11 |
+| Independent neighboring releases | Street Story `1aec5cb8a828cb54060118ec2f94d3310d09613e`; RKB POI delivery `fd967f8592f17154e3b10a7f9c752599090b77c6` (63 Python files match); six services active |
+| Active archive / duplicates | 151/151 exact tenant, topic 4, origin and native observed SHA; 121 service-owned + 30 legacy-owner; zero repeated active entry refs |
+| Current exact-grant authorization | 34/34 reconstructed with production `require_grant` on read-only SQLite, including current actor/binding epochs, destination, immutable revision and origin; 30 image + 4 source grants |
+| Service authority | Non-owner; scopes remain `bootstrap`, `media.store`, `status`; no owner token or user OAuth used |
+| Semantic query continuation | All five requested natural-language queries reached `main_state=ready`, `retrieval_mode=bge`, retaining each original `main_job_id` after cold start |
+| Search → evidence → real image | Zoo plan, monkeys, potent cross, historical postcard and Green Gate all returned source-linked native PNG ImageContent; images visually inspected |
+| Actual archive image bytes | Eight files: three active legacy-owner + five service-owned; all `delivered_crop_origin=telegram_archive`, PNG magic and actual SHA equal both delivered and native provider SHA |
+| Four legacy originals | Four real service-authorized PDF downloads, 15,453,787 / 1,574,088 / 12,752,172 / 17,013,878 bytes; each SHA equals immutable origin and canonical RKB source SHA |
+| Live access refusal | A known owner-owned RKB archive entry outside the exact grant set returned `media_store_entry_not_found`; no private content returned. Scoped topic-2 list returned only eight service-owned entries, without legacy-owner library enumeration |
+| Retained Original / compositor | Existing 1448×1086 unannotated Original matches its art byte SHA and all decoded pixels. Existing 3000×4000 source-frame candidate preserves source dimensions and every compared pixel below its annotation; saved provenance says `generation_dispatch=not_sent` |
+| Worker independence | Current unit has soft `Wants`/`After` on API and no API `Requires`, `PartOf` or `BindsTo`; no restart performed |
+| POI delivery | Existing outbox event is `delivered` with saved `unresolved_identity` receipt, unchanged idempotency identity; transport delivery is not accepted POI identity |
+| Focused repository checks | RKB: 28 tests passed for exact association, cross-actor refusal, unrelated same-page refusal, durable GET/expiry and SQLite mirror fences. VibePublish: 119 passed for exact grants, legacy origin, media-store recovery, source-frame/EXIF and Original recovery |
+
+Search quality has explicit limits: the plan and postcard ranked first, the potent cross and exact Green Gate evidence second, and the monkey-bearing evidence third. Other higher-ranked hits were inspected and rejected as irrelevant; returning a related book is not proof of the requested subject. Green Gate linkage is `association_basis=exact_shared_region`, with its actual printed caption, never a Wooden Bridge substitution. Printed captions and model observations remain separate. No evidence claims all-book retrieval-quality acceptance.
+
+All 151 active crops already lacked an Object Storage pointer naturally. The repeat therefore exercised the required real Telegram restoration path without deleting or fabricating crops. It does not claim a fresh Object Storage download. Wrong topic, revoked/replaced grant, other tenant/actor and unrelated same-page cases are repository regressions; the live denial above was an existing ungranted entry, not a grant revocation experiment. No foreign-user source was opened.
+
+Private evidence is retained in the managed directory `/home/dev/artifacts/regional-knowledge-base/20261019T085314Z-illustration-final-acceptance-20261019` (mode 0700). It contains original MCP image bytes, descriptors, evidence/query IDs, provider/native joins, all four original-file readback hashes, authority and runtime checks. Source scans, private IDs, native message links and credentials are excluded from this public report. Original PDFs were hashed in memory rather than copied into artifacts. Free disk was approximately 2.5 GiB after these checks; no large database copy was made.
+
+**Outcome:** the scoped illustration pipeline is live-verified, including active legacy restoration and all four approved legacy-original reads. This documentation update requires no runtime release: RKB API/indexer remain on the verified #144 release; newer `main` and the separately released POI delivery are preserved. Mass ingestion, unfinished source revisions, all-book semantic quality and Street Story editorial quality retain their independent acceptance requirements.
