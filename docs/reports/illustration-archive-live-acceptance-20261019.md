@@ -90,3 +90,30 @@ All 151 active crops already lacked an Object Storage pointer naturally. The rep
 Private evidence is retained in the managed directory `/home/dev/artifacts/regional-knowledge-base/20261019T085314Z-illustration-final-acceptance-20261019` (mode 0700). It contains original MCP image bytes, descriptors, evidence/query IDs, provider/native joins, all four original-file readback hashes, authority and runtime checks. Source scans, private IDs, native message links and credentials are excluded from this public report. Original PDFs were hashed in memory rather than copied into artifacts. Free disk was approximately 2.5 GiB after these checks; no large database copy was made.
 
 **Outcome:** the scoped illustration pipeline is live-verified, including active legacy restoration and all four approved legacy-original reads. This documentation update requires no runtime release: RKB API/indexer remain on the verified #144 release; newer `main` and the separately released POI delivery are preserved. Mass ingestion, unfinished source revisions, all-book semantic quality and Street Story editorial quality retain their independent acceptance requirements.
+
+## Product continuation after the Claude audit — 2026-10-19
+
+The preceding runtime statement describes the earlier acceptance segment.
+Audit-backed archive recovery fixes have now been merged in
+[PR149](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/149)
+and deployed from clean exact main commit
+[`4dd88d79a7030fb852b3620a884004a25d71c6fe`](https://github.com/onedayonemasterpiece/regional-knowledge-base/commit/4dd88d79a7030fb852b3620a884004a25d71c6fe)
+to **both API and indexer** after a consistent verified SQLite backup.
+Branch and merge CI passed; both supported Python versions ran 585 tests.
+
+Post-release verification again found **151/151** active exact native archive
+bindings and no duplicates. The real MCP returned **six PNG images** (three
+legacy-owner, three service-owned), all via `telegram_archive` with actual byte
+SHA equal to provider evidence. All **four** legacy PDFs were downloaded again
+and SHA-verified through the service principal; all **34** current exact grants
+passed the production validator. An ungranted owner entry remained denied.
+Search/fetch repeated three meaningful ready queries with their saved job IDs;
+the earlier five-query cold-start/continuation evidence remains a separate segment.
+
+VibePublish, Street Story, graph and delivery processes kept their PID and
+release paths; saved Original/compositor bytes and the POI event/key/revision
+were rechecked unchanged. No new archive PUT, generation, public publication,
+grant expansion or source reimport occurred. Disposable test/runtime cleanup
+recovered about 4.5 GB; about 6.0 GiB remained after release and verification.
+See the [remediation and released-product evidence](illustration-audit-remediation-20261019.md)
+for exact fixes, CI links, backup verification and remaining audit proposals.
