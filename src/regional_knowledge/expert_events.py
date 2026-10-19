@@ -147,6 +147,8 @@ class ExpertEvents:
         return dict(row),claim,now
 
     async def deliver_one(self):
+        if self.requests.dependencies:
+            await asyncio.to_thread(self.requests.dependencies.refresh)
         acquired=await asyncio.to_thread(self._claim_delivery)
         if isinstance(acquired,bool):return acquired
         row,claim,now=acquired

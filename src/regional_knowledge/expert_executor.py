@@ -41,11 +41,25 @@ class ExpertExecutor:
         return documents
 
     async def search(self,credentials,request_id,generation,execution_token,query,*,limit=8,main_job_id=None):
+        # Leave a small response-conversion margin inside the protected 2s
+        # search budget; dependency bookkeeping is part of this same deadline.
+        deadline=asyncio.timeout(1.9)
+        try:
+            async with deadline:
+                return await self._search(credentials,request_id,generation,execution_token,query,limit=limit,main_job_id=main_job_id)
+        except TimeoutError:
+            if not deadline.expired():raise
+            raise ExpertRequestError('search_deadline') from None
+
+    async def _search(self,credentials,request_id,generation,execution_token,query,*,limit=8,main_job_id=None):
         context=await self.context(credentials,request_id,generation,execution_token)
-        scope=current_source_scope.set(ExpertSourceScope(self.requests.people,context))
+        scope=current_source_scope.set(ExpertSourceScope(self.requests.people,context,
+            self.requests.dependencies.consumer(request_id) if self.requests.dependencies else None))
         try:
             found=await self.backend.search(query,context.principal,match_count=limit,main_job_id=main_job_id)
             await asyncio.to_thread(self._complete_source_read,context,[r.id for r in found.results])
+            if found.main_job_id and self.requests.dependencies:
+                await asyncio.to_thread(self.requests.dependencies.observe,context,found.main_job_id,query)
             return found.model_dump(mode="json")
         finally:
             current_source_scope.reset(scope)

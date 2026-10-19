@@ -20,7 +20,11 @@ class CropStore:
 
 
 @pytest.fixture
-def mirror_source(tmp_path):
+def mirror_source(tmp_path,monkeypatch):
+    # These tests exercise delivery/recovery, independently of devhost pressure.
+    # test_mirror_capacity overrides this with explicit low/unavailable probes.
+    from regional_knowledge import illustration_mirror
+    monkeypatch.setattr(illustration_mirror.shutil,'disk_usage',lambda _:SimpleNamespace(free=2*1024**3))
     backend = SQLiteBackend(
         corpus_path=tmp_path / "corpus.db",
         embedder=LexicalOnlyEmbedder(),

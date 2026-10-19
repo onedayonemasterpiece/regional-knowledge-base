@@ -85,6 +85,7 @@ class ExpertRequests:
         self.team_id=team_id
         self.bot_user_id=bot_user_id
         self.allowed_channels=frozenset(allowed_channels)
+        self.dependencies=None
         self.journal=DisagreementJournal(self.corpus,participants=participants)
         with self.corpus.connect() as db:
             db.executescript("""
@@ -283,10 +284,14 @@ class ExpertRequests:
                     "wake_event_id":row["trigger_event_id"] or wake_event_id(row["id"],row["generation"]),
                     "output_scope":row["output_scope"],"input_text":row["input_text"],"origin":json.loads(row["origin"]),
                     "result":json.loads(row["result_json"]) if row["result_json"] else None,
+                    **({'checkpoint':self.dependencies.saved(db,row)} if self.dependencies else {}),
                     "delivery_receipt":json.loads(row["delivery_receipt"]) if row["delivery_receipt"] else None}
 
     def claim(self,credentials,*,request_id=None,lease_seconds=120,event_id=None):
         if not 1<=lease_seconds<=300: fail("invalid_lease")
+        if self.dependencies:
+            with self.corpus.connect() as db:self._service(db,credentials,'executor')
+            self.dependencies.refresh()
         with self.corpus.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             service=self._service(db,credentials,"executor")
@@ -298,7 +303,9 @@ class ExpertRequests:
             if request_id and row['id']!=str(request_id):return {"state":"deferred"}
             expected_event=wake_event_id(row["id"],row["generation"])
             if event_id is not None and str(event_id)!=expected_event:fail("event_identity_conflict")
-            try:self._identity(db,row)
+            try:
+                self._identity(db,row)
+                if self.dependencies:self.dependencies.saved(db,row)
             except (ParticipantError,ExpertRequestError):
                 db.execute("UPDATE rkb_expert_requests SET state='blocked',updated_at=? WHERE id=?",(self._now(),row["id"]))
                 self._event(db,row["id"],"access_revoked",{})

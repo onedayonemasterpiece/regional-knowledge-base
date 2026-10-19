@@ -50,9 +50,10 @@ def test_http_personal_submit_restart_result_ack_and_no_slack_send(managed):
         assert submit(client,token)=={**first,'duplicate':True}
         assert submit(client,token,text='Different')['error']['code']=='event_identity_conflict'
         # Supplying a human ID is rejected by the MCP schema.
-        spoof=mcp(client,token,'research_request',{'action':'submit','dialog_key':'dialog-00001',
-            'client_request_key':'question-spoof','text':'Spoof','person_id':q.owner.subject})
-        assert spoof['isError']
+        for field in ('person_id','tenant_id','dialog_id'):
+            spoof=mcp(client,token,'research_request',{'action':'submit','dialog_key':'dialog-00001',
+                'client_request_key':'question-spoof','text':'Spoof',field:q.owner.subject})
+            assert spoof['isError']
         lease=q.requests.claim(q.executor,request_id=first['request_id'])
         context=q.requests.context(q.executor,lease['request_id'],lease['generation'],lease['execution_token'])
         assert context.principal.subject==q.actors[1].subject and context.route=='delegated'

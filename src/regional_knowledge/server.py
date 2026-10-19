@@ -171,6 +171,11 @@ async def _research_runtime(server):
 class KnowledgeMCPServer(MCPServer):
     """Advertise the public PKCE clients supported by our embedded provider."""
 
+    def _strict_arguments(self,name,arguments):
+        tool=self._tool_manager.get_tool(name)
+        if tool is not None and set(arguments or {})-set(tool.parameters.get('properties',{})):
+            raise ToolError('invalid_arguments')
+
     async def list_tools(self):
         from .mcp_authority import EXECUTOR_TOOLS, PERSONAL_TOOLS, is_service
         tools = await super().list_tools()
@@ -194,11 +199,11 @@ class KnowledgeMCPServer(MCPServer):
         if is_service():
             if name not in EXECUTOR_TOOLS:
                 raise ToolError("capability_denied")
+            self._strict_arguments(name,arguments)
             return await super().call_tool(name, arguments, context)
         if name in EXECUTOR_TOOLS:
             raise ToolError("service_denied")
-        if name=='research_request' and set(arguments or {})-{'action','dialog_key','client_request_key','text','request_id','result_hash'}:
-            raise ToolError('invalid_arguments')
+        if name=='research_request':self._strict_arguments(name,arguments)
         principal = _principal()
         authority = RequestAuthority(principal, "owner" if principal.subject == participants.owner else "personal")
         # Catalog filtering is only convenience. Enforce direct calls as well.
@@ -503,6 +508,10 @@ def build_server(
             config=configuration(resource_url)
             channels=config.get("allowed_channels") or ([config["authorized_test_channel_id"]] if config.get('authorized_test_channel_id') else [])
             requests=ExpertRequests(participants,app_id=config["app_id"],team_id=config["team_id"],bot_user_id=config["bot_user_id"],allowed_channels=channels)
+            if os.getenv('RKB_BGE_ENABLED')=='1' and os.getenv('RKB_BGE_QUEUE_PATH'):
+                from .request_dependencies import RequestDependencies
+                from .bge_queue import BgeQueue
+                RequestDependencies(requests,BgeQueue(os.environ['RKB_BGE_QUEUE_PATH']))
             mcp._token_verifier=ResourceTokenVerifier(mcp._token_verifier,requests,resource_url)
             mcp.expert_requests=requests
             register_executor_tools(mcp,requests,backend)

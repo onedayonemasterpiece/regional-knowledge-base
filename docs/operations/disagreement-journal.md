@@ -469,3 +469,67 @@ which now correctly conflicts with the query reserve. Their full-pressure
 precondition is now255 documents plus one query; the same overflow rejection,
 exact replay, ACL and evidence-hydration assertions pass. No test threshold was
 relaxed, and the earlier failed log is retained.
+
+## Dependency checkpoints and computational references
+
+With the existing BGE configuration enabled, the same request runtime now tracks
+server-observed query jobs. The queue actor, literal query hash, immutable query
+identity and query kind must agree. A free job ID, another person's job, a document
+job or a different request's unobserved job cannot authorize a checkpoint.
+`expert_request_delivery(action=checkpoint_wait)` saves a continuation and its
+hash in the corpus transaction, sets `dependency_wait` and clears the execution
+lease. Exact replay reconciles a lost response; changed content conflicts. The
+old execution token no longer authorizes research or journal writes.
+
+The existing claim/wake lifecycle reads dependencies outside the corpus writer
+transaction, rechecks the current identity and all retained source/case ACL, then
+CAS-transitions a ready dependency back to pending. It receives a fresh generation
+only through the same fair head selection. Waiting does not retain a300-second
+lease during a900-second cold start. Durable bounded scan cursors avoid leaving
+later dependencies behind the first batch. Missing/changed queue identity keeps
+the input and checkpoint in `needs_recovery`; it does not launch replacement
+inference or manufacture a completed answer. The full operator repair/resume
+procedure and measured stage permits remain required parts of the design.
+
+The existing BGE queue has child consumer references keyed by canonical parent
+namespace/request. Active references protect ready query results beyond the
+ordinary24-hour computation-cache TTL. Parent completion releases references;
+shared consumers retain their work. Only exclusively managed orphan queries may
+retire. Active native claims finish or expire before retirement; legacy/bare
+queries, document publication jobs and unknown launch records are preserved.
+Closed-parent tombstones fence late re-enqueue. Parent absence is unexplained
+data loss, not authority to discard its computation. Worker transport, model
+pins, the original computational cap and Kaggle-only inference are unchanged.
+
+Source-search bounds its complete operation, including dependency
+bookkeeping, with a1.9-second deadline inside the protected2-second budget.
+`search_deadline` is not a claim of provider outage or queue pressure. A retained
+queue receipt survives a lost tool response; `action=dependencies` pages those
+receipts and records a new current guarded observation, allowing the client to
+checkpoint without repeating inference. A late source-read completion cannot
+write after that checkpoint released the execution. Unknown tool arguments are
+rejected against the actual registered schema, including forged actor fields and
+attempted caller-supplied hour-long leases.
+
+These are source/deterministic integration checks, not a live900-second provider
+run or measured load acceptance. Backend and BGE-controller releases must both
+include the consumer-aware queue maintenance before enabling this feature: the
+old controller's unconditional cache GC cannot provide its retention guarantee.
+Keep independent service lifecycle and verify actual running releases before
+rollout. No production unit, flag, grant or corpus was changed by these tests.
+
+One local full run reported680 passed/four archive-protocol failures/31 skipped
+when the real devhost crossed the2GiB disk reserve. Those failures/logs remain
+retained. Protocol fixtures now state their available-space precondition;
+dedicated low-space/unavailable-space tests still enforce the unchanged reserve.
+The combined corrected protocol/identity/checkpoint boundaries passed30 tests;
+further integrated verification is recorded with the final candidate.
+
+The load design explicitly separates deterministic tests from live calibration.
+LOAD-D01/D02/D03 are now recorded as passing **only at deterministic unit/HTTP
+integration scope**: dialog ACK/order/context across restart, ten questions in
+one or ten dialogs versus another person, and shared-person cross-client
+fairness with rejected actor/tenant/dialog spoofing. Their exact tests are in the
+matrix; the focused dialog/identity set passed13 tests. This does not close
+resource admission, actual Mira/AI UI integration, live PMI or the full load
+criterion. Latest checkpoint/deadline/executor/capacity boundaries passed26 tests.

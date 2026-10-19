@@ -1291,39 +1291,59 @@
       "source": "docs/designs/user-request-load-management-20261019.md",
       "line": 251,
       "action": "Два зависимых вопроса одного диалога: B не claimable до результата/доставки A; B получает ответ A в контексте, в том числе после restart.",
-      "status": "NOT_RUN",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/test_request_order.py::test_dialog_waits_for_delivery_not_result_and_unknown_is_a_hold",
+        "tests/test_personal_requests.py::test_http_personal_submit_restart_result_ack_and_no_slack_send"
+      ],
       "partial_component_evidence": [
         "src/regional_knowledge/request_order.py",
         "src/regional_knowledge/expert_requests.py",
         "tests/test_request_order.py",
         "src/regional_knowledge/personal_request_mcp.py",
         "src/regional_knowledge/request_grants.py",
-        "tests/test_personal_requests.py"
+        "tests/test_personal_requests.py",
+        "src/regional_knowledge/request_dependencies.py",
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/expert_executor.py",
+        "tests/test_request_dependencies.py"
       ],
-      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open.",
+      "verification_scope": "deterministic unit/HTTP integration with synthetic identities and provider observations",
+      "verification_note": "Only the explicitly deterministic dialog/fairness/identity requirement is proved; no actual client UI, live provider actor, measured resource admission or full load acceptance is claimed."
     },
     {
       "id": "LOAD-D02",
       "source": "docs/designs/user-request-load-management-20261019.md",
       "line": 252,
       "action": "A отправляет десять запросов, B один; B входит в ближайший fair круг. A создаёт десять диалогов: это не десять fairness subjects.",
-      "status": "NOT_RUN",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/test_request_order.py::test_person_fairness_explicit_id_and_wake_cannot_jump_turn[False]",
+        "tests/test_request_order.py::test_person_fairness_explicit_id_and_wake_cannot_jump_turn[True]"
+      ],
       "partial_component_evidence": [
         "src/regional_knowledge/request_order.py",
         "src/regional_knowledge/expert_requests.py",
         "tests/test_request_order.py"
       ],
-      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
+      "verification_scope": "deterministic unit/HTTP integration with synthetic identities and provider observations",
+      "verification_note": "Only the explicitly deterministic dialog/fairness/identity requirement is proved; no actual client UI, live provider actor, measured resource admission or full load acceptance is claimed."
     },
     {
       "id": "LOAD-D03",
       "source": "docs/designs/user-request-load-management-20261019.md",
       "line": 253,
       "action": "Несколько клиентов одного verified человека имеют общий fairness subject; spoofed dialog/person/tenant отвергнуты.",
-      "status": "NOT_RUN",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/test_personal_requests.py::test_native_and_slack_same_human_get_one_fair_share_and_revocation_fences_active_work",
+        "tests/test_personal_requests.py::test_two_oauth_clients_cannot_read_or_ack_each_others_result",
+        "tests/test_personal_requests.py::test_http_personal_submit_restart_result_ack_and_no_slack_send",
+        "tests/test_expert_requests.py::test_durable_accept_dedup_two_collectors_and_bad_origin"
+      ],
       "partial_component_evidence": [
         "src/regional_knowledge/request_order.py",
         "src/regional_knowledge/expert_requests.py",
@@ -1332,7 +1352,9 @@
         "src/regional_knowledge/request_grants.py",
         "tests/test_personal_requests.py"
       ],
-      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
+      "verification_scope": "deterministic unit/HTTP integration with synthetic identities and provider observations",
+      "verification_note": "Only the explicitly deterministic dialog/fairness/identity requirement is proved; no actual client UI, live provider actor, measured resource admission or full load acceptance is claimed."
     },
     {
       "id": "LOAD-D04",
@@ -1344,9 +1366,14 @@
       "partial_component_evidence": [
         "src/regional_knowledge/request_order.py",
         "src/regional_knowledge/expert_requests.py",
-        "tests/test_request_order.py"
+        "tests/test_request_order.py",
+        "src/regional_knowledge/request_dependencies.py",
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/expert_executor.py",
+        "tests/test_request_dependencies.py"
       ],
-      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open."
     },
     {
       "id": "LOAD-D05",
@@ -1358,9 +1385,14 @@
       "partial_component_evidence": [
         "src/regional_knowledge/request_order.py",
         "src/regional_knowledge/expert_requests.py",
-        "tests/test_request_order.py"
+        "tests/test_request_order.py",
+        "src/regional_knowledge/request_dependencies.py",
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/expert_executor.py",
+        "tests/test_request_dependencies.py"
       ],
-      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open."
     },
     {
       "id": "LOAD-D06",
@@ -1375,9 +1407,14 @@
         "tests/test_request_order.py",
         "src/regional_knowledge/personal_request_mcp.py",
         "src/regional_knowledge/request_grants.py",
-        "tests/test_personal_requests.py"
+        "tests/test_personal_requests.py",
+        "src/regional_knowledge/request_dependencies.py",
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/expert_executor.py",
+        "tests/test_request_dependencies.py"
       ],
-      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified.",
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open."
     },
     {
       "id": "LOAD-D07",
@@ -1437,7 +1474,14 @@
       "line": 261,
       "action": "ACL revoke после enqueue/после source read/до delivery: приватная информация не утекает; safe recovery не подменяет человека owner credential.",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_dependencies.py",
+        "src/regional_knowledge/bge_queue.py",
+        "src/regional_knowledge/expert_executor.py",
+        "tests/test_request_dependencies.py"
+      ],
+      "partial_dependency_note": "Guarded immutable dependency checkpoint releases execution lease, resumes through fair claim after readiness, survives cache TTL/restart and preserves missing input for recovery. Actor/literal-query/current ACL and old-token fences; retained receipt recovery after bounded search deadline. Deterministic HTTP/unit evidence; actual provider wait, full operator recovery, measured resource admission and prescribed live acceptance remain open."
     },
     {
       "id": "LOAD-CALIBRATION",

@@ -12,6 +12,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+from dataclasses import dataclass
 from .bge_contract import SPACE, validate_vector
 
 IDLE_SECONDS = 1800
@@ -21,6 +22,13 @@ HEARTBEAT_SECONDS = 120
 JOB_SECONDS = 180
 DONE_QUERY_RETENTION_SECONDS = 24 * 3600
 DONE_AUDIT_RETENTION_SECONDS = 24 * 3600
+
+
+@dataclass(frozen=True)
+class QueryConsumer:
+    """Internal durable-parent reference, never a worker/client credential."""
+    namespace:str
+    request_id:str
 
 
 class BgeQueueCapacityError(RuntimeError):
@@ -49,11 +57,24 @@ class BgeQueue:
               run_id text,claim text,lease_until real,result text,attempt integer not null default 0,
               unique(actor,idempotency));
             create index if not exists bge_pending on jobs(state,kind,created);
+            create table if not exists query_consumers(
+              job_id text not null,namespace text not null,request_id text not null,
+              active integer not null,primary key(job_id,namespace,request_id));
+            create index if not exists bge_query_parents on query_consumers(namespace,active,request_id);
+            create table if not exists query_parents(
+              namespace text not null,request_id text not null,released integer not null,
+              primary key(namespace,request_id));
             ''')
+            # executescript ends the initial transaction. Serialize conditional
+            # ALTER checks across simultaneous first requests after an upgrade.
+            if not db.in_transaction:db.execute('begin immediate')
             if 'diagnostics' not in {row['name'] for row in db.execute('pragma table_info(runs)')}:
                 db.execute("alter table runs add column diagnostics text not null default '{}'")
             if 'provider_version' not in {row['name'] for row in db.execute('pragma table_info(runs)')}:
                 db.execute('alter table runs add column provider_version integer')
+            if 'unmanaged_consumer' not in {row['name'] for row in db.execute('pragma table_info(jobs)')}:
+                # Existing bare search calls retain their original cache contract.
+                db.execute('alter table jobs add column unmanaged_consumer integer not null default 1')
         self.path.chmod(0o600)
 
     @contextlib.contextmanager
@@ -113,16 +134,23 @@ class BgeQueue:
         if useful:db.execute('update runs set useful=? where id=?',(now,run_id))
         return run_id
 
-    def enqueue(self, actor, idempotency, texts, *, kind='query', identity=None):
+    def enqueue(self, actor, idempotency, texts, *, kind='query', identity=None,consumer=None):
         if kind not in ('query','document') or len(texts)!=1 or not isinstance(texts[0],str) or not texts[0].strip() or len(texts[0])>(16000 if kind=='query' else 40000):
             raise ValueError('BGE job contract')
+        if consumer is not None:
+            if (kind!='query' or not isinstance(consumer,QueryConsumer) or len(consumer.namespace)!=64
+                or any(c not in '0123456789abcdef' for c in consumer.namespace)):
+                raise ValueError('BGE consumer contract')
+            uuid.UUID(consumer.request_id)
         identity=identity or {};now=self.clock()
         with self.connect() as db:
+            if consumer is not None:self._parent(db,consumer)
             previous=db.execute('select * from jobs where actor=? and idempotency=?',(actor,idempotency)).fetchone()
             if previous:
                 if json.loads(previous['texts'])!=texts or json.loads(previous['identity'])!=identity or previous['kind']!=kind:
                     raise ValueError('idempotency payload mismatch')
                 if previous['state']!='done':self._ensure(db,now)
+                self._consumer(db,previous['id'],consumer)
                 return previous['id']
             pending=db.execute("select count(*) from jobs where state!='done'").fetchone()[0]
             # Every producer uses this transaction. Keep one slot for a search
@@ -132,7 +160,66 @@ class BgeQueue:
             self._ensure(db,now);job_id=str(uuid.uuid4())
             db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)',
                        (job_id,actor,idempotency,kind,json.dumps(texts),json.dumps(identity),'pending',now,now))
+            if consumer is not None:db.execute('update jobs set unmanaged_consumer=0 where id=?',(job_id,))
+            self._consumer(db,job_id,consumer)
             return job_id
+
+    @staticmethod
+    def _consumer(db,job_id,consumer):
+        if consumer is None:
+            db.execute('update jobs set unmanaged_consumer=1 where id=?',(job_id,))
+        else:
+            BgeQueue._parent(db,consumer)
+            # Released parent references are tombstones; a late old execution
+            # must not reactivate them after a final result was committed.
+            db.execute('insert or ignore into query_consumers values(?,?,?,1)',(job_id,consumer.namespace,consumer.request_id))
+
+    @staticmethod
+    def _parent(db,consumer):
+        parent=db.execute('select released from query_parents where namespace=? and request_id=?',
+            (consumer.namespace,consumer.request_id)).fetchone()
+        if parent and parent[0]:raise PermissionError('BGE consumer closed')
+        db.execute('insert or ignore into query_parents values(?,?,0)',(consumer.namespace,consumer.request_id))
+
+    def consumer_parents(self,namespace,*,after_id='',limit=100):
+        if not 1<=limit<=100:raise ValueError('BGE consumer limit')
+        with self.connect() as db:
+            return [r[0] for r in db.execute('''select distinct request_id from query_consumers
+                where namespace=? and active=1 and request_id>? order by request_id limit ?''',(namespace,after_id,limit))]
+
+    def consumer_queries(self,actor,consumer,*,after_id='',limit=20):
+        if not isinstance(consumer,QueryConsumer) or not 1<=limit<=20:raise ValueError('BGE consumer contract')
+        with self.connect() as db:
+            return [{'job_id':r['id'],'query':json.loads(r['texts'])[0],'identity':json.loads(r['identity']),'state':r['state']}
+                for r in db.execute('''select j.id,j.texts,j.identity,j.state from jobs j join query_consumers c on c.job_id=j.id
+                    where j.actor=? and j.kind='query' and c.namespace=? and c.request_id=? and c.active=1 and j.id>?
+                    order by j.id limit ?''',(str(actor),consumer.namespace,consumer.request_id,after_id,limit+1))]
+
+    def bind_consumer(self,actor,job_id,consumer,query_sha256):
+        if not isinstance(consumer,QueryConsumer):raise ValueError('BGE consumer contract')
+        with self.connect() as db:
+            row=db.execute("select identity,texts from jobs where id=? and actor=? and kind='query'",(job_id,str(actor))).fetchone()
+            if (not row or json.loads(row['identity']).get('query_sha256')!=query_sha256
+                or hashlib.sha256(json.loads(row['texts'])[0].encode()).hexdigest()!=query_sha256):
+                raise PermissionError('BGE query identity mismatch')
+            self._consumer(db,job_id,consumer)
+
+    def release_consumer(self,namespace,request_id):
+        """Caller proves the canonical parent is terminal; no provider I/O."""
+        with self.connect() as db:
+            db.execute('''insert into query_parents values(?,?,1)
+                on conflict(namespace,request_id) do update set released=1''',(namespace,str(request_id)))
+            db.execute('update query_consumers set active=0 where namespace=? and request_id=?',(namespace,str(request_id)))
+            return self._retire_queries(db)
+
+    @staticmethod
+    def _retire_queries(db):
+        # An active native claim finishes or expires first. Publication jobs,
+        # legacy/unmanaged queries and ambiguous launch records are untouched.
+        cursor=db.execute('''delete from jobs where kind='query' and unmanaged_consumer=0
+            and state in ('pending','done') and not exists(select 1 from query_consumers c
+                where c.job_id=jobs.id and c.active=1)''')
+        return cursor.rowcount
 
     def lookup(self,actor,idempotency):
         with self.connect() as db:
@@ -190,7 +277,7 @@ class BgeQueue:
     def claim(self, run_id, token):
         now=self.clock()
         with self.connect() as db:
-            self._expire(db,now);run=self._authorize(db,run_id,token,now)
+            self._expire(db,now);self._retire_queries(db);run=self._authorize(db,run_id,token,now)
             db.execute('update runs set heartbeat=? where id=?',(now,run_id))
             if run['status']!='ready' or db.execute("select 1 from jobs where run_id=? and state='claimed'",(run_id,)).fetchone():return None
             job=db.execute("select * from jobs where state='pending' order by case kind when 'query' then 0 else 1 end,created,id limit 1").fetchone()
@@ -215,11 +302,11 @@ class BgeQueue:
             db.execute('update runs set useful=? where id=?',(now,run_id))
             return 'accepted'
 
-    def result(self, actor, job_id):
+    def result(self, actor, job_id, *, query_only=False):
         with self.connect() as db:
             self._expire(db,self.clock())
             row=db.execute('select * from jobs where id=? and actor=?',(job_id,actor)).fetchone()
-            if not row:raise PermissionError('BGE job not found')
+            if not row or query_only and row['kind']!='query':raise PermissionError('BGE job not found')
             return {'state':row['state'],'result':json.loads(row['result']) if row['result'] else None,'identity':json.loads(row['identity'])}
 
     def _status(self, db, now):
@@ -235,6 +322,7 @@ class BgeQueue:
         now=self.clock()
         with self.connect() as db:
             self._expire(db,now)
+            self._retire_queries(db)
             if db.execute("select 1 from jobs where state!='done'").fetchone():self._ensure(db,now,useful=False)
             control=db.execute('select * from control where id=1').fetchone()
             current=db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
@@ -243,7 +331,8 @@ class BgeQueue:
             # Old workers drain only their already claimed job; no more claims.
             db.execute("update runs set status='expired' where status='draining' and not exists(select 1 from jobs where jobs.run_id=runs.id and state='claimed')")
             db.execute(
-                "delete from jobs where kind='query' and state='done' and updated<?",
+                """delete from jobs where kind='query' and state='done' and updated<?
+                   and not exists(select 1 from query_consumers c where c.job_id=jobs.id and c.active=1)""",
                 (now-DONE_QUERY_RETENTION_SECONDS,),
             )
             # Benchmark/audit document jobs are transient inference cache, not

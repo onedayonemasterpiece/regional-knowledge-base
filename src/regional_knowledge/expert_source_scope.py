@@ -21,6 +21,7 @@ def public_document(document):
 class ExpertSourceScope:
     participants:object
     authority:object
+    query_consumer:object=None
 
     def validate(self,db,actor,*,write=False):
         if write: raise PermissionError("expert_source_read_only")

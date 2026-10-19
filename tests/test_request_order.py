@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from uuid import uuid4
+import pytest
 
 from test_expert_requests import queue,observation,claim,save_result,expect
 from regional_knowledge.expert_requests import ExpertRequests,ExpertResult,SlackDeliveryReceipt
@@ -41,9 +42,10 @@ def test_dialog_waits_for_delivery_not_result_and_unknown_is_a_hold(queue):
     expect('request_fence_denied',q.people.require,ctx,'public_search')
 
 
-def test_person_fairness_explicit_id_and_wake_cannot_jump_turn(queue):
+@pytest.mark.parametrize('same_dialog',[False,True])
+def test_person_fairness_explicit_id_and_wake_cannot_jump_turn(queue,same_dialog):
     q=queue
-    many=[q.requests.accept(replace(observation(number=i),thread_ts=str(100+i)+'.1')) for i in range(1,11)]
+    many=[q.requests.accept(replace(observation(number=i),thread_ts='100.1' if same_dialog else str(100+i)+'.1')) for i in range(1,11)]
     lone=q.requests.accept(observation('U2',50))
     # Initially person 1 has the first turn, then person 2 gets a start even
     # while person 1 has ten independent dialogs queued.
@@ -53,7 +55,7 @@ def test_person_fairness_explicit_id_and_wake_cannot_jump_turn(queue):
     assert q.requests.claim(q.executor,request_id=many[1]['request_id'],event_id=wake_event_id(many[1]['request_id']))=={'state':'deferred'}
     assert q.requests.claim(q.executor,request_id=lone['request_id'])['state']=='leased'
     # Work conserving: an active question is not an arbitrary per-person cap.
-    assert q.requests.claim(q.executor,request_id=many[1]['request_id'])['state']=='leased'
+    assert q.requests.claim(q.executor,request_id=many[1]['request_id'])['state']==('empty' if same_dialog else 'leased')
 
 
 def test_concurrent_claims_respect_one_head_and_atomic_sequence(queue):

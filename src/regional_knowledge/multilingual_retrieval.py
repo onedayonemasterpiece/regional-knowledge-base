@@ -6,6 +6,7 @@ from .e5_contract import SPACE as E5_SPACE
 from .contracts import SearchOutput,SearchResult
 from .rank_fusion import MODES,fuse
 from .local_e5 import encoding_timings
+from .expert_source_scope import current_source_scope
 logger=logging.getLogger(__name__)
 
 async def wait_result(queue,actor,job_id,seconds):
@@ -33,9 +34,11 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
                 raise ValueError('main job query mismatch')
         else:
             cache_key='query:'+BGE_SPACE+':'+query_hash
+            scope=current_source_scope.get()
+            consumer=scope.query_consumer if scope is not None else None
             main_job_id=await asyncio.to_thread(
                 queue.enqueue,principal.subject,cache_key,[query],
-                identity={'query_sha256':query_hash})
+                identity={'query_sha256':query_hash},**({'consumer':consumer} if consumer is not None else {}))
     except BgeQueueCapacityError:
         fast=await backend.search(
             query,principal,match_count=match_count,_fast_only=True,
