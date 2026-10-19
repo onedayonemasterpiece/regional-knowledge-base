@@ -197,6 +197,8 @@ class KnowledgeMCPServer(MCPServer):
             return await super().call_tool(name, arguments, context)
         if name in EXECUTOR_TOOLS:
             raise ToolError("service_denied")
+        if name=='research_request' and set(arguments or {})-{'action','dialog_key','client_request_key','text','request_id','result_hash'}:
+            raise ToolError('invalid_arguments')
         principal = _principal()
         authority = RequestAuthority(principal, "owner" if principal.subject == participants.owner else "personal")
         # Catalog filtering is only convenience. Enforce direct calls as well.
@@ -497,15 +499,15 @@ def build_server(
             from .expert_requests import ExpertRequests
             from .expert_mcp import register_executor_tools
             from .mcp_authority import ResourceTokenVerifier
-            config_path=Path(os.environ["RKB_SLACK_CONFIG_PATH"])
-            if config_path.stat().st_mode & 0o077:
-                raise RuntimeError("expert runtime configuration must be private")
-            config=json.loads(config_path.read_text())
-            channels=config.get("allowed_channels") or [config["authorized_test_channel_id"]]
+            from .request_runtime import configuration
+            config=configuration(resource_url)
+            channels=config.get("allowed_channels") or ([config["authorized_test_channel_id"]] if config.get('authorized_test_channel_id') else [])
             requests=ExpertRequests(participants,app_id=config["app_id"],team_id=config["team_id"],bot_user_id=config["bot_user_id"],allowed_channels=channels)
             mcp._token_verifier=ResourceTokenVerifier(mcp._token_verifier,requests,resource_url)
             mcp.expert_requests=requests
             register_executor_tools(mcp,requests,backend)
+            from .personal_request_mcp import register_personal_requests
+            register_personal_requests(mcp,requests,research_authority,resource_url)
             if os.getenv("RKB_SLACK_RUNTIME_ENABLED") == "1":
                 from .slack_runtime import configured_adapter
                 mcp.expert_slack = configured_adapter(requests, config)

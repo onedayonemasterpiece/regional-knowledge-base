@@ -542,6 +542,13 @@ class RegionalOAuthProvider(PersonalOAuthMixin):
             "subject": subject,
             **{key: authority[key] for key in ("personal_credential_id", "personal_credential_epoch") if authority and key in authority},
         }
+        if self.personal_policy is not None:
+            from .request_grants import save
+            expiry=self.clock()+_REFRESH_SECONDS
+            if common.get('personal_credential_id'):
+                expiry=min(expiry,state['personal_credentials'][common['personal_credential_id']]['expires_at'])
+            if save(self.personal_policy.participants.corpus,common,expiry) is None:
+                raise TokenError('invalid_grant','The authorization was revoked')
         state["access"][_digest(access)] = {
             **common,
             "expires_at": self.clock() + _ACCESS_SECONDS,
@@ -639,9 +646,23 @@ class RegionalOAuthProvider(PersonalOAuthMixin):
         return await asyncio.to_thread(self.store.mutate, rotate)
 
     async def load_access_token(self, token: str) -> AccessToken | None:
-        record = await asyncio.to_thread(self.store.read,
-            lambda state: state["access"].get(_digest(token)))
-        if not record or not await asyncio.to_thread(self._record_allowed, record):
+        def verified(state):
+            row=state['access'].get(_digest(token))
+            if not row or not self._record_allowed(row,state=state):return None
+            row=dict(row)
+            if self.personal_policy is not None:
+                from .request_grants import save
+                # Existing sessions are projected under the same auth-file lock
+                # as revocation, so a stale snapshot cannot resurrect a grant.
+                refresh=[r['expires_at'] for r in state['refresh'].values() if r.get('family')==row['family']]
+                expiry=max(refresh,default=row['expires_at'])
+                if row.get('personal_credential_id'):
+                    expiry=min(expiry,state['personal_credentials'][row['personal_credential_id']]['expires_at'])
+                row['request_grant']=save(self.personal_policy.participants.corpus,row,expiry)
+                if row['request_grant'] is None:return None
+            return row
+        record = await asyncio.to_thread(self.store.read,verified)
+        if not record:
             return None
         return AccessToken(
             token=token,
@@ -650,11 +671,13 @@ class RegionalOAuthProvider(PersonalOAuthMixin):
             expires_at=int(record["expires_at"]),
             resource=str(record["resource"]),
             subject=str(record["subject"]),
-            claims={"iss": self.issuer},
+            claims={"iss": self.issuer,**({'rkb_request_grant':record['request_grant']} if record.get('request_grant') else {})},
         )
 
-    @staticmethod
-    def _revoke_family(state: dict[str, Any], family: str) -> None:
+    def _revoke_family(self,state: dict[str, Any], family: str) -> None:
+        if self.personal_policy is not None:
+            from .request_grants import revoke
+            revoke(self.personal_policy.participants.corpus,family=family)
         for bucket in ("access", "refresh"):
             for key, record in list(state[bucket].items()):
                 if record.get("family") == family:

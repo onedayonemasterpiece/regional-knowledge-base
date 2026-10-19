@@ -26,6 +26,8 @@ def new_login_code():
 class PersonalPolicy:
     def __init__(self, participants):
         self.participants = participants
+        from .request_grants import schema
+        schema(participants.corpus)
 
     def _context(self, subject, *, owner=False):
         return RequestAuthority(Principal(subject=str(UUID(str(subject))),
@@ -117,6 +119,8 @@ class PersonalOAuthMixin:
                 return self._credential_metadata(str(ident), row)
             if row["epoch"] != expected_epoch:
                 raise ValueError("credential revision conflict")
+            from .request_grants import revoke
+            revoke(self.personal_policy.participants.corpus,credential_id=str(ident))
             row.update(enabled=False, epoch=row["epoch"] + 1, revoked_reason=reason)
             # Invalidate the complete set of sessions/code/access/refresh grants
             # created with this credential, including already-rotated families.

@@ -111,7 +111,7 @@ def test_domain_writes_carry_executor_and_request_scope_and_late_writes_fail(que
     journal=DisagreementJournal(q.corpus,participants=q.people)
     case=journal.create(q.admin,CaseCreate(question='Synthetic question',context='Context',classification='candidate',rationale='Reason',positions=[{'id':'a','text':'A','speaker':'Author','modality':'asserted'}]),'create-domain-case')['case_id']
     journal.grant(q.admin,case,1,CaseGrant(grantee=q.actors[0].subject,capability='contributor',reason='test'),'grant-case-access')
-    first,a=claim(q,observation('U1',1)); second,b=claim(q,observation('U1',2))
+    first,a=claim(q,observation('U1',1)); second,b=claim(q,replace(observation('U1',2),thread_ts='200.2'))
     command=ContributionAdd(kind='argument',original_text='Synthetic argument')
     x=journal.contribute(a,case,command,'same-client-key')
     assert journal.contribute(a,case,command,'same-client-key')==x

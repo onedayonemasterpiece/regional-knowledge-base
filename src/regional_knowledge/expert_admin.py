@@ -13,7 +13,7 @@ from .slack_runtime import private_text
 from .sqlite_corpus import SQLiteCorpus
 
 
-def service_to_file(requests, owner, service_id, kind, path, *, expected_epoch, enabled=True, generate=False):
+def service_to_file(requests, owner, service_id, kind, path, *, expected_epoch, enabled=True, generate=False,personal_resource=None):
     if kind not in {"executor", "delivery"} or not re.fullmatch(r"[a-z][a-z0-9_-]{4,79}", service_id):
         raise ValueError("invalid scoped service")
     with requests.corpus.connect() as db:
@@ -34,18 +34,19 @@ def service_to_file(requests, owner, service_id, kind, path, *, expected_epoch, 
         raise ValueError("invalid service credential")
     # File precedes the audited DB effect. Repeating the exact key/file/epoch
     # reconciles provision_service's immutable outcome instead of duplicating it.
-    return requests.provision_service(owner, service_id, kind, token, expected_epoch=expected_epoch, enabled=enabled)
+    return requests.provision_service(owner, service_id, kind, token, expected_epoch=expected_epoch, enabled=enabled,personal_resource=personal_resource)
 
 
 def runtime():
     corpus_path = Path(os.environ["RKB_SQLITE_CORPUS_PATH"])
     if not corpus_path.is_file():
         raise ValueError("existing corpus required")
-    config = json.loads(private_text(os.environ["RKB_SLACK_CONFIG_PATH"]))
+    from .request_runtime import configuration
+    config = configuration(os.getenv('RKB_RESOURCE_URL'))
     people = Participants(SQLiteCorpus(corpus_path), os.environ["RKB_OWNER_SUBJECT"])
     owner = RequestAuthority(Principal(subject=people.owner, client_id="rkb-local-admin", issuer="rkb-local", access_token=""), "owner")
     requests = ExpertRequests(people, app_id=config["app_id"], team_id=config["team_id"], bot_user_id=config["bot_user_id"],
-        allowed_channels=config.get("allowed_channels") or [config["authorized_test_channel_id"]])
+        allowed_channels=config.get("allowed_channels") or ([config["authorized_test_channel_id"]] if config.get('authorized_test_channel_id') else []))
     return requests, owner
 
 
@@ -57,11 +58,12 @@ def main(argv=None):
     parser.add_argument("--expected-epoch", type=int, required=True)
     parser.add_argument("--generate", action="store_true", help="Create a missing private file; never replace an existing token.")
     parser.add_argument("--disable", action="store_true")
+    parser.add_argument('--personal-resource',help='Explicit existing MCP resource whose personal jobs this executor may claim.')
     args = parser.parse_args(argv)
     try:
         requests, owner = runtime()
         result = service_to_file(requests, owner, args.service_id, args.kind, args.token_file,
-            expected_epoch=args.expected_epoch, enabled=not args.disable, generate=args.generate)
+            expected_epoch=args.expected_epoch, enabled=not args.disable, generate=args.generate,personal_resource=args.personal_resource)
     except (ValueError, KeyError, OSError, ParticipantError, ExpertRequestError) as error:
         raise SystemExit("Expert service administration failed (" + type(error).__name__ + "). No token printed.") from None
     print(json.dumps(result))

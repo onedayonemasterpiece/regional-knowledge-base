@@ -209,8 +209,11 @@ ordinary ingestion and other requests do not inherit that scope. Request reads
 record source dependencies before result/delivery rechecks. Group case reads
 remain denied until a complete safe public projection is implemented.
 
-Source configuration: `RKB_EXPERT_REQUESTS_ENABLED=1`, private
-`RKB_SLACK_CONFIG_PATH` with app/team/bot identity and authorized channel scope.
+Source configuration: `RKB_EXPERT_REQUESTS_ENABLED=1` on the existing full MCP.
+Personal managed requests work without installing Slack. Private optional
+`RKB_REQUEST_CONFIG_PATH` (legacy alias `RKB_SLACK_CONFIG_PATH`) supplies the
+actual Slack app/team/bot identity and authorized channel scope when that route
+is used; enabling Slack requires this configuration.
 This adds tools to the current full MCP, rather than starting another listener.
 `RKB_EXPERT_EVENTS_ENABLED=1` also requires `events_encryption_key_path` in that
 private config: a stable Fernet key file with mode0600. Never regenerate that
@@ -359,12 +362,11 @@ No extra job/worker launch is created on overflow. The original 256 cap and exac
 idempotency/replay remain unchanged. Targeted tests use the actual full queue
 and current source ACL; they do not run BGE locally or contact a provider.
 
-This is a partial classification correction, not shared admission or complete
-load acceptance. The next change must generalize the same `ExpertRequests`
-identity/origin/dialog/context/result contract for Slack and a second client,
-make eligible-head/person fairness unavoidable even for claim(request_id) and
-wake events, then add measured stage permits and persistent wait/checkpoint/
-notification handling. All search paths must share stage admission while the
+This classification correction is not shared resource admission or complete
+load acceptance. The same `ExpertRequests` now also implements the dialog,
+fairness and personal MCP lifecycle described below. Measured stage permits and
+persistent wait/checkpoint/notification handling remain required. All search
+paths must share stage admission while the
 protected evidence-search deadline remains 2 seconds. Resource limits and ETA
 seeds require actual calibration; they will not be guessed from RAM size or a
 unit-test constant. The added load checks remain NOT_RUN until their specified
@@ -376,3 +378,71 @@ capacity classification change: **651 passed,31 skipped,2 dependency/schema
 warnings**. Full load-management/calibration/live checks remain open; these
 results prove the current component regressions, not measured resource capacity
 or final conversational delivery.
+
+## Shared dialogs and the personal request client
+
+`research_request` extends the current full `/mcp` personal surface with
+`submit`, `result` and `ack`. It uses the authenticated OAuth subject/client and
+exact resource; a caller cannot supply a person, tenant, service credential or
+Slack origin. Dialog keys and submission keys are namespaced by that verified
+person/client/resource. Replaying the same key with different text is rejected;
+different keys preserve distinct questions even when their text is identical.
+Ordinary direct search and journal tools remain usable independently of dot.
+This managed submission protocol needs a scoped executor to produce an answer;
+it does not turn a naked search into a completed conversation.
+
+The existing OAuth authority projects opaque family references and revocation
+into the corpus SQLite. This projection creates neither people nor rights and
+contains no bearer/refresh token. Accepted jobs survive short bearer expiry and
+client disconnect. Consent-family/credential revocation or current person/source
+rights still fence later work. OAuth file locking precedes projection updates;
+workers read only the corpus, avoiding a reverse lock order. A projection cannot
+be re-enabled by loading an old token after revocation. Existing executor grants
+default to Slack scope; personal execution additionally requires the explicit
+`--personal-resource` grant on `regional-knowledge-expert-admin`. Rotation or
+resource-scope change increments the same service epoch.
+
+Both Slack and personal MCP intake atomically assign sequence numbers under
+the same request authority. Slack dialog identity is app/team/channel/thread;
+personal dialog identity also includes its verified owner/client/resource.
+Only the first unfinished turn can execute. A saved result alone does not open
+the next turn: Slack requires its actual native delivery receipt, while the
+personal client collects the immutable result and ACKs its exact hash. Lost ACK
+responses are replayable. UNKNOWN Slack delivery holds that dialog until
+reconciliation; unrelated dialogs remain runnable. Personal results never enter
+the Slack sender. Old raw origins, event hashes and input text survive migration.
+
+Every claim, including an explicit ID, wake and expired-lease reclaim, goes
+through the same eligible-head/person selection. Starts rotate by canonical
+person and then dialog; ten dialogs are still one person's share. Waiting
+people without active work receive an opportunity before additional rounds;
+free independent work is not capped at one job per person. A disallowed explicit
+ID returns `deferred` without exposing another person's request ID. Selection
+and cursor changes commit with the lease, not in a preceding outer sort.
+This is an order/fairness guard; measured resource permits are still pending.
+
+`expert_request_delivery(action=history)` reads paginated retained prior turns
+when execution begins. The saved context boundary survives restart. Reads
+recheck the current recipient's source/case ACL and withhold inaccessible turns;
+returned dependencies are tracked on the current request so an executor cannot
+omit references to launder a private derivative. History never supplies a human
+verification flag. The service tool also supports unbound fair `claim` for a
+trusted dispatcher. Each claimed request requires a fresh isolated model context:
+do not drain different people through one model conversation. Thin wake delivery
+is a hint; a receiver must reconcile saved work and `deferred` outcomes. The real
+dot dispatch/acknowledgment integration is still unverified, including wake
+deferral when a new eligible person changes the next fair turn.
+
+Deterministic tests cover concurrent intake/claim, delivery/UNKNOWN holds,
+ten-dialog fairness, explicit/wake bypass, history ACL revocation, unchanged
+legacy evidence, actual HTTP OAuth submit/result/ACK, client isolation, mixed
+Slack/MCP person fairness, bearer expiry and family/credential revocation.
+The callbacks used for ChatGPT/Grok in tests are synthetic URLs; actual client
+UI compatibility, a real second-client sink/ACK, capacity/ETA calibration and
+full live PMI remain required and unverified. This source change is undeployed.
+
+Local regression evidence for this slice: **661 passed,31 skipped,2 dependency
+warnings** in the full suite; a subsequent focused set passed **30 tests**, adding
+owner-delegation and legacy pre-send head guards. The first extra-actor test
+exposed SDK argument omission; explicit rejection was added and verified. These
+are deterministic/source integration checks, not real expert or load acceptance.

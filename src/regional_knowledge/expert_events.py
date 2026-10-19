@@ -103,11 +103,13 @@ class ExpertEvents:
 
     def _fill(self,db,now):
         rows=db.execute('''SELECT r.id,r.generation,s.id AS subscription_id FROM rkb_expert_requests r
+            JOIN rkb_request_dialogs d ON d.id=r.dialog_id AND d.head_seq=r.dialog_seq
             JOIN rkb_expert_subscriptions s ON s.active=1 AND s.expires_at>?
             JOIN rkb_expert_services g ON g.id=s.service_id AND g.enabled=1 AND g.epoch=s.service_epoch AND g.kind='executor'
               AND g.app_id=? AND g.team_id=?
             WHERE (r.state='pending' OR (r.state='leased' AND r.lease_until<=?))
               AND json_extract(r.origin,'$.app_id')=? AND json_extract(r.origin,'$.team_id')=?
+              AND (r.client_kind='slack' OR (r.client_kind='mcp' AND json_extract(r.origin,'$.resource')=g.personal_resource))
               AND NOT EXISTS(SELECT 1 FROM rkb_expert_event_outbox o WHERE o.request_id=r.id
                 AND o.subscription_id=s.id AND o.generation=r.generation)
             ORDER BY r.created_at,r.id,s.id LIMIT 100''',

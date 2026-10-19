@@ -19,7 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from .contracts import Principal
 from .disagreement_journal import DisagreementJournal, JournalError
 from .participants import ParticipantError, RequestAuthority
-from .request_authority import token_hash,wake_event_id
+from .request_authority import token_hash,wake_event_id,track_resources
+from . import request_order
 from .sqlite_corpus import canonical
 
 
@@ -125,6 +126,12 @@ class ExpertRequests:
         with self.corpus.connect() as db:
             if "trigger_event_id" not in {row[1] for row in db.execute("PRAGMA table_info(rkb_expert_requests)")}:
                 db.execute("ALTER TABLE rkb_expert_requests ADD COLUMN trigger_event_id TEXT")
+        request_order.schema(self.corpus)
+        from .request_grants import schema
+        schema(self.corpus)
+        with self.corpus.connect() as db:
+            if 'personal_resource' not in {r[1] for r in db.execute('PRAGMA table_info(rkb_expert_services)')}:
+                db.execute('ALTER TABLE rkb_expert_services ADD COLUMN personal_resource TEXT')
 
     def _now(self):
         return self.people._time().timestamp()
@@ -133,20 +140,21 @@ class ExpertRequests:
         seq=db.execute("SELECT coalesce(max(seq),0)+1 FROM rkb_expert_request_events WHERE request_id=?",(request_id,)).fetchone()[0]
         db.execute("INSERT INTO rkb_expert_request_events VALUES(?,?,?,?,?)",(request_id,seq,kind,canonical(payload),self._now()))
 
-    def provision_service(self,owner_context,service_id,kind,token,*,expected_epoch=0,enabled=True):
+    def provision_service(self,owner_context,service_id,kind,token,*,expected_epoch=0,enabled=True,personal_resource=None):
         """Owner bootstrap only; no public service-identity/secret creation tool."""
         if kind not in {"executor","delivery","notifier"} or not re.fullmatch(r"[a-z][a-z0-9_-]{4,79}",service_id) or len(token)<32:
             fail("invalid_service")
+        if personal_resource is not None and (kind!='executor' or not isinstance(personal_resource,str) or not 1<=len(personal_resource)<=2048):fail('invalid_service')
         with self.corpus.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             actor=self.people._authority(db,owner_context,admin=True)
             old=db.execute("SELECT * FROM rkb_expert_services WHERE id=?",(service_id,)).fetchone()
             if (old["epoch"] if old else 0)!=expected_epoch:
-                if old and old["epoch"]==expected_epoch+1 and old["kind"]==kind and old["enabled"]==enabled and old["token_hash"]==token_hash(token) and old["app_id"]==self.app_id and old["team_id"]==self.team_id:
+                if old and old["epoch"]==expected_epoch+1 and old["kind"]==kind and old["enabled"]==enabled and old["token_hash"]==token_hash(token) and old["app_id"]==self.app_id and old["team_id"]==self.team_id and old['personal_resource']==personal_resource:
                     return {"service_id":service_id,"epoch":old["epoch"],"enabled":enabled,"kind":kind}
                 fail("revision_conflict")
-            db.execute("INSERT INTO rkb_expert_services VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,token_hash=excluded.token_hash,enabled=excluded.enabled,epoch=excluded.epoch,app_id=excluded.app_id,team_id=excluded.team_id",(service_id,kind,token_hash(token),enabled,expected_epoch+1,self.app_id,self.team_id))
-            db.execute("INSERT INTO rkb_expert_service_events VALUES(?,?,?,?,?)",(service_id,expected_epoch+1,actor,canonical({"kind":kind,"enabled":enabled,"app_id":self.app_id,"team_id":self.team_id}),self._now()))
+            db.execute("INSERT INTO rkb_expert_services(id,kind,token_hash,enabled,epoch,app_id,team_id,personal_resource) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,token_hash=excluded.token_hash,enabled=excluded.enabled,epoch=excluded.epoch,app_id=excluded.app_id,team_id=excluded.team_id,personal_resource=excluded.personal_resource",(service_id,kind,token_hash(token),enabled,expected_epoch+1,self.app_id,self.team_id,personal_resource))
+            db.execute("INSERT INTO rkb_expert_service_events VALUES(?,?,?,?,?)",(service_id,expected_epoch+1,actor,canonical({"kind":kind,"enabled":enabled,"app_id":self.app_id,"team_id":self.team_id,"personal_resource":personal_resource}),self._now()))
             return {"service_id":service_id,"epoch":expected_epoch+1,"enabled":enabled,"kind":kind}
 
     def _service(self,db,credentials,kind):
@@ -159,6 +167,12 @@ class ExpertRequests:
     def _identity(self,db,row):
         origin=json.loads(row["origin"])
         if origin["app_id"]!=self.app_id or origin["team_id"]!=self.team_id: fail("request_unavailable")
+        if row['client_kind']=='mcp':
+            from .request_grants import allowed
+            if not allowed(db,origin['grant_id'],row['person_id'],origin['resource'],self._now(),origin['client_id']):fail('identity_changed')
+            context=RequestAuthority(Principal(subject=row['person_id'],client_id=origin['client_id'],issuer=origin['resource'],access_token=''),'personal')
+            self.people.require(context,'public_search',connection=db)
+            return context
         context=self.people.resolve_external(provider="slack",tenant=origin["team_id"],provider_subject=origin["user_id"],principal_factory=principal,connection=db)
         if context.principal.subject!=row["person_id"] or context.link_id!=row["link_id"] or context.link_revision!=row["link_revision"]:
             fail("identity_changed")
@@ -198,7 +212,61 @@ class ExpertRequests:
                 origin,input_text,output_scope,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,'pending',?,?)""",
                 (ident,o.event_id,digest,message_key,context.principal.subject,context.link_id,context.link_revision,canonical(origin),o.text,"personal" if o.channel_type=="im" else "public",timestamp,timestamp))
             self._event(db,ident,"accepted",{"event_id":o.event_id,"output_scope":"personal" if o.channel_type=="im" else "public"})
+            request_order.assign_slack(db,ident,context.principal.subject,origin)
             return {"request_id":ident,"state":"pending","duplicate":False}
+
+    def personal_submit(self,context,grant_id,resource,*,dialog_key,client_request_key,text):
+        """Trusted same-resource OAuth adapter supplies the verified grant proof."""
+        if (context.route not in {'personal','owner'} or not isinstance(text,str) or not 1<=len(text)<=12000
+            or any(not isinstance(v,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{7,127}',v) for v in (dialog_key,client_request_key))):fail('invalid_arguments')
+        from .request_grants import allowed
+        with self.corpus.connect() as db:
+            db.execute('PRAGMA synchronous=FULL');db.execute('BEGIN IMMEDIATE')
+            actor=self.people.require(context,'public_search',connection=db)
+            client=context.principal.client_id
+            if not allowed(db,grant_id,actor,resource,self._now(),client):fail('identity_changed')
+            tenant=hashlib.sha256(canonical(['mcp',resource,client]).encode()).hexdigest()
+            key=hashlib.sha256(canonical([tenant,actor,dialog_key,client_request_key]).encode()).hexdigest()
+            digest=hashlib.sha256(text.encode()).hexdigest()
+            old=db.execute('SELECT * FROM rkb_expert_requests WHERE message_key=?',(key,)).fetchone()
+            if old:
+                if old['event_hash']!=digest:fail('event_identity_conflict')
+                self._identity(db,old)
+                return {'request_id':old['id'],'state':old['state'],'duplicate':True,'dialog_id':old['dialog_id'],'dialog_seq':old['dialog_seq']}
+            ident=str(uuid4());now=self._now()
+            origin={'app_id':self.app_id,'team_id':self.team_id,'client_id':client,'resource':resource,'grant_id':grant_id}
+            db.execute('''INSERT INTO rkb_expert_requests(id,event_id,event_hash,message_key,person_id,link_id,link_revision,
+                origin,input_text,output_scope,state,created_at,updated_at) VALUES(?,?,?,?,?,'',0,?,?,'personal','pending',?,?)''',
+                (ident,'mcp:'+key,digest,key,actor,canonical(origin),text,now,now))
+            dialog,seq=request_order.assign(db,ident,actor,client_kind='mcp',tenant_id=tenant,conversation_key=dialog_key,
+                client_request_key=client_request_key,owner_person_id=actor)
+            self._event(db,ident,'accepted',{'client_kind':'mcp','dialog_seq':seq})
+            return {'request_id':ident,'state':'pending','duplicate':False,'dialog_id':dialog,'dialog_seq':seq}
+
+    def personal_result(self,context,grant_id,resource,request_id,*,ack_hash=None):
+        """Authenticated pull/ACK is this client's delivery receipt, never Slack."""
+        from .request_grants import allowed
+        with self.corpus.connect() as db:
+            db.execute('PRAGMA synchronous=FULL');db.execute('BEGIN IMMEDIATE')
+            actor=self.people.require(context,'public_search',connection=db)
+            if context.route not in {'personal','owner'} or not allowed(db,grant_id,actor,resource,self._now(),context.principal.client_id):fail('identity_changed')
+            row=db.execute('SELECT * FROM rkb_expert_requests WHERE id=?',(str(request_id),)).fetchone()
+            if not row or row['person_id']!=actor or row['client_kind']!='mcp':fail('request_unavailable')
+            origin=json.loads(row['origin'])
+            if origin['resource']!=resource or origin['client_id']!=context.principal.client_id:fail('request_unavailable')
+            self._identity(db,row)
+            result=ExpertResult.model_validate_json(row['result_json']) if row['result_json'] else None
+            if result:self._resources(db,row,result)
+            if ack_hash is not None:
+                if not result or ack_hash!=row['result_hash'] or row['state'] not in {'result_ready','delivered'}:fail('provider_receipt_mismatch')
+                if row['state']!='delivered':
+                    if not request_order.is_head(db,row):fail('request_fence_denied')
+                    receipt={'client_kind':'mcp','person_id':actor,'client_id':origin['client_id'],'resource':resource,'result_hash':ack_hash}
+                    db.execute("UPDATE rkb_expert_requests SET state='delivered',delivery_receipt=?,updated_at=? WHERE id=?",(canonical(receipt),self._now(),row['id']))
+                    request_order.advance(db,row['dialog_id']);self._event(db,row['id'],'delivery_verified',receipt)
+                return {'request_id':row['id'],'state':'delivered','result_hash':row['result_hash']}
+            return {'request_id':row['id'],'state':row['state'],'dialog_id':row['dialog_id'],'dialog_seq':row['dialog_seq'],
+                'result_hash':row['result_hash'],'result':result.model_dump(mode='json') if result else None}
 
     def get(self,context,request_id):
         with self.corpus.connect() as db:
@@ -211,6 +279,7 @@ class ExpertRequests:
             if row["result_json"]:
                 self._resources(db,row,ExpertResult.model_validate_json(row["result_json"]))
             return {"request_id":row["id"],"event_id":row["event_id"],"state":row["state"],"generation":row["generation"],
+                    "dialog_id":row["dialog_id"],"dialog_seq":row["dialog_seq"],"context_seq":row["context_seq"],
                     "wake_event_id":row["trigger_event_id"] or wake_event_id(row["id"],row["generation"]),
                     "output_scope":row["output_scope"],"input_text":row["input_text"],"origin":json.loads(row["origin"]),
                     "result":json.loads(row["result_json"]) if row["result_json"] else None,
@@ -221,13 +290,12 @@ class ExpertRequests:
         with self.corpus.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             service=self._service(db,credentials,"executor")
-            args=[self._now()]
-            query="SELECT * FROM rkb_expert_requests WHERE (state='pending' OR (state='leased' AND lease_until<=?)) AND json_extract(origin,'$.app_id')=? AND json_extract(origin,'$.team_id')=?"
-            args.extend([self.app_id,self.team_id])
-            if request_id:
-                query+=" AND id=?";args.append(str(request_id))
-            row=db.execute(query+" ORDER BY created_at,id LIMIT 1",args).fetchone()
+            row=request_order.fair_head(db,self._now(),
+                "json_extract(r.origin,'$.app_id')=? AND json_extract(r.origin,'$.team_id')=? AND (r.client_kind='slack' OR (r.client_kind='mcp' AND json_extract(r.origin,'$.resource')=?))",(self.app_id,self.team_id,service['personal_resource']))
             if not row: return {"state":"empty"}
+            # A wake or explicit ID is only a hint. Never let it select a later
+            # dialog turn or jump another person's turn, nor disclose their ID.
+            if request_id and row['id']!=str(request_id):return {"state":"deferred"}
             expected_event=wake_event_id(row["id"],row["generation"])
             if event_id is not None and str(event_id)!=expected_event:fail("event_identity_conflict")
             try:self._identity(db,row)
@@ -237,7 +305,8 @@ class ExpertRequests:
                 return {"state":"blocked","request_id":row["id"]}
             generation=row["generation"]+1;token=secrets.token_urlsafe(32)
             db.execute("""UPDATE rkb_expert_requests SET state='leased',generation=?,executor_id=?,service_epoch=?,
-                execution_token_hash=?,lease_until=?,updated_at=?,trigger_event_id=? WHERE id=?""",(generation,service["id"],service["epoch"],token_hash(token),self._now()+lease_seconds,self._now(),expected_event,row["id"]))
+                execution_token_hash=?,lease_until=?,updated_at=?,trigger_event_id=?,context_seq=dialog_seq-1 WHERE id=?""",(generation,service["id"],service["epoch"],token_hash(token),self._now()+lease_seconds,self._now(),expected_event,row["id"]))
+            request_order.claimed(db,row)
             self._event(db,row["id"],"execution_claimed",{"generation":generation,"executor_id":service["id"]})
             return {"request_id":row["id"],"generation":generation,"execution_token":token,"state":"leased"}
 
@@ -254,12 +323,44 @@ class ExpertRequests:
         base=self._identity(db,row)
         if allow_result_replay and row["result_json"] and row["state"] in {"result_ready","sending","unknown","retry_wait","delivered"}:
             return base
-        context=replace(base,request_id=row["id"],request_generation=generation,executor_id=service["id"],execution_token=execution_token,public_only=row["output_scope"]=="public")
+        context=replace(base,route='delegated' if row['client_kind']=='mcp' else base.route,request_id=row["id"],request_generation=generation,executor_id=service["id"],execution_token=execution_token,public_only=row["output_scope"]=="public")
         self.people.require(context,"public_search",connection=db)
         return context
 
-    def _resources(self,db,row,result):
-        base=self._identity(db,row)
+    def history(self,credentials,request_id,generation,execution_token,*,after_seq=0,limit=10):
+        """Read retained prior turns at execution time, under the current ACL.
+
+        Dependency reads are recorded in the same transaction. A caller cannot
+        launder prior private evidence by omitting it from its final references.
+        """
+        if type(after_seq) is not int or after_seq<0 or type(limit) is not int or not 1<=limit<=20:fail('invalid_cursor')
+        with self.corpus.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            context=self.context(credentials,request_id,generation,execution_token,connection=db)
+            row=db.execute('SELECT * FROM rkb_expert_requests WHERE id=?',(str(request_id),)).fetchone()
+            rows=db.execute('''SELECT * FROM rkb_expert_requests WHERE dialog_id=? AND dialog_seq>? AND dialog_seq<=?
+                ORDER BY dialog_seq LIMIT ?''',(row['dialog_id'],after_seq,row['context_seq'],limit+1)).fetchall()
+            items=[]
+            for prior in rows[:limit]:
+                item={'dialog_seq':prior['dialog_seq'],'request_id':prior['id']}
+                try:
+                    if prior['state']!='delivered' or not prior['result_json']:fail('context_unavailable')
+                    result=ExpertResult.model_validate_json(prior['result_json'])
+                    self._resources(db,prior,result,context=context)
+                except (ParticipantError,ExpertRequestError,JournalError):
+                    item['state']='withheld'
+                else:
+                    item.update(state='available',input_text=prior['input_text'],result=result.model_dump(mode='json'))
+                    known=db.execute('SELECT DISTINCT kind,resource_id FROM rkb_expert_request_resources WHERE request_id=?',(prior['id'],)).fetchall()
+                    track_resources(db,context,
+                        document_ids={str(v) for v in result.document_ids}|{r['resource_id'] for r in known if r['kind']=='document'},
+                        case_ids={str(v) for v in result.case_ids}|{r['resource_id'] for r in known if r['kind']=='case'})
+                items.append(item)
+            return {'request_id':row['id'],'dialog_id':row['dialog_id'],'context_seq':row['context_seq'],'items':items,
+                'next_after_seq':items[-1]['dialog_seq'] if len(rows)>limit else None}
+
+    def _resources(self,db,row,result,*,context=None):
+        base=context or self._identity(db,row)
         known=db.execute("SELECT DISTINCT kind,resource_id FROM rkb_expert_request_resources WHERE request_id=?",(row["id"],)).fetchall()
         documents={str(v) for v in result.document_ids}|{r["resource_id"] for r in known if r["kind"]=="document"}
         cases={str(v) for v in result.case_ids}|{r["resource_id"] for r in known if r["kind"]=="case"}
@@ -267,10 +368,10 @@ class ExpertRequests:
             doc=self.people.sources._document_allowed(db,base.principal.subject,str(ident))
             if not doc: fail("resource_access_revoked")
             from .expert_source_scope import public_document
-            if row["output_scope"]=="public" and not public_document(doc):
+            if (row["output_scope"]=="public" or base.public_only) and not public_document(doc):
                 fail("public_projection_required")
         for case_id in cases:
-            if row["output_scope"]=="public": fail("public_projection_required")
+            if row["output_scope"]=="public" or base.public_only: fail("public_projection_required")
             try:self.journal._case(db,base.principal.subject,str(case_id))
             except JournalError: fail("resource_access_revoked")
 
@@ -296,11 +397,13 @@ class ExpertRequests:
             service=self._service(db,credentials,"delivery")
             row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",(str(request_id),)).fetchone()
             if not row or not row["result_json"]: fail("request_unavailable")
+            if row['client_kind']!='slack':fail('request_unavailable')
             result=ExpertResult.model_validate_json(row["result_json"])
             self._resources(db,row,result)
             if row["state"] in {"sending","unknown"}:
                 return {"request_id":row["id"],"state":"reconciliation_required","delivery_id":row["delivery_id"],"send_allowed":False}
             if row["state"]=="delivered": return {"request_id":row["id"],"state":"delivered","send_allowed":False}
+            if not request_order.is_head(db,row):return {"request_id":row["id"],"state":"deferred","send_allowed":False}
             if row["state"] not in {"result_ready","retry_wait"}: fail("request_unavailable")
             if row["state"]=="retry_wait" and row["next_delivery_at"]>self._now():
                 return {"request_id":row["id"],"state":"retry_wait","send_allowed":False,"retry_at":row["next_delivery_at"]}
@@ -312,7 +415,7 @@ class ExpertRequests:
     def next_delivery(self,credentials):
         with self.corpus.connect() as db:
             self._service(db,credentials,"delivery")
-            row=db.execute("SELECT id FROM rkb_expert_requests WHERE (state='result_ready' OR (state='retry_wait' AND next_delivery_at<=?)) AND json_extract(origin,'$.app_id')=? AND json_extract(origin,'$.team_id')=? ORDER BY updated_at,id LIMIT 1",(self._now(),self.app_id,self.team_id)).fetchone()
+            row=db.execute("SELECT r.id FROM rkb_expert_requests r JOIN rkb_request_dialogs d ON d.id=r.dialog_id AND d.head_seq=r.dialog_seq WHERE r.client_kind='slack' AND (state='result_ready' OR (state='retry_wait' AND next_delivery_at<=?)) AND json_extract(origin,'$.app_id')=? AND json_extract(origin,'$.team_id')=? ORDER BY updated_at,r.id LIMIT 1",(self._now(),self.app_id,self.team_id)).fetchone()
             return row[0] if row else None
 
     def block_delivery(self,credentials,request_id,reason):
@@ -338,6 +441,7 @@ class ExpertRequests:
             service=self._service(db,credentials,"delivery")
             row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",(str(request_id),)).fetchone()
             if not row or row["delivery_service_id"]!=service["id"] or row["delivery_service_epoch"]!=service["epoch"] or row["delivery_id"]!=delivery_id or row["state"]!="sending": fail("request_fence_denied")
+            if not request_order.is_head(db,row):fail("request_fence_denied")
             retry_at=self._now()+retry_after
             db.execute("UPDATE rkb_expert_requests SET state='retry_wait',next_delivery_at=?,updated_at=? WHERE id=?",(retry_at,self._now(),row["id"]))
             self._event(db,row["id"],"delivery_rate_limited",{"delivery_id":delivery_id,"retry_at":retry_at})
@@ -361,6 +465,7 @@ class ExpertRequests:
             service=self._service(db,credentials,"delivery")
             row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",(str(request_id),)).fetchone()
             if not row or row["delivery_service_id"]!=service["id"] or row["delivery_service_epoch"]!=service["epoch"] or row["delivery_id"]!=delivery_id or row["state"]!="sending": fail("request_fence_denied")
+            if not request_order.is_head(db,row):fail('request_fence_denied')
             result=ExpertResult.model_validate_json(row["result_json"])
             self._resources(db,row,result)
             return {"request_id":row["id"],"delivery_id":row["delivery_id"],"origin":json.loads(row["origin"]),"text":result.text}
@@ -387,6 +492,7 @@ class ExpertRequests:
             # A real receipt after revocation still records what actually happened;
             # it never creates another delivery or makes revoked content readable.
             db.execute("UPDATE rkb_expert_requests SET state='delivered',delivery_receipt=?,updated_at=? WHERE id=?",(canonical(value),self._now(),row["id"]))
+            request_order.advance(db,row['dialog_id'])
             self._event(db,row["id"],"delivery_verified",value)
             return value
 

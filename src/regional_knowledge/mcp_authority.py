@@ -10,7 +10,7 @@ from .oauth_provider import KNOWLEDGE_SCOPE
 
 EXECUTOR_TOOLS = frozenset({"expert_request_delivery", "expert_research"})
 SOURCE_TOOLS = frozenset({"search", "fetch", "knowledge_search", "illustration_fetch", "book_find", "source_proof"})
-PERSONAL_TOOLS = SOURCE_TOOLS | frozenset({"disagreement_participants", "disagreement_get", "disagreement_edit", "disagreement_contribute", "disagreement_conclusion", "profile"})
+PERSONAL_TOOLS = SOURCE_TOOLS | frozenset({"disagreement_participants", "disagreement_get", "disagreement_edit", "disagreement_contribute", "disagreement_conclusion", "profile", "research_request"})
 
 
 def current_service():

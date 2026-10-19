@@ -400,8 +400,15 @@
         "src/regional_knowledge/personal_auth.py",
         "src/regional_knowledge/personal_auth_cli.py",
         "src/regional_knowledge/oauth_provider.py",
-        "tests/test_personal_auth.py"
-      ]
+        "tests/test_personal_auth.py",
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py",
+        "src/regional_knowledge/personal_request_mcp.py",
+        "src/regional_knowledge/request_grants.py",
+        "tests/test_personal_requests.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
     },
     {
       "id": "KB-27",
@@ -806,8 +813,15 @@
         "src/regional_knowledge/personal_auth.py",
         "src/regional_knowledge/personal_auth_cli.py",
         "src/regional_knowledge/oauth_provider.py",
-        "tests/test_personal_auth.py"
-      ]
+        "tests/test_personal_auth.py",
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py",
+        "src/regional_knowledge/personal_request_mcp.py",
+        "src/regional_knowledge/request_grants.py",
+        "tests/test_personal_requests.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
     },
     {
       "id": "E2E-6",
@@ -1278,7 +1292,16 @@
       "line": 251,
       "action": "Два зависимых вопроса одного диалога: B не claimable до результата/доставки A; B получает ответ A в контексте, в том числе после restart.",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py",
+        "src/regional_knowledge/personal_request_mcp.py",
+        "src/regional_knowledge/request_grants.py",
+        "tests/test_personal_requests.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
     },
     {
       "id": "LOAD-D02",
@@ -1286,7 +1309,13 @@
       "line": 252,
       "action": "A отправляет десять запросов, B один; B входит в ближайший fair круг. A создаёт десять диалогов: это не десять fairness subjects.",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
     },
     {
       "id": "LOAD-D03",
@@ -1294,7 +1323,16 @@
       "line": 253,
       "action": "Несколько клиентов одного verified человека имеют общий fairness subject; spoofed dialog/person/tenant отвергнуты.",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py",
+        "src/regional_knowledge/personal_request_mcp.py",
+        "src/regional_knowledge/request_grants.py",
+        "tests/test_personal_requests.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
     },
     {
       "id": "LOAD-D04",
@@ -1302,7 +1340,13 @@
       "line": 254,
       "action": "Явный claim(request_id), wake event, duplicate delivery и retry не обходят admission.",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
     },
     {
       "id": "LOAD-D05",
@@ -1310,7 +1354,13 @@
       "line": 255,
       "action": "Разные диалоги реально параллельны при свободных ресурсах; один blocked/unknown dialog не останавливает остальных.",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
     },
     {
       "id": "LOAD-D06",
@@ -1318,7 +1368,16 @@
       "line": 256,
       "action": "Рестарт на каждой границе: до/после intake commit, claim, dependency enqueue, result commit, before/after external send. Ни потерянных accepted inputs, ни stale generation writes, ни слепого повторного send.",
       "status": "NOT_RUN",
-      "evidence": []
+      "evidence": [],
+      "partial_component_evidence": [
+        "src/regional_knowledge/request_order.py",
+        "src/regional_knowledge/expert_requests.py",
+        "tests/test_request_order.py",
+        "src/regional_knowledge/personal_request_mcp.py",
+        "src/regional_knowledge/request_grants.py",
+        "tests/test_personal_requests.py"
+      ],
+      "partial_component_note": "Same-authority dialog/head/person selection and synthetic HTTP OAuth submit/result/ACK tests; measured stage admission, actual second-client integration and prescribed live actors remain unverified."
     },
     {
       "id": "LOAD-D07",

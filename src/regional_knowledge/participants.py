@@ -102,7 +102,7 @@ class Participants:
         return value is not None and datetime.fromisoformat(value) <= self._time()
 
     def _authority(self, db, context, *, admin=False):
-        if not isinstance(context, RequestAuthority) or context.route not in {"owner", "personal", "expert"}:
+        if not isinstance(context, RequestAuthority) or context.route not in {"owner", "personal", "expert", "delegated"}:
             fail("capability_denied")
         try:
             actor = str(UUID(str(context.principal.subject)))
@@ -126,8 +126,10 @@ class Participants:
             fail("capability_denied")
         if context.request_id is not None:
             from .request_authority import execution_allowed
-            if context.route != "expert" or not execution_allowed(db, context, self._time().timestamp()):
+            if context.route not in {"expert","delegated"} or not execution_allowed(db, context, self._time().timestamp()):
                 fail("request_fence_denied")
+        elif context.route == 'delegated':
+            fail('request_fence_denied')
         elif any((context.request_generation, context.executor_id, context.execution_token, context.public_only)):
             fail("request_fence_denied")
         return actor
@@ -145,7 +147,7 @@ class Participants:
         # exports must acquire their own audience-safe path before enabling it.
         if context.public_only and capability != "public_search":
             fail("public_projection_required")
-        if context.route == "expert" and capability not in EXPERT_CAPABILITIES:
+        if context.route in {"expert","delegated"} and capability not in EXPERT_CAPABILITIES:
             fail("capability_denied")
         if actor == self.owner:
             if capability == "import" and context.route != "owner":

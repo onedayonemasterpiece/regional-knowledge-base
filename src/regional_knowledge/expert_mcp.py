@@ -41,16 +41,20 @@ def register_executor_tools(mcp,requests,backend):
     def invalid():return {"error":{"code":"invalid_arguments"}}
 
     @mcp.tool(name="expert_request_delivery",title="Read and complete a saved expert request",
-        description="Claim/get/status/record_result for the exact request. Service identity selects the executor; the stored verified binding selects the human. Use exact generation and execution_token from claim. The same record_result is replayable after a lost response. This tool never sends Slack or grants import/owner rights.",
+        description="Claim/get/status/history/record_result for a saved request. Only a trusted dispatcher may omit request_id for a fair claim; each claimed request needs a fresh isolated model context. An explicit request_id or wake cannot bypass order/fairness. Service identity selects the executor; the stored verified binding selects the human. Use exact generation and execution_token from claim. Read paginated prior history at execution time. The same record_result is replayable after a lost response. This tool never sends Slack or grants import/owner rights.",
         annotations=ToolAnnotations(read_only_hint=False,open_world_hint=False))
-    async def request_tool(action:Literal["claim","get","status","record_result"],request_id:UUID,
+    async def request_tool(action:Literal["claim","get","status","history","record_result"],request_id:UUID|None=None,
         generation:Annotated[int,Field(ge=1)]|None=None,
         execution_token:Annotated[str,Field(min_length=16,max_length=256)]|None=None,
         event_id:UUID|None=None,
-        result:ExpertResult|None=None) -> dict[str,Any]:
+        result:ExpertResult|None=None,
+        after_seq:Annotated[int,Field(ge=0)]=0,limit:Annotated[int,Field(ge=1,le=20)]=10) -> dict[str,Any]:
         credentials=current_service()
-        if action=="claim":return await sync(requests.claim,credentials,request_id=str(request_id),lease_seconds=300,event_id=str(event_id) if event_id else None)
-        if generation is None or execution_token is None:return invalid()
+        if action=="claim":
+            if event_id and request_id is None:return invalid()
+            return await sync(requests.claim,credentials,request_id=str(request_id) if request_id else None,lease_seconds=300,event_id=str(event_id) if event_id else None)
+        if request_id is None or generation is None or execution_token is None:return invalid()
+        if action=="history":return await sync(requests.history,credentials,str(request_id),generation,execution_token,after_seq=after_seq,limit=limit)
         if action=="record_result" and result is not None:
             return await sync(requests.record_result,credentials,str(request_id),generation,execution_token,result)
         if action in {"get","status"}:
