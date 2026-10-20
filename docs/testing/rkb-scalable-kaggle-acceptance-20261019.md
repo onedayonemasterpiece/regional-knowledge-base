@@ -4,7 +4,7 @@
 
 Самодостаточный [handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md) содержит тот же нормативный набор gates. Этот файл предназначен для отметок конкретных запусков с exact SHA/config/corpus и evidence. Числа и сценарии ниже синхронизированы с его §14; нумерация сохранена для прямой сверки. При изменении критериев обновлять оба места в одном PR.
 
-Аудированная документационная база — `b1c0689b1a09373a900a317a3bac9cf4f86fdaf4`. Перед запуском фиксировать фактические source/runtime heads. Условия отличаются от прежнего SQLite/Supabase/E5; старые PASS не переносятся автоматически. Дополнительные предметные сценарии сохраняет [ПМИ разногласий](rkb-disagreement-pmi-20261018.md).
+Аудированная документационная база — `3e39046fe32aaf14cfa088d65d15ff0082425309`. Перед запуском фиксировать фактические source/runtime heads. Условия отличаются от прежнего SQLite/Supabase/E5; старые PASS не переносятся автоматически. Дополнительные предметные сценарии сохраняет [ПМИ разногласий](rkb-disagreement-pmi-20261018.md).
 
 ## 14. Приёмка: обязательные численные gates и конкретные отказы
 
@@ -135,3 +135,21 @@
 
 Это ограниченная приёмка конкретных изменений, не обязательный постоянный трёхъязычный tournament или второй LLM-судья. Для неизменённого пути переиспользовать подходящее проверенное evidence; повторить только затронутые gates.
 
+### 14.5. Быстрая отладка, lifecycle и миграции
+
+До живого run локально/CI проверить handler candidate/rollback со stub-моделью, migration lost-ACK/replay и fixture reset guard. Затем провести один ограниченный smoke на доступном разрешённом run: ранние bootstrap stages/WSS, live SQL patch, code-version readback, небольшой artifact и cooperative Stop с provider readback. Сценарии потерянного push/ACK, зависшего supervisor, нескольких output pages и плохого hash сначала проверять детерминированными fixtures на выбранном adapter; не создавать второй живой run только для имитации ошибки. Повтор реальной проверки нужен для конкретной неизвестной provider boundary. Stage 0 receipt фиксирует installed SDK, version-specific status **и его execution semantics**, pagination, фактический stop path и writable paths; невыясненные ownership/stop/recovery возможности не объявляются serving/TG readiness. Доступность новой private Dataset version в живой session — отдельная проверка выбранного пути, не блокер обычного SQL/code patch.
+
+| ID | Сценарий | Ожидаемый наблюдаемый результат |
+|---|---|---|
+| DBG-1 | Несколько SQL/function/read handler исправлений, битый import или первый probe | Тот же run/model, для SQL прежний PG; exact loaded hashes и полезный результат изменились ожидаемо, model-load/download/install counters не выросли без причины. Битый candidate оставляет/возвращает прежний handler; incompatible restart обозначен отдельно |
+| DBG-2 | Push принят, ответ потерян; lookup ошибся/remote version продвинулась; два runtime instance с одним nonce | Стабильный slug, один исходный launch intent; нет повторного push/двойного TG grant, второй instance fenced. Ошибка lookup остаётся UNKNOWN; чужая/latest версия не подтверждает исход |
+| DBG-3 | STOP ACK потерян, worker/parent завис, lease истёк, resource удалён, поздний heartbeat | Только свой process group; cancel/delete/TTL не terminal proof. TG slot не переиспользован; credential revocation не объявляет compute terminal. Terminal generation не воскрешается |
+| DBG-4 | Controller restart при active/unknown run и deterministic bootstrap failure | Existing owned run reconciled/reused; новый controller не создаёт duplicate. Startup failure до READY виден по stage/reason; конечный retry budget не превращается в crash→push loop |
+| DBG-5 | Partial/многостраничный output, чужая version, missing manifest/member, плохой hash или resume старого файла | Expected inventory задан controller до операции; exact-version native pagination/bytes проверены. Failed bytes не accepted, пригодные независимые artifacts сохранены; SDK capability фактически выбранной версии, partial/unknown явны |
+| DBG-6 | C accepted/sealed при v1, ещё не dispatched либо ACK потерян; запрошена v2, DDL ACK потерян и active routing сменился | Barrier закрывает новую v1 фиксацию и завершает всю ранее accepted v1 queue под v1; UNKNOWN сверяет в исходной generation. Transactional schema/ledger atomic, live/replay outcomes совпадают; ID/hash mismatch — конфликт |
+| DBG-7 | DDL lock wait, cancelled concurrent index, смена function return shape | Конечный lock/job timeout; INVALID index не READY; scoped repair и pool generation корректны, чужой actor не протёк, старый работающий путь не снят без необходимости |
+| DBG-8 | Замена snapshot старее Saved; failure до/после первой новой записи; reset с реальным Saved/GEO или прежним product binding | Base+tail/ordered migrations сохранены; live PGDATA overwrite запрещён. После writes откат только с catch-up/roll-forward. Reset реальных данных отклонён; immutable test_fixture не повышается до production и не выдаёт product ACK |
+| DBG-9 | Нет места для candidate/two clusters; зависимость или artifact обновлены во время run | Maintenance admission блокирует превышение peak, действующие данные сохранены; выбран конечный PG-only restart/окно, не notebook explosion. Deps/model cache не переустанавливаются на SQL patch |
+| DBG-10 | Истёк debug budget/idle, control потерян; исходный runtime path попал в notebook output | Bounded self-stop выполняется как защита, а не terminal proof; ownership/recovery refs остаются. Private PGDATA/credentials не опубликованы; cleanup не удаляет UNKNOWN/accepted results |
+
+DBG-1, DBG-2/3/4 и поддержанный artifact path проверяются до длительного цикла реализации на Kaggle. DBG-6/7/8 и production recovery — до первого реального accepted/Saved, а не после импорта книг. Остальные applicable проверки входят в соответствующий runtime/maintenance release; эта матрица не требует прогонять все каналы/100 книг при каждом SQL исправлении. В отчёте нужны фактические edit→apply→useful timings, число starts/restarts/model loads и повторных bytes, отдельно cold/warm. До выполнения — NOT RUN.

@@ -4,7 +4,7 @@ Source-grounded regional knowledge: books and articles, actual tellable stories,
 
 ## Current project
 
-**[One complete Markdown handoff for implementation and debugging](docs/prompts/rkb-scalable-kaggle-implementation-20261019.md)** — version 3, updated 20 October 2026. It contains the target, preserved functions, import/story prompts, search indexes, storage/recovery, roles, channels, Go/Rust feasibility and choice, voice latency, rollout and acceptance. Supporting documents are normalized to the same design. This commit is documentation, not a claim that the new runtime is deployed.
+**[One complete Markdown handoff for implementation and debugging](docs/prompts/rkb-scalable-kaggle-implementation-20261019.md)** — version 4, updated 20 October 2026. It contains the target, preserved functions, import/story prompts, search indexes, storage/recovery, roles, channels, Go/Rust choice, voice latency, warm Kaggle debugging, stable notebook slugs, reliable lifecycle/output handling, ordered SQL migrations, rollout and acceptance. Supporting documents are normalized to the same design. This commit is documentation, not a claim that the new runtime is deployed.
 
 Target: PostgreSQL/pgvector and BGE-M3 on Kaggle; stable MCP/auth/request controller and short control spool on DevCoveer; direct outbound notebook WSS with bidirectional work/results. Dataset holds verified recovery versions, not an always-running database. Existing Yandex recovery tail protects final accepted/saved writes; local pending alone is not a durability promise.
 

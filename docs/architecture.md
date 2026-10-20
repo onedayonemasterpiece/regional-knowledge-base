@@ -29,6 +29,8 @@ E5 и Supabase отсутствуют в target. Один BGE space: сущес�
 
 Ping/Pong, полезный спрос, task progress, короткая writer lease и 30-минутный useful-idle — разные таймеры. Сокет без полезной работы не удерживает notebook бесконечно. Frames, bytes, inflight credits, reconnect backoff и task deadlines ограничены. Большие payloads передаются существующим bounded byte transport по проверенным refs, а не огромным WSS JSON.
 
+Отладка переиспользует healthy owned run со **стабильным slug**. Минимальный HELLO/control приходит до install/restore/BGE, READY после probes. SQL и совместимый stateless read handler меняются без повторного model load; mutation executor — через ordered migration/reconciliation, context/deps — через controlled restart. Snapshot replacement по умолчанию требует finite PG maintenance окно, не двух clusters. UNKNOWN push/stop не запускает replacement; provider terminal относится к exact execution, cancel ACK/delete/TTL недостаточны. Expected outputs определены до работы. Полный контракт и новые cases — [handoff §5.4/6.6/14.5](prompts/rkb-scalable-kaggle-implementation-20261019.md).
+
 ## Долговечность и ACK
 
 Ранний local receipt означает **pending**. Финальный accepted/Saved разрешён только после remote confirmation точных payload и intent; Saved дополнительно означает domain commit и remotely verified exact outcome/receipt; облачно сохранённый intake ещё не является applied результатом. Этот контракт относится к mutations и явно принятым durable requests. Group commit удерживает их готовую группу не более 1 секунды до flush; provider latency не выдаётся за гарантированную секунду сохранения. Обычный read-only turn не становится durable request только потому, что его задал человек.
