@@ -303,18 +303,25 @@ class NativeSnapshotFactory:
         self.workspace_private_current=workspace_private_current
         self.native_uid,self.native_gid=native_uid,native_gid
         self.acquire,self.limits,self.connect,self.spawn=acquire,limits,connect,spawn
+        self.native_env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'}
+        self.model_pins=None
         self.upload_ticket=upload_ticket
         self.probe=probe or native_probe_for_schema(getattr(database,'schema_revision',None))
         self._sessions=set();self._capabilities=set();self._owned_candidates=set()
         self._operations={}
-        self._completed={};self._references={}
+        self._completed={};self._references={};self._finish_intents={}
 
     def _current(self,binding):
         if not self.current(binding):raise SnapshotError('native_restore_binding_changed')
 
+    def _versions(self,versions):
+        validate_versions(versions)
+        if self.model_pins is not None and any(versions.get(key)!=value for key,value in self.model_pins.items()):
+            raise SnapshotError('snapshot_resident_model_tokenizer_changed')
+
     async def capture(self,binding,*,workspace,versions,expected_sequence):
         """A scoped direct upload callback receives bytes, never bucket credentials."""
-        self._current(binding);validate_versions(versions)
+        self._current(binding);self._versions(versions)
         if not callable(self.acquire) or not callable(self.upload_ticket):
             raise SnapshotError('native_backup_scoped_transport_unavailable')
         async with asyncio.timeout(self.limits.timeout_seconds):
@@ -385,7 +392,7 @@ class NativeSnapshotFactory:
         This API is internal to authenticated owned-worker control, never a
         caller-facing tool or source of bucket/user credentials.
         """
-        self._current(binding);validate_versions(expected_versions)
+        self._current(binding);self._versions(expected_versions)
         if len(manifest_bytes)>self.limits.max_control_bytes or len(control_bytes)>self.limits.max_control_bytes:
             raise SnapshotError('native_restore_metadata_budget')
         if sha(manifest_bytes)!=expected_manifest_sha256:raise SnapshotError('native_restore_manifest_hash')
@@ -420,7 +427,7 @@ class NativeSnapshotFactory:
             '-c','local_preload_libraries=','-c','max_connections=8','-c','shared_buffers=32MB',
             '-c','work_mem=4MB','-c','maintenance_work_mem=16MB',stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL,
-            env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'},**self._identity())
+            env=self.native_env,**self._identity())
         candidate=_CandidatePg(process,self.database,self.connect);self._owned_candidates.add(candidate)
         try:
             async with asyncio.timeout(20):
@@ -477,8 +484,11 @@ class NativeSnapshotFactory:
         completed=self._completed.get(session)
         if completed is not None:
             if (completed.control!=control_bytes or completed.journal_head!=final_head
-                    or expected_tail!=tuple(session.receipts)):
+                    or expected_tail!=tuple(session.receipts)
+                    or json.loads(completed.control).get('catalog_sha256')!=expected_catalog_sha256):
                 raise SnapshotError('native_restore_finish_request_changed')
+            self._current(session.binding)
+            object.__setattr__(completed,'_binding',session.binding)
             await self.verify_initialized(completed,self.database,self.identity)
             return completed
         if session not in self._sessions:raise SnapshotError('native_restore_session_unknown')
@@ -490,12 +500,27 @@ class NativeSnapshotFactory:
                 or control.get('sequence')!=final_sequence or control.get('journal_head')!=final_head
                 or control.get('catalog_sha256')!=expected_catalog_sha256):
             raise SnapshotError('native_restore_final_control_binding')
+        intent=sha(encode(dict(expected_tail=expected_tail,final_head=final_head,
+            control_sha256=sha(control_bytes),catalog_sha256=expected_catalog_sha256)))
+        prior=self._finish_intents.get(session)
+        if prior is not None and prior!=intent:raise SnapshotError('native_restore_finish_request_changed')
+        self._finish_intents[session]=intent
         async with session.candidate.acquire() as connection:
-            cursor=await connection.execute('SELECT applied_seq FROM rkb_v4.recovery_state WHERE singleton')
-            if await cursor.fetchone()!=(final_sequence,):raise SnapshotError('native_restore_final_cursor')
-            await connection.commit()
-            await handover_writer(connection,database_generation=self.database.database_generation,
-                expected_writer=session.manifest['writer_generation'],new_writer=self.database.writer_generation)
+            cursor=await connection.execute('SELECT applied_seq,writer_generation FROM rkb_v4.recovery_state WHERE singleton')
+            row=await cursor.fetchone()
+            if row is None or row[0]!=final_sequence:raise SnapshotError('native_restore_final_cursor')
+            if row[1]==self.database.writer_generation:
+                if prior is None:raise SnapshotError('native_restore_unowned_handover')
+                cursor=await connection.execute('SELECT generation,retired FROM rkb_v4.writer_generations '
+                    'WHERE generation=ANY(%s::text[])',([session.manifest['writer_generation'],self.database.writer_generation],))
+                if dict(await cursor.fetchall())!={session.manifest['writer_generation']:True,self.database.writer_generation:False}:
+                    raise SnapshotError('native_restore_handover_state_changed')
+                await connection.commit()
+            elif row[1]==session.manifest['writer_generation']:
+                await connection.commit()
+                await handover_writer(connection,database_generation=self.database.database_generation,
+                    expected_writer=session.manifest['writer_generation'],new_writer=self.database.writer_generation)
+            else:raise SnapshotError('native_restore_writer_changed')
         catalog,fields=await self.probe(acquire=session.candidate.acquire)
         if (sha(catalog)!=expected_catalog_sha256 or fields['database_generation']!=self.database.database_generation
                 or fields['applied_seq']!=final_sequence
@@ -569,7 +594,7 @@ class NativeSnapshotFactory:
     async def _run(self,*args,timeout=30):
         process=await self.spawn(*args,stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,
-            env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'},**self._identity())
+            env=self.native_env,**self._identity())
         try:
             async with asyncio.timeout(timeout):
                 output=bytearray()

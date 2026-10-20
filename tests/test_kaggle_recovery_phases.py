@@ -29,7 +29,7 @@ async def test_concrete_factory_binds_tools_to_retained_stage0_manifest(fixture,
     import regional_knowledge.kaggle_owned_pg as owned
     import regional_knowledge.kaggle_pg_snapshot_native as native
     names=('pg_basebackup','pg_verifybackup','postgres')
-    entries=[('usr/bin/'+n,'file',('synthetic-'+n).encode()) for n in names]
+    entries=[('usr/bin/'+n,'file',('synthetic-'+n).encode()) for n in names]+[('usr/lib/x86_64-linux-gnu/libfixture.so','file',b'synthetic-ELF')]
     def executable(manifest):
         for file in manifest['files']:file['executable']=True
     root,pin,inventory,_=fixture(entries=entries,mutate=executable)
@@ -46,11 +46,18 @@ async def test_concrete_factory_binds_tools_to_retained_stage0_manifest(fixture,
     worker=await build_recovery_worker(**args)
     assert type(worker) is WorkerRecoveryPhases and worker.factory.native_gid==1002
     assert worker.factory.tools.postgres.sha256==sha(b'synthetic-postgres')
+    assert worker.factory.native_env['LD_LIBRARY_PATH']==str(bundle.prefix/'usr/lib/x86_64-linux-gnu')
     assert worker.factory.tools.postgres.path==str(bundle.prefix/'usr/bin/postgres')
     assert len(verified)==2
     changed=dict(tools,binaries=tools['binaries']|{'postgres':dict(path='outside/postgres',version_output='arbitrary')})
     with pytest.raises(SnapshotError,match='unverified'):await build_recovery_worker(**(args|{'tools':changed}))
     with pytest.raises(SnapshotError,match='stage0_owner'):await build_recovery_worker(**(args|{'native_bundle':{'pins':'json'}}))
+    closed=[]
+    class PartialCandidate:
+        async def aclose(self):closed.append('partial-native-candidate')
+    partial=PartialCandidate();worker.factory._owned_candidates.add(partial)
+    await worker.aclose()
+    assert closed==['partial-native-candidate'] and not worker.factory._owned_candidates
 
 
 async def work_for(s,bridge,phase='verify',args=None,key='same-operation'):

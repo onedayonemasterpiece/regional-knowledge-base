@@ -159,3 +159,63 @@ def test_manifest_rejects_source_text_fields_and_omitted_declared_dependencies_e
 def test_changed_legacy_geo_intent_proof_is_not_reused_as_an_accepted_locator():
     data=snapshot();data['mentions'][0]['evidence']=dict(data['mentions'][0]['evidence'],exact_quote='altered claim')
     with pytest.raises(GeoWhitelistError,match='source_or_owner_mismatch'):build_geo_whitelist(**data)
+
+
+def test_measured_144_mention_place_preserves_every_provenance_and_dependency():
+    # Actual GEO inventory has a 144-mention place. Preserve every locator.
+    data=snapshot()
+    first=data['mentions'][0]
+    data['mentions'] += [dict(first,id=uid(300+n)) for n in range(143)]
+    data['expected_counts']=data['expected_counts'].model_copy(update={'mentions':len(data['mentions'])})
+    manifest=build_geo_whitelist(**data).require_ready()
+    place=next(item for item in manifest.items if item.key=='place:'+uid(10))
+    expected={'provenance:'+row['id'] for row in data['mentions'] if row['entity_id']==uid(10)}
+    assert len(expected)==144
+    assert set(place.payload.provenance_keys)==set(place.dependencies)==expected
+    assert expected <= {item.key for item in manifest.items}
+    assert GeoMigrationManifest.from_wire(manifest.wire())==manifest
+    from regional_knowledge.geo_manifest_commands import plan_geo_manifest
+    assert plan_geo_manifest(manifest).manifest_id==manifest.sha256
+    assert b'SECRET OLD CHAPTER' not in canonical(manifest.wire())
+
+
+def test_large_geographic_provenance_refuses_instead_of_silently_clipping():
+    data=snapshot()
+    data['mentions'] += [dict(data['mentions'][0],id=uid(300+n)) for n in range(256)]
+    data['expected_counts']=data['expected_counts'].model_copy(update={'mentions':len(data['mentions'])})
+    with pytest.raises(GeoWhitelistError,match='geographic_provenance_bound'):
+        build_geo_whitelist(**data)
+
+
+@pytest.mark.parametrize('version',['rkb.geo_claim.v1','cartography.resolve.v1'])
+def test_recorded_geo_resolution_contract_is_preserved_without_owner_receipt(version):
+    data=snapshot();recorded=data['entities'][0]['metadata']['geo_queue']
+    recorded['contract_version']=version
+    manifest=build_geo_whitelist(**data).require_ready()
+    place=next(item for item in manifest.items if item.key=='place:'+uid(10))
+    retained=place.payload.legacy_resolution
+    assert retained.contract_version==version and retained.recorded_metadata_sha256==sha(recorded)
+    assert retained.identity_state=='candidate' and retained.resolution=='owner_alias_candidate'
+    assert retained.receipt_verification=='legacy_metadata_not_owner_receipt'
+    assert retained.historical_geometry=='not_verified' and place.status=='legacy_unanchored'
+    assert GeoMigrationManifest.from_wire(manifest.wire())==manifest
+    from regional_knowledge.geo_manifest_commands import plan_geo_manifest
+    assert plan_geo_manifest(manifest).manifest_id==manifest.sha256
+
+
+def test_unknown_geo_resolution_contract_and_fabricated_owner_acceptance_remain_rejected():
+    for key,value in (('contract_version','cartography.resolve.v2'),('resolution','owner_accepted')):
+        data=snapshot();data['entities'][0]['metadata']['geo_queue'][key]=value
+        with pytest.raises(ValueError):build_geo_whitelist(**data)
+
+
+
+def test_existing_exact_spelling_is_selected_without_dropping_earlier_mention_provenance():
+    data=snapshot();existing=data['mentions'][0]
+    data['mentions'].append(dict(existing,id=uid(9)))
+    data['mentions'][-1].pop('exact_source_spelling')
+    data['expected_counts']=data['expected_counts'].model_copy(update={'mentions':3})
+    manifest=build_geo_whitelist(**data).require_ready()
+    place=next(item for item in manifest.items if item.key=='place:'+uid(10))
+    assert place.payload.exact_source_spelling==existing['exact_source_spelling']
+    assert set(place.payload.provenance_keys)=={'provenance:'+uid(9),'provenance:'+uid(30)}

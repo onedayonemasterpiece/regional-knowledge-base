@@ -38,6 +38,7 @@ class TargetLaunchSpec:
     bootstrap_only: bool = False
     bootstrap_seconds: int = 900
     original_intake: object = None
+    recovery: object = None
 
     def __post_init__(self):
         if type(self.database) is not OwnedDatabase:
@@ -79,6 +80,15 @@ class TargetLaunchSpec:
             from .kaggle_source_commands import fixed_registry
             fixed_registry(self.database,self.command_handlers)
         object.__setattr__(self,'command_handlers',tuple(json.loads(canonical(self.command_handlers))))
+        if self.recovery is not None:
+            from .kaggle_recovery_composition import SnapshotRecoveryConfig
+            if (type(self.recovery) is not SnapshotRecoveryConfig or self.database.mode not in ('VERIFIED_INITIALIZED','NEW_EMPTY_GENERATION')
+                    or self.native_bundle is None or self.stage0 is None or not self.command_handlers):
+                raise ValueError('initialized recovery requires exact native/package/command deployment')
+            if self.recovery.drill_empty and self.database.mode!='NEW_EMPTY_GENERATION':
+                raise ValueError('empty snapshot drill requires fresh owned database')
+            if self.database.mode=='NEW_EMPTY_GENERATION' and (self.recovery.native_uid,self.recovery.native_gid)!=(self.database.uid,self.database.gid):
+                raise ValueError('snapshot native identity must match owned fresh database')
         if self.original_intake is not None:
             from .kaggle_original_native import OriginalIntakeConfig
             if type(self.original_intake) is not OriginalIntakeConfig:
@@ -137,7 +147,8 @@ class TargetLaunchSpec:
             stage0=self.stage0.wire() if self.stage0 is not None else None,
             native_bundle=self.native_bundle.wire() if self.native_bundle is not None else None,
             bootstrap_only=self.bootstrap_only,bootstrap_seconds=self.bootstrap_seconds,
-            original_intake=self.original_intake.wire() if self.original_intake is not None else None)
+            original_intake=self.original_intake.wire() if self.original_intake is not None else None,
+            **(dict(recovery=self.recovery.wire()) if self.recovery is not None else {}))
 
 
 class TargetRuntime:
@@ -185,17 +196,30 @@ class TargetRuntime:
         callback objects retain attachment/transfer/private-output authority.
         No launch receipt dictionary supplies those permissions.
         """
-        if (self.closed or self.identity is not None or self.recovery_worker is not None
-                or self.restored_database is not None or self.database.mode!='VERIFIED_INITIALIZED'
+        if (self.closed or self.recovery_worker is not None or self.restored_database is not None
+                or (self.database.mode=='VERIFIED_INITIALIZED' and self.identity is not None)
+                or (self.database.mode=='NEW_EMPTY_GENERATION' and (self.prepared is None
+                    or self.identity!=(run_id,launch_nonce,runtime_incarnation)))
+                or self.database.mode not in ('VERIFIED_INITIALIZED','NEW_EMPTY_GENERATION')
                 or (run_id,launch_nonce)!=(self.config['run_id'],self.config['launch_nonce'])
                 or native_bundle.root!=encoder.artifacts.root):
             raise BootstrapUnavailable('target_recovery_configuration_changed')
         from .kaggle_recovery_phases import build_recovery_worker
+        from contextlib import asynccontextmanager
+        @asynccontextmanager
+        async def acquire():
+            import psycopg
+            async with await psycopg.AsyncConnection.connect(**self.database.connection(reader=False)) as connection:
+                yield connection
+        from .bge_contract import REVISION,SPACE
+        model_pins=dict(model_sha256=sha(canonical(dict(revision=REVISION,space=SPACE,
+            artifacts=encoder.artifacts.role_hash({'weight','model_config','tokenizer'})))),
+            tokenizer_sha256=encoder.artifacts.role_hash({'tokenizer'}))
         worker=await build_recovery_worker(native_bundle=native_bundle,database=self.database,
             identity=(run_id,launch_nonce,runtime_incarnation),tools=tools,native_uid=native_uid,
             native_gid=native_gid,current=current,workspace_private_current=workspace_private_current,
             upload=upload,download=download,workspace=workspace,limits=limits,
-            ticket_channel=ticket_channel,transfer=transfer)
+            ticket_channel=ticket_channel,transfer=transfer,acquire=acquire,model_pins=model_pins)
         self.recovery_worker=worker;self._recovery_available.set()
         return worker
 
@@ -266,9 +290,10 @@ class TargetRuntime:
         self.pool = self.pool_factory(kwargs=reader_kwargs,min_size=1,max_size=4,
             open=False,timeout=2,max_waiting=4)
         await self.pool.open(wait=True,timeout=10)
+        read_events=asyncio.Queue(maxsize=64)
         prepared = await self.prepare_resident(encoder,acquire=self.pool.connection,
             probe_database=self._owned_probe,launch_config=self.config,executed_source=self.executed_source,
-            source_binding_verified=True,dependency_packages=self.target['dependency_packages'])
+            source_binding_verified=True,dependency_packages=self.target['dependency_packages'],telemetry=read_events)
         readiness = prepared.readiness
         if (readiness.database_generation != self.database.database_generation
                 or any(getattr(readiness,key) != getattr(self.database,key) for key in
@@ -325,7 +350,9 @@ class TargetRuntime:
                 await asyncio.to_thread(shutil.rmtree,workspace)
                 raise
             self.original_intake_handler=original_handler
-        self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler,original_handler)
+        from .query_telemetry import drain_native_read_events
+        self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler,original_handler,
+            read_event_drain=lambda frame:drain_native_read_events(read_events,frame))
         return self.prepared
 
     async def aclose(self):
@@ -348,4 +375,7 @@ class TargetRuntime:
                 if self.restored_database is not None:
                     await self.restored_database.aclose()
             finally:
-                await self.owner.aclose()
+                try:
+                    if self.recovery_worker is not None:await self.recovery_worker.aclose()
+                finally:
+                    await self.owner.aclose()

@@ -180,7 +180,7 @@ class KnowledgeMCPServer(MCPServer):
             allowed.update({'story_search','story_get','story_history','story_variants'})
         if getattr(self,'_target_editorial_available',False):allowed.update({'story_edit','story_access'})
         if getattr(self,'_target_facts_available',False):
-            allowed.update({'story_calendar','story_observation_search'})
+            allowed.update({'story_calendar','story_observation_search','story_observation_compare'})
         if getattr(self,'_target_import_available',False):
             allowed.update({'book_ingest','book_pages'})
         if getattr(self,'_target_cases_available',False):
@@ -456,7 +456,7 @@ def build_server(
             if worker_queue.path.resolve() != Path(os.environ['RKB_BGE_QUEUE_PATH']).resolve():
                 raise RuntimeError('backend and channel must share the same owned queue')
         register_routes(mcp,worker_queue)
-        mcp._bge_channel_route = channel_route(worker_queue)
+        mcp._bge_channel_route = channel_route(worker_queue,read_telemetry=read_telemetry)
 
     if projects_hub_receiver is not None:
         from .projects_hub_reader import ProjectsHubReader, PATH
@@ -559,6 +559,13 @@ def build_server(
                 limit:Annotated[int,Field(ge=1,le=10)]=3,cursor:str|None=None)->dict[str,Any]:
             return await backend.story_observation_search(_principal(),metric_key=metric_key,
                 unit_code=unit_code,limit=limit,cursor=cursor)
+
+        @mcp.tool(name='story_observation_compare',title='Check whether numeric series can be compared',
+            description='Read two exact source observations linked to this Story and explain metric, unit, '
+                'subject, method and period compatibility. No arithmetic, unit conversion or identity inference.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_observation_compare(story_id:str,left_id:str,right_id:str)->dict[str,Any]:
+            return await backend.story_observation_compare(story_id,left_id,right_id,_principal())
 
     if profile in story_profiles and mcp._target_story_available:
         @mcp.tool(name='story_get',title='Read saved source-bound narrative',

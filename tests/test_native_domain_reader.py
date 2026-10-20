@@ -57,6 +57,13 @@ async def test_current11_production_roles_source_case_editorial_geo_and_hybrid_r
     async def acquire():yield reader
     try:
         native['connection']=writer;payload,graph=graph_payload()
+        # Two model-selected quantities over the exact synthetic source wording.
+        from test_kaggle_fact_read import observation
+        finding=payload['semantic']['findings'][0]
+        quantity=dict(observation(),original_value_text='1910',value='1910',metric_key='reported_year',
+            unit_code='calendar_years',subject_label='Fictional council',period_text='1910',
+            period_start_year=1910,period_end_year=1910)
+        finding['observations']=[quantity,dict(quantity)]
         payload['source_graph']=resolve_source_graph(graph,source_id=SOURCE,person_id=ACTOR,semantic=payload['semantic'])
         source=resolved_current_import_v4_command(sequence=1,operation_key='native-role-source',request_id='native-role-1',
             person_id=ACTOR,logical_time='2026-10-20T19:00:00Z',source_id=SOURCE,payload=payload)
@@ -88,6 +95,14 @@ async def test_current11_production_roles_source_case_editorial_geo_and_hybrid_r
         calendar=await execute_fact_read(FactReadRequest(action='calendar',month=1,day=1,calendar='gregorian',**identity),acquire=acquire)
         observations=await execute_fact_read(FactReadRequest(action='observations',metric_key='population',**identity),acquire=acquire)
         assert calendar.status==observations.status=='ok'
+        compared=await execute_fact_read(FactReadRequest(action='observation_compare',story_id=STORY,
+            left_id=f"{finding['assertion_id']}:o0",right_id=f"{finding['assertion_id']}:o1",limit=2,
+            **identity),acquire=acquire)
+        assert compared.status=='ok' and len(compared.records)==2,compared.reason
+        from regional_knowledge.observation_comparison import render_comparison
+        comparison=render_comparison(compared)
+        assert comparison['left']['value_decimal']=='1910' and comparison['ratio'] is None
+        assert comparison['verdict']=='manual_identity_and_semantic_review_required'
         async with admin.transaction():
             assert await(await admin.execute('SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])',([SOURCE],))).fetchone()==(True,)
         async def count(text):return 8

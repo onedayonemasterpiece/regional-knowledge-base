@@ -11,7 +11,7 @@ from collections import defaultdict
 
 from .geo_migration import (Alias, Blocked, Edition, Exclusion, GeoManifestItem,
     GeoMigrationManifest, GeoObservation, InventoryCounts, LocatorHint, ExternalId, LegacyResolution, OwnerReference, Place, Provenance,
-    Relation, exact_uuid, sha)
+    Relation, exact_uuid, sha, MAX_PLACE_PROVENANCE)
 
 
 class GeoWhitelistError(ValueError):
@@ -111,14 +111,15 @@ def build_geo_whitelist(*,source_inventory_sha256,expected_counts,entities,menti
         owner=row['owner_user_id'];found=sorted(by_entity[identity],key=lambda x:x['id'])
         if not found:
             block(row,'rkb_entities','missing_mention','mention-for-place:'+identity);continue
-        if len(found)>64:raise GeoWhitelistError('geographic_provenance_bound')
+        if len(found)>MAX_PLACE_PROVENANCE:raise GeoWhitelistError('geographic_provenance_bound')
         keys=[];failures=[]
         for mention in found:
             key,error=provenance(mention['id'],mention['document_id'],mention['revision'],
                 mention.get('evidence') or {},owner)
             keys.append(key)
             if error:failures.append(error)
-        spelling=found[0].get('exact_source_spelling')
+        spelling=next((mention['exact_source_spelling'] for mention in found
+            if mention.get('exact_source_spelling')),None)
         if not spelling:
             block(row,'rkb_entities','missing_source_label','source-spelling:'+identity);continue
         metadata=row.get('metadata') or {}

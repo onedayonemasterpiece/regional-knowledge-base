@@ -18,13 +18,27 @@ def canonical(value):
                       ensure_ascii=False, allow_nan=False).encode()
 
 
+def observation_position(value):
+    """Exact native observation locator, never a query expression."""
+    if type(value) is not str or len(value) != 39:
+        raise ValueError('canonical observation locator required')
+    assertion, separator, suffix = value.partition(':')
+    if (str(UUID(assertion)) != assertion or separator != ':' or
+            len(suffix) != 2 or suffix[0] != 'o' or suffix[1] not in '01234567'):
+        raise ValueError('canonical observation locator required')
+    return assertion, int(suffix[1])
+
+
 class FactReadRequest(ReadIdentity):
     type: Literal['FACT_READ'] = 'FACT_READ'
     protocol_version: Literal[2] = 2
     operation: Literal['source_fact_read'] = 'source_fact_read'
     operation_version: Literal[1] = 1
-    action: Literal['assertions', 'calendar', 'observations']
+    action: Literal['assertions', 'calendar', 'observations', 'observation_compare']
     source_id: str | None = None
+    story_id: str | None = None
+    left_id: str | None = None
+    right_id: str | None = None
     month: Annotated[int, Field(ge=1, le=12)] | None = None
     day: Annotated[int, Field(ge=1, le=31)] | None = None
     calendar: Literal['gregorian', 'julian', 'unspecified'] | None = None
@@ -41,6 +55,16 @@ class FactReadRequest(ReadIdentity):
     def exact_filter(self):
         if self.source_id is not None and str(UUID(self.source_id)) != self.source_id:
             raise ValueError('canonical source UUID required')
+        if self.action == 'observation_compare':
+            if (self.story_id is None or str(UUID(self.story_id)) != self.story_id or
+                    self.left_id == self.right_id or self.limit != 2 or self.cursor is not None or
+                    any(v is not None for v in (self.source_id, self.month, self.day,
+                        self.calendar, self.metric_key, self.unit_code))):
+                raise ValueError('exact Story and two distinct observations required')
+            observation_position(self.left_id); observation_position(self.right_id)
+            return self
+        if any(v is not None for v in (self.story_id, self.left_id, self.right_id)):
+            raise ValueError('comparison selectors require comparison action')
         if self.action == 'calendar':
             if self.month is None or self.day is None or self.calendar is None:
                 raise ValueError('explicit calendar/day required')
@@ -92,6 +116,19 @@ class FactReadResult(ReadIdentity):
                     len(evidence.dependencies.source_revisions)!=1 or
                     evidence.dependencies.source_revisions[0].content_revision != record.get('source_revision')):
                 raise ValueError('fact record/evidence pairing required')
+        if any('story_id' in record or 'story_revision' in record for record in self.records):
+            if (len(self.records)!=2 or self.next_cursor is not None or
+                    len({r.get('story_id') for r in self.records})!=1 or
+                    len({r.get('story_revision') for r in self.records})!=1 or
+                    len({r.get('source_id') for r in self.records})!=1 or
+                    len({r.get('id') for r in self.records})!=2):
+                raise ValueError('complete same Story observation pair required')
+            for record in self.records:
+                if (record.get('kind')!='observations' or
+                        str(UUID(record['story_id']))!=record['story_id'] or
+                        type(record['story_revision']) is not int or not 1<=record['story_revision']<2**63):
+                    raise ValueError('exact current Story observation required')
+                observation_position(record['id'])
         if len(canonical(self.model_dump(mode='json'))) > 128 * 1024:
             raise ValueError('fact read result bound')
         return self

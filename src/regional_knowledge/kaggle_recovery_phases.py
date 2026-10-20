@@ -15,12 +15,13 @@ from .kaggle_pg_snapshot_native import SnapshotError, encode, sha
 MAX_PHASE_FRAME_BYTES = 4 * 1024 * 1024
 MAX_PHASE_RESULT_BYTES = 120 * 1024  # Reserve result envelope/claim identity bytes.
 from .original_intake import PHASES as ORIGINAL_PHASES
-PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history'})|ORIGINAL_PHASES
+from .kaggle_snapshot_drill import DRILL_PHASES
+PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history'})|ORIGINAL_PHASES|DRILL_PHASES
 
 
 async def build_recovery_worker(*,native_bundle,database,identity,tools,native_uid,native_gid,
                                 current,workspace_private_current,workspace,upload=None,download=None,
-                                ticket_channel=None,transfer=None,acquire=None,limits=None):
+                                ticket_channel=None,transfer=None,acquire=None,limits=None,model_pins=None):
     """Construct the real native owner from the retained Stage0 verification.
 
     tools declares each binary's bundle-relative path and exact --version output.
@@ -80,6 +81,14 @@ async def build_recovery_worker(*,native_bundle,database,identity,tools,native_u
         current=current,workspace_private_current=workspace_private_current,native_uid=native_uid,
         native_gid=native_gid,acquire=acquire,upload_ticket=upload,limits=limits or SnapshotLimits())
     # Verify exact installed ELF revisions before any backup/restore operation.
+    from .kaggle_native_env import verified_native_environment
+    if model_pins is not None:
+        from .kaggle_pg_snapshot_native import _hash
+        if type(model_pins) is not dict or set(model_pins)!={'model_sha256','tokenizer_sha256'}:
+            raise SnapshotError('recovery_model_inventory_required')
+        for value in model_pins.values():_hash(value)
+        factory.model_pins=dict(model_pins)
+    factory.native_env=await asyncio.to_thread(verified_native_environment,native_bundle)
     await factory.tools.verify(factory._run)
     return WorkerRecoveryPhases(factory=factory,download=download,workspace=workspace)
 
@@ -117,7 +126,7 @@ class WorkerRecoveryPhases:
             raise TypeError('retained native factory and scoped transfer required')
         self.factory,self.download,self.workspace=factory,download,workspace
         self._sessions={};self._results={};self._requests={};self._lock=asyncio.Lock()
-        self._ready=asyncio.Event();self._initialized=None
+        self._ready=asyncio.Event();self._initialized=None;self.drill=None
 
     async def wait_initialized(self,database,run_id,launch_nonce,runtime_incarnation):
         if database!=self.factory.database or (run_id,launch_nonce,runtime_incarnation)!=self.factory.identity:
@@ -131,10 +140,11 @@ class WorkerRecoveryPhases:
             'launch_nonce','runtime_incarnation','database_generation','writer_generation','phase',
             'operation_key','request_sha256','arguments','compute_claim','dispatch_generation'}
         if (not isinstance(frame,dict) or set(frame)-{'download_ticket'}!=fields
-                or 'download_ticket' in frame and frame.get('phase')!='prepare' or frame['type']!='DISPATCH'
+                or 'download_ticket' in frame and frame.get('phase') not in ('prepare','drill_prepare') or frame['type']!='DISPATCH'
                 or frame['protocol_version']!=2 or frame['kind']!='recovery_phase'
                 or frame['phase'] not in PHASES-{'source_history'}-ORIGINAL_PHASES or type(frame['connection_generation']) is not int
-                or frame['connection_generation']<1 or frame['dispatch_generation']!=frame['connection_generation']
+                or frame['connection_generation']<1 or type(frame['dispatch_generation']) is not int
+                or not 1<=frame['dispatch_generation']<=frame['connection_generation']
                 or any(not isinstance(frame[k],str) or not 1<=len(frame[k].encode())<=256
                        for k in ('id','claim','compute_claim','operation_key'))
                 or tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))!=self.factory.identity
@@ -153,9 +163,11 @@ class WorkerRecoveryPhases:
             prior=self._requests.get(key)
             if prior is not None:
                 if prior!=request:raise SnapshotError('recovery_phase_operation_changed')
-                if key not in self._results:
+                if key in self._results:return self._results[key]
+                session=self._sessions.get(frame.get('arguments',{}).get('handle'))
+                if not (frame['phase']=='finish' and session in self.factory._finish_intents
+                        or self.drill is not None and self.drill.can_reconcile(frame['phase'],frame['arguments'])):
                     raise SnapshotError('recovery_phase_unknown_requires_reconciliation')
-                return self._results[key]
             if len(self._requests)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
             self._requests[key]=request  # UNKNOWN is retained before effects.
             value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
@@ -163,6 +175,15 @@ class WorkerRecoveryPhases:
             result={'phase':frame['phase'],'request_sha256':request,'value':value}
             self._results[key]=result
             return result
+
+    async def aclose(self):
+        if self.drill is not None:await self.drill.aclose()
+        # Includes a partially restored candidate that never released readiness.
+        for candidate in tuple(self.factory._owned_candidates):
+            await candidate.aclose()
+            self.factory._owned_candidates.discard(candidate)
+        self.factory._capabilities.clear()
+        self._initialized=None
 
     def _session(self,args,binding):
         session=self._sessions.get(args['handle'])
@@ -173,6 +194,9 @@ class WorkerRecoveryPhases:
     async def _execute(self,phase,args,key,binding,frame):
         from .kaggle_pg_snapshot_native import BlobRef
         if not isinstance(args,dict):raise SnapshotError('recovery_phase_arguments')
+        if phase in DRILL_PHASES:
+            if self.drill is None:raise SnapshotError('drill_fixed_owner_unavailable')
+            return await self.drill(phase,args,key,binding,frame)
         expected={'capture':{'versions','expected_sequence'},
             'prepare':{'manifest_b64','manifest_ref','blob','control_b64','expected_versions','database','identity','restore_operation'},
             'apply':{'handle','command_b64','accepted','handler_sha256','original_pg_writer'},

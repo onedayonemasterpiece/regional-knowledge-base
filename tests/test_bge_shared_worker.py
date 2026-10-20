@@ -516,3 +516,22 @@ async def test_each_idle_probe_replays_unacknowledged_release_before_nonce_proof
             proof_index = next(i for i, frame in enumerate(tail) if frame.get('probe_nonce') == nonce)
             releases = [frame for frame in tail[:proof_index] if frame['type'] == 'RESOURCE_RELEASED']
             assert releases and releases[-1] == original
+
+
+@pytest.mark.asyncio
+async def test_native_read_events_attach_to_existing_result_without_changing_result_contract():
+    from regional_knowledge.kaggle_bootstrap import PreparedRuntime
+    from test_kaggle_target_runtime import candidate
+    transport=module('bge_wss_transport');peer=Peer();stop=asyncio.Event();calls=[]
+    async def handler(frame,*,encode):return result(frame)
+    def drain(frame):calls.append(frame['request_id']);return [{'synthetic_native_timing':1}]
+    async def prepare(*args,**kwargs):return PreparedRuntime(handler,candidate(),read_event_drain=drain)
+    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),lambda:lambda text:[1.]+[0.]*1023,lambda:{},
+        prepare_runtime=prepare,connector=peer.connect,heartbeat_seconds=.01,maximum_seconds=3,stop=stop)
+    task=asyncio.create_task(worker.run())
+    try:
+        await peer.wait('READY');await peer.put(query(request='native-event-query'))
+        value=await peer.wait('QUERY_RESULT')
+        assert value['status']=='degraded' and value['read_events']==[{'synthetic_native_timing':1}]
+        assert calls==['native-event-query'] and len(json.dumps(value).encode())<=262144
+    finally:stop.set();await task

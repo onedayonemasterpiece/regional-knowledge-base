@@ -238,6 +238,7 @@ class SourceReadGate:
         if len(sources) > 160:
             raise SourceGateDenied('dependency bound exceeded')
         scope = ((q.source_id,) if q.source_id is not None else None) if graph else None if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
+        if fact and q.action=='observation_compare':scope=sources
         if graph and (not self.graph_supported() or len(result.records)>q.limit or any(
                 record['action']!=q.action or q.source_id is not None and record['source_id']!=q.source_id
                 or q.entity_id is not None and record['entity_id']!=q.entity_id for record in result.records)):
@@ -245,9 +246,17 @@ class SourceReadGate:
         if catalog and (not self.catalog_supported() or len(result.records)>q.limit):
             raise SourceGateDenied('exact bounded source catalogue required')
         if fact and (not self.facts_supported() or len(result.records)>q.limit or
-                any(record.get('kind')!=q.action for record in result.records) or
+                any(record.get('kind')!=('observations' if q.action=='observation_compare' else q.action) for record in result.records) or
                 q.source_id is not None and any(source!=q.source_id for source in sources)):
             raise SourceGateDenied('exact source fact provenance differs')
+        if fact and q.action=='observation_compare' and (
+                len(result.records)!=2 or result.next_cursor is not None or
+                tuple(record.get('id') for record in result.records)!=(q.left_id,q.right_id) or
+                any(record.get('story_id')!=q.story_id for record in result.records) or
+                result.records[0].get('story_revision')!=result.records[1].get('story_revision') or
+                type(result.records[0].get('story_revision')) is not int or result.records[0]['story_revision']<1 or
+                len(sources)!=1):
+            raise SourceGateDenied('exact Story observation pair differs')
         if fact and any(q.action=='calendar' and any(record.get('fact',{}).get(key)!=getattr(q,key)
                     for key in ('month','day','calendar')) or q.action=='observations' and (
                     record.get('fact',{}).get('metric_key')!=q.metric_key or q.unit_code is not None and

@@ -196,7 +196,7 @@ class ControlSpool:
         self.max_bytes,self.raw_retention_seconds,self.clock=max_bytes,float(raw_retention_seconds),clock
         self.max_command_bytes=min(1048576,journal.max_segment_bytes)
         self.max_outcome_bytes=min(1048576,journal.max_outcome_bytes)
-        self._lock=asyncio.Lock();self._loop=None;self._writing=0
+        self._lock=asyncio.Lock();self._loop=None;self._writing=0;self._intake_guard=None
         self._facts_owner=object();self._source_version=object();self._source_anchor=None
         self._source_head=None;self._source_covered_sequence=0
         self._fd=os.open(queue.path.resolve().with_suffix(queue.path.suffix+'.control-spool.lock'),os.O_RDWR|os.O_CREAT,0o600)
@@ -294,7 +294,19 @@ class ControlSpool:
             raise
         finally:db.close()
 
+    def configure_intake_guard(self,current):
+        """Retain the configured startup gate for new staging/acceptance only."""
+        if not callable(current) or self._intake_guard is not None:
+            raise TypeError('one retained control intake guard required')
+        self._intake_guard=current
+
+    def _require_intake(self):
+        try:allowed=self._intake_guard is None or self._intake_guard()
+        except Exception:allowed=False
+        if not allowed:raise SpoolDenied('configured control intake unavailable')
+
     async def _authorize(self,context):
+        self._require_intake()
         if not isinstance(context,RequestAuthority) or context.route!='owner' or context.public_only:
             raise SpoolDenied('current owner personal route required')
         try:return await _database(self.participants.require,context,'import')
@@ -307,6 +319,7 @@ class ControlSpool:
         in the ordered apply transaction. This current Participants check only
         admits a canonical person to the personal editorial intake path.
         """
+        self._require_intake()
         if command.route.startswith('disagreement.'):
             from .disagreement_native import validate_case_command,required_capabilities
             if command.schema_revision=='rkb-v4-sql001-011-v1':

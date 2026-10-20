@@ -197,12 +197,14 @@ async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg():
         return {'ok':True}
     async def prepare(encoder,**kwargs):
         assert kwargs['launch_config'] is config
+        assert isinstance(kwargs['telemetry'],asyncio.Queue) and kwargs['telemetry'].maxsize==64
         return PreparedRuntime(handler,candidate())
     runtime=TargetRuntime(config,executed_source='/fixture',pool_factory=Pool,owner_factory=Owner,prepare=prepare)
     args=dict(run_id=CONFIG['run_id'],launch_nonce=CONFIG['launch_nonce'],runtime_incarnation='incarnation')
     prepared=await runtime.prepare(SimpleNamespace(artifacts=None),**args)
     assert await runtime.prepare(None,**args) is prepared
     assert await prepared.query_handler({},encode=None)=={'ok':True}
+    assert prepared.read_event_drain({'request_id':'none','connection_generation':1,'turn_generation':0})==[]
     await runtime.aclose();await runtime.aclose()
     assert events==['owned','pool','open','pool-close','pg-close']
 

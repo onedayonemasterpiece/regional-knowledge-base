@@ -45,6 +45,65 @@ def stages_ms(values):
             and type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 86400000}
 
 
+def clean_native_read_events(values, *, request_id, run_id, runtime_incarnation,
+                             connection_generation, turn_generation):
+    """Fixed optional diagnostics, never a result/authority or payload channel."""
+    import json
+    if (type(values) is not list or len(values)>4
+            or len(json.dumps(values,allow_nan=False,separators=(',',':')).encode())>8192):
+        raise ValueError('bounded native read events required')
+    identity=dict(request_ref=sha256(request_id.encode()).hexdigest(),run_id=run_id,
+        runtime_incarnation=runtime_incarnation,connection_generation=connection_generation,turn_generation=turn_generation)
+    clean=[]
+    for value in values:
+        kinds={'kaggle_read_completed':('executor_stage',False),
+               'kaggle_read_adapter_terminal':('adapter',True)}
+        if type(value) is not dict or value.get('event') not in kinds:
+            raise ValueError('fixed native read event required')
+        event=value['event'];plane,terminal=kinds[event]
+        allowed={'event','plane','terminal',*identity,'diagnostic_state','executed_branches',
+            'stages_ms','timing_semantics','loss_before'}|({'status','reason'} if terminal else set())
+        if (set(value)-allowed or any(value.get(k)!=v for k,v in identity.items())
+                or value.get('plane')!=plane or value.get('terminal') is not terminal
+                or value.get('diagnostic_state') not in ('observed','inconclusive')
+                or value.get('timing_semantics')!='overlapping_do_not_sum'
+                or type(value.get('stages_ms')) is not dict
+                or stages_ms(value['stages_ms'])!=value['stages_ms']
+                or not isinstance(value.get('executed_branches'),(tuple,list))
+                or tuple(value['executed_branches'])!=branches(value['executed_branches'])):
+            raise ValueError('native read identity or timing contract differs')
+        loss=value.get('loss_before',{})
+        if (type(loss) is not dict or set(loss)-{'emitted','dropped','failed'}
+                or any(type(v) is not int or not 0<=v<2**63 for v in loss.values())):
+            raise ValueError('native read loss counters differ')
+        record=dict(event=event,plane=plane,terminal=terminal,**identity,
+            diagnostic_state=value['diagnostic_state'],executed_branches=list(value['executed_branches']),
+            stages_ms=dict(value['stages_ms']),timing_semantics='overlapping_do_not_sum',loss_before=dict(loss))
+        if terminal:
+            if outcome(value.get('status'),value.get('reason'))!=(value.get('status'),value.get('reason')):
+                raise ValueError('fixed native outcome required')
+            record.update(status=value['status'],reason=value.get('reason'))
+        clean.append(record)
+    return clean
+
+
+def drain_native_read_events(collector, frame):
+    """Drain finite diagnostics only; old/cancelled requests cannot join a new one."""
+    reference=sha256(str(frame.get('request_id','')).encode()).hexdigest();result=[]
+    telemetry_counts(collector)
+    for _ in range(64):
+        try:value=collector.get_nowait()
+        except asyncio.QueueEmpty:break
+        collector.task_done()
+        if (value.get('request_ref')==reference and all(value.get(k)==frame.get(k)
+                for k in ('connection_generation','turn_generation')) and len(result)<4):result.append(value)
+        else:collector._rkb_read_event_counts['dropped']+=1
+    counts=telemetry_counts(collector)
+    if counts['dropped'] or counts['failed']:
+        result=[dict(value,diagnostic_state='inconclusive',loss_before=counts) for value in result]
+    return result
+
+
 def branches(values):
     present = set(values)
     return tuple(name for name in ('lexical', 'dense') if name in present)

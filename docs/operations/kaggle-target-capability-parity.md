@@ -16,7 +16,7 @@ current source-history gate.
 | `book_ingest`, `book_pages` | Explicit pinned PDF parser/intake and independent HF counter required; direct original archive receipt, complete page/block continuation. DjVu, multipart and later reprocess paths remain unsupported. |
 | `story_search`, `story_get`, `story_history`, variants | Native saved-body, default-variant, editorial revision/history and bounded variant reads are prepared behind the shared source/output fence. Production-role PG fixture passes; live MCP acceptance remains open. |
 | `story_calendar`, `story_observation_search` | Fresh schema8 adds indexed source facts independent of Story. Exact event-day/calendar semantics and decimal/unit preservation are required. No schema7 adoption is implied. |
-| `story_observation_compare` | Not enabled by the initial facts read path; source subject identity/method review remains necessary, with no automatic arithmetic. |
+| `story_observation_compare` | Fixed native exact-pair read prepared through the existing FACT_READ slot and source/output gate. The unchanged Story/left/right selectors require both observations in that current Story. Returns exact decimals, source proofs and conservative compatibility reasons; identity/method review and live acceptance remain open, with no arithmetic. |
 | `entity_list`, graph stage/fetch/related, POI context/registry | Fresh11 source graph writes retain five entity kinds, explicit identities, aliases, directional relations and exact passage/page/region/Unicode evidence. Native atomicity, duplicate, withdrawal and corruption tests pass; typed public graph reads are still being integrated. Street Story retains physical POI ownership. |
 | GEO status/receipt/lookup/request/claim/stage/apply/recheck | Bounded whitelist manifest staging/activation, retained identities, indexed native lookup/context and shared MCP reads are prepared. Native and production-role fixtures pass. Actual GEO-only migration and full operation parity are not accepted. |
 | Cases, contributions, conclusions, personal drafts and public pages | Native versioned lifecycle, explicit publication selection, scoped access, exact accepted origins and production-role reads/writes pass synthetic PG tests. Four public MCP operation groups are being integrated. Real non-owner and recovery acceptance remain open. Cases remain independent of a Story. |
@@ -74,3 +74,15 @@ observers therefore use576records; schema6/7 retain512. The1MiB byte cap and
 64KiB per-definition cap remain unchanged. Fixture evidence is retained at
 `/home/dev/artifacts/regional-knowledge-base/20261020T181101Z-native-facts-pg1711-fixture-20261020`.
 This is native fixture evidence, not a target deployment or scale gate.
+
+The native observation comparison adds no SQL artifact, stored function, accepted
+command or schema revision. In one repeatable-read transaction it reads the exact
+current Story and two observation primary keys. Missing membership or either
+missing/currently unavailable observation closes the whole pair. Output refresh
+reconstructs both sides from the currently gated result; it never retains a
+previous comparison after withdrawal or authority loss. Source-only observation
+search remains available without a Story; this existing comparison operation
+continues to require its Story argument. Method, subject and period wording stay
+source-attributed, with no calendar/unit conversion, difference or ratio. The
+explicit route `source.observation_compare` joins both fixed history allowlists,
+so the native observer fingerprint must be reviewed with the new worker bundle.

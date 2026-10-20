@@ -90,3 +90,17 @@ tokenize/acquire/encode/lexical/dense/hydrate/search/serialize/total/adapter
 timings keep their original overlapping semantics. Do not sum stages or subtract
 wall timestamps across hosts. Logs contain only request hashes and existing
 run/generation correlation, never query/body/vector/actor/credential values.
+
+
+The generated TargetRuntime now supplies a finite64-event queue to the native
+read adapter. The prepared owner drains at most4 events/8KiB for the exact
+request/generation into optional `read_events` metadata on the existing WSS
+result; the complete frame retains its256KiB cap. Diagnostics are omitted when
+they do not fit and never replace a valid result. No exporter task or second
+channel is started. The authenticated controller checks exact
+run/incarnation/request hash/generation and a fixed numeric/outcome whitelist,
+then uses its existing nonblocking ReadTelemetry sink. Malformed diagnostics
+are dropped with a loss count; they neither disclose their fields nor deny a
+valid result. Queue overflow and stale/cancelled leftovers remain inconclusive
+diagnostics. This wiring is prepared source until its exact worker release is
+actually loaded and matched native records are observed.

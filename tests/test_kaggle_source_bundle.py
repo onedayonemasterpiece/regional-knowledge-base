@@ -101,3 +101,65 @@ assert not {'torch','transformers','tensorflow','flax'} & sys.modules.keys()
     completed=subprocess.run([sys.executable,'-I','-c',script,str(tmp_path)],cwd=tmp_path,
         env={'PATH':os.defpath},capture_output=True,timeout=20,text=True)
     assert completed.returncode==0,completed.stderr[-4000:]
+
+
+def test_shipped_fact_compare_executes_lazy_path_without_dev_renderer_or_model(tmp_path):
+    from test_kaggle_fact_read import row,request,ASSERTION,SOURCE
+    _,files,_=source_bundle(Path(__file__).resolve().parents[1])
+    for relative,encoded in files.items():
+        target=tmp_path/relative;target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes(base64.b64decode(encoded,validate=True))
+    story='40000000-0000-0000-0000-000000000001'
+    q=request(action='observation_compare',month=None,day=None,calendar=None,story_id=story,
+        left_id=f'{ASSERTION}:o0',right_id=f'{ASSERTION}:o1',limit=2,compute_claim='existing-read-slot')
+    fixture=dict(request=q.model_dump(mode='json'),rows=[row(1,action='observations'),row(0,action='observations')],
+        story=dict(story_id=story,revision=2,finding_ids=[ASSERTION],
+            source=dict(source_id=SOURCE,content_revision=1,eligibility_revision=7)))
+    (tmp_path/'compare.json').write_text(json.dumps(fixture,default=str))
+    script="""
+import asyncio,json,pathlib,socket,sys
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+root=pathlib.Path(sys.argv[1]).resolve()
+def denied(*args,**kwargs):raise AssertionError('comparison attempted network/model access')
+socket.socket.connect=denied;socket.create_connection=denied
+sys.path.insert(0,str(root))
+from psycopg.rows import tuple_row
+from psycopg.pq import TransactionStatus
+from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
+from regional_knowledge.kaggle_query import PinnedTokenizer
+from regional_knowledge.bge_contract import REVISION,SPACE,TOKENIZER_SHA256
+raw=json.loads((root/'compare.json').read_text())
+class Native:
+ closed=False
+ def __init__(self):self.row_factory=tuple_row
+ info=SimpleNamespace(transaction_status=TransactionStatus.IDLE)
+ @asynccontextmanager
+ async def acquire(self):yield self
+ @asynccontextmanager
+ async def transaction(self):yield self
+ @asynccontextmanager
+ async def cursor(self):yield self
+ async def execute(self,sql,args=()):self.sql=sql
+ async def fetchone(self):
+  if 'schema_revision,function_revision' in self.sql:
+   return ('rkb-v4-sql001-011-v1','rkb-v4-source-story-cases-geo-v6')
+  if 'read_editorial_story_v1' in self.sql:return (raw['story'],)
+  return (9,9,4,True,False,'native-db')
+ async def fetchall(self):return raw['rows']
+async def forbidden(_):raise AssertionError('comparison counted or encoded')
+handler=KaggleWorkerQuery(acquire=Native().acquire,
+ tokenizer=PinnedTokenizer(forbidden,REVISION,TOKENIZER_SHA256,SPACE))
+result=asyncio.run(handler(raw['request'],encode=forbidden))
+assert result['status']=='ok',result.get('reason')
+assert [r['id'] for r in result['records']]==[raw['request']['left_id'],raw['request']['right_id']]
+assert result['records'][0]['fact']['value']=='12.50'
+assert 'observation_comparison' not in json.dumps(list(sys.modules))
+assert not {'torch','transformers','tensorflow','flax'} & sys.modules.keys()
+assert not (root/'regional_knowledge'/'observation_comparison.py').exists()
+for name in ('kaggle_fact_read','kaggle_fact_contracts','story_contracts'):
+ assert pathlib.Path(sys.modules['regional_knowledge.'+name].__file__).resolve().is_relative_to(root)
+"""
+    completed=subprocess.run([sys.executable,'-I','-c',script,str(tmp_path)],cwd=tmp_path,
+        env={'PATH':os.defpath},capture_output=True,timeout=20,text=True)
+    assert completed.returncode==0,completed.stderr[-4000:]

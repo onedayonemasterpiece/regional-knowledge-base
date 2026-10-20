@@ -9,7 +9,7 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 
 from .kaggle_fact_contracts import (FactReadRequest, FactReadResult, canonical,
-    cursor_scope, decode_cursor, encode_cursor)
+    cursor_scope, decode_cursor, encode_cursor, observation_position)
 from .kaggle_protocol import EvidenceItem, EvidenceMetadata, ItemDependencies, SourceDependency
 from .kaggle_query import ReadUnavailable, _frontier, _identity
 from .story_contracts import StageEventDateInput, StageObservationInput
@@ -30,6 +30,19 @@ FACT_READER_FUNCTIONS = (
     'read_source_observations_v1(text,text,uuid,uuid,integer,integer)',
     'read_source_assertions_v1(uuid,uuid,integer)',
 )
+
+
+OBSERVATION_PAIR_SQL = """
+ SELECT a.assertion_id,a.source_id,a.source_revision,v.eligibility_revision,a.proposition,
+ a.data->>'account_kind',a.data->>'attributed_to',a.data->>'reported_by',d.ordinal,d.data,d.proofs,s.bibliography,0
+ FROM rkb_v4.source_observations d JOIN rkb_v4.story_assertion_versions a
+ ON (a.assertion_id,a.revision)=(d.assertion_id,d.assertion_revision)
+ JOIN rkb_v4.sources s ON s.source_id=a.source_id
+ JOIN rkb_v4.active_revision r ON (r.source_id,r.revision)=(a.source_id,a.source_revision)
+ JOIN rkb_v4.source_visibility v ON v.source_id=a.source_id
+ WHERE (d.assertion_id,d.assertion_revision,d.ordinal) IN ((%s::uuid,1,%s),(%s::uuid,1,%s))
+ AND a.source_id=%s::uuid AND s.accepted AND NOT s.withdrawn
+"""
 
 
 def _record(row, action):
@@ -88,7 +101,7 @@ async def execute_fact_read(request: FactReadRequest, *, acquire):
     observed = {}
 
     def failed(reason, invalid=False):
-        return FactReadResult(**_identity(request), status='invalid_query' if invalid else 'unavailable',
+        return FactReadResult(**_identity(request), status='invalid_query' if invalid else 'denied' if reason == 'access_denied' else 'unavailable',
             observed_data_seq=observed.get('data'), observed_projection_seq=observed.get('projection'),
             observed_visibility_epoch=observed.get('visibility'), observed_database_generation=observed.get('database'),
             reason=reason)
@@ -110,7 +123,8 @@ async def execute_fact_read(request: FactReadRequest, *, acquire):
 
                         await _frontier(cursor, execute, request, observed, require_dense=False)
                         await execute('SELECT schema_revision,function_revision FROM rkb_v4.recovery_state WHERE singleton')
-                        if tuple(await cursor.fetchone() or ()) not in FACT_READ_REVISIONS:
+                        revisions = tuple(await cursor.fetchone() or ())
+                        if revisions not in FACT_READ_REVISIONS:
                             raise ReadUnavailable('not_ready')
                         scope = cursor_scope(request, observed)
                         after = ('00000000-0000-0000-0000-000000000000', -1, 0)
@@ -120,7 +134,24 @@ async def execute_fact_read(request: FactReadRequest, *, acquire):
                             except ValueError:
                                 raise ReadUnavailable('invalid_input') from None
                         assertion, ordinal, year = after
-                        if request.action == 'calendar':
+                        comparison_story = None
+                        if request.action == 'observation_compare':
+                            # Both indexed observation lookups share the exact Story snapshot.
+                            statement = ("SELECT rkb_v4.read_story_v1(%s,'get',NULL,0,1)"
+                                if revisions == (FACT_SCHEMA, FACT_FUNCTION) else
+                                "SELECT rkb_v4.read_editorial_story_v1(%s,NULL,'get',0,1,NULL)")
+                            await execute(statement, (UUID(request.story_id),))
+                            row = await cursor.fetchone()
+                            comparison_story = row[0] if row else None
+                            if not comparison_story:
+                                raise ReadUnavailable('access_denied')
+                            left, right = observation_position(request.left_id), observation_position(request.right_id)
+                            if (comparison_story.get('story_id') != request.story_id or
+                                    any(position[0] not in comparison_story['finding_ids'] for position in (left,right))):
+                                raise ReadUnavailable('access_denied')
+                            await execute(OBSERVATION_PAIR_SQL, (*left,*right,
+                                comparison_story['source']['source_id']))
+                        elif request.action == 'calendar':
                             await execute('SELECT * FROM rkb_v4.read_source_calendar_v1(%s,%s,%s,%s::uuid,%s,%s::uuid,%s,%s)',
                                 (request.calendar, request.month, request.day, request.source_id,
                                  year, assertion, ordinal, request.limit + 1))
@@ -134,9 +165,20 @@ async def execute_fact_read(request: FactReadRequest, *, acquire):
                         rows = await cursor.fetchall()
                         if len(rows) > request.limit + 1:
                             raise ReadUnavailable('internal_error')
+                        if comparison_story is not None:
+                            by_id = {f'{row[0]}:o{row[8]}':row for row in rows}
+                            if len(rows) != 2 or set(by_id) != {request.left_id,request.right_id}:
+                                raise ReadUnavailable('access_denied')
+                            rows = [by_id[request.left_id],by_id[request.right_id]]
                         records, evidence, positions = [], [], []
                         for row in rows[:request.limit]:
-                            record, item, position = _record(row, request.action)
+                            record, item, position = _record(row,
+                                'observations' if comparison_story is not None else request.action)
+                            if comparison_story is not None:
+                                if (record['source_id'] != comparison_story['source']['source_id'] or
+                                        record['source_revision'] != comparison_story['source']['content_revision']):
+                                    raise ReadUnavailable('internal_error')
+                                record.update(story_id=request.story_id,story_revision=comparison_story['revision'])
                             if request.source_id is not None and record['source_id'] != request.source_id:
                                 raise ReadUnavailable('internal_error')
                             if request.action=='calendar' and any(record['fact'][key]!=getattr(request,key)

@@ -23,9 +23,13 @@ def _object(pairs):
 
 
 def target_launch_from_wire(value):
-    if type(value) is not dict or set(value)!={field.name for field in fields(TargetLaunchSpec)}:
+    required={field.name for field in fields(TargetLaunchSpec)}-{'recovery'}
+    if type(value) is not dict or not required<=set(value) or set(value)-required-{'recovery'}:
         raise ValueError('exact target launch configuration fields required')
     options=dict(value)
+    if options.get('recovery') is not None:
+        from .kaggle_recovery_composition import SnapshotRecoveryConfig
+        options['recovery']=SnapshotRecoveryConfig.from_wire(options['recovery'])
     options['database']=OwnedDatabase(**options['database'])
     for name in ('artifacts','dependency_packages','command_handlers'):
         if type(options[name]) is not list:raise ValueError('target configuration arrays required')

@@ -114,6 +114,8 @@ class KaggleSourceImporter:
     def _binding_current(self, binding):
         if not self.startup.binding_current(binding):
             return False
+        snapshot=getattr(self.startup,'snapshot',None)
+        if snapshot is not None and not snapshot.verified:return False
         try:
             with self.queue.connect(write=False) as db:
                 runtime = self.queue._runtime_row(db,binding.run_id)
@@ -555,7 +557,7 @@ class KaggleSourceImporter:
     def _intake_coverage_current(self,binding):
         # New intake needs the actual startup capability installed by native
         # genesis/history verification, rather than READY/writer status alone.
-        return (self.startup.reads_current() and self.startup.binding==binding
+        return (self.startup.imports_current() and self.startup.binding==binding
             and self.startup.coverage is self.spool._source_anchor)
 
     async def _stage_command(self, access, row, payload):

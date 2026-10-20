@@ -114,11 +114,16 @@ async def intake(target, tmp_path, request):
     startup.running=True;startup.binding=current_binding(t.queue)
     startup.history.available=True
     startup.coverage=await startup.history.restore(startup.binding)
+    # GEO native/remote proof has separate actual-spool gate tests. Retain an
+    # explicit synthetic proof seam for isolated fresh11 importer regressions.
+    geo_state={'current':True}
+    if versions==DOMAIN_REVISIONS:
+        startup.imports_current=lambda:startup.reads_current() and geo_state['current']
     tokens=await issue(t.auth.provider)
     principal=Principal(subject=t.auth.p.owner.subject,client_id=t.auth.provider.client.client_id,
         issuer=t.auth.provider.issuer,access_token=tokens.access_token)
     s=SimpleNamespace(t=t,startup=startup,spool=spool,originals=originals,tokenizer=tokenizer,principal=principal,
-        importer=startup.importer,token_calls=token_calls)
+        importer=startup.importer,token_calls=token_calls,geo_state=geo_state)
     yield s
     await startup.source_dispatch.aclose();spool.close()
 
@@ -495,5 +500,41 @@ async def test_first_finalize_waits_for_native_genesis_and_reconciles_existing_a
     pending=await s.importer.book_ingest(command='status',principal=s.principal,ingestion_id=result.ingestion_id)
     assert pending.state=='processing' and len(s.token_calls)==token_calls
     assert (await s.spool.get(entry.command.operation_key)).command.encode()==original
+    with s.t.queue.connect(write=False) as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('intake',[11],indirect=True)
+async def test_first_fresh11_import_waits_for_geo_installation_and_rechecks_before_acceptance(intake):
+    s=intake;result=await staged(s)
+    await s.importer.book_ingest(command='validate',principal=s.principal,ingestion_id=result.ingestion_id)
+    assert s.startup.reads_current()
+    s.geo_state['current']=False
+    tokens=len(s.token_calls)
+    with pytest.raises(ToolError,match='source_history_unavailable'):
+        await s.importer.book_ingest(command='finalize',principal=s.principal,ingestion_id=result.ingestion_id)
+    assert len(s.token_calls)==tokens and not s.spool.journal.store.objects
+    with s.t.queue.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM jobs').fetchone()[0]==0
+    s.geo_state['current']=True
+    await s.importer.book_ingest(command='finalize',principal=s.principal,ingestion_id=result.ingestion_id)
+    for _ in range(10):await finish_document(s)
+    original_head=s.spool.journal.head
+    async def invalidates_during_await():
+        value=await original_head();s.geo_state['current']=False;return value
+    s.spool.journal.head=invalidates_during_await
+    with pytest.raises(ToolError,match='source_history_unavailable'):
+        await s.importer.book_ingest(command='status',principal=s.principal,ingestion_id=result.ingestion_id)
+    s.spool.journal.head=original_head
+    assert await original_head() is None and (await s.spool.scope_state())['operation_count']==0
+    s.geo_state['current']=True
+    await s.importer.book_ingest(command='status',principal=s.principal,ingestion_id=result.ingestion_id)
+    entry=await s.spool.get('source-import:'+result.ingestion_id)
+    exact=entry.command.encode();tokens=len(s.token_calls)
+    s.geo_state['current']=False
+    await s.importer.book_ingest(command='status',principal=s.principal,ingestion_id=result.ingestion_id)
+    assert (await s.spool.get(entry.command.operation_key)).command.encode()==exact
+    assert len(s.token_calls)==tokens
     with s.t.queue.connect(write=False) as db:
         assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1

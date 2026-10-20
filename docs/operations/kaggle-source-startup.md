@@ -95,3 +95,131 @@ SQLite/OAuth and synthetic native-S3 race/cancellation tests. They perform no
 Kaggle, PostgreSQL, model or real object-store operations. Native SOURCE_HISTORY
 registration, exact current function/catalog/ACL pins, real provider recovery
 proof and actual public read acceptance remain required before product routing.
+
+## Generated notebook restore owner
+
+`TargetLaunchSpec.recovery` is an explicit `SnapshotRecoveryConfig` for
+`VERIFIED_INITIALIZED` launches, or fresh launches explicitly enabling the
+first-base owner below. It declares the exact bundle-relative
+`postgres`, `pg_basebackup`, and `pg_verifybackup` paths and complete version
+outputs, allowed HTTPS storage origins, observed nonroot UID/GID, and finite
+archive/unpacked/time budgets. The existing native bundle, package closure and
+command handler pins remain mandatory. Old launch wire without this optional
+field remains valid; a receipt dictionary never supplies a restored capability.
+
+The generated notebook registers one retained `DeferredRecoveryRuntime` and
+`SnapshotTicketChannel` on the existing WSS transport before runtime preparation.
+ATTACH/WELCOME binds its current incarnation and connection generation. After
+Stage0, the owner rechecks the native bundle, grants only its verified native code
+access, builds the existing `WorkerRecoveryPhases` through
+`TargetRuntime.configure_recovery`, and waits for its retained verified database
+capability. The reader pool, queries and READY remain unavailable until physical
+verification, exact accepted-command replay and native final checks complete.
+Reconnect preserves the owner/model/session and invalidates the detached
+generation. Native children use only the retained bundle's verified library
+paths; no ambient `LD_*` settings or cloud credentials enter the notebook.
+
+The controller must supply its existing pre-READY `RecoveryPhaseDispatch`,
+`SnapshotTicketIssuer`, and `PhysicalSnapshotRecovery` operation. The notebook
+hook alone does not orchestrate that controller operation or prove production
+recovery. Unknown operations preserve their original identities and remain
+closed. Shutdown closes partial native candidates as well as an adopted pool;
+it does not overwrite or delete an accepted cluster to restart a failed restore.
+
+## Dev recovery startup
+
+An initialized source-service configuration may opt into `source_restore`, using
+`SourceRestoreConfig.wire()`: an exact existing snapshot manifest reference,
+stable operation key, exact native/model/tokenizer/schema versions, the final
+launch-config SHA, allowed storage origins and finite archive/time limits. The
+source service still reuses its existing queue, participant authority, S3 client,
+journal stream, handler registry and admission. No snapshot metadata creates a
+readiness capability. The notebook must independently opt into the native
+recovery owner described above.
+
+The server lifespan yields its WSS route before background restoration waits for
+native phases. The old persisted writer must already be retired and have no
+unresolved publication. A different executor cannot take shared admission until
+the existing `confirm_terminal` gate accepts a fresh, identity-bound authoritative
+provider terminal observation and its verified capability receipt. Heartbeat
+expiry, a Stop ACK or a new launch descriptor cannot clear that debt.
+
+`QueueWriterAuthority.begin_restore` records the exact plan, attachment identity
+and actual remote journal head in the same control database. Normal writer
+checks remain false. Recovery publications retain the existing durable I/O fence
+and are limited to that operation's recovery intent and exact outcome keys;
+accepted-command/head/index writes are refused. UNKNOWN publication must be
+resolved by native exact-byte readback. Fixed WSS phases verify the physical
+base, replay the original accepted command bytes and original semantic handlers,
+and verify the new writer/readiness. Independent Case/GEO commands do not create
+source heads. Writer activation requires the factory-retained controller proof,
+unchanged head and accepted current READY at the identical cursor. Public routing
+still waits for full WSS native history coverage after that activation.
+
+The configured snapshot must already exist. This restore composition does not
+create an initial backup for a deployment whose native snapshot owner was never
+enabled, and it does not silently choose or replace a published snapshot.
+
+
+Fresh11 source intake also requires the exact configured GEO installation. Set
+all `geo_manifest_operation_keys` before constructing startup and establishing
+its initial route/genesis closure. `imports_current()` opens new source acceptance
+only after the retained GEO gate has verified every accepted phase, native apply,
+remote durable outcome and exact contiguous activation prefix. Configuring the
+keys, READY, a manifest file or an activation ACK alone is insufficient. Ordinary
+reads and GEO installation stay available while installation is pending. Already
+accepted imports continue exact reconciliation after this proof invalidates.
+
+The measured operational GEO manifest has20 commands/5,680,160 encoded command
+bytes; its largest complete SOURCE_COMMAND envelope is752,274bytes. Both source
+WSS boundaries already permit2MiB. The configured20 operation keys receive a
+separate6MiB WSS history window for their exact fresh11 GEO command and outcome
+bytes. Ordinary source/Story/Case history retains its4MiB budget; unrelated GEO
+operations cannot use the window. Per-command, per-frame and command-count bounds
+remain unchanged. These byte measurements used synthetic in-memory seals with
+actual codecs, not remote acceptance or native application.
+
+Cold WSS history currently verifies from immutable genesis; incremental renewal
+uses an already verified prefix. This GEO bootstrap allowance does not make
+unbounded cold history or post-GC GEO proof reconstruction supported. A verified
+snapshot/prefix capability and compact durable GEO proof must cover those cases
+before claiming restart/retention acceptance. The current GEO gate still needs
+its accepted raw install rows; do not GC them while that restore gap remains.
+## First empty base and restore drill
+
+A fresh deployment can opt into `SnapshotRecoveryConfig(drill_empty=True)` and
+matching Dev `SourceSnapshotConfig.wire()` under `source_snapshot`. Both retain
+exact native binary/version, model/tokenizer, catalog and schema pins, the same
+storage origin and writer, and explicit finite budgets. For the measured empty
+schema11 base (about 53 MiB), an operator can select 128 MiB archive and 256 MiB
+unpacked limits instead of the larger compatibility defaults. The native owner
+checks free space before the additional download/restore and returns the actual
+free-space observation plus a conservative owned peak bound. This path has no
+model reload or second queue.
+
+After the real serving PG A and ordinary native history proof are ready, the
+same source-service owner retains the canonical spool exclusion for the entire
+empty-prefix operation. It captures A through the existing scoped conditional
+PUT ticket, streams the stored blob back for SHA/size verification and seals an
+immutable candidate manifest. Public reads and all new canonical command
+staging/acceptance/dispatch stay closed; exact already-accepted reconciliation and
+maintenance remain available.
+The fixed maintenance phases derive a distinct private socket and temporary
+writer B from A's identity; caller paths and writer IDs cannot select them.
+They conditionally GET the same immutable blob, verify the physical backup,
+start B, check its catalog, SQL and dense readiness, and close only B. A retained
+drill proof is released only after B's process terminates and socket disappears.
+It is not an adoptable serving-database capability.
+
+Before publishing the existing verified `snapshots/current` pointer, the owner
+requires that retained proof, fresh native observations of A's exact catalog,
+system ID, writer and text/dense frontier zero, an unchanged empty journal head,
+and independent blob readback. A stays the serving writer throughout. Capture
+alone cannot publish this pointer. The same SQLite control database records
+pending, captured and verified states; API restart validates the exact verified
+pointer and immutable base without repeating the backup or drill. An unknown
+capture needs explicit `SourceSnapshotCoordinator.reconcile()` and an already
+durable exact capture result. It cannot allocate another backup or temporary PG.
+Unknown shutdown retains B and blocks promotion until that same owned shutdown
+is proved. Scoped tests use synthetic transfer/native peers; actual Kaggle
+capture, drill, provider readback and recovery remain separate acceptance.
