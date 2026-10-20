@@ -20,7 +20,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from .bge_contract import DIMENSION, MAX_TOKENS, REVISION, SPACE, TOKENIZER_SHA256, validate_vector
 from .contracts import (BookIngestOutput, KnowledgeExtractionStatus, Principal,
-    StageChunkInput, StagePageInput, StoryExtractionStatus)
+    StageChunkInput, StagePageInput, StagePoiFactInput, StoryExtractionStatus)
 from .kaggle_apply import Revisions
 from .kaggle_import_contracts import PublicImportRights, SourceResearchInput, TargetSourceImportInput
 from .kaggle_import_output import OwnerImportOutputGate
@@ -329,22 +329,31 @@ class KaggleSourceImporter:
         if (source_import is not None and source_import.public_rights is not None
                 and canonical(source_import.public_rights.model_dump(mode='json')).decode() != row['rights_json']):
             raise failure('original_public_rights_basis_is_immutable', status='invalid_query')
-        if any(payload.get(key) for key in ('poi_facts', 'poi_media_links', 'entity_candidates')):
+        if payload.get('poi_media_links') or (self.import_revisions!=DOMAIN_REVISIONS and any(
+                payload.get(key) for key in ('poi_facts','entity_candidates'))):
             raise failure('target_semantic_domain_unavailable')
         pages = [StagePageInput.model_validate(value) for value in payload.get('pages', [])]
         chunks = [StageChunkInput.model_validate(value) for value in payload.get('chunks', [])]
+        poi_facts=[StagePoiFactInput.model_validate(value) for value in payload.get('poi_facts',[])]
         if len(pages) > 8 or len(chunks) > MAX_PASSAGES or any(page.illustrations for page in pages):
             raise failure('target_small_text_stage_only')
         graph = StagedGraph.model_validate_json(row['stage_json']) if row['stage_json'] else StagedGraph(revision=1)
-        partial = compile_model_stage(graph, document_id=row['source_id'], revision=1, pages=pages, chunks=chunks)
+        partial = compile_model_stage(graph, document_id=row['source_id'], revision=1, pages=pages, chunks=chunks,poi_facts=poi_facts)
         graph = merge_stage(graph, partial)
+        if payload.get('entity_candidates'):
+            from .entity_graph import GraphBundle,validate_staged_bundle,digest as graph_digest
+            bundle=GraphBundle.model_validate(payload['entity_candidates'])
+            validate_staged_bundle(bundle,graph)
+            if graph_digest(bundle.model_dump(mode='json')) not in {graph_digest(b.model_dump(mode='json')) for b in graph.entity_candidates}:
+                graph=graph.model_copy(update={'entity_candidates':[*graph.entity_candidates,bundle]})
+        if len(graph.entity_candidates)>32 or len(graph.poi_facts)>32:raise failure('source_graph_stage_bound',status='invalid_query')
         if len(graph.pages) > MAX_PAGES or len(graph.chunks) > MAX_PASSAGES:
             raise failure('small_source_stage_bound')
         proof = await self._native_proof(access, row, receipt, graph)
         semantic = json.loads(row['semantic_json']) if row['semantic_json'] else {'candidates': {}, 'page_reviews': {}}
         for value in payload.get('story_candidates', []):
             candidate = StageStoryCandidateInput.model_validate(value)
-            if candidate.entity_keys:
+            if candidate.entity_keys and self.import_revisions!=DOMAIN_REVISIONS:
                 raise failure('target_entity_resolution_unavailable')
             semantic['candidates'][candidate.candidate_key] = candidate.model_dump(mode='json')
         for page in pages:
@@ -454,7 +463,7 @@ class KaggleSourceImporter:
                 proposition=candidate.proposition, account_kind=candidate.account_kind,
                 attributed_to=candidate.attributed_to, reported_by=candidate.reported_by, evidence=evidence,
                 event_dates=[date.model_dump(mode='json') for date in candidate.event_dates],
-                observations=[value.model_dump(mode='json') for value in candidate.observations], entity_keys=[]))
+                observations=[value.model_dump(mode='json') for value in candidate.observations], entity_keys=list(candidate.entity_keys)))
             if any(index >= len(evidence) for item in [*candidate.event_dates, *candidate.observations]
                     for index in item.evidence_indexes):
                 raise failure('finding_metadata_requires_existing_evidence', status='invalid_query')
@@ -476,6 +485,9 @@ class KaggleSourceImporter:
             narrative_inputs.append(dict(passage_id=variant_id, body=variant.body, input_tokens=count))
         if result['pending'] and SourceResearchInput.model_validate_json(row['research_json']).state != 'pending':
             raise failure('unfinished_narratives_require_explicit_research_continuation', status='invalid_query')
+        if self.import_revisions==DOMAIN_REVISIONS:
+            from .source_graph import resolve_source_graph
+            resolve_source_graph(graph,source_id=row['source_id'],person_id=row['person_id'],semantic=result)
         return result, narrative_inputs
 
     async def _validate(self, access, row):
@@ -605,6 +617,10 @@ class KaggleSourceImporter:
                 payload['codec']='rkb.source-import.v4'
                 payload['source_manifest']=build_source_manifest(metadata=StartMetadataInput.model_validate(metadata),
                     receipt=receipt,proof=proof,graph=graph,semantic=semantic,passages=payload['passages'])
+            if self.import_revisions==DOMAIN_REVISIONS and (graph.entity_candidates or graph.poi_facts
+                    or any(finding['entity_keys'] for finding in semantic['findings'])):
+                from .source_graph import resolve_source_graph
+                payload['source_graph']=resolve_source_graph(graph,source_id=row['source_id'],person_id=row['person_id'],semantic=semantic)
             entry = await self._stage_command(access, row, payload)
             row = await asyncio.to_thread(self._save, row, phase='accepted', frozen_sha256=entry.command_sha256)
         await self._check(access.authority, access.context, access.binding)
