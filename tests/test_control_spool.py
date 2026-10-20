@@ -7,6 +7,7 @@ import json
 import sqlite3
 import threading
 from types import SimpleNamespace
+from unittest.mock import create_autospec
 
 import pytest
 import pytest_asyncio
@@ -250,13 +251,18 @@ async def test_unknown_unpublished_orphan_does_not_newly_accept_after_disable(en
 async def test_apply_unknown_then_exact_receipt_and_remote_outcome(env,monkeypatch):
     e=env
     await accept(e)
+    native_apply=module.apply_accepted
     async def lost(*args,**kwargs):raise ApplyUnknown('synthetic lost SQL commit ACK')
-    monkeypatch.setattr(module,'apply_accepted',lost)
+    lost_call=create_autospec(native_apply,side_effect=lost)
+    monkeypatch.setattr(module,'apply_accepted',lost_call)
     with pytest.raises(ApplyUnknown):await e.spool.apply(e.cmd.operation_key,object(),writer_generation='writer-1')
+    assert lost_call.await_args.kwargs['journal'] is e.journal
+    assert lost_call.await_args.kwargs['registry'] is e.registry
+    assert lost_call.await_args.kwargs['command'].encode()==e.cmd.encode()
     assert (await e.spool.get(e.cmd.operation_key)).apply_state=='SENT_UNKNOWN'
     exact=receipt(e.cmd)
     async def reconciled(*args,**kwargs):return exact
-    monkeypatch.setattr(module,'apply_accepted',reconciled)
+    monkeypatch.setattr(module,'apply_accepted',create_autospec(native_apply,side_effect=reconciled))
     assert await e.spool.apply(e.cmd.operation_key,object(),writer_generation='writer-1')==exact
     assert (await e.spool.scope_state())['unknown_count']==0
     remote=await e.spool.publish_outcome(e.cmd.operation_key,writer_generation='writer-1')

@@ -431,7 +431,8 @@ class ControlSpool:
             entry=await self.get(key)
             if entry.apply_receipt is not None:return entry.apply_receipt
             await self.mark_apply_sent(key)
-            receipt=await apply_accepted(connection,self.journal,entry.accepted,entry.command,self.registry,
+            receipt=await apply_accepted(connection,journal=self.journal,seal=entry.accepted,
+                command=entry.command,registry=self.registry,
                 database_generation=entry.database_generation,writer_generation=writer_generation,
                 max_command_bytes=self.max_command_bytes,max_outcome_bytes=self.max_outcome_bytes)
             await self.record_apply(key,receipt)
