@@ -10,7 +10,7 @@
         "The minimum engineering scale benchmark covers at least 100 book-equivalent sources and 100,000 active chunks, or a larger real corpus when available; this is a readiness benchmark, not a product limit.",
         "Routine imports are resumable and idempotent, use bounded queues/backpressure, do not require keeping a ChatGPT turn open, and one failed/superseded revision cannot block unrelated books.",
         "A book is not considered accepted merely because text or vectors were written; its active revision must pass the required import and retrieval acceptance.",
-        "Accepted exact source-analysis payloads, human contributions and typed resolved mutations are durable before application; restart/replay cannot silently replace a previously accepted model result by a new inference or lose a confirmed effect. Snapshot-plus-tail recovery and its stated failure domains are verified before production cutover."
+        "Exact accepted inputs, model/human payloads and resolved mutations are remotely durable before final accepted ACK; Saved additionally requires a committed, recoverable exact outcome. Local receipt is pending. Replay preserves IDs, revisions and chosen facts without new model inference; derived projections have separate hashes/readiness. Snapshot-plus-tail restores control state and domain effects after DevCoveer disk loss."
       ]
     },
     {
@@ -22,7 +22,8 @@
         "At the production-like scale benchmark, measured steady-state usage is at most 80% of each applicable storage budget and the largest-source reimport, snapshot/restore and cutover peak is at most 90%; document the actual provider limits and reserved headroom.",
         "Capacity is established from measured database, volume and object-storage usage/growth, not row-count or raw-vector arithmetic alone.",
         "Corpus completeness, evidence provenance and retrieval quality are not silently reduced merely to fit quota; if the gate fails, storage/index representation is optimized and remeasured.",
-        "Compaction preserves every accepted command/payload still needed by the oldest retained verified recovery baseline or unfinished consumer; resource pressure applies bounded backpressure rather than deleting unprotected accepted work."
+        "DevCoveer raw spool is bounded to a few hours and a measured byte cap. Verified remote tail separately covers designated recoverable baselines and unfinished consumers. Local GC need not wait for a daily baseline; remote GC must preserve its coverage. UNKNOWN, active requests and dedup receipts do not expire with raw spool. Backpressure precedes loss of unprotected work.",
+        "Incremental projections, reference-aware cache/tail GC and measured autovacuum/ANALYZE keep storage bounded. Full reembedding/REINDEX is event- or evidence-driven, not a nightly default. Shadow indexes, Dataset versions, upload/restore overlap and WAL are included in peak capacity; remote snapshot bytes do not pass through the control spool."
       ]
     },
     {
@@ -45,7 +46,8 @@
         "On a production-like corpus and representative concurrency, warm backend ranked-candidate retrieval has p95 <= 1000 ms.",
         "Public MCP search has p95 <= 1500 ms and a hard interaction deadline of 2000 ms for the evidence-search path.",
         "No normal retrieval branch introduces an implicit multi-second or 10-second wait; unavailable slow branches either complete inside the same budget or return an explicit degraded state.",
-        "Latency acceptance reports percentiles, not only averages or best-case single queries."
+        "Latency acceptance reports percentiles, not only averages or best-case single queries.",
+        "Source, story, catalog, entity and GEO retrieval use bounded indexed SQL, keyset pagination and batched hydration, not full-corpus Python scans. Actual prepared plans, ANN filtering/recall, index freshness and maintenance under import/search concurrency are verified at scale; stale or incomplete projections are explicit."
       ]
     },
     {
@@ -57,9 +59,11 @@
         "Retrieval chunks are coherent semantic passages around the measured approximately 256-token operating target; page boundaries are provenance and are not default embedding boundaries.",
         "The exact final embedding input, including any prefix, is counted with the pinned deployed BGE tokenizer; exceeding its current 512-token hard limit blocks acceptance rather than silently truncating. Increasing this limit requires a measured retrieval/import-quality change gate; an E5 tokenizer is not a target dependency.",
         "Before a newly imported or reprocessed book is considered accepted, source-grounded natural-query retrieval checks run against that exact active revision, including paraphrased queries and cross-language queries when relevant.",
-        "Old book corpus/chunks/vectors/import receipts are not migrated into the target. Books are freshly imported from verified originals; activation atomically schedules persisted research that creates or updates disagreement cases, without waiting for future expert consensus.",
+        "Only GEO identities, historical/cartographic layers, geometry/CRS, temporal toponyms and minimal GEO provenance migrate. No old books, chunks, vectors, stories, drafts, expert contributions, cases or other non-GEO content migrate. Books are freshly imported through MCP; activation atomically schedules persisted research for disagreement cases without waiting for expert consensus.",
         "Source-bound factual assertions, exact evidence, people and roles, organizations, event dates and calendar precision, quantitative observations and units, historical toponyms/geography and disagreement candidates are retained even when a fragment yields no narrative story. Import and accepted-source re-extraction share this contract; filtering weak stories must not drop factual knowledge.",
-        "Story extraction separates facts, coherent episodes, editorial dossiers and publication variants in the existing registry. It joins episodes across page/window boundaries, permits zero stories and invents no facts, motives, dialogue or causality. A small source-grounded blind comparison verifies narrative usefulness, false acceptance/refusal and preservation before release; no story quota, mandatory length or second model judge is required."
+        "Story extraction separates facts, episodes, existing dossiers and variants in one workflow. Sufficient episodes save an actual basic Variant.body and exact default revision during import, normally 2-6 connected sentences with separate bibliography. Facts and explicit context gaps remain when no narrative exists. No invented motives/causality, story quota, mandatory length or second model judge.",
+        "Ordinary story get/search/read-export and voice expose the actual saved body or a labelled excerpt/reference, never a synopsis or potential rating as the story. Body/default reference/evidence dependencies/receipt are atomic and read back after retry/restart. Read permission is distinct from publication approval; private author drafts are not promoted to shared text.",
+        "A small source-grounded blind comparison of actual saved narratives verifies coherence, title promises, faithful uncertainty and known outcome or honest knowledge boundary. Zero-variant success, unsupported claims, false How/Why explanations and loss of factual knowledge are failures; a coherent story need not have conflict or a known ending."
       ]
     },
     {
@@ -89,11 +93,13 @@
       "acceptance": [
         "Personal resource-bound OAuth identifies the actual expert, never an owner invite or a client-supplied actor. Supported clients are verified individually; naming ChatGPT or Grok is not a compatibility result.",
         "Slack resolves the verified provider account to the same existing RKB person UUID. A dedicated executor service uses the same MCP endpoint and a durable request/route/generation-bound authority; it never inherits dot's or the owner's unrelated credentials.",
-        "Effective permissions are the intersection of the person's current capabilities, case/artifact scope and delivery audience; service execution is additionally limited by its service grant and request fence. Text search and bibliography across active accepted books have no per-book owner ACL; current revision/withdrawal and private pixels/original grants still apply. Import and participant administration remain owner-only and unavailable through delegated expert requests.",
+        "Effective permissions intersect current person capabilities, case/artifact scope and delivery audience; service execution also requires its grant/request fence. Active accepted text/bibliography have no book-owner filter. Illustrations are public. Stripe/page quote scans require owner or verified demo/expert/local_historian with scan_proof_read. Full originals and private drafts retain separate grants; import/admin remain owner-personal.",
         "Concurrent actors, cross-route access, lease/link/grant revocation, delayed results and direct calls to forbidden tools are checked on the server, regardless of catalog visibility.",
         "Acceptance demonstrates direct personal research and Slack-delegated research on the same authorized case/revision, including a real non-owner, denial and revocation; documentation and green component tests alone do not establish live support.",
-        "The redesign preserves import, story editing/search/history/variants, dates/calendar, people and organizations, observations/comparison, georeferencing and historical layers, disagreement cases/contributions/conclusions, and private drafts with current role and audience rules. Fresh book reimport is not authorization to delete irreplaceable manual work or rebuild another product's canonical POI/map catalogue.",
-        "Mira in Projects Hub remains the preferred voice client through the existing shared live-interaction and typed RKB adapter. Real delegated identity, progressive research capabilities, durable pending/result/receipt continuation and screen evidence are implemented and verified with more than one real user; a search-only adapter or emulator success is not full integration acceptance."
+        "Preserve import, actual story body/edit/search/history/variants, dates/calendar, people/organizations, observations/comparison, historical GEO, disagreement cases/contributions/conclusions and private drafts. GEO-only content migration does not reset infrastructure identities/grants/configuration or authorize copying another product's canonical POI/map catalogue.",
+        "Mira in Projects Hub remains the preferred voice client through the existing shared live-interaction and typed RKB adapter. Real delegated identity, progressive research capabilities, durable pending/result/receipt continuation and screen evidence are implemented and verified with more than one real user; a search-only adapter or emulator success is not full integration acceptance.",
+        "Artifact class and actual accepted geometry are server-authoritative; caller labels cannot turn page/quote scans into public illustrations. Authorized proof uses purpose-scoped original access without owner impersonation or full-file disclosure. Cache hits, history/receipt replay and delayed/shared-channel delivery recheck current dependencies and audience.",
+        "Verified demo/expert/local_historian assignment materializes the existing scan_proof_read policy grant with audit and category revision; demo expiry is inherited. Claimed categories grant nothing. Current grant/scope governs rendering; explicit revocation is not recreated on read and category removal withdraws its policy-derived grant."
       ]
     },
     {
@@ -109,7 +115,8 @@
         "Import stages cooperate at existing safe durable boundaries and cannot consume the measured search reserve. Required BGE publication, source fidelity, prior active revision and Kaggle-only inference remain protected; no process kill or unsafe transaction pause.",
         "The existing evidence-search deadline and latency/quality gates remain unchanged. Report queue wait and time to final answer separately; do not hide a long HTTP search behind the durable question queue.",
         "Acceptance includes cross-client/dialog fairness, restart and stale-generation boundaries, notification thresholds, real resource calibration/resize and import+search concurrency, actual second-client result/ACK readback and held-out ETA error. A green unit suite or pending response alone does not prove product acceptance.",
-        "Kaggle maintains direct authenticated outbound bidirectional persistent communication with the existing DevCoveer broker. One durable queue, request/claim IDs, writer fence and result hashes govern both directions. ACK follows durable acceptance; reconnect preserves the loaded worker; stale claims do not kill it. Duplicate connections cannot create another dispatcher. Verify provider reachability, reconnect and mixed load."
+        "Kaggle keeps authenticated outbound bidirectional WSS to the existing DevCoveer broker. One queue/request authority, claim IDs, writer fence and hashes govern both directions; final ACK follows remote durability and the corresponding application commit. Reconnect preserves a living loaded worker, stale claims do not kill it, and duplicate sockets cannot add a dispatcher.",
+        "Unknown provider effects reconcile before resend and have scoped explicit resolution, including abandoned_no_resend without fake success. A provider outage/UNKNOWN backlog does not consume unrelated import/story-save permits. Expired verifiable request IDs cannot execute as new; same-key/different-payload is a conflict, including after recovery and compaction."
       ]
     }
   ]

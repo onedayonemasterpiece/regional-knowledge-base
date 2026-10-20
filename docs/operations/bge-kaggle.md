@@ -1,148 +1,47 @@
-# BGE main tier
+# Эксплуатация Kaggle PG/BGE и прямого WSS
 
-## Применение в переработке 19.10.2026
+Обновлено 20.10.2026. Целевой runbook для [единого handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md). Это порядок проверки реализации, не отчёт о выполненном запуске.
 
-Нормативный целевой контракт: [единый файл агенту](../prompts/rkb-scalable-kaggle-implementation-20261019.md) и [архитектура](../designs/rkb-scalable-kaggle-architecture-20261019.md). Текущий runtime ещё не перенесён этой документационной задачей.
+## Startup и attachment
 
-- Один PostgreSQL/pgvector corpus в Kaggle, BGE-only (1024 FP32 baseline, exact pinned BGE input≤512); небольшой durable control journal на DevCoveer.
-- Прямой исходящий WSS notebook→existing DevCoveer ASGI с двусторонними заданиями/результатами, durable ACK/RESUME и одной BgeQueue authority. Старые polling/локальный E5/Supabase инструкции не целевой deployment.
-- Fresh MCP import книг; перенос только historical/cartographic layers и согласованных зависимостей, со stable IDs/provenance и проверенным reanchor. Ручная работа не уничтожается из-за отказа от старого corpus.
-- Source-bound facts/dates/observations сохраняются без обязательной Story; эпизод/досье/Variant/private draft/independent case различаются. Один persisted research workflow, bounded compose, без квот и выдуманной драматургии.
-- Поиск accepted active book text и bibliography без per-book owner ACL; current withdrawal/revision, pixels/original/private draft grants и delivery audience остаются обязательными.
-- One canonical person/request/dialog, fair admission и confirmed result/hash ACK; Мира в PH расширяет existing typed adapter, не создаёт отдельный voice/IAM/queue.
+1. Existing controller выбирает один writer run и выдаёт scoped run/epoch authority. Existing BgeQueue сохраняет job IDs, claims и result hashes.
+2. Notebook восстанавливает exact verified private Dataset snapshot в PostgreSQL 17 с pinned pgvector, проверяет manifest/extensions/internal cursor и replay remotely accepted tail.
+3. Загружает pinned BGE-M3: 1024 FP32, input≤512 по exact tokenizer. Один process, без E5 и без model на DevCoveer.
+4. Открывает outbound WSS к existing DevCoveer ASGI/HTTPS. HTTP pull и WSS не dispatch одну работу параллельно.
+5. Проверяет actual SQL и dense query; только после readback принимает serving readiness. Snapshot upload, process liveness и vector counts недостаточны.
 
-Численные protected gates сохранены: backend p95≤1000ms, MCP p95≤1500ms/hard2000ms, BGE Hit@5≥85%/@10≥90%, RU→DE@10≥85%, ≥30 held-out families, ≥100 sources/100000 chunks, storage≤80% steady/≤90% peak. Документ не является доказательством PASS.
+Database port остаётся внутри notebook. Credentials не входят в snapshot или public notebook output. Large files/accepted payloads передаются bounded byte transport по authorized refs.
 
-## Граница старого runbook
+## Reconnect и защита от повторов
 
-Ниже — runbook исходного runtime до cutover, а не инструкция устанавливать прежнюю архитектуру заново. Не удалять shared runtime files/данные до проверенного переключения. Новое восстановление использует schema/codec compatibility, exact command/result hashes, snapshot+tail; TTL accepted jobs не может удалить данные незавершённого consumer. 10-секундная политика waiting notice не увеличивает 2000ms evidence deadline.
+При socket drop тот же живой notebook держит PG/model, сохраняет bounded inflight results и повторяет handshake с jitter/backoff. RESUME сопоставляет job/claim/generation/result hashes. Same operation + same payload возвращает прежний outcome; different payload под тем же ключом — conflict.
 
-### Исходный runtime
+Новый attachment получает connection generation и fencing старого socket. Stale claim завершает соответствующее задание, а не убивает warmed worker. Revoked run больше не принимает новые authority-bound effects. Уже remote-accepted commands прошлого epoch остаются replayable.
 
-The E5 encoder remains an independent loopback service. MCP imports neither Torch
-nor Transformers. BGE inference runs in one private Kaggle **CPU** script. The
-worker only receives a run-bound broker credential, never database/object-store
-credentials. No paid inference fallback is configured.
+Controller не запускает kernels_push только из-за потери socket. Когда Kaggle session закончилась, сохранение RAM невозможно: новый run выполняет restore/warmup. Unknown launch reconciles по существующим launch IDs; не создавать серию notebook по timeout одной попытки.
 
-## Contract and installation
+## Таймеры и ресурсные границы
 
-Apply `sql/011_bge_rankings.sql` only after `verify_bge_migration.py` passes on the
-isolated PostgreSQL fixture. `apply_bge_migration.py` requires its exact SHA/proof
-and checks that legacy/E5 rows survive. Rollback removes only BGE resources.
+Useful-idle — 30 минут от реального спроса. Writer lease, task claim, heartbeat/Ping, stage progress, source-cache idle и provider lifetime независимы. Keepalive не делает notebook вечным и не продлевает полезный спрос.
 
-Space: `bge-m3:5617a9f:t211-tr5161:cls-l2-512:q1-d1:v1`; model `BAAI/bge-m3`,
-revision `5617a9f61b028005a4858fdac845db406aefb181`; 1024 dimensions. Kaggle CPU
-uses Torch 2.11.0+cpu, Transformers 5.16.1, Tokenizers 0.23.1 and
-Huggingface Hub 1.29.0. The worker refuses an incompatible runtime. Identical
-query/document preprocessing: no prefix, tokenizer truncation at 512 tokens,
-FP32 CLS pooling and L2 normalization, batch 1, four intra-op/one inter-op threads.
-Long chunks can lose tail information; this contract does not claim the model's
-full 8192-token context. Source SHA256 and active revision must match at ranking.
+Frames, total buffers, inflight credits, handshake/send deadlines и retry windows ограничены. CPU encode, render, blocking DB/file/network operations вынесены из event loop. Control reads не используют BEGIN IMMEDIATE. После commit сигнал wakeup виден другим process; bounded reconciliation восстанавливает пропущенные notifications.
 
-Normal imports automatically enqueue/install BGE document vectors after activation.
-The [automatic indexing reconciler](automatic-indexing.md) uses active missing
-vectors and this existing durable queue; no user/operator backfill is required.
-`backfill_bge.py` remains an explicit maintenance tool, not an import step.
-Owner RLS, source-byte hash, active revision, model revision and exact space are
-rechecked before installation. Counts describe indexed chunks, not source-book
-completeness.
+Query-first действует на общей queue boundary для всех producers. Import/story encode и PG maintenance учитывают общий CPU/RAM/IO envelope; защищён минимум один search reserve. Не ждать permit внутри SQL write transaction.
 
-## Queue and services
+## Что сохраняется до ACK
 
-`regional-knowledge-bge-controller.service` runs the system Python Kaggle SDK and
-`bge_kaggle_controller.py`; the shared `/home/dev/.env` supplies only Kaggle's
-username/key. Do not duplicate credentials in project environment files.
+Raw DevCoveer spool: implementation defaults 4 часа/512 MiB с измерением до cutover. Early receipt pending. Final accepted/Saved требует remotely confirmed exact intent/payload в existing Yandex recovery storage; Saved также требует domain commit и remotely verified exact outcome/receipt. Ready groups ждут flush ≤1 секунды: это окно набора, не гарантированный cloud RTT. Read-only search не проходит через remote journal.
 
-`RKB_BGE_QUEUE_PATH` names the durable private SQLite database outside Kaggle.
-Parent directories are 0700; queue and generated private launch material are
-0600. `RKB_BGE_BROKER_URL` must be HTTPS. The consuming MCP process and controller
-use the same database. Keep it across deployments; do not replace it on restart.
-Run credentials/private launch sources stay in runtime state, not Git or reports.
+Existing S3ObjectStore — put/get/delete transport, а seal/continuous manifest/CAS ещё реализуются и проверяются. Большие base bytes идут direct Kaggle→recovery object по scoped key/epoch/expiry без global/delete credentials; Dev 512 MiB spool их не пропускает. Presigned URL не отменяется сам при epoch change: old-writer upload остаётся orphan без promotion authority.
 
-`RKB_BGE_ENABLED=1` enables main retrieval; `RKB_BGE_WARM_MODE` selects the accepted
-ranking (`bge_lexical`, `e5_bge_lexical`, `bge` or `e5_bge`). Vectors remain in
-separate 384/1024-d spaces. Fusion uses RRF with k=60 and independent branch depth
-100; no cross-model cosine arithmetic. Disable the flag to serve E5 immediately
-while investigating BGE. Missing vectors are reconciled automatically; search
-uses E5/lexical until the authorized active BGE coverage is complete.
+Canonical replay не хеширует заново derived BGE floats/FTS/crops. Exact domain outcome сохраняется, projection dirty/rebuild и dense readiness идут отдельно; accepted BGE artifacts reuse. Уже delivered artifact bytes/hash/receipt не подменяются.
 
-After either fast-tier or ready main-tier ranking, direct-PostgreSQL search may
-apply one bounded continuation-context post-pass. Only the top two ranked prose
-hits are eligible, at most one adjacent chunk may be added, and the result count
-never exceeds the requested bound. Expansion requires both a strong source-order
-continuation boundary and query evidence that the missing side can add answer
-context; source-only single-fact matches do not qualify. Existing eligible pairs
-already inside the result window are protected before any replacement. Neighbor
-lookup is constrained to the same readable document and active revision through
-the ordinary actor/RLS connection, never service-wide visibility. Inserted
-context carries an inspectable continuation_neighbor ranking signal. Failure of
-this post-pass returns the original ranking rather than failing search.
+Control checkpoint 15 min; changed PG base 4 h или раньше по replay/byte pressure/planned handover; daily independent-from-Kaggle Yandex base. Local raw GC после remote seal не ждёт old daily baseline; remote tail остаётся для designated recovery chains и unfinished consumers. UNKNOWN/request/receipt metadata не expires вместе с raw body.
 
-On cold demand, search returns normal E5 evidence plus `main_state=starting` and
-an actor-bound `main_job_id`. Reissue the same query with that ID to obtain its
-main result. Both full `search` and Live `knowledge_search` accept it. Completed
-jobs can be replayed without inference. A different query or actor cannot reuse
-the job. Warm calls wait at most 10 seconds for BGE, then return E5 with pending
-state. Queue capacity 256; document producers hold at most 64 pending jobs;
-interactive queries are claimed before document jobs. Fast and main evidence
-both undergo ordinary ACL checks and fetch authorization. Revocation remains
-effective even if a vector job completed earlier.
+## Отчёт readiness и recovery
 
-## Lifecycle and degraded modes
+Показывать отдельно transport state, model revision/readiness, database schema/cursor, query probe, active passage/story coverage, effective retrieval mode, replay backlog и last remotely sealed seq. Public status не раскрывает credentials/private text/чужие drafts.
 
-SQLite transactions atomically create one current run. Dispatch is claimed once,
-with an immutable notebook slug derived from the run ID. After a lost response,
-the controller probes that notebook and never repeats an unknown save/version.
-Provider failure preserves jobs; failed starts have a 60-second cooldown.
-An ambiguous launch that cannot be reconciled expires after 15 minutes rather
-than risking a duplicate launch.
+Проверки включают socket drop живого run, kill завершённой session с восстановлением, late duplicate result, wrong generation, duplicate connection, lost ACK, failed remote seal, failed Dataset processing и restore без нужного WAL. Для release действуют [protected gates](../mass-ingestion-readiness.md); качественный ответ в 2 s нельзя заменить быстрым enqueue.
 
-Useful requests/claims/completions renew a 30-minute lease. Heartbeat every 20
-seconds only reports liveness/resources and never renews that lease. A ready
-worker missing for 120 seconds is fenced. Claim leases last 180 seconds; unfinished
-jobs return to pending. A result must match run, claim nonce, space and normalized
-1024-d vector; duplicates are idempotent and stale results cannot overwrite data.
-
-At 10h45m, one successor warms while the current worker serves. On readiness,
-the old worker drains only its claimed job. At 11h, run credentials expire
-unconditionally. At most one serving and one warming run exist; the old process
-may take up to one heartbeat interval to exit after being fenced. Provider
-compute may briefly overlap during drain, but a fenced worker cannot claim jobs.
-Idle expiry likewise revokes the credential. Stopping the controller alone does
-not stop a serving worker; disabling the main tier preserves E5 independently.
-
-The narrow `/bge-worker/heartbeat`, `/claim`, `/complete` routes accept only
-run-bound credentials, fixed contract and bounded payloads. They offer no arbitrary
-execution or general user tool access. Do not expose worker credentials to MCP
-clients. Queue status is safe to inspect locally; job texts/results are private.
-
-Acceptance tooling: `multilingual_benchmark.py` for parallel query encodings and
-seven ablations; `accept_bge.py` for actual 1/5/10 search/fetch concurrency. Write
-all private outputs to a managed retained directory. Public reports contain
-aggregates and evidence checksums, not texts, source IDs or vectors.
-
-`smoke_bge_http.py` verifies public OAuth MCP search/fetch and revokes its temporary
-operator test token family. `verify_bge_lifecycle.py --execute` performs controlled
-tests on this project's real queue/notebooks: timestamp acceleration for idle/
-lifetime boundaries, claimed-job fencing and temporary controller suspension for
-provider/start-failure injection. Run only with a ready empty queue during an
-operator acceptance window; it intentionally rotates the current worker. It
-always restores the controller. These are injected failures, not measurements of
-a natural provider outage or an eleven-hour wall-clock soak.
-
-## One persistent notebook, versioned runs
-
-New worker launches use the same `KAGGLE_USERNAME/rkb-bge-m3-cpu` notebook and
-create new Kaggle versions. `RKB_BGE_KERNEL_SLUG` can override the deployment's
-constant slug; it must never contain a run/job UUID. Generated source remains
-private and run-bound, and job identity/fencing remains in the existing queue.
-Each run records its immutable provider ref and returned `provider_version`.
-Existing workers and ambiguous pre-migration launches retain their old refs.
-
-A timeout/crash after `kernels_push` never causes another save/version. The
-controller reads the notebook's current source and version and checks the exact
-`RUN_CONFIG.run_id` before recording a recovered launch. Because Kaggle status
-addresses the latest version, a starting run's terminal status is accepted only
-when its stored version and source identity match. Another run's old/latest
-version cannot be mistaken for the current launch. Private source/credentials
-are never emitted into logs/reports. Model/embedding contracts are unchanged.
+[Прежние pull/claim/complete deployment details](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/operations/bge-kaggle.md) — исходный runbook. Новое развёртывание следует этому контракту и handoff, не восстанавливает прежний E5/Supabase runtime.

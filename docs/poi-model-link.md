@@ -1,21 +1,14 @@
 # Model-selected Street Story POI from a regional source
 
-## Применение в переработке 19.10.2026
+Updated 2026-10-20. Normative target: [single implementation handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md). The same model-selected owner operation and source graph move to PostgreSQL/pgvector on Kaggle with BGE-only retrieval. DevCoveer retains the existing controller and same-host Street Story bridge; the notebook uses one outbound WSS. This document is not evidence of target deployment.
 
-Нормативный целевой контракт: [единый файл агенту](prompts/rkb-scalable-kaggle-implementation-20261019.md) и [архитектура](designs/rkb-scalable-kaggle-architecture-20261019.md). Текущий runtime ещё не перенесён этой документационной задачей.
+## Migration and access boundary
 
-- Один PostgreSQL/pgvector corpus в Kaggle, BGE-only (1024 FP32 baseline, exact pinned BGE input≤512); небольшой durable control journal на DevCoveer.
-- Прямой исходящий WSS notebook→existing DevCoveer ASGI с двусторонними заданиями/результатами, durable ACK/RESUME и одной BgeQueue authority. Старые polling/локальный E5/Supabase инструкции не целевой deployment.
-- Fresh MCP import книг; перенос только historical/cartographic layers и согласованных зависимостей, со stable IDs/provenance и проверенным reanchor. Ручная работа не уничтожается из-за отказа от старого corpus.
-- Source-bound facts/dates/observations сохраняются без обязательной Story; эпизод/досье/Variant/private draft/independent case различаются. Один persisted research workflow, bounded compose, без квот и выдуманной драматургии.
-- Поиск accepted active book text и bibliography без per-book owner ACL; current withdrawal/revision, pixels/original/private draft grants и delivery audience остаются обязательными.
-- One canonical person/request/dialog, fair admission и confirmed result/hash ACK; Мира в PH расширяет existing typed adapter, не создаёт отдельный voice/IAM/queue.
+Only GEO/place/layer identities, temporal/geometric data and minimal provenance transfer. Production fresh imports start after the minimal GEO identity manifest (layer/place IDs, aliases, owner refs, CRS); bulk raster/geometry arrival can remain unresolved in the existing GEO queue without later book reimport. A+B imports before that manifest are isolated fixtures only. Preserve the exact existing external POI key (`UUID` or `poi_ss_<24 lowercase hex>`), source-side place ID and owner. Old books/stories/manual drafts/expert contributions/cases and their evidence bodies do not migrate. Fresh MCP import creates new source facts, Stories and cases; exact edition/source SHA plus verified page/region mapping reanchors any retained GEO `legacy_unanchored` link. Infrastructure identities/configuration are preserved separately. See [GEO cutover](migrations/rkb-layers-only-cutover-20261019.md).
 
-Численные protected gates сохранены: backend p95≤1000ms, MCP p95≤1500ms/hard2000ms, BGE Hit@5≥85%/@10≥90%, RU→DE@10≥85%, ≥30 held-out families, ≥100 sources/100000 chunks, storage≤80% steady/≤90% peak. Документ не является доказательством PASS.
+Accepted illustration renditions are public for everyone. Quote stripe/page/crop scans use the existing owner/demo/expert/local_historian `scan_proof_read` capability; full originals remain independently private. Its participant grants are atomically materialized from verified categories under [rights.md](rights.md); current grant/scope, expiry/removal and manual revocation govern reads, without a category-name bypass or grant recreation on read. Public POI identity is neither a proof-pixel grant nor permission to expose surrounding source-page text. Current source withdrawal/policy and audience apply on every delivery, including cache and late callbacks. Shared Slack remains `public_only`. See [rights](rights.md).
 
-Основные entity, temporal, identity, provenance и ownership контракты ниже сохраняют силу. Их SQL/storage привязки переносятся на PG, а старый per-book search ACL трактуется согласно новому правилу выше. Карта, пользовательский профиль и физический POI не становятся новой канонической копией в RKB.
-
-## Сохраняемый предметный контракт
+## Model-selected owner operation
 
 **Rule:** A source location is not automatically a POI. During the same book-review the model identifies physical places worth visiting or historically locating (standing building, ruins, plaque, memorial, lost building site). Broad geographic references stay RKB locations.
 
@@ -25,9 +18,9 @@ Creation occurs ONLY in Street Story's existing canonical `pois` table with stat
 
 Name and even proximity are candidate discovery signals, not an identity merge. Existing external identifiers or conflicting names must be checked by the model. Missing map geometry does not prevent a lost-building site POI; absence of modern coordinates must not generate a fake public pin.
 
-Use `poi_context(streetstory://poi/<id>)` to obtain actor-authorized RKB source mentions, linked people, events, places and editorial stories, then fetch exact excerpts using ordinary evidence tools. Street Story's authenticated `GET /v1/pois/{id}/knowledge` returns the same bounded context under the owner's separate loopback service grant. No user OAuth bearer or PDF moves between services.
+Use `poi_context(streetstory://poi/<id>)` to obtain eligible RKB source mentions, linked people, events, places, source-bound facts/dates/observations and editorial stories, then fetch exact excerpts using ordinary evidence tools. A fact does not require a Story parent. Accepted active book text/bibliography are public without a per-book owner read filter; genuinely private records keep their own scopes. Street Story's authenticated `GET /v1/pois/{id}/knowledge` returns the same bounded context under the owner's separate loopback service grant. No user OAuth bearer or full PDF moves through this context bridge. The service credential does not impersonate a user.
 
-Only the RKB/Street Story installation owner is granted this loopback bridge. A dedicated secret must be provisioned in a protected systemd EnvironmentFile. The Android `STREET_STORY_DEVICE_TOKEN` is NOT that secret. The bridge is disabled without explicit private provisioning. Test both owner ACL and service token rejection.
+The bridge is restricted to the established RKB↔Street Story installation service identity and purpose; it is not an owner-only read filter on public book text or illustrations. A dedicated secret must be provisioned in a protected systemd EnvironmentFile. The Android `STREET_STORY_DEVICE_TOKEN` is NOT that secret. The bridge requires its established protected service configuration; missing or invalid configuration fails closed. Test source-specific private-resource authorization and rejection of invalid service tokens; public projection must not inherit an owner-only content filter.
 
 ## Observed production acceptance — 2026-10-10
 
@@ -62,7 +55,7 @@ interservice requests returned HTTP 401. Neither application copied full
 book bytes to the other's database. The private owner service credential is
 stored under a 0600 EnvironmentFile and was not printed.
 
-Reproduce the narrow HTTP readback from the registered DevCoveer checkout,
+Historical probe (run only against the applicable registered release/environment): reproduce the narrow HTTP readback from the registered DevCoveer checkout,
 without including user bearer tokens in arguments:
 `python scripts/production/probe_poi_bridge.py --poi-id <existing-poi_ss-id>`.
 It reads established local private tokens and emits only bounded IDs/status
@@ -79,8 +72,8 @@ Physical POI identity and candidate lifecycle remain Street Story authority.
 
 ## One-hop geographic projection available to Street Story
 
-The owner-authorized `poi_context` / `GET /v1/pois/{id}/knowledge` pair
-also returns each linked RKB source location's `place_kind`,
+The authorized `poi_context` / `GET /v1/pois/{id}/knowledge` pair
+returns the current eligible public/private projection and also returns each linked RKB source location's `place_kind`,
 `place_context`, and any model-selected `map_refs`. Its relations now carry
 the neighbor's selected Street Story POI ref (if any), the **source relation**
 review state and its source time scope. This reuses RKB's existing source
@@ -101,7 +94,7 @@ as `[]`, not generated from a name or today's OSM location.
 The bounded response queries one extra *authorized* RKB location to set
 `has_more` correctly. Exactly `limit` accessible locations means
 `has_more=false`; an actual `limit+1`-th source location means
-`has_more=true`. There is no cross-owner pagination or leakage.
+`has_more=true`. Public eligible source locations are not filtered by book owner; pagination of genuinely private context remains actor-scoped and must not leak inaccessible inventory.
 
 **Before a new map ref is staged**, the importing model must verify
 Cartography's current context at its producer authority, confirm the

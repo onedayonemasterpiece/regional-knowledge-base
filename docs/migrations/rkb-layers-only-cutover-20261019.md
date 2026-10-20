@@ -1,45 +1,43 @@
-# Перенос исторических и картографических слоёв; книги через fresh MCP import
+# GEO-only cutover; all other content is freshly imported
 
-Дата: 2026-10-19. Статус: план, данные не переносились этой документационной задачей.
+Updated 2026-10-20. Status: implementation plan; this documentation update moves no data. The owner has resolved the scope: **migrate only GEO**. The [single implementation handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md) is the coding-agent entry point.
 
-Основной [файл кодовому агенту](../prompts/rkb-scalable-kaggle-implementation-20261019.md) самодостаточен. Ниже сохранён его операционный контракт переноса; read-only inventory и isolated dry-run предшествуют переключению production.
+## 1. Explicit migration boundary
 
-## 12. Перенос слоёв и запуск с заново импортируемыми книгами
+| Transfer | Do not transfer as target content |
+| --- | --- |
+| Historical/cartographic layers; geographic place/layer stable IDs; rasters/vector geometry and topology; CRS, axes, units, GCPs and transforms; temporal IDs/validity and uncertainty | Old books/PDF corpus, accepted transcriptions, chunks, vectors, search projections and import receipts |
+| Toponyms, sourced aliases, historical addresses and geographic relations; source-specific cartographic observations; existing Cartography/Street Story owner references | Old stories/variants, manual drafts/history, expert contributions, disagreement register/cases and general factual/person/event records merely mentioning a place |
+| Minimal geographic provenance necessary to interpret the retained geometry/identity: source/edition/SHA/page/locator, dating evidence and attribution of the geographic interpretation | Transitive copies of entire chapters, story dossiers, personal work or old delivery queues under the name of a provenance dependency |
 
-### 12.1. Manifest переносимых данных
+A geographic measurement/date belongs in the transfer when it describes the retained geographic observation, transform or layer validity. General statistics, a biographical date or an event's location does not make its full non-GEO record transferable. Preserve the geographic part and minimal attribution/reference without importing the surrounding story or contribution history.
 
-До переноса создать проверяемый inventory: категории, canonical owner, count, IDs, hashes/versions, dependencies и ожидаемый target. Не предполагать, что «карта» — только изображение.
+Infrastructure identity, authorization configuration, service registrations, secrets and routing settings are not book content migration. Preserve their established control-plane lifecycle; do not reset or delete them to obtain a clean corpus. External canonical stores stay with their owners. This scope does not authorize copying Street Story/Cartography databases or minting replacement IDs.
 
-Обязательны:
-- historical map/layer IDs, raster/vector sources, CRS, axis order, units, geometry, georeferencing points/transform, validity periods и исходные объяснения датировки;
-- топонимы/aliases/языки/периоды, historical address relations, source-specific observations, unresolved states;
-- provenance, source reference/edition/SHA, physical/printed page, exact locators и авторство ручной интерпретации;
-- подтверждённые external POI IDs/refs с сохранённым владельцем Street Story и Cartography;
-- необходимая ручная работа/история зависимостей: сначала сохранить inventory/export, active transfer только в согласованной области.
+There is no unresolved owner choice about migrating manual stories/drafts/contributions and no mandatory export of all non-GEO assets. An already established bounded rollback backup may remain for its agreed retention; it is not a permanent second corpus or an active source for target search. The bounded retention/restore policy in the handoff applies to that backup and later Dataset generations.
 
-Старые book text/chunks/vectors/import receipts в target не попадают. Минимальные старые bibliography/hash/page/archive refs, нужные слою или ручному доказательству, сохраняются как **legacy_unanchored** историческая ссылка, а не как принятая новая книга или searchable corpus.
+## 2. Manifest and provenance
 
-После fresh import reanchor разрешён только при совпадающем оригинале/издании и проверенном evidence mapping. Тот же title/page number, близкая цитата или похожее имя недостаточны. Другой edition/scan/offset остаётся visibly unanchored до проверки. Не менять старое ручное заключение так, будто автор видел новую revision.
+Produce a read-only inventory and deterministic GEO whitelist before export. Each manifest item records source owner/store, category, stable ID, count/hash/revision, geometry/CRS/axis/units/transform/time, uncertainty, minimal provenance, dependencies, target owner/store and transfer status. Separate `migrated`, `legacy_unanchored`, `left_with_owner` and explicit `excluded_non_geo`; a missing dependency must not silently become a successful item.
 
-### 12.2. Порядок cutover
+For references into old books, preserve only the bibliography/edition/source SHA and exact physical/printed page or locator needed by the GEO object. Mark these as `legacy_unanchored`. They do not become an accepted target book, searchable old text, copied quote scan or a proof of the new import. A legacy locator retains its access class and current source policy; it grants no access to an old private original.
 
-1. Export/inventory и restore dry-run слоёв на изолированной БД; проверить counts, IDs, geometry/provenance и реальные lookup/overlay сценарии.
-2. Isolated A+B fresh book import/research/story/case сценарий можно проверять отдельно от всей карты.
-3. Для production bootstrap **сначала устойчивые layer/place identities**, затем новые книги и их ссылки. Не импортировать заново уже принятые в target книги только потому, что позднее приехал большой layer export.
-4. Перед финальным переносом согласовать короткую остановку layer writes или доказуемый delta watermark. Не обещать delta, если источник его не поддерживает. Зафиксировать, какие внешние canonical stores вообще не копируются.
-5. Переключить routing/readiness после проверенного snapshot/replay и applicable gates. Старое состояние сохранить как обратимый reference, а не вторую live write authority.
-6. Rollback до новых записей может переключить маршрут к прежнему состоянию. **После новых подтверждённых вкладов** rollback обязан сохранить и replay target tail. Восстановить старую целую SQLite поверх новых работ или заменить target пустой БД нельзя.
-7. Удаление старых копий/ручных объектов — отдельный последующий шаг после inventory и проверенного cutover, не часть данного документационного изменения.
+Fresh book import starts from verified original bytes through the normal MCP workflow, with a new accepted semantic graph and disagreement processing. Reanchor a GEO reference only to the **exact edition/source SHA plus checked page/region mapping**. Same title, printed page number, similar quote, name or vector proximity is insufficient. For a different scan/edition or unavailable original, keep the old reference visibly unresolved until an explicit mapping is verified. Record the mapping and its provenance; do not rewrite the historical interpreter's statement as if it originally used the new revision.
 
-Неопределённые смешанные manual stories, drafts, expert contributions и слойные evidence не уничтожать и не переносить молча в public search. Сохранить export и список решений по mapping. Это ограниченный открытый вопрос владельцу, а не причина отложить всю реализацию.
+## 3. Cutover sequence
 
+1. Prepare and verify the minimal GEO identity manifest: stable layer/place IDs, aliases, owner refs, CRS/axis/units and required provenance/version bindings. Restore/check those identities before production fresh imports. Full raster/geometry payloads may follow through the existing bounded GEO queue; manifest readiness does not falsely claim their availability.
+2. Fresh A+B book/import/research/story/case tests before that manifest are permitted only in an isolated fixture. They are not production bootstrap and do not import old non-GEO content.
+3. Production fresh books reuse the established manifest identities. Pending bulk rasters/geometry remain explicitly unresolved/unavailable until verified; their later arrival enriches the same IDs without reimporting accepted target books or duplicating places. Verify full layer geometry/topology, temporal validity, uncertainty and attribution when those payloads arrive.
+4. Bound the final source write window with a short pause of applicable GEO writes or a proven delta watermark. Do not promise delta capture where the owner source has none. Reconcile external references through their canonical owners without copying those stores.
+5. Check the source/target manifest and replay state, then switch routing and readiness. Maintain one live writer authority. An old rollback snapshot is read-only. The handoff's default is 7 days after confirmed cutover, extendable only for a concrete unresolved rollback incident within the measured byte budget; no independent longer retention is introduced here.
+6. After any new target acceptance, rollback preserves that exact accepted target tail, domain identities and delivery receipts. Restoring an old whole database over fresh imports or replacing the target with an empty database is prohibited. A compatible target restore/replay or explicitly degraded read path is required.
+7. Expire obsolete staging/backup copies only through the verified retention/GC policy. The design does not require permanent preservation or transfer of excluded non-GEO content.
 
-## Проверка manifest
+## 4. Required readback and recovery
 
-Для каждой категории указать source owner/store, count и устойчивые IDs, export SHA/revision, dependencies, target owner/store, transform/CRS/axis/units/time, provenance и статусы migrated/preserved_unanchored/left_with_owner/pending_decision. Статусы не должны скрывать потерянные manual records.
+Exercise a real historical layer/overlay, stable place lookup, historical alias by time, uncertain/unresolved place, topology/CRS conversion, retained author/provenance, and an unchanged external POI key. Verify that an old book reference is visibly unanchored and that exact reanchor succeeds only with the verified source mapping. Confirm old non-GEO search results, story/draft/case bodies and pending delivery events are absent from the target bootstrap.
 
-Минимальные readback: выбор реального historical layer; lookup известного/неразрешённого места; отрисовка геометрии; чтение provenance и авторства; historic alias по времени; external POI reference без дубликата; legacy evidence с правильным неизвестным anchor; fresh source reanchor только по подтверждённому оригиналу.
+Interrupt export/restore and final write cutover; reject incomplete or mismatching manifests. Test concurrent GEO writes and rollback after a new target book/accepted contribution. Count omissions explicitly rather than accepting a lower row count as cleanup.
 
-Согласованный scope слоёв не даёт права менять Cartography/Street Story canonical IDs или переносить чужие базы. Изменения API владельцев реализуются отдельно через их обычные контракты.
-
-[Приёмка MIG/REC/IMP](../prompts/rkb-scalable-kaggle-implementation-20261019.md#14-приёмка-обязательные-численные-gates-и-конкретные-отказы) включает конкурирующие записи, failed snapshot, неточный reanchor и rollback после нового вклада. Единственный base snapshot не разрешает удалить accepted хвост или заменить новую базу старой.
+The DevCoveer journal is a bounded hot recovery tail, not a permanent archive. An older Dataset/backup may be designated a historical recovery point with a declared older RPO; it cannot require unbounded local journal retention. Before truncating accepted changes needed by a supported replay base, verify a replacement durable checkpoint/tail. Only a few hours of local journal plus a daily remote backup cannot prove a few-hour RPO after loss of DevCoveer; the independent durable checkpoint/tail cadence or the honest recovery point must be stated in acceptance. No additional control plane is required.

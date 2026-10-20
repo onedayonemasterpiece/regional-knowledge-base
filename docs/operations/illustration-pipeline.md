@@ -1,97 +1,76 @@
-# RKB illustration pipeline — operator and agent contract
+# RKB illustration and source-proof pipeline
 
-## Target illustration and proof chain on Kaggle (2026-10-19)
+Updated 2026-10-20. Normative target: [single implementation handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md). This is not a claim that the new Kaggle runtime is deployed. Reuse the existing source/page/figure → evidence → canonical rendition → private Telegram mirror → verified restoration chain.
 
-**Required implementation, not new live acceptance.** Follow the [single handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md). Move PG corpus access, BGE retrieval, original loading and rendering/proof processing to Kaggle using this chain. Port source_proof authorization/corpus adapter; no second image index, OCR pipeline, scheduler or generative replacement.
+## Product capabilities and artifact policy
 
-Figure identity retains source revision, page, region and accepted caption links. Printed captions and labelled model observations stay separate. Same-page proximity/name/vector similarity do not prove image/POI association. Street Story retains canonical POI ownership.
-
-Reuse native PDF quads where valid. For scans/DjVu, calling-model coordinates refer to the authorized render; deterministic code validates and paints stripes. Preserve existing locator/validation adapters and bounded independent strip reading where visual confirmation is promised. Transcript match, plausible bbox or confidence alone is not visual/human proof.
-
-Bind locator to source SHA/revision, physical page, render dimensions/hash, crop offset/rotation/transform, quote/span and pixel scope. Persist exact accepted locator and dependencies. Retain preview/render or an exact recoverable descriptor until callbacks are terminal; preview/image delivery ACK alone is not permission to GC outstanding locator input. Lost exact preview requires a new generation/localization.
-
-Authorize pixels before retrieval and on final output; recheck source/grant/capability/audience on cache hits and delayed delivery. A crop grant does not expose the full page. Return real MCP ImageContent and actual MIME, not hardcoded PNG. Keep source/display/provider-rendition/delivery hashes distinct. Multi-item proof returns ready/pending/unavailable/denied/failed per item without discarding completed allowed results.
-
-Direct Kaggle archive reads use genuine new owner-provided sessions. VibePublish remains uploader unless explicitly changed; originals topic2, images topic4. Preserve stable operation IDs, bounded capacity, hashes and receipt-before-GC.
-
-The [released remediation](../reports/illustration-audit-remediation-20261019.md) fixed keyed verification GET, guarded recovery/cooldown/fairness, missing provider digest and source admission reserve. Preserve these repairs. Separately verify new direct reads, PG proof, actual images, scopes/partial outputs, stale callback and reset/revoke behavior.
-
-## Retained deployed-chain baseline
-
-Following sections retain prior topology and exact release evidence. New placement/transport does not reopen repaired defects automatically or make old measurements a new PASS.
-
-
-Canonical product path: **source/page/figure → indexed evidence → canonical crop → private Telegram mirror → verified restoration**. This document applies equally to new and already imported sources. Preserve the existing SQLite corpus, single indexing owner, VibePublish worker and current BGE/Kaggle boundary. No new service, vector index, scheduler or source import is required.
-
-## Three separately testable capabilities
-
-| Capability | Authority and entry point | Evidence of success |
+| Capability | Entry/authority | Required result |
 | --- | --- | --- |
-| Find the right image | `Kalinigrad_base.search(query)` → `fetch(evidence_id)` → `metadata.illustrations[]` | Actor-visible chunk and **correct source-region** illustration ID, page and figure provenance. Ranking/availability reported; no invented image association. |
-| Get a real image | `Kalinigrad_base.illustration_fetch(id)` | Authenticated MCP `ImageContent` PNG/JPEG **bytes** plus `delivered_crop_origin`, `delivered_crop_sha256`, private/rights labels. Printed caption and model observation never conflated. |
-| Archive and restore | Existing RKB indexing owner's `IllustrationMirror` → local VibePublish media-store service principal → Telegram **private forum topic 4** | Stable operation ID, native receipt, exact topic/origin, media `provider_crop_sha256`, `vibepublish_entry_ref`; `illustration_fetch` can restore when local crop is already absent. Original PDF/DjVu uses **topic 2**, not topic 4. |
+| Discover a source illustration | `search` → `fetch` → `metadata.illustrations[]` | Correct accepted figure/caption association, exact page/revision and retrieval state |
+| Fetch the illustration | `illustration_fetch(id)` | A public illustration rendition for everyone, real MCP ImageContent, actual MIME, delivered origin and hash |
+| Prove a source quotation | Existing source-proof/locator path | Authorized page/crop/stripe pixels for owner or current demo/expert/local_historian `scan_proof_read`; exact locator/accuracy and per-item outcome |
+| Restore the illustration | Existing mirror/provider-read adapter | Exact verified topic 4 rendition, native receipt, provider hash and source binding |
+| Retrieve full original | Separate private source operation | Independently authorized exact PDF/DjVu, topic 2 and original SHA |
 
-**One logical illustration identity:** `illustration_id` belongs to a selected document revision, real page and `source_region_id` (figure). Printed `caption_region_ids` and model-labelled `visual_description` are stored separately. A canonical crop has `source_crop_sha256` and optional oriented/display `display_crop_sha256`; provider Telegram rendition may have a distinct `provider_crop_sha256`. Never use one hash as evidence of another rendition's bytes.
+Apply [rights.md](../rights.md) at creation, retrieval and delivery. Public illustration policy is already authorized; no new per-figure editorial approval is required. Its authoritative artifact class comes from accepted figure identity and validated output geometry, not a caller's label. A full-page plate can be a genuine figure; an arbitrary page/quote crop cannot be made public by calling it an illustration. Exclude adjacent unrelated prose/marginalia and restricted page context. Keep authentic rights metadata unchanged; do not fabricate `public_domain_verified`.
 
-**Search is over evidence chunks, not a separate image gallery.** At staging, `search_material` includes accepted printed captions and explicitly labelled visual descriptions without overwriting source text. E5/BGE revision hashes fence stale embeddings. `search` may rank an illustrated chunk rather than put an image into the result JSON. The agent calls `fetch`, follows returned exact illustration descriptors, and calls `illustration_fetch` for the image. Fetch can project an omitted legacy illustration ID only if a user-authorized figure and the chunk share the **same accepted caption/figure region** on the same document/page; the projection is marked `association_basis=exact_shared_region`. Mere co-occurrence on a page, nearby place name or inferred visual similarity is **not** proof of linkage. Never identify a Green Gate figure as a Wooden Bridge.
+Verified participant-category changes atomically materialize the audited `scan_proof_read` grant as defined in [rights.md](../rights.md); `claimed` does not. Rendering uses the current grant/scope, never category-name fallback. Category removal/demo expiry disables its derived grant; manual revocation is not undone by reading or replay.
 
-## Asynchronous search: a pending result is not an empty archive
+The private archive location does not make a permitted public rendition owner-only. Conversely, a public rendition does not expose private archive URLs or full originals. Shared Slack stays `public_only` and may carry public figures; personal proof grants are not combined into channel access.
 
-The **first** `Kalinigrad_base.search(query)` can return `main_state=pending` or `starting`, a `main_job_id`, and `mode=lexical_degraded` with **zero preliminary hits** even while `indexing.bge_ready` equals all active chunks. That is **not** a completed semantic search and not proof that no illustration exists.
+## One corpus and exact evidence
 
-- Reuse the **same query and the returned `main_job_id`** in `search(query, main_job_id=...)`; the BGE/Kaggle queue is already working on that job. Do not create a new job or claim no results because the preliminary list was empty.
-- Make bounded follow-up calls while `main_state` is `starting`/`pending` (normally a short wait between checks, up to the client/agent's task budget), and report whether `main_state=ready` has been reached. Once ready, use the ranked evidence IDs as usual: `fetch` and then `illustration_fetch` for the source image.
-- If `main_state=unavailable` or the budget expires, describe the **unresolved semantic retrieval** separately from any lexical hits; do not present a provisional empty result as a definitive absence. Reusing a job ID is for continuing the same search, not bypassing access checks.
-- Same-page proximity or keyword resemblance never authorizes attaching a picture. Follow only the explicit `metadata.illustrations` descriptors and the exact accepted region associations.
+The corpus/proof adapters use the same PostgreSQL/pgvector on Kaggle and one accepted source revision; BGE is the only embedding model. DevCoveer keeps the existing request/controller and durable change/delivery state. Kaggle uses one outbound WSS connection to that controller. Do not add an image index, OCR/VLM service, scheduler or second semantic pipeline.
 
-## Transport and durable boundaries
+`illustration_id` is tied to the accepted source revision, physical page and `source_region_id`. Keep `caption_region_ids`, exact printed caption and separately labelled `visual_description`. Same-page location, name similarity and vector proximity do not establish image/POI identity. Street Story remains canonical POI owner.
 
-- RKB and VibePublish share DevCoveer: existing authenticated **loopback HTTP**, independent least-privileged technical service principal, narrow Telegram KB destination and exact topic grants. See [canonical interservice policy](https://github.com/onedayonemasterpiece/codex-devcoveer-mcp/blob/main/docs/operations/local-service-connections.md). Do not use a human OAuth/browser owner token, unscoped owner rights, public network hop or additional local daemon.
-- Use only RKB's existing `IndexReconciler`/mirror maintenance and VibePublish's existing provider queue/pacing. A provider outage or slow read leaves durable `pending` and must not block indexing. No duplicate scheduler.
-- Freeze the key per actor + illustration + accepted revision. Persist `mirror_operation_id` and `mirror_read_operation_id` before declaring completion. A lost response/time-out is **unknown**, not permission to mint another operation: reconcile/replay the same key or continue the same read ID.
-- Only after provider-backed `get` confirms exact original topic, entry, origin and provider SHA set `vibepublish_entry_ref` and provider hash. Do not garbage-collect the private Object Storage crop before this proof.
-- Actor authorization must succeed before either the private Object Storage locator **or** the Telegram fallback is consulted. An archive entry or signed URL is not authorization. Public rights remain closed unless separately verified.
+Search material may include accepted captions and labelled visual observations without overwriting source text. An omitted descriptor can be projected only from the exact accepted shared figure/caption region, recorded as `association_basis=exact_shared_region`. A keyword or neighboring place cannot supply a missing image link. Search ranks source evidence; the agent follows its descriptor and fetches the real image.
 
-### Archive recovery and capacity (2026-10-19)
+Only GEO migrates. Old book/figure/chunk/vector projections are rebuilt by fresh MCP import, not backfilled as accepted target content. Reuse verified original bytes and existing archive infrastructure as permitted; preserve GEO minimal provenance and exact reanchor under the [cutover contract](../migrations/rkb-layers-only-cutover-20261019.md).
 
-Initial mirror and source verification GETs now use immutable keys derived from
-their original PUT operation. A lost admission reply replays that GET rather
-than downloading a second provider copy. Terminal `blocked` reads with exactly
-`telegram_transport_unhealthy` or `provider_read_deadline` can recover through
-the existing read path. Original-file/fallback reads persist the next key and
-15-minute cooldown atomically in the private cache database; concurrent callers
-and process restarts share it. Unknown, pending, failed, authorization and digest
-failures retain the original operation. Asset 404/410 retains its separate,
-bounded expiry continuation. A missing provider digest fails closed.
+## Source-proof and locator contract
 
-Mirror polling errors preserve the last transient retry's cooldown. The bounded
-four-item selection gives ready work precedence over cooling reads, so four
-waiting entries cannot monopolize a pass. Both new source PUTs and new mirror
-PUTs defer below the existing 2 GiB filesystem reserve without discarding source
-bytes or crops. Already admitted operations continue their receipt/readback
-reconciliation under disk pressure. This admission check is not a global quota
-or a guarantee against concurrent unrelated filesystem writes.
+Port the existing corpus/authorization boundary in `quote_proof` and `source_archive` to PG. An authorized nonowner proof request must reach the original through purpose-scoped internal rendering access; never impersonate the owner or grant direct source download as a side effect. Restrict the model's input and final composited pixels to the authorized class/scope. A full private page underneath a highlighted crop is a disclosure.
 
-The [remediation report](../reports/illustration-audit-remediation-20261019.md) records which audit findings were reproduced and fixed;
-the remaining audit proposals are not presented as completed changes.
+Reuse validated native PDF quads. For image-only scans/DjVu, the calling model receives an authorized render and returns coordinates; deterministic code validates them and draws stripes. Preserve existing locator/validation adapters and bounded independent strip reading where visual confirmation is claimed. A transcription match, plausible bounding box or confidence score alone does not prove visual alignment.
 
-## Troubleshooting without guessing
+Bind each locator to source SHA/revision, physical page, render hash/dimensions, crop offset, rotation/transform, selected quote/span and pixel scope. Preserve exact accepted locator payload and provenance. Multiple columns, rotated text, repeated phrases, line breaks and separate pages keep separate geometry. Report `exact`, `line`, `region` or `unavailable` honestly; never silently turn an exact request into a broad highlighted paragraph.
 
-| Symptom | Inspect first | Correct response |
-| --- | --- | --- |
-| Text found but no `metadata.illustrations` | Chunk's `illustration_ids`, region IDs vs accepted figure/caption IDs, active revision; probe exact `search→fetch` | Repair factual region projection or document a real missing link; **do not** guess by name or reimport blindly |
-| Descriptor present but `illustration_fetch` fails | Caller ACL, `crop_object_id`, object hash, `vibepublish_entry_ref`, original vs provider digest | Restore through existing scoped fallback; do not publish private bytes or silently claim success |
-| Illustrations never leave the queue | Real indexer SHA/PYTHONPATH and `illustration_mirror_pass_retry`; SQLite `UPDATE ... AS i` compatibility | Fix/verify one existing worker SQL boundary and its receipt; no extra queue |
-| Some Telegram originals visible to owner but not RKB service | Exact legacy entry principal/topic/grant/binding/origin | Authorize **only** approved exact old entries under the technical principal; no broad owner impersonation |
-| Read takes longer than a synchronous budget | Durable media-store get request key and existing operation status | Resume/reconcile **same** read ID, never send again blindly |
-| Slack file hash differs from RKB crop hash | Inspect PNG chunks and pixel data; Slack may remove the 21-byte `pHYs` auxiliary chunk | Log `RKB SHA` and `Slack delivery` separately; check actual rendered pixels/IDAT when transport transforms metadata |
+Retain the exact preview/render or an exact recoverable descriptor while any locator callback is live. Delivery ACK of a preview is not a terminal localization receipt. If exact preview recovery is impossible, create a new generation/localization and reject a callback tied to the old hash. Semantic payloads/accepted coordinates are authoritative accepted data; a parser version and source hash cannot recreate model work.
 
-## Mandatory acceptance: real data, not a mock-only claim
+## Actual media and partial results
 
-1. **Search and association.** At least three distinct natural-language prompts; no hardcoded illustration IDs in the query. Demonstrate exact accepted evidence region and `metadata.illustrations`, model vs printed caption separation, and semantic/lexical retrieval mode. Also probe an unrelated same-page and cross-actor negative case.
-2. **Actual media bytes.** Call the real authenticated MCP `illustration_fetch` for each, check image MIME and SHA of delivered canonical crop (not a web result or generated facsimile); present at least three **real image attachments** in an approved **private** owner Slack thread. One text-only general query should discover an illustration without a preknown ID. Slack transport integrity is separate from source-byte integrity.
-3. **Telegram mirror.** Measure **actual active revision** `vibepublish_entry_ref IS NULL` backlog before/after; verify Telegram destination and **forum topic 4**, provider receipt/get, original vs provider hash, idempotent replay/restart and **no duplicate publications**. Preserve topic 2 for full original source files.
-4. **Existing archive fallback.** Choose a naturally GC'd verified crop with no live Object Storage pointer; call the **same** `illustration_fetch` tool and verify `delivered_crop_origin=telegram_archive` and matching provider rendition hash. Do not delete real crop bytes merely for the demonstration. Test negative wrong owner/topic/entry.
-5. **Deployment:** green CI and negative tests, commit and immutable deployed SHA, which **actual process** runs which module/PYTHONPATH (MCP server and indexer may use different release snapshots), live status/receipts. A merged PR is not proof of deployment. Attach evidence to existing audit report and Slack thread.
+Return real MCP ImageContent and a MIME matching the bytes (including WebP where produced), not a metadata-only URL or hardcoded PNG. Track `source_crop_sha256`, optional `display_crop_sha256`, `provider_crop_sha256` and delivered hash separately. Orientation/sanitation/provider processing can change bytes; a hash of one rendition proves nothing about another.
 
-The current illustration outcome is recorded in the [live acceptance report](../reports/illustration-archive-live-acceptance-20261019.md), including the independent repeat of image and original-file byte retrieval. It supersedes the illustration backlog and legacy-access limitations in the [historical imported-source audit](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/52b58b49c0e0a00e7e02e3f43836b99ade444927/docs/reports/imported-source-audit-20261018.md). Current live receipts take precedence over either document. Report each capability as `verified`, `failed`, `pending` or `untested` independently; archive acceptance does not certify mass-ingestion or all-book retrieval quality.
+Multi-page and multi-image operations retain verified allowed items and report each item as `ready`, `pending`, `unavailable`, `denied` or `failed`. Do not fail all pages because one is pending or disclose denied inventory. Use bounded item counts/continuations and preserve accepted result IDs across retry.
+
+Public illustration/proof/original caches are distinct. Cache keys include authoritative class, source/revision, geometry/profile, policy version and applicable audience. Recheck source withdrawal/current policy and any capability/grant on cache hit, callback, retry and delivery. Late success from an obsolete policy cannot republish withdrawn pixels.
+
+## Mirror, transport and capacity
+
+VibePublish is the sole uploader. On DevCoveer, use its existing authenticated loopback endpoint and dedicated least-privileged service identity with exact archive destination/topic grants. Kaggle localhost is not DevCoveer; route bounded work through the existing controller/bridge. Never forward a human OAuth/owner token, create a second uploader or introduce a new gateway. See the [same-host connection policy](https://github.com/onedayonemasterpiece/codex-devcoveer-mcp/blob/main/docs/operations/local-service-connections.md).
+
+Full originals go to topic 2; illustration documents go to **private forum topic 4**. Kaggle reads exact registered locators directly using genuine separately authorized Telegram sessions supplied for implementation. Copying a StringSession/auth key does not create an independent session, and account-wide pacing/FloodWait still applies.
+
+Freeze publication/read keys by exact logical artifact and accepted revision. Persist operation/read IDs before success; timeout/lost reply means unknown, requiring same-key reconciliation. Only native provider readback confirming destination/topic/origin and trusted rendition SHA can mark an archive verified. Never use a freshly computed downloaded hash as its own independent expected hash. Byte eviction needs this proof and no live ingest/render/locator dependency.
+
+Reserve measured staging/cache capacity before downloads/renders/uploads; include concurrent copies and output artifacts. Keep fair bounded work under the existing queue/controller. Pending originals/mirrors cannot starve behind embeddings, and blocked work releases capacity. No second maintenance scheduler is introduced. The handoff defines bounded journal/checkpoint/backup retention; old Dataset generations do not pin an unlimited local replay log.
+
+## Released baseline repairs to preserve
+
+The [19 October remediation](../reports/illustration-audit-remediation-20261019.md) fixed immutable first verification GET keys, missing-provider-digest failure, guarded read recovery, cooldown/fairness and source admission reserve. These are already closed baseline findings, not newly discovered defects.
+
+In the Vibe read path, terminal blocked `telegram_transport_unhealthy` / `provider_read_deadline` may transition to a persisted next key with a 15-minute cooldown. Unknown/pending/auth/digest failures keep their operation. Verified-asset HTTP 404/410 has a separate expiry continuation. Polling errors preserve cooldown; ready work must not be hidden behind cooling entries. The existing 2 GiB admission reserve is a historical guard, not an atomic global capacity guarantee; target capacity must account for all concurrent allocations. See [read continuation](archive-read-continuation.md).
+
+## Acceptance and diagnosis
+
+- Use at least three natural-language searches without hardcoded image IDs. Demonstrate exact evidence/figure association and printed-caption/model-observation separation; include a nearby unrelated same-page image negative case.
+- Fetch real images through the actual MCP connection, verify bytes/MIME/source/provider/delivery hashes, and deliver public renditions to an audience without a personal book grant. Separately test denied quote/page/original access and authorized owner/demo/expert/local_historian proof.
+- Exercise a mislabeled page crop, actual final output geometry, warm-cache withdrawal, expired demo and stale callbacks. Return usable partial results when one page is pending or denied.
+- Verify forum topic 4 native readback and naturally evicted-cache restoration through the same API. Keep topic 2 original retrieval independently private. Do not delete production bytes just to manufacture a fallback demonstration.
+- Test lost replies/restart/failover with exact accepted payloads and stable keys, preview lifetime, hash mismatch and no duplicate publications. Confirm target PG corpus access and direct Telegram reads; old tests do not prove these new paths.
+- Record the actual running MCP/controller/notebook release identities and exact result receipts. A merged PR is not deployment. Preserve neighboring Vibe full-frame/Original/compositor behavior and Street Story integration.
+
+If Slack transforms PNG metadata (the historical example removed the 21-byte `pHYs` chunk), keep source and delivered hashes separate and inspect pixels/IDAT as appropriate. Do not call a transport-rendition hash mismatch proof that the source illustration changed.
+
+The [live acceptance report](../reports/illustration-archive-live-acceptance-20261019.md) and remediation report preserve prior real-image/original readbacks. Their measurements remain historical and do not certify fresh import, all-book recall or Kaggle reset recovery. Report each capability independently as verified/failed/pending/untested.

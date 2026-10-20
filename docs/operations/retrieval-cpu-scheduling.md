@@ -1,74 +1,45 @@
-# Regional Knowledge CPU scheduling for retrieval
+# Ресурсный допуск поиска, импорта и maintenance
 
-## Применение в переработке 19.10.2026
+Обновлено 20.10.2026. План целевого Kaggle PG 17/BGE runtime. [Handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md), [технический request lifecycle](../designs/user-request-load-management-20261019.md), [storage](../storage.md).
 
-Нормативный целевой контракт: [единый файл агенту](../prompts/rkb-scalable-kaggle-implementation-20261019.md) и [архитектура](../designs/rkb-scalable-kaggle-architecture-20261019.md). Текущий runtime ещё не перенесён этой документационной задачей.
+## Совместный envelope
 
-- Один PostgreSQL/pgvector corpus в Kaggle, BGE-only (1024 FP32 baseline, exact pinned BGE input≤512); небольшой durable control journal на DevCoveer.
-- Прямой исходящий WSS notebook→existing DevCoveer ASGI с двусторонними заданиями/результатами, durable ACK/RESUME и одной BgeQueue authority. Старые polling/локальный E5/Supabase инструкции не целевой deployment.
-- Fresh MCP import книг; перенос только historical/cartographic layers и согласованных зависимостей, со stable IDs/provenance и проверенным reanchor. Ручная работа не уничтожается из-за отказа от старого corpus.
-- Source-bound facts/dates/observations сохраняются без обязательной Story; эпизод/досье/Variant/private draft/independent case различаются. Один persisted research workflow, bounded compose, без квот и выдуманной драматургии.
-- Поиск accepted active book text и bibliography без per-book owner ACL; current withdrawal/revision, pixels/original/private draft grants и delivery audience остаются обязательными.
-- One canonical person/request/dialog, fair admission и confirmed result/hash ACK; Мира в PH расширяет existing typed adapter, не создаёт отдельный voice/IAM/queue.
+На Kaggle конкурируют PostgreSQL connections/transactions/buffers, BGE inference/tokenizer, render/proof, source I/O, import и snapshot/index maintenance. Разные API не создают независимые CPU или RAM. На DevCoveer учитывать event loop, compact control state, raw spool и bounded WSS buffers; BGE inference и E5 там отсутствуют.
 
-Численные protected gates сохранены: backend p95≤1000ms, MCP p95≤1500ms/hard2000ms, BGE Hit@5≥85%/@10≥90%, RU→DE@10≥85%, ≥30 held-out families, ≥100 sources/100000 chunks, storage≤80% steady/≤90% peak. Документ не является доказательством PASS.
+Один BGE model process; pool/parallelism учитываются суммарно по всем PG consumers. Измерять current/peak RAM, CPU quota/pressure, event-loop lag, PG lock/temp/WAL/I/O, stage duration и useful query latency. work_mem/parallel workers и maintenance memory умножаются по одновременным операциям; не отдавать один и тот же available memory reserve двум claimers.
 
-## Граница старого runbook
+Existing controller атомарно выдаёт короткий permit следующей стадии и сохраняет её generation/checkpoint. Другие clients/producers не заводят собственные schedulers. Permit не удерживает SQL transaction во время внешнего ожидания; реально освобождённый ресурс возвращается, но память незавершённого этапа не объявляется свободной.
 
-Ниже — runbook исходного runtime до cutover, а не инструкция устанавливать прежнюю архитектуру заново. Не удалять shared runtime files/данные до проверенного переключения. Новое восстановление использует schema/codec compatibility, exact command/result hashes, snapshot+tail; TTL accepted jobs не может удалить данные незавершённого consumer. 10-секундная политика waiting notice не увеличивает 2000ms evidence deadline.
+## Поиск во время импорта
 
-### Исходный runtime
+Поддерживать измеренный резерв как минимум одного supported search, включая query encode, PG candidates/hydration и control response. Резерв нужен и при пустой пользовательской очереди: иначе новый запрос встретит уже запущенный чрезмерный batch.
 
-On 8 GB RAM the host still has two vCPUs shared with development agents and other applications.
-Postdeployment on 2026-10-08, a strict backend test on main b2d0b415 yielded p95
-948.64 ms at concurrency 1 and 1348.03 ms at concurrency 2, with all quality checks passing.
-Direct public MCP HTTPS search p95 was 987.8 ms (12 serial calls). CPU pressure (PSI
-some 30–55%) is significant, while IO pressure is low.
+Query-first в BgeQueue не прерывает текущий bounded encode. Новый document/story batch, render или index build запускается только если помещается вместе с резервом. На pressure не брать следующий safe batch; commit/rollback текущей transaction завершается нормально. SIGSTOP/kill и ожидание permit под writer lock не используются.
 
-**Current owner architecture (2026-10-17): BGE inference runs ONLY in the
-Kaggle worker**, via the existing durable, owner-bound BGE queue on DevCoveer.
-The legacy local ONNX BGE query unit is **removed and systemd-masked**; its
-585,569,350-byte dedicated model directory has been deleted. Do not unmask or
-reinstall it in response to Kaggle latency. See [hard placement boundary](bge-kaggle-only.md). The main MCP and story indexer enqueue
-deduplicated BGE jobs and report Kaggle warming/pending truthfully; zero
-local BGE model bytes should be loaded.
-E5 remains a separate **local** CPU sidecar, restored and assessed independently.
-The MCP unit receives CPUWeight=250 via the versioned override in ops.
-The indexing unit retains CPUQuota=50% and has CPUWeight=70.
-These are relative CPU weights, not absolute guarantees. They do not stop or
-change unrelated applications. This preserves resumability of background indexing.
-A previous local BGE service in 1.7 GiB RAM repeatedly reached ~1 GiB and was
-OOM-killed; increasing VM memory is not authorization to violate Kaggle-only BGE.
+Proof и import получают положительное продвижение через bounded aging: если oldest runnable stage постоянно не помещается, не начинать конкурирующие новые этапы, дать им закончиться и собрать её рабочий объём, сохраняя serving reserve. Если минимальный batch плюс резерв физически не помещаются, уменьшить checkpointed batch или признать capacity failure. Бесконечная starvation не считается выполненной гарантией.
 
-## Verification
+Resource resize перечитывается. После уменьшения прекращаются новые тяжёлые starts; принятые запросы и checkpoints остаются. Повышение concurrency разрешено только в подтверждённом envelope. Missing/stale telemetry не даёт автоматически расширять допуск; hysteresis предотвращает дрожание.
 
-Deployment must use an immutable merged main SHA. Install/read back the service
-priority configuration, check exact release SHAs, all service health, BGE readiness,
-and authenticated search correctness. Re-run strict backend p95 <=1000 ms at
-representative concurrency; public MCP p95 <=1500 ms and hard evidence deadline
-<=2000 ms. Preserve a failed measurement rather than lower requirements.
-If unstable with co-located developer jobs, a 4-vCPU or dedicated retrieval
-allocation may be required. Do not claim 100-book/100k chunk readiness from this
-two-book acceptance, which has separate capacity and retrieval-quality gates.
+## Deadline и query work
 
-## Nearby source context (bounded, not a second search service)
+Warm backend p95≤1000 ms, public MCP p95≤1500 ms, hard evidence deadline2000 ms. Queue wait до полного human answer измеряется отдельно. Внутри короткого search не появляется скрытый многосекундный sleep ради пользовательской очереди.
 
-When a top-ranked accepted chunk is contextually incomplete, the existing
-retrieval post-pass may examine at most **two adjacent source-position chunks**
-on either side of each of the top two hits. A two-position context hop is
-allowed only within one authorized original document, active revision,
-article/component and physical page, with its intervening chunk also on that
-page and no illustration-bearing content crossed. The same actor/source
-authorization is applied *before* fetching any neighbor.
+Все lexical/alias/dense branches делят общий deadline; до 20 последовательных alias calls с собственным полным timeout недопустимы. Broad и scoped SQL имеют проверенные планы, включая actual prepared ANN после 6+ executions и крайние selectivity. Custom-plan/disableprepare применяется только к ANN при доказанном generic-plan regression; SET LOCAL knobs не протекают между pool clients; HNSW candidate limit стоит до полной hydration. Дедупликация/RRF и batch read top-K не обходят весь corpus. FTS per-row RU/DE/simple использует bounded набор query configs; alias lookup не запускает цикл отдельного full FTS на каждое имя. Immutable revision projections и маленький atomic active pointer исключают массовый activation UPDATE; inactive versions имеют bounded GC и проверенный iterative/exact filter path.
 
-Only **one** contextual source result can be added to the requested result
-window; top-two ranked evidence is protected. Grammatical continuation retains
-priority on the immediate hop. Otherwise at least three question cues and more
-overlap than the anchor are required, with a passage-length normalization to
-avoid over-favoring long general background. Context signals mark direction,
-hop count and `same_page_context` distinctly from primary BGE ranking.
-No user-specific titles, named places, entity IDs or question rewrites are used.
+Scoped ANN имеет bounded iterative scan/refill. Deadline exhaustion или недостаток допущенных candidates маркируется partial/degraded, а не доказанным отсутствием фактов. Seq Scan маленькой таблицы допустим; O(N) full-catalog map, JSON dossier scan и Python sort всех story vectors исключаются.
 
-The original natural gold and independent questions must still be verified
-against the **deployed** MCP and full source evidence. This bounded supplement
-does not make weak BGE dense retrieval a passing general holdout.
+## Ограниченное расширение source context
+
+Сохранить существующий bounded post-pass как дополнительный сигнал: для top 2 hits можно проверить не более двух соседних source-position chunks в каждую сторону, с тем же original document, active revision, article/component и physical page. Второй hop требует допустимого промежуточного chunk; illustration-bearing content не пересекается. Scope проверяется до fetch.
+
+Добавляется максимум один contextual source result, top 2 ranked evidence защищены. Immediate grammatical continuation имеет приоритет; альтернативный context требует минимум трёх question cues и большего нормализованного overlap, чем anchor. Direction/hop/same_page_context маркируются отдельно от primary BGE rank.
+
+Не добавлять hardcoded user titles, locations или entity-specific rewrites. Dense-only gate измеряется без этого post-pass; supplement не превращает слабый dense recall в PASS. Смена этих правил требует source-grounded quality gate.
+
+## Maintenance и измерения
+
+Autovacuum включён; targeted ANALYZE после значимой bulk activation. Один maintenance slot в existing controller; крупный snapshot/build/reindex учитывает disk/memory overlap и serving reserve. Никаких hourly/daily full REINDEX, VACUUM FULL или полного reembed.
+
+Различать encoding time, queue time, SQL candidates, hydration, source I/O, e2e и native delivery. Сохранять ошибки/timeout/degraded attempts, resource/pin/config и corpus revision; не отчитываться лучшим одиночным call. Исторические systemd CPUWeight/Quota не являются измерением новой Kaggle мощности.
+
+[Прежние CPU measurements и deployed context rules](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/operations/retrieval-cpu-scheduling.md) сохранены как immutable baseline. Текущая документация не запускала новый benchmark.

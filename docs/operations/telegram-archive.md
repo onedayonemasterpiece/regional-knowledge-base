@@ -1,141 +1,59 @@
 # Telegram source archive and bounded staging
 
-## Target archive and fresh-source boundary (2026-10-19)
+Updated 2026-10-20. Normative target: [single implementation handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md). Current runtime evidence is recorded separately; this document does not provision credentials or mutate the archive.
 
-**Target requirements; no credential/runtime/archive mutation here.** Follow the [single handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md). Kaggle reads approved originals/media directly and processes sources. DevCoveer retains durable request/change/delivery state without another full-corpus/PDF staging host.
+## Placement and source lifecycle
 
-Genuine independent Telegram sessions are supplied at implementation. Cloned StringSession/auth keys are not independent; account-wide FloodWait/provider limits still apply. Keep secrets out of code/reports. VibePublish remains uploader unless explicitly reassigned. Retrieval changes do not require a new publication/mirror index/daemon.
+One PostgreSQL/pgvector corpus with BGE-only retrieval and source/image processing runs on Kaggle. DevCoveer holds the existing MCP/ASGI authorization/controller and bounded durable request/change/delivery state. The notebook connects outbound over one WSS channel; do not create another scheduler, full-corpus staging host or polling control plane.
 
-Read exact registered chat/topic/message/archive identity: original PDF/DjVu topic2, images topic4. Compare bytes to retained trusted source/provider hashes. A self-calculated digest is not independent verification; archive URL grants no access.
+Only GEO content migrates. All old non-GEO book text/chunks/vectors/stories/drafts/contributions/cases are excluded; fresh MCP import reexamines verified original bytes and accepts a new semantic graph. Legacy chunk backfills/migration017 are not target cutover. An existing verified archive can supply the exact original without copying its old accepted transcription or review stamps. Preserve model-accepted text, semantic boundaries, locators and IDs durably; source SHA plus parser version cannot regenerate them.
 
-Freshly review books from verified originals. Old backfill below is not target cutover; do not present old transcription/review stamps as fresh acceptance. Preserve exact accepted semantic payloads beyond Kaggle-local commits; SHA/parser version cannot reproduce model work.
+Original source identity includes exact bytes/SHA and edition; native archive identity includes connection/chat/topic/message/document/origin. Read that registered identity, not a filename search or a guessed message. Full PDF/DjVu uses topic 2; illustrations use **forum topic 4**. A public illustration remains public even though its recovery archive is private. A private archive locator is never an access grant.
 
-Reserve bounded staging/cache capacity before I/O; count concurrent download/render copies. Persist attempt, retry-after/cooldown and fair pending work. Read recovery does not create replacement publications or source identities. GC requires verified recovery/archival proof and no active ingest/read/render/locator dependency; byte eviction does not erase unresolved attempt identity. Image ACK does not finish an outstanding locator.
+## Direct reads and one uploader
 
-The [remediation report](../reports/illustration-audit-remediation-20261019.md) records deployed service-principal retrieval and repaired behavior. Older OAuth/M2M-not-done passages are historical. Direct Kaggle reads/new sessions/reset recovery require new acceptance.
+Kaggle reads approved originals/media directly using genuine separately authorized Telegram sessions supplied for implementation. The owner named `TELEGRAM_RKB1` and `TELEGRAM_RKB2` (the second is currently empty): verify actual independent authorization and archive access at stage 0. Bind one exclusive session lease to each Kaggle run; simultaneous runs cannot exceed verified available sessions or Kaggle capacity. More sessions extend the existing pool. Copying an existing StringSession/auth key is not a new independent authorization. Keep credentials out of repository, notebooks' public output, reports and logs. Account-wide provider limits still apply; honor FloodWait and per-session state without treating multiple sessions as permission to bypass the account budget.
 
-## Retained chronological baseline
+VibePublish remains the sole archive uploader and owner of its native provider queue/pacing. Its DevCoveer bridge uses the existing authenticated loopback HTTP endpoint and a dedicated nonowner service identity restricted to the archive destination and topics 2/4. Kaggle is not on that loopback host; use the existing controller/bridge route for upload work. No browser/human OAuth, owner bearer, extra daemon or alternate uploader is needed. Follow the [same-host policy](https://github.com/onedayonemasterpiece/codex-devcoveer-mcp/blob/main/docs/operations/local-service-connections.md).
 
-Following sections retain older migrations/topology/credential transition. Migration017/backfill and human archive OAuth are not the fresh-book or current service-auth target. Actual release receipts supersede old status.
+Existing transport configuration/identity/grants are infrastructure, not old content to delete at cutover. Provider-side target binding must be enforced; a service credential never becomes unrestricted owner access. Direct retrieval does not require new publications, a new mirror index or relaxed source ownership.
 
+## Authorization and verified bytes
 
-Apply migration 017 only after `verify_telegram_storage_migration.py` passes in
-the isolated PostgreSQL database. `migrate_telegram_text.py` backfills **all**
-legacy chunks from whole-projection and range hashes, then verifies every stored
-chunk SHA and unchanged vector/corpus digests. It also recovers exact region text
-from hash-verified staged graphs or exact matching historical chunk digests.
-Legacy incomplete regions stay explicit and prevent their graph evidence GC.
+Apply [artifact access](../rights.md) before retrieval and again before delivery. Public accepted illustration renditions are distinct from restricted source-page/crop/stripe scans and private full files. Owner/demo/expert/local_historian proof access uses current `scan_proof_read` authorization; verified category assignment materializes the audited grant under [rights.md](../rights.md), while claimed/revoked/expired categories are not an alternate read path; purpose-scoped internal rendering may read an original only to produce that authorized artifact. It must not return the full original or impersonate its owner.
 
-`source_text` in Postgres is canonical accepted transcription. Fetch/indexing/
-graph evidence prefer authorized Postgres text; legacy object reads remain a
-migration fallback only. New finalize writes neither text projections nor page
-renders. It writes exact region text, chunks and temporary crop bytes.
+Shared Slack `public_only` may display public illustrations, without using members' private credentials. Recheck current source/revision, withdrawal, policy and any scoped grant on cache, retry and late callback. Never expose private native archive URLs/session material as public illustration links.
 
-The existing single indexing owner reconciles at most four sources per bounded
-archive pass, prioritizing already recorded Telegram readbacks, then admitted
-publications, then new uploads. Illustrations reconcile independently of embedding
-work, with VibePublish enforcing the shared native media rate budget. Use the mode-0600 resource grant
-`RKB_VIBEPUBLISH_GRANT_FILE` with the dedicated KB destination alias,
-`source_thread_ref=https://t.me/c/4368830579/2` and
-`thread_ref=https://t.me/c/4368830579/4`. VibePublish must already run the distinct
-`TELEGRAM_KNOWLEDGE_BASE` connection. There is no direct Telegram client in RKB.
+Before marking an archive verified, confirm native DOCUMENT identity, exact destination/topic/origin and bytes against a retained trusted expected SHA. Source SHA, canonical/display crop SHA, provider-rendition SHA and transport-delivery SHA are distinct. Missing or mismatching provider hash is a failure, not a reason to manufacture a new expected hash. Stable historical archive aliases may reference one verified identical original, but do not silently collapse separate edition/source identities.
 
-Exact source origin includes the logical root URI and source SHA. Same-key replay
-uses the original operation. Native DOCUMENT/topic/origin and downloaded SHA must
-match before setting `source_archive_status=verified`. Historical duplicate roots
-remain separate; their identical owner/source bytes share one explicitly recorded
-`source_archive_origin_ref` and verified archive reference.
+## Deterministic source processing
 
-Source format is detected from container signatures. PDF uses PyMuPDF; DjVu uses
-DjVuLibre (`djvused`, `ddjvu`, `djvutxt`). Install the
-system `djvulibre-bin` package, or set `RKB_DJVU_ROOT` to the locally extracted
-package root. Rendering/native text extraction is deterministic, with no OCR,
-VLM, semantic recognizer or caption extraction. `book_pages` remains one API.
+Detect source format from container signatures. PDF uses PyMuPDF; DjVu uses DjVuLibre (`djvused`, `ddjvu`, `djvutxt`) through the existing source API. Rendering/native text extraction is deterministic. Semantic transcription, image/caption meaning and geometry decisions come from the calling model, not a new server OCR/VLM/LLM recognizer. `book_pages` remains one source API.
 
-New source reservations use one capacity mutex and an 800 MiB default known-object
-budget (`RKB_STAGING_MAX_BYTES`, at most 1 GiB). Pending/unverified sources remain
-staged across provider outage/restart. Capacity exhaustion fails explicitly before
-uploading more bytes. New graph updates retain an immutable current pointer;
-superseded snapshots are GC-eligible, with one-hour reader/recovery grace.
+Do not archive every rendered page as an import or proof gate. Render bounded requested pages/regions from verified originals; page readiness and precise quote geometry are per-item. For proof, bind source SHA/revision, physical/printed page, dimensions/transform and preview hash, retain live locator dependencies, and return actual MIME/ImageContent. See [illustration/proof pipeline](illustration-pipeline.md).
 
-Run `telegram_storage_gc.py <retained-report-path>` first, inspect its dry run,
-then add `--apply`. GC only visits registered DB objects with explicit replacement
-proof. It detaches migrated text/render/finalized graph/crop pointers and marks
-binary metadata `deleted_at`; it never deletes catalog/source identities. Source
-bytes become eligible only after exact archive proof and no active ingestion.
-Illustration crops require a verified archive. Source reads fall back to verified
-Telegram bytes with full exact hash checking; crop reads use provider bytes after
-actor authorization. Set `RKB_STORAGE_GC_ENABLED=1` after guarded acceptance to
-run at most one bounded 100-object pass per minute under the existing maintenance
-owner. No whole-bucket deletion or independent scheduler is introduced.
+## Admission, retry and fairness
 
-Terminal source failures stay pending. A proven zero-dispatch blocked/failed
-operation is retried through Vibe's existing `retry_failed` gate with its original
-publication/revision/attempt and a stable recovery key. Dispatched or uncertain
-outcomes are refused by that gate; they are never replaced with a fresh send.
-Failed retries use a 30-second minimum retry interval. A deliberate new revision
-after source-cache GC reserves capacity again, revives the existing cache metadata
-under the document lifecycle lock and starts a fresh cache grace period.
+Reserve the measured cache/staging/render budget before I/O. Count concurrent downloads, decompression, full originals, previews, generated crops and provider-bound copies; a per-file limit alone is not a total bound. Backpressure before admission must be resumable. Already accepted payloads retain a verified recovery path during provider outages.
 
-## Private mirror OAuth rotation and recovery
+Persist stable publication/read keys and attempt state. Unknown send outcome first reconciles the same operation; it never triggers a fresh publication. Only a proven zero-dispatch failed/blocked send may use Vibe's established `retry_failed` gate with the original operation and stable recovery key. Dispatched/uncertain work cannot use that escape. Respect provider retry-after and the existing minimum retry interval; release execution capacity while waiting.
 
-All RKB clients sharing `RKB_VIBEPUBLISH_GRANT_FILE` must serialize refresh-token
-rotation with a private, permanent sibling `.refresh.lock` file. A client
-adopts an already-refreshed on-disk grant rather than reusing an old refresh
-token; after HTTP 401 it first checks whether another client already replaced
-the rejected access token. The grant stays owner/client/issuer bound and is
-atomically written mode 0600. No credential contents are logged.
+Reads continue through [durable read continuation](archive-read-continuation.md). The released Vibe terminal-read recovery persists a next key and 15-minute cooldown only for `telegram_transport_unhealthy` / `provider_read_deadline`. Auth/digest/unknown failures do not mint keys. Verified-asset 404/410 is a separate bounded read-expiry path. Direct Telegram transfer can reread bounded chunks after restart; do not claim exactly-once network transfer.
 
-A lock prevents concurrent replay; it cannot repair a refresh-token family that
-VibePublish already revoked, nor extend the OAuth family's fixed lifetime.
-Recover only through normal PKCE authorization and **explicit owner consent**,
-with the registered callback for a legitimate RKB client and its previously
-authorized scope/bindings. Do not redirect a RKB grant into the ChatGPT
-connector callback, modify registrations or issue a grant in SQLite as a
-workaround. A missing/incompatible RKB callback needs a separately authorized
-registration correction or dedicated RKB client first. Until provider DOCUMENT
-readback and matching original SHA-256 succeed, source archive status remains
-`pending`; unchanged book contents must not be reimported.
+Use one fair controller/maintenance owner. Source/vector/story backlog cannot starve accepted archive work indefinitely; ready receipts take precedence over cooling retries. Preserve the established Vibe account-wide rolling pacing, including all topics/album members and stricter FloodWait. A source upload does not consume a separate independent allowance merely by using another topic.
 
-## Mandatory unified on-host connection policy (2026-10-18)
+## GC and bounded recovery
 
-Design decision **Fixed**; M2M archive migration **Not done** until deployed and
-the original document is recovered. Canonical: [DevCoveer same-host S2S](https://github.com/onedayonemasterpiece/codex-devcoveer-mcp/blob/main/docs/operations/local-service-connections.md).
-The previous VibePublish OAuth grant/ChatGPT callback is legacy failure state,
-not a sanctioned cross-service connector. RKB's indexer should use an existing
-loopback VibePublish endpoint with a dedicated service principal restricted to
-archive operations on the KB group, topic 2 (original PDF/DjVu) and topic 4
-(illustration files). No owner session/bearer, browser, refresh token, local
-HTTPS roundtrip or new gateway. Preserve source UUID/SHA, 1st-pass extraction,
-revision, journal operation key, existing `pending` state and media evidence.
-Implement/verify provider-side target enforcement before switching credentials.
-A green PR or healthy server does not prove archived bytes. Acceptance requires
-provider get/readback and byte-for-byte original SHA-256 match; then mark verified.
+Temporary original/crop eviction requires verified exact archive/recovery proof and no active import/read/render/locator dependency. Image delivery ACK alone does not close a localization callback. An unresolved attempt's identity is not evicted with its byte cache. Pending/unknown publication state must reach reconciliation or an explicit terminal decision before its live recovery metadata can expire.
 
-## Dedicated loopback service bearer — code support (2026-10-18)
+Use the existing bounded maintenance path, registered objects, dry-run inventory and explicit replacement evidence; do not whole-bucket-delete or add a second GC service. Keep compact source identity/locator/provenance and receipts needed by current domain state, not all old payloads indefinitely. A later read reserves capacity again and checks the source/revision/current policy before restoring bytes.
 
-The archived-grant file may use `auth_mode=local_service` instead of user OAuth,
-with `issuer=https://mcp-vibepublish.kenigevents.ru`,
-`local_endpoint=http://127.0.0.1:18765`, a pinned HTTP `Host`, and a dedicated
-non-owner `service_token`. Source/illustration code retains the same archive
-URI, request key and native readback protocol. This mode rejects an HTTP endpoint
-outside loopback and never calls OAuth refresh. Credentials stay in a private
-mode-0600 file, never documentation, logs, GitHub or chat.
+Hot DevCoveer journal retention is bounded by the agreed hours/bytes; checkpoints, current replay bases and live operation state make truncation safe. Older Dataset/Yandex versions may remain historical recovery points with an explicitly older RPO rather than pinning all local journal segments. Before dropping the only accepted tail needed by a supported base, verify an independent durable checkpoint/tail. Measure Dataset version deletion/retention and creation overlap: switching a pointer is not evidence that old versions stopped consuming capacity. A daily remote backup plus only the last few local hours cannot guarantee a few-hour RPO if DevCoveer is lost. Use the handoff's actual checkpoint cadence and honest failure-specific restore claim.
 
-Prerequisites before switching the production file: VibePublish's exact topic
-grants (2/4), a non-owner principal with scoped `media.store`, protected
-service-token provisioning, current provider worker and hash-verified original
-retrieval. **Code support is not deployment**. The previously accepted article,
-10 stories and source revision must stay unchanged. Verify source_archive_status
-by live MCP only after the original archive document is actually retrieved.
+GEO-only cutover permits an established bounded rollback backup; it does not require a permanent copy/export of non-GEO content. Rollback after new target acceptance preserves the exact target tail and receipts, not an overwrite with the old whole database.
 
-## Archive fairness under a sustained story-vector backlog (2026-10-18)
+## Historical baseline and target acceptance
 
-Story vectors retain normal priority, but their backlog must not starve
-original-document archiving indefinitely. The existing indexing owner admits
-one archive/mirror maintenance pass at least once per 60 seconds when no source
-vector publication is pending, even if story-vector jobs remain queued. A
-failed provider call retains the exact original and existing request identity;
-it never causes a second publication. This is the existing indexer loop, not
-an extra scheduler or service. A green CI does not replace live PDF SHA-256
-provider readback and the `source_archive_status=verified` acceptance gate.
+The [19 October remediation](../reports/illustration-audit-remediation-20261019.md) and [live acceptance](../reports/illustration-archive-live-acceptance-20261019.md) record successful dedicated-service archive retrieval and closed keyed-GET/cooldown/fairness/digest/reserve findings. The former OAuth-rotation transition, migration017 backfill and earlier "M2M not done" state are preserved only in the [immutable old runbook](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/operations/telegram-archive.md); they are not active rollout instructions.
+
+Accept the new path with native exact-byte original and topic 4 rendition readbacks, genuine session identity, cache eviction/restore, provider outages/FloodWait, denied full-file/public-scan requests, public illustration delivery, source withdrawal, reset with pending locator and target-tail recovery. Record actual release identities and per-capability outcomes. A healthy endpoint, archive row, old receipt or green CI is not a fresh native-byte acceptance.

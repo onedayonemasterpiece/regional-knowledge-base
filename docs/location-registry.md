@@ -1,29 +1,22 @@
 # Location-first source ingestion
 
-## Применение в переработке 19.10.2026
+Updated 2026-10-20. The [single implementation handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md) defines the PostgreSQL/pgvector+BGE-only target on Kaggle, the existing DevCoveer controller and one WSS connection. This document preserves the source-side geographical model; it does not certify deployment.
 
-Нормативный целевой контракт: [единый файл агенту](prompts/rkb-scalable-kaggle-implementation-20261019.md) и [архитектура](designs/rkb-scalable-kaggle-architecture-20261019.md). Текущий runtime ещё не перенесён этой документационной задачей.
+The ordinary import path remains model-selected location identity without mandatory coordinates, cartographic completion or a separate approval queue. The source place graph, Street Story's physical POI registry and Cartography's geometry keep distinct owners.
 
-- Один PostgreSQL/pgvector corpus в Kaggle, BGE-only (1024 FP32 baseline, exact pinned BGE input≤512); небольшой durable control journal на DevCoveer.
-- Прямой исходящий WSS notebook→existing DevCoveer ASGI с двусторонними заданиями/результатами, durable ACK/RESUME и одной BgeQueue authority. Старые polling/локальный E5/Supabase инструкции не целевой deployment.
-- Fresh MCP import книг; перенос только historical/cartographic layers и согласованных зависимостей, со stable IDs/provenance и проверенным reanchor. Ручная работа не уничтожается из-за отказа от старого corpus.
-- Source-bound facts/dates/observations сохраняются без обязательной Story; эпизод/досье/Variant/private draft/independent case различаются. Один persisted research workflow, bounded compose, без квот и выдуманной драматургии.
-- Поиск accepted active book text и bibliography без per-book owner ACL; current withdrawal/revision, pixels/original/private draft grants и delivery audience остаются обязательными.
-- One canonical person/request/dialog, fair admission и confirmed result/hash ACK; Мира в PH расширяет existing typed adapter, не создаёт отдельный voice/IAM/queue.
+## GEO-only bootstrap
 
-Численные protected gates сохранены: backend p95≤1000ms, MCP p95≤1500ms/hard2000ms, BGE Hit@5≥85%/@10≥90%, RU→DE@10≥85%, ≥30 held-out families, ≥100 sources/100000 chunks, storage≤80% steady/≤90% peak. Документ не является доказательством PASS.
+Migrate only geographic/cartographic identities and data: layers/places/toponyms, geometry/topology, CRS/GCP/transforms, temporal validity, uncertainty, source-specific geographic observations and minimal provenance/author attribution. Do not migrate old book text/chunks/vectors, stories/variants, personal drafts, general facts/people/events, expert contributions or disagreement cases merely because they mention a location. All other content is produced through fresh MCP import.
 
-Основные entity, temporal, identity, provenance и ownership контракты ниже сохраняют силу. Их SQL/storage привязки переносятся на PG, а старый per-book search ACL трактуется согласно новому правилу выше. Карта, пользовательский профиль и физический POI не становятся новой канонической копией в RKB.
+Before production fresh imports, establish the minimal GEO identity manifest with stable layer/place IDs, aliases, owner refs and CRS. Bulk rasters/geometry may arrive later through the existing GEO queue with explicit unresolved availability; they enrich the same IDs without book reimport. Fresh A+B tests before the manifest run only in an isolated fixture. Preserve stable GEO and external owner IDs when fresh target books link to them. An old book/quote link survives only as the minimal `legacy_unanchored` source/edition/SHA/page/locator needed by the GEO object, not an accepted target mention or searchable old corpus. Exact edition/source SHA plus validated evidence mapping is required to reanchor. Keep an unavailable/different-source mapping explicitly unresolved. See [GEO cutover](migrations/rkb-layers-only-cutover-20261019.md).
 
-## Сохраняемый предметный контракт
-
-Owner decision: 2026-10-10. This is the current ingestion policy and supersedes older instructions that make cartographic completion, unique name matching or a multi-step geo approval process prerequisites for source location identity.
+Infrastructure identities/configuration are preserved separately. There is no mandatory export or active migration of old non-GEO manual work. A bounded rollback backup follows the handoff's retention and does not become a second active corpus.
 
 ## Normal path
 
 Read the source once. During the same model review, extract meaningful people, organizations, episodes and places. Search the existing registry through `entity_list`; use `graph_fetch` to compare aliases, context, source evidence and neighboring places. The MCP-calling model decides whether an existing entity is the same place. Reuse its `entity_id`, or create a new location when the context really differs. The backend validates ownership, exact evidence and reference integrity; it does not decide historical identity from words.
 
-Use `book_ingest(stage).entity_candidates` alongside the ordinary source chunks and `story_candidates`. No second model invocation or separate location-import campaign is required. For already accepted books, use `graph_stage` on the active revision; do not reimport, re-chunk or re-embed unchanged source material merely to enrich locations. Within a still-pending book, keep the same new-node key and canonical label across batches; after materialization, reuse the returned ID across books.
+Use `book_ingest(stage).entity_candidates` alongside ordinary source chunks, factual/date/observation records and any justified `story_candidates`. A source-bound fact, date or measurement requires no artificial Story parent. No second model invocation or separate location-import campaign is required. For already accepted books, use `graph_stage` on the active revision; do not reimport, re-chunk or re-embed unchanged source material merely to enrich locations. Within a still-pending book, keep the same new-node key and canonical label across batches; after materialization, reuse the returned ID across books.
 
 A geographical attachment is not necessarily a coordinate. “On the island”, “at the market square”, “in Königsberg”, an address, or a now-lost building are valid levels of source description. Preserve that level. Do not invent a point or assign an entire passage to the nearest modern house. Several places may be mentioned in one chunk; a mention is not automatically the setting of every claim in that chunk.
 
@@ -46,7 +39,7 @@ Each location has a label, exact source spelling and exact chunk/page/region/quo
 
 `located_in` is a directed, source-backed place-to-place relation, for example building → square → island → city. It may have a `time_scope`; membership need not be historically permanent. Do not infer containment merely from co-occurrence, and do not fabricate a parent to fill every branch. An uncertain parent can remain absent.
 
-A bundle can use `entity_refs: {"parent": "existing UUID"}` for an existing endpoint. This avoids inventing another mention of the parent in the current passage. The relation itself still needs actual source evidence. Self-relations and foreign-owner references are rejected. People, organizations and events retain their existing relation types; a building is not the organization occupying it.
+A bundle can use `entity_refs: {"parent": "existing UUID"}` for an existing endpoint. This avoids inventing another mention of the parent in the current passage. The relation itself still needs actual source evidence. Self-relations, unresolved endpoint substitutions and unauthorized mutations are rejected. Public source-graph read access does not grant write access to another actor or canonical owner. People, organizations and events retain their existing relation types; a building is not the organization occupying it.
 
 ## Avoid duplicates through model reuse
 
@@ -68,6 +61,6 @@ The same registry applies to lectures, transcripts and other attributed material
 
 ## Scope and checks
 
-Focused regression coverage checks map-free creation, source quotes, explicit cross-book reuse, alias search, hierarchy with existing parents, later map attachment without a second identity, owner isolation and absence of automatic name-based binding. Existing retrieval vectors, chunking, private source bytes and source revisions are unchanged by location enrichment. Broad mass-ingestion and retrieval SLA are separate existing product requirements; a location test does not certify them.
+Focused regression coverage checks map-free creation, source quotes, explicit cross-book reuse, alias search, hierarchy with existing parents, later map attachment without a second identity, current resource authorization and absence of automatic name-based binding. Existing retrieval vectors, chunking, private source bytes and source revisions are unchanged by location enrichment. Broad mass-ingestion and retrieval SLA are separate existing product requirements; a location test does not certify them.
 
-Kneiphof is a practical initial case. The official Cathedral site identifies today's Kant Island as former Kneiphof: https://sobor39.ru/about/life/ . The Cathedral's own history locates it on that island: https://sobor39.ru/about/ . These are web context sources, not invented statements inside Gause or Brunneck. Historical municipal Kneiphof and the geographical island must still be distinguished when an account concerns administration rather than location.
+Historical illustrative context (not new acceptance): Kneiphof was a practical initial case. The official Cathedral site identifies today's Kant Island as former Kneiphof: https://sobor39.ru/about/life/ . The Cathedral's own history locates it on that island: https://sobor39.ru/about/ . These are web context sources, not invented statements inside Gause or Brunneck. Historical municipal Kneiphof and the geographical island must still be distinguished when an account concerns administration rather than location.

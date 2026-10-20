@@ -1,424 +1,154 @@
-# Реестр историй — Story Registry
+# Story Registry: факты, досье и сохранённые рассказы
 
-## Актуальная цель и граница baseline — 19 октября 2026
+**Целевой контракт от 20.10.2026; документация, не акт развёртывания.** Нормативный план и полная продуктовая матрица: [handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md). Размещение и восстановление: [архитектура](designs/rkb-scalable-kaggle-architecture-20261019.md).
 
-**Нормативная цель:** [единый PG/pgvector+BGE на Kaggle](designs/rkb-scalable-kaggle-architecture-20261019.md). Полные контракты, исследование качества story, обновлённые промпты и приёмка находятся в [handoff кодовому агенту](prompts/rkb-scalable-kaggle-implementation-20261019.md). Этот блок имеет приоритет над прежними инфраструктурными и владельческими ограничениями ниже.
+## Проверенная исходная точка и граница переноса
 
-Основной domain state корпуса, assertions/evidence, историй/досье и независимых дел хранится в PostgreSQL на Kaggle; BGE работает там же. E5 и прежний Supabase data plane исключены из target. DevCoveer сохраняет MCP/ASGI, проверку полномочий, долговечный control journal запросов/receipts и существующий BgeQueue/controller. Notebook устанавливает исходящий WSS к существующему ASGI broker DevCoveer. Это транспорт существующих операций, без второй очереди или копии domain authority.
+В [main a8cf41b](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/a8cf41b50b8ccb62409d046d009d53c09d74b1d7) есть Story/Assertion/Evidence, редакционные Variant и версии, оценки, межкнижное сопоставление, календарь и числовые наблюдения. Однако импорт создаёт title/summary и assertion без Variant, compact get отбрасывает варианты, search строит spoken_summary из атрибуции и summary, а export требует одобренного варианта. Это не готовый контракт рассказов, даже если карточка найдена и имеет высокий рейтинг. Код: [contracts](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/src/regional_knowledge/story_contracts.py), [ingestion](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/src/regional_knowledge/story_ingestion.py), [registry](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/src/regional_knowledge/story_registry.py).
 
-Принятый книжный текст и библиография доступны общему поиску без book-owner ACL. Оригиналы/PDF/пиксели, права на воспроизведение, частные drafts и операции записи защищаются отдельно. Общедоступность источника не делает личное досье или черновик общим Variant.
+PR #151 на `adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4` — отдельная незавершённая ветка, материал для повторного использования после ревью и тестов, не доказательство live PASS. Исторические schema v7–v13 и отчёты приёмки описывают свои SHA, а не целевой deployment.
 
-**Baseline:** SQLite schema v7–v13 и датированные поставки ниже описывают исходный код main `8799f8a01e63070f19fe4bea714777d1be9bbae6` и исторические проверки. Они сохраняют описание capabilities, но не запрещают принятый переход в PG и не доказывают актуальный production SHA. Draft PR151 на `adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4` — материал для совместимого reuse, не production PASS.
+В новый corpus переносятся **только исторические/картографические GEO-слои** по геоконтракту. Старые книги, Stories, ручные и личные черновики, вклады, дела и их очереди не мигрируют. Новые книги принимаются заново через MCP. Сохранность и история ниже относятся к данным, принятым в новом контуре; перенос прежних редакционных записей не является условием запуска.
 
-### Факт, эпизод, досье и публикация
+## Один владелец данных и существующая поверхность
 
-| Материал | Смысл |
-| --- | --- |
-| Source-bound факт/наблюдение | Проверяемое сообщение источника с attribution, scope и точным evidence; сохраняется без Story |
-| Эпизод | Связное событие, изменение, последовательность, объяснение практики или определённый вопрос |
-| Досье — редакционная Story | Развивающийся материал с assertions, evidence, людьми/ролями, местами, временем, gaps, angle и версиями |
-| Публикационный Variant | Конкретный текст/сценарий под аудиторию, формат и канал с точными зависимостями и проверкой |
+Каноническое взаимосвязанное состояние живёт в одном PostgreSQL/pgvector corpus на Kaggle. Один fenced writer фиксирует версии, evidence, права, audit, receipt и outbox атомарно. DevCoveer сохраняет небольшой durable control journal запросов/команд/результатов/ACK; исходящий WSS notebook → existing ASGI broker использует тот же контроллер и BgeQueue. Читатели используют согласованные снимки. До ACK проверяется предусмотренная handoff долговечная фиксация; остановка notebook не должна терять подтверждённый вклад. Это не второй канонический реестр Story.
 
-Это смысловые границы существующего исследования и редакционной работы, а не четыре новые базы или универсальный реестр истины. История не обязана иметь героя, препятствие, точную дату, конфликт или развязку. Справочный источник может дать только полезные факты; спокойное связное объяснение повседневности также допустимо. Короткая фактическая заметка может быть хорошим публикационным форматом.
+BGE — единственное embedding-пространство: 1024 FP32 baseline, конечный вход проверяет pinned BGE tokenizer, максимум 512 токенов. E5 и Supabase не входят в целевую архитектуру. Истории, дела и книги используют существующий индексатор, outbox и общую очередь; не добавляются LLM внутри MCP, локальный encoder, новый scheduler или постоянный судья качества. Производный индекс восстанавливается из текста, точной версии и material hash; он не владелец содержания.
 
-**Обязательный facts-first путь target:** сначала сохранять исходные claims/evidence, даты и наблюдения, затем optional связь с досье/эпизодом. В main8799 этот путь ещё отсутствует: начальный импортный кандидат содержит одну proposition, сразу создаёт Story и её assertion, а event_dates/observations привязаны к этой assertion. Просто запретить «сухие story» без изменения контракта означало бы потерять штатный путь сохранения фактов.
+Модель исследует и составляет текст через существующие book_ingest, story_*, graph/evidence и disagreement интерфейсы. MCP проверяет права, ссылки, типы, версии и запись. Mira — клиент Projects Hub; существующий search-only adapter расширяется Stories/cases/proof, pending/request/result и native ACK. Голосовой клиент читает сохранённый текст, не создаёт историю при каждом чтении. RKB не строит второго помощника и сам не отправляет публикации в TG/VK/MAX.
 
-Начальный пакет должен поддерживать несколько claims с собственными основаниями, когда это позволяет источник. Один bounded пакет не определяет полный размер эпизода: pending continuation, устойчивый finding/episode ID, source locators и expected revision позволяют продолжать через окна. Title/material_type не должны сами превращать редакционное переименование в новое исходное доказательство. Сходство имени, даты или вектора не разрешает автоматический merge.
+## Смысловые сущности и независимые состояния
 
-Даты/календари/точность, люди и роли, организации, география и временная область названий, числа с единицами/периодом/методом, цитаты и разногласия сохраняются канонически полностью. Краткий render выбирает относящиеся к задаче сведения и не обязан повторять всё досье. Нельзя дописывать мотивы, эмоции, причинность, реплики или финал ради привлекательности. Source-grounded hook необязателен; квот историй и минимума слов нет.
+| Сущность | Назначение и граница |
+|---|---|
+| Источниковый факт / assertion | Утверждение с exact source revision, автором/говорящим, модальностью и evidence. Существует **без Story**; дата, измерение и краткая запись не требуют искусственного сюжета. |
+| Эпизод / связное объяснение | Связанный ход событий, практика или объяснимое явление. Не обязательны драма, герой, конфликт или известная развязка. |
+| Story / досье | Стабильная редакционная рамка: assertions, источники, gaps, angle/audience value, связи, оценки и варианты. Неполное досье без текста не называется готовым рассказом. |
+| VariantRevision | Сохранённый текст для аудитории/формата/канала. **Variant.body — единственная истина текста**; редакции и source-bound blocks сохраняются. |
+| Дело разногласия | Самостоятельный объект с позициями, вкладами и заключениями, возможный без Story. Спор не равен запрету чтения или готовности к публикации. |
+| Личный черновик | Частный рабочий текст автора. Явное внесение выбранной версии в общее дело/Story — отдельное действие. |
+| Публикация | Наблюдаемый внешний выпуск одобренной редакции с provenance/receipt. Чтение рассказа не является публикацией. |
 
-Использовать существующие angle/audience_value, gaps, assertions, Variant и его blocks. RecordInterest — вспомогательная редакционная оценка, не обязательный импортный gate или оценка исторической истины. Contested state и readiness различаются: честно атрибутированный материал о споре может быть пригоден к публикации, но спорное утверждение не превращается в бесспорное.
+Story → StoryRevision → VariantRevision и Assertion → AssertionRevision → EvidenceLink/Assessment сохраняют смысл. Легенда, воспоминание, слух, гипотеза, историческое утверждение и художественная реконструкция различаются. «Автор сообщает X» и «X произошло» — разные assertions. Exact text match подтверждает присутствие цитаты, не её историческую истинность. Внешние свидетельства регистрируются как immutable source versions.
 
-Facts, episodes, entities, POI и disagreements извлекаются одним проходом чтения с общими search/read receipts и frontier. Повторное исследование принятого источника использует те же правила без chunk/vector reimport. Книги импортируются заново; переносятся только согласованные исторические/картографические слои с проверенным reanchor provenance.
+Contested, доступность body, редакционная готовность и результат публикации — разные свойства существующих объектов. Не вводить второй параллельный автомат состояний. Interest/rating помогает выбрать материал, но не доказывает наличие body, связность, истинность или publish_ready.
 
-Retry возвращает прежний receipt/result и не создаёт новый Variant, case или публикацию. Другой payload под прежним ключом конфликтует. Человеческие правки, contributor roles, личные drafts и решения не перезаписываются автоматически; private draft не становится общим вариантом.
+## Обязательный базовый рассказ при импорте
 
-Независимое дело разногласий не требует Story или POI. Его публичная статическая страница имеет постоянный непрозрачный slug, работает без login и исключает закрытый материал. Первый URL — только после фактического upload/readback. Неудачное обновление сохраняет last-good опубликованную версию с отдельными desired/published revision; отзыв публикации отменяет это разрешение, а generation fence блокирует старый builder.
+При первичном чтении модель сохраняет факты, людей, места, даты/календарь, наблюдения, позиции и достаточные эпизоды в **одном persisted research workflow**. Поиск и сравнение идут порциями с явным остатком; отдельное повторное чтение всей книги ради Stories или дел не требуется.
 
-Полная source-based диагностика, синтетические отрицательные примеры и конечная приёмка приведены в handoff. Reviewed/completed означает учёт выполненного исследования, не доказанную полноту сюжетов. Качество проверяется на фиксированных оригинальных фрагментах разных типов с сохранностью фактов и отсутствием выдуманных связей; постоянный второй LLM-судья не требуется.
+Если принятые материалы достаточны для связного эпизода, импорт **автоматически сохраняет базовый читаемый рассказ в existing Variant**, связывает его с exact assertions/evidence и выполняет readback. Обычная длина — 2–6 предложений: ориентир, не жёсткий лимит, минимум слов или квота на книгу. Нельзя закончить такой эпизод только title/summary, предложением «здесь можно рассказать» или оценкой потенциала. Повседневной практике и связному объяснению не нужен выдуманный драматический поворот.
 
-## Preserved implementation and historical record
+Если есть лишь разрозненные факты или существенный разрыв, они остаются фактами/кандидатом с none либо needs_context и конкретным gap. Композиция не добавляет внешнее знание, причинность, мотив, сцену, героя, точную дату или исход без основания. Неизвестный исход допустим, если связная часть понятна и предел знания обозначен. Обязательный рассказ из достаточного материала не означает обязательного рассказа из любого фрагмента.
 
+Базовый импортный вариант наследует **read scope Story**, даже если редакционно drafting. Он доступен читателю без publish_ready. Личные авторские черновики не становятся общими, default или search-excerpt без явного разрешённого действия.
 
-**Статус (2026-10-09):** Story Registry работает; PR #85, #86 и #87 объединены с main. Production MCP и конкретный deployed SHA проверяются отдельно от состояния кода; полная межкнижная и векторная продуктовая приёмка не объявлена.
+### Сохранение и ссылка по умолчанию
 
-## Границы и назначение
+- `default_variant_ref` указывает на **конкретные variant ID и revision**, не на «последний подходящий текст». Story не дублирует body в metadata/summary/отдельном ledger.
+- Сохраняются язык, формат, audience/channel, body, existing blocks с assertion revisions, attributions и media. Недостающая привязка не заменяется вымышленным evidence.
+- Число блоков и предложений не обязано совпадать. Существенные утверждения и выводы имеют основания; bibliography находится отдельно от рассказа. Существенный спорный рассказчик/автор версии называется в body там, где без этого изменится смысл.
+- Existing idempotency key, expected Story/Variant revision и atomic receipt защищают создание/обновление. Retry или новый чат не создают новый Variant/Story и не меняют default. Заголовок/summary не служат ключом identity эпизода.
+- После записи модель читает exact revision и сверяет body/hash, default ref, evidence и состояние. Pending/error не называется сохранённым рассказом по одному тексту в контексте модели.
+- Поздняя композиция не перезаписывает ручную правку default: CAS возвращает конфликт и текущее состояние. Редактор выбирает дальнейшее действие.
 
-Единый авторитетный файл SQLite корпуса (RKB_SQLITE_CORPUS_PATH): истории, утверждения, источники/цитаты, ACL, версии, аудит, ответы идемпотентных команд, задание извлечения, FTS. Не создаём новый SQLite, PostgreSQL, Redis или самостоятельный сервис. Чанк — заменяемый поисковый указатель; доказательство ссылается на зарегистрированную версию источника, страницу, регион и диапазон текста. Supabase — существующий векторный data plane, а не владелец редакционных данных или MCP OAuth.
+### Композиционная инструкция
 
-Приложение Projects Hub — внешний клиент через реальный resource-bound RKB grant, а не второй владелец данных. RKB не строит собственного голосового помощника и не публикует в TG/VK/MAX. Прикладная модель выполняет смысловую работу, MCP — разрешённое хранение, транзакционные операции и детерминированные проверки.
+> По принятому evidence составь один связный рассказ, который уже можно прочитать или произнести. Начни с предмета или события, а не с «В примечании 17…», библиографического вступления или оценки занимательности. Дай понятную исходную ситуацию, последовательно свяжи относящиеся к ней действия/наблюдения и закончи известным результатом или пределом знания. Хронологическая последовательность не доказывает причинность. «Поэтому», «из-за» и мотив допустимы только с основанием; иначе изложи последовательность без вымышленной причины. Заголовок «Как…» должен получать ответ в body, иначе измени заголовок. Не добавляй героя, конфликт или финал ради формы. Обычно достаточно 2–6 предложений; сохрани существенные оговорки, даже если нужно больше. Библиографию передай отдельно; оставь в body имя рассказчика, если оно необходимо для понимания версии. Сохрани existing Variant, назначь exact default ref и прочитай сохранённый результат. При недостатке материала сохрани факты и конкретный gap, без фиктивного body.
 
-## Смысловая модель
+Все канонические даты, имена, география, роли и measurements сохраняются независимо от короткого рассказа. Он выбирает релевантное, а не повторяет каждое поле досье. Полный рабочий prompt, синтетические отрицательные примеры и приёмка — в [handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md).
 
-Story → StoryRevision → VariantRevision. Assertion → AssertionRevision → EvidenceLink / Assessment. Для исторической цитаты точное совпадение text_match=exact удостоверяет только присутствие текста в исходнике, а не истинность вывода. Внешние свидетельства регистрируются как immutable source versions. Легенда, воспоминание, слух, гипотеза, историческое утверждение и художественная реконструкция различаются. Документированный факт сообщения «автор N пишет об X» и утверждение «X произошло» не становятся одним assertion.
+## Чтение, поиск, голос и export
 
-В SQLite отдельные нормализованные таблицы story_records, story_revisions, story_sources, story_assertion_versions, story_evidence, story_assessments, story_variants, story_variant_versions, story_review_decisions, story_publications, story_dependencies, story_grants, story_audit, story_receipts, story_jobs, story_outbox и story_schema_migrations. Изменения атомарны: версия, аудит, receipt и outbox фиксируются в одной транзакции с существующим корпусом.
+| Операция | Целевой ответ |
+|---|---|
+| Обычный story_get | Реальный default Variant.body, exact ref/revision и состояние применимости. Title, summary, rating и bibliography отдельно. Длинный body имеет явное продолжение, без скрытого усечения. |
+| story_search | Реальный excerpt из доступного saved body, явно помеченный excerpt, с exact body ref; короткий body допустим целиком. Metadata/interest/case warnings отдельно. Без body — none/needs_context, **без summary fallback**. |
+| Голос / Mira / «расскажи» | Читает ту же сохранённую редакцию или получает её по ref. Не озвучивает рейтинг, описание потенциала и библиографическую преамбулу как рассказ. |
+| Read-export | Доступные читателю body/blocks/provenance exact revision, включая editorial draft; без требования publisher. Не даёт права опубликовать. |
+| Approved publication export | Exact publish_ready revision, текущие dependencies/fingerprint и право publisher. Внешний провайдер отвечает за отправку. |
 
-Книжные E5/BGE-пространства и защищённые требования `.devcoveer/requirements.json` не изменяются. **Schema v13** добавляет восстановимый BGE-кэш редакционных карточек (`story_bge_index`) в том же SQLite: только версия, хэш материала и вектор, без второго источника правды или исходных страниц. Старый `story_outbox` обслуживается существующим индексатором RKB после публикации книжных векторов, с ограничением одного задания на проход через **единую очередь BGE на Kaggle**. Локального BGE-энкодера нет. Векторы от предыдущего локального ONNX BGE становятся неактуальными по `encoder_revision` и безопасно заменяются Kaggle-векторами без изменения самих историй или прав доступа. FTS остаётся независимым рабочим поиском, а `semantic` не выдаёт lexical fallback за векторный ответ.
+Existing story_get view/cursor и story_export расширяются совместимо, без второго read API. Compact не должен выкидывать запрошенный рассказ. Spoken_summary не заменяет body. Чтение по умолчанию не вызывает LLM и не меняет текст.
 
-## MCP/function-call профили
+Нет доступного default — вернуть none/needs_context либо действующее dependency revalidation с причиной. Нельзя скрыто подставить личный черновик, предыдущую невыбранную редакцию, summary или новый сгенерированный текст. Разрешённая историческая редакция явно помечается и не выдаётся текущей. Withdrawal/права проверяются для excerpt, кеша, export и отложенного ответа.
+
+## Поиск и права
+
+Текст и библиография **всех active accepted books доступны без per-book owner filter**. Все принятые иллюстрации публичны. Full PDF/DjVu остаётся частным. Страница/полоса proof выдаётся через existing `scan_proof_read` владельцу и категориям `demo`, `expert`, `local_historian` с проверкой действующего grant/expiry. Категория и вес не заменяют серверной capability. Личные drafts, непубличные сведения участников и ограниченные внешние материалы сохраняют права.
+
+**Назначение proof по политике владельца:** категория demo/expert/local_historian, подтверждённая как owner_attested или independently_verified, атомарно материализует **существующий scan_proof_read grant** вместе с audit и source category revision; для demo фиксируется expiry. Claimed категория прав не создаёт. Render/read проверяет текущую capability и scope/expiry, без второго category bypass. Независимый revoke действует немедленно и не отменяется чтением или повтором прежнего события. Удаление категории отзывает только policy-derived grant/его основание; отдельные explicit grants не переписываются и не выдаются за категорийные. Повторное назначение после revoke требует нового разрешённого owner-policy действия. Это назначение существующего права, без нового IAM, pixel registry или ручного одобрения каждого изображения.
+
+Story read scope, active/source withdrawal, exact revision и адресат проверяются до ранжирования и раскрытия. Нельзя снова вводить owner ACL на accepted book text под видом dependency check. Удаление ссылки не разрешает пересказ отозванного источника. Группа не наследует proof-права инициатора.
+
+Lexical ищет title/summary, текущие assertions и saved narratives. Semantic привязан к material hash/revision; story_bge, story_bge_partial, lexical_degraded честно показывают покрытие/fallback. Stale/архив не выдаются текущими. Пока hybrid использует только dense, это не фиктивное смешение. Renderer, title, рейтинг и производные поисковые представления не становятся evidence.
+
+## MCP-профили и гарантии записи
 
 | Профиль | Методы | Полномочия |
-| --- | --- | --- |
-| live | Только knowledge_search, без изменений | Существующий поиск книги |
-| story_reader | story_search/get/history/validate/job_get, corpus_read, entity_list | Проверка чтения истории И всех её source dependencies |
-| story_contributor | Reader + story_create/edit/archive/source_register/extract | Различные ACL contribute/research/edit внутри метода |
-| story_editor | Contributor + story_transition/merge/access/export/publication_record | Уполномоченный редактор/управляющий/издатель, не право от видимости инструмента |
-| full | Старые tools и новые Story tools | Серверная проверка прав каждого действия |
+|---|---|---|
+| live | Existing knowledge_search; расширение чтения по handoff | Без редакционных мутаций; voice использует saved body/ref |
+| story_reader | search/get/history/validate/job_get, corpus_read, entity_list, read-export | Story и допустимые material dependencies |
+| story_contributor | Reader + create/edit/archive/source_register/extract | Раздельные contribute/research/edit, собственные private drafts |
+| story_editor | Contributor + transition/merge/access/publication export/publication_record | Явные права редактора/управляющего/издателя |
+| full | Прежние и Story tools | Видимость инструмента не разрешает действие |
 
-Все мутации с idempotency_key; существующие изменяемые объекты — с expected_revision. Структура operations — ограниченный discriminated union. Сохранённый receipt возвращается при повторе того же намерения даже после реконнекта; конфликт версии не перезаписывает чужую правку. Префикс story_ не вводит новый transport или чат-приложение.
+Все мутации имеют idempotency key; изменяемые объекты — expected revision. Operations — ограниченный discriminated union. Retry возвращает receipt после reconnect; неизвестный исход разрешается чтением операции. Успех содержит commit_state, operation ID, resource IDs и committed/job revision; очередь без исполнителя не называется выполненной. Actor устанавливается сервером; user ID/reviewer_kind/assessor_kind из payload не доказывают права или человеческое авторство. Сохраняются verified principal/client и actual executor.
 
-Примеры параметров вызовов:
+## Межкнижное исследование, связи и оценки
 
-    story_create({
-      "seed":{"text":"Слышал о подземном ходе, но источник не помню","origin_status":"unknown"},
-      "idempotency_key":"voice-intent-20261009-0001"
-    })
+Одна цель импорта объединяет source-bound facts, graph/POI, dates/observations, episodes, cases и bounded composition. Existing reconcile/job/outbox используют общий research checkpoint, без отдельного полного прохода для каждой сущности. Уже принятую **в новом corpus** source revision можно дообогатить без OCR/rechunk/reimport. Новая книга не требует перечитать весь прежний corpus.
 
-    story_edit({
-      "story_id":"<story_id-from-create>", "expected_revision":1,
-      "operations":[{"op":"add_gap","text":"Где это происходило?","priority":"high"}],
-      "idempotency_key":"voice-intent-20261009-0002"
-    })
+story_reconcile(next/start/enqueue/claim/stage/apply) сохраняет порционную работу. Модель ищет и Stories, и исходный корпус: карточка может ещё не существовать. Максимум 50 candidate refs на run — бюджет порции, не предел исследования/доказательство полноты. Lexical fallback не считается BGE-каналом. Awaiting_agent означает потребность во внешней модели.
 
-    story_search({"query":"городская повседневность","limit":3,"mode":"lexical"})
+Proposal содержит identity_relation, contribution kinds, independence с причиной, proposed effect, evidence обеих сторон, объяснение и неизвестности. Сервер проверяет exact revision/page/region/quote; ошибка не двигает cursor. Apply под editor проверяет proposal/version/права и добавляет evidence, attributed assertion, явную связь либо обоснованное отсутствие изменения. Переводы/перепечатки одной цепочки не считаются независимыми автоматически.
 
-Это аргументы функций, НЕ команды для немедленной публикации в каналы. Серверный output успеха возвращает commit_state=saved / queued (для задания без исполнителя), operation_id, resource_ids и committed_revision/job_revision; ошибки содержат явный code/message_ru. User id из входной модели не используется как основание полномочий.
+Фазы связываются направленным phase_of, не merge. Decision.phase_of_source=anchor|candidate задаёт направление независимо от UUID/дат. Неустановленное направление остаётся unresolved; fresh import не наследует старые связи. Story_merge — явная операция над проверенным дублем с сохранением assertions/evidence, contributors, редакций/вариантов и оценок, без наследования publication approval.
 
-## Редакционное одобрение и публикации
+Optional evidence_relation/effective_assessment фиксируют support status, independence, semantic review, rationale и method version только для проверенной пары. Без assessment добавляется reports, не молчаливая поддержка. Corroborated требует отдельно заявленного independent evidence; backend не сертифицирует истину.
 
-Story readiness вычисляется из конкретных вариантов. Publish_ready ставится только для перечисленных variant revision IDs с сохранённым решением редактора, актуальным fingerprint утверждений/оснований и проверками формулировок, атрибуции, прав и критических пробелов. Атрибутированная легенда может быть готовой без доказательства чудесного события. Изменения утверждений, важных assessment или исходного SHA требуют повторной проверки. Фиксация публикации через story_publication_record — запись наблюдаемого факта с editor_reported, а НЕ provider_verified; отправка осуществляется другим авторизованным провайдером. Story export — read-only пакет; URL отсутствует, пока реально не существует доступного ресурса.
+Все текущие assessments доступны через assessments_page: typed assessment и assertion revision. Preview первых шести сообщает assessments_has_more; остальные не теряются. Cursors привязаны к Story revision и assertion; чужой/устаревший отклоняется. Каждая ссылка проверяется заново.
 
-Поля reviewer_kind/assessor_kind из клиентского JSON рассматриваются лишь как заявление вызывающей стороны; сервер отдельно записывает проверенный principal UUID/client_id и actual_executor=application. Human-authorship не доказано одним параметром.
+Revise_relation сохраняет retract, restore, correct_direction: expected Story/relation revision, reason, before/after audit, verified actor/client/time. Restore повторно проверяет оба evidence; reconcile не обходит отзыв через INSERT OR IGNORE. Relations_page показывает действующие, relation_history_page — и отозванные, relation_reviews_page — все решения по связи с revision-bound cursor. Исправление связи не доказывает identity лиц/POI и инвалидирует только затронутые dependencies.
 
-## Сохранность и критерии развёртывания
+Pair decision сохраняется атомарно с apply: IDs, policy version, proposal/effect, fingerprints evidence обеих сторон. Title/summary не являются новым evidence. Anchor fingerprint фиксируется после дополнения. Неизменная пара возвращает skipped_decided_pairs; если все кандидаты уже сравнивались — already_compared_under_policy, не no_match_found. Cancelled/unapplied proposal не считается решением. Новое evidence/source/policy разрешает bounded run; скрытый повтор неизменных пар/merge запрещён. Completed_under_policy означает конечный срез и реальные каналы, не полноту всех будущих книг.
 
-SQLite WAL, foreign_keys=ON, для story write synchronous=FULL и короткий BEGIN IMMEDIATE. SQLite Online Backup API существующего SQLiteCorpus захватывает реестр/ACL/receipts вместе с корпусом. Обязательная отдельная restore-проверка должна проверить integrity_check, foreign_key_check, приложение/ACL, аудит и идемпотентность на восстановленной базе. Локальный snapshot НЕ является удалённой зашифрованной копией. Начальные RPO ≤1 ч / RTO ≤2 ч — только целевые SLO, не достигнутые измерения.
+## Календарь, люди и числовые наблюдения
 
-Перед production обязателен точный CI SHA (Python 3.12/3.13), проверка реального remote tools/list, scope/revocation E2E, реальные источники и карточки, извлечение с lease, функция через Projects Hub/live-interaction при наличии runtime, внешний backup/readback, 10k синтетических карточек и 10 readers/3 writers, p95 latency, и применимые corpus quality gates: BGE-only Hit@5 ≥85%, Hit@10 ≥90%, языковые срезы ≥85%, p95 public search ≤1500 ms, >=100 book-equivalent и >=100k chunks.
+**Facts-first — необходимое расширение baseline:** record_event_date/record_observation сейчас требуют Story assertion. Нужно разрешить те же typed записи для принятого источникового assertion **без Story**, сохранив совместимость story-bound интерфейса. Нельзя запретить сухие Stories и потерять путь сохранения дат/измерений. Расширяется existing source/assertion/evidence модель, не новый универсальный fact registry.
 
-Функциональная граница первой ветки не означает прохождение всего перечня. Не заявлять продуктовую приёмку до отчёта о remote MCP и восстановления, не создавать фальшивые цитаты или редакционные карточки из публичных синтетических fixtures.
+Исторические person/organization/source author identities отделены от rkb_users участников. Одинаковое имя не объединяет людей; автор, редактор, переводчик, цитируемый рассказчик и современный комментатор различаются. Affiliations/roles, geography и valid-time связываются с evidence; canonical POI принадлежит Street Story. Angle/audience value дополняют рамку, не переписывают факт.
 
-## Сквозное сопоставление нескольких книг
+### Даты
 
-Каноническая постановка: [масштабируемое обогащение при импорте](prompts/scalable-cross-book-story-enrichment-20261009.md).
+Typed date хранит exact assertion revision, 1–8 evidence IDs, original_date_text, calendar, precision, date_role, соответствующие точности year/month/day, rationale и optional supersedes date ID. Исходное выражение буквально присутствует в evidence. Точности day, approximate_day, month, year, range, unknown. Год не превращается в 1 января, approximate — в exact.
 
-**Добавление книги — единая пользовательская цель.** Вызывающая модель в том же
-`book_pages`/`book_ingest(stage)` проходе сохраняет доказательных кандидатов.
-После активации `story_reconcile(command="next", document_id=...)` получает
-следующую сохранённую опору из `story_reconcile_queue` или возвращает
-незавершённый run. Это не отдельный LLM/агент внутри сервера:
-`awaiting_agent` означает, что дальнейшее сравнение выполняет внешняя модель.
+Julian/Gregorian/unspecified сохраняются без скрытой конверсии; валидность даты учитывает календарь. Event valid-time, публикация и регистрация — разные роли. Конкурирующие незамещённые даты сохраняются; новая запись не выбирает истину. Event_dates_page/history_page возвращают текущие/замещённые записи; correction сохраняет историю и инвалидирует зависимые variants.
 
-Для уже принятых книг продолжение старого `story_extract` идёт по прежним
-`job_id` и `processed_chunks` без `book_ingest(reprocess)`. При создании
-новых доказательных карточек они включаются в следующую порцию межкнижного
-сопоставления. Клиент не загружает всё досье и реестр в контекст.
+Story_calendar и совместимый facts-first путь выбирают для «этот день» только date_role=event AND precision=day с календарём, текущими assertions/source и cursor (year,date_id). Годы, approximate и публикации исключены. Ответ различает calendar_conversion=none, source-attributed evidence и точность выборки; бюджет страницы не маскируется под no_match. Связи event/entity и диапазоны сохраняют evidence без выдуманной точности.
 
-### Ограниченный MCP-проход
+### Наблюдения и измерения
 
-1. `story_reconcile(next, document_id=..., idempotency_key=...)` возвращает
-   `job_id`, `anchor_story_id`, зафиксированную story revision,
-   `next_action=search_then_enqueue`. Можно также начать с выбранной истории
-   через `start` и явно отобранные refs.
-2. Основная модель делает **два поиска** по разрешённой области:
-   `story_search` по именам/проверяемым утверждениям и поиск исходного
-   корпуса: `search` → `fetch` в полном MCP либо `knowledge_search`
-   в Live-профиле. Live сам не предоставляет команды reconciliation;
-   меняющий клиент должен иметь соответствующий полный/редакторский доступ.
-   Первая ветка находит прежние
-   карточки; вторая — источник без карточки. Реально выполненные каналы
-   указываются при `story_reconcile(enqueue)`: `story_lexical` и `source_bge`.
-   Lexical fallback исходного поиска не засчитывается как выполненный BGE-канал.
-   Максимум — 50 различных refs на run.
-3. `claim` выдаёт lease и одну сравниваемую пару, не весь корпус.
-   `story_get(view="evidence_page", limit<=10)`,
-   `story_get(view="sources_page")` и `corpus_read` возвращают исходные
-   цитаты, ID страниц/регионов и авторство; после merge также читаются
-   доказательства исходной архивированной карточки.
-4. `stage` сохраняет **предложение**, а не придуманную истину:
-   `identity_relation` (один эпизод/разная фаза/разные события/не связано/
-   неизвестно), `contribution_kinds`, `independence` с причиной,
-   `proposed_effect`, исходные `anchor_evidence` и `candidate_evidence`,
-   объяснение/неизвестности. Сервер перепроверяет точную source revision,
-   страницу, регион и цитату с обеих сторон; неудача не двигает cursor.
-5. `apply` под ролью editor проверяет proposal ID, актуальную story revision,
-   свидетельства и права. Возможные действия: связать отдельные истории без
-   автоматического merge, добавить evidence к конкретному assertion,
-   присоединить отдельное атрибутированное утверждение либо сохранить
-   отсутствие изменения. Новое доказательство берётся из **другого**
-   источника, исходный сюжет/его история не стираются.
-6. `story_job_get(job_id, cursor, limit)` содержит фактический `processed_pairs`,
-   число pending/applied proposals и постраничные IDs. Новый сеанс
-   продолжает по одному ID; команда `next` тоже находит активный run.
-   Неполное сопоставление не называется завершённым.
+Typed observation содержит assertion revision, 1–8 evidence IDs, original value text, decimal value **строкой без потери точности**, metric key, unit code, subject label/ref при доказанной identity, period text и подтверждённые bounds, method/note, precision, rationale и supersedes ref. Число, период и structured year bounds подтверждены исходной цитатой. Два показателя в цитате — две записи с разными metric/unit.
 
-Exact quote подтверждает наличие текста у автора, **не** истинность события.
-Два перевода/перепечатки могут иметь общую исходную цепочку и не считаются
-двумя независимыми свидетельствами без специальной проверки.
-Отдельные этапы объединяются типизированной ссылкой `phase_of`, не merge.
-`story_merge` — только явная редакционная операция для проверенного дубля,
-с сохранением исходных assertion/evidence, links, contributors, вариантов,
-авторства и прежних оценок. Approval другого варианта не наследуется.
+Observations_page/history_page читают текущие/замещённые версии; story_observation_search и facts-first чтение показывают действующие источник/assertion, не source_changed как свежие данные. Compare сохраняет диагностики different_metrics, different_units, unverified_subject_identity, incompatible_or_unknown_method, period_not_confirmed, manual_identity_and_semantic_review_required. Совпадение subject label не устанавливает person/org/POI identity. Нет автоматических conversion, difference/ratio, трендов и агрегации несопоставимых рядов. Допустимые compare/aggregate требуют проверенных subject, units, periods и methods.
 
-`story_search(mode=lexical)` ищет заголовки, summary и актуальные assertion
-phrases. `mode=semantic` при наличии BGE-вектора запроса ищет по версии
-карточки и применяет **полные actor/source ACL до ранжирования**; stale
-revision, архив и несовпадение хэша карточки не допускаются. Результат
-`story_bge` означает, что весь доступный отфильтрованный набор был
-проиндексирован; `story_bge_partial` — только неполное покрытие; при
-недоступном query-энкодере/индексе — явный `lexical_degraded`.
-`hybrid` в текущей реализации использует ту же BGE-ветку, когда векторы
-доступны, и честно сообщает `story_bge` (а не фиктивное смешение).
-Source BGE-книга остаётся отдельным каналом межкнижного discovery.
-`completed_under_policy` относится только к зафиксированному конечному
-набору сравнений и объявленным каналам, **не** доказывает отсутствие
-других сквозных историй. При получении нового источника допустим
-догоняющий bounded run.
+## Разногласия, готовность и публикации
 
-## План развития хранилища
+Story связывает exact case/conclusion revisions и source spans. Существенное изменение основания требует revalidation зависимого Variant; обычный комментарий не отменяет всё. Дело отдаёт current conclusion и last supported conclusion раздельно: человеческая поддержка относится к exact revision и не переносится. Читаемый рассказ может содержать ясно атрибутированные альтернативы.
 
-Если появятся два одновременно пишущих API/worker-хоста, проверенное восстановление перестанет удовлетворять RTO/RPO или устойчиво нарушится write SLO после устранения длинных транзакций — переносим всё взаимосвязанное основное состояние/ACL/истории/каталог/доказательства/задания на PostgreSQL согласованно. Число зарегистрированных пользователей не является причиной миграции.
+Publish_ready ставится только перечисленным Variant revisions после редакторского решения, текущего dependency fingerprint и проверок формулировок, прав, атрибуции, критических gaps. Атрибутированная легенда может быть готова без доказательства чудесного события. Изменение существенных assertion/assessment/date/measurement/source/case требует целевого пересмотра. Базовый импортный рассказ не получает implicit approval.
 
+Story_publication_record фиксирует внешний факт с editor_reported либо проверенным provider provenance; уровни не смешиваются. URL появляется только после реального ресурса/receipt. Read-export не публикует, approved export не отправляет. Private drafts не входят в общий поиск/VK/digest/case page без явного действия автора.
 
-### Доступ ко всем assessment и направленные связи (совместимое дополнение v7)
+## Приёмка и сохранность
 
-`story_get(view="assessments_page", assertion_id=..., limit<=10, cursor=...)`
-возвращает **все текущие (не замещённые) оценки** конкретной редакции
-утверждения, страница за страницей: `items[].assessment` содержит исходный
-typed assessment, `assertion_id` и `assertion_revision` сохраняются.
-Следующий `next_cursor` привязан к версии истории и ID утверждения.
-После изменения карточки или попытки использовать курсор другой assertion
-возвращается validation_failed. Ссылка на evidence перепроверяется по
-текущим source ACL при каждом чтении. Прежние `assertion_page` и
-`evidence_page` всё ещё возвращают только первые шесть effective assessments;
-`assessments_has_more` означает, что продолжение доступно отдельно.
+Достаточный эпизод после fresh import имеет saved body/default ref, одинаковый exact readback после restart и корректные get/search/read-export/voice. Сравниваются текст/hash, не слово «история». Retry не создаёт дополнительных Story/Variant; CAS сохраняет ручную правку. Title «Как…» без способа требует retitle. Факты без эпизода, сухая таблица, неполная цитата, чужая атрибуция, противоположные версии, неизвестный исход и недраматичная практика имеют отдельные ожидаемые результаты. Квота рассказов и постоянный второй LLM-judge не нужны.
 
-Для `story_reconcile(stage)` есть необязательное typed
-`decision.phase_of_source = "anchor" | "candidate"`. Его значение —
-**какая из двух историй является фазой другой**, а не порядок дат.
-При `link_stories` с `part_or_phase` новое поле записывается в
-`story_relations.phase_from_story_id/phase_to_story_id` независимо от
-сортировки UUID. В `story_get(view="relations_page")` доступны
-`phase_direction` и `phase_direction_status`. Исторические записи, для
-которых исходная модель не указала направление, возвращаются
-`legacy_unresolved`; миграция не приписывает им направление задним числом.
-Конфликт нового направления с уже сохранённым требует явной редакционной
-коррекции и не переписывает старое доказательство. SQL v7 добавляет только
-две nullable колонки, без сброса данных/ревизий/историй. Для старых MCP
-клиентов поле optional; обновлённую client schema нужно подтвердить отдельно.
+Проверки сохраняют даты/календари, людей/роли, географию, units/method/period, альтернативы и private права. Basic draft читается в Story scope, private draft — только автором. Accepted text доступен независимо от uploader; illustrations публичны; proof проверяется для owner/demo/expert/local_historian; full PDF не выдаётся. Withdrawal закрывает stale кеш/excerpt/late delivery; public-page revocation не прячется за last-good.
 
-При enrichment операция `story_reconcile(stage)` может дополнительно
-передать `decision.evidence_relation` (по умолчанию `reports`) и
-`decision.effective_assessment` — явно сформулированное моделью решение
-с `support_status`, `independence`, `semantic_review`, `rationale`,
-`method_version`. При `apply` оно проверяется и записывается через обычный
-`RecordAssessment` в той же транзакции и той же новой редакции истории:
-только точное исходное свидетельство anchor и новое свидетельство candidate,
-без механической оценки остальных цитат. Claim новой версии имеет только одно
-собственное evidence. `corroborated` не допускается без отдельно заявленной
-`independent` оценки двух источников; backend не объявляет её доказанной
-самостоятельно. Реальная проверка авторства модели остаётся отдельной задачей:
-`assessor_claim_verified=false` и `actual_executor=application`. Отсутствие
-assessment сохраняет старую семантику (добавить reports, не оценивать смысл).
+**Слепой пилот качества рассказов — 15–20 примеров.** На одних и тех же свежих оригинальных фрагментах сравниваются pinned baseline prompt/contract из [архива a8cf](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/prompts/scalable-cross-book-story-enrichment-20261009.md) и новый контракт. Показываются именно фактически сохранённые body; если baseline/new run не сохранил body, это честно помечается «body отсутствует», summary не подставляется. Порядок/метки вариантов не раскрывают реализацию оценщику. Оценивает владелец или назначенный им человек: связность, понятное начало и мысль, известный исход/честная неопределённость, соответствие title, фактическая и атрибуционная точность, отсутствие выдуманной причинности, пригодность к чтению вслух. Самопохвала генерирующей модели не является PASS. Пока человеческий ответ не получен, human pilot имеет NOT_RUN. Это разовый gate качества изменения, не обязательное ручное одобрение каждой импортируемой книги.
 
-Revision-guarded correction/retraction уже описана и реализована в schema v8
-ниже; повторное сравнение неизменных пар — в v9. Полный durable frontier/
-corpus watermark остаётся отдельным этапом. Story BGE worker с v13
-обрабатывает существующий outbox в основном процессе индексации, без
-нового демона/очереди. Наличие индекса и зелёный CI сами по себе
-не подтверждают semantic recall действующего MCP: требуется post-deploy
-проверка исходным естественным вопросом, evidence и latency.
+Нагрузочная проверка реестра сохраняет сценарий 10 000 синтетических карточек, 10 читающих и 3 одновременно подающих запись клиента; это три caller, не три canonical PG writer. Реальные MCP tools/list, scope/revocation и post-deploy естественные вопросы проверяются отдельно от CI. Restore проверяет данные, audit/receipts/outbox, revisions и default body refs; подтверждённые команды переигрываются идемпотентно по handoff без второго writer. RPO/RTO и snapshot freshness подтверждаются измерением. Protected gates не ослаблены: backend p95≤1000 ms; MCP p95≤1500 ms/hard 2000 ms; BGE Hit@5≥85%/@10≥90%, RU→DE@10≥85%, ≥30 held-out families; ≥100 sources/100000 chunks; storage≤80% steady/≤90% peak. Исторический CI/report не является PASS redesign.
 
-
-### Редакционное исправление межкнижных связей — schema v8
-
-`story_edit(operations=[{"op":"revise_relation", ...}])` позволяет **редактору
-исходной anchor-истории**, записавшему исходную связь в reconciliation,
-провести три явных действия с проверкой `expected_revision` карточки и
-`expected_relation_revision` связи:
-
-- `action="retract"`: убрать связь из обычной навигации, сохранив
-  предложение, цитаты, ID и весь журнал без физического удаления;
-- `action="restore"`: только для отозванной связи и только после
-  повторной проверки доступности и точного текста обеих исходных цитат;
-- `action="correct_direction"`: только для активной `phase_of` с
-  `phase_from_story_id` / `phase_to_story_id`, точно соответствующими
-  двум сторонам текущей связи. Требуется осмысленное `reason`.
-
-Каждое исправление повышает и редакцию anchor-истории, и собственную
-редакцию связи, создаёт неизменяемую запись `story_relation_reviews`
-с состояниями до/после, подтверждённым OAuth actor ID, клиентским ID
-и временем; изменённые опубликованные варианты anchor требуют повторной
-проверки. Старые связи начинают с `relation_revision=1`; schema v8
-добавляет nullable-independent audit, не переносит/пересчитывает книжный
-корпус и не переписывает исторические направления автоматически.
-
-`story_get(view="relations_page")` по-прежнему выдаёт только активные
-связи, включая `relation_revision`. `relation_history_page` показывает
-также отозванные связи, исходные доказательства и последнюю
-коррекцию; `relation_reviews_page` с обязательным `relation_id`
-возвращает все версии редакционных решений через revision-bound
-cursor, с ACL обеих историй и обоих источников. Нельзя использовать
-старый курсор после изменения карточки. Повторная reconciliation не
-может обойти отзыв через прежний `INSERT OR IGNORE`: такая попытка
-отклоняется, требуется явное `restore`.
-
-Это корректировка *редакционной связи*, не ревизия книжного источника
-и не доказательство идентичности одноимённых лиц/зданий. Модели и
-бэкенд не проводят скрытого семантического пересмотра: редактор явно
-фиксирует основание решения. Отдельная production-проверка нового
-MCP schema и deployed SHA обязательна.
-
-
-### Долговечные решения по парам источников — schema v9
-
-После `story_reconcile.apply` в той же SQLite-транзакции сохраняется
-неизменяемая запись `story_reconcile_pair_decisions` с IDs сторон,
-`kind=story|chunk`, версией политики, ID исходного proposal, эффектом и
-отпечатками **принятого evidence** обеих сторон. Для истории отпечаток
-учитывает IDs/revisions текущих утверждений и evidence, version/sha/active
-revision source roots; для чанка — ID, revision, text/search-material hashes,
-региональные refs и source SHA. Заголовок/сводка не считаются новым
-историческим доказательством. Отпечаток anchor фиксируется **после**
-присоединения нового свидетельства; иначе тот же кандидат бесконечно
-повторялся бы из-за нового story revision. Отмена и ещё не применённый
-proposal не являются просмотренным решением и не попадают в dedup.
-
-При `story_reconcile.start/enqueue` прежняя оценённая пара с теми же
-evidence и policy не занимает слот frontier, а возвращает
-`skipped_decided_pairs`. Когда оба обязательных канала были реально
-просмотрены и все найденные кандидаты уже оценивались, состояние —
-`already_compared_under_policy`, **не** `no_match_found_under_policy`.
-Оно не означает глобальной полноты корпуса. Новое evidence, source
-revision или версия policy позволяет повторить сопоставление. Устаревшие
-записи audit не удаляются и никакие пары не merge автоматически.
-
-Ограничение `max_candidate_pairs<=50` по-прежнему относится к отдельному
-run; v9 не обещает полного corpus-watermark, очереди overflow или
-автоматического обхода всех источников после поздней индексации. Это
-следующая часть масштабного reconciliation, требующая отдельных
-датированных тестов покрытия и реального MCP acceptance.
-
-
-## Календарь исторических событий — SQLite schema v10
-
-`story_edit` поддерживает типизированную операцию
-`record_event_date` для **текущего assertion revision** со списком 1–8
-реальных `evidence_ids`, `original_date_text`, `calendar`,
-`precision`, `date_role`, полями `year/month/day` по точности,
-`rationale` и необязательным `supersedes_date_id`. Исходная строка
-даты **обязательно буквально содержится** в принятой точной цитате
-хотя бы одного из названных evidence; связь с assertion/revision,
-права на source и idempotency/revision проверяются внутри SQLite
-write-транзакции. Семантическую интерпретацию и тип календаря
-указывает внешняя модель; совпадение текста доказывает присутствие
-записи у автора, **не** историческую истину.
-
-Поддержаны точности `day`, `approximate_day`, `month`, `year`,
-`range`, `unknown`. Запись года не синтезирует 1 января, а
-приблизительная дата не превращается в точную. Юлианские даты и
-григорианские даты хранятся **в исходной календарной системе без
-автоматической конверсии**; например, 29 февраля 1700 допустимо по
-юлианскому календарю, но не по григорианскому. Неопределённый
-календарь сохраняется как `unspecified`. Историческое время события
-(`date_role=event`), публикация и время регистрации источника
-не смешиваются.
-
-`story_get(view="event_dates_page"|"event_date_history_page",
-assertion_id?,limit<=10,cursor?)` возвращает текущие или вместе с
-замещёнными датами при наличии права на карточку и исходные цитаты.
-Исправление помечает старый `date_id` как superseded, сохраняет его
-в истории, создаёт новую дату и инвалидирует зависящие варианты.
-Несколько несуперседированных разных дат **остаются конкурирующими**:
-backend не выбирает «правильную» за редактора.
-
-`story_calendar(month=3,day=15,calendar="gregorian",limit=3,cursor?)`
-ищет строго `date_role=event AND precision=day` через отдельный
-индекс SQLite. ACL и состояние текущих assertion/source проверяются
-перед выдачей каждой цитаты. Выдача постраничная по
-`(year,date_id)`, cursor привязан к actor/датам/календарю.
-Продуктовый ответ сообщает режим `exact_sql_source_authorized`,
-`calendar_conversion=none`, открытые исходные доказательства и
-`source_attributed_not_historical_truth_certified`.
-Даты только с годом, приблизительные даты и публикации в рубрику
-«этот день» не входят. Большой ACL scan ограничен; частичная выборка
-объявляется `partial_acl_scan_budget` с continuation, а не `no_match`.
-
-**Граница:** новая таблица `story_event_dates` — часть той же SQLite
-authority, без второй базы. Она не извлекает даты из старых книг
-самостоятельно: calling model при чтении/обогащении должна явно
-выполнить typed запись. Bounded backfill, event-entity linking,
-source version invalidation beyond current assertion revision,
-общие интервалы и полнота календарного наполнения остаются отдельными этапами.
-Атрибутированные числовые observations реализованы отдельно в v11 ниже;
-это не автоматическая статистическая агрегация. Массовые protected
-BGE/capacity/latency gates не смягчены.
-
-
-## Числовые наблюдения — SQLite v11 (2026-10-09)
-
-`story_edit(operations=[{"op":"record_observation",...}])` сохраняет
-отдельный **атрибутированный числовой факт-утверждение** с текущим
-`assertion_id/revision`, 1–8 зарегистрированными `evidence_ids`,
-оригинальным числовым выражением `original_value_text`, точным
-decimal `value`, `metric_key`, `unit_code`, `subject_label`,
-`period_text`, при наличии точных границ `period_start_year/
-period_end_year`, `method/method_note`, `precision`, `rationale`
-и ссылкой на замещаемую редакционную версию.
-
-Исходное выражение числа и точный период должны встречаться в
-разрешённой **исходной цитате** этого assertion. Даты-годы, явно
-записанные в structured year bounds, должны присутствовать в самой
-цитате. Проверяется также `source_state=unchanged` — нельзя
-выдавать ранее сохранённую цифру за актуально доказанную после
-изменения источника. Один excerpt может сообщать два разных показателя,
-но это **две записи** с разными metric/unit. Decimal хранится как
-строка без потери точности. Нет автоматического перевода единиц,
-высчитывания трендов и объединения по похожим именам.
-
-`story_get(view="observations_page"|"observations_history_page",
-assertion_id?,limit<=10,cursor?)` читает все действующие наблюдения
-и/или замещённые ревизии с ACL всех источников. Исправления требуют
-`supersedes_observation_id`; прежнее основание не стирается и
-зависящий опубликованный вариант требует revalidation.
-`story_observation_search(metric_key,unit_code?,limit,cursor)`
-ищет подтверждённые **как цитаты** числа из актуальных assertion
-через индекс, короткими страницами и с повторной ACL-проверкой;
-`source_changed` не возвращается обычному читателю как свежее число.
-`story_observation_compare(story_id,left_id,right_id)` выдаёт
-`different_metrics`, `different_units`,
-`unverified_subject_identity`, `incompatible_or_unknown_method`,
-`period_not_confirmed` либо
-`manual_identity_and_semantic_review_required`. Это **диагностика
-несопоставимости**, без ложных результатов `difference/ratio`:
-совпавший `subject_label` не создаёт canonical POI/person/org.
-Публикация графа цифр без проверки единиц, объекта, периода и метода
-не разрешается.
-
-**Граница:** v11 не извлекает цифры автоматически из старых источников;
-LLM выполняет интерпретацию при разборе книг или внешних документов.
-Это не statistical timeseries engine, не калькулятор conversion и
-не автоматическое доказательство правильности любого сообщённого
-количества. Следующие шаги — source-verified
-`subject_ref` от Street Story/RKB entity graph, normalized
-measurement methods и допустимая compare/aggregate только
-для научно сопоставимых рядов. Квоты и protected dense-retrieval gates
-не меняются.
-
-
-### Проверенная production-поставка v11, 9 октября 2026
-
-Точный served SHA: `5d6c421a88ea62069c69ed97070c9f5a53046a86`.
-Миграция populated SQLite до v11, резервная копия, public health,
-пять реальных story-readback, CI Python 3.12/3.13 и synthetic load
-подтверждены. Две существующие истории получили датированные события,
-а существующая карточка зоопарка — доказательное дополнение исходной
-цитаты и **две раздельные метрики** (893 особи, 262 вида). Проба
-на записи метрик из неподтверждённой 36-символьной цитаты была
-остановлена; после проверки точного 128-символьного фрагмента числа
-сохранены отдельно. `story_observation_compare` возвращает
-`different_metrics` без арифметики.
-
-Полные данные, границы OAuth/операторской проверки и оставшиеся product
-gates: [production acceptance report](reports/rkb-graph-calendar-measurements-production-20261009.md).
+Связанные контракты: [дела](design/rkb-disagreement-journal-design-20261018.md), [участники и POI](design/rkb-participants-poi-fact-bridge-20261018.md), [ПМИ](testing/rkb-disagreement-pmi-20261018.md). [Историческая версия](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/story-registry.md) сохраняет датированные детали v7–v13 и прежнюю приёмку; её SQLite/Supabase deployment и миграционные инструкции не целевые требования.

@@ -1,182 +1,92 @@
-# Architecture
+# Архитектура базы знаний региона
 
-## Canonical target and precedence — 2026-10-19
+Обновлено 20.10.2026. Это целевой контракт, а не отчёт о внедрении. Проверенный исходный main — [a8cf41b](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/a8cf41b50b8ccb62409d046d009d53c09d74b1d7): corpus/FTS/graph/stories ещё используют SQLite, книжные vectors — Supabase, story vectors — отдельный SQLite/Python путь.
 
-New work follows the [unified Kaggle architecture](designs/rkb-scalable-kaggle-architecture-20261019.md) and the single [implementation/debugging handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md). The SQLite/Supabase sections below describe the existing implementation. Their former “canonical task”, local-database prohibition and E5 guidance do not override the new target.
+Единое самодостаточное [задание кодовому агенту](prompts/rkb-scalable-kaggle-implementation-20261019.md) задаёт внедрение и отладку. Здесь описаны компоненты и пути данных; [storage](storage.md), [configuration](configuration.md), [управление нагрузкой](designs/user-request-load-management-20261019.md) и [приёмка](testing/rkb-scalable-kaggle-acceptance-20261019.md) раскрывают соответствующие контракты.
 
-| Component | Target responsibility |
+## Размещение и владельцы
+
+| Компонент | Ответственность |
 |---|---|
-| DevCoveer | Stable MCP, verified identity/scope, durable requests, exact typed-command journal, result/delivery receipts and writer/snapshot authority |
-| Kaggle writer | PostgreSQL+pgvector working domain state, BGE, ordered apply/receipts and snapshots |
-| Kaggle readers | Verified snapshot, BGE/search, authorized proof/render and bounded computation; no independent domain writes |
-| Telegram and recovery storage | Exact originals/illustrations, immutable accepted payloads and verified snapshots with explicit retention |
-| Astro | Selected public case projection, stable URL, desktop/mobile, no viewer auth |
+| DevCoveer: существующий MCP/ASGI, BgeQueue/controller | Проверенная identity, request/dialog/fairness, admission, writer/run/connection authority, доставка. Короткий raw spool и компактные request/UNKNOWN/receipt metadata; рабочего корпуса и vectors здесь нет. |
+| Один Kaggle writer | PostgreSQL 17 с закреплённым pgvector, принятый corpus, bibliography/provenance, факты, entities/relations, истории/варианты, даты/observations, cases/private drafts и индексы. BGE-M3 и разрешённая обработка исходников. |
+| Kaggle readers при измеренной необходимости | Восстановленная проверенная snapshot, SQL/BGE/search/proof; запрещены независимые domain writes, jobs/outbox и выбор canonical snapshot. |
+| Private Kaggle Dataset | Версионированные PG base snapshots с indexes, manifest, hashes и внутренним applied cursor. Dataset не является живой БД или append-log. |
+| Существующий Yandex recovery storage | Immutable command/control/receipt tail и точные accepted payloads; отдельная проверенная суточная base для восстановления при потере Kaggle. Base и tail в одном Yandex не независимы друг от друга. |
+| VibePublish / Telegram archive | Точные оригиналы и иллюстрации. Существующий владелец upload/delivery сохраняется; Kaggle получает scoped direct-download доступ. |
+| Regional Cartography / Street Story | Картографическая интерпретация/геометрия и физическая POI identity соответственно. RKB сохраняет source-place graph и ссылки, не создаёт второй канонический каталог. |
+| GitHub / публичная case page | Код и публичная документация; выбранная безопасная проекция дела с постоянным URL и проверенным readback. Source bytes, private drafts и recovery objects в GitHub не попадают. |
 
-The notebook opens one authenticated outbound **WSS** connection to the existing DevCoveer HTTPS/ASGI broker. Both sides send jobs/control or progress/results immediately. Reuse BgeQueue/controller/request ownership; no second broker or public notebook listener. HTTP compatibility cannot become a parallel dispatcher for the same run.
+E5 и Supabase отсутствуют в target. Один BGE space: существующий pinned model/tokenizer, 1024 dimensions, FP32, точный полный embedding input не более 512 токенов. Ориентир семантического passage — около 256 токенов. Model inference выполняется только в Kaggle.
 
-Application ACK follows durable commit/readback of the exact outcome. Resume reconciles bounded existing job/claim/result hashes; new connection generation fences old attachment. Stale claims are scoped failures; run revocation is separate. Keep loaded BGE/PG across a temporary socket failure while the same Kaggle session is alive. Session termination requires new run/restore/warmup. Bound frames, buffers, credits and reconnect; keep blocking compute off the connection loop. Large artifacts use existing byte paths and references, while actual MCP ImageContent remains required.
+## Один транспорт и одна authority
 
-Current source has HTTP claim polling, 50 ms result polling and BEGIN IMMEDIATE even for queue result/status reads. Remove that avoidable contention: notify after commits and use bounded read-only reconciliation for reconnect and separate producers. An in-process Event alone does not observe indexer/controller enqueues.
+Notebook открывает постоянный authenticated outbound WSS к существующему DevCoveer ASGI по HTTPS/443. По одному соединению идут задания, прогресс, результаты и application ACK. PostgreSQL наружу не публикуется. HTTP pull и WSS не становятся двумя одновременно действующими dispatchers; очередь, job IDs, claims и controller общие.
 
-One writer applies exact accepted commands in continuous order. Snapshot manifests bind the restored internal cursor and exact Dataset version; old writers cannot select canonical copies or deliver late authoritative results. Retain required tail through both verified recovery baselines. BGE-only replaces E5; public text search retains bibliography, active revision and withdrawal checks, with separate pixel/original rights.
+Каждая запись проверяет current writer epoch, run, claim и connection generation. Reconnect заменяет attachment и fencing старого socket; stale claim — ошибка конкретного задания, revocation run — отдельное событие. Пока Kaggle-сессия жива, временная потеря WSS сохраняет загруженные PG/BGE. Завершение самой сессии требует нового run, restore и warmup.
 
-Only historical/cartographic and inventoried human assets transfer; books are freshly imported with atomic research enqueue. Case identity, provenance and existing source/location/illustration safeguards remain intact. This documentation does not certify deployment or performance; use the [acceptance plan](testing/rkb-scalable-kaggle-acceptance-20261019.md).
+Ping/Pong, полезный спрос, task progress, короткая writer lease и 30-минутный useful-idle — разные таймеры. Сокет без полезной работы не удерживает notebook бесконечно. Frames, bytes, inflight credits, reconnect backoff и task deadlines ограничены. Большие payloads передаются существующим bounded byte transport по проверенным refs, а не огромным WSS JSON.
 
-## Preserved implementation and historical record
+## Долговечность и ACK
 
+Ранний local receipt означает **pending**. Финальный accepted/Saved разрешён только после remote confirmation точных payload и intent; Saved дополнительно означает domain commit и remotely verified exact outcome/receipt; облачно сохранённый intake ещё не является applied результатом. Group commit удерживает готовые accepted mutations и реальные пользовательские turns не более 1 секунды до flush; provider latency не выдаётся за гарантированную секунду сохранения.
 
-## SQLite / Supabase v2 implementation boundary (2026-10-05)
+Existing S3ObjectStore обеспечивает put/get/delete transport. Immutable sealing, exact verification и CAS manifest ещё предстоит реализовать поверх него; generic put не доказывает CAS. Segment связывает sequence range/count, payload hashes и previous hash; orphan upload не accepted. Один existing controller выполняет bounded compaction sealed segments с сохранением logical IDs/hashes/seq и CAS refs, чтобы не накапливать по одному объекту на каждую секунду бесконечно.
 
-The canonical task is [SQLite corpus + Supabase vectors + on-demand proof](prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md).
-The old v1 page archive and capacity prompt are superseded. No local PostgreSQL,
-page archive/topic/spool, whole-book readiness gate or new IAM is introduced.
+Обычный read-only evidence search не ждёт remote journal и не пишет туда каждую страницу результатов. Долговечный человеческий диалог использует request lifecycle, а его отдельные чтения — короткий serving path.
 
-The v2 release selects persistent SQLite with `RKB_SQLITE_CORPUS_PATH`.
-SQLite owns corpus text, catalog, rights/ACL, page/region mapping, ingestion,
-graph/POI and publication state. Supabase owns only E5/BGE vectors and minimal
-ID/revision/hash/scope anchors. The existing application actor bridge authorizes
-local reads and writes; MCP bearers never enter the vector plane. Fetch/catalog
-and FTS lexical-only search remain available without Supabase. See the
-[deployment and recovery runbook](operations/sqlite-v2.md).
+DevCoveer raw spool: стартовый горизонт 4 часа, hard byte cap 512 MiB, с проверкой реального envelope до cutover. Компактные UNKNOWN/request/receipt metadata живут до reconciliation, а не до spool TTL. Local GC требует remotely sealed payloads и verified metadata; суточная backup не задерживает local GC. Remote-tail GC, напротив, сохраняет всё необходимое designated retained verified baselines и unfinished consumers.
 
-## Invariants
+Изменившаяся PG base создаётся каждые 4 часа, раньше при replay/byte pressure или плановой передаче writer. Без изменений полная копия не создаётся. Control checkpoint — каждые 15 минут; это не задержка фиксации новых grants, accepted commands или receipts. Подробности и failure domains: [storage](storage.md).
 
-Regional Knowledge Base is deliberately split into a cheap online retrieval plane and a resumable ingestion plane.
+## Схема для быстрого извлечения
 
-```text
-ONLINE / latency-sensitive
-model -> MCP -> SQLite FTS + E5/BGE Supabase pgvector -> authorized evidence
+Canonical source data и serving projections находятся в одной PG БД. Searchable поля типизированы; JSONB нужен для переменного provenance, не для обхода всех dossier snapshots при каждом запросе.
 
-INGESTION / throughput-insensitive
-PDF/DjVu source -> thin format adapter -> page image/native hints -> ChatGPT vision/reading
-               -> typed staged graph -> validate/finalize -> SQLite staged state -> configured required-vector acknowledgments (BGE by default) -> activation
-               -> original source archive through VibePublish Telegram /2
-               -> illustration archive through VibePublish Telegram /4
-```
-
-The runtime uses SQLite FTS; Supabase runs vector computations. Originals remain in the existing binary archive.
-
-## Data ownership
-
-| Layer | Owns |
+| Данные | Минимальные ключи / индексы |
 |---|---|
-| VibePublish / Telegram via dedicated `TELEGRAM_KNOWLEDGE_BASE` connection | durable original source DOCUMENTs in topic /2 and extracted illustration DOCUMENTs in topic /4 |
-| SQLite | exact corpus, FTS, catalog, ACL/rights, provenance, ingestion, graph, POI and publication state |
-| Supabase Postgres | minimal anchors/scope and E5/BGE embeddings/vector search |
-| S3-compatible object storage | bounded temporary ingestion/cache objects only; not the corpus archive |
-| GitHub | source code, schemas, migrations, tests, public documentation |
-| local disk | persistent SQLite/WAL/backups plus bounded originals/proof/work files |
+| document / revision / region / passage | PK/FK; source SHA, revision и exact locators; B-tree по document, revision, ordinal для book scope и продолжения. |
+| passage_search активного принятого корпуса | Stable passage ID, material version/hash, language, tsvector, BGE vector(1024); GIN для FTS, HNSW cosine для broad dense. Старые search revisions не заполняют active ANN. |
+| story_search | Отдельная типизированная projection того же BGE space; editorial revision/material hash, GIN/HNSW. Source passages и пересказы не конкурируют в одной неразличимой выдаче. |
+| catalog | Нормализованный title и ID; B-tree и keyset pagination, SQL filters. Hydration только выбранной страницы. |
+| aliases / entity mentions | B-tree normalized_name/language и entity→evidence links; язык, вид alias и temporal scope сохранены. Дополнительный trigram GiST на names только для нужного fuzzy top-K. |
+| assertions / cases / source dependencies | Индексированные FK и обратные link keys. Поиск по entity/source/state не раскрывает каждый JSON snapshot. |
+| geo | PostGIS geometry с явным SRID и GiST при пространственном query path; временные интервалы индексировать под реальные predicates. |
+| dates / observations | Типизированные calendar, date_role, precision, subject, metric, exact decimal, unit, period и evidence. Индексы соответствуют календарному/метрическому запросу, не меняют семантику сравнения. |
 
-Telegram/provider IDs and object-store keys are never authorization. “Public
-document” is an application authorization state enforced by Regional Knowledge.
+Revision projections immutable. После готового staging атомарно переключается небольшой active pointer и создаётся persisted research frontier; activation не переписывает 100000 строк с active flag. Inactive versions ограничиваются retention/GC, а current-pointer filter вместе с iterative/exact path не допускает ANN scope starvation. Неудачная новая revision не лишает поиска прежнюю принятую. Вывод старых derived indexes в GC не уничтожает immutable evidence history.
 
-Exact accepted text and FTS belong in SQLite. Supabase retains only vector metadata and embeddings; binary originals are archived separately.
+## Путь поиска
 
-## Canonical document graph
+1. Проверить текущий доступ и query/scope; получить один query embedding от прогретой BGE.
+2. Независимо выбрать bounded lexical, dense и exact/alias candidates.
+3. Выполнить dedup/RRF, затем batch hydrate top-K exact evidence и обязательную библиографию.
+4. Проверить текущие revision/withdrawal и применимые output capabilities перед cache reuse и delayed delivery. При отбрасывании stale candidates сделать bounded refill либо явно отметить partial.
 
-```text
-Document
-  -> Page
-      -> Region(kind, bbox, reading_order)
-          -> Relation(caption_of, footnote_of, continues_to, illustrates, refers_to)
-      -> Illustration(source_region, crop, caption relations)
-```
+Нельзя каждый раз строить allowed-map всех книг, отправлять весь каталог JSON в vector query, вычислять все story similarities в Python или делать запрос на каждый title/evidence. Поиск active accepted book text не требует per-book owner ACL. Private drafts и mutation scopes сохраняются отдельно.
 
-Chunks reference region/page IDs. They are derived, can be rebuilt, and do not own page geometry.
+Broad ANN использует прямой ascending ORDER BY distance и LIMIT до window/tie-break/hydration. Для селективного book/geo/time scope допустим индексированный shortlist и exact distance. Для широкого filtered ANN использовать поддерживаемый pinned pgvector iterative scan с конечными ef/scan/memory/deadline budgets. Strict order означает порядок найденных кандидатов, а не perfect recall. Dense branch не ограничивается lexical top-K.
 
-## Availability
+GIN не отменяет стоимость ранжирования очень частого слова; lexical/alias branches имеют общий budget. FTS language configuration задаётся per row как RU/DE/simple и версионируется; query проверяет лишь bounded набор нужных configurations, без alias loop; исходные имена сохраняются, aliases не доказывают identity. Не переносить SQLite BM25 scores в PostgreSQL ts_rank_cd как эквивалентные. Короткий Seq Scan маленькой таблицы допустим; обход всего corpus в обычном поиске — дефект.
 
-Search degrades explicitly:
-- vector + lexical available: hybrid result;
-- embeddings unavailable: lexical-only result with degraded-mode marker;
-- binary providers unavailable: search/fetch remain local; original reconstruction reports unavailable;
-- Supabase unavailable: authorized local fetch/catalog and FTS remain usable with truthful lexical-only mode.
+Actual prepared ANN plan проверяется после не менее шести executions и на крайних selectivity. При доказанном generic-plan regression использовать custom plan/disable preparation только для ANN, не для всей БД. pgvector knobs задаются через SET LOCAL внутри transaction и не протекают между pool clients.
 
-Ingestion never competes with Live search for mandatory CPU. Concurrency is bounded separately.
+Canonical command outcome hash включает exact domain IDs/body/evidence, но не заново вычисленные BGE floats, FTS или crops. Derived projections при необходимости отмечаются dirty и rebuild отдельно; durable accepted BGE artifacts можно reuse. Dense lag является отдельной readiness и не блокирует canonical replay. Уже delivered artifact сохраняет exact bytes/hash/receipt и не подменяется новой картинкой под прежним receipt.
 
-## Deployment shape
+Spatial predicates используют индексируемые ST_DWithin/ST_Intersects и согласованный CRS. Не вычислять ST_Transform для каждой строки без соответствующего expression index. Не создавать partition/HNSW на каждую книгу и не индексировать все поля без query owner.
 
-Initial target: one lightweight MCP/gateway process on DevCoveer plus managed
-Supabase, VibePublish/Telegram binary archival and a bounded S3-compatible staging
-cache. The MCP Python SDK 2.x stateless HTTP mode is preferred so no user session
-is pinned to one worker.
+## Функции, которые сохраняются
 
-The MCP is deliberately a **thin document orchestrator**, not a recognition
-service. It may decode/render supported containers (PDF, DjVu), hash bytes, expose
-native text already present in the container, persist typed results and route
-binary assets. ChatGPT performs transcription/recognition, semantic layout,
-caption/footnote reasoning, chunking and entity extraction.
+Импорт start/pages/stage/validate/finalize/status, exact regions/quotes/captions/footnotes, dedup и resumability; source facts без обязательной Story; Story → revision → publication Variant, history/edit/merge/archive/restore; даты и calendars, observations/comparison, люди/организации/relations; independent disagreement registry/cases, вклады/аргументы/conclusions; private drafts; geo queue/POI outbox; source proof и archive continuation; публичная case page с last-known-good и revocation; единый request lifecycle Slack, personal MCP и Миры.
 
-Do not add Redis, Kafka, a local Postgres, a local vector database, OCR engine,
-VLM or server-side LLM parser until measured product need justifies one.
+Миграция переносит **только геоданные**: layers/places/geometry/CRS/temporal aliases/provenance и минимальные ссылки на использованные источники. Всё остальное, включая негеографические исторические факты, stories, drafts/cases и книги, создаётся через fresh import/workflow. Старое состояние сохраняется как reference до проверенного cutover; это не перенос его corpus в target. До production book imports фиксируется проверенный GEO identity manifest: stable layer/place IDs, aliases и CRS. Bulk raster transfer может идти в phase 4; stage 2 до manifest допускает только isolated fixture, не production import.
 
-## Accumulative semantic graph
+Текст и библиография активных принятых книг, а также разрешённые иллюстрации доступны всем. Stripe quote scans доступны owner/demo/expert/local_historian; полный PDF/DjVu и full-page pixels остаются private по отдельному grant. Превью не должно раскрывать большую область, чем разрешённый artifact. См. [rights](rights.md).
 
-The document graph and the regional knowledge graph are different layers.
+## Границы готовности
 
-The document graph preserves source structure:
+Core/GEO runtime cutover и feature-release gates Миры, VK, Astro/case pages и research needs оцениваются отдельно. Все эти функции обязательны для завершения всего проекта; NOT RUN не означает работающую функцию. Регрессия уже включённого канала блокирует switch: молча отключать канал для прохождения core gate нельзя.
 
-`Document -> Page -> Region -> layout/evidence relations`.
+Ready означает совместимость snapshot/cursor плюс действующий SQL query и dense query probe с полезным результатом. Physical manifest включает PG minor, extensions/libs/platform и collation provider/version; keyed normalized text использует C collation для детерминированного сравнения. Compatibility/version check и при необходимости корректный rebuild только затронутых indexes предшествуют READY. Не предполагать непроверенную Kaggle UI feature для закрепления окружения. Stored-vector counts, HTTP 200 или Pong readiness не доказывают. Search имеет backend p95 ≤1 s, public MCP p95 ≤1.5 s и hard evidence deadline 2 s; ожидание полного пользовательского вопроса измеряется отдельно.
 
-The accumulative semantic graph is a small evidence-backed projection over sources:
-
-`person <-> event <-> poi_ref`, grouped where useful into `historical_thread`.
-
-The graph uses the persistent SQLite data plane, not a separate graph database. Every
-semantic node/edge returned to a user must remain traceable to authorized
-page/region/chunk evidence.
-
-Street Story remains canonical owner of physical POI identity, aliases, lifecycle
-and POI-to-POI relations. RKB independently owns source-side place entities,
-including places without coordinates or an external POI. Model-selected Street
-Story references enrich those same entities; they do not create a second physical
-POI catalogue. See [location-first ingestion](location-registry.md).
-
-See
-[accumulative knowledge graph decision](reports/accumulative-knowledge-graph-decision-20261004.md).
-
-## Evidence-backed entity graph MVP
-
-The existing owner-scoped graph stores people, organizations, events, historical
-threads and source-side places (legacy wire kind `poi_ref`). Places exist without
-coordinates, a map or a Street Story ID. Mentions and aliases retain exact
-chunk/page/region locators and source quotes; `located_in` connects places into
-source-supported geographical hierarchies. Historical/current spellings are
-aliases, not new identities. See [location-first ingestion](location-registry.md). Reads are evidence-RLS
-filtered, active-revision filtered and limited to one hop/20 edges. Identity keys
-are explicit; Unicode alias normalization never merges people or places.
-
-ChatGPT submits bounded typed `entity_candidates` during staging, or
-`graph_stage` on an owned active revision. The backend validates source bytes,
-region attribution, shape and idempotency; it performs no semantic extraction.
-The model searches `entity_list`, inspects `graph_fetch`, and explicitly reuses
-an ID or creates a new location. Unresolved external references do not block book
-activation. Later model-selected map or canonical POI references enrich the same
-source-side entity; no name-based worker binding is allowed.
-
-The migrated SQLite discovery job table drives one bounded background worker.
-It reuses accepted E5/BGE/lexical retrieval and exact alias branches. Candidates
-retain retrieval signals and never become facts or identity merges automatically.
-New revisions enqueue one paging job; alias versions enqueue idempotent jobs.
-Existing incomplete source projections remain incomplete.
-
-Entity seeds prepared for a replacement revision become visible only with the
-same successful document activation transaction. The current active graph remains
-readable during retryable finalization. Source-owner staging rows may be inspected
-under owner RLS; public graph APIs always filter the active source revision.
-
-Automatic post-activation indexing uses the small `indexing` process: payload-free
-SQLite pending-publication and missing-vector reconciliation, local E5 batch4
-and existing priority BGE document jobs. It introduces no durable scheduler/table.
-Readiness and SQL snapshot guards use actor-authorized active source/hash/revision
-coverage; incomplete spaces safely degrade. See [automatic indexing](operations/automatic-indexing.md).
-
-## Indexed local corpus access
-
-Common UUID fetches use `(table_name,row_key)`; authorized candidate queries
-join indexed chunk metadata and never hydrate the whole corpus. Continuation
-uses indexed source positions, selecting only current/previous/next chunks
-within article boundaries before the existing continuation gate. WAL permits
-ordinary readers alongside a worker transaction. Reads take no writer lock;
-mutations use short serialized transactions and release them before network or
-encoder calls. Graph/discovery and POI durable state use the same local authority.
+Источники реализации и проектирования: [исходный backend](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/src/regional_knowledge/sqlite_backend.py), [story search](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/src/regional_knowledge/story_registry.py), [pgvector](https://github.com/pgvector/pgvector), [PostgreSQL FTS](https://www.postgresql.org/docs/current/textsearch-indexes.html), [PostGIS indexes](https://postgis.net/documentation/faq/spatial-indexes/). [Полная прежняя архитектура](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/architecture.md) — историческая запись, не план установки target.

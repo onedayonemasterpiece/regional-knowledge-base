@@ -1,78 +1,71 @@
-# Целевая архитектура RKB: Kaggle PostgreSQL/BGE и DevCoveer control
+# Целевая архитектура RKB: Kaggle PG 17/BGE и короткий DevCoveer control
 
-Дата: 2026-10-19. Статус: целевой дизайн для внедрения; проверенный исходный main `8799f8a01e63070f19fe4bea714777d1be9bbae6`. Этот документ не утверждает выполненного deploy.
+Обновлено 20.10.2026; канонический путь документа сохранён. Статус: решение для реализации, не выполненный deploy. Проверенный source baseline — [main a8cf41b](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/a8cf41b50b8ccb62409d046d009d53c09d74b1d7).
 
-**Самодостаточное задание кодовому агенту:** [rkb-scalable-kaggle-implementation-20261019.md](../prompts/rkb-scalable-kaggle-implementation-20261019.md). Оно содержит все инварианты, промпты и этапы; данный документ фиксирует архитектурное решение и причины.
+**Один самодостаточный [handoff кодовому агенту](../prompts/rkb-scalable-kaggle-implementation-20261019.md)** содержит функциональный контракт, порядок внедрения и отладки. Этот документ объясняет принятое размещение; подробные query/index paths — в [architecture](../architecture.md), durability/GC — в [storage](../storage.md).
 
-## Решение
+## Решение владельца и область
 
-Рабочие corpus, lexical/vector search, source assertions, entities, stories, dates/observations и disagreement cases размещаются в одном PostgreSQL/pgvector в Kaggle. BGE-M3 — один embedding space, baseline 1024 FP32 и текущий input limit512 по pinned BGE tokenizer. E5 в target отсутствует. DevCoveer сохраняет существующий MCP/ASGI, BgeQueue/controller, durable user requests, identity/permissions, небольшую authority/command/delivery БД и recovery pointers.
+Рабочая БД PostgreSQL **17** с закреплённым pgvector и BGE-M3 находится на Kaggle. E5 и Supabase в target отсутствуют. Существующий BGE baseline — 1024 FP32, pinned revision/tokenizer, final input≤512 tokens; coherent passages около 256 tokens. Поиск и экономичность хранения — приоритеты; сохранение фактов и exact provenance не сокращается ради quota.
 
-Между notebook и DevCoveer устанавливается **прямая двусторонняя постоянная WSS связь**: notebook открывает исходящий authenticated socket к DevCoveer HTTPS/443, работа и результаты проходят по нему в обе стороны. Один dispatcher/queue/run attachment. PostgreSQL не публикуется наружу; публичный inbound endpoint notebook не нужен.
+Миграция переносит **только geo**: layers/places, geometry/CRS/оси/единицы, transform/GCP, временные aliases, provenance и необходимые минимальные source refs. Негеографические facts, старые книги/chunks/vectors/receipts, stories, cases и drafts не копируются в новую БД; они создаются fresh через проверенный import/workflow. Старое состояние сохраняется отдельно как reference, без второй live write authority. GEO identity manifest со stable layer/place IDs, aliases и CRS готов до production book imports; bulk raster transfer допустим в phase 4. Stage 2 без manifest использует только isolated fixture.
 
-```mermaid
-flowchart TD
-    C["Личный MCP, Slack, Мира"] --> D["DevCoveer: MCP, authority, очередь"]
-    D <-->|"WSS: задания, результаты, ACK"| W["Kaggle writer: PG и BGE"]
-    D <-->|"WSS: чтение и результаты"| R["Kaggle readers при необходимости"]
-    W --> S["Verified snapshot и exact payload tail"]
-    S --> R
-    S --> Y["Yandex: проверенная резервная копия"]
-```
+Accepted active book text/bibliography и illustrations доступны всем. Stripe quote scans доступны owner/demo/expert/local_historian. Original PDF/DjVu, full-page pixels и private drafts имеют отдельный private scope. Публичность выбранной иллюстрации не разрешает full-page preview.
 
-Это topology хранения и исполнения; внешняя доставка остаётся у существующих владельцев: VibePublish, PH, Street Story и Cartography. Snapshot/recovery tail — восстановительные данные, не второй онлайн-каталог книг.
+## Минимальный состав
 
-## Почему именно так
+| Контур | Роль |
+|---|---|
+| Existing DevCoveer MCP/ASGI/BgeQueue/controller | Verified identity, единый person/request/dialog lifecycle, fairness/admission, writer/connection authority, existing delivery. Raw spool 4h/512 MiB и компактное state до reconciliation. |
+| Один Kaggle writer | PG 17 domain store, BGE, source processing, ordered apply/receipts, serving и snapshots. |
+| Readers только по необходимости | Exact verified snapshot, BGE/search/proof; никаких независимых writes, scheduler или sender. |
+| Private Kaggle Dataset | Consistent PG physical base с indexes и verified manifest/version/cursor. |
+| Existing Yandex recovery storage | Immutable command/control/receipt tail, accepted payloads и одна latest verified daily base независимая от Kaggle. |
+| Existing integrations | VibePublish/Telegram archive/delivery, Regional Cartography, Street Story, Projects Hub/Мира; их ownership сохраняется. |
 
-| Исходная проблема | Решение | Ограничение |
-|---|---|---|
-| SQLite corpus + Supabase vectors + отдельный story-vector путь усложняют перенос и согласованность | Один PG domain store + pgvector, typed projections в общем BGE space | PG требует измерений WAL/index/temp/backup footprint; установка сама по себе не доказывает latency. |
-| Ephemeral notebook нельзя считать единственным durable storage | Exact accepted command/payload до применения, consistent snapshot + tail | Daily backup не гарантирует RPO0 при потере DevCoveer control disk. |
-| Polling transport и неверная классификация expired claim выключают прогретый worker | Outbound WSS, durable ACK/RESUME, typed stale_claim/revoked_run | WSS не ускоряет сам encode и не отменяет provider quotas. |
-| Внутреннее status polling сохраняет SQL lock contention | Read без BEGIN IMMEDIATE, notify after commit, bounded cross-process reconciliation | Process-local Event не видит работу, добавленную другим процессом. |
-| Model generation нельзя воспроизвести одним parser/source hash | Exact immutable accepted payload, frozen UUID/time/defaults и schema/codec | Large payload не помещать в SQLite BLOB; references должны быть реально durable. |
-| Каждый кандидат превращается в Story, через неё сохраняются даты/числа | Source-bound facts независимо от Story + one research workflow с bounded compose | Фильтрация «сухих stories» до нового factual пути теряет функциональность. |
-| Новый backend может сохранить поиск, но сломать доказательства/каналы | PG corpus adapter для source_proof; явный PH provider/result ACK; полный feature inventory | Existing code/doc или emulator result не равен production E2E. |
+Notebook открывает direct authenticated outbound WSS к existing ASGI broker. Команды и результаты идут в обе стороны; публичный notebook endpoint и открытый PostgreSQL не нужны. Один dispatcher и одна queue authority; HTTP polling и WSS не dispatch одновременно.
 
-## Контрольные инварианты
+## Инварианты
 
-1. Input ACK следует durable приёму, save ACK — сохранённой resolved command и применённому PG outcome. Socket send/Pong не является подтверждением application result.
-2. Apply_seq назначается готовым resolved commands, не медленным исследованиям. Domain effects + applied_ops + непрерывный cursor находятся в одной PG transaction.
-3. Старые новые submissions fenced по current writer/run/claim/connection generation; уже accepted commands прошлого epoch replay обязательны.
-4. Canonical snapshot pointer и внешний sender проверяют authority вне notebook. Локальный epoch в потерявшем связь PG не предотвращает позднюю внешнюю публикацию.
-5. Snapshot exact version/hash/WAL/internal watermark проверяется restore; читатели не обращаются к произвольному Dataset latest.
-6. Yandex replacement сохраняет old+candidate до verification. Compaction ограничена самым старым retained verified watermark и незавершёнными consumers; TTL не удаляет подтверждённый хвост.
-7. min_data_seq нужен для read-after-write/research; ordinary search сообщает data_as_of. Current revocation/source visibility/pixel/draft grants проверяются перед output/cache reuse/delayed delivery.
-8. 30 минут useful idle от спроса, socket health, task claim и короткая writer lease независимы. Reconnect не выгружает BGE и не запускает новый notebook только ради сокета, пока Kaggle-сессия жива. Завершение notebook требует нового run/restore/warmup; постоянный WSS не сохраняет RAM завершённой сессии.
-9. Одна очередь пользователя сохраняет canonical-person fairness, dialog order, stage permits и confirmed result/hash ACK. UNKNOWN одного диалога не блокирует остальных.
-10. Source activation и persisted research frontier атомарны, но экспертное согласие/POI/map не блокируют accepted книгу.
-11. Story, factual assertion, public Variant, independent case и private draft различаются. Даты/observations не зависят от художественной пригодности.
-12. Text across active accepted books публичен в принятом владельцем смысле без owner book ACL; pixels/original/private drafts и writes имеют свой scope.
+1. Local receipt pending; final accepted/Saved только после exact intent/payload remote confirmation. Saved дополнительно означает applied PG result и remotely verified exact outcome/receipt. Готовые accepted mutations/реальные user turns ждут group flush ≤1 s. Read-only search не ждёт remote journal.
+2. Domain effects, applied_ops и непрерывный applied cursor фиксируются одной PG transaction. IDs, logical timestamps и принятые значения не генерируются заново при replay.
+3. New submissions проверяют current writer/run/claim/connection generation. Уже принятые команды прежнего epoch остаются обязательными для replay.
+4. Canonical pointer, external effect и delivery проверяются внешней authority. Старый writer не выбирает late snapshot и не публикует поздний результат сам.
+5. Manifest содержит exact Dataset version/hash, PG minor/extensions/libs/platform/collation provider+version, schema/codec, internal cursor и required WAL. Keyed normalized text использует C collation; incompatible affected indexes исправляются до READY. Upload success не равен restore verification.
+6. Dev raw spool: default 4h/hard 512 MiB, проверяемые до cutover; compact UNKNOWN/request/receipt metadata живут до reconciliation. Local GC после remotely sealed payload + verified metadata не ждёт daily base.
+7. Remote-tail GC покрывает designated retained verified baselines и unfinished consumers. Yandex base и tail в одном Yandex не независимы друг от друга.
+8. Control checkpoint 15 min; changed PG base 4 h либо раньше при replay/byte pressure/planned handover; daily independent-from-Kaggle Yandex base. Без изменений full base не создаётся.
+9. Read-after-write использует min_data_seq; обычный reader сообщает data_as_of. Current withdraw/revoke и output scope проверяются до выдачи и delayed delivery.
+10. 30 min useful-idle не равен writer lease/Ping/task timeout. Reconnect сохраняет модель лишь в живой Kaggle session; после session end нужны новый run/restore/warmup.
+11. Actual SQL+dense query probes подтверждают serving readiness; counts/Pong/process health недостаточны.
+12. Один request lifecycle, verified-person fairness, dialog order и result/hash/native delivery ACK действуют в personal MCP, Slack и Мире.
 
-## Работа с историями
+## Почему схема должна быть именно индексируемой
 
-Принято сочетание улучшенного prompt/rendering и одной bounded compose стадии внутри existing persisted workflow. Stage сохраняет факты/даты/наблюдения и routing отдельно от создания Story; продолжение эпизода переживает границу страницы/чата. Existing angle, gaps, assertions/evidence/assessment и VariantBlock достаточно; новая фабрика и второй судья не нужны.
+Исходный backend перечисляет все документы перед поиском и каталогом; story semantic path считает similarity в Python. Перенос этих алгоритмов в PG без изменения query shape не решает масштабирование.
 
-История — связное объяснимое событие, изменение, практика или вопрос с основаниями. Change/choice/consequence — полезные признаки, не универсальный запрет на everyday_life или спокойный рассказ. Ноль новых stories допустим; отсутствие готового variant не означает потерю полезного знания. Case contested не является степенью редакционной готовности.
+Target: активные passage_search и story_search, GIN tsvector + HNSW BGE, B-tree scope/catalog/links, aliases с языком/временем, PostGIS GiST под spatial predicates. Broad dense, lexical и exact-alias branches выбирают bounded candidates независимо; RRF/dedup затем batch hydration. Полный revision map всех книг не пересылается на каждый запрос. Dense не prefilter lexical.
 
-Полные инструкции и source-grounded A/B приёмка находятся в §8 единого handoff. Ограниченная live выборка17 records/3dossiers и код подтверждают механизм, а не долю плохих историй во всём корпусе.
+Immutable revision projections готовятся заранее; activation меняет небольшой active pointer и research frontier, не active flags 100000 rows. Inactive versions ограничены GC; current-pointer filtering проверяется совместно с ANN selectivity. Prepared ANN plans проверяются после 6+ executions на крайних scopes; custom-plan/disableprepare только для ANN при доказанном regression, SET LOCAL knobs pool-safe. FTS per-row RU/DE/simple и bounded query configs, без alias loop.
 
-## Восстановление и границы надёжности
+Для маленьких scoped множеств — индексированный filter и exact distance; для broad ANN — bounded iterative scan и честный partial при исчерпании budget. Проверять plans и recall на настоящей application role. FTS ranking, query material, ANN parameters и scope входят в change gate.
 
-Physical pg_basebackup + required WAL — стартовый путь для быстрого restore с indexes; logical dump рассматривается при version upgrade с отдельным измерением rebuild. Секретная runtime configuration не попадает в corpus backup. Source/variant/private grants не делают закрытый recovery object общедоступным.
+## Надёжность без лишних компонентов
 
-Рабочий notebook loss покрывается baseline+tail. Защита DevCoveer disk loss требует независимой копии свежих accepted commands/payloads или согласованного RPO. Пока нет ответа владельца, не рекламировать zero-loss; isolated implementation/probe не блокируется.
+Reuse existing BgeQueue, controller, request/outbox и domain registries. Existing S3ObjectStore остаётся transport: immutable seal/continuous segment manifest/CAS ещё реализуются узко. Большой base идёт direct Kaggle→recovery object по scoped key+epoch+expiry, без long-lived delete/global credentials; presigned URL не заменяет внешний promotion fence. Один controller делает bounded sealed-tail compaction и refs CAS, не 86k retained objects/day.
 
-Kaggle остаётся средой с конечным notebook lifetime, quotas и возможными cold starts. Фактические limits и возможность долгого WSS проверить на целевом аккаунте. Один writer и readers по измеренному спросу проще избыточного кластера, но не дают обещания 24/7 доступности.
+Canonical outcome содержит exact domain values/evidence; BGE floats/FTS/crops — derived dirty/rebuild, не блокируют canonical replay. Delivered artifact bytes/hash/receipt остаются exact. UNKNOWN ограничивается per provider/route с evidence-based operation resolve; не тормозит весь import.
 
-## Данные и интеграции
+Нет нового брокера, отдельной фабрики Story, распределённого write-кластера, собственного IAM или второй копии POI/map authority.
 
-Миграция ограничена историческими/картографическими слоями, их identity/provenance и согласованными ручными зависимостями. Старые книги переимпортируются через MCP. Legacy anchors остаются historical/unanchored до exact source verification; не подсоединяются к новому изданию по названию/странице. Production layer identities создаются до свежих книг; rollback после target writes сохраняет новый tail.
+Один maintenance permit координирует heavy build/snapshot/import; autovacuum и targeted ANALYZE сохраняются. Нельзя по таймеру делать полный REINDEX/VACUUM FULL/reembedding. В общей памяти учитываются BGE, PG query/maintenance workspaces и render. Ускорение проверяется на больших book counts и реальных source families, не выводится из факта установки PostgreSQL.
 
-Мира в PH — предпочтительный voice client. Adapter search-only требует реального resource-bound provider, расширенных typed bundles, pending/result/readback и ACK. Slack Kaliningrad Base — единственный пользовательский бот; Dot — заменяемый executor. RKB research needs связываются с PH tasks; публикацию/комментарии/модерацию VK выполняет VibePublish; физические POI и картографические интерпретации не дублируются.
+Stories/facts/cases сохраняют самостоятельную семантику: отсутствие Story не теряет dates, observations или source facts. Existing research workflow имеет bounded compose и продолжение через page/window boundaries. Private draft не превращается в shared Variant; case disagreement не является редакционной оценкой.
 
-## Проверка и источники
+## Границы обещаний
 
-[Приёмка](../testing/rkb-scalable-kaggle-acceptance-20261019.md), [перенос](../migrations/rkb-layers-only-cutover-20261019.md), [сводный аудит](../reports/rkb-comprehensive-critical-audit-20261019.md), [полный Opus55](../reports/rkb-opus55-redesign-20261019.md), [story Opus55 с disposition](../reports/rkb-opus55-story-quality-20261019.md).
+Core/GEO runtime cutover отделён от feature-release Миры/VK/Astro/research needs, но все функции обязательны для завершения проекта. NOT RUN не выдаётся за working; регрессия уже включённого канала блокирует switch без молчаливого отключения. Scale gate использует отдельную isolated benchmark DB, originals/new chunks/BGE без старых vectors; controlled synthetic amplification подтверждает только масштаб, dense quality — реальные held-out facts/new passages. Fixture не публикуется в corpus.
 
-Технические основания: [pg_basebackup](https://www.postgresql.org/docs/current/app-pgbasebackup.html), [pgvector](https://github.com/pgvector/pgvector), [WebSocket keepalive](https://websockets.readthedocs.io/en/stable/topics/keepalive.html), [Starlette WebSockets](https://starlette.dev/websockets/), [Kaggle notebooks](https://www.kaggle.com/docs/notebooks). Исходный код и owner decisions закреплены ссылками в §17 handoff. Новая архитектура требует собственных измерений; historical report не превращается в новое PASS.
+Kaggle имеет конечные sessions и quotas; постоянный WSS не создаёт SLA. Редкий cold break владельцем допустим, но 3–5 минут не являются измеренным restore SLA. Warm gates остаются backend p95≤1 s, MCP p95≤1.5 s и evidence hard deadline2 s. Полный human answer и очередь измеряются отдельно.
+
+[Acceptance](../testing/rkb-scalable-kaggle-acceptance-20261019.md), [mass gates](../mass-ingestion-readiness.md), [geo cutover](../migrations/rkb-layers-only-cutover-20261019.md). [Историческая архитектура 19.10](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/designs/rkb-scalable-kaggle-architecture-20261019.md) сохраняет исходное обсуждение; действующие решения изложены здесь связно.

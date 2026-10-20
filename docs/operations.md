@@ -1,97 +1,67 @@
-# Operations and acceptance gates
+# Эксплуатация и проверяемое переключение
 
-## Current delivery target — 2026-10-19
+Обновлено 20.10.2026. План целевого runtime, не подтверждение deploy. Использовать [единственный handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md), [acceptance](testing/rkb-scalable-kaggle-acceptance-20261019.md), [storage](storage.md) и [geo-only cutover](migrations/rkb-layers-only-cutover-20261019.md). [Прежний runbook](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/operations.md) фиксирует исходный этап и не является инструкцией заново устанавливать Supabase/E5.
 
-The [single implementation/debugging handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md), [architecture](designs/rkb-scalable-kaggle-architecture-20261019.md), [acceptance](testing/rkb-scalable-kaggle-acceptance-20261019.md) and [layers-only cutover](migrations/rkb-layers-only-cutover-20261019.md) govern new work. The earlier beta checklist below records a historical implementation stage; do not restart Supabase OAuth setup, install its old 768-dimensional provider or restore E5 from it.
+## Контур
 
-Preserve the existing service and parallel work until the new path and recovery are verified. Inspect executing revision separately from Git main. BGE inference stays on Kaggle; the existing SQLite/Supabase runbooks remain useful for pre-cutover recovery.
+Один PostgreSQL 17/pinned pgvector и BGE в Kaggle; existing MCP/ASGI/BgeQueue/controller на DevCoveer; direct outbound WSS; existing Yandex immutable command/control/receipt recovery tail. E5/Supabase отсутствуют в target. Один writer и внешний fence управляют применением и snapshot pointer; существующие senders отвечают за доставку.
 
-Build the useful vertical path first: authenticated durable intake → exact accepted command → one Kaggle writer apply/receipt → saved result. Establish direct persistent outbound WSS to the existing ASGI broker, then verify warm reconnect and snapshot/tail recovery. Continue with BGE-only search, fresh A/B imports and cases, real source proof, actual delivery and public case page. Transfer only inventoried historical/cartographic and human assets; reimport books.
+DevCoveer raw spool имеет стартовые 4 часа/512 MiB; это не TTL компактных UNKNOWN/request/receipt metadata. Accepted требует remotely confirmed exact intent/payload; Saved дополнительно требует domain commit и remotely verified exact outcome/receipt. Read-only search не ждёт remote journal.
 
-For duplex, reuse BgeQueue/controller and one dispatcher. Application ACK follows durable commit; lost ACK reconciles the same result. Temporary socket failure preserves the warm model while its Kaggle session remains alive. Expired job claims do not kill the healthy worker. Provider termination requires a new run, restore and warmup; do not promise a surviving process after session end.
+## Перед cutover
 
-Focused verification must cover: proxy/network loss and reconnect; result commit before lost ACK; DevCoveer restart; competing old/new sockets; stale claim versus revoked run; heavy compute without blocked control/heartbeat; separate-process enqueue; and planned successor handover. No parallel HTTP/WSS sender or second broker. Notify after queue commit and reconcile with bounded read-only queries rather than retaining write-lock polling.
+1. Зафиксировать actual executing SHA, PG 17/pgvector/model/tokenizer/schema pins, resource mount/quota и применимые differences от main. Не объявлять draft PR151 или историческую canary production implementation.
+2. Проверить изолированный вертикальный путь: authenticated intake → pending → remote seal → один writer apply → saved receipt → result delivery/ACK.
+3. Проверить WSS reconnect живой сессии и отдельный сценарий завершения notebook: новая session, restore exact snapshot, replay, SQL+dense readiness. Один queue/controller/attachment; без parallel HTTP dispatcher.
+4. Fresh A/B imports проверяют source fidelity, bibliography, BGE/FTS, independent facts/dates/observations, stories, cases, proof и продолжение из нового чата. Source_proof получает настоящий PG corpus adapter.
+5. Geo inventory/dry-run переносит только layers/places/geometry/CRS/temporal aliases/provenance и нужные reference stubs. Проверенный GEO identity manifest со stable layer/place IDs, aliases и CRS обязателен до production book imports. Bulk rasters могут переноситься в phase 4; stage 2 без manifest — только isolated fixture. Негеографические facts/stories/drafts/cases и книги — fresh workflow, без копирования прежнего corpus.
+6. Выполнить применимые quality/capacity/latency/recovery gates и проверить новые media audiences. Core/GEO cutover оценивается отдельно от feature-release Миры/VK/Astro/research needs; все функции обязательны для whole-project completion. NOT RUN не объявляется работающим. Регрессия уже включённого канала блокирует switch, канал нельзя молча отключать. Старое состояние остаётся обратимым reference; удаление старых копий не является частью docs change.
 
-Report actual BGE query readiness separately from stored vector coverage. Lexical degradation does not pass BGE quality acceptance. Separate connection health, application readiness, research completion, published revision and confirmed text/image delivery.
+## Ежедневная диагностика
 
-Preserve protected thresholds, including warm backend p95 ≤1000 ms, public MCP p95 ≤1500 ms and evidence deadline ≤2000 ms. Cold 3–5 minutes is owner tolerance to verify, not a guarantee. Include cold/pending/errors in evidence; measure dispatch/transport/SQL/encoding and whole response separately. WSS does not remove CPU contention or finite Kaggle lifetime.
+| Сигнал | Что действительно проверять |
+|---|---|
+| Connection | WSS attachment/generation, bounded reconnect, queue credits. Pong не означает готовую БД или модель. |
+| Serving | Actual SQL query и dense query probe, active revision/material hash, useful evidence, backend/MCP latency и degraded outcomes. |
+| Publication | Required BGE coverage, current revision, activation/research frontier; stale/superseded результаты inert. |
+| Recovery | Last remotely sealed seq, contiguous applied cursor, verified base/version, replay backlog, checkpoint age, raw spool bytes/age. |
+| Resource pressure | PG/BGE combined RSS, CPU, event-loop lag, pool/locks/temp/WAL, disk and Dataset/recovery headroom. |
+| User work | Eligible heads, fairness cursor, capacity/dependency waits, oldest runnable age, ETA accuracy; не содержимое private вопросов. |
+| Delivery | result hash, native receipt, UNKNOWN reconciliation и текущее право на audience. |
 
-Verify backup restore and internal watermark before canonical selection; retain required tail across Dataset and Yandex recovery baselines. Unknown provider sends require original readback. Public page update failure preserves last-good; revocation does not. Keep exact accepted human/model data and independent artifact receipts.
+Полный пользовательский вопрос может ждать и продолжаться через durable request. Evidence-search отдельно соблюдает backend p95≤1 s, public MCP p95≤1.5 s, hard deadline2 s. Pending и lexical degradation учитываются в отчёте; ими нельзя скрыть failed dense gate.
 
-New Telegram authorizations are supplied during implementation. Their absence blocks only dependent transfers, not domain/recovery work. Use existing focused tests and real readback for the changed boundary; no additional approval ladder, second mandatory judge or blanket retest.
+## Recovery cadence и GC
 
-## Preserved implementation and historical record
+Group-commit flush delay для accepted mutations/реальных turns ≤1 s — окно набора, не cloud RTT; ранний local receipt pending. Saved требует domain commit и remote exact outcome/receipt. Existing S3ObjectStore пока только put/get/delete transport; sealed continuous segment chain и conditional manifest CAS реализуются и проверяются отдельно. Control checkpoint 15 min. Changed PG base каждые4 h, раньше по replay/byte pressure или planned handover. Независимая от Kaggle verified Yandex base примерно ежедневно. Без изменений full base/reembed не выполняются.
 
+Local raw GC требует remotely sealed payloads/verified metadata, не oldest daily backup. Compact UNKNOWN/request metadata живёт до reconciliation. Remote-tail GC покрывает designated retained verified baselines и unfinished consumers. Base и tail в одном Yandex не независимы друг от друга; outage этого failure domain не скрывается.
 
-## Current state
+Большой base загружается напрямую Kaggle→Dataset/recovery object, не через Dev 512 MiB spool. Notebook получает scoped key+epoch+expiry upload grant без long-lived delete/global-bucket credentials. Presigned URL не отзывается магически при смене epoch; old-writer upload остаётся orphan без promotion authority. Bounded sealed-tail compaction под тем же controller/CAS сохраняет logical hashes и recovery dependencies.
 
-Data infrastructure is available:
-- dedicated Supabase Postgres project;
-- Session Pooler connectivity from DevCoveer;
-- migrations 001–005;
-- pgvector/pgcrypto;
-- private S3-compatible corpus bucket;
-- deterministic ingestion implementation and tests.
+Dataset version: controller создаёт upload и сохраняет account key/blob token; notebook получает только signed upload URL/session, отправляет large bytes напрямую; controller создаёт version → provider completion → exact-version download/hash → restore/replay/probe → fenced pointer switch. [Kaggle primitive и probe](storage.md) не требуют выдавать notebook account-wide API credentials. Old good + candidate остаются до verification. Delete-old-versions не применять к pinned recovery/reader dependencies. Source bytes и credentials не попадают в публичные artifacts.
 
-Authentication correction:
-- Supabase OAuth is **not** required;
-- current source now refuses to derive MCP auth from `KB_SUPABASE_URL`;
-- the old PostgREST user-JWT backend is disabled by default;
-- the next implementation slice must provide application OAuth plus a direct
-  Postgres RLS actor bridge.
+## Конкретные отказы
 
-There is therefore no remaining user action in the Supabase Dashboard related to
-OAuth.
+- **WSS drop, notebook жив:** bounded reconnect/RESUME с прежними job/result hashes; модель и PG остаются в RAM. Не создавать notebook только из-за socket failure.
+- **Notebook завершён:** revoked old authority, новый run, verified restore и replay. Старые новые submissions не принимаются, но ранее remote-accepted commands старого epoch replay обязательны.
+- **Remote recovery недоступно:** bounded pending и backpressure до hard limits; не сообщать accepted/Saved без remote confirmation. Read-only queries продолжаются при готовом serving backend.
+- **Vector coverage ready, BGE query failed:** dense serving unavailable/partial. Lexical-only результат честно маркируется и не считается dense acceptance.
+- **Stale reader:** ordinary search сообщает data_as_of; min_data_seq route только на достаточный cursor либо explicit pending. Current revoke/withdrawal фильтруется gateway.
+- **Send outcome UNKNOWN:** один sender, bounded admission/reconciliation per provider/route, без остановки всего import. Existing operation resolve допускает verified_delivered, not_delivered или abandoned_no_resend только с evidence и operator authority; отсутствие readback не доказывает not_delivered. Не повторять генерацию и не делать blind resend; другие диалоги продолжаются.
+- **Poison stage:** сохранить exact checkpoint/input, needs_recovery и операторский incident; лимит retries не удаляет accepted работу.
+- **Space/CPU pressure:** не начинать новый тяжёлый batch, завершить текущую transaction; не SIGSTOP/kill посреди commit и не ждать permit под writer lock.
 
-## Product beta gates
+## Maintenance без отдельного оркестратора
 
-The next executor must deliver a usable product, not another architecture audit.
+Один existing controller выдаёт короткие stage permits на imports, render, snapshot и index maintenance. Поиск имеет измеренный резерв; proof/import получают положительное продвижение через aging. Если минимальный совместный footprint не помещается, это capacity failure, а не выполненная гарантия.
 
-1. Implement application-owned OAuth 2.1 for the Knowledge MCP, independent from Supabase.
-2. Implement direct Postgres RLS actor binding through `KB_SUPABASE_SESSION_CONNECTION`; remove runtime dependence on forwarding user bearer tokens to Supabase.
-3. Add/migrate application-owned user identity and replace `auth.uid()` policy dependence.
-4. Re-run two-user/private/workspace/grant/anonymous RLS acceptance against the live database through the new actor bridge.
-5. Keep the existing private object-storage acceptance green.
-6. Configure a real 768-dimension external embedding provider and verify hybrid search plus lexical degradation.
-7. Deploy a stable HTTPS MCP resource on DevCoveer.
-8. Prove OAuth discovery, PKCE, exact resource binding, refresh rotation/revocation and authenticated MCP initialize/tools/list.
-9. Run a real book end-to-end: attached PDF -> start -> page batches -> model stage -> validate -> finalize.
-10. Verify exact source PDF and derived graph/text/crops in object storage and only compact index/catalog data in Postgres.
-11. Verify search/fetch returns evidence from that imported book with page provenance.
-12. Include at least one illustration/caption/POI relationship in the acceptance source and verify crop/media evidence.
-13. Verify raw private source remains private.
-14. Return the exact ChatGPT MCP URL and short owner connection/import instructions.
+После значимой bulk activation/изменения распределения — targeted ANALYZE; autovacuum включён. Никаких hourly/daily full REINDEX, VACUUM FULL или reembedding. Heavy rebuild только по конкретным evidence, с memory/disk overlap и измеренной паузой. Index/log growth не лечить удалением ещё нужного recovery tail.
 
-## Performance targets
+Не запускать повторные benchmarks без конкретного оставшегося gate. Для проверки plan/latency использовать разрешённый production-like fixture в отдельной isolated benchmark DB, без нового tenant/IAM; сохранить все attempts, errors, resource/config pins. Scale fixture проходит originals → new chunks → BGE, без старых chunks/vectors и без попадания fixture в public corpus; подробные scale/quality границы — в [mass readiness](mass-ingestion-readiness.md). Source text, query bodies и private origins не выводятся в public report.
 
-- hybrid search p95 excluding model generation: <1.0 s;
-- lexical degraded p95: <750 ms;
-- fetch p95 without image bytes: <500 ms;
-- page vision batch: default 4, hard max 8;
-- no corpus-wide ANN/FTS/cross-encoder compute on the gateway.
-- `finalize` must return control promptly for large books. Long render/index work
-  runs server-side under persisted `processing/finalize` state; callers use
-  `status` later instead of holding one MCP request/ChatGPT turn open for minutes.
+## Правильный rollback
 
-## Ingestion isolation
+До новых accepted target writes допустим возврат routing к проверенному прежнему состоянию. После новых подтверждённых вкладов rollback сохраняет remote accepted tail и совместимый replay; старая целая SQLite поверх новых работ недопустима. Старый snapshot pointer не возвращает отозванные grants и не запускает второго writer. Canonical replay не хеширует заново BGE floats/FTS/crops как domain outcome; derived projections dirty/rebuild отдельно от domain cursor. Existing delivered artifact bytes/hash/receipt сохраняются точно. PG minor/libs/platform/collation compatibility и affected-index rebuild проверяются до READY.
 
-Page rendering/cropping concurrency is bounded and lower priority than interactive
-retrieval. Staged data never participates in retrieval until finalize atomically
-switches the active revision.
-
-## Observability
-
-Log operation IDs, pseudonymous actor ID, document/ingestion IDs, stage, latency
-and dependency state. Never log bearer tokens, OAuth codes, source text, page
-images, object keys or signed URLs.
-
-## Existing producer integrations
-
-Source code already contains:
-- POI fact candidates + durable outbox;
-- POI-linked historical media evidence;
-- rights/access-aware media relations;
-- Street Story/Projects Hub contracts.
-
-These must remain non-blocking for book finalize. Network delivery can remain a
-post-beta integration step if the local durable outbox and contracts stay intact.
+Клиенты/интеграции проверяются реально: Slack Kaliningrad Base, personal MCP, Мира в Projects Hub, public case page и её readback, source archive/proof, Street Story/Cartography refs. Documentation и emulator HTTP200 не заменяют actual user/result/receipt flow.

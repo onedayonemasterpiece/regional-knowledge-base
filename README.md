@@ -1,48 +1,23 @@
 # Regional Knowledge Base
 
-A source-backed knowledge and MCP service for regional books, articles and other attributed materials.
+Source-grounded regional knowledge: books and articles, actual tellable stories, people/organizations, dates and measurements, historical geography, illustrations and independent disagreement cases. MCP, Slack and Mira in Projects Hub share one verified person and request lifecycle.
 
-A user attaches a source and asks to add it. The MCP-calling model reads the material, preserves its text and illustrations, identifies people, organizations, stories and locations, and reuses existing identities. The backend handles files, storage, access control, source references, indexing and replay safety. It does not infer historical identity from matching names.
+## Current project
 
-## Approved next architecture — 2026-10-19
+**[One complete Markdown handoff for implementation and debugging](docs/prompts/rkb-scalable-kaggle-implementation-20261019.md)** — updated20 October2026. It contains the target, preserved functions, import/story prompts, search indexes, storage/recovery, roles, channels, rollout and acceptance. Supporting documents are normalized to the same design. This commit is documentation, not a claim that the new runtime is deployed.
 
-The [canonical architecture](docs/designs/rkb-scalable-kaggle-architecture-20261019.md) unifies corpus, catalog, source graph, stories, disagreement cases and search in **PostgreSQL + pgvector with BGE-M3 on Kaggle**. DevCoveer retains stable MCP, identity, durable request/typed-command/result/delivery state and worker control. One writer applies accepted changes; additional readers use verified snapshots. E5 is removed from the target, preserving independent BGE token validation.
+Target: PostgreSQL/pgvector and BGE-M3 on Kaggle; stable MCP/auth/request controller and short control spool on DevCoveer; direct outbound notebook WSS with bidirectional work/results. Dataset holds verified recovery versions, not an always-running database. Existing Yandex recovery tail protects final accepted/saved writes; local pending alone is not a durability promise.
 
-Each notebook maintains a direct authenticated **outbound WSS** connection to the existing DevCoveer service. Jobs/control and results/progress flow both ways. Reconnect reconciles persisted operations and preserves the warm model while the same Kaggle session is alive; provider termination still requires restore and warmup. No public notebook endpoint or second broker is introduced.
+Owner decisions:
 
-Use the single [coding-agent handoff](docs/prompts/rkb-scalable-kaggle-implementation-20261019.md), [acceptance plan](docs/testing/rkb-scalable-kaggle-acceptance-20261019.md) and [layers-only cutover](docs/migrations/rkb-layers-only-cutover-20261019.md). Historical/cartographic layers and inventoried human work are preserved. Old books/chunks/vectors are not migrated: books are imported again with research and disagreement cases.
-
-Target text search covers all active accepted books and returns bibliography, printed-page references and evidence IDs. Scan/original rights remain separate. Cases have public desktop/mobile Astro pages with stable opaque URLs and no viewer login.
-
-**This is the approved implementation target, not a claim of completed deployment, migration or production acceptance.** SQLite/Supabase and optional E5 descriptions below record the existing baseline; their older implementation instructions do not override this target. See the [documentation map](docs/README.md).
-
-## Current implementation baseline
-
-SQLite owns the accepted corpus, source/page/region graph, lexical search, catalog, ACL, stories, entity mentions and source-side location registry. Supabase holds the vector search plane and minimal identity/scope anchors, not another full text corpus. Original sources remain in the configured private archive. GitHub holds public code and documentation only.
-
-Retrieval uses the existing multilingual vector spaces with bounded lexical support. Entity enrichment does not require re-embedding unchanged chunks. See [storage](docs/storage.md) and [architecture](docs/architecture.md) for deployment-specific details.
-**Embedding resource boundary:** BGE-M3 neural inference is **Kaggle-only** for every query and document, including editorial stories; the DevCoveer host must not contain or install BGE model weights or run a BGE model process. The older local ONNX BGE sidecar was retired and its service masked. E5-small INT8 is legacy baseline support and is retired by the new implementation; its historical acceptance does not make it a target dependency. Preserve the independently required BGE tokenizer and shared runtime consumers during retirement. A BGE tokenizer used for token counting is not a BGE inference model. Follow the [canonical Kaggle-only BGE operations policy](docs/operations/bge-kaggle-only.md); historical experiments and older deployment snippets never override it.
-
-
-## Source ingestion and locations
-
-The model follows `start → pages → stage → validate → finalize`. During the same source review it supplies `entity_candidates` and `story_candidates`. It searches `entity_list`, inspects `graph_fetch`, then explicitly reuses an entity ID or creates a distinct source-backed entity. `graph_stage` enriches already accepted material without importing it again.
-
-A location may be a city, island, street, square, building, bridge or less precisely identified area. It exists before coordinates or cartographic coverage. Historical/current names are sourced aliases, `located_in` connects places, and exact mentions connect them to passages. Later cartographic and Street Story references enrich the same location. See the current [location-registry policy](docs/location-registry.md).
-
-The existing background geo adapter can discover candidates but does not select identity. The model decides. Maps, source interpretation and accepted external physical identities remain separate; missing maps do not block source import.
-
-## Access and product boundaries
-
-MCP OAuth is independent of Supabase and uses a stable application user identity. Source access and all writes are checked server-side. Private sources and derivatives are not made public by import. Live exposes only the bounded retrieval surface, not ingestion and graph writes.
-
-This repository implements ingestion, retrieval and graph operations. Software tests, a deployed version, completeness of a particular book and broad mass-ingestion readiness are separate statements. Catalog `active_revision` identifies the searchable source revision; the latest ingestion job may be preparing a newer revision. Source activation, required-vector readiness, semantic extraction, cross-book reconciliation and retrieval acceptance are distinct checkpoints. A job with `next_action=done` does not certify the latter three. The protected capacity, source-fidelity and latency requirements remain in `.devcoveer/requirements.json`.
+- Migrate **only GEO** and its minimal provenance. Reimport all books through MCP; recreate other content. Keep functions and infrastructure identities/configuration.
+- Import useful facts even when no story exists. For a sufficient episode save an actual **Variant.body**, usually2–6 sentences, with exact source dependencies. Show that body by default; summary/potential is not a story.
+- Search all active accepted text/bibliography. Illustrations are public; stripe quote/page scans require owner/demo/expert/local_historian proof capability. Originals and private drafts have separate access.
+- Keep one research workflow, existing queues/renderers/adapters, source fidelity and numeric readiness gates. Remove E5/Supabase from the target, never add local BGE on DevCoveer.
+- Use bounded indexed SQL and incremental maintenance; measure warm latency, ANN quality, storage peak and restore under representative load.
 
 ## Documentation
 
-- [Ingestion](docs/ingestion.md), [MCP](docs/mcp.md), [location registry](docs/location-registry.md)
-- [Stories and integrations](docs/integrations.md), [Street Story evidence bridge](docs/poi-integration.md)
-- [Storage](docs/storage.md), [rights](docs/rights.md), [OAuth](docs/auth.md)
-- [Mass-ingestion readiness](docs/mass-ingestion-readiness.md)
-- [ПМИ: импорт, поиск и извлечение](docs/testing.md), [журнал испытаний и доработок](docs/testing-journal.md)
+[Documentation map](docs/README.md) · [Architecture](docs/architecture.md) · [Storage/recovery](docs/storage.md) · [Import](docs/ingestion.md) · [Stories](docs/story-registry.md) · [Rights](docs/rights.md) · [Operations](docs/operations.md) · [Acceptance](docs/testing/rkb-scalable-kaggle-acceptance-20261019.md).
 
+The code baseline at design time still uses SQLite/Supabase and an incomplete story materialization path. The coding agent must implement and verify the target, not treat this README as release evidence. Historical measurements remain in docs/reports and docs/testing-journal.md. Public repository content excludes books, scans, private corpus and credentials.

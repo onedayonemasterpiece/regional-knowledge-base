@@ -1,87 +1,57 @@
 # Organizations in the regional evidence graph
 
-## Применение в переработке 19.10.2026
+**Target contract, 20 October 2026; documentation is not deployment acceptance.** See the [implementation handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md), [architecture](designs/rkb-scalable-kaggle-architecture-20261019.md) and [Story/facts contract](story-registry.md).
 
-Нормативный целевой контракт: [единый файл агенту](prompts/rkb-scalable-kaggle-implementation-20261019.md) и [архитектура](designs/rkb-scalable-kaggle-architecture-20261019.md). Текущий runtime ещё не перенесён этой документационной задачей.
+## Current code, target ownership and migration boundary
 
-- Один PostgreSQL/pgvector corpus в Kaggle, BGE-only (1024 FP32 baseline, exact pinned BGE input≤512); небольшой durable control journal на DevCoveer.
-- Прямой исходящий WSS notebook→existing DevCoveer ASGI с двусторонними заданиями/результатами, durable ACK/RESUME и одной BgeQueue authority. Старые polling/локальный E5/Supabase инструкции не целевой deployment.
-- Fresh MCP import книг; перенос только historical/cartographic layers и согласованных зависимостей, со stable IDs/provenance и проверенным reanchor. Ручная работа не уничтожается из-за отказа от старого corpus.
-- Source-bound facts/dates/observations сохраняются без обязательной Story; эпизод/досье/Variant/private draft/independent case различаются. Один persisted research workflow, bounded compose, без квот и выдуманной драматургии.
-- Поиск accepted active book text и bibliography без per-book owner ACL; current withdrawal/revision, pixels/original/private draft grants и delivery audience остаются обязательными.
-- One canonical person/request/dialog, fair admission и confirmed result/hash ACK; Мира в PH расширяет existing typed adapter, не создаёт отдельный voice/IAM/queue.
+The [a8cf41b baseline](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/a8cf41b50b8ccb62409d046d009d53c09d74b1d7) contains bounded GraphBundle ingestion, entities, mentions, aliases, directed relations and source/page/region evidence. Historical SQLite implementation and sql/024_organization_graph.sql are reusable code/schema evidence, not the target deployment.
 
-Численные protected gates сохранены: backend p95≤1000ms, MCP p95≤1500ms/hard2000ms, BGE Hit@5≥85%/@10≥90%, RU→DE@10≥85%, ≥30 held-out families, ≥100 sources/100000 chunks, storage≤80% steady/≤90% peak. Документ не является доказательством PASS.
+The target authoritative corpus is one PostgreSQL/pgvector database on Kaggle with one fenced writer, BGE-only and the existing request/controller/BgeQueue path. The direct outbound notebook WSS uses the existing DevCoveer ASGI broker; its small durable control journal does not duplicate the graph authority. No local encoder, E5, Supabase target or separate graph service is introduced.
 
-Основные entity, temporal, identity, provenance и ownership контракты ниже сохраняют силу. Их SQL/storage привязки переносятся на PG, а старый per-book search ACL трактуется согласно новому правилу выше. Карта, пользовательский профиль и физический POI не становятся новой канонической копией в RKB.
+**Only historical/cartographic GEO layers are migrated.** Old books, Stories, personal/manual drafts, cases, contributions and old research jobs are not migrated. Fresh MCP imports rebuild source facts, entities, cases and sufficient narratives. Provenance needed for GEO must remain honest about its archived origin; it must not masquerade as a newly accepted book revision.
 
-## Сохраняемый предметный контракт
+## Model semantics
 
-Checkpoint: 2026-10-09; incremental graph-domain implementation, **not** calendar,
-numeric observation or full geographic resolution acceptance.
+The calling model submits a bounded GraphBundle in the existing book_ingest(stage) workflow or an authorized graph_stage enrichment against an active accepted source. GraphService validates exact quote membership, source/revision, actor and permitted operation. There is no hidden server-side historical inference/LLM. Graph facts share the same research checkpoint as dates, observations, Stories and cases; they do not require a second whole-book pass.
 
-## Ownership and model semantics
+Canonical POI identity remains with Street Story: an organization is not the building in which it operated. Historical source people and authors are not rkb_users participants. Identical names do not merge people, institutions or places. Author, editor, translator and quoted narrator remain distinguishable.
 
-The existing RKB SQLite authority stores all accepted graph entity candidates,
-mentions, aliases, typed relations and source/page/region evidence alongside
-the accepted document revision. The model submits a bounded `GraphBundle`
-in the same existing `book_ingest(stage)` flow or via `graph_stage`
-against an owned active document. There is **no server-side historical inference
-or LLM**. `GraphService` verifies the existing authorized source graph, including
-exact quote membership and source/revision. Canonical POI identity remains with
-Street Story: an `organization` is not the building in which it worked.
+Supported GraphEntity.kind:
 
-Supported `GraphEntity.kind`:
-- `person`, `organization`, `event`, `historical_thread`, `poi_ref`.
+- person;
+- organization;
+- event;
+- historical_thread;
+- poi_ref.
 
-Organizations have stable **explicit** ID/key, current/historical/former
-name aliases, language, time scope and exact source evidence. Two institutions
-with the same written name are **two candidates**, not an implicit merge.
-A name change may be represented as an alias only after source review.
-An administrative predecessor is a **directed** and sourced relation,
-not the same institution unless separately established. Never convert one
-organization's move into a building identity change.
+Organizations have stable explicit IDs/keys, current/historical/former aliases, language, valid-time/time scope and exact source evidence. Two institutions with the same written name remain separate candidates. A name change becomes an alias only after source review. A predecessor is a directed relation, not identity. An institution's move does not change building identity. Roles, affiliation intervals and geographic scope retain evidence and uncertainty.
 
 ## Controlled directed relations
 
 | Relation | Source kind | Target kind | Meaning |
-| --- | --- | --- | --- |
-| `affiliated_with` | person | organization | Sourced affiliation; not proof of employment without stronger semantics |
-| `participated_in` | person / organization | event | Sourced participation, not causality |
-| `member_of` | person / organization / event / poi_ref | historical_thread | Editorial thread grouping |
-| `founded_by` | organization | person | A source's claim of founding |
-| `operated_at` | organization | poi_ref | Reported location of activity, not building ownership |
-| `predecessor_of` | organization | organization | Directed historical institutional succession, not entity merge |
-| `occurred_at` | event | poi_ref | Sourced event location, not proximity |
+|---|---|---|---|
+| affiliated_with | person | organization | Sourced affiliation; not automatically employment |
+| participated_in | person / organization | event | Participation, not causality |
+| member_of | person / organization / event / poi_ref | historical_thread | Editorial thread grouping |
+| founded_by | organization | person | A source's founding claim |
+| operated_at | organization | poi_ref | Location of activity, not building ownership |
+| predecessor_of | organization | organization | Institutional succession, not entity merge |
+| occurred_at | event | poi_ref | Event location, not proximity |
 
-Every edge carries 1–8 **exact source refs**, an optional `time_scope`,
-`state` and `review_note`. Same-entity edges and reversed types are
-rejected before persistence; SQLite's writer repeats the endpoint validation
-rather than trusting model/tool-side annotations. Existing relations are not
-relabelled or remapped. The optional legacy PostgreSQL schema migration is
-`sql/024_organization_graph.sql`: a compatible check/trigger extension,
-**not** a proposal to move the current RKB graph back into Supabase.
+Every edge carries 1–8 exact source refs, optional time_scope, state and review_note. Same-entity edges and reversed types are rejected before persistence; the authoritative writer repeats endpoint validation. Model annotations do not bypass validation. Existing accepted relations in the new corpus are not silently relabelled/remapped. Correction/retraction retains previous evidence and versions.
 
-Queries: use existing `graph_fetch(entity_id, limit<=20)` for an authorized
-organization and its one-hop neighbors/aliases/mentions with source refs;
-`graph_related` uses the existing retrieval for candidate evidence.
-These calls **do not** promise full graph traversal or cross-source global
-entity normalization. `entity_list(kinds=["organization"])` lists accepted
-source mentions, not all institutions in the region.
+## Reading and derived uses
 
-## End-to-end acceptance and unfinished scope
+Use existing graph_fetch(entity_id, limit<=20) for a permitted entity and one-hop neighbors/aliases/mentions with source refs; graph_related finds candidate evidence. These calls do not promise full graph traversal or global cross-source identity normalization. Entity_list(kinds=["organization"]) lists accepted source mentions, not all institutions in the region.
 
-Synthetic in-process end-to-end acceptance covers two distinct institutions,
-a person, event and unresolved canonical Street Story place in one accepted
-source; exact source evidence; role/direction; alias period; idempotent stage;
-unauthorized reader rejection. Existing mass-book retrieval quality/capacity
-requirements are unaffected. Production deployment, actual current client
-`tools/list`, fresh user-source extraction coverage and latency require
-separate runtime verification.
+Searchable text and bibliography of all active accepted books have no per-book owner filter. Illustrations are public. Source withdrawal/revision, private drafts and nonpublic participant data still constrain disclosure. Page/stripe proof requires existing scan_proof_read for owner/demo/expert/local_historian with current grant/expiry; full PDF remains private. Verified owner_attested/independently_verified demo/expert/local_historian categories atomically materialize the existing scan_proof_read grant with audit/source category revision and demo expiry; claimed does not grant. Reads check current capability/scope, never a category bypass or automatic regrant after revoke. Removing a category revokes only its policy-derived grant basis; independent explicit grants retain their provenance. Recheck cached and delayed results. Graph visibility must not be inferred from a requester's professional weight.
 
-Remaining stage D: typed `organization_role`/affiliation intervals where
-role granularity is needed; source-grounded event date assertions with
-calendar/precision/uncertainty and exact day queries; numeric observations with
-units/statistical boundaries; retraction/history of graph edges; ACL-scoped
-depth/cursor traversal. Stage E geospatial owner lives in Street Story, not
-this RKB entity table.
+Facts, dates and typed numeric observations are preserved without forcing a Story. Exact dates retain calendar, precision, date_role and valid-time; measurements retain decimal/unit/subject/period/method. A sufficient coherent episode or explanation automatically receives a saved basic narrative in existing Variant.body, exact default_variant_ref and readback. Facts-only material remains facts/candidates without a fake body. A brief narrative need not repeat every canonical fact; graph and evidence retain them. Story get/search/voice/export use the actual saved text, not a summary of its potential.
+
+POI facts use the existing evidence/outbox and Street Story fact intake; identity linked is not evidence delivered/accepted. Source revision changes require reanchor/review; withdrawal removes affected current projections without erasing other independent evidence. RKB case conclusions do not automatically change Street Story's canonical POI.
+
+## Acceptance and remaining implementation
+
+A useful check includes two different same-named institutions, a source person distinct from a same-named user, event and unresolved canonical POI; exact evidence; directed roles; alias/affiliation period; idempotent stage; wrong-direction rejection; source withdrawal and access readback. Calendar/measurement tests must also work without a Story. Narratives need persistence/readback, not merely a high-interest graph card.
+
+Baseline tests are not proof of deployed MCP schemas, extraction coverage or latency. Typed organization roles/intervals, source-grounded event/entity dates, numeric observations, edge retraction/history and authorized depth/cursor traversal require the concrete gates in handoff. No extra registry or global entity-resolution platform is a prerequisite. Street Story remains the owner of geographic identity. Protected quality/capacity/latency requirements are unchanged.

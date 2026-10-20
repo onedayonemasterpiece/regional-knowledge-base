@@ -1,31 +1,8 @@
-# Участники и доказательные POI-факты — дополнение РКБ v3.2
+# RKB: участники, источниковые личности и POI-факты
 
-## Применение в переработке 19.10.2026
+**Целевой контракт 20.10.2026.** [Handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md), [архитектура](../designs/rkb-scalable-kaggle-architecture-20261019.md), [Story/facts](../story-registry.md) и [ПМИ](../testing/rkb-disagreement-pmi-20261018.md) дополняют предметные гарантии ниже. Baseline main a8cf41b50b8ccb62409d046d009d53c09d74b1d7; PR151 adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4 требует review/reuse, не является live PASS.
 
-Нормативный целевой контракт: [единый файл агенту](../prompts/rkb-scalable-kaggle-implementation-20261019.md) и [архитектура](../designs/rkb-scalable-kaggle-architecture-20261019.md). Текущий runtime ещё не перенесён этой документационной задачей.
-
-- Один PostgreSQL/pgvector corpus в Kaggle, BGE-only (1024 FP32 baseline, exact pinned BGE input≤512); небольшой durable control journal на DevCoveer.
-- Прямой исходящий WSS notebook→existing DevCoveer ASGI с двусторонними заданиями/результатами, durable ACK/RESUME и одной BgeQueue authority. Старые polling/локальный E5/Supabase инструкции не целевой deployment.
-- Fresh MCP import книг; перенос только historical/cartographic layers и согласованных зависимостей, со stable IDs/provenance и проверенным reanchor. Ручная работа не уничтожается из-за отказа от старого corpus.
-- Source-bound facts/dates/observations сохраняются без обязательной Story; эпизод/досье/Variant/private draft/independent case различаются. Один persisted research workflow, bounded compose, без квот и выдуманной драматургии.
-- Поиск accepted active book text и bibliography без per-book owner ACL; current withdrawal/revision, pixels/original/private draft grants и delivery audience остаются обязательными.
-- One canonical person/request/dialog, fair admission и confirmed result/hash ACK; Мира в PH расширяет existing typed adapter, не создаёт отдельный voice/IAM/queue.
-
-Численные protected gates сохранены: backend p95≤1000ms, MCP p95≤1500ms/hard2000ms, BGE Hit@5≥85%/@10≥90%, RU→DE@10≥85%, ≥30 held-out families, ≥100 sources/100000 chunks, storage≤80% steady/≤90% peak. Документ не является доказательством PASS.
-
-## Приоритет дополнения к исходному дизайну
-
-Документ перенесён из PR142, commit `9d56b10c65d7c867f47f3d9f77fc002d60278b46`; исходные исследовательские, экспертные, публичные и MCP сценарии сохранены. Это спецификация, не свидетельство deployed implementation.
-
-При конфликте execution-решений применяются: PG вместо старого SQLite/Supabase corpus; E5 удалён; единый research frontier для stories/cases/needs/POI; activation+durable continuation атомарны и не ждут экспертного консенсуса. Прежняя «фаза2» — этап того же saved workflow, не второй независимый полный scan. Existing BgeQueue/PR151 request lifecycle расширяются WSS; title/pair hash не определяет case identity.
-
-Current/last-supported conclusions, exact human endorsement, private drafts, participant profiles/weights, source requests/reviews, VK editorial queue/whitelist, subscriptions, truthful readback и permanent Astro URL остаются обязательными. Страница сохраняет last-good при failed update; до первой успешной публикации URL не выдумывается. Новое public accepted text search не открывает scan pixels или закрытые private contributions.
-
-Численные SQL/transport/retention параметры исходного текста ниже применимы только к старому checkpoint и сверяются с новым handoff. Датированные evidence и ещё не выполненная ПМИ не переименовываются в PASS.
-
-## Исходный подробный дизайн и сценарии
-
-**18 октября 2026 года. Статус: проект, не внедрение.** Часть проверок основана на чтении текущего кода, часть — на критическом разборе dot. Обязательная приёмка перечислена в [ПМИ](../testing/rkb-disagreement-pmi-20261018.md); основной [проект разногласий v3.1](rkb-disagreement-journal-design-20261018.md).
+Новый corpus — PG/pgvector на Kaggle, BGE-only, один fenced writer и существующий общий request/controller/BgeQueue. Прямой исходящий WSS notebook → existing ASGI broker не создаёт нового IAM/queue/registry. E5/Supabase не target. **Только GEO переносится**; old books, Stories, ручные/личные drafts, cases, contributions и research jobs не мигрируют. Facts/cases/narratives возникают при fresh MCP imports.
 
 ## 1. Два независимых результата
 
@@ -33,16 +10,16 @@ Current/last-supported conclusions, exact human endorsement, private drafts, par
 
 **Книга → POI → атомарный факт с оригиналом и автором.** Street Story остаётся единственным владельцем POI, локального регистра накопленных фактов и предметного арбитража. РКБ владеет PDF/DjVu, OCR, принятыми редакциями, страницами, цитатами, авторством, source rights и исследовательскими делами. Никакой второй POI registry, полной копии корпуса или универсального графа исторических фактов.
 
-## 2. Что действительно существует
+## 2. Проверенные компоненты baseline и открытые соединения
 
 - В РКБ уже есть пользовательский UUID в таблице **rkb_users**, действующие workspace/document grants и привязка SQL actor (sql/006_application_identity.sql). Не требуется новая каноническая таблица пользователей.
-- Целевое единое first-party identity описано в Projects Hub, но нынешний сервер identity.kenigevents.ru и OAuth РКБ пока ориентированы на владельца. РКБ OAuth approve() назначает owner_subject, а текущий Projects Hub helper выдаёт invite платформенного владельца. **Их нельзя использовать как уже готовую выдачу доступа другому человеку.** Projects Hub actor имеет формат usr_...; RKB subject — UUID. Нужен явный подтверждённый mapping, не вставка PH actor как RKB principal.
+- Целевое единое first-party identity описано в Projects Hub, но в проверенной исходной реализации сервер identity.kenigevents.ru и OAuth РКБ ориентированы на владельца. РКБ OAuth approve() назначает owner_subject, а проверенный Projects Hub helper выдаёт invite платформенного владельца. **Их нельзя использовать как уже готовую выдачу доступа другому человеку.** Projects Hub actor имеет формат usr_...; RKB subject — UUID. Нужен явный подтверждённый mapping, не вставка PH actor как RKB principal.
 - Во время импорта РКБ принимает typed POI fact candidate и формирует **poi.fact_evidence.v1** с документом, ревизией, page/region, source-family, проверенным авторским authority и иной provenance. Activation фиксирует его в rkb_integration_outbox в одной транзакции. **poi_registry** уже умеет отдельно связывать source entity с каноническим POI Street Story, **poi_context** возвращает источник/соседние сущности/истории.
 - В Street Story написаны **poi_external.ingest_poi_evidence**, **poi_claims**, **poi_claim_evidence**, semantic review и конфликтный журнал. Но в проверенных RKB source-модулях не найден действующий outbox-delivery worker, а в Street Story текущий внутренний HTTP-route **/v1/internal/rkb-poi** обслуживает identity-link, не факт-evidence intake. **Наличие linked POI и outbox row не означает доставленный и принятый POI-факт.**
 - Существующий source evidence URI, например **knowledge://evidence/<candidate_uuid>**, не продемонстрирован как разрешимый обычным fetch/source_proof. Нужен проверяемый переход от candidate_id к активной/исторической source revision и оригинальным page/region.
 - Street Story хранит исходные source title/year/ref/revision в событии, но текущая пользовательская проекция местами выводит URI вместо человеческого заголовка; авторы конкретных статей/глав не гарантируются одним author_profile_ref.
 - При переобработке и отзыве исходной редакции существующая public-проекция фильтрует scope и claim status, но не все состояния исходного события и актуальность источника. Старое свидетельство может остаться используемым без актуального основания. Это потенциальный дефект по статическому чтению, не утверждение о найденной порче production.
-- Выполненный read-only вызов RKB poi_context для собора на Кнайпхофе вернул source place, страницу/цитату и story при **complete_extraction_claimed=false**. Это подтверждает navigational POI-link, не завершение конвейера фактов.
+- Исторический read-only poi_context подтверждал navigational source/POI-link при complete_extraction_claimed=false; это не подтверждает доставку fact intake, полноту истории или новый deployment. Реальные corpus названия/цитаты не являются acceptance fixtures в публичной документации.
 
 ## 3. Создание и сопровождение пользователей — без админ-панели
 
@@ -54,7 +31,9 @@ Current/last-supported conclusions, exact human endorsement, private drafts, par
 
 В существующем реестре **rkb_author_profiles** записаны **авторы публикаций**, это не аккаунты пользователей. Если эксперт также является автором статьи, отдельную подтверждённую связь оформляет владелец; одинаковая фамилия не устанавливает identity. Библиографический авторитет может помогать оценивать конкретный текст, но не давать право редактировать дела или публиковать.
 
-**Категория, capability, ACL и предметный вес — четыре разные вещи.** Шаблон demo может дать ограниченный временем публичный поиск; student — право предложить аргумент; research_staff/expert — право подготовить профессиональный вывод и просматривать специально разрешённые сканы; guide/local_historian — поиск для своей работы и собственные свидетельства. Это предлагаемые defaults, а не неотменяемое правило. Ни регалии, ни вес автоматически не дают доступ к частной книге или право на импорт.
+**Категория, capability, scope и предметный вес — разные вещи.** Все active accepted book text/bibliography ищутся без owner filter, illustrations публичны. Страница/полоса proof доступна owner/demo/expert/local_historian через existing scan_proof_read с действующим grant/expiry; full PDF/DjVu остаётся частным. Не вводить отдельное can_read_scan_proof или второй реестр pixel-прав. Student/research_staff/guide сохраняют свои исследовательские/профессиональные функции, но имя категории и регалии не подменяют фактическую capability. Demo может быть ограничен временем; право на вклад/вывод/поддержку/общую сводку назначается отдельно. Предметный вес не открывает full PDF, private draft или импорт.
+
+**Назначение proof по политике владельца:** категория demo/expert/local_historian, подтверждённая как owner_attested или independently_verified, атомарно материализует **существующий scan_proof_read grant** вместе с audit и source category revision; для demo фиксируется expiry. Claimed категория прав не создаёт. Render/read проверяет текущую capability и scope/expiry, без второго category bypass. Независимый revoke действует немедленно и не отменяется чтением или повтором прежнего события. Удаление категории отзывает только policy-derived grant/его основание; отдельные explicit grants не переписываются и не выдаются за категорийные. Повторное назначение после revoke требует нового разрешённого owner-policy действия. Это назначение существующего права, без нового IAM, pixel registry или ручного одобрения каждого изображения.
 
 Выдаваемые права: public_search, case_read, case_contribute, scan_proof_read, personal_conclusion, support_exact_revision, maintain_shared_summary, discussion_request, discussion_approve, participants_manage, а также узкие document/workspace grants. **Импорт** — отдельная owner-only capability и другой route. Временные права и демо-доступ имеют expires_at. Предметный вес хранится с областью, основанием, назначившим и историей.
 
@@ -62,7 +41,7 @@ Current/last-supported conclusions, exact human endorsement, private drafts, par
 
 Минимальный типизированный интерфейс — развитие уже спроектированного **disagreement_participants**: upsert/get/list/disable; categories/credentials; grant/revoke; assign_domain_weight; link_account_begin/confirm/unlink; audit/readback. Физических MCP-методов может быть меньше. Все изменения имеют operation key, expected revision и серверную проверку owner. Не строить новый административный сайт или IAM.
 
-Пример естественного поручения владельца: «Создай участника N, научный сотрудник, область — архитектура Восточной Пруссии, степень заявлена, пока не подтверждена; доступ к открытым материалам и конкретной разрешённой коллекции; может вносить аргументы и предлагать заключения, но не менять общую сводку и не импортировать; добавь pending Slack workspace T/user U». Результат MCP должен показать **точные** роли/гранты/профиль и person UUID; модель не назначает дополнительные права по смыслу звания.
+Пример естественного поручения владельца: «Создай участника N, научный сотрудник, область — архитектура Восточной Пруссии, степень заявлена, пока не подтверждена; доступ к active accepted text/bibliography и public illustrations; proof только по допустимой категории и существующему grant; может вносить аргументы и предлагать заключения, но не менять общую сводку и не импортировать; добавь pending Slack workspace T/user U». Результат MCP должен показать **точные** роли/гранты/профиль и person UUID; модель не назначает дополнительные права по смыслу звания.
 
 ### 3.3. Подтверждённые внешние аккаунты
 
@@ -72,8 +51,8 @@ Current/last-supported conclusions, exact human endorsement, private drafts, par
 |---|---|
 | Slack | Владелец добавляет точные workspace/team ID и user ID как pending. Проверенный Slack DM от этого аккаунта и короткая одноразовая проверка/owner-confirmed binding переводят в verified. Отображаемое имя и email не нужны для сопоставления. Подпись HTTP Events или проверенный Socket Mode transport подтверждает источник события. |
 | VK | Только точный числовой user ID и доказательство владения через допустимую user-auth процедуру либо одноразовое сообщение из этого аккаунта, подтверждённое провайдером. Отрицательный from_id сообщества — не человек. До подтверждения связь pending и не переносит экспертный вес. |
-| Projects Hub | Текущий usr_... — **внешний PH actor ID**, а не RKB UUID и не доказательство multi-user OAuth РКБ. Привязка по действительной PH-сессии и ограниченному challenge; future first-party OIDC делегирует доступ к отдельному Knowledge resource с правильными audience/scope. Не использовать существующий owner invite для учёного. |
-| Mira и будущий клиент | Та же персональная карточка; после готовности многопользовательского identity.kenigevents.ru связывается подтверждённый issuer+sub, без изменения исторических ID дела или POI. |
+| Projects Hub | usr_… — внешний PH actor, не RKB UUID. Verified mapping устанавливается по действительной сессии/challenge. Same-host связь — loopback machine identity + verified delegated actor/request; external client — действительный resource grant. Existing owner invite не становится доступом учёного. |
+| Mira и будущий клиент | Mira остаётся PH-клиентом с той же персональной карточкой и verified mapping. Existing search-only adapter расширяется pending/request/result/ACK/proof/Stories/cases; отдельный voice/IAM/queue не нужен. |
 
 Не сопоставлять людей по имени, фамилии, степени, email, VK-аватару, одинаковому слову в комментариях. При неверной связи владелец отзывает её с историей; исторические мнения не исчезают, ошибочно приписанные поддержки переходят в attribution_review_required. Отзыв ресурса/роли перепроверяется перед чтением и асинхронной отправкой ответов.
 
@@ -99,10 +78,10 @@ Current/last-supported conclusions, exact human endorsement, private drafts, par
 
 1. Модель выявляет упоминание физического/памятного POI и **атомарные факты**: дату, авторство постройки, назначение, перестройку, исторический эпизод. Структура сохраняет говорящего, время, условность, автора конкретной главы/статьи и точные page+region.
 2. Для объекта модель использует существующий **poi_registry(search → select/create candidate)**. Исторический остров/район не превращается автоматически в отдельный объект здания; похожие имена — кандидаты на identity review, не повод соединить два объекта. Та же source entity связывается с каноническим Street Story POI.
-3. Для каждого факта РКБ создаёт отдельный принятой ревизии **poi.fact_evidence.v1** и outbox receipt. После активации источника обязательная фаза 2 может обнаружить **дополнительные** факты — нужна узкая write-операция submit_poi_evidence для той же активной source revision с exact page/region, а не повторный импорт всей книги.
-4. Существующий outbox worker доставляет авторизованный event в **отдельный narrow intake Street Story** (не identity route /v1/internal/rkb-poi и не Android device token). Действующий **ingest_poi_evidence_with_reviews** используется повторно. Public-service sender и private approved resource-grant различаются. Если private grant отсутствует — pending_authorization, не тихая публикация.
+3. Для каждого факта РКБ создаёт отдельный принятой ревизии **poi.fact_evidence.v1** и outbox receipt. Тот же общий research workflow или адресное enrichment после активации может обнаружить **дополнительные** факты — нужна узкая write-операция submit_poi_evidence для той же активной source revision с exact page/region, а не повторный импорт всей книги.
+4. Existing outbox механизм требуется довести до подтверждённой доставки: worker доставляет авторизованный event в **отдельный narrow intake Street Story** (не identity route /v1/internal/rkb-poi и не Android device token). Действующий **ingest_poi_evidence_with_reviews** используется повторно. Same-host sender использует loopback machine identity и verified actor. Active accepted text evidence не требует per-book owner grant; withdrawal, private drafts/participant data и proof/full-original boundary проверяются отдельно. Если нужное право операции отсутствует — pending_authorization, не owner-token fallback.
 5. Street Story возвращает event ID, canonical POI ID, claim ID, evidence ID, candidate/semantic review state и receipt. Входящее свидетельство сначала является **кандидатом**, пока модель не квалифицирует конкуренцию и не примет решение по POI факту. Текущее disagreement дело РКБ может ссылаться на предметный POI conflict, но не перезаписывает его самостоятельно.
-6. Импорт завершает OCR + обязательный scan независимо от внешнего сбоя. Но отчёт **отдельно** показывает POI identities linked/unresolved, extracted evidence, outbox pending/authorized/delivered, claims candidate/accepted/contested; фраза «POI обогащён» допустима только после подтверждённой owner receipt. Видимый незавершённый POI-sync без ложного completed.
+6. Принятие source/retrieval, общий research coverage и saved narrative readback отмечаются независимо от внешнего сбоя POI delivery. Но отчёт **отдельно** показывает POI identities linked/unresolved, extracted evidence, outbox pending/authorized/delivered, claims candidate/accepted/contested; фраза «POI обогащён» допустима только после подтверждённой owner receipt. Видимый незавершённый POI-sync без ложного completed.
 
 ### 4.2. Когда Street Story ищет материалы по POI
 
@@ -110,16 +89,24 @@ Street Story знает свой canonical poi_id и уже принятые ф�
 
 Модель сравнивает кандидат с накопленными POI facts: новый независимый факт; дополнительное свидетельство к уже существующему; вопрос идентичности; возможный конфликт; неподходящий источник. Для подходящего факта использует **тот же intake и claim/evidence регистр**, не создаёт второй «факты из поиска». Результат Street Story содержит явный флаг origin=regional_knowledge и source document+revision. **poi_context** сейчас возвращает one-hop источник/истории, не полную выборку атомарных фактов; его нельзя выдавать за новый исследовательский поиск.
 
+### 4.3. Факты, исторические лица и настоящие рассказы
+
+Source person/author identities, affiliations/roles и исторические организации отделены от participant rkb_users. Автор главы, редактор, переводчик и цитируемый говорящий сохраняются раздельно; тёзки не merge автоматически. Дата сохраняет original text, calendar, precision, date_role и valid-time; event date не смешивается с publication/ingestion time. Typed observation сохраняет decimal/unit/subject/period/method и competing revisions, без арифметики несопоставимых величин.
+
+Факт или измерение не требует Story: baseline story-bound assertion путь расширяется совместимо для source facts, не заменяется выдуманной карточкой. Достаточный связный эпизод в том же import workflow **обязательно** получает readable basic narrative в existing Variant.body, exact default_variant_ref и readback. Обычно 2–6 предложений как мягкий ориентир; недраматичная практика/объяснение и неизвестный исход допустимы. Причина, мотив, герой и точная дата не додумываются; title «Как…» отвечает body либо retitle. Facts-only/needs_context остаются без fake body.
+
+Saved body отдельно от title/summary/rating/bibliography; get/voice/read-export возвращают его, search — реальный labeled excerpt+ref или короткий body. Imported shared draft наследует Story scope без publish_ready. Private author draft не превращается в общий вариант. POI summary и case synthesis не подменяют рассказ; short render не обязан повторять все канонические даты/observations, но не удаляет их из данных.
+
 ## 5. Читабельная и открываемая доказательная цепочка
 
 У каждого POI факта, пришедшего из РКБ, нужен минимальный provenance pack:
 - Street Story canonical poi_id, claim_id, статус candidate/accepted/contested; RKB document_ref и source_revision;
 - название **конкретной** книги/статьи/главы, год, автор и роль (отдельно от редактора/переводчика), при известности — verified author profile;
 - физическая и печатная страница, page_id/region_id/chunk_id, точная цитата, original proof с видимым выделением;
-- source family и повторные независимые/зависимые свидетельства, их visibility/ACL;
+- source family и повторные независимые/зависимые свидетельства, актуальный accepted/withdrawn scope и права на proof/private материалы;
 - состояние current/superseded/retracted/unavailable/reanchor_required и ссылка на связанное дело о разногласии, если оно есть.
 
-**Сегодня формат v1 строгий:** source содержит document ref, revision, title, year; evidence содержит page/region и возможные author_profile_refs, но не обязательно имя автора отдельной статьи. Для MVP авторизованный reader РКБ разрешает по исходному source ref актуальную библиографию компонента и атрибуцию автора; исходное событие v1 менять молча нельзя. Если позднее потребуется автономный contributor snapshot в Street Story, расширить producer/consumer **согласованной** версионированной схемой и backward-compatible tests.
+**В pinned baseline формат v1 строгий:** source содержит document ref, revision, title, year; evidence содержит page/region и возможные author_profile_refs, но не обязательно имя автора отдельной статьи. Для MVP авторизованный reader РКБ разрешает по исходному source ref актуальную библиографию компонента и атрибуцию автора; исходное событие v1 менять молча нельзя. Если позднее потребуется автономный contributor snapshot в Street Story, расширить producer/consumer **согласованной** версионированной схемой и backward-compatible tests.
 
 **Устранить ложный evidence URI:** текущий knowledge://evidence/<candidate_id> должен иметь RKB resolver до действительной комбинации document, revision, page, region, chunk и origin byte/scan; расширить существующие fetch/source_proof, а не создавать новое хранилище сканов. Пока resolver не готов — возвращать честное unavailable, не кликабельную фиктивную цитату. Совпадение OCR, визуальная локализация и человеческое подтверждение — три разных свойства.
 
@@ -129,7 +116,7 @@ Street Story знает свой canonical poi_id и уже принятые ф�
 - после reprocess старый evidence сначала становится superseded/reanchor_required до проверки новой source revision;
 - публичная выборка Street Story проверяет **текущее состояние event, действующий источник и права**, а не только public и claim status;
 - при отзыве книги закрыть исходное свидетельство, не уничтожая другие независимые доказательства того же claim;
-- если private/workspace право не подтверждено, не отправлять байты, названия закрытых книг, private текст или их пересказы в public POI/Slack;
+- accepted active book text/bibliography не фильтруются uploader/owner; отозванные/непринятые материалы, private drafts/participants, full PDF и proof без допустимого grant не уходят в public POI/Slack. Cached и delayed выдача повторно проверяются;
 - конфликтный факт остаётся contested, даже если источник имеет высокий score; количество ссылок, повторяющих одного автора, не голосует за истину;
 - недоступность Street Story оставляет outbox pending/retry_wait, исходный импорт не откатывает, а повторный event не создаёт дубли.
 
@@ -139,12 +126,12 @@ Street Story знает свой canonical poi_id и уже принятые ф�
 - **disagreement_participants** — owner upsert, credentials, profile categories, grant/revoke, domain weight, get/list/status, link external account begin/confirm/revoke, audit.
 - **poi_registry/poi_context** — оставить источниковую POI identity boundary; linked не равно accepted fact.
 - **poi_evidence_submit** — late accepted-source fact+proof и outbox; idempotent по document/revision/evidence.
-- **poi_evidence_research** — канонический POI ref, вопрос, subject/time filters, cursor; evidence candidates, source completeness, independent families.
+- **poi_evidence_research** — канонический POI ref, вопрос, subject/time filters с valid-time/calendar/date_role, без фиктивной точности, cursor; evidence candidates, source completeness, independent families.
 - **fetch/source_proof** — разрешающий evidence candidate ID до конкретной цитаты и оригинала, по actor ACL.
 - **poi_sync_status** — полный receipt delivery/identity/semantic review/provenance/revision; можно совместить со статусом исходного outbox.
 - **disagreement_get/export** — взаимные stable ссылки на Street Story conflict и RKB source disagreement без двойного арбитража.
 
-Детерминистика отвечает за право, версии, ссылки, idempotency и доставку. Модель отвечает за смысл факта, выбор POI, различение контекста/свидетельств, конфликт и вывод. Существующие SQL/memory и BGE остаются; PostgreSQL не нужен ради этого дополнения.
+Детерминистика отвечает за право, версии, ссылки, idempotency и доставку. Модель отвечает за смысл, POI identity, контекст/свидетельства, конфликт и вывод. Existing contracts реализуются в едином PG/pgvector corpus на Kaggle; смена storage не создаёт второго POI или fact registry.
 
 ## 7. Проверяемый первый результат
 
@@ -152,16 +139,16 @@ Street Story знает свой canonical poi_id и уже принятые ф�
 
 **Книга → факт:** на реальном разрешённом источнике модель подтверждает POI identity, извлекает один атомарный факт с book/author/page, пишет existing outbox и получает фактический Street Story receipt. Street Story readback показывает отдельную claim+evidence, а source proof открывается на **оригинале**. Повтор event не удваивает доказательство.
 
-**POI → новый источник:** поиск по тому же poi_id находит вторую независимую книгу, модель привязывает её как новое свидетельство или противоположный вариант, не как второй POI. Рецензия и дело РКБ доступны по ссылке. Reprocess/private revoke сохраняет историю, но не выдаёт отозванную опору как действительную.
+**POI → новый источник:** поиск по тому же poi_id находит вторую независимую книгу, модель привязывает её как новое свидетельство или противоположный вариант, не как второй POI. Рецензия и дело РКБ доступны по ссылке. Source revision/withdrawal/proof revoke сохраняет историю, но не выдаёт отозванную опору как действительную.
 
-**Пилот допускается на уже импортированной книге**, где подтверждены страницы и POI identity; не ждать многопользовательского расширения OIDC для первых owner-managed Slack связок. Для входа PH/mobile вне существующего owner-only OAuth потребуются отдельные подтверждённые resource grants; нельзя присвоить PH actor ID или owner_token вместо них.
+**Пилот допускается на книге, уже принятой fresh import в новом corpus**, где подтверждены страницы и POI identity; не ждать многопользовательского расширения OIDC для первых owner-managed Slack связок. Same-host PH/Mira adapter использует loopback machine identity и verified delegated actor; внешний PH/mobile client — действительный resource grant. Нельзя присвоить PH actor ID как RKB UUID или подставить owner_token.
 
 ## 8. Основания и честные границы
 
-Код: [RKB stage_service](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/main/src/regional_knowledge/stage_service.py), [RKB POI outbox](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/main/sql/004_poi_outbox.sql), [RKB rkb_users](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/main/sql/006_application_identity.sql), [Street Story poi_external](https://github.com/onedayonemasterpiece/street-story/blob/main/backend/street_story/poi_external.py), [Street Story POI memory](https://github.com/onedayonemasterpiece/street-story/blob/main/backend/street_story/poi_memory.py), [Projects Hub identity target](https://github.com/onedayonemasterpiece/projects-hub/blob/main/docs/product/17-unified-identity-and-self-development.md).
+Код: [RKB stage_service](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/src/regional_knowledge/stage_service.py), [RKB POI outbox](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/sql/004_poi_outbox.sql), [RKB rkb_users](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/sql/006_application_identity.sql), [Street Story poi_external](https://github.com/onedayonemasterpiece/street-story/blob/main/backend/street_story/poi_external.py), [Street Story POI memory](https://github.com/onedayonemasterpiece/street-story/blob/main/backend/street_story/poi_memory.py), [Projects Hub identity target](https://github.com/onedayonemasterpiece/projects-hub/blob/main/docs/product/17-unified-identity-and-self-development.md).
 
 [OAuth security best current practice (RFC 9700)](https://www.rfc-editor.org/info/rfc9700/); [Slack event identity / signatures](https://docs.slack.dev/authentication/verifying-requests-from-slack); [Slack Sign in identity](https://docs.slack.dev/reference/methods/users.identity/).
 
-Dot по прочитанному коду отметил 5 рисков: owner-only PH invite, несовпадающие PH/RKB actor IDs, не соединённый POI fact intake, неоткрываемый candidate evidence и stale revocation в публичной проекции. Эти замечания учтены. Новую консультацию Claude Opus 5.5 именно по этому дополнению **не удалось вызвать**: оба подключённых клиента consult_model по-прежнему отвергают alias claude_opus_5_5. Предыдущее подтверждённое заключение Opus относилось к v3, а не к нынешним решениям. Не заявлять о состоявшемся тройном консилиуме или production-приёмке.
+Исторический разбор dot выделил owner-only invite, несовпадающие PH/RKB actor IDs, не соединённый fact intake, неразрешимый candidate ref и stale revocation. Эти риски сохраняют проверки выше. Неуспешные попытки consult_model, записанные в [версии a8cf](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/design/rkb-participants-poi-fact-bridge-20261018.md), относятся к той дате; их нельзя выдавать ни за новый аудит, ни за текущую недоступность Opus. Новые аудиты и точный результат внедрения фиксируются отдельно в handoff/reports.
 
-**Статус реализации всех добавлений: planned.** Отдельная ПМИ фиксирует критерии PASS/FAIL; её выполнение ещё впереди.
+**Статус target: требует реализации/интеграции и проверки относительно pinned baseline/PR151.** Отдельная ПМИ фиксирует критерии PASS/FAIL; её выполнение ещё впереди.
