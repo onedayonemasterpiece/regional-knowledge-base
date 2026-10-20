@@ -19,13 +19,14 @@ _LOG=logging.getLogger(__name__)
 
 
 class RecoveryPhaseDispatch:
-    def __init__(self,queue,*,database,identity,binding_current,timeout_seconds=900):
+    def __init__(self,queue,*,database,identity,binding_current,timeout_seconds=900,snapshot_tickets=None):
         if (queue._shared_reads is None or getattr(queue,'_recovery_phases',None) is not None
                 or not callable(binding_current) or not isinstance(identity,tuple) or len(identity)!=3
                 or type(timeout_seconds) not in (int,float) or not 0<timeout_seconds<=900):
             raise TypeError('configured current maintenance owner required')
         self.queue,self.database,self.identity=queue,database,identity
         self.binding_current,self.timeout=binding_current,timeout_seconds
+        self.snapshot_tickets=snapshot_tickets
         self._bindings={};self.closed=False
         queue._recovery_phases=self
 
@@ -92,7 +93,33 @@ class RecoveryPhaseDispatch:
                     or job['run_id']!=run_id or job['lease_until']<=self.queue.clock()):
                 raise StaleClaim('recovery assignment changed')
             identity=json.loads(job['identity'])
-            return dict(id=job_id,claim=job['claim'],kind='recovery_phase',**identity)
+            payload=dict(id=job_id,claim=job['claim'],kind='recovery_phase',**identity)
+        if identity['phase']=='prepare' and self.snapshot_tickets is not None:
+            from .kaggle_pg_snapshot_native import BlobRef
+            ticket=await self.snapshot_tickets.issue_download(self._bindings[job_id],identity['operation_key'],
+                BlobRef(**identity['arguments']['blob']))
+            payload['download_ticket']=ticket.wire()
+        return payload
+
+    async def issue_upload(self,frame,*,run_id,token,generation):
+        """Ticket intent stays on control while capture retains compute permit."""
+        if self.snapshot_tickets is None:raise PermissionError('snapshot ticket issuer unavailable')
+        with self.queue.connect(write=False) as db:
+            run=self._run(db,run_id,token,generation)
+            job=db.execute("select * from jobs where id=? and kind='recovery_phase'",(frame['job_id'],)).fetchone()
+            if (job is None or job['run_id']!=run_id or job['claim']!=frame['claim']
+                    or job['state']!='claimed' or not self.eligible(job,run,generation)):
+                raise StaleClaim('snapshot transfer assignment changed')
+            identity=json.loads(job['identity'])
+            if (identity['phase']!='capture' or frame['operation_key']!=identity['operation_key']
+                    or tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))!=self.identity):
+                raise PermissionError('snapshot transfer capture binding changed')
+            self.queue.shared_reads.require_durable_resource(run_id,self.identity[2],generation,job['id'],
+                frame['compute_claim'],frame['dispatch_generation'])
+            binding=self._bindings[job['id']]
+        ticket=await self.snapshot_tickets.issue_upload(binding,frame['operation_key'],size=frame['size'],sha256=frame['sha256'])
+        if not self.current(binding):raise PermissionError('snapshot transfer binding expired')
+        return ticket.wire()
 
     async def receive(self,frame,*,run_id,token,generation):
         bounded(frame['receipt'],MAX_PHASE_RESULT_BYTES)

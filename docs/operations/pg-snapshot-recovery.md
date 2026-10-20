@@ -127,3 +127,21 @@ scoped direct-transfer callbacks installed by trusted composition. The wire cann
 supply filesystem paths, SQL, credentials or replace those callbacks. Native bundle
 construction, provider-ticket registration and the physical fixture drill remain
 separate acceptance work; the synthetic WSS tests do not prove those effects.
+
+Scoped direct transfer is now registered on the same authenticated channel.
+`SnapshotTicketChannel` retains one upload intent/future across disconnects;
+its stable request, operation, run, job, claim and actual compute permit are checked
+before `SnapshotTicketIssuer` signs an exact-size/hash PUT ticket. A prepare GET
+ticket is added only to the current dispatch, never the persisted job identity.
+The native builder can install `NativeSnapshotTransfer` with this retained broker;
+its fixed private-temp path, origin, exact operation/blob, expiry and conditional
+HTTP checks remain in force. No signed URL is logged or stored in durable jobs.
+An ETag or completed PUT remains pending until the controller independently reads
+and hashes the exact immutable object. Unknown upload/prepare outcomes are retained
+and require reconciliation of the same operation.
+
+Focused synthetic checks include the actual ASGI pre-READY receipt path, exact
+compute-claim rejection before ticket issuance, no ticket in durable job payloads,
+and a disconnected capture waiting on the same ticket future without recapture.
+Native physical restore and the complete generated notebook installation remain
+explicit acceptance work; these tests use no PG process, real corpus or provider.

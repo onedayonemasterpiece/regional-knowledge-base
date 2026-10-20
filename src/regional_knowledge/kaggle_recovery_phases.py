@@ -18,8 +18,8 @@ PHASES = frozenset({'capture','prepare','apply','finish','verify'})
 
 
 async def build_recovery_worker(*,native_bundle,database,identity,tools,native_uid,native_gid,
-                                current,workspace_private_current,upload,download,workspace,
-                                acquire=None,limits=None):
+                                current,workspace_private_current,workspace,upload=None,download=None,
+                                ticket_channel=None,transfer=None,acquire=None,limits=None):
     """Construct the real native owner from the retained Stage0 verification.
 
     tools declares each binary's bundle-relative path and exact --version output.
@@ -31,6 +31,27 @@ async def build_recovery_worker(*,native_bundle,database,identity,tools,native_u
     from .kaggle_owned_pg import grant_native_code_access
     from .kaggle_pg_snapshot_native import NativeSnapshotFactory,NativeBinary,PhysicalPgTools,SnapshotLimits
     from .kaggle_source_commands import fixed_registry,WorkerSourceExecutor
+    if ticket_channel is not None or transfer is not None:
+        from .kaggle_snapshot_channel import SnapshotTicketChannel
+        from .native_snapshot_transfer import NativeSnapshotTransfer,SnapshotTicket
+        from .kaggle_pg_snapshot_native import BlobRef
+        if (type(ticket_channel) is not SnapshotTicketChannel or type(transfer) is not NativeSnapshotTransfer
+                or upload is not None or download is not None):
+            raise SnapshotError('recovery_retained_transfer_owner_required')
+        async def upload(path,*,size,sha256):
+            ticket=SnapshotTicket.from_wire(await ticket_channel.upload_ticket(size=size,sha256=sha256))
+            key=ticket_channel._assignment['operation_key']
+            if ticket.size!=size or ticket.sha256!=sha256:
+                raise SnapshotError('recovery_upload_ticket_bytes_changed')
+            etag=await transfer.upload(ticket,path,operation_key=key)
+            return BlobRef(ticket.key,size,sha256,etag)
+        async def download(blob,restore_operation,*,ticket,transfer_operation):
+            ticket=SnapshotTicket.from_wire(ticket)
+            headers={k.lower():v for k,v in ticket.headers}
+            if ((ticket.key,ticket.size,ticket.sha256)!=(blob.key,blob.size,blob.sha256)
+                    or headers.get('if-match')!=blob.native_version):
+                raise SnapshotError('recovery_download_ticket_blob_changed')
+            return await transfer.download(ticket,workspace(restore_operation,'download'),operation_key=transfer_operation)
     if (type(native_bundle) is not VerifiedNativeBundle
             or not await asyncio.to_thread(native_bundle.current)
             or not isinstance(tools,dict) or set(tools)!={'binaries','command_handlers'}
@@ -100,7 +121,7 @@ class WorkerRecoveryPhases:
     async def wait_initialized(self,database,run_id,launch_nonce,runtime_incarnation):
         if database!=self.factory.database or (run_id,launch_nonce,runtime_incarnation)!=self.factory.identity:
             raise SnapshotError('recovery_runtime_identity_changed')
-        await self._ready.wait()
+        async with asyncio.timeout(900):await self._ready.wait()
         await self._initialized.verify_for(database,run_id,launch_nonce,runtime_incarnation)
         return self._initialized
 
@@ -108,7 +129,8 @@ class WorkerRecoveryPhases:
         fields={'type','protocol_version','connection_generation','id','claim','kind','run_id',
             'launch_nonce','runtime_incarnation','database_generation','writer_generation','phase',
             'operation_key','request_sha256','arguments','compute_claim','dispatch_generation'}
-        if (not isinstance(frame,dict) or set(frame)!=fields or frame['type']!='DISPATCH'
+        if (not isinstance(frame,dict) or set(frame)-{'download_ticket'}!=fields
+                or 'download_ticket' in frame and frame.get('phase')!='prepare' or frame['type']!='DISPATCH'
                 or frame['protocol_version']!=2 or frame['kind']!='recovery_phase'
                 or frame['phase'] not in PHASES or type(frame['connection_generation']) is not int
                 or frame['connection_generation']<1 or frame['dispatch_generation']!=frame['connection_generation']
@@ -168,7 +190,10 @@ class WorkerRecoveryPhases:
             declared=json.loads(manifest)
             if declared.get('blob')!=args['blob']:
                 raise SnapshotError('recovery_phase_blob_reference_changed')
-            archive=self.download(BlobRef(**args['blob']),args['restore_operation'])
+            transfer={}
+            if 'download_ticket' in frame:
+                transfer=dict(ticket=frame['download_ticket'],transfer_operation=frame['operation_key'])
+            archive=self.download(BlobRef(**args['blob']),args['restore_operation'],**transfer)
             if inspect.isawaitable(archive):archive=await archive
             session=await self.factory.prepare(binding,operation_key=args['restore_operation'],
                 manifest_bytes=manifest,expected_manifest_sha256=sha(manifest),archive_path=archive,

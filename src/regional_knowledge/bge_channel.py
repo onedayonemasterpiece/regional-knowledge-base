@@ -327,6 +327,15 @@ def channel_route(queue):
                                          connection_generation=generation)
                         await send('HEARTBEAT_ACK', provider_version=(str(observed['provider_version'])
                                    if observed['provider_version'] is not None else None))
+                    elif frame['type']=='SNAPSHOT_UPLOAD_INTENT':
+                        _fields(frame,(*common,'request_id','job_id','claim','run_id','launch_nonce',
+                            'runtime_incarnation','compute_claim','dispatch_generation','operation_key','size','sha256'))
+                        recovery_dispatch=getattr(queue,'_recovery_phases',None)
+                        if recovery_dispatch is None or shared is None:
+                            raise ValueError('snapshot_transfer_unavailable')
+                        for key in ('request_id','job_id','claim','operation_key'):_identifier(frame[key])
+                        ticket=await recovery_dispatch.issue_upload(frame,run_id=run_id,token=token,generation=generation)
+                        await send('SNAPSHOT_UPLOAD_TICKET',request_id=frame['request_id'],ticket=ticket)
                     elif frame['type']=='RECOVERY_PHASE_RESULT':
                         recovery_dispatch=getattr(queue,'_recovery_phases',None)
                         _fields(frame,(*common,'job_id','claim','receipt','run_id','launch_nonce',

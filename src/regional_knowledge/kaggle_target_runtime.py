@@ -157,7 +157,8 @@ class TargetRuntime:
 
     async def configure_recovery(self,encoder,*,run_id,launch_nonce,runtime_incarnation,
                                  native_bundle,tools,native_uid,native_gid,current,
-                                 workspace_private_current,upload,download,workspace,limits=None):
+                                 workspace_private_current,workspace,upload=None,download=None,
+                                 ticket_channel=None,transfer=None,limits=None):
         """Trusted notebook composition after actual Stage0 and before prepare.
 
         The verified native bundle belongs to the same verified artifact root;
@@ -173,14 +174,16 @@ class TargetRuntime:
         worker=await build_recovery_worker(native_bundle=native_bundle,database=self.database,
             identity=(run_id,launch_nonce,runtime_incarnation),tools=tools,native_uid=native_uid,
             native_gid=native_gid,current=current,workspace_private_current=workspace_private_current,
-            upload=upload,download=download,workspace=workspace,limits=limits)
+            upload=upload,download=download,workspace=workspace,limits=limits,
+            ticket_channel=ticket_channel,transfer=transfer)
         self.recovery_worker=worker;self._recovery_available.set()
         return worker
 
     async def recovery(self,frame):
         """Register this handler before _load/prepare; same channel stays live."""
         if self.closed:raise BootstrapUnavailable('target_runtime_closed')
-        await self._recovery_available.wait()
+        async with asyncio.timeout(900):await self._recovery_available.wait()
+        if self.closed:raise BootstrapUnavailable('target_runtime_closed')
         return await self.recovery_worker(frame)
 
     async def _owned_probe(self, *, acquire):

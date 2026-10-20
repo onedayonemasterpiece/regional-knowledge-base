@@ -9,6 +9,7 @@ from regional_knowledge.kaggle_recovery_dispatch import RecoveryPhaseDispatch,Ws
 from regional_knowledge.kaggle_recovery_phases import WorkerRecoveryPhases
 from regional_knowledge.kaggle_pg_snapshot_native import NativeSnapshotFactory,SnapshotError,encode,sha
 from regional_knowledge.kaggle_bootstrap import PreparedRuntime
+from regional_knowledge.kaggle_snapshot_channel import SnapshotTicketChannel
 from test_bge_admission import state,auth,people
 from test_bge_shared_channel import peer
 from test_bge_shared_worker import Peer,result
@@ -183,3 +184,66 @@ def test_actual_asgi_runs_maintenance_before_ready_and_persists_receipt(peer):
             assert p.client.portal.call(result)=={'verified':True}
             assert p.q.result(p.auth.p.owner.subject,p.document)['state']=='pending'
         finally:p.client.portal.call(retained['bridge'].aclose)
+
+
+@pytest.mark.asyncio
+async def test_upload_ticket_intent_survives_disconnect_without_second_capture(monkeypatch):
+    transport=module('bge_wss_transport');p=Peer();stop=asyncio.Event();ready=asyncio.Event();calls=[]
+    broker=SnapshotTicketChannel(timeout_seconds=2)
+    monkeypatch.setattr(transport.random,'uniform',lambda *_:.001)
+    async def read(frame,*,encode):return result(frame)
+    async def prepare(encoder,**identity):await ready.wait();return PreparedRuntime(read,candidate())
+    async def recovery(frame):
+        calls.append('capture')
+        ticket=await broker.upload_ticket(size=123,sha256='a'*64)
+        assert ticket=={'synthetic':'exact-scoped-ticket'}
+        ready.set()
+        return dict(phase='capture',request_sha256=frame['request_sha256'],value={'uploaded':'verified-next'})
+    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),lambda:lambda _:None,lambda:{},
+        prepare_runtime=prepare,recovery_handler=recovery,snapshot_channel=broker,connector=p.connect,
+        stop=stop,heartbeat_seconds=.01,maximum_seconds=3)
+    task=asyncio.create_task(worker.run())
+    try:
+        await p.wait('RESOURCE_STATE')
+        await p.put(dict(type='DISPATCH',id='capture',claim='claim',kind='recovery_phase',run_id=CONFIG['run_id'],
+            launch_nonce=CONFIG['launch_nonce'],runtime_incarnation=worker.incarnation,phase='capture',operation_key='stable-op',
+            request_sha256='b'*64,arguments={},database_generation='db',writer_generation='writer',
+            compute_claim='actual-slot',dispatch_generation=1))
+        first=await p.wait('SNAPSHOT_UPLOAD_INTENT')
+        assert first['size']==123 and first['compute_claim']=='actual-slot'
+        await p.disconnect()
+        replay=await p.wait('SNAPSHOT_UPLOAD_INTENT',generation=2)
+        assert {k:v for k,v in first.items() if k!='connection_generation'}=={k:v for k,v in replay.items() if k!='connection_generation'}
+        assert broker.pending['request_id']==first['request_id'] and calls==['capture']
+        await p.put(dict(type='SNAPSHOT_UPLOAD_TICKET',request_id=first['request_id'],ticket={'synthetic':'exact-scoped-ticket'}),generation=2)
+        await p.wait('RECOVERY_PHASE_RESULT',generation=2);await p.wait('READY',generation=2)
+        await p.put(dict(type='RESULT_ACK',job_id='capture',claim='claim',status='accepted'),generation=2)
+        assert calls==['capture'] and broker.pending is None
+    finally:ready.set();stop.set();await task
+
+
+@pytest.mark.asyncio
+async def test_ticket_issuance_requires_exact_capture_resource_and_urls_are_not_persisted(state):
+    s=state;issued=[]
+    class Ticket:
+        def wire(self):return {'url':'https://private-fixture.invalid/synthetic-signed-token'}
+    class Issuer:
+        async def issue_upload(self,binding,key,**args):issued.append((binding,key,args));return Ticket()
+        async def issue_download(self,binding,key,blob):issued.append(('get',blob));return Ticket()
+    bridge=RecoveryPhaseDispatch(s.q,database=database(),identity=(s.run,s.nonce,'incarnation-a'),
+        binding_current=lambda b:b is s,snapshot_tickets=Issuer())
+    try:
+        task,work,frame=await work_for(s,bridge,'capture',{'versions':{},'expected_sequence':0})
+        intent=dict(job_id=frame['id'],claim=frame['claim'],operation_key=frame['operation_key'],size=123,sha256='a'*64,
+            **{k:frame[k] for k in ('run_id','launch_nonce','runtime_incarnation','compute_claim','dispatch_generation')})
+        with pytest.raises(PermissionError):
+            await bridge.issue_upload(intent|{'compute_claim':'forged'},run_id=s.run,token=s.token,generation=s.generation)
+        assert not issued
+        ticket=await bridge.issue_upload(intent,run_id=s.run,token=s.token,generation=s.generation)
+        assert ticket['url'].endswith('synthetic-signed-token') and len(issued)==1
+        with s.q.connect(write=False) as db:
+            row=db.execute('select identity,result from jobs where id=?',(frame['id'],)).fetchone()
+            assert 'signed-token' not in str(tuple(row))
+        await bridge.receive(response(s,frame,{'native':'capture'}),run_id=s.run,token=s.token,generation=s.generation)
+        assert await task=={'native':'capture'}
+    finally:await bridge.aclose()

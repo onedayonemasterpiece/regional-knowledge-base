@@ -44,7 +44,7 @@ class BgeWssTransport:
 
     def __init__(self, config, load_encoder, diagnostics, *, connector=None,
                  heartbeat_seconds=20, maximum_seconds=11 * 3600, stop=None,
-                 query_handler=None, prepare_runtime=None, close_runtime=None, recovery_handler=None):
+                 query_handler=None, prepare_runtime=None, close_runtime=None, recovery_handler=None, snapshot_channel=None):
         url = urlsplit(config['channel'])
         if (url.scheme != 'wss' or not url.hostname or url.port not in (None, 443)
                 or url.username or url.password or url.query or url.fragment):
@@ -82,6 +82,12 @@ class BgeWssTransport:
                 or inspect.iscoroutinefunction(getattr(recovery_handler,'__call__',None)))):
             raise ValueError('shared async recovery handler required')
         self.recovery_handler=recovery_handler
+        if snapshot_channel is not None:
+            from regional_knowledge.kaggle_snapshot_channel import SnapshotTicketChannel
+            if type(snapshot_channel) is not SnapshotTicketChannel or recovery_handler is None:
+                raise ValueError('retained snapshot channel requires fixed recovery handler')
+            snapshot_channel.changed=self.changed
+        self.snapshot_channel=snapshot_channel
         if close_runtime is not None and not inspect.iscoroutinefunction(close_runtime):
             raise ValueError('async close_runtime required')
         self.close_runtime = close_runtime
@@ -249,7 +255,9 @@ class BgeWssTransport:
         if job['kind'] in ('source_command','recovery_phase'):
             handler=self.recovery_handler if job['kind']=='recovery_phase' else self.source_handler
             if handler is None:raise ValueError('fixed native executor unavailable')
-            receipt=await handler(job)
+            if job['kind']=='recovery_phase' and self.snapshot_channel is not None:
+                with self.snapshot_channel.assignment(job):receipt=await handler(job)
+            else:receipt=await handler(job)
             self.pending=dict(job_id=job['id'],claim=job['claim'],receipt=receipt,
                 **{key:job[key] for key in ('run_id','launch_nonce','runtime_incarnation',
                     'compute_claim','dispatch_generation')})
@@ -345,6 +353,7 @@ class BgeWssTransport:
         async def states():
             ready_sent = False
             result_sent = None
+            intent_sent = None
             released_sent = attachment_release
             state_sent = attachment_state
             self.changed.set()
@@ -353,6 +362,10 @@ class BgeWssTransport:
                 self.changed.clear()
                 self._failure(self.loading)
                 self._failure(self.encoding)
+                if self.snapshot_channel is not None:
+                    intent=self.snapshot_channel.pending
+                    if intent is not None and intent is not intent_sent:
+                        await put(intent);intent_sent=intent
                 if self.shared_reads:
                     # Preserve the completed result before advertising compute
                     # release, which can immediately authorize the next read.
@@ -411,6 +424,11 @@ class BgeWssTransport:
                         continue
                     await queue_read_result()
                     self._start_read(frame)
+                elif kind == 'SNAPSHOT_UPLOAD_TICKET':
+                    if (self.snapshot_channel is None or set(frame)!={'type','protocol_version',
+                            'connection_generation','request_id','ticket'}):
+                        raise ValueError('snapshot ticket response contract')
+                    self.snapshot_channel.receive(frame)
                 elif kind == 'DISPATCH':
                     source=frame.get('kind')=='source_command'
                     recovery=frame.get('kind')=='recovery_phase'
@@ -578,7 +596,7 @@ class BgeWssTransport:
                 raise asyncio.CancelledError
 
 
-def run_wss_worker(config, load_encoder, diagnostics, *, query_handler=None, prepare_runtime=None, close_runtime=None, recovery_handler=None):
+def run_wss_worker(config, load_encoder, diagnostics, *, query_handler=None, prepare_runtime=None, close_runtime=None, recovery_handler=None, snapshot_channel=None):
     asyncio.run(BgeWssTransport(config, load_encoder, diagnostics, query_handler=query_handler,
                                prepare_runtime=prepare_runtime, close_runtime=close_runtime,
-                               recovery_handler=recovery_handler).run())
+                               recovery_handler=recovery_handler,snapshot_channel=snapshot_channel).run())
