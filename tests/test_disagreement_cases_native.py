@@ -42,7 +42,7 @@ async def prepare(conn,generation):
     async with conn.transaction():
         await conn.execute("""CREATE FUNCTION rkb_v4.fixture_check_cases_migration(p bytea,ids jsonb,expected jsonb,logical_time text)
           RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
-          SELECT convert_from(p,'UTF8')='{"migration":"010_disagreement_cases.sql"}' AND expected->>'schema'=schema_revision
+          SELECT convert_from(p,'UTF8')::jsonb->>'migration_id'='fixture-cases-010' AND expected->>'schema'=schema_revision
            AND expected->>'function'=function_revision AND expected->>'executor'=executor_revision
            AND expected->>'migration'=coalesce(last_migration_id,'') FROM rkb_v4.recovery_state WHERE singleton $$""",prepare=False)
         await conn.execute('CREATE FUNCTION rkb_v4.fixture_apply_cases_migration(p bytea,ids jsonb,expected jsonb,logical_time text) '
@@ -61,7 +61,8 @@ async def prepare(conn,generation):
         schema_revision=EDITORIAL_REVISIONS.schema,function_revision=EDITORIAL_REVISIONS.function,executor_revision=EDITORIAL_REVISIONS.executor,
         ids={'migration_id':'fixture-cases-010'},expected_revisions=dict(schema=EDITORIAL_REVISIONS.schema,
             function=EDITORIAL_REVISIONS.function,executor=EDITORIAL_REVISIONS.executor,migration=''),
-        payload=b'{"migration":"010_disagreement_cases.sql"}')
+        payload=json.dumps(dict(migration_id='fixture-cases-010',artifact_sha256=sha,predecessor=None),
+            sort_keys=True,separators=(',',':')).encode())
     assert (await apply(n,migration)).status=='applied'
     c=await pinned(conn,'check_disagreement_v1');a=await pinned(conn,'apply_disagreement_v1')
     n['registry']=HandlerRegistry([source,transition]+[case_handler(route,check_sha256=c.definition_sha256,
