@@ -297,15 +297,25 @@ class GeoManifestItem(Contract):
         value=self.model_dump(mode='json')
         return dict(value,payload_sha256=sha(value['payload']))
 
+    @classmethod
+    def from_wire(cls,value):
+        value=json.loads(canonical(value))
+        if type(value) is not dict or value.pop('payload_sha256',None)!=sha(value.get('payload')):
+            raise ValueError('geographic payload hash mismatch')
+        return cls.model_validate_json(canonical(value))
 
-class GeoMigrationManifest(Contract):
+
+class GeoManifestHeader(Contract):
     codec: Literal['rkb.geo-migration-manifest.v1'] = 'rkb.geo-migration-manifest.v1'
     source_inventory_sha256: Digest
     inventory_counts: InventoryCounts
-    items: tuple[GeoManifestItem, ...] = Field(max_length=4096)
     missing_dependencies: tuple[Identity, ...] = Field(default=(),max_length=4096)
     canonical_owners_copied: Literal[False] = False
     accepted_target_sources_created: Literal[False] = False
+
+
+class GeoMigrationManifest(GeoManifestHeader):
+    items: tuple[GeoManifestItem, ...] = Field(max_length=4096)
 
     @model_validator(mode='after')
     def closure(self):
@@ -313,6 +323,21 @@ class GeoMigrationManifest(Contract):
         if keys!=sorted(keys) or len(set(keys))!=len(keys):
             raise ValueError('unique deterministic geographic item ordering required')
         by_key={item.key:item for item in self.items}
+        # The input inventory is independent of item ordering. It cannot be
+        # replaced by an empty/partial output carrying the old count header.
+        counts=self.inventory_counts
+        actual=dict(entities=0,geo_places=0,aliases=0,relations=0,geo_intents=0)
+        for item in self.items:
+            kind=item.payload.kind
+            table=getattr(item.payload,'source_table',None)
+            if kind=='place' or kind=='blocked_geo_identity' and table=='rkb_entities':
+                actual['entities']+=1;actual['geo_places']+=1
+            elif kind=='excluded_non_geo' and table=='rkb_entities':actual['entities']+=1
+            if kind=='alias' or kind in ('blocked_geo_identity','excluded_non_geo') and table=='rkb_entity_aliases':actual['aliases']+=1
+            if kind=='relation' or kind in ('blocked_geo_identity','excluded_non_geo') and table=='rkb_entity_relations':actual['relations']+=1
+            if kind=='source_geo_observation' or kind=='blocked_geo_identity' and table=='rkb_geo_intents':actual['geo_intents']+=1
+        if any(value!=getattr(counts,key) for key,value in actual.items()):
+            raise ValueError('geographic inventory record counts mismatch')
         missing=set()
         for item in self.items:
             for dependency in item.dependencies:
@@ -339,6 +364,8 @@ class GeoMigrationManifest(Contract):
     def require_ready(self):
         if self.missing_dependencies or any(item.status=='blocked_missing_dependency' for item in self.items):
             raise ValueError('geographic manifest has unresolved required dependencies')
+        if sum(item.payload.kind=='place' and item.payload.legacy_resolution is not None for item in self.items)!=self.inventory_counts.accepted_geo_metadata:
+            raise ValueError('accepted geographic metadata coverage mismatch')
         return self
 
     @classmethod
