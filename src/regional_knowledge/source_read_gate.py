@@ -13,6 +13,7 @@ from uuid import UUID
 from .kaggle_protocol import Query, QueryResult, PassageReadRequest, PassageReadResult, StoryReadRequest, StoryReadResult, TrustedActorContext
 from .kaggle_fact_contracts import FactReadRequest, FactReadResult
 from .kaggle_source_read import SourceReadRequest, SourceReadResult
+from .kaggle_editorial_contracts import EditorialReadRequest,EditorialReadResult
 from .read_authority import ReadAuthority
 
 
@@ -115,26 +116,46 @@ class SourceReadGate:
                 expected=source_import_v3_handler(revisions=FACT_REVISIONS,
                     check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
                 if handler==expected:return True
-        return False
+        return self.catalog_supported()
 
     def catalog_supported(self):
         from .source_import_v4 import SOURCE_IMPORT_V4,source_import_v4_handler
         from .story_editorial import EDITORIAL_REVISIONS
+        from .kaggle_domain_bindings import DOMAIN_REVISIONS,current_handler
         for handler in self.spool.registry.handlers.values():
-            if handler.route==SOURCE_IMPORT_V4 and handler.revisions==EDITORIAL_REVISIONS:
-                if handler==source_import_v4_handler(check_sha256=handler.check.definition_sha256,
-                        apply_sha256=handler.apply.definition_sha256):return True
+            if handler.route!=SOURCE_IMPORT_V4:continue
+            if handler.revisions==EDITORIAL_REVISIONS:
+                expected=source_import_v4_handler(check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
+            elif handler.revisions==DOMAIN_REVISIONS:
+                expected=current_handler(handler.route,check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
+            else:continue
+            if handler==expected:return True
         return False
+
+    def editorial_supported(self):
+        if not self.catalog_supported():return False
+        from .story_editorial import EDITORIAL_REVISIONS,editorial_handler
+        from .kaggle_domain_bindings import DOMAIN_REVISIONS,current_handler
+        found={}
+        for handler in self.spool.registry.handlers.values():
+            if handler.route not in ('story.edit.v1','story.access.v1'):continue
+            if handler.revisions==EDITORIAL_REVISIONS:
+                expected=editorial_handler(route=handler.route,check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
+            elif handler.revisions==DOMAIN_REVISIONS:
+                expected=current_handler(handler.route,check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
+            else:continue
+            if handler==expected:found[handler.route]=handler.revisions
+        return len(found)==2 and len(set(found.values()))==1
 
     async def dispatch(self, authority, query: Query | PassageReadRequest | StoryReadRequest, binding):
         self._expire()
-        if type(query) not in (Query, PassageReadRequest, StoryReadRequest, FactReadRequest, SourceReadRequest) or len(self._permits) + len(self._tickets) >= self.max_retained:
+        if type(query) not in (Query, PassageReadRequest, StoryReadRequest, FactReadRequest, SourceReadRequest,EditorialReadRequest) or len(self._permits) + len(self._tickets) >= self.max_retained:
             raise SourceGateDenied('read capacity or contract unavailable')
         await self.authority.require(authority, 'public_search')
         key = binding_key(binding)
         if not self.binding_current(binding) or query.connection_generation != key[2]:
             raise SourceGateDenied('runtime binding changed')
-        story = type(query) is StoryReadRequest or (type(query) is Query and query.filters.kinds == ('story',))
+        story = type(query) in (StoryReadRequest,EditorialReadRequest) or (type(query) is Query and query.filters.kinds == ('story',))
         if story and not self.story_supported():
             raise SourceGateDenied('native story semantics unavailable')
         if type(query) is FactReadRequest and not self.facts_supported():
@@ -167,9 +188,10 @@ class SourceReadGate:
         q = read.query
         catalog = type(q) is SourceReadRequest
         fact = type(q) is FactReadRequest
-        story = type(q) is StoryReadRequest
-        exact = catalog or fact or type(q) in (PassageReadRequest,StoryReadRequest)
-        if (type(result) is not (SourceReadResult if catalog else FactReadResult if fact else StoryReadResult if story else PassageReadResult if exact else QueryResult)
+        editorial=type(q) is EditorialReadRequest
+        story = type(q) in (StoryReadRequest,EditorialReadRequest)
+        exact = catalog or fact or type(q) in (PassageReadRequest,StoryReadRequest,EditorialReadRequest)
+        if (type(result) is not (SourceReadResult if catalog else FactReadResult if fact else EditorialReadResult if editorial else StoryReadResult if story else PassageReadResult if exact else QueryResult)
                 or (result.request_id, result.connection_generation, result.turn_generation)
                     != (q.request_id, q.connection_generation, q.turn_generation)):
             raise SourceGateDenied('result request binding differs')
@@ -217,7 +239,9 @@ class SourceReadGate:
         if story and (not self.story_supported() or result.record['story_id']!=q.story_id
                 or result.record['view']!=q.view or q.revision is not None and result.record['revision']!=q.revision
                 or len(result.record['entries'])>q.limit
-                or any(e['revision']<=q.after_revision for e in result.record['entries'])):
+                or q.view=='history' and any(e['revision']<=q.after_revision for e in result.record['entries'])
+                or editorial and q.view=='variants' and q.after_variant_id is not None and
+                    any(e['variant_id']<=q.after_variant_id for e in result.record['entries'])):
             raise SourceGateDenied('exact story provenance differs')
         if exact and not story and not fact and not catalog and (len(result.evidence) != 1 or result.evidence[0].id != q.locator.passage_id
                 or result.evidence[0].dependencies.source_revisions != (q.locator.source,)
@@ -242,7 +266,9 @@ class SourceReadGate:
                 if item.kind!='story' or not self.story_supported():return False
                 try:
                     prefix,variant,revision=item.exact_variant_ref.split(':')
-                    return (prefix=='variant' and str(UUID(variant))==variant and revision=='r1'
+                    return (prefix=='variant' and str(UUID(variant))==variant and
+                        (revision=='r1' or self.catalog_supported() and revision.startswith('r') and revision[1:].isascii()
+                         and revision[1:].isdecimal() and str(int(revision[1:]))==revision[1:] and 1<=int(revision[1:])<2**63)
                         and item.dependencies.variant_refs==(item.exact_variant_ref,)
                         and item.text_form=='complete' and item.continuation is None
                         and item.source_continuation is None and len(item.dependencies.source_ids)==1)
@@ -281,7 +307,7 @@ class SourceReadGate:
     def _closed(result, reason):
         return result.model_copy(update={'status': 'unavailable' if reason != 'access_denied' else 'denied',
             **({'mode': None, 'continuation': None} if type(result) is QueryResult else
-                {'record':None} if type(result) is StoryReadResult else
+                {'record':None} if type(result) in (StoryReadResult,EditorialReadResult) else
                 {'records':(),'next_cursor':None} if type(result) is FactReadResult else
                 {'records':()} if type(result) is SourceReadResult else {}),
             'reason': reason, 'evidence': (),

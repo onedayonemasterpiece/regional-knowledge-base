@@ -22,6 +22,7 @@ from .kaggle_fact_contracts import FactReadRequest
 from .kaggle_source_read import SourceReadRequest
 from .query_telemetry import ReadRuntime
 from .read_authority import TrustedReadDestination, VerifiedReadAuthority
+from .kaggle_editorial_contracts import EditorialReadRequest,EditorialReadResult,editorial_cursor,parse_editorial_cursor
 from .read_issuance import retain_read_output
 from .read_telemetry import ReadTelemetry
 
@@ -179,7 +180,8 @@ class KaggleSourceBackend:
 
     @staticmethod
     def _render_story(result, *, attempt):
-        return {**(result.record or {}),'status':result.status,'reason':result.reason,
+        return {**(result.record or {}),**({'next_cursor':editorial_cursor(result.record,result.observed_database_generation)}
+            if type(result) is EditorialReadResult and result.record is not None else {}),'status':result.status,'reason':result.reason,
             'observed_data_seq':result.observed_data_seq,'observed_projection_seq':result.observed_projection_seq,
             'read_trace':ReadTrace(**attempt.correlation(),
                 backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json')}
@@ -195,7 +197,7 @@ class KaggleSourceBackend:
                 backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json'))
 
     async def _search(self, query, principal, *, evidence, source_ids=None, limit=3, exact_locator=None,
-                      story_request=None,fact_request=None,catalog_request=None,kinds=('source',),trusted=None):
+                      story_request=None,fact_request=None,catalog_request=None,kinds=('source',),trusted=None,story_cursor_generation=None):
         # One budget includes auth, admission, network, native execution and gate.
         deadline = min(time.monotonic()+2,trusted['deadline']) if trusted is not None else time.monotonic()+2
         telemetry = self.read_telemetry
@@ -224,6 +226,8 @@ class KaggleSourceBackend:
                         raise PermissionError('adapter destination differs')
                     await self.read_authority.require(authority,'public_search')
                 binding = await asyncio.to_thread(current_binding, self.worker_queue)
+                if story_cursor_generation is not None and story_cursor_generation!=binding.database_generation:
+                    raise PublicQueryInvalid
                 try:
                     identity = dict(request_id=attempt.request_id,
                         connection_generation=binding.connection_generation,
@@ -234,7 +238,7 @@ class KaggleSourceBackend:
                         deadline_ms=max(1, int((deadline-time.monotonic())*1000)))
                     request = (SourceReadRequest(**catalog_request,**identity) if catalog_request is not None else
                         FactReadRequest(**fact_request,**identity) if fact_request is not None else
-                        StoryReadRequest(**story_request,**identity) if story_request is not None else
+                        (EditorialReadRequest if self.source_gate.catalog_supported() else StoryReadRequest)(**story_request,**identity) if story_request is not None else
                         PassageReadRequest(locator=exact_locator, **identity) if exact_locator is not None else
                         Query(query=query, filters=filters, evidence_limit=limit, **identity))
                 except (ValueError, TypeError):
@@ -347,16 +351,24 @@ class KaggleSourceBackend:
             story_id=story_id,revision=revision,view='get',limit=limit))
 
     async def story_history(self,story_id,principal,*,from_revision=None,to_revision=None,limit=10,cursor=None):
-        if cursor is not None or to_revision not in (None,1) or from_revision not in (None,1) or not 1<=limit<=10:
+        current=self.source_gate.catalog_supported()
+        if to_revision is not None or (not current and (cursor is not None or from_revision not in (None,1))) or not 1<=limit<=10:
             raise ToolError('{"status":"unavailable","reason":"unsupported_target_story_history"}')
-        return await self._search(None,principal,evidence=True,kinds=('story',),story_request=dict(
-            story_id=story_id,view='history',limit=limit))
+        params=dict(story_id=story_id,view='history',limit=limit,after_revision=max(0,(from_revision or 1)-1));generation=None
+        if cursor is not None:
+            if from_revision is not None:raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
+            try:page,generation=parse_editorial_cursor(cursor,story_id=story_id,view='history');params.update(page)
+            except (ValueError,TypeError):raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
+        return await self._search(None,principal,evidence=True,kinds=('story',),story_request=params,story_cursor_generation=generation)
 
     async def story_variants(self,story_id,principal,*,limit=10,cursor=None):
-        if cursor is not None or not 1<=limit<=10:
+        if (cursor is not None and not self.source_gate.catalog_supported()) or not 1<=limit<=10:
             raise ToolError('{"status":"unavailable","reason":"unsupported_target_story_variants"}')
-        return await self._search(None,principal,evidence=True,kinds=('story',),story_request=dict(
-            story_id=story_id,view='variants',limit=limit))
+        params=dict(story_id=story_id,view='variants',limit=limit);generation=None
+        if cursor is not None:
+            try:page,generation=parse_editorial_cursor(cursor,story_id=story_id,view='variants');params.update(page)
+            except (ValueError,TypeError):raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
+        return await self._search(None,principal,evidence=True,kinds=('story',),story_request=params,story_cursor_generation=generation)
 
     async def story_search(self,query,principal,*,filters=None,mode='hybrid',order='updated',limit=3,cursor=None):
         if filters or mode!='hybrid' or order!='updated' or cursor is not None or not 1<=limit<=5:

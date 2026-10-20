@@ -64,6 +64,7 @@ def _variant(value,findings):
         elif block.assertion_revision is not None:raise ValueError('stray assertion revision')
     if extra and value['body_sha256']!=hashlib.sha256(value['body'].encode()).hexdigest():raise ValueError('exact saved body hash required')
     if source:
+        if value['revision']!=1:raise ValueError('imported source blocks belong only to baseline revision1')
         end=0
         if type(value['source_blocks']) is not list or not 1<=len(value['source_blocks'])<=32:raise ValueError('bounded source blocks required')
         for block in value['source_blocks']:
@@ -138,3 +139,29 @@ class EditorialReadResult(PassageReadResult):
         if r['next_variant_id'] is not None:_uuid(r['next_variant_id'])
         if r['view']=='edit_context' and r['role'] is not None and r['role'] not in ROLES:raise ValueError('fixed current Story role required')
         return self
+
+
+def editorial_cursor(record,database_generation):
+    import base64
+    after=record['next_revision'] if record['view']=='history' else record['next_variant_id']
+    if after is None:return None
+    value=dict(codec='rkb.editorial-cursor.v1',story_id=record['story_id'],view=record['view'],
+        database_generation=database_generation,revision=record['revision'] if record['view']=='variants' else None,after=after)
+    return base64.urlsafe_b64encode(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).decode().rstrip('=')
+
+
+def parse_editorial_cursor(cursor,*,story_id,view):
+    import base64
+    if type(cursor) is not str or not 1<=len(cursor)<=2048:raise ValueError('bounded editorial cursor required')
+    raw=base64.b64decode(cursor+'='*((-len(cursor))%4),altchars=b'-_',validate=True);value=json.loads(raw)
+    if (type(value) is not dict or set(value)!={'codec','story_id','view','database_generation','revision','after'}
+            or value['codec']!='rkb.editorial-cursor.v1' or value['story_id']!=story_id or value['view']!=view
+            or type(value['database_generation']) is not str or not 1<=len(value['database_generation'])<=256):
+        raise ValueError('exact scoped editorial cursor required')
+    if view=='history':
+        if value['revision'] is not None:raise ValueError('history cursor is ordered by immutable revision')
+        _revision(value['after']);result=dict(after_revision=value['after'])
+    elif view=='variants':
+        _uuid(value['after']);_revision(value['revision']);result=dict(after_variant_id=value['after'],revision=value['revision'])
+    else:raise ValueError('page cursor requires history or variants')
+    return result,value['database_generation']

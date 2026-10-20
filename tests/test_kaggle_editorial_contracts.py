@@ -45,3 +45,13 @@ def test_forged_editorial_output_fails_closed(change):
     if change=='revision':r['variant']['revision']=True
     if change=='role':r.update(view='edit_context',role='owner-override')
     with pytest.raises((ValueError,TypeError)):result(r)
+
+
+def test_editorial_page_cursor_is_bound_to_story_view_generation_and_snapshot():
+    from regional_knowledge.kaggle_editorial_contracts import editorial_cursor,parse_editorial_cursor
+    r=record();r.update(view='variants',next_variant_id=r['default_variant_ref']['variant_id'],revision=3,current_revision=3)
+    cursor=editorial_cursor(r,'db-current')
+    page,generation=parse_editorial_cursor(cursor,story_id=r['story_id'],view='variants')
+    assert generation=='db-current' and page==dict(after_variant_id=r['next_variant_id'],revision=3)
+    with pytest.raises(ValueError):parse_editorial_cursor(cursor,story_id=r['story_id'],view='history')
+    with pytest.raises(ValueError):parse_editorial_cursor(cursor,story_id='00000000-0000-0000-0000-000000000005',view='variants')
