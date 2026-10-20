@@ -518,7 +518,8 @@ BEGIN
  FOREACH cid IN ARRAY wanted LOOP
   maps:='{"heads":{},"versions":{},"grants":{},"evidence":{},"contributions":{},"conclusions":{},"events":{},"drafts":{},"draft_versions":{},"publications":{},"receipts":{}}'::jsonb;
   head:=NULL;ordinal:=0;
-  FOR receipt IN SELECT a.* FROM rkb_v4.applied_ops a WHERE a.status='applied'
+  FOR receipt IN SELECT a.operation_key,a.sequence,a.status,a.command_bytes,a.command_sha256,a.outcome_bytes
+   FROM rkb_v4.applied_ops a WHERE a.status='applied'
    AND convert_from(a.command_bytes,'UTF8')::jsonb->>'route' IN
     ('disagreement.edit.v1','disagreement.access.v1','disagreement.draft.v1','disagreement.publish.v1')
    AND convert_from(a.command_bytes,'UTF8')::jsonb->'ids'->>'case_id'=cid::text ORDER BY a.sequence LOOP
