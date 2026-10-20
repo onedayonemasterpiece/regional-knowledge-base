@@ -26,6 +26,7 @@ MAX_SOURCE_DISPATCH_BYTES = 2 * 1024 * 1024
 MAX_SOURCE_RESULT_BYTES = 16 * 1024
 MAX_RECOVERY_DISPATCH_BYTES = 4 * 1024 * 1024
 MAX_RECOVERY_RESULT_BYTES = 128 * 1024
+MAX_BOOTSTRAP_BYTES = 1536 * 1024
 SEND_QUEUE_FRAMES = 8
 RECONCILE_SECONDS = .25
 SEND_TIMEOUT_SECONDS = 5
@@ -36,7 +37,7 @@ def _decode(message):
     raw = message.get('bytes')
     if raw is None:
         raw = message.get('text', '').encode('utf-8')
-    if len(raw) > RESULT_MAX_BYTES:
+    if len(raw) > MAX_BOOTSTRAP_BYTES:
         raise ValueError('frame_size')
     def unique(pairs):
         result = {}
@@ -50,7 +51,9 @@ def _decode(message):
     frame = json.loads(raw, object_pairs_hook=unique, parse_constant=nonfinite)
     if not isinstance(frame, dict) or type(frame.get('protocol_version')) is not int or frame['protocol_version'] != 2:
         raise ValueError('protocol')
-    if frame.get('type') not in ('QUERY_RESULT','PASSAGE_READ_RESULT','RECOVERY_PHASE_RESULT') and len(raw) > MAX_FRAME_BYTES:
+    if frame.get('type')!='BOOTSTRAP_OBSERVATION' and len(raw)>RESULT_MAX_BYTES:
+        raise ValueError('frame_size')
+    if frame.get('type') not in ('QUERY_RESULT','PASSAGE_READ_RESULT','RECOVERY_PHASE_RESULT','BOOTSTRAP_OBSERVATION') and len(raw) > MAX_FRAME_BYTES:
         raise ValueError('frame_size')
     if frame.get('type')=='SOURCE_COMMAND_RESULT' and len(raw)>MAX_SOURCE_RESULT_BYTES:
         raise ValueError('source_receipt_size')
@@ -298,6 +301,18 @@ def channel_route(queue):
                         await shared.finish_read(run_id, token, generation, result)
                         # Ephemeral response: no durable ACK, receipt, replay or
                         # release of actual compute is implied by this frame.
+                    elif frame['type']=='BOOTSTRAP_OBSERVATION':
+                        _fields(frame,(*common,'observation'))
+                        if not observed.get('runtime_required') or promoted:
+                            raise ValueError('unexpected_bootstrap_observation')
+                        receipt=await queue_call(queue.record_bootstrap_observation,run_id,token,generation,frame['observation'])
+                        runtime_readiness=frame['observation']['runtime_readiness']
+                        # Candidate exists, but promote() cannot grant serving
+                        # until trusted local finalization replaces only the
+                        # initial bootstrap expectation in one CAS.
+                        ready=True;runtime_blocked=None
+                        await send('BOOTSTRAP_ACK',observation_sha256=receipt,status='observed_not_ready')
+                        await promote(observed)
                     elif frame['type'] == 'READY':
                         _fields(frame, (*common, 'space', 'model_revision'), ('runtime_readiness',))
                         if frame['space'] != SPACE or frame['model_revision'] != REVISION:

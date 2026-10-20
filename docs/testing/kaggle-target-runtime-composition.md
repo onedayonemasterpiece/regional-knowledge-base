@@ -6,6 +6,27 @@ an existing Stage0 prepared inventory rooted in `/kaggle/working`, independently
 observed dependency and native catalog hashes, and an explicit owned database binding.
 No environment variable silently creates this authority or supplies a new journal.
 
+For a first real warm bootstrap, `bootstrap_only=True` requires both dependency
+and catalog pins to be `None`. Before ATTACH, source assembly freezes the other
+four hashes, exact SQL/native/package plan and finite bootstrap deadline. After
+actual PG and BGE preparation, the worker emits BOOTSTRAP_OBSERVATION with bounded
+native catalog bytes and actual dependency metadata, rather than READY. Reads and
+normal document/source jobs stay closed. The trusted controller independently
+reviews those bytes and calls `queue.finalize_bootstrap_runtime` with their exact
+observation digest, full SearchRuntimeExpectation and retained review reference.
+This one-time transition requires the same current attachment/incarnation/provider
+version before the deadline and cannot alter any frozen anchor. WSS has no pin
+finalization operation. The retained candidate can then promote without a reload;
+unfinalized workers stop at the finite deadline and drain runtime cleanup. A later
+active manifest change still requires the ordinary ordered update barrier.
+
+Native child processes receive a clean PATH/LANG/LC_ALL environment. Only library
+directories containing exact files in a current retained native bundle may enter
+LD_LIBRARY_PATH; ambient LD_PRELOAD/LD_LIBRARY_PATH are excluded. The configured
+nonroot numeric service account must resolve to the exact configured primary GID
+before initdb. The same exported verified_native_environment helper is available
+to owned backup/restore tools.
+
 For the real controller invocation, serialize exactly `TargetLaunchSpec.wire()`
 to a bounded regular JSON configuration file. `load_target_launch(path)` reconstructs
 the typed database, Stage0 and native bundle descriptors and rejects unknown or

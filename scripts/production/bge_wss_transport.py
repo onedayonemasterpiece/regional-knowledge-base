@@ -77,6 +77,8 @@ class BgeWssTransport:
         self.changed = asyncio.Event()
         self.shared_reads, self.query_handler = shared, query_handler
         self.prepare_runtime, self.prepared_runtime = prepare_runtime, None
+        self.bootstrap_only=bool(config.get('target_runtime',{}).get('bootstrap_only'))
+        self.bootstrap_finalized=False
         self.source_handler = None
         if recovery_handler is not None and (not shared or not (inspect.iscoroutinefunction(recovery_handler)
                 or inspect.iscoroutinefunction(getattr(recovery_handler,'__call__',None)))):
@@ -383,6 +385,8 @@ class BgeWssTransport:
                     frame = {'type': 'READY', 'space': SPACE, 'model_revision': REVISION}
                     if self.prepared_runtime is not None:
                         frame['runtime_readiness'] = self.prepared_runtime.readiness.to_wire()
+                        if self.prepared_runtime.bootstrap_observation is not None:
+                            frame={'type':'BOOTSTRAP_OBSERVATION','observation':self.prepared_runtime.bootstrap_observation}
                     await put(frame)
                     ready_sent = True
                 if self.pending is not None and result_sent != (self.pending['job_id'], self.pending['claim']):
@@ -498,7 +502,11 @@ class BgeWssTransport:
                     if self.waiting_job is not None:
                         job, self.waiting_job = self.waiting_job, None
                         self._start(job)
-                elif kind not in ('READY_ACK', 'HEARTBEAT_ACK'):
+                elif kind=='READY_ACK':
+                    if self.bootstrap_only and frame.get('status')=='ready':
+                        self.bootstrap_finalized=True
+                        self._lifetime_timeout.reschedule(self._overall_deadline)
+                elif kind not in ('HEARTBEAT_ACK','BOOTSTRAP_ACK'):
                     raise ValueError('unexpected channel frame')
 
         tasks = [asyncio.create_task(coro()) for coro in (writer, heartbeat, states, reader)]
@@ -538,9 +546,13 @@ class BgeWssTransport:
                     yield Adapter()
 
         deadline = asyncio.get_running_loop().time() + self.maximum_seconds
+        self._overall_deadline=deadline
+        bootstrap_deadline=(asyncio.get_running_loop().time()+self.config['target_runtime'].get('bootstrap_seconds',900)
+            if self.bootstrap_only else deadline)
         attempt = 0
         try:
-            async with asyncio.timeout_at(deadline):
+            async with asyncio.timeout_at(min(deadline,bootstrap_deadline)) as lifetime:
+                self._lifetime_timeout=lifetime
                 while not self.stop.is_set():
                     self._failure(self.loading)
                     self._failure(self.encoding)

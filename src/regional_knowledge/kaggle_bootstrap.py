@@ -285,6 +285,7 @@ class PreparedRuntime:
     query_handler: object
     readiness: CandidateReadiness
     source_handler: object = None
+    bootstrap_observation: object = None
 
     def __post_init__(self):
         if (not (inspect.iscoroutinefunction(self.query_handler)
@@ -297,6 +298,11 @@ class PreparedRuntime:
                 inspect.iscoroutinefunction(self.source_handler)
                 or inspect.iscoroutinefunction(getattr(self.source_handler,'__call__',None))):
             raise BootstrapUnavailable('source_handler_invalid')
+
+
+def observe_dependencies(packages):
+    return {'python':sys.version,'machine':platform.machine(),'libc':list(platform.libc_ver()),
+        'packages':{p:importlib.metadata.version(p) for p in packages}}
 
 
 async def prepare_resident_runtime(encoder, *, acquire, probe_database, launch_config,
@@ -324,8 +330,7 @@ async def prepare_resident_runtime(encoder, *, acquire, probe_database, launch_c
             if (not 1 <= len(packages) <= 64 or len(set(packages)) != len(packages)
                     or any(not _text(p) for p in packages) or not REQUIRED_DEPENDENCIES <= set(packages)):
                 raise BootstrapUnavailable('dependency_inventory_invalid')
-            dependencies = {'python': sys.version, 'machine': platform.machine(), 'libc': platform.libc_ver(),
-                'packages': {p: importlib.metadata.version(p) for p in packages}}
+            dependencies = observe_dependencies(packages)
             config_bytes = _json(launch_config)
             if len(config_bytes) > 65536:
                 raise BootstrapUnavailable('launch_config_bound')

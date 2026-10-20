@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import signal
 import stat
+import pwd
 from collections.abc import Mapping
 from types import MappingProxyType
 
@@ -173,6 +174,7 @@ class OwnedPostgres:
             raise TypeError('typed owned PG specification required')
         self.spec, self.connect, self.spawn = spec, connect, spawn
         self.process = None
+        self.native_env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'}
 
     def _identity(self):
         spec = self.spec
@@ -189,7 +191,7 @@ class OwnedPostgres:
         spec = self.spec
         process = await self.spawn(*args, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            **self._identity())
+            env=self.native_env,**self._identity())
         try:
             async with asyncio.timeout(timeout):
                 # pg_config/initdb output is bounded; drain at most 64KiB.
@@ -245,6 +247,14 @@ class OwnedPostgres:
                 raise BootstrapUnavailable('native_pg_artifact_hash_mismatch')
         pins=[(path,*entry) for path,entry in verified.items()]
         await asyncio.to_thread(grant_native_code_access,artifacts.root,pins,uid=spec.uid,gid=spec.gid)
+        if native_bundle is not None:
+            from .kaggle_native_env import verified_native_environment
+            self.native_env=await asyncio.to_thread(verified_native_environment,native_bundle)
+        try:
+            account=pwd.getpwuid(spec.uid)
+            if account.pw_gid!=spec.gid:raise KeyError
+        except KeyError:
+            raise BootstrapUnavailable('native_pg_service_account_unverified') from None
         files = {name:(Path(sql_root)/name).read_bytes() for name in SQL_ARTIFACTS}
         if intent.get('sql_hashes') != {name:digest(data) for name,data in files.items()}:
             raise BootstrapUnavailable('native_pg_sql_binding_mismatch')
@@ -278,7 +288,7 @@ class OwnedPostgres:
             '-c','work_mem=4MB','-c','maintenance_work_mem=16MB','-c','max_wal_size=64MB',
             '-c','min_wal_size=32MB',stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL,
-            **self._identity())
+            env=self.native_env,**self._identity())
         async with asyncio.timeout(20):
             while True:
                 if self.process.returncode is not None:

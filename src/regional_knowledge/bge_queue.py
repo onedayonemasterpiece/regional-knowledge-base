@@ -392,11 +392,25 @@ class BgeQueue:
                 accepted_generation INTEGER,observed_json TEXT)''')
             db.execute('INSERT INTO bge_runtime_expectations(run_id,expected_json) VALUES(?,?)',(run_id,data))
 
+    def expect_bootstrap_runtime(self,run_id,expected):
+        from .kaggle_bootstrap_pins import expect_bootstrap
+        return expect_bootstrap(self,run_id,expected)
+
+    def record_bootstrap_observation(self,run_id,token,generation,value):
+        from .kaggle_bootstrap_pins import record_observation
+        return record_observation(self,run_id,token,generation,value)
+
+    def finalize_bootstrap_runtime(self,run_id,expected,*,observation_sha256,review_evidence):
+        from .kaggle_bootstrap_pins import finalize_bootstrap
+        return finalize_bootstrap(self,run_id,expected,observation_sha256=observation_sha256,review_evidence=review_evidence)
+
     def _runtime_check(self, db, run, generation, observation):
         from .kaggle_readiness import (SearchRuntimeExpectation, RunIdentity, Validation,
                                        validate_search_runtime)
         row=self._runtime_row(db,run['id'])
         if row is None:raise ValueError('unexpected target runtime observation')
+        if json.loads(row['expected_json']).get('codec')=='rkb.bootstrap-expectation.v1':
+            return Validation(('bootstrap_finalization_required',))
         if run['provider_version'] is None or not run['provider_ref']:
             return Validation(('provider_pending',))
         expected=SearchRuntimeExpectation(**json.loads(row['expected_json']))

@@ -35,6 +35,8 @@ class TargetLaunchSpec:
     command_handlers: tuple[dict, ...] = ()
     stage0: object = None
     native_bundle: object = None
+    bootstrap_only: bool = False
+    bootstrap_seconds: int = 900
 
     def __post_init__(self):
         if type(self.database) is not OwnedDatabase:
@@ -54,7 +56,12 @@ class TargetLaunchSpec:
                 or len(set(self.dependency_packages)) != len(self.dependency_packages)
                 or len(self.dependency_packages)>64
                 or not isinstance(self.stage0_receipt,str) or not 1<=len(self.stage0_receipt.encode())<=256
-                or any(not re.fullmatch('[0-9a-f]{64}',v) for v in (self.dependency_sha256,self.schema_sha256))
+                or type(self.bootstrap_only) is not bool or type(self.bootstrap_seconds) is not int
+                or not 30<=self.bootstrap_seconds<=1800
+                or (self.bootstrap_only and (self.database.mode!='NEW_EMPTY_GENERATION'
+                    or self.dependency_sha256 is not None or self.schema_sha256 is not None))
+                or (not self.bootstrap_only and any(type(v) is not str or not re.fullmatch('[0-9a-f]{64}',v)
+                    for v in (self.dependency_sha256,self.schema_sha256)))
                 or type(self.min_data_seq) is not int or not 0<=self.min_data_seq<2**63):
             raise ValueError('independent Stage0 dependency/schema pins required')
         if self.database.mode == 'VERIFIED_INITIALIZED':
@@ -119,7 +126,8 @@ class TargetLaunchSpec:
             stage0_receipt=self.stage0_receipt,initialized_receipt=self.initialized_receipt,
             min_data_seq=self.min_data_seq,command_handlers=list(self.command_handlers),
             stage0=self.stage0.wire() if self.stage0 is not None else None,
-            native_bundle=self.native_bundle.wire() if self.native_bundle is not None else None)
+            native_bundle=self.native_bundle.wire() if self.native_bundle is not None else None,
+            bootstrap_only=self.bootstrap_only,bootstrap_seconds=self.bootstrap_seconds)
 
 
 class TargetRuntime:
@@ -190,6 +198,7 @@ class TargetRuntime:
         # The native catalog hash and actual current writer binding have
         # independent checks. A receipt cannot substitute for a database read.
         catalog, fields = await self.probe(acquire=acquire)
+        self._bootstrap_catalog=catalog
         async with asyncio.timeout(3):
             async with acquire() as connection:
                 async with connection.transaction():
@@ -261,7 +270,14 @@ class TargetRuntime:
             source_handler=WorkerSourceExecutor(acquire=self.writer_pool.connection,
                 registry=fixed_registry(self.database,self.target['command_handlers']),database=self.database,
                 run_id=run_id,launch_nonce=launch_nonce,runtime_incarnation=runtime_incarnation)
-        self.prepared = PreparedRuntime(invoke,readiness,source_handler)
+        observation=None
+        if self.target.get('bootstrap_only'):
+            import base64
+            from .kaggle_bootstrap import observe_dependencies
+            dependencies=await asyncio.to_thread(observe_dependencies,self.target['dependency_packages'])
+            observation=dict(runtime_readiness=readiness.to_wire(),dependencies=dependencies,
+                catalog_b64=base64.b64encode(self._bootstrap_catalog).decode())
+        self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation)
         return self.prepared
 
     async def aclose(self):

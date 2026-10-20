@@ -15,7 +15,8 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
     'kaggle_readiness','kaggle_worker_query','kaggle_database_probe','kaggle_bootstrap',
     'kaggle_owned_pg','kaggle_target_runtime','kaggle_apply','recovery_journal','query_telemetry',
     'source_import','kaggle_source_commands','kaggle_stage0','kaggle_restored_database','kaggle_native_bundle',
-    'kaggle_environment','kaggle_pg_snapshot_native','kaggle_recovery_phases','kaggle_snapshot_channel','native_snapshot_transfer')
+    'kaggle_environment','kaggle_pg_snapshot_native','kaggle_recovery_phases','kaggle_snapshot_channel',
+    'native_snapshot_transfer','kaggle_bootstrap_pins','kaggle_native_env')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 
 
@@ -160,7 +161,16 @@ if __name__ == '__main__':
             artifacts=role_hash({'weight','model_config','tokenizer'})))),schema=target.schema_sha256)
     database = target.database
     # Final source hash is persisted outside its own source bytes: no self hash.
-    queue.expect_search_runtime(config['run_id'],SearchRuntimeExpectation(hashes,
-        database.database_generation,database.schema_revision,database.function_revision,
-        database.executor_revision,target.min_data_seq))
+    if target.bootstrap_only:
+        from .kaggle_bootstrap_pins import BootstrapRuntimeExpectation,ANCHORS
+        if target.stage0 is None or target.native_bundle is None:
+            raise ValueError('bootstrap requires complete pinned native and package plan')
+        queue.expect_bootstrap_runtime(config['run_id'],BootstrapRuntimeExpectation(
+            {key:hashes[key] for key in ANCHORS},database.database_generation,database.schema_revision,
+            database.function_revision,database.executor_revision,target.stage0.packages,
+            target.native_bundle.manifest_sha256,intent['sql_hashes'],target.bootstrap_seconds,target.min_data_seq))
+    else:
+        queue.expect_search_runtime(config['run_id'],SearchRuntimeExpectation(hashes,
+            database.database_generation,database.schema_revision,database.function_revision,
+            database.executor_revision,target.min_data_seq))
     return source
