@@ -38,6 +38,19 @@ def test_concrete_builder_combines_full_receipts_without_fake_ready_pins(native_
     assert target.database.cluster.startswith('/kaggle/temp/rkb-')
     assert len(target.stage0.wheels)==len(lock['packages'])
     assert len(target.artifacts)==len(lock['packages'])+8
+    if parser_enabled:
+        from regional_knowledge.kaggle_target_launch import source_bundle
+        from regional_knowledge.kaggle_stage0 import _inventory,MAX_PREPARED_FILES
+        _,_,source_entries=source_bundle(Path(__file__).resolve().parents[1])
+        combined=list(target.artifacts)+source_entries
+        prepared=dict(root=target.artifact_root,entries=combined,
+            max_total_bytes=sum(item['size'] for item in combined))
+        assert 128<len(combined)<=MAX_PREPARED_FILES
+        assert len(_inventory(prepared))==len(combined)
+        overflow=[dict(name='overflow/'+str(n),size=1,sha256=sha(b'x'),role='code')
+            for n in range(MAX_PREPARED_FILES+1)]
+        with pytest.raises(ValueError,match='stage0_prepared_inventory_required'):
+            _inventory(dict(prepared,entries=overflow))
     restored=target_launch_from_wire(json.loads(json.dumps(target.wire())))
     assert restored.wire()==target.wire()
     if parser_enabled:

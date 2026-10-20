@@ -25,6 +25,10 @@ import urllib.request
 
 TRUSTED_ROOT = Path('/kaggle/working')
 MAX_FILES = 128
+# Fresh11's measured source/domain closure plus PDF runtime has130 entries.
+# Download and wheel budgets remain128; only the complete prepared inventory
+# includes the additional immutable generated source files.
+MAX_PREPARED_FILES = 144
 MAX_FILE_BYTES = 16 * 1024**3
 MAX_TOTAL_BYTES = 64 * 1024**3
 CHUNK_BYTES = 1024 * 1024
@@ -185,7 +189,7 @@ def _inventory(prepared):
     if (type(prepared) is not dict or set(prepared)!={'root','entries','max_total_bytes'}
             or type(prepared['root']) is not str or prepared['root'] != str(TRUSTED_ROOT)
             or type(prepared['entries']) not in (list,tuple)
-            or not 1<=len(prepared['entries'])<=MAX_FILES):
+            or not 1<=len(prepared['entries'])<=MAX_PREPARED_FILES):
         raise ValueError('stage0_prepared_inventory_required')
     _integer(prepared['max_total_bytes'],1,MAX_TOTAL_BYTES)
     inventory={}

@@ -10,6 +10,7 @@ from .kaggle_owned_pg import SQL_ARTIFACTS, STORY_SQL_ARTIFACTS, FACT_SQL_ARTIFA
 from .kaggle_readiness import SearchRuntimeExpectation
 from .kaggle_target_runtime import TargetLaunchSpec
 from .recovery_journal import RecoveryJournal
+from .kaggle_stage0 import MAX_PREPARED_FILES
 
 MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_search',
     'kaggle_readiness','kaggle_worker_query','kaggle_database_probe','kaggle_bootstrap',
@@ -88,7 +89,7 @@ def compose_target(template,config,target,*,queue,repository):
     relative,files,code_entries = source_bundle(repository)
     root = Path(target.artifact_root)
     entries = [dict(e) for e in target.artifacts] + code_entries
-    if len({e['name'] for e in entries}) != len(entries) or len(entries)>128:
+    if len({e['name'] for e in entries}) != len(entries) or len(entries)>MAX_PREPARED_FILES:
         raise ValueError('unique bounded final artifact inventory required')
     intent = read_empty_intent(queue,config['run_id'])
     if target.database.mode == 'NEW_EMPTY_GENERATION':
