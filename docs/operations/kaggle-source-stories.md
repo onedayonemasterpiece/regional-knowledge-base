@@ -6,6 +6,12 @@ remain unchanged. New writes require the ordered revision tuple
 `rkb-v4-sql001-007-v1` / `rkb-v4-source-story-import-v2` /
 `rkb-python-apply-v1`; a builder does not authorize or install that transition.
 
+The existing notebook controller pins the selected native migration prefix when
+persisting its empty-generation intent. A schema-007 launch includes exactly
+001–007 there; the legacy schema-006 launch retains exactly 001–006. Source
+assembly and native initialization verify the same hashes. Merely shipping the
+007 file in a bundle does not authorize executing it in a schema-006 generation.
+
 Each staged candidate remains an immutable source finding even when it produces
 no Story. `basic_variant` supplies an actual body plus a complete Unicode-offset
 evidence map; title and summary have no body fallback. A missing body is either

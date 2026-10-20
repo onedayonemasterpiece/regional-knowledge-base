@@ -147,6 +147,27 @@ async def test_empty_head_read_unknown_never_records_intent(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_controller_intent_includes_the_selected_native_story_migration(tmp_path):
+    from test_bge_controller import controller
+    from regional_knowledge.source_import_v2 import STORY_REVISIONS
+    from regional_knowledge.kaggle_owned_pg import STORY_SQL_ARTIFACTS
+    queue,run=queue_run(tmp_path)
+    base=spec(fresh=True)
+    target=replace(base,database=replace(base.database,schema_revision=STORY_REVISIONS.schema,
+        function_revision=STORY_REVISIONS.function,executor_revision=STORY_REVISIONS.executor))
+    _,journal=journal_fixture()
+    selected=controller().target_sql_hashes(target,ROOT)
+    assert tuple(selected)==STORY_SQL_ARTIFACTS
+    await persist_empty_intent(queue,run,target,launch_nonce=queue.prepare_channel(run),
+        recovery_journal=journal,sql_hashes=selected)
+    # Without migration 007 in the controller's intent the real composer
+    # refuses to generate a launch. This does not push a notebook or open PG.
+    generated=generate(queue,run,target)
+    ast.parse(generated)
+    assert '007_source_stories.sql' in generated
+
+
+@pytest.mark.asyncio
 async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg():
     events=[];loop=asyncio.get_running_loop()
     target=spec()
