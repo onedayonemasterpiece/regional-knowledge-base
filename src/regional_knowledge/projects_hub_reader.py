@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import hashlib
-import hmac
 import json
 import math
 import os
@@ -134,10 +133,10 @@ async def _connected_read(request, operation):
 
 
 class ProjectsHubReader:
-    def __init__(self, *, backend, read_authority, service_id, token, provider_tenant, bindings, current):
+    def __init__(self, *, backend, read_authority, service_id, credential_id, credential_epoch, provider_tenant, bindings, current):
         if (backend.read_authority is not read_authority or not callable(getattr(backend,'search_adapter',None))
                 or type(service_id) is not str or not re.fullmatch(r'[A-Za-z0-9._-]{1,80}',service_id)
-                or type(token) is not str or not 32 <= len(token) <= 4096
+                or not _canonical_uuid(credential_id) or type(credential_epoch) is not int or credential_epoch<1
                 or type(provider_tenant) is not str or not re.fullmatch(r'[A-Za-z0-9._:/-]{1,120}',provider_tenant)
                 or not callable(current)):
             raise ValueError('explicit target reader and technical scope required')
@@ -155,20 +154,21 @@ class ProjectsHubReader:
         if not 1 <= len(parsed) <= 32:
             raise ValueError('bounded nonempty delegation scope required')
         self.backend, self.authority = backend, read_authority
-        self.service_id, self.token_hash = service_id, hashlib.sha256(token.encode()).digest()
+        self.service_id,self.credential_id,self.credential_epoch=service_id,credential_id,credential_epoch
+        self.provider=read_authority.provider
+        if not callable(getattr(self.provider,'verify_service_credential',None)):
+            raise ValueError('existing provisioned service authority required')
         self.tenant, self.bindings, self.current = provider_tenant, parsed, current
 
     @classmethod
     def from_file(cls, path, *, backend):
         config = PrivateInput(path, 16384)
         value = json.loads(config.value)
-        if type(value) is not dict or set(value) != {'codec','service_id','service_token_file','provider_tenant','bindings'} or value['codec'] != 'rkb.ph-reader.v2':
+        if type(value) is not dict or set(value) != {'codec','service_id','service_credential_id','service_credential_epoch','provider_tenant','bindings'} or value['codec'] != 'rkb.ph-reader.v2':
             raise ValueError('exact PH reader configuration required')
-        credential = PrivateInput(value['service_token_file'], 4096)
-        token = credential.value.decode().strip()
         return cls(backend=backend, read_authority=backend.read_authority, service_id=value['service_id'],
-            token=token, provider_tenant=value['provider_tenant'], bindings=value['bindings'],
-            current=lambda: config.current() and credential.current())
+            credential_id=value['service_credential_id'],credential_epoch=value['service_credential_epoch'],
+            provider_tenant=value['provider_tenant'], bindings=value['bindings'],current=config.current)
 
     def _query(self, value):
         required = {'codec','query','actor_sub','workspace_id','provider_tenant','link_id','link_revision',
@@ -196,7 +196,8 @@ class ProjectsHubReader:
         token = supplied[7:] if supplied.startswith('Bearer ') else ''
         if (not client or client[0] != '127.0.0.1' or not self.current()
                 or request.headers.get('x-rkb-service') != self.service_id
-                or not hmac.compare_digest(hashlib.sha256(token.encode()).digest(),self.token_hash)):
+                or request.headers.get('x-rkb-service-credential')!=self.credential_id
+                or request.headers.get('x-rkb-service-epoch')!=str(self.credential_epoch) or not 32<=len(token)<=128):
             return JSONResponse({'error':'service_scope_required'},status_code=403)
         context = None
         authority = None
@@ -210,6 +211,10 @@ class ProjectsHubReader:
                         raise ValueError('request bound')
             value = json.loads(raw)
             context = self._query(value)
+            service=self.provider.verify_service_credential(token,service_id=self.service_id,
+                credential_id=self.credential_id,epoch=self.credential_epoch,provider_tenant=self.tenant,workspace_id=value['workspace_id'])
+            if service is None:
+                raise PermissionError('provisioned service scope unavailable')
             if context.deadline_monotonic <= time.monotonic():
                 return JSONResponse(failure(context,'deadline_exceeded'))
             destination_ref = hashlib.sha256(json.dumps([self.tenant,value['workspace_id'],value['actor_sub']],separators=(',',':')).encode()).hexdigest()
@@ -227,7 +232,7 @@ class ProjectsHubReader:
                         deadline_monotonic=context.deadline_monotonic,destination=destination,limit=value['max_evidence']))
                     if len(calls) != 1:
                         raise RuntimeError('current output provenance required')
-                    calls[0].gate = _ServiceFence(calls[0].gate,lambda: self.current() and time.monotonic() < context.deadline_monotonic)
+                    calls[0].gate = _ServiceFence(calls[0].gate,lambda: self.current() and self.provider.service_credential_current(service) and time.monotonic() < context.deadline_monotonic)
                     bind_json_output(request,calls,context.request_id,lambda output:render(output,context),lambda:failure(context))
                     return JSONResponse(render(result,context),headers={'Cache-Control':'no-store'})
         except asyncio.CancelledError:

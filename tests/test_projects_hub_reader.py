@@ -17,7 +17,7 @@ from test_read_authority import auth
 from test_kaggle_public_backend import target, work, settle, release
 from test_kaggle_service_startup import service
 
-TOKEN='synthetic-dedicated-service-'+('x'*40)
+from regional_knowledge.service_auth import new_service_token
 
 
 def linked(s):
@@ -33,12 +33,17 @@ def linked(s):
 
 def setup(s,*,row=None,current=lambda:True):
     row=row or linked(s)
+    ident,token=new_service_token()
+    s.auth.provider.issue_service_credential(s.auth.p.admin,service_id='projects-hub-reader',token=token,
+        scope=dict(operation='knowledge_search',provider='projects_hub',provider_tenant='ph.fixture',workspace_ids=[row['workspace_id']]),
+        expires_at=s.auth.now[0]+86400,reason='synthetic service scope')
     reader=ProjectsHubReader(backend=s.backend,read_authority=s.auth.resolver,service_id='projects-hub-reader',
-        token=TOKEN,provider_tenant='ph.fixture',bindings=[row],current=current)
+        credential_id=ident,credential_epoch=1,provider_tenant='ph.fixture',bindings=[row],current=current)
     app=ReadIssuanceMiddleware(Starlette(routes=[Route(PATH,reader.__call__,methods=['POST'])]))
     body=dict(codec='rkb.knowledge-query.v2',query='actual query',**row,provider_tenant='ph.fixture',
         request_id='actual-ph-request',turn_generation=7,min_data_seq=5,deadline_monotonic=time.monotonic()+2,max_evidence=3)
-    headers={'Authorization':'Bearer '+TOKEN,'X-RKB-Service':'projects-hub-reader'}
+    headers={'Authorization':'Bearer '+token,'X-RKB-Service':'projects-hub-reader',
+        'X-RKB-Service-Credential':ident,'X-RKB-Service-Epoch':'1'}
     return reader,app,body,headers
 
 
@@ -149,9 +154,41 @@ async def test_real_server_registers_receiver_only_when_explicit_and_for_same_ta
     from regional_knowledge.server import build_server
     startup=service.startup
     row=linked(service.target)
+    ident,token=new_service_token()
     receiver=ProjectsHubReader(backend=startup.backend,read_authority=startup.authority,service_id='projects-hub-reader',
-        token=TOKEN,provider_tenant='ph.fixture',bindings=[row],current=lambda:True)
+        credential_id=ident,credential_epoch=1,provider_tenant='ph.fixture',bindings=[row],current=lambda:True)
     absent=build_server(target_startup=startup).streamable_http_app(stateless_http=True,json_response=True)
     enabled=build_server(target_startup=startup,projects_hub_receiver=receiver).streamable_http_app(stateless_http=True,json_response=True)
     assert not any(getattr(route,'path',None)==PATH for route in absent.routes)
     assert any(getattr(route,'path',None)==PATH for route in enabled.routes)
+
+
+@pytest.mark.asyncio
+async def test_provisioned_service_epoch_revoke_is_checked_at_final_http_issuance(target):
+    s=target;reader,app,body,headers=setup(s)
+    original=s.gate.refresh
+    async def refresh(gated):
+        s.auth.provider.revoke_service_credential(s.auth.p.admin,reader.credential_id,expected_epoch=1,reason='revoke technical reader')
+        return await original(gated)
+    s.gate.refresh=refresh
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app,client=('127.0.0.1',9001)),base_url='http://127.0.0.1') as client:
+        task=asyncio.create_task(client.post(PATH,json=body,headers=headers));dispatched=await work(s)
+        await settle(s,dispatched);value=(await task).json()
+        assert value['evidence']==[] and value['mode'] is None and value['context_gap']
+        assert not s.auth.resolver._contexts
+        await release(s,dispatched)
+
+
+@pytest.mark.asyncio
+async def test_receiver_private_descriptor_references_existing_credential_without_reading_secret(target,tmp_path):
+    import json
+    s=target;original,app,body,headers=setup(s)
+    config=tmp_path/'reader.json'
+    config.write_text(json.dumps(dict(codec='rkb.ph-reader.v2',service_id=original.service_id,
+        service_credential_id=original.credential_id,service_credential_epoch=1,provider_tenant='ph.fixture',
+        bindings=[{key:body[key] for key in ('actor_sub','workspace_id','link_id','link_revision')}])));config.chmod(0o600)
+    reader=ProjectsHubReader.from_file(config,backend=s.backend)
+    assert reader.credential_id==original.credential_id and reader.current()
+    config.chmod(0o640)
+    assert not reader.current()
+    with pytest.raises(ValueError):ProjectsHubReader.from_file(config,backend=s.backend)

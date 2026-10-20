@@ -34,6 +34,7 @@ from pydantic import AnyHttpUrl, AnyUrl
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response, JSONResponse
 from .personal_auth import PersonalOAuthMixin
+from .service_auth import ServiceOAuthMixin
 
 
 KNOWLEDGE_SCOPE = "knowledge:manage"
@@ -87,6 +88,8 @@ class _EncryptedStateStore:
             "sessions": {},
             "personal_credentials": {},
             "personal_audit": {},
+            "service_credentials": {},
+            "service_audit": {},
         }
 
     def _load_or_create_key(self) -> bytes:
@@ -153,6 +156,18 @@ class _EncryptedStateStore:
             self._prune(state)
             return callback(state)
 
+    def try_read(self, callback):
+        """Read-only final service fence: lock contention withholds output."""
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            with self._file_lock(exclusive=False, nonblocking=True):
+                return callback(self._read())
+        except BlockingIOError:
+            return None
+        finally:
+            self._lock.release()
+
     def mutate(self, callback: Callable[[dict[str, Any]], Any]) -> Any:
         with self._lock, self._file_lock(exclusive=True):
             state = self._read()
@@ -162,7 +177,7 @@ class _EncryptedStateStore:
             return result
 
     @contextmanager
-    def _file_lock(self, *, exclusive):
+    def _file_lock(self, *, exclusive, nonblocking=False):
         # The stable lock inode survives atomic state-file replacement. Native
         # credential CLI and web workers must not lose each other's grants.
         path = self.state_file.with_name(self.state_file.name + ".lock")
@@ -170,7 +185,7 @@ class _EncryptedStateStore:
         try:
             if os.fstat(fd).st_mode & 0o077:
                 raise RuntimeError("OAuth lock must be private")
-            fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | (fcntl.LOCK_NB if nonblocking else 0))
             yield
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
@@ -193,7 +208,7 @@ class _EncryptedStateStore:
                     del state[bucket][key]
 
 
-class RegionalOAuthProvider(PersonalOAuthMixin):
+class RegionalOAuthProvider(PersonalOAuthMixin, ServiceOAuthMixin):
     """Resource OAuth with current canonical-person policy and explicit consent."""
 
     def __init__(

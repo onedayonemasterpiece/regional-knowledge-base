@@ -20,8 +20,10 @@ forwarded addresses cannot satisfy the loopback check.
 A reviewer must substitute the observed existing RKB loopback port and stable
 private state paths. Neither service may point at a temporary artifact or venv.
 Files are absolute, bounded regular files, mode 0600, outside source control.
-The credential is a separate file holding a dedicated random service secret.
-Changing either descriptor or credential invalidates the retained configuration;
+The PH credential file is produced only by the existing local owner auth CLI.
+RKB holds only the provisioned ID/epoch; the existing encrypted auth authority
+verifies its token digest, fixed technical scope, enabled state and expiry.
+Changing the descriptor invalidates the retained configuration;
 a deliberate reviewed process restart loads a replacement.
 
 RKB descriptor (`RKB_PROJECTS_HUB_READER_CONFIG`):
@@ -30,7 +32,8 @@ RKB descriptor (`RKB_PROJECTS_HUB_READER_CONFIG`):
 {
   "codec": "rkb.ph-reader.v2",
   "service_id": "projects-hub-reader",
-  "service_token_file": "/ABSOLUTE/PRIVATE/ph-rkb-reader.token",
+  "service_credential_id": "PROVISIONED_TECHNICAL_CREDENTIAL_UUID",
+  "service_credential_epoch": 1,
   "provider_tenant": "REVIEWED_STABLE_PH_TENANT",
   "bindings": [{
     "actor_sub": "usr_VERIFIED_PH_ACTOR",
@@ -59,6 +62,13 @@ turn generation, minimum data sequence and the same-host absolute monotonic
 sequences, prior-write-pending and context gaps are explicit. Unavailable or stale
 results carry no evidence or success mode. Normal acceptance requires actual
 hybrid retrieval; lexical degradation is not product acceptance.
+
+Technical issue/list/revoke/audit and crash reconciliation are documented in
+[service credentials](service-credentials.md). The dedicated credential never
+authenticates as a person and cannot be exchanged at the OAuth token endpoint.
+Current service epoch and scope are rechecked without waiting on a busy auth
+writer; contention withholds output. Revocation commits and reads back in the
+existing encrypted store before returning, without a notebook/corpus command.
 
 Activation remains blocked until reviewed configuration, verified links, compatible
 API target composition and target readiness exist. Preserve all currently running
