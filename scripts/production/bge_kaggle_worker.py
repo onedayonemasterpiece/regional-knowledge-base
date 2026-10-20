@@ -24,6 +24,9 @@ def load_encoder():
     global _MODEL_LOAD_COUNT
     prepared = RUN_CONFIG.get('prepared_model')
     artifacts = None
+    if RUN_CONFIG.get('stage0') is not None:
+        from regional_knowledge.kaggle_stage0 import prepare_stage0
+        prepare_stage0(prepared,RUN_CONFIG['stage0'])
     if prepared is not None:
         from regional_knowledge.kaggle_bootstrap import PreparedArtifact, verify_artifacts, ResidentEncoder
         from regional_knowledge.kaggle_readiness import ArtifactRequirement
