@@ -108,6 +108,7 @@ class SharedReadAdmission:
         self._loop=None
         self._reads={}
         self._documents={}
+        self._commands={}
         self._attachment=None
         self._state='unknown'
         self._work=None
@@ -223,9 +224,26 @@ class SharedReadAdmission:
         self._active()
         if not isinstance(context,RequestAuthority):raise TypeError('internal RequestAuthority required')
         actor=await asyncio.to_thread(self.authority.participants.require,context,'import')
-        if len(self._documents)>=256 and actor not in self._documents:
+        if len(set(self._documents)|set(self._commands)|{actor})>256:
             raise AdmissionUnavailable('document authority capacity exhausted')
         self._documents[actor]=context
+        self._event.set()
+        return actor
+
+    async def register_command_actor(self,context,command):
+        """Only the retained existing bridge may authorize its exact command.
+
+        This context is distinct from document import authority. Registering a
+        Story editor never makes that person's arbitrary document rows eligible.
+        """
+        self._active()
+        bridge=self.queue._source_commands
+        if bridge is None:raise PermissionError('retained accepted command bridge required')
+        bridge.spool.registry.resolve(command)
+        actor=await bridge.spool.authorize_command(context,command)
+        if len(set(self._documents)|set(self._commands)|{actor})>256:
+            raise AdmissionUnavailable('canonical durable actor capacity exhausted')
+        self._commands[actor]=context
         self._event.set()
         return actor
 
@@ -246,7 +264,7 @@ class SharedReadAdmission:
 
     async def _snapshot(self, run_id, token, generation, *, observe=True):
         run,owner,docs,resumed=await asyncio.to_thread(self.queue._admission_snapshot,run_id,token,generation,
-                                                    document_actors=tuple(self._documents))
+                                                    document_actors=tuple(self._documents),command_actors=tuple(self._commands))
         if owner['run_id'] is not None and (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation']):
             raise StaleAttachment('prior compute resource remains unknown')
         if observe:self._observe_attachment(run,generation)
@@ -391,6 +409,13 @@ class SharedReadAdmission:
                     if maintenance is not None and maintenance.eligible(doc,run,connection_generation):eligible.append(doc)
                     continue
                 if not ready:continue
+                if doc['kind']=='source_command':
+                    context=self._commands.get(doc['actor'])
+                    if context is not None and self.queue._source_commands is not None:
+                        try:actor=await self.queue._source_commands.authorize_job(context,doc)
+                        except (PermissionError,ValueError,LookupError):actor=None
+                        if actor==doc['actor']:eligible.append(doc)
+                    continue
                 context=self._documents.get(doc['actor'])
                 if context is not None:
                     if doc['actor'] not in authorized:
@@ -550,7 +575,7 @@ class SharedReadAdmission:
         return {'state':self._state,'pending_reads':len(self._reads),
                 'resource':self._work.resource if self._work else None,
                 'document_result_pending':self._document_result is not None,
-                'document_contexts':len(self._documents)}
+                'document_contexts':len(self._documents),'command_contexts':len(self._commands)}
 
     def close(self):
         """Shutdown only: never clears persistent ownership or compute debt."""

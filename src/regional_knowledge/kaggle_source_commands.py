@@ -47,6 +47,12 @@ def decode_command(data):
         elif command.route=='source.import.v3':
             from .source_import_v3 import validate_import_v3_command
             validate_import_v3_command(command)
+        elif command.route=='source.import.v4':
+            from .source_import_v4 import validate_import_v4_command
+            validate_import_v4_command(command)
+        elif command.route in ('story.edit.v1','story.access.v1'):
+            from .story_editorial import validate_story_edit_command,validate_story_access_command
+            (validate_story_edit_command if command.route=='story.edit.v1' else validate_story_access_command)(command)
         elif (command.route!=SOURCE_WITHDRAW or command.kind!='domain_command'
               or set(command.ids)!={'source_id'} or set(command.expected_revisions)!={'eligibility_revision'}
               or command.payload!=b'{"withdrawn":true}'):
@@ -115,7 +121,7 @@ def fixed_registry(database,entries):
     from .kaggle_apply import DependencySpec
     handlers=[]
     revisions=Revisions(database.schema_revision,database.function_revision,database.executor_revision)
-    if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=3:raise ValueError('fixed source registry required')
+    if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=6:raise ValueError('fixed source registry required')
     for entry in entries:
         if not isinstance(entry,dict) or set(entry)!={'route','check_sha256','apply_sha256'}:raise ValueError('fixed source registry pins required')
         if entry['route']==SOURCE_IMPORT:
@@ -126,6 +132,15 @@ def fixed_registry(database,entries):
         elif entry['route']=='source.import.v3':
             from .source_import_v3 import source_import_v3_handler
             handler=source_import_v3_handler(revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
+        elif entry['route']=='source.import.v4':
+            from .source_import_v4 import source_import_v4_handler
+            from .story_editorial import EDITORIAL_REVISIONS
+            if revisions!=EDITORIAL_REVISIONS:raise ValueError('explicit editorial revision required')
+            handler=source_import_v4_handler(check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
+        elif entry['route'] in ('story.edit.v1','story.access.v1'):
+            from .story_editorial import editorial_handler,EDITORIAL_REVISIONS
+            if revisions!=EDITORIAL_REVISIONS:raise ValueError('explicit editorial revision required')
+            handler=editorial_handler(route=entry['route'],check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
         elif entry['route']==SOURCE_WITHDRAW:
             handler=HandlerSpec('domain_command',SOURCE_WITHDRAW,revisions,
                 PgFunction('check_source_withdraw_v1',entry['check_sha256']),PgFunction('apply_source_withdraw_v1',entry['apply_sha256']),
@@ -201,20 +216,24 @@ class AcceptedSourceDispatch:
         self.queue._source_commands=self
 
     async def enqueue(self,context,key,*,writer_generation):
-        actor=await self.spool._authorize(context)
         entry=await self.spool.get(key)
+        actor=await self.spool.authorize_command(context,entry.command)
         if entry.command.person_id!=actor or entry.accepted is None:
             raise PermissionError('original actor and remote accepted source command required')
         command_hash=await self.spool.journal.verify_accepted(entry.accepted,entry.command)
         if command_hash!=entry.command_sha256:raise PermissionError('accepted source bytes differ')
         if not isinstance(writer_generation,str) or not 1<=len(writer_generation)<=256:
             raise ValueError('exact current writer generation required')
-        await self.queue.shared_reads.register_document_actor(context)
+        await self.queue.shared_reads.register_command_actor(context,entry.command)
         identity=dict(operation_key=key,command_sha256=command_hash,database_generation=entry.database_generation,
             writer_generation=writer_generation,sequence=entry.command.sequence)
         job=await asyncio.to_thread(self.queue._enqueue_source_command,self,actor,identity)
         self.queue.shared_reads.wake()
         return job
+
+    async def authorize_job(self,context,job):
+        entry,_=await self._entry(job,verify=False)
+        return await self.spool.authorize_command(context,entry.command)
 
     async def _entry(self,job,*,verify=True):
         identity=json.loads(job['identity'])
