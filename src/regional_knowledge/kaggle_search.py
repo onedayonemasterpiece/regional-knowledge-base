@@ -36,6 +36,17 @@ class SearchEvidence:
 
 
 @dataclass(frozen=True)
+class StorySearchEvidence:
+    record: dict
+
+    @property
+    def source_id(self):return self.record['source']['source_id']
+
+    @property
+    def revision(self):return self.record['source']['content_revision']
+
+
+@dataclass(frozen=True)
 class SearchResult:
     evidence: tuple[SearchEvidence, ...]
     incomplete: bool = True
@@ -77,12 +88,13 @@ async def fused_search(connection, query: str, *,
             or not 0 < timeout_seconds <= 2):
         raise ValueError("deadline must be within 2 seconds")
     source_ids = None
+    story = type(filters) is QueryFilters and filters.kinds == ("story",)
     if filters is not None:
         if type(filters) is not QueryFilters:
             raise ValueError("filters must be QueryFilters")
         # Revalidate even constructed instances before inference or SQL.
         filters = QueryFilters.model_validate(filters.model_dump())
-        if filters.kinds is not None and filters.kinds != ("source",):
+        if filters.kinds is not None and filters.kinds not in (("source",),("story",)):
             raise ValueError("unsupported search kinds")
         if filters.source_ids is not None:
             try:
@@ -142,7 +154,10 @@ async def fused_search(connection, query: str, *,
                     await execute("SET LOCAL hnsw.max_scan_tuples = 1000")
                     await execute("SET LOCAL hnsw.ef_search = 100")
                     began = loop.time()
-                    if source_ids is None:
+                    if story:
+                        await execute("SELECT * FROM rkb_v4.story_lexical_candidates_v1(%s,%s,%s::uuid[])",
+                                      (query,candidate_budget,source_ids))
+                    elif source_ids is None:
                         await execute("SELECT * FROM rkb_v4.lexical_candidates(%s, %s)",
                                       (query, candidate_budget))
                     else:
@@ -153,7 +168,10 @@ async def fused_search(connection, query: str, *,
                         stage_timings["lexical_ms"] = (loop.time() - began) * 1000
                     vector = vector_literal(await asyncio.shield(encoding))
                     began = loop.time()
-                    if source_ids is None:
+                    if story:
+                        await execute("SELECT * FROM rkb_v4.story_dense_candidates_v1(%s::public.vector,%s,%s::uuid[])",
+                                      (vector,candidate_budget,source_ids))
+                    elif source_ids is None:
                         await execute("SELECT * FROM rkb_v4.dense_candidates(%s::public.vector, %s)",
                                       (vector, candidate_budget))
                     else:
@@ -168,7 +186,9 @@ async def fused_search(connection, query: str, *,
                             scores[passage_id] += 1 / (60 + rank)
                     ids = sorted(scores, key=lambda key: (-scores[key], str(key)))[:top_k]
                     began = loop.time()
-                    if source_ids is None:
+                    if story:
+                        await execute("SELECT * FROM rkb_v4.story_hydrate_v1(%s::uuid[],%s::uuid[])", (ids,source_ids))
+                    elif source_ids is None:
                         await execute("SELECT * FROM rkb_v4.hydrate(%s::uuid[])", (ids,))
                     else:
                         await execute("SELECT * FROM rkb_v4.hydrate_scoped(%s::uuid[], %s::uuid[])",
@@ -176,8 +196,9 @@ async def fused_search(connection, query: str, *,
                     rows = await cursor.fetchall()
                     if stage_timings is not None:
                         stage_timings["hydrate_ms"] = (loop.time() - began) * 1000
-                    result = SearchResult(tuple(SearchEvidence(str(r[0]), str(r[1]), *r[2:])
-                                              for r in rows), limitation=(
+                    result = SearchResult(tuple(StorySearchEvidence(r[1]) if story else
+                                              SearchEvidence(str(r[0]), str(r[1]), *r[2:])
+                                              for r in rows if not story or r[1] is not None), limitation=(
                         "bounded_candidate_fusion_unverified" if source_ids is not None
                         else "bounded_ann_recall_unverified"))
                     if snapshot_finish is not None:

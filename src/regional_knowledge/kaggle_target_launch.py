@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from .bge_contract import REVISION, SPACE
-from .kaggle_owned_pg import SQL_ARTIFACTS, canonical, digest
+from .kaggle_owned_pg import SQL_ARTIFACTS, STORY_SQL_ARTIFACTS, sql_artifacts, canonical, digest
 from .kaggle_readiness import SearchRuntimeExpectation
 from .kaggle_target_runtime import TargetLaunchSpec
 from .recovery_journal import RecoveryJournal
@@ -17,7 +17,8 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
     'source_import','kaggle_source_commands','kaggle_stage0','kaggle_restored_database','kaggle_native_bundle',
     'kaggle_environment','kaggle_pg_snapshot_native','kaggle_recovery_phases','kaggle_snapshot_channel',
     'native_snapshot_transfer','kaggle_bootstrap_pins','kaggle_native_env','kaggle_source_acl','kaggle_source_history_native',
-    'original_intake','kaggle_original_native','kaggle_original_parser','file_ingress','source_adapter','ingestion')
+    'original_intake','kaggle_original_native','kaggle_original_parser','file_ingress','source_adapter','ingestion',
+    'source_import_v2','story_contracts','kaggle_story_read')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 
 
@@ -25,7 +26,7 @@ def source_bundle(repository):
     repository = Path(repository)
     files = {f'regional_knowledge/{name}.py':(repository/'src/regional_knowledge'/f'{name}.py').read_bytes()
              for name in MODULES}
-    files.update({f'sql/{name}':(repository/'sql/kaggle'/name).read_bytes() for name in SQL_ARTIFACTS})
+    files.update({f'sql/{name}':(repository/'sql/kaggle'/name).read_bytes() for name in STORY_SQL_ARTIFACTS})
     if sum(map(len,files.values())) > MAX_SOURCE_BYTES:
         raise ValueError('immutable target source byte budget exceeded')
     manifest = {name:digest(data) for name,data in sorted(files.items())}
@@ -88,7 +89,7 @@ def compose_target(template,config,target,*,queue,repository):
         raise ValueError('unique bounded final artifact inventory required')
     intent = read_empty_intent(queue,config['run_id'])
     if target.database.mode == 'NEW_EMPTY_GENERATION':
-        sql_hashes = {name:digest(base64.b64decode(files['sql/'+name])) for name in SQL_ARTIFACTS}
+        sql_hashes = {name:digest(base64.b64decode(files['sql/'+name])) for name in sql_artifacts(target.database.schema_revision)}
         if (intent is None or intent['database']!=target.database.wire()
                 or intent['run_id']!=config['run_id'] or intent['launch_nonce']!=config['launch_nonce']
                 or intent.get('native_bundle')!=(target.native_bundle.wire() if target.native_bundle is not None else None)

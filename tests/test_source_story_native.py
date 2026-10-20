@@ -185,3 +185,26 @@ async def test_native_story_origin_and_authored_receipt_are_exact(native):
         await conn.execute("UPDATE rkb_v4.story_variant_versions SET body='tampered body',body_sha256=encode(sha256(convert_to('tampered body','UTF8')),'hex'),data=jsonb_set(data,'{body}',to_jsonb('tampered body'::text)) WHERE variant_id=%s",(VARIANT,))
         assert await(await conn.execute('SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])',([SOURCE],))).fetchone()==(False,)
 
+@pytest.mark.asyncio
+async def test_native_typed_get_history_variants_and_resident_search_return_saved_body(native):
+    from regional_knowledge.kaggle_story_read import execute_story_read
+    from regional_knowledge.kaggle_query import execute_query,PinnedTokenizer
+    from regional_knowledge.kaggle_protocol import Query,QueryFilters,StoryReadRequest,StoryReadResult
+    from regional_knowledge.bge_contract import REVISION,TOKENIZER_SHA256,SPACE
+    await apply(native,command());doc=payload();body=doc['semantic']['stories'][0]['default_variant']['body']
+    @asynccontextmanager
+    async def acquire():
+        conn,fd=await connect()
+        try:yield conn
+        finally:await conn.close();os.close(fd)
+    identity=dict(request_id='actual-native-story-read',connection_generation=1,turn_generation=1,min_data_seq=1,
+        deadline_ms=1900,actor=dict(person_id=command().person_id,audience='public',auth_epoch=0,visibility_epoch=0))
+    for view in ('get','history','variants'):
+        result=await execute_story_read(StoryReadRequest(story_id=STORY,view=view,**identity),acquire=acquire)
+        assert type(result) is StoryReadResult and result.status=='ok' and result.record['body']==body
+    async def count(_):return 2
+    async def encode(_):return doc['semantic']['stories'][0]['default_variant']['embedding']
+    result=await execute_query(Query(query='fictional gate',filters=QueryFilters(kinds=('story',)),**identity),
+        acquire=acquire,tokenizer=PinnedTokenizer(count,REVISION,TOKENIZER_SHA256,SPACE),encode=encode)
+    assert result.mode=='hybrid' and result.status=='degraded' and result.evidence[0].text==body
+    assert result.evidence[0].exact_variant_ref==f'variant:{VARIANT}:r1'

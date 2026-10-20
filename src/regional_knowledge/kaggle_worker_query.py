@@ -14,7 +14,7 @@ import math
 from .bge_contract import REVISION, SPACE, TOKENIZER_SHA256
 from .kaggle_protocol import (
     QUERY_MAX_BYTES, Query, QueryResult, PassageReadRequest, PassageReadResult,
-    ReadIdentity, decode_envelope, encode_envelope,
+    StoryReadRequest, StoryReadResult, ReadIdentity, decode_envelope, encode_envelope,
 )
 from .kaggle_query import PinnedTokenizer, execute_query, execute_passage_read
 from .query_telemetry import NativeReadTelemetry
@@ -38,8 +38,8 @@ def _identity(frame):
         raise WorkerQueryInputError('invalid worker QUERY identity') from None
 
 
-def _failure(identity, reason, *, invalid=False, observed=None, exact=False):
-    result_type = PassageReadResult if exact else QueryResult
+def _failure(identity, reason, *, invalid=False, observed=None, exact=False,story=False):
+    result_type = StoryReadResult if story else PassageReadResult if exact else QueryResult
     return result_type(**identity.model_dump(), status='invalid_query' if invalid else 'unavailable',
         **({} if exact else {'mode': None}), evidence=(), reason=reason,
         observed_data_seq=observed.observed_data_seq if observed else None,
@@ -102,15 +102,16 @@ class KaggleWorkerQuery:
         loop = asyncio.get_running_loop()
         started = loop.time()
         identity = _identity(frame_dict)
-        exact = frame_dict.get('type') == 'PASSAGE_READ'
+        story = frame_dict.get('type')=='STORY_READ'
+        exact = story or frame_dict.get('type') == 'PASSAGE_READ'
         def failure(reason, **kwargs):
-            return _failure(identity, reason, exact=exact, **kwargs)
+            return _failure(identity, reason, exact=exact, story=story, **kwargs)
         try:
             raw = json.dumps(frame_dict, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')
             if len(raw) > QUERY_MAX_BYTES:
                 return _wire(failure('query_too_large', invalid=True))
             query = decode_envelope(raw)
-            if (type(query) not in (Query, PassageReadRequest) or query.compute_claim is None
+            if (type(query) not in (Query, PassageReadRequest, StoryReadRequest) or query.compute_claim is None
                     or len(query.compute_claim.encode('utf-8')) > 256
                     or not 1 <= query.deadline_ms <= 2000):
                 raise ValueError
@@ -131,10 +132,14 @@ class KaggleWorkerQuery:
         deadline = started + query.deadline_ms / 1000
         query = query.model_copy(update={'deadline_ms': remaining})
         try:
-            result = (await execute_passage_read(query, acquire=self.acquire) if exact else
+            if story:
+                from .kaggle_story_read import execute_story_read
+                result=await execute_story_read(query,acquire=self.acquire)
+            else:
+                result = (await execute_passage_read(query, acquire=self.acquire) if exact else
                 await execute_query(query, acquire=self.acquire, tokenizer=self.tokenizer,
                                     encode=encode, telemetry=self.telemetry))
-            result_type = PassageReadResult if exact else QueryResult
+            result_type = StoryReadResult if story else PassageReadResult if exact else QueryResult
             if type(result) is not result_type or any(getattr(result, key) != getattr(identity, key)
                     for key in ('request_id', 'connection_generation', 'turn_generation')):
                 raise ValueError('executor result identity mismatch')

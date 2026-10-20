@@ -77,3 +77,21 @@ schema7 selects001..007. The schema7 reader receives only the fixed four Story
 read functions and their required read tables; the origin verifier uses the
 separate trusted maintenance connection. No existing generation is adopted or
 modified by this selection.
+
+
+The typed `STORY_READ` request uses the existing shared read admission and fixed
+`read_story_v1` function for get/history/variants. It does no tokenizer count or
+model forward. A seventh native test executes these typed reads and the same
+resident hybrid search pipeline against actual PG, returning the exact accepted
+body/default variant. The seven-test fixture passed in7.927s. Existing Query
+Story search uses fixed indexed lexical/dense candidates, the same RRF and
+batched hydration, and explicitly reports bounded retrieval. The output gate
+requires the installed v2 revision7 handler, validates exact Story records,
+checks current source facts, and removes body plus all nested metadata/history
+on source restriction. Explicit StoryB is unaffected by unrelated pendingA.
+
+The trusted `search_adapter` seam accepts an already retained adapter authority,
+exact destination and request/turn/minimum-cursor/absolute deadline. It shares
+the same source pipeline, authority recheck, admission and final issuance guard;
+it creates no fake OAuth principal and transfers release ownership through the
+request-local output boundary. Missing final output capture remains unavailable.

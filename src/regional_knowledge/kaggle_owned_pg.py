@@ -33,6 +33,16 @@ _LOG=logging.getLogger(__name__)
 
 SQL_ARTIFACTS = ('001_search.sql', '002_recovery.sql', '003_search_scope.sql',
                  '004_read_fences.sql', '005_source_withdraw.sql', '006_source_import.sql')
+STORY_SQL_ARTIFACTS=SQL_ARTIFACTS+('007_source_stories.sql',)
+
+def sql_artifacts(schema_revision):
+    if schema_revision=='rkb-v4-sql001-007-v1':return STORY_SQL_ARTIFACTS
+    return SQL_ARTIFACTS
+
+STORY_READER_FUNCTIONS=('read_story_v1(uuid,text,bigint,bigint,integer)',
+    'story_lexical_candidates_v1(text,integer,uuid[])','story_dense_candidates_v1(public.vector,integer,uuid[])',
+    'story_hydrate_v1(uuid[],uuid[])')
+
 READER_FUNCTIONS = ('lexical_candidates(text,integer)', 'dense_candidates(public.vector,integer)',
     'hydrate(uuid[])', 'checked_source_scope(uuid[])', 'lexical_candidates_scoped(text,integer,uuid[])',
     'dense_candidates_scoped(public.vector,integer,uuid[])', 'hydrate_scoped(uuid[],uuid[])')
@@ -353,7 +363,8 @@ class OwnedPostgres:
             if account.pw_gid!=spec.gid:raise KeyError
         except KeyError:
             raise BootstrapUnavailable('native_pg_service_account_unverified') from None
-        files = {name:(Path(sql_root)/name).read_bytes() for name in SQL_ARTIFACTS}
+        selected_sql=sql_artifacts(spec.schema_revision)
+        files = {name:(Path(sql_root)/name).read_bytes() for name in selected_sql}
         if intent.get('sql_hashes') != {name:digest(data) for name,data in files.items()}:
             raise BootstrapUnavailable('native_pg_sql_binding_mismatch')
         await asyncio.to_thread(ensure_private_runtime_root,native_uid=spec.uid,native_gid=spec.gid)
@@ -416,13 +427,13 @@ class OwnedPostgres:
             await admin.commit()
             async with admin.transaction():
                 await admin.execute('CREATE EXTENSION vector WITH SCHEMA public')
-                for name in SQL_ARTIFACTS[:2]:
+                for name in selected_sql[:2]:
                     await admin.execute(files[name].decode(),prepare=False)
             await initialize_database(admin,database_generation=spec.database_generation,
                 writer_generation=spec.writer_generation,
                 revisions=Revisions(spec.schema_revision,spec.function_revision,spec.executor_revision))
             async with admin.transaction():
-                for name in SQL_ARTIFACTS[2:]:
+                for name in selected_sql[2:]:
                     await admin.execute(files[name].decode(),prepare=False)
                 await admin.execute('''CREATE ROLE rkb_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
                     CREATE ROLE rkb_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
@@ -437,7 +448,11 @@ class OwnedPostgres:
                     GRANT SELECT ON rkb_v4.sources,rkb_v4.revisions,rkb_v4.active_revision,
                         rkb_v4.passage_search,rkb_v4.recovery_state,rkb_v4.read_frontier,
                         rkb_v4.source_visibility TO rkb_reader;''',prepare=False)
-                for signature in READER_FUNCTIONS:
+                if spec.schema_revision=='rkb-v4-sql001-007-v1':
+                    await admin.execute('GRANT SELECT ON rkb_v4.source_regions,rkb_v4.story_assertion_versions,'
+                        'rkb_v4.stories,rkb_v4.story_versions,rkb_v4.story_variant_versions,rkb_v4.story_search,'
+                        'rkb_v4.source_story_pending,rkb_v4.story_history_receipts TO rkb_reader')
+                for signature in READER_FUNCTIONS+(STORY_READER_FUNCTIONS if len(selected_sql)==7 else ()):
                     await admin.execute('GRANT EXECUTE ON FUNCTION rkb_v4.'+signature+' TO rkb_reader')
                 await admin.execute(sql.SQL('REVOKE ALL ON DATABASE {} FROM PUBLIC').format(sql.Identifier(spec.dbname)))
                 await admin.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO rkb_writer,rkb_reader').format(sql.Identifier(spec.dbname)))

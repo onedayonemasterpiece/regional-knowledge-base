@@ -66,7 +66,7 @@ def _unavailable(query, reason, observed, *, invalid=False):
 
 
 def _scope(query):
-    if query.filters.kinds is not None and query.filters.kinds != ("source",):
+    if query.filters.kinds is not None and query.filters.kinds not in (("source",),("story",)):
         raise ReadUnavailable("invalid_filters")
     if query.filters.source_ids is not None:
         try:
@@ -190,8 +190,14 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
                     for hit in searched.evidence:
                         # Share finite text budget across remaining items; preserve all<=5.
                         per_item = min(8000, budget // (len(searched.evidence) - len(evidence)))
-                        entry = _item(hit, dependencies[hit.source_id], observed["visibility"],
-                                      database_generation=observed["database"], text_budget=per_item)
+                        if query.filters.kinds == ("story",):
+                            from .kaggle_story_read import story_item
+                            entry = story_item(hit.record)
+                            if entry.dependencies.source_revisions != (dependencies[hit.source_id],):
+                                raise ReadUnavailable("not_ready")
+                        else:
+                            entry = _item(hit, dependencies[hit.source_id], observed["visibility"],
+                                          database_generation=observed["database"], text_budget=per_item)
                         budget -= len(entry.text)
                         evidence.append(entry)
                     result = QueryResult(**_identity(query), status="degraded", mode="hybrid",
