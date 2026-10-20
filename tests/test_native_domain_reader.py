@@ -22,6 +22,8 @@ from regional_knowledge.kaggle_case_contracts import CaseReadRequest
 from regional_knowledge.kaggle_case_read import execute_case_read
 from regional_knowledge.kaggle_geo_contracts import GeoReadRequest
 from regional_knowledge.kaggle_geo_read import execute_geo_read
+from regional_knowledge.kaggle_source_graph_read import SourceGraphReadRequest,execute_source_graph_read
+from regional_knowledge.source_graph import resolve_source_graph
 from regional_knowledge.kaggle_protocol import Query,PassageReadRequest,PassageContinuation
 from regional_knowledge.kaggle_query import execute_query,execute_passage_read,PinnedTokenizer
 from regional_knowledge.bge_contract import REVISION,SPACE,TOKENIZER_SHA256
@@ -29,7 +31,7 @@ from test_geo_manifest_native import native,commands
 from test_geo_migration import uid
 from test_kaggle_apply import pinned
 from test_source_story_native import apply
-from test_source_manifest import manifest_payload
+from test_source_graph import payload as graph_payload
 from test_source_import import SOURCE
 from test_source_import_v2 import STORY
 from test_disagreement_native import ACTOR,CASE,create,attribution
@@ -52,7 +54,8 @@ async def test_current11_production_roles_source_case_editorial_geo_and_hybrid_r
     @asynccontextmanager
     async def acquire():yield reader
     try:
-        native['connection']=writer;payload=manifest_payload()
+        native['connection']=writer;payload,graph=graph_payload()
+        payload['source_graph']=resolve_source_graph(graph,source_id=SOURCE,person_id=ACTOR,semantic=payload['semantic'])
         source=resolved_current_import_v4_command(sequence=1,operation_key='native-role-source',request_id='native-role-1',
             person_id=ACTOR,logical_time='2026-10-20T19:00:00Z',source_id=SOURCE,payload=payload)
         assert (await apply(native,source)).status=='applied'
@@ -76,6 +79,10 @@ async def test_current11_production_roles_source_case_editorial_geo_and_hybrid_r
         assert case_read.status=='ok',case_read.reason
         geo_read=await execute_geo_read(GeoReadRequest(action='identity',entity_id=uid(10),**identity),acquire=acquire)
         assert geo_read.status=='ok' and len(geo_read.records)==1
+        graph_read=await execute_source_graph_read(SourceGraphReadRequest(action='list',source_id=SOURCE,**identity),acquire=acquire)
+        assert graph_read.status=='ok' and len(graph_read.records)==3 and graph_read.next_cursor
+        async with admin.transaction():
+            assert await(await admin.execute('SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])',([SOURCE],))).fetchone()==(True,)
         async def count(text):return 8
         async def synthetic_vector(text):return [1.]+[0.]*1023
         found=await execute_query(Query(query='fictional council gate',**identity),acquire=acquire,

@@ -276,7 +276,7 @@ class TargetRuntime:
             raise BootstrapUnavailable('target_database_binding_mismatch')
         # Same per-invocation context is used by telemetry's native adapter.
         handler = prepared.query_handler
-        if self.database.schema_revision=='rkb-v4-sql001-009-v1':
+        if self.database.schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
             from dataclasses import replace
             handler=replace(handler,source_provenance=True)
         async def invoke(frame, *, encode):
