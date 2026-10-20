@@ -9,7 +9,8 @@ from regional_knowledge.kaggle_launch_config import target_launch_from_wire
 from test_kaggle_native_bundle import fixture as native_fixture,sha
 
 
-def test_concrete_builder_combines_full_receipts_without_fake_ready_pins(native_fixture):
+@pytest.mark.parametrize('parser_enabled',(False,True))
+def test_concrete_builder_combines_full_receipts_without_fake_ready_pins(native_fixture,parser_enabled):
     names=('usr/lib/postgresql/17/bin/initdb','usr/lib/postgresql/17/bin/postgres',
         'usr/lib/postgresql/17/bin/pg_config','usr/lib/postgresql/17/lib/vector.so',
         'usr/share/postgresql/17/extension/vector.control','usr/share/postgresql/17/extension/vector--0.8.2.sql')
@@ -20,15 +21,31 @@ def test_concrete_builder_combines_full_receipts_without_fake_ready_pins(native_
     downloads=[dict(name=item['name'],size=item['size'],sha256=item['sha256'],
         url='https://fixture.invalid/'+item['name'],executable=False) for item in inventory]
     lock=json.loads((Path(__file__).resolve().parents[1]/'scripts/production/manifests/kaggle-cp312-x86_64-wheels.json').read_bytes())
+    if parser_enabled:
+        lock['packages'].append(dict(package='pymupdf',version='1.28.2',
+            name='wheels-cp312/pymupdf-1.28.2-cp312-cp312-manylinux_2_28_x86_64.whl',
+            url='https://fixture.invalid/synthetic-parser.whl',size=1,sha256=sha(b'x')))
+        lock['wheel_bytes']+=1
     options=dict(wheel_lock=lock,native_receipt=receipt,native_manifest_bytes=(root/spec.manifest_name).read_bytes(),
         native_downloads=downloads,database_generation='fixture-new-generation',writer_generation='writer-1',
         uid=65534,gid=65534,identity_evidence='explicit candidate; actual lookup mandatory')
     target=build_bootstrap_target(**options)
+    if parser_enabled:
+        from dataclasses import replace
+        from regional_knowledge.kaggle_original_native import OriginalIntakeConfig
+        target=replace(target,original_intake=OriginalIntakeConfig(
+            ('https://archive.fixture.invalid',),(('pymupdf','1.28.2'),)))
     assert target.bootstrap_only and target.dependency_sha256 is None and target.schema_sha256 is None
     assert target.database.cluster.startswith('/kaggle/temp/rkb-')
     assert len(target.stage0.wheels)==len(lock['packages'])
     assert len(target.artifacts)==len(lock['packages'])+8
-    assert target_launch_from_wire(target.wire()).wire()==target.wire()
+    restored=target_launch_from_wire(json.loads(json.dumps(target.wire())))
+    assert restored.wire()==target.wire()
+    if parser_enabled:
+        assert type(restored.original_intake) is OriginalIntakeConfig
+        bad=target.wire();bad['original_intake']['unknown']=True
+        with pytest.raises(ValueError,match='original_deployment_invalid'):
+            target_launch_from_wire(bad)
     with pytest.raises(ValueError,match='actual native manifest'):
         build_bootstrap_target(**dict(options,native_manifest_bytes=b'{}'))
     with pytest.raises(ValueError,match='hosted inputs'):

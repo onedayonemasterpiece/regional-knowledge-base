@@ -32,6 +32,9 @@ def target_launch_from_wire(value):
         options[name]=tuple(options[name])
     options['stage0']=Stage0Spec.from_wire(options['stage0']) if options['stage0'] is not None else None
     options['native_bundle']=NativeBundleSpec.from_wire(options['native_bundle']) if options['native_bundle'] is not None else None
+    if options['original_intake'] is not None:
+        from .kaggle_original_native import OriginalIntakeConfig
+        options['original_intake']=OriginalIntakeConfig.from_wire(options['original_intake'])
     return TargetLaunchSpec(**options)
 
 
