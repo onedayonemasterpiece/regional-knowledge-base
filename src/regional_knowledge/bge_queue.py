@@ -4,6 +4,7 @@ Only authorized text supplied by the consuming service enters this queue. Worker
 credentials are run-bound; the worker receives neither DB nor object credentials.
 """
 import contextlib
+import asyncio
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 import secrets
 import sqlite3
 import time
+import threading
 import uuid
 from .bge_contract import SPACE, validate_vector
 
@@ -21,6 +23,20 @@ HEARTBEAT_SECONDS = 120
 JOB_SECONDS = 180
 DONE_QUERY_RETENTION_SECONDS = 24 * 3600
 DONE_AUDIT_RETENTION_SECONDS = 24 * 3600
+
+# A notification is only a hint; committed SQLite rows remain authoritative.
+# Cross-process completions use the bounded reconciliation below.
+_WAITERS = {}
+_WAITERS_LOCK = threading.Lock()
+RECONCILE_SECONDS = 0.25
+
+
+class StaleClaim(PermissionError):
+    """This assignment ended; the authenticated run may continue working."""
+
+
+class RevokedRun(PermissionError):
+    """The run has no current worker authority."""
 
 class BgeQueue:
     def __init__(self, path, *, clock=time.time):
@@ -51,11 +67,13 @@ class BgeQueue:
         self.path.chmod(0o600)
 
     @contextlib.contextmanager
-    def connect(self):
+    def connect(self, *, write=True):
         db = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         db.row_factory = sqlite3.Row
         try:
-            db.execute('begin immediate')
+            if not write:
+                db.execute('pragma query_only=ON')
+            db.execute('begin immediate' if write else 'begin')
             yield db
             if db.in_transaction:db.commit()
         except BaseException:
@@ -75,15 +93,21 @@ class BgeQueue:
                    (run_id,'starting',hashlib.sha256(token.encode()).hexdigest(),now,now,now))
         return run_id
 
+    @staticmethod
+    def _run_expired(run, now):
+        if run['status']=='failed' and now-run['heartbeat']<60:
+            return False
+        lost = (now-run['heartbeat']>HEARTBEAT_SECONDS
+                if run['status']!='starting' else now-run['started']>900)
+        return (run['status']=='expired' or now>=run['started']+MAX_LIFETIME
+                or now>=run['useful']+IDLE_SECONDS or lost or run['status']=='failed')
+
     def _expire(self, db, now):
         for run in db.execute("select * from runs where status in ('starting','ready','draining','failed')").fetchall():
             if run['status']=='failed' and now-run['heartbeat']<60:continue
-            deadline = run['started'] + MAX_LIFETIME
-            idle = run['useful'] + IDLE_SECONDS
             # A cold start gets at most 15 minutes to become ready. Heartbeats
             # cannot perpetually preserve an idle run or a failed warm-up.
-            lost = (now-run['heartbeat']>HEARTBEAT_SECONDS if run['status']!='starting' else now-run['started']>900)
-            if now>=deadline or now>=idle or lost or run['status']=='failed':
+            if self._run_expired(run, now):
                 db.execute("update runs set status='expired' where id=?",(run['id'],))
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
                 db.execute('update control set current_run=null where current_run=?',(run['id'],))
@@ -126,14 +150,13 @@ class BgeQueue:
             return job_id
 
     def lookup(self,actor,idempotency):
-        with self.connect() as db:
-            self._expire(db,self.clock())
-            row=db.execute('select id,state,result,identity,kind from jobs where actor=? and idempotency=?',(actor,idempotency)).fetchone()
+        with self.connect(write=False) as db:
+            row=db.execute('select * from jobs where actor=? and idempotency=?',(actor,idempotency)).fetchone()
             if not row:return None
-            return {'id':row['id'],'state':row['state'],'result':json.loads(row['result']) if row['result'] else None,'identity':json.loads(row['identity']),'kind':row['kind']}
+            return {'id':row['id'],**self._job_result(db,row),'kind':row['kind']}
 
     def document_pending(self):
-        with self.connect() as db:
+        with self.connect(write=False) as db:
             return db.execute("select count(*) from jobs where kind='document' and state!='done'").fetchone()[0]
 
     def retire_done_documents(self, actor, job_ids):
@@ -152,7 +175,7 @@ class BgeQueue:
         run=db.execute('select * from runs where id=?',(run_id,)).fetchone()
         digest=hashlib.sha256(token.encode()).hexdigest()
         if not run or not secrets.compare_digest(run['token_hash'],digest) or run['status'] not in ('starting','ready','draining') or now>=run['started']+MAX_LIFETIME:
-            raise PermissionError('invalid or stale BGE worker')
+            raise RevokedRun('invalid or stale BGE worker')
         return run
 
     def heartbeat(self, run_id, token, *, ready=False, diagnostics=None):
@@ -198,29 +221,73 @@ class BgeQueue:
         with self.connect() as db:
             self._expire(db,now);self._authorize(db,run_id,token,now)
             job=db.execute('select * from jobs where id=?',(job_id,)).fetchone()
-            if not job or job['run_id']!=run_id or job['claim']!=claim:raise PermissionError('late/stale BGE result')
+            if not job or job['run_id']!=run_id or job['claim']!=claim:raise StaleClaim('late/stale BGE result')
             if job['state']=='done':return 'duplicate'
-            if job['state']!='claimed' or now>=job['lease_until']:raise PermissionError('expired BGE job')
+            if job['state']!='claimed' or now>=job['lease_until']:raise StaleClaim('expired BGE job')
             result={'space':SPACE,'vectors':vectors,'queue_seconds':max(0,job['updated']-job['created']),**safe_times}
             db.execute("update jobs set state='done',result=?,updated=? where id=?",(json.dumps(result),now,job_id))
             db.execute('update runs set useful=? where id=?',(now,run_id))
-            return 'accepted'
+        self._notify_result(job_id)
+        return 'accepted'
+
+    def _job_result(self, db, row):
+        state=row['state']
+        if state=='claimed':
+            run=db.execute('select * from runs where id=?',(row['run_id'],)).fetchone()
+            now=self.clock()
+            if not run or self._run_expired(run,now) or row['lease_until'] is None or now>=row['lease_until']:
+                state='pending'
+        return {'state':state,'result':json.loads(row['result']) if row['result'] else None,'identity':json.loads(row['identity'])}
 
     def result(self, actor, job_id):
-        with self.connect() as db:
-            self._expire(db,self.clock())
+        with self.connect(write=False) as db:
             row=db.execute('select * from jobs where id=? and actor=?',(job_id,actor)).fetchone()
             if not row:raise PermissionError('BGE job not found')
-            return {'state':row['state'],'result':json.loads(row['result']) if row['result'] else None,'identity':json.loads(row['identity'])}
+            return self._job_result(db,row)
+
+    def _notify_result(self, job_id):
+        key=(str(self.path.resolve()),job_id)
+        with _WAITERS_LOCK:
+            waiters=tuple(_WAITERS.get(key,()))
+        for loop,event in waiters:
+            try:loop.call_soon_threadsafe(event.set)
+            except RuntimeError:pass  # closed caller loop; its result remains durable
+
+    async def wait_result(self, actor, job_id, seconds):
+        """Wake after local commit; reconcile other processes within a bounded wait."""
+        loop=asyncio.get_running_loop()
+        deadline=loop.time()+max(0.0,seconds)
+        event=asyncio.Event()
+        key=(str(self.path.resolve()),job_id)
+        waiter=(loop,event)
+        with _WAITERS_LOCK:
+            _WAITERS.setdefault(key,set()).add(waiter)
+        try:
+            while True:
+                event.clear()
+                row=await asyncio.to_thread(self.result,actor,job_id)
+                if row['state']=='done':return row
+                remaining=deadline-loop.time()
+                if remaining<=0:return None
+                try:
+                    await asyncio.wait_for(event.wait(),min(RECONCILE_SECONDS,remaining))
+                except TimeoutError:pass
+        finally:
+            with _WAITERS_LOCK:
+                entries=_WAITERS.get(key)
+                if entries is not None:
+                    entries.discard(waiter)
+                    if not entries:_WAITERS.pop(key,None)
 
     def _status(self, db, now):
         control=db.execute('select * from control where id=1').fetchone()
         run=db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
+        if run and self._run_expired(run,now):run=None
         return {'state':run['status'] if run else 'stopped','space':SPACE,'queue_depth':db.execute("select count(*) from jobs where state!='done'").fetchone()[0],'successor_starting':bool(control['successor']),'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
 
     def status(self):
-        with self.connect() as db:
-            self._expire(db,self.clock());return self._status(db,self.clock())
+        with self.connect(write=False) as db:
+            return self._status(db,self.clock())
 
     def maintenance(self):
         now=self.clock()

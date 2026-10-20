@@ -9,6 +9,8 @@ from .local_e5 import encoding_timings
 logger=logging.getLogger(__name__)
 
 async def wait_result(queue,actor,job_id,seconds):
+    if hasattr(queue,'wait_result'):
+        return await queue.wait_result(actor,job_id,seconds)
     deadline=time.monotonic()+seconds
     while True:
         row=await asyncio.to_thread(queue.result,actor,job_id)
