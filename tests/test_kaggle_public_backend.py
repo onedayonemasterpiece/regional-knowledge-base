@@ -27,6 +27,11 @@ class Gate:
         self.authority = authority
         self.permits, self.abandoned, self.released = [], [], []
 
+    def catalog_supported(self):
+        # This fixture retains the original source/Story read contract. Current
+        # editorial/catalogue tests supply the actual native registry and gate.
+        return False
+
     async def dispatch(self, authority, query, binding):
         await self.authority.require(authority, 'public_search')
         permit = SimpleNamespace(authority=authority, query=query, binding=binding)
