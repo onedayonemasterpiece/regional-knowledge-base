@@ -691,10 +691,10 @@ BEGIN
  END LOOP;
  -- Accepted sources containing a graph must have a receipt; bare rows cannot
  -- create an origin proof, including orphan canonical identities.
- RETURN NOT EXISTS(SELECT 1 FROM rkb_v4.applied_ops op CROSS JOIN LATERAL (SELECT convert_from(op.command_bytes,'UTF8')::jsonb c) x
-   WHERE op.status='applied' AND c->>'route'='source.import.v4' AND (c->'ids'->>'source_id')::uuid=ANY(scope)
-    AND convert_from(decode(c->>'payload_b64','base64'),'UTF8')::jsonb ? 'source_graph'
-    AND NOT EXISTS(SELECT 1 FROM rkb_v4.source_graph_documents z WHERE z.source_id=(c->'ids'->>'source_id')::uuid))
+ RETURN NOT EXISTS(SELECT 1 FROM rkb_v4.applied_ops op CROSS JOIN LATERAL (SELECT convert_from(op.command_bytes,'UTF8')::jsonb command_doc) x
+   WHERE op.status='applied' AND x.command_doc->>'route'='source.import.v4' AND (x.command_doc->'ids'->>'source_id')::uuid=ANY(scope)
+    AND convert_from(decode(x.command_doc->>'payload_b64','base64'),'UTF8')::jsonb ? 'source_graph'
+    AND NOT EXISTS(SELECT 1 FROM rkb_v4.source_graph_documents z WHERE z.source_id=(x.command_doc->'ids'->>'source_id')::uuid))
   AND NOT EXISTS(SELECT 1 FROM rkb_v4.source_entity_ids h WHERE NOT EXISTS(
     SELECT 1 FROM rkb_v4.source_entity_representations x WHERE x.entity_id=h.entity_id));
 EXCEPTION WHEN data_exception OR no_data_found OR too_many_rows THEN RETURN false;
