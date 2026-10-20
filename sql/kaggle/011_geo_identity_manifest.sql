@@ -310,3 +310,430 @@ REVOKE ALL ON FUNCTION rkb_v4.validate_geo_manifest_head_v1(),
  rkb_v4.capture_geo_manifest_receipt_v1(),
  rkb_v4.read_geo_identity_v1(uuid,uuid,text,text,text,integer,uuid,integer),
  rkb_v4.read_geo_members_v1(uuid,uuid,text,text,integer) FROM PUBLIC;
+
+-- New accepted sources retain their complete model-authored entity graph.
+-- This is separate from the private legacy-unanchored geographic manifest.
+CREATE TABLE rkb_v4.source_graph_documents (
+ source_id uuid PRIMARY KEY REFERENCES rkb_v4.sources,source_revision bigint NOT NULL CHECK(source_revision=1),
+ owner_person_id uuid NOT NULL,data jsonb NOT NULL,payload_sha256 text NOT NULL CHECK(payload_sha256 ~ '^[0-9a-f]{64}$'),
+ FOREIGN KEY(source_id,source_revision) REFERENCES rkb_v4.revisions
+);
+CREATE TABLE rkb_v4.source_entity_ids (
+ entity_id uuid PRIMARY KEY,owner_person_id uuid NOT NULL,
+ kind text NOT NULL CHECK(kind IN ('person','organization','event','historical_thread','poi_ref'))
+);
+CREATE TABLE rkb_v4.source_entity_representations (
+ source_id uuid NOT NULL REFERENCES rkb_v4.source_graph_documents,entity_key text NOT NULL,
+ entity_id uuid NOT NULL REFERENCES rkb_v4.source_entity_ids,data jsonb NOT NULL,
+ PRIMARY KEY(source_id,entity_key)
+);
+CREATE INDEX source_entity_active_lookup ON rkb_v4.source_entity_representations(entity_id,source_id,entity_key);
+CREATE TABLE rkb_v4.source_entity_references (
+ source_id uuid NOT NULL REFERENCES rkb_v4.source_graph_documents,entity_key text NOT NULL,
+ entity_id uuid NOT NULL REFERENCES rkb_v4.source_entity_ids,data jsonb NOT NULL,
+ PRIMARY KEY(source_id,entity_key)
+);
+CREATE TABLE rkb_v4.source_entity_mentions (
+ source_id uuid NOT NULL REFERENCES rkb_v4.source_graph_documents,mention_id uuid NOT NULL,
+ entity_id uuid NOT NULL REFERENCES rkb_v4.source_entity_ids,data jsonb NOT NULL,
+ PRIMARY KEY(source_id,mention_id)
+);
+CREATE INDEX source_entity_mention_lookup ON rkb_v4.source_entity_mentions(entity_id,source_id,mention_id);
+CREATE TABLE rkb_v4.source_entity_aliases (
+ source_id uuid NOT NULL REFERENCES rkb_v4.source_graph_documents,alias_id uuid NOT NULL,
+ entity_id uuid NOT NULL REFERENCES rkb_v4.source_entity_ids,normalized_value text NOT NULL,
+ normalized_sha256 text NOT NULL CHECK(normalized_sha256=encode(sha256(convert_to(normalized_value,'UTF8')),'hex')),data jsonb NOT NULL,
+ PRIMARY KEY(source_id,alias_id),UNIQUE(source_id,entity_id,normalized_sha256)
+);
+CREATE INDEX source_entity_alias_lookup ON rkb_v4.source_entity_aliases(normalized_sha256,entity_id,source_id);
+CREATE INDEX source_entity_alias_members ON rkb_v4.source_entity_aliases(entity_id,source_id,alias_id);
+CREATE TABLE rkb_v4.source_entity_relations (
+ source_id uuid NOT NULL REFERENCES rkb_v4.source_graph_documents,relation_id uuid NOT NULL,
+ from_id uuid NOT NULL REFERENCES rkb_v4.source_entity_ids,to_id uuid NOT NULL REFERENCES rkb_v4.source_entity_ids,
+ kind text NOT NULL,data jsonb NOT NULL,PRIMARY KEY(source_id,relation_id),CHECK(from_id<>to_id)
+);
+CREATE INDEX source_entity_outgoing ON rkb_v4.source_entity_relations(from_id,source_id,relation_id);
+CREATE INDEX source_entity_incoming ON rkb_v4.source_entity_relations(to_id,source_id,relation_id);
+CREATE TABLE rkb_v4.source_entity_finding_links (
+ source_id uuid NOT NULL REFERENCES rkb_v4.source_graph_documents,assertion_id uuid NOT NULL,
+ entity_id uuid NOT NULL REFERENCES rkb_v4.source_entity_ids,entity_key text NOT NULL,assertion_revision bigint NOT NULL DEFAULT 1 CHECK(assertion_revision=1),
+ PRIMARY KEY(source_id,assertion_id,entity_key),FOREIGN KEY(assertion_id,assertion_revision) REFERENCES rkb_v4.story_assertion_versions(assertion_id,revision)
+);
+CREATE TABLE rkb_v4.source_poi_hypotheses (
+ source_id uuid NOT NULL REFERENCES rkb_v4.source_graph_documents,candidate_id uuid NOT NULL,
+ data jsonb NOT NULL,PRIMARY KEY(source_id,candidate_id)
+);
+CREATE TABLE rkb_v4.source_graph_receipts (
+ source_id uuid PRIMARY KEY REFERENCES rkb_v4.source_graph_documents,
+ operation_key text NOT NULL REFERENCES rkb_v4.applied_ops,sequence bigint NOT NULL,
+ command_sha256 text NOT NULL,person_id uuid NOT NULL,request_id text NOT NULL
+);
+DO $$ DECLARE tab text;BEGIN
+ FOREACH tab IN ARRAY ARRAY['source_graph_documents','source_entity_ids','source_entity_representations',
+  'source_entity_references','source_entity_mentions','source_entity_aliases','source_entity_relations',
+  'source_entity_finding_links','source_poi_hypotheses','source_graph_receipts'] LOOP
+  EXECUTE format('CREATE TRIGGER immutable_source_graph BEFORE UPDATE OR DELETE ON rkb_v4.%I FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_revision_update()',tab);
+ END LOOP;
+END $$;
+
+CREATE FUNCTION rkb_v4.check_source_graph_evidence_v1(doc jsonb,e jsonb) RETURNS boolean
+ LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE r jsonb;p jsonb;m jsonb;b integer;z integer;
+BEGIN
+ IF jsonb_typeof(e) IS DISTINCT FROM 'object' OR NOT e ?& ARRAY['chunk_id','page_id','region_id','exact_quote','evidence_ref','start','end','source_region_sha256']
+  OR e-ARRAY['chunk_id','page_id','region_id','exact_quote','evidence_ref','start','end','source_region_sha256']<>'{}'
+  OR jsonb_typeof(e->'start') IS DISTINCT FROM 'number' OR jsonb_typeof(e->'end') IS DISTINCT FROM 'number'
+  OR e->>'start' !~ '^(0|[1-9][0-9]{0,4})$' OR e->>'end' !~ '^[1-9][0-9]{0,4}$'
+  OR jsonb_typeof(e->'exact_quote') IS DISTINCT FROM 'string' OR length(e->>'exact_quote') NOT BETWEEN 1 AND 2000
+  OR e->>'evidence_ref' IS DISTINCT FROM 'knowledge://chunks/'||(e->>'chunk_id') THEN RETURN false;END IF;
+ SELECT value INTO STRICT r FROM jsonb_array_elements(doc->'semantic'->'regions') WHERE value->>'region_id'=e->>'region_id';
+ SELECT value INTO STRICT p FROM jsonb_array_elements(doc->'passages') WHERE value->>'passage_id'=e->>'chunk_id';
+ SELECT value INTO STRICT m FROM jsonb_array_elements(doc->'source_manifest'->'passages') WHERE value->>'passage_id'=e->>'chunk_id';
+ b:=(e->>'start')::integer;z:=(e->>'end')::integer;
+ RETURN r->>'page_id' IS NOT DISTINCT FROM e->>'page_id' AND r->>'source_text_sha256' IS NOT DISTINCT FROM e->>'source_region_sha256'
+  AND m->'page_ids' @> jsonb_build_array(e->'page_id') AND m->'region_ids' @> jsonb_build_array(e->'region_id')
+  AND b<z AND z<=length(r->>'source_text') AND substring(r->>'source_text' FROM b+1 FOR z-b)=e->>'exact_quote'
+  AND position(e->>'exact_quote' IN p->>'body')>0;
+EXCEPTION WHEN data_exception OR no_data_found OR too_many_rows THEN RETURN false;
+END $$;
+
+CREATE FUNCTION rkb_v4.source_graph_endpoint_kind_v1(g jsonb,ident uuid) RETURNS text
+ LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT coalesce((SELECT value->>'kind' FROM jsonb_array_elements(g->'entities') WHERE value->>'entity_id'=ident::text LIMIT 1),
+  (SELECT h.kind FROM rkb_v4.source_entity_ids h WHERE h.entity_id=ident AND EXISTS(
+   SELECT 1 FROM jsonb_array_elements(g->'references') WHERE value->>'entity_id'=ident::text)))
+$$;
+
+CREATE FUNCTION rkb_v4.check_source_graph_v1(doc jsonb,source uuid) RETURNS boolean
+ LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE g jsonb:=doc->'source_graph';e jsonb;a jsonb;r jsonb;proof jsonb;f jsonb;name text;owner uuid;ident uuid;
+ k text;from_kind text;to_kind text;ids uuid[]:='{}';keys text[]:='{}';binding jsonb:='{}';n integer;
+BEGIN
+ IF g IS NULL THEN RETURN NOT EXISTS(SELECT 1 FROM jsonb_array_elements(doc->'semantic'->'findings') x WHERE x->'entity_keys'<>'[]'::jsonb);END IF;
+ IF jsonb_typeof(g) IS DISTINCT FROM 'object' OR NOT g ?& ARRAY['codec','source_id','source_revision','owner_person_id','bundles','poi_fact_inputs','entities','references','relations','poi_facts','finding_entities']
+  OR g-ARRAY['codec','source_id','source_revision','owner_person_id','bundles','poi_fact_inputs','entities','references','relations','poi_facts','finding_entities']<>'{}'
+  OR g->>'codec' IS DISTINCT FROM 'rkb.source-graph.v1' OR g->>'source_id' IS DISTINCT FROM source::text
+  OR g->'source_revision' IS DISTINCT FROM '1'::jsonb OR jsonb_typeof(g->'owner_person_id') IS DISTINCT FROM 'string'
+  OR (g->>'owner_person_id')::uuid::text IS DISTINCT FROM g->>'owner_person_id' THEN RETURN false;END IF;
+ owner:=(g->>'owner_person_id')::uuid;
+ FOREACH k IN ARRAY ARRAY['bundles','poi_fact_inputs','entities','references','relations','poi_facts','finding_entities'] LOOP
+  n:=CASE k WHEN 'bundles' THEN 32 WHEN 'poi_fact_inputs' THEN 32 WHEN 'entities' THEN 128 WHEN 'references' THEN 128
+   WHEN 'relations' THEN 256 WHEN 'poi_facts' THEN 32 ELSE 100 END;
+  IF jsonb_typeof(g->k) IS DISTINCT FROM 'array' OR jsonb_array_length(g->k)>n THEN RETURN false;END IF;
+ END LOOP;
+ FOR e IN SELECT value FROM jsonb_array_elements(g->'entities') LOOP
+  IF jsonb_typeof(e) IS DISTINCT FROM 'object' OR NOT e ?& ARRAY['key','entity_id','mode','kind','canonical_label','state','metadata','mention','aliases']
+   OR e-ARRAY['key','entity_id','mode','kind','canonical_label','state','metadata','mention','aliases']<>'{}'
+   OR jsonb_typeof(e->'key') IS DISTINCT FROM 'string' OR length(e->>'key') NOT BETWEEN 1 AND 100 OR e->>'key'=ANY(keys)
+   OR jsonb_typeof(e->'entity_id') IS DISTINCT FROM 'string'
+   OR jsonb_typeof(e->'mention'->'mention_id') IS DISTINCT FROM 'string'
+   OR jsonb_typeof(e->'kind') IS DISTINCT FROM 'string' OR e->>'kind' NOT IN ('person','organization','event','historical_thread','poi_ref')
+   OR e->>'mode' IS NULL OR e->>'mode' NOT IN ('create','reuse') OR e->>'state' IS NULL OR e->>'state' NOT IN ('candidate','reviewed')
+   OR jsonb_typeof(e->'canonical_label') IS DISTINCT FROM 'string' OR length(e->>'canonical_label') NOT BETWEEN 1 AND 200
+   OR jsonb_typeof(e->'metadata') IS DISTINCT FROM 'object'
+   OR e->'metadata'->>'owner_reference_verification' IS DISTINCT FROM 'not_verified'
+   OR e->'metadata'->>'historical_geometry' IS DISTINCT FROM 'not_verified'
+   OR NOT rkb_v4.check_source_graph_evidence_v1(doc,e->'mention'->'evidence')
+   OR jsonb_typeof(e->'mention'->'exact_source_spelling') IS DISTINCT FROM 'string'
+   OR position(e->'mention'->>'exact_source_spelling' IN e->'mention'->'evidence'->>'exact_quote')<=0
+   OR jsonb_typeof(e->'aliases') IS DISTINCT FROM 'array' OR jsonb_array_length(e->'aliases')>20 THEN RETURN false;END IF;
+  ident:=(e->>'entity_id')::uuid;
+  IF e->>'mode'='create' AND EXISTS(SELECT 1 FROM rkb_v4.source_entity_ids WHERE entity_id=ident)
+   OR e->>'mode'='reuse' AND NOT EXISTS(SELECT 1 FROM rkb_v4.source_entity_ids h WHERE h.entity_id=ident AND h.owner_person_id=owner
+    AND h.kind=e->>'kind' AND EXISTS(SELECT 1 FROM rkb_v4.source_entity_representations x JOIN rkb_v4.active_revision act USING(source_id)
+     JOIN rkb_v4.sources s USING(source_id) WHERE x.entity_id=ident AND act.revision=1 AND s.accepted AND NOT s.withdrawn)) THEN RETURN false;END IF;
+  keys:=array_append(keys,e->>'key');ids:=array_append(ids,ident);binding:=binding||jsonb_build_object(e->>'key',ident::text);
+  FOR a IN SELECT value FROM jsonb_array_elements(e->'aliases') LOOP
+   IF NOT rkb_v4.check_source_graph_evidence_v1(doc,a->'evidence') OR jsonb_typeof(a->'normalized_value') IS DISTINCT FROM 'string'
+    OR length(a->>'normalized_value') NOT BETWEEN 1 AND 200 OR jsonb_typeof(a->'alias_id') IS DISTINCT FROM 'string' OR (a->>'alias_id')::uuid IS NULL THEN RETURN false;END IF;
+  END LOOP;
+ END LOOP;
+ FOR r IN SELECT value FROM jsonb_array_elements(g->'references') LOOP
+  IF jsonb_typeof(r) IS DISTINCT FROM 'object' OR NOT r ?& ARRAY['key','entity_id'] OR r-ARRAY['key','entity_id']<>'{}'
+   OR jsonb_typeof(r->'key') IS DISTINCT FROM 'string' OR length(r->>'key') NOT BETWEEN 1 AND 100 OR r->>'key'=ANY(keys) OR jsonb_typeof(r->'entity_id') IS DISTINCT FROM 'string' THEN RETURN false;END IF;
+  ident:=(r->>'entity_id')::uuid;
+  IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_entity_ids h WHERE h.entity_id=ident AND h.owner_person_id=owner AND EXISTS(
+    SELECT 1 FROM rkb_v4.source_entity_representations x JOIN rkb_v4.active_revision act USING(source_id)
+    JOIN rkb_v4.sources s USING(source_id) WHERE x.entity_id=ident AND act.revision=1 AND s.accepted AND NOT s.withdrawn)) THEN RETURN false;END IF;
+  keys:=array_append(keys,r->>'key');ids:=array_append(ids,ident);binding:=binding||jsonb_build_object(r->>'key',ident::text);
+ END LOOP;
+ FOR r IN SELECT value FROM jsonb_array_elements(g->'relations') LOOP
+  IF NOT r ?& ARRAY['relation_id','source_id','target_id','kind','evidence','time_scope','state','review_note']
+   OR jsonb_typeof(r->'relation_id') IS DISTINCT FROM 'string' OR jsonb_typeof(r->'source_id') IS DISTINCT FROM 'string'
+   OR jsonb_typeof(r->'target_id') IS DISTINCT FROM 'string' OR (r->>'source_id')::uuid=(r->>'target_id')::uuid OR NOT ((r->>'source_id')::uuid=ANY(ids)) OR NOT ((r->>'target_id')::uuid=ANY(ids))
+   OR jsonb_typeof(r->'evidence') IS DISTINCT FROM 'array' OR jsonb_array_length(r->'evidence') NOT BETWEEN 1 AND 8 THEN RETURN false;END IF;
+  from_kind:=rkb_v4.source_graph_endpoint_kind_v1(g,(r->>'source_id')::uuid);
+  to_kind:=rkb_v4.source_graph_endpoint_kind_v1(g,(r->>'target_id')::uuid);
+  IF NOT coalesce(CASE r->>'kind'
+   WHEN 'participated_in' THEN from_kind IN ('person','organization') AND to_kind='event'
+   WHEN 'occurred_at' THEN from_kind='event' AND to_kind='poi_ref'
+   WHEN 'member_of' THEN from_kind IN ('person','organization','event','poi_ref') AND to_kind='historical_thread'
+   WHEN 'affiliated_with' THEN from_kind='person' AND to_kind='organization'
+   WHEN 'operated_at' THEN from_kind='organization' AND to_kind='poi_ref'
+   WHEN 'predecessor_of' THEN from_kind='organization' AND to_kind='organization'
+   WHEN 'founded_by' THEN from_kind='organization' AND to_kind='person'
+   WHEN 'located_in' THEN from_kind='poi_ref' AND to_kind='poi_ref' ELSE false END,false) THEN RETURN false;END IF;
+  FOR proof IN SELECT value FROM jsonb_array_elements(r->'evidence') LOOP
+   IF NOT rkb_v4.check_source_graph_evidence_v1(doc,proof) THEN RETURN false;END IF;
+  END LOOP;
+ END LOOP;
+ FOR f IN SELECT value FROM jsonb_array_elements(g->'poi_facts') LOOP
+  IF jsonb_typeof(f->'candidate_id') IS DISTINCT FROM 'string' OR f->>'geometry_acceptance' IS DISTINCT FROM 'source_hypothesis_not_owner_geometry'
+   OR jsonb_typeof(f->'evidence') IS DISTINCT FROM 'array' OR jsonb_array_length(f->'evidence') NOT BETWEEN 1 AND 50
+   OR jsonb_typeof(f->'text') IS DISTINCT FROM 'string' OR length(f->>'text') NOT BETWEEN 1 AND 500 THEN RETURN false;END IF;
+  FOR proof IN SELECT value FROM jsonb_array_elements(f->'evidence') LOOP
+   IF NOT EXISTS(SELECT 1 FROM jsonb_array_elements(doc->'semantic'->'regions') x WHERE x->>'region_id'=proof->>'region_id'
+    AND x->>'page_id'=proof->>'page_id' AND x->>'source_text_sha256'=proof->>'source_region_sha256') THEN RETURN false;END IF;
+  END LOOP;
+ END LOOP;
+ IF (SELECT count(*) FROM jsonb_array_elements(doc->'semantic'->'findings') x WHERE x->'entity_keys'<>'[]'::jsonb)
+    <>jsonb_array_length(g->'finding_entities') THEN RETURN false;END IF;
+ FOR f IN SELECT value FROM jsonb_array_elements(g->'finding_entities') LOOP
+  IF NOT EXISTS(SELECT 1 FROM jsonb_array_elements(doc->'semantic'->'findings') x WHERE x->>'assertion_id'=f->>'assertion_id'
+    AND x->'entity_keys'=f->'entity_keys') OR jsonb_typeof(f->'entity_ids') IS DISTINCT FROM 'array'
+    OR jsonb_typeof(f->'entity_keys') IS DISTINCT FROM 'array' OR jsonb_array_length(f->'entity_ids')<>jsonb_array_length(f->'entity_keys') THEN RETURN false;END IF;
+  FOR name,n IN SELECT value,ordinal::integer FROM jsonb_array_elements_text(f->'entity_keys') WITH ORDINALITY x(value,ordinal) LOOP
+   IF binding->>name IS NULL OR binding->>name IS DISTINCT FROM f->'entity_ids'->>(n-1) THEN RETURN false;END IF;
+  END LOOP;
+ END LOOP;
+ RETURN true;
+EXCEPTION WHEN data_exception OR no_data_found OR too_many_rows THEN RETURN false;
+END $$;
+
+CREATE FUNCTION rkb_v4.check_source_import_graph_v1(p bytea,ids jsonb,expected jsonb,logical_time text)
+ RETURNS boolean LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE doc jsonb;BEGIN
+ IF octet_length(p) NOT BETWEEN 1 AND 786432 THEN RETURN false;END IF;
+ doc:=convert_from(p,'UTF8')::jsonb;
+ RETURN rkb_v4.check_source_import_v4(convert_to((doc-'source_graph')::text,'UTF8'),ids,expected,logical_time)
+   AND rkb_v4.check_source_graph_v1(doc,(ids->>'source_id')::uuid);
+EXCEPTION WHEN data_exception THEN RETURN false;END $$;
+
+CREATE FUNCTION rkb_v4.project_source_graph_v1(source uuid,g jsonb,payload_sha text) RETURNS void
+ LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE e jsonb;a jsonb;r jsonb;link jsonb;k text;n integer;BEGIN
+ IF g IS NULL THEN RETURN;END IF;
+ INSERT INTO rkb_v4.source_graph_documents VALUES(source,1,(g->>'owner_person_id')::uuid,g,payload_sha);
+ FOR e IN SELECT value FROM jsonb_array_elements(g->'entities') LOOP
+  INSERT INTO rkb_v4.source_entity_ids VALUES((e->>'entity_id')::uuid,(g->>'owner_person_id')::uuid,e->>'kind') ON CONFLICT DO NOTHING;
+  INSERT INTO rkb_v4.source_entity_representations VALUES(source,e->>'key',(e->>'entity_id')::uuid,e);
+  INSERT INTO rkb_v4.source_entity_mentions VALUES(source,(e->'mention'->>'mention_id')::uuid,(e->>'entity_id')::uuid,e->'mention') ON CONFLICT DO NOTHING;
+  FOR a IN SELECT value FROM jsonb_array_elements(e->'aliases') LOOP
+   INSERT INTO rkb_v4.source_entity_aliases VALUES(source,(a->>'alias_id')::uuid,(e->>'entity_id')::uuid,
+    a->>'normalized_value',encode(sha256(convert_to(a->>'normalized_value','UTF8')),'hex'),a) ON CONFLICT DO NOTHING;
+  END LOOP;
+ END LOOP;
+ FOR r IN SELECT value FROM jsonb_array_elements(g->'references') LOOP
+  INSERT INTO rkb_v4.source_entity_references VALUES(source,r->>'key',(r->>'entity_id')::uuid,r);
+ END LOOP;
+ FOR r IN SELECT value FROM jsonb_array_elements(g->'relations') LOOP
+  INSERT INTO rkb_v4.source_entity_relations VALUES(source,(r->>'relation_id')::uuid,(r->>'source_id')::uuid,(r->>'target_id')::uuid,r->>'kind',r);
+ END LOOP;
+ FOR r IN SELECT value FROM jsonb_array_elements(g->'poi_facts') LOOP
+  INSERT INTO rkb_v4.source_poi_hypotheses VALUES(source,(r->>'candidate_id')::uuid,r);
+ END LOOP;
+ FOR link IN SELECT value FROM jsonb_array_elements(g->'finding_entities') LOOP
+  FOR k,n IN SELECT value,ordinal::integer FROM jsonb_array_elements_text(link->'entity_keys') WITH ORDINALITY x(value,ordinal) LOOP
+   INSERT INTO rkb_v4.source_entity_finding_links(source_id,assertion_id,entity_id,entity_key) VALUES(source,(link->>'assertion_id')::uuid,(link->'entity_ids'->>(n-1))::uuid,k);
+  END LOOP;
+ END LOOP;
+END $$;
+
+-- Exact full payload hashing and activation order are preserved at fresh11.
+CREATE FUNCTION rkb_v4.apply_source_import_graph_v1(p bytea, ids jsonb, expected jsonb, logical_time text)
+RETURNS bytea LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE state rkb_v4.recovery_state; prior rkb_v4.read_frontier; frontier rkb_v4.read_frontier;
+        source uuid; doc jsonb; item jsonb; research jsonb; original jsonb; eligibility bigint; story jsonb; variant jsonb;
+BEGIN
+    SELECT * INTO STRICT state FROM rkb_v4.recovery_state WHERE singleton FOR UPDATE;
+    SELECT * INTO STRICT prior FROM rkb_v4.read_frontier WHERE singleton FOR UPDATE;
+    IF NOT rkb_v4.check_source_import_graph_v1(p,ids,expected,logical_time) THEN
+        RAISE EXCEPTION 'source import requires exact resolved new-source precondition';
+    END IF;
+    source:=(ids->>'source_id')::uuid; doc:=convert_from(p,'UTF8')::jsonb;
+    research:=doc->'research'; original:=doc->'original';
+    INSERT INTO rkb_v4.sources VALUES (source,doc->>'bibliography',true,false);
+    INSERT INTO rkb_v4.revisions VALUES (source,1);
+    INSERT INTO rkb_v4.source_import_origins VALUES (source,1,(doc->>'work_id')::uuid,
+        (doc->>'edition_id')::uuid,original->>'sha256',(original->>'size')::bigint,
+        original->>'ref',original->>'receipt_sha256',encode(sha256(p),'hex'),
+        doc->'model'->>'revision',doc->'model'->>'space',doc->'model'->>'tokenizer_sha256',logical_time);
+    INSERT INTO rkb_v4.source_research_frontier VALUES (source,1,(research->>'frontier_id')::uuid,
+        research->>'state',research->'continuation');
+    FOR item IN SELECT value FROM jsonb_array_elements(doc->'passages') LOOP
+        INSERT INTO rkb_v4.passage_search(passage_id,source_id,revision,ordinal,locator,body,language,config,embedding)
+        VALUES ((item->>'passage_id')::uuid,source,1,(item->>'ordinal')::integer,item->>'locator',item->>'body',
+            item->>'language',CASE item->>'language' WHEN 'ru' THEN 'pg_catalog.russian'::regconfig
+                WHEN 'de' THEN 'pg_catalog.german'::regconfig ELSE 'pg_catalog.simple'::regconfig END,
+            (item->'embedding')::text::public.vector);
+    END LOOP;
+    FOR item IN SELECT value FROM jsonb_array_elements(doc->'semantic'->'regions') LOOP
+        INSERT INTO rkb_v4.source_regions VALUES(source,1,(item->>'region_id')::uuid,
+            (item->>'page_id')::uuid,item->>'source_text',item->>'source_text_sha256');
+    END LOOP;
+    FOR item IN SELECT value FROM jsonb_array_elements(doc->'semantic'->'findings') LOOP
+        INSERT INTO rkb_v4.story_assertion_versions VALUES((item->>'assertion_id')::uuid,1,
+            source,1,item->>'candidate_key',item->>'proposition',item);
+    END LOOP;
+    FOR story IN SELECT value FROM jsonb_array_elements(doc->'semantic'->'stories') LOOP
+        variant:=story->'default_variant';
+        INSERT INTO rkb_v4.stories VALUES((story->>'story_id')::uuid,1,source,1,
+            (variant->>'variant_id')::uuid,1);
+        INSERT INTO rkb_v4.story_versions VALUES((story->>'story_id')::uuid,1,
+            story-'default_variant',logical_time,encode(sha256(p),'hex'));
+        INSERT INTO rkb_v4.story_variant_versions VALUES((variant->>'variant_id')::uuid,1,
+            (story->>'story_id')::uuid,variant->>'body',
+            encode(sha256(convert_to(variant->>'body','UTF8')),'hex'),variant-'embedding');
+        INSERT INTO rkb_v4.story_search(story_id,variant_id,variant_revision,source_id,source_revision,body,config,embedding)
+        VALUES((story->>'story_id')::uuid,(variant->>'variant_id')::uuid,1,source,1,variant->>'body',
+            CASE variant->>'language' WHEN 'ru' THEN 'pg_catalog.russian'::regconfig
+            WHEN 'de' THEN 'pg_catalog.german'::regconfig ELSE 'pg_catalog.simple'::regconfig END,
+            (variant->'embedding')::text::public.vector);
+    END LOOP;
+    FOR item IN SELECT value FROM jsonb_array_elements(doc->'semantic'->'pending') LOOP
+        INSERT INTO rkb_v4.source_story_pending VALUES(source,item->>'candidate_key',item);
+    END LOOP;
+    -- Activation happens after every exact passage and its research continuation
+    -- exist. All source/projection/receipt/frontier work commits or rolls back.
+    PERFORM rkb_v4.project_source_graph_v1(source,doc->'source_graph',encode(sha256(p),'hex'));
+    INSERT INTO rkb_v4.source_manifests VALUES(source,1,doc->'source_manifest',encode(sha256(p),'hex'),
+        decode(doc->'source_manifest'->>'original_receipt_b64','base64'));
+    INSERT INTO rkb_v4.active_revision VALUES (source,1);
+    SELECT * INTO STRICT frontier FROM rkb_v4.read_frontier WHERE singleton;
+    SELECT eligibility_revision INTO STRICT eligibility FROM rkb_v4.source_visibility WHERE source_id=source;
+    PERFORM rkb_v4.prepare_read_frontier(state.database_generation,state.writer_generation,
+        frontier.visibility_epoch,state.applied_seq+1,
+        prior.text_ready AND prior.projection_seq IS NOT DISTINCT FROM state.applied_seq,
+        prior.dense_ready AND prior.projection_seq IS NOT DISTINCT FROM state.applied_seq);
+    RETURN convert_to(jsonb_build_object('source_id',source,'content_revision',1,'accepted',true,
+        'withdrawn',false,'eligibility_revision',eligibility,'visibility_epoch',frontier.visibility_epoch,
+        'passage_count',jsonb_array_length(doc->'passages'),'story_count',jsonb_array_length(doc->'semantic'->'stories'),
+        'finding_count',jsonb_array_length(doc->'semantic'->'findings'),'story_refs',(SELECT coalesce(jsonb_agg(jsonb_build_object(
+            'story_id',s->>'story_id','variant_id',s->'default_variant'->>'variant_id','variant_revision',1,
+            'body_sha256',encode(sha256(convert_to(s->'default_variant'->>'body','UTF8')),'hex'))),'[]'::jsonb)
+            FROM jsonb_array_elements(doc->'semantic'->'stories') s),'payload_sha256',encode(sha256(p),'hex'),
+        'research_frontier_id',research->>'frontier_id','research_state',research->>'state',
+        'logical_time',logical_time)::text,'UTF8');
+END $$;
+
+CREATE FUNCTION rkb_v4.capture_source_graph_receipt_v1() RETURNS trigger
+ LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE c jsonb;doc jsonb;source uuid;g rkb_v4.source_graph_documents;BEGIN
+ c:=convert_from(NEW.command_bytes,'UTF8')::jsonb;
+ IF NEW.status<>'applied' OR c->>'route'<>'source.import.v4' THEN RETURN NULL;END IF;
+ doc:=convert_from(decode(c->>'payload_b64','base64'),'UTF8')::jsonb;source:=(c->'ids'->>'source_id')::uuid;
+ SELECT * INTO g FROM rkb_v4.source_graph_documents WHERE source_id=source;
+ IF doc ? 'source_graph' THEN
+  IF g.source_id IS NULL OR g.owner_person_id::text IS DISTINCT FROM c->>'person_id' OR g.data IS DISTINCT FROM doc->'source_graph'
+   OR g.payload_sha256 IS DISTINCT FROM encode(sha256(decode(c->>'payload_b64','base64')),'hex') THEN
+   RAISE EXCEPTION 'source graph accepted actor/payload differs';END IF;
+  INSERT INTO rkb_v4.source_graph_receipts VALUES(source,NEW.operation_key,NEW.sequence,NEW.command_sha256,(c->>'person_id')::uuid,c->>'request_id');
+ ELSIF g.source_id IS NOT NULL THEN RAISE EXCEPTION 'source graph not in accepted source import';END IF;
+ RETURN NULL;
+END $$;
+CREATE TRIGGER capture_source_graph_receipt AFTER INSERT ON rkb_v4.applied_ops
+ FOR EACH ROW EXECUTE FUNCTION rkb_v4.capture_source_graph_receipt_v1();
+
+CREATE FUNCTION rkb_v4.verify_source_graph_origins_v1(scope uuid[]) RETURNS boolean
+ LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE g rkb_v4.source_graph_documents;c jsonb;doc jsonb;e jsonb;a jsonb;r jsonb;f jsonb;
+BEGIN
+ IF scope IS NULL OR cardinality(scope)>10000 THEN RETURN false;END IF;
+ FOR g IN SELECT * FROM rkb_v4.source_graph_documents WHERE source_id=ANY(scope) LOOP
+  SELECT convert_from(op.command_bytes,'UTF8')::jsonb INTO STRICT c FROM rkb_v4.source_graph_receipts receipt
+   JOIN rkb_v4.applied_ops op USING(operation_key) WHERE receipt.source_id=g.source_id AND op.status='applied'
+    AND receipt.sequence=op.sequence AND receipt.command_sha256=op.command_sha256
+    AND receipt.person_id=g.owner_person_id;
+  doc:=convert_from(decode(c->>'payload_b64','base64'),'UTF8')::jsonb;
+  IF c->>'route' IS DISTINCT FROM 'source.import.v4' OR c->'ids'->>'source_id' IS DISTINCT FROM g.source_id::text
+   OR c->>'person_id' IS DISTINCT FROM g.owner_person_id::text OR doc->'source_graph' IS DISTINCT FROM g.data
+   OR g.payload_sha256 IS DISTINCT FROM encode(sha256(decode(c->>'payload_b64','base64')),'hex')
+   OR (SELECT count(*) FROM rkb_v4.source_entity_representations WHERE source_id=g.source_id)<>jsonb_array_length(g.data->'entities')
+   OR (SELECT count(*) FROM rkb_v4.source_entity_references WHERE source_id=g.source_id)<>jsonb_array_length(g.data->'references')
+   OR (SELECT count(*) FROM rkb_v4.source_entity_mentions WHERE source_id=g.source_id)<>
+     (SELECT count(DISTINCT value->'mention'->>'mention_id') FROM jsonb_array_elements(g.data->'entities'))
+   OR (SELECT count(*) FROM rkb_v4.source_entity_aliases WHERE source_id=g.source_id)<>
+     (SELECT count(DISTINCT a->>'alias_id') FROM jsonb_array_elements(g.data->'entities') e CROSS JOIN LATERAL jsonb_array_elements(e->'aliases') a)
+   OR (SELECT count(*) FROM rkb_v4.source_entity_relations WHERE source_id=g.source_id)<>jsonb_array_length(g.data->'relations')
+   OR (SELECT count(*) FROM rkb_v4.source_poi_hypotheses WHERE source_id=g.source_id)<>jsonb_array_length(g.data->'poi_facts')
+   OR (SELECT count(*) FROM rkb_v4.source_entity_finding_links WHERE source_id=g.source_id)<>
+     (SELECT coalesce(sum(jsonb_array_length(value->'entity_keys')),0) FROM jsonb_array_elements(g.data->'finding_entities')) THEN RETURN false;END IF;
+  FOR e IN SELECT value FROM jsonb_array_elements(g.data->'entities') LOOP
+   IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_entity_representations x JOIN rkb_v4.source_entity_ids h USING(entity_id)
+    WHERE x.source_id=g.source_id AND x.entity_key=e->>'key' AND x.entity_id=(e->>'entity_id')::uuid AND x.data=e
+     AND h.owner_person_id=g.owner_person_id AND h.kind=e->>'kind')
+    OR NOT EXISTS(SELECT 1 FROM rkb_v4.source_entity_mentions x WHERE x.source_id=g.source_id
+     AND x.mention_id=(e->'mention'->>'mention_id')::uuid AND x.entity_id=(e->>'entity_id')::uuid AND x.data=e->'mention') THEN RETURN false;END IF;
+   FOR a IN SELECT value FROM jsonb_array_elements(e->'aliases') LOOP
+    IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_entity_aliases x WHERE x.source_id=g.source_id AND x.alias_id=(a->>'alias_id')::uuid
+     AND x.entity_id=(e->>'entity_id')::uuid AND x.normalized_value=a->>'normalized_value'
+     AND x.normalized_sha256=encode(sha256(convert_to(a->>'normalized_value','UTF8')),'hex') AND x.data=a) THEN RETURN false;END IF;
+   END LOOP;
+  END LOOP;
+  FOR r IN SELECT value FROM jsonb_array_elements(g.data->'references') LOOP
+   IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_entity_references x JOIN rkb_v4.source_entity_ids h USING(entity_id)
+    WHERE x.source_id=g.source_id AND x.entity_key=r->>'key' AND x.entity_id=(r->>'entity_id')::uuid
+     AND h.owner_person_id=g.owner_person_id AND x.data=r) THEN RETURN false;END IF;
+  END LOOP;
+  FOR r IN SELECT value FROM jsonb_array_elements(g.data->'relations') LOOP
+   IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_entity_relations x WHERE x.source_id=g.source_id AND x.relation_id=(r->>'relation_id')::uuid
+    AND x.from_id=(r->>'source_id')::uuid AND x.to_id=(r->>'target_id')::uuid AND x.kind=r->>'kind' AND x.data=r) THEN RETURN false;END IF;
+  END LOOP;
+  FOR f IN SELECT value FROM jsonb_array_elements(g.data->'poi_facts') LOOP
+   IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_poi_hypotheses x WHERE x.source_id=g.source_id AND x.candidate_id=(f->>'candidate_id')::uuid AND x.data=f) THEN RETURN false;END IF;
+  END LOOP;
+  FOR f IN SELECT value FROM jsonb_array_elements(g.data->'finding_entities') LOOP
+   IF EXISTS(SELECT 1 FROM jsonb_array_elements_text(f->'entity_keys') WITH ORDINALITY k(name,n) WHERE NOT EXISTS(
+    SELECT 1 FROM rkb_v4.source_entity_finding_links x WHERE x.source_id=g.source_id AND x.assertion_id=(f->>'assertion_id')::uuid
+     AND x.entity_key=k.name AND x.entity_id=(f->'entity_ids'->>(k.n::integer-1))::uuid)) THEN RETURN false;END IF;
+  END LOOP;
+ END LOOP;
+ -- Accepted sources containing a graph must have a receipt; bare rows cannot
+ -- create an origin proof, including orphan canonical identities.
+ RETURN NOT EXISTS(SELECT 1 FROM rkb_v4.applied_ops op CROSS JOIN LATERAL (SELECT convert_from(op.command_bytes,'UTF8')::jsonb c) x
+   WHERE op.status='applied' AND c->>'route'='source.import.v4' AND (c->'ids'->>'source_id')::uuid=ANY(scope)
+    AND convert_from(decode(c->>'payload_b64','base64'),'UTF8')::jsonb ? 'source_graph'
+    AND NOT EXISTS(SELECT 1 FROM rkb_v4.source_graph_documents z WHERE z.source_id=(c->'ids'->>'source_id')::uuid))
+  AND NOT EXISTS(SELECT 1 FROM rkb_v4.source_entity_ids h WHERE NOT EXISTS(
+    SELECT 1 FROM rkb_v4.source_entity_representations x WHERE x.entity_id=h.entity_id));
+EXCEPTION WHEN data_exception OR no_data_found OR too_many_rows THEN RETURN false;
+END $$;
+
+CREATE FUNCTION rkb_v4.read_source_graph_v1(wanted_entity uuid,wanted_source uuid,action text,
+ after_source uuid,after_key text,take integer)
+RETURNS TABLE(source_id uuid,source_revision bigint,eligibility_revision bigint,record_id text,
+ data jsonb,evidence_text text,bibliography text)
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ WITH candidates AS (
+  SELECT n.source_id,n.entity_key record_id,n.data,n.data->'mention'->'evidence'->>'exact_quote' evidence_text
+   FROM rkb_v4.source_entity_representations n
+   WHERE action IN ('entity','list') AND ((action='entity' AND wanted_entity IS NOT NULL AND n.entity_id=wanted_entity)
+    OR (action='list' AND wanted_source IS NOT NULL AND n.source_id=wanted_source))
+  UNION ALL
+  SELECT m.source_id,m.mention_id::text,m.data,m.data->'evidence'->>'exact_quote'
+   FROM rkb_v4.source_entity_mentions m WHERE action='mentions' AND wanted_entity IS NOT NULL AND m.entity_id=wanted_entity
+  UNION ALL
+  SELECT a.source_id,a.alias_id::text,a.data,a.data->'evidence'->>'exact_quote'
+   FROM rkb_v4.source_entity_aliases a WHERE action='aliases' AND wanted_entity IS NOT NULL AND a.entity_id=wanted_entity
+  UNION ALL
+  SELECT r.source_id,r.relation_id::text,r.data,r.data->'evidence'->0->>'exact_quote'
+   FROM rkb_v4.source_entity_relations r WHERE action='relations' AND wanted_entity IS NOT NULL AND (r.from_id=wanted_entity OR r.to_id=wanted_entity)
+  UNION ALL
+  SELECT f.source_id,f.candidate_id::text,f.data,f.data->>'text'
+   FROM rkb_v4.source_poi_hypotheses f WHERE action='poi_facts' AND wanted_source IS NOT NULL AND f.source_id=wanted_source
+ ) SELECT c.source_id,1::bigint,v.eligibility_revision,c.record_id,c.data,c.evidence_text,s.bibliography
+ FROM candidates c JOIN rkb_v4.sources s USING(source_id) JOIN rkb_v4.active_revision active USING(source_id)
+ JOIN rkb_v4.source_visibility v USING(source_id) JOIN rkb_v4.source_graph_receipts receipt USING(source_id)
+ WHERE s.accepted AND NOT s.withdrawn AND active.revision=1 AND (wanted_source IS NULL OR c.source_id=wanted_source)
+  AND (after_source IS NULL OR c.source_id>after_source OR c.source_id=after_source AND c.record_id COLLATE "C">after_key COLLATE "C")
+ ORDER BY c.source_id,c.record_id COLLATE "C" LIMIT least(greatest(take,1),4)
+$$;
+
+REVOKE ALL ON rkb_v4.source_graph_documents,rkb_v4.source_entity_ids,rkb_v4.source_entity_representations,
+ rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,
+ rkb_v4.source_entity_finding_links,rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts FROM PUBLIC;
+REVOKE ALL ON FUNCTION rkb_v4.check_source_graph_evidence_v1(jsonb,jsonb),rkb_v4.source_graph_endpoint_kind_v1(jsonb,uuid),
+ rkb_v4.check_source_graph_v1(jsonb,uuid),rkb_v4.check_source_import_graph_v1(bytea,jsonb,jsonb,text),
+ rkb_v4.project_source_graph_v1(uuid,jsonb,text),rkb_v4.apply_source_import_graph_v1(bytea,jsonb,jsonb,text),
+ rkb_v4.capture_source_graph_receipt_v1(),rkb_v4.verify_source_graph_origins_v1(uuid[]),
+ rkb_v4.read_source_graph_v1(uuid,uuid,text,uuid,text,integer) FROM PUBLIC;

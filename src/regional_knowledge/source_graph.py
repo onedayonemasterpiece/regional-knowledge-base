@@ -104,6 +104,8 @@ def _resolve(*,source_id,person_id,bundles,poi_facts,regions,passages,findings):
         keys=finding['entity_keys']
         if len(set(keys))!=len(keys) or any(key not in bindings for key in keys):raise ValueError('explicit finding entity key unresolved')
         if keys:links.append(dict(assertion_id=finding['assertion_id'],entity_keys=keys,entity_ids=[bindings[key] for key in keys]))
+    _unique([entity['mention'] for entity in entities],'mention_id')
+    _unique([alias for entity in entities for alias in entity['aliases']],'alias_id')
     entities=_unique(entities,'key');refs=_unique(refs,'key');relations=_unique(relations,'relation_id');facts=_unique(facts,'candidate_key')
     if len(entities)>128 or len(refs)>128 or len(relations)>256 or sum(len(e['aliases']) for e in entities)>512:
         raise ValueError('aggregate source graph bound')
