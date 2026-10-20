@@ -325,8 +325,8 @@ class StoryReadResult(PassageReadResult):
                 or len(set(record['finding_ids']))!=len(record['finding_ids'])
                 or any(type(x) is not str or str(UUID(x))!=x for x in record['finding_ids'])
                 or type(variant['input_tokens']) is not int or not 1<=variant['input_tokens']<=512
-                or type(variant['audience']) is not str or not 1<=len(variant['audience'])<=80
-                or type(variant['language']) is not str or not 1<=len(variant['language'])<=16):
+                or type(variant['audience']) is not str or not 1<=len(variant['audience'])<=500
+                or type(variant['language']) is not str or not 2<=len(variant['language'])<=24):
             raise ValueError('exact source-bound default narrative required')
         if record['view']=='get' and record['entries']:raise ValueError('get has no version page')
         for entry in record['entries']:

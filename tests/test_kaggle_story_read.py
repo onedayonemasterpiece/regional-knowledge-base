@@ -144,3 +144,15 @@ async def test_trusted_adapter_keeps_identity_deadline_authority_without_oauth_r
     calls[0].release()
     with pytest.raises(ReadAuthorityError):await s.auth.resolver.recheck(authority)
     await release(s,dispatched)
+
+
+def test_story_read_accepts_same_maximum_audience_and_language_as_accepted_import():
+    from test_source_import_v2 import command
+    value=payload();variant=value['semantic']['stories'][0]['default_variant']
+    variant['audience']='a'*500;variant['language']='x'*24
+    accepted=command(value)
+    assert accepted.payload
+    row=record();row['variant']['audience']=variant['audience'];row['variant']['language']=variant['language']
+    actual=decode_envelope(encode_envelope(result(row)))
+    assert actual.record['variant']['audience']==variant['audience']
+    assert actual.record['variant']['language']==variant['language']
