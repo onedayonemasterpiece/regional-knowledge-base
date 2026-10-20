@@ -1,0 +1,192 @@
+"""Real private file hashes/dispatch binding, synthetic parser/HTTP peers only."""
+import asyncio
+import base64
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import UUID,uuid5
+
+import pytest
+
+from regional_knowledge.kaggle_original_native import NativeOriginalIntake,OriginalIntakeConfig
+from regional_knowledge.native_snapshot_transfer import SnapshotTicket
+from regional_knowledge.original_intake import OriginalIntakeSpec,OriginalIntakeError,canonical,digest
+
+SOURCE='10000000-0000-0000-0000-000000000001'
+INGEST='20000000-0000-0000-0000-000000000002'
+REQUEST='30000000-0000-0000-0000-000000000003'
+PDF=b'%PDF-1.7\nsynthetic bounded file fixture'
+IMAGE=b'synthetic-rendered-derivative'
+
+
+class Downloader:
+    calls=0
+    async def download(self,url,folder,*,max_bytes):
+        assert url=='https://attachment.invalid/private' and max_bytes==len(PDF)
+        self.calls+=1;path=folder/'original.pdf';path.write_bytes(PDF)
+        return SimpleNamespace(path=path,sha256=digest(PDF),size_bytes=len(PDF))
+
+
+class Transfer:
+    def __init__(self):self.objects={};self.calls=[];self.lost=False
+    async def upload(self,ticket,path,*,operation_key):
+        self.calls.append('upload');data=path.read_bytes()
+        assert len(data)==ticket.size and digest(data)==ticket.sha256
+        self.objects[ticket.key]=data
+        if self.lost:raise TimeoutError('private provider detail')
+        return 'native-etag'
+    async def download(self,ticket,path,*,operation_key):
+        self.calls.append('download');data=self.objects[ticket.key]
+        if digest(data)!=ticket.sha256:raise ValueError('corrupt')
+        path.write_bytes(data);return path
+
+
+@pytest.fixture
+def native(tmp_path,monkeypatch):
+    import regional_knowledge.kaggle_original_native as module
+    root=tmp_path/'native';root.mkdir(mode=0o700)
+    monkeypatch.setattr(module,'PRIVATE_ROOT',tmp_path)
+    monkeypatch.setattr(module.importlib.metadata,'version',lambda name:'pinned-version')
+    download=Downloader();transfer=Transfer();parser_calls=[]
+    async def parser(path,action,index=0):
+        assert path.read_bytes()==PDF;parser_calls.append(action)
+        if action=='inspect':return dict(format='pdf',page_count=1)
+        return dict(format='pdf',page_count=1,physical_page_index=index,width=100,height=200,
+            image_b64=base64.b64encode(IMAGE).decode(),image_sha256=digest(IMAGE),native_text='actual fixture span',
+            native_text_info={'truncated':False,'requires_visual_review':True},native_blocks=[])
+    handler=NativeOriginalIntake(config=OriginalIntakeConfig(('https://archive.invalid',),(('PyMuPDF','pinned-version'),)),
+        database=SimpleNamespace(database_generation='db',writer_generation='writer'),identity=('run','nonce','inc'),
+        workspace=root,current=lambda b:b==('run','inc',1),downloader=download,parser=parser,transfer=transfer)
+    handler.attached(1)
+    return SimpleNamespace(handler=handler,download=download,transfer=transfer,parser=parser_calls)
+
+
+def frame(phase,args,*,key=None,private=None):
+    value=dict(type='DISPATCH',protocol_version=2,connection_generation=1,id='job',claim='claim',kind='recovery_phase',
+        run_id='run',launch_nonce='nonce',runtime_incarnation='inc',database_generation='db',writer_generation='writer',
+        phase=phase,operation_key=key or digest(canonical([phase,args])),arguments=args,
+        request_sha256=digest(canonical(dict(phase=phase,arguments=args))),compute_claim='actual-shared-slot',dispatch_generation=1)
+    if private is not None:value['original_transfer']=private
+    return value
+
+
+def spec(**changes):return replace(OriginalIntakeSpec(SOURCE,INGEST,REQUEST,'file',max_bytes=len(PDF)),**changes)
+
+
+def ticket(f,record,method='PUT',*,page=False):
+    sha256,size=(digest(IMAGE),len(IMAGE)) if page else (record['sha256'],record['size'])
+    headers=(('Content-Length',str(size)),('Content-Type','application/octet-stream'),('If-None-Match','*')) if method=='PUT' else (('If-Match','native-etag'),)
+    return SnapshotTicket(method,digest(f['operation_key'].encode()),'originals/private/'+sha256,size,sha256,
+        9999999999.,'https://archive.invalid/private',headers).wire()
+
+
+async def acquire(n,s=None):
+    f=frame('original_acquire',{'spec':(s or spec()).wire()},private={'download_url':'https://attachment.invalid/private'})
+    return f,(await n.handler(f))['value']
+
+
+@pytest.mark.asyncio
+async def test_native_hash_archive_conditional_readback_and_page_identity(native):
+    n=native;f,r=await acquire(n)
+    assert r['sha256']==digest(PDF) and n.download.calls==1 and n.parser==['inspect']
+    assert await n.handler(f)==await n.handler(f) and n.download.calls==1
+    args=dict(handle=r['handle'],original_sha256=r['sha256'])
+    pending=await n.handler(frame('original_pages',dict(args,index=0)))
+    assert pending['value']['error']=='original_archive_verification_required'
+    upload=frame('original_archive',args);upload['original_transfer']={'ticket':ticket(upload,r)}
+    assert (await n.handler(upload))['value']['native_version']=='native-etag'
+    verify=frame('original_verify',args);verify['original_transfer']={'ticket':ticket(verify,r,'GET')}
+    receipt=(await n.handler(verify))['value']
+    assert receipt['sha256']==digest(PDF) and receipt['acquisition_sha256']==r['acquisition_sha256']
+    pages=frame('original_pages',dict(args,index=0),key='after-verified')
+    page=(await n.handler(pages))['value']
+    assert page['page_id']==str(uuid5(UUID(SOURCE),'page:1:0'))
+    assert page['original_sha256']==digest(PDF) and 'image_b64' not in page
+    assert n.parser==['inspect','page']
+    pageargs=dict(args,page_index=0)
+    u=frame('original_archive',pageargs);u['original_transfer']={'ticket':ticket(u,r,page=True)}
+    assert (await n.handler(u))['value']['sha256']==digest(IMAGE)
+    await n.handler(pages)
+    assert n.parser==['inspect','page']
+    await n.handler.aclose();assert not n.handler.root.exists()
+
+
+@pytest.mark.asyncio
+async def test_expected_hash_and_page_bound_fail_before_archive(native):
+    _,bad=await acquire(native,spec(expected_sha256='f'*64))
+    assert bad['error']=='original_expected_bytes_mismatch' and not native.transfer.calls
+    async def too_many(*a):return dict(format='pdf',page_count=33)
+    native.handler.parser=too_many
+    f=frame('original_acquire',{'spec':spec().wire()},key='over-page-bound',private={'download_url':'https://attachment.invalid/private'})
+    assert (await native.handler(f))['value']['error']=='original_parser_invalid'
+    assert not native.transfer.calls
+
+
+@pytest.mark.asyncio
+async def test_small_ten_page_original_is_admitted_without_rendering_every_page(native):
+    async def ten_pages(*a):return dict(format='pdf',page_count=10)
+    native.handler.parser=ten_pages
+    _,receipt=await acquire(native)
+    assert receipt['page_count']==10 and receipt['size']==len(PDF)
+    assert not native.transfer.calls
+
+
+@pytest.mark.asyncio
+async def test_dispatch_forgery_and_changed_operation_refuse(native):
+    f,_=await acquire(native)
+    for key,value in (('writer_generation','other'),('runtime_incarnation','other'),('compute_claim',''),('dispatch_generation',0)):
+        with pytest.raises(OriginalIntakeError):await native.handler({**f,key:value})
+    changed=frame('original_acquire',{'spec':spec(file_id='different').wire()},key=f['operation_key'],private=f['original_transfer'])
+    with pytest.raises(OriginalIntakeError,match='operation_changed'):await native.handler(changed)
+    native.handler.detached(1)
+    with pytest.raises(OriginalIntakeError):await native.handler(f)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_acquisition_retains_unknown_and_removes_owned_partial(native):
+    entered=asyncio.Event()
+    async def blocked(*a,**kw):entered.set();await asyncio.Event().wait()
+    native.handler.downloader.download=blocked
+    f=frame('original_acquire',{'spec':spec().wire()},private={'download_url':'https://attachment.invalid/private'})
+    task=asyncio.create_task(native.handler(f));await entered.wait();task.cancel()
+    with pytest.raises(asyncio.CancelledError):await task
+    with pytest.raises(OriginalIntakeError,match='unknown_reconcile'):await native.handler(f)
+    assert not list(native.handler.root.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_prepared_intake_uses_actual_transport_document_resource_and_replays_without_download():
+    from regional_knowledge.kaggle_bootstrap import PreparedRuntime
+    from test_bge_shared_worker import Peer,result
+    from test_bge_wss_worker import module,CONFIG
+    from test_kaggle_bootstrap import candidate
+    transport=module('bge_wss_transport');peer=Peer();stop=asyncio.Event();calls=[]
+    class Intake:
+        def attached(self,generation):calls.append(('attached',generation))
+        def detached(self,generation):calls.append(('detached',generation))
+        async def __call__(self,frame):
+            calls.append(('acquire',frame['compute_claim']))
+            return dict(phase=frame['phase'],request_sha256=frame['request_sha256'],value={'sha256':digest(PDF)})
+    async def read(frame,*,encode):return result(frame)
+    async def prepare(encoder,**identity):return PreparedRuntime(read,candidate(),original_intake_handler=Intake())
+    def load():
+        def forbidden(text):raise AssertionError('original intake invoked BGE')
+        return forbidden
+    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),load,lambda:{},prepare_runtime=prepare,
+        connector=peer.connect,stop=stop,heartbeat_seconds=.01,maximum_seconds=3)
+    task=asyncio.create_task(worker.run())
+    try:
+        await peer.wait('READY')
+        request=dict(type='DISPATCH',id='original',claim='claim',kind='recovery_phase',phase='original_acquire',
+            operation_key='original-op',request_sha256='a'*64,arguments={'spec':{}},run_id=CONFIG['run_id'],
+            launch_nonce=CONFIG['launch_nonce'],runtime_incarnation=worker.incarnation,database_generation='db',
+            writer_generation='writer',compute_claim='actual-document-slot',dispatch_generation=1,
+            original_transfer={'download_url':'https://attachment.invalid/private'})
+        await peer.put(request)
+        receipt=await peer.wait('RECOVERY_PHASE_RESULT');await peer.wait('RESOURCE_RELEASED')
+        assert receipt['receipt']['value']['sha256']==digest(PDF)
+        await peer.disconnect()
+        assert (await peer.wait('RECOVERY_PHASE_RESULT',generation=2))['receipt']==receipt['receipt']
+        assert [c for c in calls if c[0]=='acquire']==[('acquire','actual-document-slot')]
+        await peer.put(dict(type='RESULT_ACK',job_id='original',claim='claim',status='accepted'),generation=2)
+    finally:stop.set();await task

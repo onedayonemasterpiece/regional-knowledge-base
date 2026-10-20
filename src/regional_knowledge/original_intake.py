@@ -6,7 +6,7 @@ import hashlib
 import json
 from uuid import UUID
 
-PHASES=frozenset({'original_acquire','original_archive','original_verify','original_pages','original_encode'})
+PHASES=frozenset({'original_acquire','original_archive','original_verify','original_pages'})
 
 def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
 def digest(value):return hashlib.sha256(value).hexdigest()
@@ -41,6 +41,7 @@ class OriginalIntakeSpec:
     max_bytes:int=128*1024*1024
     expected_sha256:str|None=None
     expected_size:int|None=None
+    max_pages:int=32
 
     def __post_init__(self):
         for value in (self.source_id,self.ingestion_id,self.request_id):uuid_value(value)
@@ -52,6 +53,7 @@ class OriginalIntakeSpec:
         if self.expected_sha256 is not None:hash_value(self.expected_sha256)
         if self.expected_size is not None and (type(self.expected_size) is not int or not 1<=self.expected_size<=self.max_bytes):
             raise OriginalIntakeError('original_bounds_invalid')
+        if type(self.max_pages) is not int or not 1<=self.max_pages<=32:raise OriginalIntakeError('original_page_bound')
 
     def wire(self):return asdict(self)
     @classmethod
@@ -104,3 +106,20 @@ class OriginalIntakeStatus:
 
     @property
     def verified(self):return self.receipt is not None and self.state=='verified'
+
+
+@dataclass(frozen=True)
+class NativePagesProof:
+    original_receipt_sha256:str
+    page_bytes:tuple[bytes,...]
+
+    def __post_init__(self):
+        hash_value(self.original_receipt_sha256)
+        if (type(self.page_bytes) is not tuple or not 1<=len(self.page_bytes)<=32
+                or any(type(raw) is not bytes or not 1<=len(raw)<=120*1024 for raw in self.page_bytes)):
+            raise OriginalIntakeError('original_page_proof_bound')
+    @property
+    def pages(self):return tuple(json.loads(raw) for raw in self.page_bytes)
+    @property
+    def sha256(self):return digest(canonical(dict(original_receipt_sha256=self.original_receipt_sha256,
+        pages=list(self.pages))))

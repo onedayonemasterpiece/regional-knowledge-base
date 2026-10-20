@@ -37,6 +37,7 @@ class TargetLaunchSpec:
     native_bundle: object = None
     bootstrap_only: bool = False
     bootstrap_seconds: int = 900
+    original_intake: object = None
 
     def __post_init__(self):
         if type(self.database) is not OwnedDatabase:
@@ -78,6 +79,14 @@ class TargetLaunchSpec:
             from .kaggle_source_commands import fixed_registry
             fixed_registry(self.database,self.command_handlers)
         object.__setattr__(self,'command_handlers',tuple(json.loads(canonical(self.command_handlers))))
+        if self.original_intake is not None:
+            from .kaggle_original_native import OriginalIntakeConfig
+            if type(self.original_intake) is not OriginalIntakeConfig:
+                raise TypeError('typed pinned original intake deployment required')
+            if not set(dict(self.original_intake.parser_packages))<=set(self.dependency_packages):
+                raise ValueError('original parser must be in dependency attestation')
+            if self.stage0 is None or any(self.stage0.packages.get(k)!=v for k,v in self.original_intake.parser_packages):
+                raise ValueError('original parser requires exact Stage0 wheel closure')
         if self.native_bundle is not None:
             from .kaggle_native_bundle import NativeBundleSpec
             if type(self.native_bundle) is not NativeBundleSpec:
@@ -127,7 +136,8 @@ class TargetLaunchSpec:
             min_data_seq=self.min_data_seq,command_handlers=list(self.command_handlers),
             stage0=self.stage0.wire() if self.stage0 is not None else None,
             native_bundle=self.native_bundle.wire() if self.native_bundle is not None else None,
-            bootstrap_only=self.bootstrap_only,bootstrap_seconds=self.bootstrap_seconds)
+            bootstrap_only=self.bootstrap_only,bootstrap_seconds=self.bootstrap_seconds,
+            original_intake=self.original_intake.wire() if self.original_intake is not None else None)
 
 
 class TargetRuntime:
@@ -148,6 +158,7 @@ class TargetRuntime:
         self.writer_pool = None
         self.prepared = None
         self.source_history_observer=None
+        self.original_intake_handler=None
         self.identity = None
         self.closed = False
         if restored_database is not None:
@@ -196,6 +207,11 @@ class TargetRuntime:
         return await self.recovery_worker(frame)
 
     async def _owned_probe(self, *, acquire):
+        from .kaggle_environment import bootstrap_stage
+        with bootstrap_stage(self.config['run_id'],'native_pg_probe'):
+            return await self._probe_database(acquire=acquire)
+
+    async def _probe_database(self, *, acquire):
         # The native catalog hash and actual current writer binding have
         # independent checks. A receipt cannot substitute for a database read.
         catalog, fields = await self.probe(acquire=acquire)
@@ -244,7 +260,9 @@ class TargetRuntime:
                     bundle.manifest_name,bundle.manifest_sha256,inventory=inventory)
             options=dict(intent=self.target.get('initialization_intent'),artifacts=encoder.artifacts,sql_root=self.target['sql_root'])
             if native_bundle is not None:options['native_bundle']=native_bundle
-            await self.owner.start_empty(**options)
+            from .kaggle_environment import bootstrap_stage
+            with bootstrap_stage(run_id,'native_pg_start'):
+                await self.owner.start_empty(**options)
         self.pool = self.pool_factory(kwargs=reader_kwargs,min_size=1,max_size=4,
             open=False,timeout=2,max_waiting=4)
         await self.pool.open(wait=True,timeout=10)
@@ -289,7 +307,22 @@ class TargetRuntime:
             dependencies=await asyncio.to_thread(observe_dependencies,self.target['dependency_packages'])
             observation=dict(runtime_readiness=readiness.to_wire(),dependencies=dependencies,
                 catalog_b64=base64.b64encode(self._bootstrap_catalog).decode())
-        self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler)
+        original_handler=None
+        if self.target.get('original_intake') is not None:
+            import tempfile
+            from .kaggle_original_native import NativeOriginalIntake,OriginalIntakeConfig
+            from .kaggle_owned_pg import ensure_private_runtime_root
+            workspace=tempfile.mkdtemp(prefix='rkb-original-',dir=ensure_private_runtime_root())
+            try:
+                original_handler=NativeOriginalIntake(config=OriginalIntakeConfig.from_wire(self.target['original_intake']),
+                    database=self.database,identity=identity,workspace=workspace,current=lambda binding:
+                        not self.closed and binding[:2]==(run_id,runtime_incarnation))
+            except BaseException:
+                import shutil
+                await asyncio.to_thread(shutil.rmtree,workspace)
+                raise
+            self.original_intake_handler=original_handler
+        self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler,original_handler)
         return self.prepared
 
     async def aclose(self):
@@ -298,7 +331,10 @@ class TargetRuntime:
         self.closed = True
         try:
             try:
-                if self.source_history_observer is not None:await self.source_history_observer.aclose()
+                try:
+                    if self.original_intake_handler is not None:await self.original_intake_handler.aclose()
+                finally:
+                    if self.source_history_observer is not None:await self.source_history_observer.aclose()
             finally:
                 try:
                     if self.writer_pool is not None:await self.writer_pool.close(timeout=10)

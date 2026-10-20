@@ -99,6 +99,11 @@ class RecoveryPhaseDispatch:
             ticket=await self.snapshot_tickets.issue_download(self._bindings[job_id],identity['operation_key'],
                 BlobRef(**identity['arguments']['blob']))
             payload['download_ticket']=ticket.wire()
+        from .original_intake import PHASES as ORIGINAL_PHASES
+        if identity['phase'] in ORIGINAL_PHASES:
+            original=getattr(self,'original_intake',None)
+            if original is None:raise PermissionError('configured original intake owner unavailable')
+            payload['original_transfer']=await original.dispatch_transfer(identity,self._bindings[job_id])
         return payload
 
     async def issue_upload(self,frame,*,run_id,token,generation):

@@ -341,6 +341,7 @@ class PreparedRuntime:
     source_handler: object = None
     bootstrap_observation: object = None
     source_history_handler: object = None
+    original_intake_handler: object = None
 
     def __post_init__(self):
         if (not (inspect.iscoroutinefunction(self.query_handler)
@@ -359,6 +360,12 @@ class PreparedRuntime:
                 or not callable(getattr(self.source_history_handler,'attached',None))
                 or not callable(getattr(self.source_history_handler,'detached',None))):
             raise BootstrapUnavailable('source_history_handler_invalid')
+        if self.original_intake_handler is not None and (not (
+                inspect.iscoroutinefunction(self.original_intake_handler)
+                or inspect.iscoroutinefunction(getattr(self.original_intake_handler,'__call__',None)))
+                or not callable(getattr(self.original_intake_handler,'attached',None))
+                or not callable(getattr(self.original_intake_handler,'detached',None))):
+            raise BootstrapUnavailable('original_intake_handler_invalid')
 
 
 def observe_dependencies(packages):
