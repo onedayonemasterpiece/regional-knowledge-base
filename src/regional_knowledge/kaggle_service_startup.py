@@ -191,6 +191,16 @@ class TargetServiceStartup:
                 geo_gate=self.geo_gate,destination_ref=config.destination_ref,current=self.reads_current)
             self.routes.update({'geo.identity_read':self.geo_backend.geo_lookup,
                 'geo.members_read':self.geo_backend.graph_fetch})
+        from .case_read_gate import CaseReadGate
+        self.case_gate=CaseReadGate(authority,config.spool,binding_current=self.binding_current)
+        self.cases_backend=None
+        if self.case_gate.cases_supported():
+            from .kaggle_cases_backend import KaggleCasesBackend
+            self.cases_backend=KaggleCasesBackend(self,case_gate=self.case_gate)
+            self.routes.update({'case.read':self.cases_backend.disagreement_get,
+                'case.edit':self.cases_backend.disagreement_edit,'case.access':config.spool.stage_domain_command,
+                'case.contribute':self.cases_backend.disagreement_contribute,
+                'case.conclusion':self.cases_backend.disagreement_conclusion})
         self.history=config.history_adapter.bind(spool=config.spool,routes=self.routes,
             binding_current=self.binding_current,writer_generation=config.writer_generation)
         if (self.history.spool is not config.spool or set(self.history.routes)!=set(self.routes)
@@ -250,6 +260,7 @@ class TargetServiceStartup:
             else:
                 self.coverage=None;self.gate.invalidate();self.binding=binding
                 if self.geo_gate is not None:self.geo_gate.invalidate()
+                self.case_gate.invalidate()
                 coverage=await self.history.restore(binding)
             if not coverage.current() or not self.binding_current(self.binding):
                 raise PermissionError('native history proof no longer current')
@@ -287,6 +298,7 @@ class TargetServiceStartup:
         finally:
             self.running=False;self.coverage=None;self.gate.invalidate()
             if self.geo_gate is not None:self.geo_gate.invalidate()
+            self.case_gate.invalidate()
             if self._maintenance is not None:
                 self._maintenance.cancel()
                 try:await self._maintenance

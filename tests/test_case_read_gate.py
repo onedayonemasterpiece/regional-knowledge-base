@@ -87,7 +87,9 @@ async def test_private_draft_requires_current_personal_capability_and_exact_auth
     commands=[command(actor,'create',create()),command(actor,'draft_save',PersonalDraft(text='Synthetic private analysis.',based_on_seq=1,evidence_ids=[],position_ids=['phase-one']),seq=2)]
     gate,authority,b,anchor=await setup(env,auth,commands)
     permit=await gate.dispatch(authority,request(section='draft_get',draft_id=OBJECT),b)
-    record=header();record.update(section='draft_get',draft_id=OBJECT,version=1,current_version=1,payload={'text':'Synthetic private analysis.'})
+    import json
+    record=header();record.update(section='draft_get',draft_id=OBJECT,version=1,current_version=1,
+        visibility='personal',payload=json.loads(commands[1].payload)['command'])
     gated=await gate.finish(permit,result(record));assert gated.result.status=='ok'
     # Current Case managers do not inherit another author's private draft.
     data=anchor.case_state.cases;data[CASE]['drafts'][OBJECT]['actor']=auth.p.owner.subject
@@ -103,3 +105,12 @@ def test_case_projection_rejects_forged_grant_actor_and_preserves_private_event_
     assert state.cases[CASE]['event_seq']==1 and state.cases[CASE]['drafts'][OBJECT]['version']==1
     bad=command(other,'grant',CaseGrant(grantee=UUID(other),capability='manager',reason='Not authorized'),seq=3,case_revision=1)
     with pytest.raises(ValueError,match='role history'):project_cases([(bad,None,None)],{3:'applied'},state)
+
+
+@pytest.mark.asyncio
+async def test_native_extra_private_payload_and_duplicate_draft_paths_are_rejected(env,auth):
+    gate,authority,b,anchor=await setup(env,auth)
+    permit=await gate.dispatch(authority,request(),b)
+    bad=header();bad['unrelated_private_draft']='Must never cross a Case header'
+    gated=await gate.finish(permit,result(bad))
+    assert gated.result.reason=='internal_error' and gated.result.record is None

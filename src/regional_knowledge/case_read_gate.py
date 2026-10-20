@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from .case_history import CaseHistory
 from .control_spool import _database,_command
 from .disagreement_native import DEPENDENCIES,CASE_REVISIONS,case_handler
-from .kaggle_case_contracts import CaseReadRequest,CaseReadResult
+from .kaggle_case_contracts import CaseReadRequest,CaseReadResult,validate_case_record
 from .kaggle_protocol import TrustedActorContext
 from .source_read_gate import SourceReadGate,SourceGateDenied,DispatchPermit,_Read,binding_key
 
@@ -85,7 +85,7 @@ class CaseReadGate(SourceReadGate):
 
     async def _facts(self,query,authority,anchor,case):
         version=self.spool._source_version
-        ids=tuple(sorted(case['sources']))
+        ids=tuple(sorted(set(case['sources'])|({query.candidate_source_id} if query.candidate_source_id is not None else set())))
         sources=await _database(self.spool._read_facts,ids,ids,anchor,version,self.spool._source_covered_sequence)
         seq,pending,unknown=await _database(self._local_scope,query,authority.person_id)
         for raw,_,_ in anchor.pending:
@@ -115,6 +115,9 @@ class CaseReadGate(SourceReadGate):
         try:CaseReadResult.model_validate_json(result.model_dump_json())
         except (ValueError,TypeError):result=self._closed(result,'internal_error')
         if result.status!='ok':read.facts,read.result=None,result;return result
+        try:validate_case_record(q,result.record)
+        except (ValueError,TypeError,KeyError):
+            result=self._closed(result,'internal_error');read.facts,read.result=None,result;return result
         anchor,case,role=self._policy(q,read.authority)
         if anchor is None:result=self._closed(result,'prior_write_pending');read.facts,read.result=None,result;return result
         facts=await self._facts(q,read.authority,anchor,case)
@@ -128,6 +131,12 @@ class CaseReadGate(SourceReadGate):
                         or dep['source_id'] in seen or case['sources'].get(dep['source_id'])!=dep['content_revision']
                         or type(dep['eligibility_revision']) is not int or dep['eligibility_revision']<1):good=False;break
                 seen.add(dep['source_id'])
+        if q.section=='edit_context':
+            candidate=record.get('candidate_dependency')
+            good=good and (candidate is None if q.candidate_source_id is None else
+                type(candidate) is dict and set(candidate)=={'source_id','content_revision','eligibility_revision'}
+                and candidate['source_id']==q.candidate_source_id
+                and all(type(candidate[k]) is int and candidate[k]>=1 for k in ('content_revision','eligibility_revision')))
         if q.section!='operation':
             good=good and (record.get('section'),record.get('case_role'),record.get('acl_revision'),record.get('event_seq'))==(
                 q.section,role,case['acl_revision'],case['event_seq'])
@@ -143,7 +152,8 @@ class CaseReadGate(SourceReadGate):
                         if d is None or d['actor']!=read.authority.person_id or d['version']!=item.get('version'):good=False;break
         else:good=good and record.get('operation_key')==q.operation_key
         minimum=min(result.observed_data_seq,result.observed_projection_seq)
-        if not good:result=self._closed(result,'internal_error')
+        if facts.sequence>getattr(anchor,'applied_sequence',minimum):result=self._closed(result,'prior_write_pending')
+        elif not good:result=self._closed(result,'internal_error')
         elif result.observed_database_generation!=read.key[3]:result=self._closed(result,'not_ready')
         elif (facts.pending or facts.unknown or facts.sequence>minimum or minimum<q.min_data_seq
                 or facts.sources.pending or facts.sources.unknown or facts.sources.scope_sequence>minimum):

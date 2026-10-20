@@ -182,6 +182,8 @@ class KnowledgeMCPServer(MCPServer):
             allowed.update({'story_calendar','story_observation_search'})
         if getattr(self,'_target_import_available',False):
             allowed.update({'book_ingest','book_pages'})
+        if getattr(self,'_target_cases_available',False):
+            allowed.update({'disagreement_get','disagreement_edit','disagreement_contribute','disagreement_conclusion'})
         if getattr(self,'_target_geo_available',False):
             allowed.update({'geo_lookup','graph_fetch','poi_context'})
         if getattr(self,'_target_catalog_available',False):
@@ -433,6 +435,7 @@ def build_server(
     mcp._target_story_available = (selected=='kaggle_source' and target_startup.gate.story_supported())
     mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
     mcp._target_catalog_available = (selected=='kaggle_source' and target_startup.gate.catalog_supported())
+    mcp._target_cases_available = (selected=='kaggle_source' and getattr(target_startup,'cases_backend',None) is not None)
     mcp._target_geo_available = (selected=='kaggle_source' and getattr(target_startup,'geo_backend',None) is not None)
     mcp._target_startup=target_startup
     mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
@@ -496,6 +499,10 @@ def build_server(
     # Optional narrow function-call bundles for the client application's own Live agent.
     # The default read-only Live surface above remains unchanged.
     story_profiles = {"full", "story_reader", "story_contributor", "story_editor"}
+    if profile in story_profiles and mcp._target_cases_available:
+        from .kaggle_case_tools import register_case_tools
+        register_case_tools(mcp,target_startup.cases_backend,_principal)
+
     if profile in story_profiles and mcp._target_geo_available:
         @mcp.tool(name='geo_lookup',title='Find retained private geographic identities',
             description='Exact normalized name and optional declared source year. Minimal legacy-unanchored provenance; '

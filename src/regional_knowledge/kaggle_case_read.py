@@ -46,11 +46,24 @@ async def execute_case_read(request,*,acquire):
                                 (request.case_id,request.actor.person_id,request.operation_key))
                         else:
                             await execute('SELECT rkb_v4.read_disagreement_v1(%s::uuid,%s::uuid,%s,%s,%s,%s,%s::uuid,%s,%s::uuid)',
-                                (request.case_id,request.actor.person_id,request.section,request.after_seq,request.limit,
+                                (request.case_id,request.actor.person_id,'case' if request.section=='edit_context' else request.section,request.after_seq,request.limit,
                                  request.revision,request.draft_id,request.draft_version,request.after_draft))
                         row=await cursor.fetchone()
                         if row is None or row[0] is None:raise ReadUnavailable('access_denied')
-                        result=CaseReadResult(**_identity(request),status='ok',record_b64=base64.b64encode(canonical(row[0])).decode(),
+                        record=row[0]
+                        if request.section=='edit_context':
+                            record={k:record[k] for k in ('case_id','case_revision','acl_revision','event_seq','state',
+                                'current_conclusion_id','source_dependencies','case_role')}
+                            record.update(section='edit_context',candidate_dependency=None)
+                            if request.candidate_source_id is not None:
+                                await execute('SELECT a.revision,v.eligibility_revision FROM rkb_v4.active_revision a '
+                                    'JOIN rkb_v4.sources s USING(source_id) JOIN rkb_v4.source_visibility v USING(source_id) '
+                                    'WHERE a.source_id=%s::uuid AND s.accepted AND NOT s.withdrawn',(request.candidate_source_id,))
+                                source=await cursor.fetchone()
+                                if source is None:raise ReadUnavailable('evidence_withdrawn')
+                                record['candidate_dependency']=dict(source_id=request.candidate_source_id,
+                                    content_revision=source[0],eligibility_revision=source[1])
+                        result=CaseReadResult(**_identity(request),status='ok',record_b64=base64.b64encode(canonical(record)).decode(),
                             observed_data_seq=observed['data'],observed_projection_seq=observed['projection'],
                             observed_visibility_epoch=observed['visibility'],observed_database_generation=observed['database'])
                 if loop.time()>=deadline:raise TimeoutError

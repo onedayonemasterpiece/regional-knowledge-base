@@ -45,8 +45,33 @@ that immutable manifest, including printed page labels and native block offsets.
 These fields do not assert visual or human verification. Structured author/title
 metadata likewise comes from retained typed fields, never parsed bibliography.
 
+The target startup binds the existing `disagreement_get`, `disagreement_edit`,
+`disagreement_contribute` and `disagreement_conclusion` tools only when an exact
+schema10 or explicit compatible schema11 Case handler is installed. `CASE_READ`
+shares the authenticated ephemeral resource and performs no token counting or
+embedding. Its whole native record is bounded to96KiB; pages contain at most20
+records and return continuation positions. No source dependency is invented for
+an empty private Case.
+
+The current output gate compares native Case role/ACL/event/source scope against
+a compact projection of exact verified successful journal commands. Draft access
+also requires the exact author and current personal-conclusion capability. The
+native reader reconstructs complete Case projections from the applied ledger
+before reading; forged heads, grants or bodies fail verification. A cold physical
+restore without the compact Case projection remains closed until full history is
+verified. Pending own draft operations do not change book counters or another
+person's shared Case view.
+
+Writes retain model-authored inputs in the same short control spool, seal them
+through the existing remote accepted journal, and enqueue the existing fixed
+source-command executor. `operation_status` resumes the same stored command and
+predecessor after an unknown result. Pending/accepted is not Saved; only a native
+applied outcome with a verified durable remote receipt produces `saved=true`.
+Current participant, Case and source checks remain active at final MCP issuance.
+This implementation and synthetic tests do not establish deployed, physical-phone
+or non-owner live acceptance.
+
 Case search/BGE projections, public exports/discussions, exact human support and
 research source requests are separate required product paths. No lexical-only
-case result may be called hybrid acceptance. Public tool activation must wait
-for actual native ACL/source provenance, current grant/restriction history and
-final output issuance integration on the existing typed ephemeral channel.
+case result may be called hybrid acceptance. These remaining domains are not
+silently routed to a SQLite journal or a lexical-only success result.

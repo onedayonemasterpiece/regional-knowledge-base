@@ -26,7 +26,8 @@ class CaseReadRequest(ReadIdentity):
     operation:Literal['disagreement_read']='disagreement_read'
     operation_version:Literal[1]=1
     case_id:str
-    section:Literal['case','evidence','contributions','conclusions','history','draft_get','draft_list','operation']='case'
+    section:Literal['case','evidence','contributions','conclusions','history','draft_get','draft_list','operation','edit_context']='case'
+    candidate_source_id:str|None=None
     after_seq:Nonnegative=0
     limit:Annotated[int,Field(ge=1,le=20)]=10
     revision:Annotated[int,Field(ge=1)]|None=None
@@ -42,13 +43,14 @@ class CaseReadRequest(ReadIdentity):
     @model_validator(mode='after')
     def fixed_scope(self):
         exact_uuid(self.case_id);exact_uuid(self.actor.person_id)
-        for value in (self.draft_id,self.after_draft):
+        for value in (self.draft_id,self.after_draft,self.candidate_source_id):
             if value is not None:exact_uuid(value)
         if ((self.section=='operation')!=(self.operation_key is not None)
                 or (self.section=='draft_get')!=(self.draft_id is not None)
                 or self.draft_version is not None and self.section!='draft_get'
                 or self.after_draft is not None and self.section!='draft_list'
                 or self.revision is not None and self.section!='case'
+                or self.candidate_source_id is not None and self.section!='edit_context'
                 or self.after_seq and self.section not in ('evidence','contributions','conclusions','history')):
             raise ValueError('fixed Case read selector required')
         return self
@@ -94,3 +96,89 @@ class CaseReadResult(ReadIdentity):
         elif self.record_b64 is not None:
             raise ValueError('failed Case read cannot carry private content')
         return self
+
+
+def validate_case_record(request,record):
+    """Reject extra private payload paths before inspecting any dependencies."""
+    common={'case_id','case_revision','acl_revision','event_seq','state','current_conclusion_id',
+        'source_dependencies','case_role','section'}
+    additions={
+        'case':{'question','context','classification','rationale','positions','current_conclusion','new_material_since_conclusion','has_more'},
+        'edit_context':{'candidate_dependency'},
+        'draft_get':{'draft_id','version','current_version','visibility','payload','has_more','publication_ids'},
+        'draft_list':{'items','has_more','next_after_id'},
+        'evidence':{'items','has_more','next_after_seq'},'contributions':{'items','has_more','next_after_seq'},
+        'conclusions':{'items','has_more','next_after_seq'},'history':{'items','has_more','next_after_seq'},
+    }
+    if request.section=='operation':
+        allowed={'case_id','source_dependencies','result','operation_key','sequence','command_sha256','request_id','state','outcome_durability'}
+    else:allowed=common|additions[request.section]
+    if type(record) is not dict or set(record)-allowed:raise ValueError('unexpected Case record fields')
+    from .disagreement_contracts import EvidenceAdd,ContributionAdd,ConclusionAdd,PersonalDraft,CaseGrant
+    def exact_model(model,value):
+        parsed=model.model_validate_json(json.dumps(value,ensure_ascii=False,allow_nan=False),strict=True)
+        if parsed.model_dump(mode='json')!=value:raise ValueError('exact Case payload required')
+    if request.section=='case' and record.get('current_conclusion') is not None:
+        conclusion=record['current_conclusion']
+        extra={'human_support','conclusion_id','ordinal','actor_id','event_seq'}
+        if (type(conclusion) is not dict or set(conclusion)!=set(ConclusionAdd.model_fields)|extra
+                or conclusion['human_support']!=[]):raise ValueError('exact current conclusion required')
+        exact_model(ConclusionAdd,{k:v for k,v in conclusion.items() if k not in extra})
+    if request.section=='draft_get':
+        if record.get('visibility')!='personal':raise ValueError('private draft visibility differs')
+        exact_model(PersonalDraft,record['payload'])
+    if request.section in ('evidence','contributions','conclusions','history','draft_list'):
+        items=record.get('items')
+        if type(items) is not list or len(items)>request.limit:raise ValueError('bounded whole Case records required')
+        seen=set()
+        shapes={
+            'evidence':{'evidence_id','version','actor_id','event_seq','payload','logical_time'},
+            'contributions':{'contribution_id','version','actor_id','recorded_by','event_seq','payload','logical_time'},
+            'conclusions':{'conclusion_id','ordinal','actor_id','based_on_seq','event_seq','payload','logical_time'},
+            'history':{'seq','actor_id','kind','object_id','version','payload','logical_time'},
+            'draft_list':{'draft_id','version','visibility'},
+        }
+        for item in items:
+            if type(item) is not dict or set(item)!=shapes[request.section]:raise ValueError('exact Case item fields required')
+            identity=(item.get('draft_id') or item.get('evidence_id') or item.get('contribution_id') or item.get('conclusion_id') or item.get('seq'),item.get('version'))
+            if identity in seen:raise ValueError('duplicate Case item')
+            seen.add(identity)
+            if request.section=='draft_list':
+                if item['visibility']!='personal':raise ValueError('private draft visibility differs')
+                continue
+            payload=item['payload']
+            if type(payload) is not dict:raise ValueError('exact Case item payload required')
+            if request.section=='evidence':
+                fields=set(EvidenceAdd.model_fields)
+                if set(payload)!=fields|{'text_end','verification','visual_confirmation','physical_page_index','page_provenance','region_provenance'}:
+                    raise ValueError('unexpected evidence payload fields')
+                exact_model(EvidenceAdd,{k:payload[k] for k in fields})
+                from .source_manifest import PAGE_KEYS,REGION_KEYS
+                if (set(payload['page_provenance'])!=PAGE_KEYS or set(payload['region_provenance'])!=REGION_KEYS
+                        or payload['page_provenance']['page_id']!=payload['page_id']
+                        or payload['region_provenance']['region_id']!=payload['region_id']
+                        or payload['region_provenance']['page_id']!=payload['page_id']
+                        or payload['physical_page_index']!=payload['page_provenance']['physical_page_index']
+                        or payload['text_end']!=payload['text_start']+len(payload['quote'])
+                        or payload['verification']!='accepted_text_match' or payload['visual_confirmation'] is not None):
+                    raise ValueError('exact native evidence provenance required')
+            elif request.section=='contributions':
+                fields=set(ContributionAdd.model_fields)
+                if set(payload)-fields-{'withdrawn','reason','attribution','human_reading_confirmed','origin'}:
+                    raise ValueError('unexpected contribution payload fields')
+                exact_model(ContributionAdd,{k:payload[k] for k in fields})
+                if (payload.get('human_reading_confirmed') is not False or type(payload.get('withdrawn')) is not bool
+                        or type(payload.get('attribution')) is not dict
+                        or set(payload['attribution'])!={'person_id','recorded_by','route','link_id','link_revision','human_reading_confirmed'}
+                        or payload['attribution']['person_id']!=item['actor_id']
+                        or payload['attribution']['recorded_by']!=item['recorded_by']
+                        or payload['attribution']['human_reading_confirmed'] is not False):
+                    raise ValueError('authenticated contribution provenance required')
+            elif request.section=='conclusions':
+                if payload.get('human_support')!=[]:raise ValueError('human support cannot be invented')
+                exact_model(ConclusionAdd,{k:v for k,v in payload.items() if k!='human_support'})
+            elif item['kind']=='grant':exact_model(CaseGrant,payload)
+            elif (item['kind'] not in ('create','revise','state','add_evidence','contribute','correct_contribution','conclude','draft_publish')
+                    or set(payload)!={'object_id','version'}):
+                raise ValueError('shared history cannot contain private draft data')
+    return record
