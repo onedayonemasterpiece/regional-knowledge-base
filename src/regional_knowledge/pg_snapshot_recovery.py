@@ -99,6 +99,7 @@ class PhysicalSnapshotRecovery:
                 control=self._control(proof)
                 descriptor=await self.native.capture(binding,versions=versions,expected_sequence=proof.applied_sequence)
                 if (descriptor['database_generation']!=proof.database_generation
+                        or descriptor['writer_generation']!=writer_generation
                         or descriptor['applied_sequence']!=proof.applied_sequence or descriptor['versions']!=versions):
                     raise SnapshotError('snapshot_native_capture_binding')
                 blob=BlobRef(**descriptor['blob'])
@@ -212,6 +213,20 @@ class PhysicalSnapshotRecovery:
                 or observed.get('catalog_sha256')!=json.loads(proof.control)['catalog_sha256']):
             raise SnapshotError('controller_recovery_native_readback_changed')
         return observed
+
+    async def rebind(self,proof,binding):
+        """Reconcile the same retained recovery after control reconnection."""
+        if type(proof) is not ControllerRecoveryProof or proof not in self._proofs:
+            raise SnapshotError('controller_recovery_proof_unknown')
+        self._authority(binding)
+        observed=await self.native.verify_initialized(binding,proof.native_reference)
+        if (observed.get('database')!=proof.database.wire() or tuple(observed.get('identity',()))!=proof.identity
+                or observed.get('applied_sequence')!=proof.applied_sequence
+                or observed.get('catalog_sha256')!=json.loads(proof.control)['catalog_sha256']
+                or await self.journal.head()!=proof.journal_head):
+            raise SnapshotError('controller_recovery_rebind_changed')
+        self._authority(binding);object.__setattr__(proof,'_binding',binding)
+        return proof
 
     async def promote(self,proof,binding,*,expected_token):
         self._authority(binding);await self.verify_initialized(proof,proof.database,proof.identity)

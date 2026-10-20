@@ -171,3 +171,10 @@ async def test_native_replay_exact_receipts_precede_rollover_and_adoption(monkey
     assert events==[('apply',1),('apply',2),('rollover',2),('readiness',2)]
     assert (await cap.verify_for(database,'run','nonce','inc'))['user']=='rkb_reader'
     with pytest.raises(SnapshotError):await replace(cap).verify_for(database,'run','nonce','inc')
+    reference=factory.reference(cap);new_binding=object()
+    factory.current=lambda value:value is new_binding
+    database.wire=lambda:{'database_generation':'db','writer_generation':'new'}
+    with pytest.raises(SnapshotError):await cap.verify_for(database,'run','nonce','inc')
+    observed=await factory.verify_reference(new_binding,reference)
+    assert observed['applied_sequence']==2 and cap._binding is new_binding
+    assert (await cap.verify_for(database,'run','nonce','inc'))['user']=='rkb_reader'

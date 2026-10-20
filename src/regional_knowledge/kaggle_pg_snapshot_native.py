@@ -515,6 +515,10 @@ class NativeSnapshotFactory:
         self._current(binding)
         cap=self._references.get(reference)
         if cap is None:raise SnapshotError('native_restore_reference_unknown')
+        # The same owned process may reconnect with a new control attachment.
+        # A JSON token only selects an existing retained object; fresh native
+        # checks below prove its database/writer/readiness before adoption.
+        object.__setattr__(cap,'_binding',binding)
         await self.verify_initialized(cap,self.database,self.identity)
         return {'database':self.database.wire(),'identity':list(self.identity),
             'applied_sequence':cap.applied_sequence,'catalog_sha256':json.loads(cap.control)['catalog_sha256']}

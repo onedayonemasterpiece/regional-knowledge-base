@@ -92,7 +92,11 @@ async def test_snapshot_manifest_tail_remote_outcome_rollover_pointer_order(env,
     assert len(transport.verifications)==2
     with pytest.raises(SnapshotError,match='proof_unknown'):
         await replace(proof).verify_for(database,'run','nonce','inc')
-    pointer=await controller.promote(proof,b,expected_token=None)
+    new_binding=binding();controller.current=lambda value:value is new_binding
+    with pytest.raises(SnapshotError,match='current_private_authority'):
+        await proof.verify_for(database,'run','nonce','inc')
+    assert await controller.rebind(proof,new_binding) is proof
+    pointer=await controller.promote(proof,new_binding,expected_token=None)
     assert json.loads(pointer.data)['verified_cursor']==1
     assert json.loads(pointer.data)['manifest']==base.wire()
 
