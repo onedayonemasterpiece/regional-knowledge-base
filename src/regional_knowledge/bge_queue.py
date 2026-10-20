@@ -301,11 +301,92 @@ class BgeQueue:
             if self._run_expired(run,now):
                 raise RevokedRun('invalid or stale BGE worker')
             provider_version=str(run['provider_version']) if run['provider_version'] is not None else None
+            runtime = self._runtime_row(db,run_id)
             return {'state':run['status'],
-                    'ready':run['status']=='ready' and provider_version is not None,
+                    'ready':run['status']=='ready' and provider_version is not None
+                        and (runtime is None or runtime['accepted_generation']==connection_generation),
                     'provider_version':provider_version,
                     'connection_generation':run['connection_generation'],
-                    'active':bool(run['channel_active'])}
+                    'active':bool(run['channel_active']),
+                    'runtime_required':runtime is not None,
+                    'runtime_verified':runtime is not None and runtime['accepted_generation']==connection_generation}
+
+    @staticmethod
+    def _runtime_row(db, run_id):
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bge_runtime_expectations'").fetchone():
+            return None
+        return db.execute('SELECT * FROM bge_runtime_expectations WHERE run_id=?',(run_id,)).fetchone()
+
+    def expect_search_runtime(self, run_id, expected):
+        """Trusted launch setup only: fixed hashes/versions, no corpus or grants.
+
+        Call after final source bytes are frozen and before the first attachment.
+        Changing an active manifest requires a separate ordered update barrier;
+        this initial-adoption API deliberately cannot do that.
+        """
+        from .kaggle_readiness import SearchRuntimeExpectation
+        if type(expected) is not SearchRuntimeExpectation:
+            raise TypeError('typed controller runtime expectation required')
+        data=json.dumps(expected.wire(),sort_keys=True,separators=(',',':'))
+        with self.connect() as db:
+            run=db.execute('SELECT * FROM runs WHERE id=?',(run_id,)).fetchone()
+            if run is None:raise ValueError('known owned run required')
+            prior=self._runtime_row(db,run_id)
+            if prior is not None:
+                if prior['expected_json']!=data:raise ValueError('initial runtime expectation is immutable')
+                return
+            if run['status']!='starting' or run['connection_generation'] or run['channel_active']:
+                raise StaleAttachment('runtime binding must precede first attachment')
+            db.execute('''CREATE TABLE IF NOT EXISTS bge_runtime_expectations(
+                run_id TEXT PRIMARY KEY,expected_json TEXT NOT NULL,
+                accepted_generation INTEGER,observed_json TEXT)''')
+            db.execute('INSERT INTO bge_runtime_expectations(run_id,expected_json) VALUES(?,?)',(run_id,data))
+
+    def _runtime_check(self, db, run, generation, observation):
+        from .kaggle_readiness import (SearchRuntimeExpectation, RunIdentity, Validation,
+                                       validate_search_runtime)
+        row=self._runtime_row(db,run['id'])
+        if row is None:raise ValueError('unexpected target runtime observation')
+        if run['provider_version'] is None or not run['provider_ref']:
+            return Validation(('provider_pending',))
+        expected=SearchRuntimeExpectation(**json.loads(row['expected_json']))
+        identity=RunIdentity(run['provider_ref'],str(run['provider_version']),None,
+            run['id'],run['launch_nonce'],run['runtime_incarnation'])
+        return validate_search_runtime(expected,observation,identity)
+
+    def accept_search_runtime(self, run_id, token, connection_generation, observation):
+        """Accept one bounded observed proof for this authenticated attachment.
+
+        Invalid/mismatching or duplicate observations take only read snapshots.
+        The successful setup write is repeated on reconnect, never per QUERY.
+        """
+        if type(connection_generation) is not int or connection_generation < 1:
+            raise StaleAttachment('current authenticated channel required')
+        with self.connect(write=False) as db:
+            run=self._authorize(db,run_id,token,self.clock())
+            self._dispatch_authorize(run,connection_generation)
+            if self._run_expired(run,self.clock()):raise RevokedRun('stale BGE runtime')
+            result=self._runtime_check(db,run,connection_generation,observation)
+            if not result.ok:return result
+            encoded=json.dumps(observation,sort_keys=True,separators=(',',':'),allow_nan=False)
+            row=self._runtime_row(db,run_id)
+            if row['accepted_generation']==connection_generation and row['observed_json']==encoded:
+                return result
+        with self.connect() as db:
+            self._shared_owner(db)
+            run=self._authorize(db,run_id,token,self.clock())
+            self._dispatch_authorize(run,connection_generation)
+            if self._run_expired(run,self.clock()):raise RevokedRun('stale BGE runtime')
+            result=self._runtime_check(db,run,connection_generation,observation)
+            if result.ok:
+                db.execute('UPDATE bge_runtime_expectations SET accepted_generation=?,observed_json=? WHERE run_id=?',
+                    (connection_generation,encoded,run_id))
+        return result
+
+    def _require_runtime(self, db, run_id, generation):
+        row=self._runtime_row(db,run_id)
+        if row is not None and (generation is None or row['accepted_generation']!=generation):
+            raise StaleAttachment('target runtime readiness required')
 
     def detach_channel(self, run_id, token, connection_generation):
         """Drop only this active socket; never grant HTTP ownership on loss."""
@@ -331,6 +412,7 @@ class BgeQueue:
                 raise StaleAttachment('target assignments require shared admission')
             run=self._authorize(db,run_id,token,now)
             self._dispatch_authorize(run,connection_generation)
+            self._require_runtime(db,run_id,connection_generation)
             if connection_generation is None:
                 raise StaleAttachment('BGE channel generation required')
             if self._run_expired(run,now):
@@ -355,6 +437,8 @@ class BgeQueue:
             self._expire(db,now);run=self._authorize(db,run_id,token,now)
             if connection_generation is not None:
                 self._dispatch_authorize(run,connection_generation)
+            if ready:
+                self._require_runtime(db,run_id,connection_generation)
             db.execute('update runs set heartbeat=? where id=?',(now,run_id))
             if diagnostics is not None:
                 if not isinstance(diagnostics,dict):raise ValueError('BGE diagnostics type')
@@ -381,6 +465,7 @@ class BgeQueue:
                 raise StaleAttachment('target assignments require shared admission')
             self._expire(db,now);run=self._authorize(db,run_id,token,now)
             self._dispatch_authorize(run,connection_generation)
+            self._require_runtime(db,run_id,connection_generation)
             if connection_generation is not None and run['provider_version'] is None:
                 return None
             db.execute('update runs set heartbeat=? where id=?',(now,run_id))
@@ -442,7 +527,10 @@ class BgeQueue:
                 if row is not None:rows.append(dict(row))
             rows.sort(key=lambda row:(row['created'],row['id']))
             resumed=db.execute("select * from jobs where state='claimed' and kind='document' and run_id=? and lease_until>? limit 1",(run_id,self.clock())).fetchone()
-            return dict(run),dict(owner),rows,dict(resumed) if resumed else None
+            runtime=self._runtime_row(db,run_id)
+            projected={**dict(run),'runtime_required':runtime is not None,
+                       'runtime_verified':runtime is not None and runtime['accepted_generation']==generation}
+            return projected,dict(owner),rows,dict(resumed) if resumed else None
 
     def _admission_bind(self, run_id, token, generation, incarnation):
         """Startup/reconciliation write, never performed for ready read intake."""

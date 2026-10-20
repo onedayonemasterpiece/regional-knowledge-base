@@ -102,6 +102,8 @@ def channel_route(queue):
             cancelled_work = None
             ready = False
             promoted = False
+            runtime_readiness = None
+            runtime_blocked = None
             promotion_lock = asyncio.Lock()
 
             async def send(frame_type, *, priority=0, work=None, **payload):
@@ -144,9 +146,22 @@ def channel_route(queue):
                 return await queue_call(queue.channel_status, run_id, token, generation)
 
             async def promote(observed):
-                nonlocal promoted
+                nonlocal promoted, runtime_blocked
                 async with promotion_lock:
                     if ready and not promoted and observed['provider_version'] is not None:
+                        if observed.get('runtime_required'):
+                            if runtime_readiness is None:
+                                issues = ('runtime_readiness_required',)
+                            else:
+                                proof = await queue_call(queue.accept_search_runtime, run_id, token,
+                                                         generation, runtime_readiness)
+                                issues = proof.issues
+                            if issues:
+                                if runtime_blocked != issues:
+                                    await send('READY_ACK', status='runtime_not_ready',
+                                        provider_version=str(observed['provider_version']), reasons=list(issues))
+                                    runtime_blocked = issues
+                                return
                         await queue_call(queue.heartbeat, run_id, token, ready=True,
                                          connection_generation=generation)
                         promoted = True
@@ -211,14 +226,13 @@ def channel_route(queue):
                     await asyncio.sleep(RECONCILE_SECONDS)
 
             async def receiver():
-                nonlocal ready, probe_nonce
+                nonlocal ready, promoted, probe_nonce, runtime_readiness, runtime_blocked
                 while True:
                     message = await socket.receive()
                     if message['type'] == 'websocket.disconnect':
                         return
                     frame = _decode(message)
                     if type(frame.get('connection_generation')) is not int or frame['connection_generation'] != generation:
-                        from .bge_queue import StaleAttachment
                         raise StaleAttachment('generation')
                     observed = await status()
                     common = ('type', 'protocol_version', 'connection_generation')
@@ -259,9 +273,22 @@ def channel_route(queue):
                         # Ephemeral response: no durable ACK, receipt, replay or
                         # release of actual compute is implied by this frame.
                     elif frame['type'] == 'READY':
-                        _fields(frame, (*common, 'space', 'model_revision'))
+                        _fields(frame, (*common, 'space', 'model_revision'), ('runtime_readiness',))
                         if frame['space'] != SPACE or frame['model_revision'] != REVISION:
                             raise ValueError('model_contract')
+                        if (promoted and observed.get('runtime_required')
+                                and frame.get('runtime_readiness') != runtime_readiness):
+                            ready = promoted = False
+                            # In-place revision changes require a separate
+                            # drain/update barrier, not an unsolicited READY.
+                            raise StaleAttachment('target readiness changed after promotion')
+                        if 'runtime_readiness' in frame:
+                            if not observed.get('runtime_required'):
+                                raise ValueError('unexpected_runtime_readiness')
+                            if not isinstance(frame['runtime_readiness'], dict):
+                                raise ValueError('runtime_readiness')
+                            runtime_readiness = frame['runtime_readiness']
+                            runtime_blocked = None
                         ready = True
                         if observed['provider_version'] is None:
                             await send('READY_ACK', status='provider_pending', provider_version=None)

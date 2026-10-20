@@ -364,7 +364,8 @@ class SharedReadAdmission:
             run,owner,docs,resumed=await self._snapshot(run_id,token,connection_generation)
             if (self._state!='idle' or self._work is not None
                     or (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation'])
-                    or run['status']!='ready' or run['provider_version'] is None):return None
+                    or run['status']!='ready' or run['provider_version'] is None
+                    or (run.get('runtime_required') and not run.get('runtime_verified'))):return None
             now=self.clock()
             for key,read in tuple(self._reads.items()):
                 if read.deadline<=now or read.ticket.result.done():self._cancel(key)

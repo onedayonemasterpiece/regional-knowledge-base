@@ -11,6 +11,8 @@ import math
 from pathlib import PurePosixPath
 import re
 from typing import Mapping, Sequence
+from types import MappingProxyType
+import json
 
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 RUNTIME_HASHES = frozenset({"code", "launch_config", "executed_source", "dependency", "model", "schema"})
@@ -101,6 +103,85 @@ def validate_runtime(
         issues.append("runtime_not_ready")
     if dict(expected_hashes) != dict(observed.hashes):
         issues.append("loaded_hashes_mismatch")
+    return Validation(tuple(issues))
+
+
+@dataclass(frozen=True)
+class SearchRuntimeExpectation:
+    """Small controller-owned run binding, never corpus or caller authority."""
+    hashes: Mapping[str, str]
+    database_generation: str
+    schema_revision: str
+    function_revision: str
+    executor_revision: str
+    min_data_seq: int = 0
+
+    def __post_init__(self):
+        if (not isinstance(self.hashes, Mapping) or set(self.hashes) != RUNTIME_HASHES
+                or any(not isinstance(v, str) or not _HASH.fullmatch(v) for v in self.hashes.values())):
+            raise ValueError('all six exact expected runtime hashes required')
+        for value in (self.database_generation, self.schema_revision,
+                      self.function_revision, self.executor_revision):
+            if not isinstance(value, str) or not 1 <= len(value.encode('utf-8')) <= 256:
+                raise ValueError('bounded expected runtime version required')
+        if type(self.min_data_seq) is not int or not 0 <= self.min_data_seq < 2**63:
+            raise ValueError('bounded expected data cursor required')
+        object.__setattr__(self, 'hashes', MappingProxyType(dict(self.hashes)))
+
+    def wire(self):
+        return {'hashes': dict(self.hashes), 'database_generation': self.database_generation,
+                'schema_revision': self.schema_revision, 'function_revision': self.function_revision,
+                'executor_revision': self.executor_revision, 'min_data_seq': self.min_data_seq}
+
+
+def validate_search_runtime(expected: SearchRuntimeExpectation, observed: Mapping,
+                            identity: RunIdentity) -> Validation:
+    """Validate current authenticated READY facts against persisted expectations.
+
+    The channel supplies identity from its current run/nonce/incarnation/native
+    version, not from a readiness payload. Actual artifact/probe observation is
+    the worker factory's responsibility; matching strings alone do not prove it.
+    """
+    fields = {'hashes', 'database_generation', 'schema_revision', 'function_revision',
+              'executor_revision', 'applied_seq', 'projection_seq', 'visibility_epoch',
+              'text_search_ready', 'dense_search_ready', 'archive_read_ready', 'proof_ready'}
+    if (type(expected) is not SearchRuntimeExpectation or not isinstance(observed, Mapping)
+            or set(observed) != fields):
+        raise ValueError('exact target readiness shape required')
+    if len(json.dumps(dict(observed), allow_nan=False).encode('utf-8')) > 16384:
+        raise ValueError('bounded target readiness required')
+    actual_hashes = observed['hashes']
+    if (not isinstance(actual_hashes, dict) or set(actual_hashes) != RUNTIME_HASHES
+            or any(not isinstance(v, str) or not _HASH.fullmatch(v) for v in actual_hashes.values())):
+        raise ValueError('six observed runtime hashes required')
+    for key in ('database_generation', 'schema_revision', 'function_revision', 'executor_revision'):
+        value = observed[key]
+        if not isinstance(value, str) or not 1 <= len(value.encode('utf-8')) <= 256:
+            raise ValueError('bounded observed runtime version required')
+    for key in ('applied_seq', 'projection_seq', 'visibility_epoch'):
+        value = observed[key]
+        if value is None and key != 'applied_seq':
+            continue
+        if type(value) is not int or not 0 <= value < 2**63:
+            raise ValueError('strict observed runtime cursor required')
+    for key in ('text_search_ready', 'dense_search_ready'):
+        if type(observed[key]) is not bool:
+            raise ValueError('explicit search readiness required')
+    for key in ('archive_read_ready', 'proof_ready'):
+        if observed[key] is not None and type(observed[key]) is not bool:
+            raise ValueError('explicit independent artifact readiness required')
+    database_ready = (observed['text_search_ready'] and observed['dense_search_ready']
+        and observed['visibility_epoch'] is not None
+        and observed['projection_seq'] == observed['applied_seq']
+        and observed['applied_seq'] >= expected.min_data_seq)
+    result = validate_runtime(identity, expected.hashes,
+        RuntimeObservation(identity, actual_hashes, True, 'ready', database_ready))
+    issues = list(result.issues)
+    if observed['database_generation'] != expected.database_generation:
+        issues.append('database_generation_mismatch')
+    if any(observed[key] != getattr(expected, key) for key in
+           ('schema_revision', 'function_revision', 'executor_revision')):
+        issues.append('semantic_revision_mismatch')
     return Validation(tuple(issues))
 
 

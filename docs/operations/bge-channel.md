@@ -3,9 +3,10 @@
 `bge_channel.channel_route(queue)` adds the native Starlette websocket route
 `/bge-worker/channel` to the existing MCP ASGI application. The existing
 `BgeQueue` remains the run credential, attachment and durable claim authority.
-This slice transports existing encoding jobs; it does not implement public
-ephemeral QUERY, fused PostgreSQL search, remote accepted/Saved recovery, or a
-new job queue. Local socket tests do not establish deployed Kaggle WSS egress.
+It transports existing encoding jobs and, with explicitly configured shared
+admission, internal QUERY frames. Public routing and current source-output
+authorization remain separate integrations. Local socket tests do not establish
+deployed Kaggle WSS egress.
 
 The notebook connects outbound over WSS with its existing run-bound
 `Authorization: Bearer …` credential. It sends ATTACH before loading the model.
@@ -64,3 +65,35 @@ generation fencing, competing incarnation, lost ACK duplicate, heartbeat while
 encoding, stale claim, full-size Unicode input and malformed/oversized frames. Transactional attachment
 and exact duplicate behavior belong to the real BgeQueue tests. Provider/runtime
 WSS egress, model residency and deployment acceptance remain NOT RUN here.
+
+## Target runtime proof
+
+Target controller setup must call `queue.expect_search_runtime(run_id, expected)`
+before the first ATTACH. `SearchRuntimeExpectation` freezes six artifact hashes,
+database generation, schema/function/executor revisions and the minimum applied
+sequence. The generated launch bytes and actual artifact manifests must supply
+these facts; setting matching strings is not artifact verification. The setup
+API is immutable, with an inert exact retry. It is not a warm update barrier.
+
+For such a run, READY additionally carries `runtime_readiness`: all six observed
+hashes, semantic revisions, database generation, applied/projection sequences,
+visibility epoch and explicit text/dense readiness. Archive/proof readiness is
+independent. Model-only READY, stale projections or a mismatched artifact cannot
+promote the channel. `READY_ACK/runtime_not_ready` reports bounded reason codes
+while control remains available. Native provider version must also be known.
+Identity comes from the current authenticated run/nonce/incarnation/attachment,
+never fields supplied inside this proof.
+
+Reconnect requires proof for the new attachment generation. A changed or missing
+proof after promotion closes the attachment with4409; arbitrary READY cannot
+replace an ordered migration/drain barrier. Invalid or exact duplicate proof
+checks are read-only. A first valid binding performs one setup write, outside
+normal ready QUERY delivery. The resource busy/idle/release path also avoids a
+SQLite writer transaction once the run is bound.
+
+Absent expectations preserve legacy and explicit injected-handler test behavior;
+they do not establish target readiness. Target launch/public activation must
+install this binding and require `runtime_verified`. Actual loaded artifacts,
+PostgreSQL probes, current withdrawal authorization and live acceptance remain
+separate evidence. `tests/test_bge_runtime_readiness.py` checks these binding and
+reconnect rules through the real queue and ASGI route.
