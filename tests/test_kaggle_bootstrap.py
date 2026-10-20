@@ -238,6 +238,8 @@ def test_candidate_has_exact_keys_independent_hashes_and_no_added_fields():
 
 @pytest.mark.asyncio
 async def test_early_control_once_preparation_and_context_reuse_across_reconnect(monkeypatch):
+    # This deadline measures control/model ordering, not cold transport imports.
+    import aiohttp
     transport = module('bge_wss_transport')
     monkeypatch.setattr(transport.random, 'uniform', lambda *_: .001)
     peer = Peer(); stop = asyncio.Event(); allow = asyncio.Event(); entered = asyncio.Event()
