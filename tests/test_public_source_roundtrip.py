@@ -20,7 +20,7 @@ from regional_knowledge.control_spool import ControlSpool, SOURCE_WITHDRAW, WITH
 from regional_knowledge.kaggle_apply import HandlerRegistry, HandlerSpec, initialize_database
 from regional_knowledge.kaggle_database_probe import NativeDatabaseProbe
 from regional_knowledge.kaggle_protocol import QueryResult, ItemDependencies
-from regional_knowledge.kaggle_public_backend import KaggleSourceBackend, current_binding
+from regional_knowledge.kaggle_public_backend import KaggleSourceBackend, current_binding, parse_passage_fetch_id
 from regional_knowledge.kaggle_readiness import SearchRuntimeExpectation, RUNTIME_HASHES
 from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
 from regional_knowledge.read_telemetry import ReadTelemetry
@@ -272,7 +272,7 @@ async def test_pending_withdrawal_between_native_result_and_http_issuance(vertic
     assert not result['isError']
     payload = result['structuredContent']
     assert payload['observed_data_seq'] == 2 and payload['mode'] == 'hybrid'
-    assert [item['id'] for item in payload['evidence']] == ['10000000-0000-0000-0000-000000000002']
+    assert [parse_passage_fetch_id(item['id']).passage_id for item in payload['evidence']] == ['10000000-0000-0000-0000-000000000002']
     assert 'withdrawn-source-a' not in json.dumps(result)
     assert 'private withdrawn bibliography A' not in json.dumps(result)
     assert 'private cross-source A and B' not in json.dumps(result)

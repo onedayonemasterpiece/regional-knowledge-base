@@ -139,3 +139,52 @@ async def test_exact_gate_rejects_wrong_result_type_source_or_passage(env,auth):
         permit = await gate.dispatch(authority,gate_request(),b)
         with pytest.raises(SourceGateDenied):
             await gate.finish(permit,bad)
+
+
+# Real OAuth/shared admission and worker callback; SQL here is a synthetic API
+# fixture. The separate public_exact_fetch_roundtrip suite uses native PG.
+from test_kaggle_public_backend import target, work, release
+from regional_knowledge.read_issuance import capture_read_output
+
+
+@pytest.mark.asyncio
+async def test_public_search_id_fetch_uses_typed_shared_slot_without_reembedding(target):
+    import asyncio
+    s = target
+    class CombinedConnection(ExactConnection):
+        async def fetchone(self):
+            if 'SELECT p.passage_id' in self.statement:
+                return await super().fetchone()
+            return (12,12,3,True,True,'synthetic-db')
+    lease = Lease(CombinedConnection())
+    seen = []
+    async def encode(text):
+        seen.append(text)
+        return [1.] + [0.] * 1023
+    handler = KaggleWorkerQuery(acquire=lease.acquire,tokenizer=pinned())
+    async def consume(awaitable):
+        with capture_read_output() as calls:
+            output = await awaitable
+        calls[0].complete(getattr(output,'status',None),getattr(output,'reason',None))
+        calls[0].release()
+        return output
+    search = asyncio.create_task(consume(s.backend.search('harbour',s.principal)))
+    first = await work(s)
+    wire = await handler(first.query.model_dump(mode='json'),encode=encode)
+    assert await s.admission.finish_read(s.run,s.token,s.generation,decode_envelope(json.dumps(wire).encode()))
+    output = await search
+    fetch_id = output.results[0].id
+    assert parse_passage_fetch_id(fetch_id).text_offset == 0
+    await release(s,first)
+    exact = asyncio.create_task(consume(s.backend.fetch(fetch_id,s.principal)))
+    second = await work(s)
+    assert type(second.query) is PassageReadRequest and second.kind == 'read'
+    wire = await handler(second.query.model_dump(mode='json'),encode=forbidden_encode)
+    assert await s.admission.finish_read(s.run,s.token,s.generation,decode_envelope(json.dumps(wire).encode()))
+    fetched = await exact
+    assert fetched.status == 'ok' and fetched.text == 'x' * 8000
+    assert fetched.metadata['next_id'] and not fetched.metadata['continuation_complete']
+    assert seen == ['harbour'] and lease.entered == lease.exited == 2
+    # Result delivery cannot free the exact read's actual slot.
+    assert s.admission.status()['state'] == 'busy'
+    await release(s,second)
