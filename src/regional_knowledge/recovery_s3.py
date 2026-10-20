@@ -66,9 +66,10 @@ async def _blocking(call: Callable[[], _T]) -> _T:
 class S3ConditionalRecoveryStore:
     """Restricted adapter around S3ObjectStore.client and .bucket.
 
-    writer_guard must be the existing authoritative async generation lock. It
-    validates generation on entry and excludes revocation/generation transitions
-    until exit. An async precheck without held authority is not sufficient.
+    writer_guard must provide held generation-transition exclusion, or a typed
+    publication_guard that records/fences the exact canonical publication.
+    An async precheck without held authority is not sufficient. Other generic
+    admission uses of the guard require their own current-binding recheck.
     """
 
     def __init__(self, *, client: Any, bucket: str, prefix: str,

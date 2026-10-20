@@ -178,6 +178,12 @@ class QueueWriterAuthority:
 
     @asynccontextmanager
     async def __call__(self,generation):
+        """Serialize local owner admission; callers must recheck after awaits.
+
+        Immutable snapshot ticket creation may leave harmless orphan objects.
+        Canonical publications must use publication_guard: its durable exact
+        intent additionally excludes queue pointer transitions across I/O.
+        """
         if generation!=self.writer_generation:raise StaleWriter('stale writer generation')
         async with self._lock():
             with self.queue.connect(write=False) as db:
