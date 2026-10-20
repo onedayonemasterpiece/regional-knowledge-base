@@ -33,7 +33,8 @@ def _channel_json(raw):
                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite channel value')))
     if not isinstance(frame, dict) or type(frame.get('protocol_version')) is not int or frame['protocol_version'] != 2:
         raise ValueError('channel protocol')
-    limit=2*1024*1024 if frame.get('type')=='DISPATCH' and frame.get('kind')=='source_command' else 262144
+    limit=(4*1024*1024 if frame.get('type')=='DISPATCH' and frame.get('kind')=='recovery_phase' else
+        2*1024*1024 if frame.get('type')=='DISPATCH' and frame.get('kind')=='source_command' else 262144)
     if len(raw.encode() if isinstance(raw,str) else raw)>limit:raise ValueError('channel frame bound')
     return frame
 
@@ -43,7 +44,7 @@ class BgeWssTransport:
 
     def __init__(self, config, load_encoder, diagnostics, *, connector=None,
                  heartbeat_seconds=20, maximum_seconds=11 * 3600, stop=None,
-                 query_handler=None, prepare_runtime=None, close_runtime=None):
+                 query_handler=None, prepare_runtime=None, close_runtime=None, recovery_handler=None):
         url = urlsplit(config['channel'])
         if (url.scheme != 'wss' or not url.hostname or url.port not in (None, 443)
                 or url.username or url.password or url.query or url.fragment):
@@ -77,6 +78,10 @@ class BgeWssTransport:
         self.shared_reads, self.query_handler = shared, query_handler
         self.prepare_runtime, self.prepared_runtime = prepare_runtime, None
         self.source_handler = None
+        if recovery_handler is not None and (not shared or not (inspect.iscoroutinefunction(recovery_handler)
+                or inspect.iscoroutinefunction(getattr(recovery_handler,'__call__',None)))):
+            raise ValueError('shared async recovery handler required')
+        self.recovery_handler=recovery_handler
         if close_runtime is not None and not inspect.iscoroutinefunction(close_runtime):
             raise ValueError('async close_runtime required')
         self.close_runtime = close_runtime
@@ -241,13 +246,14 @@ class BgeWssTransport:
         self.changed.set()
 
     async def _encode(self, job):
-        if job['kind']=='source_command':
-            if self.source_handler is None:raise ValueError('fixed source executor unavailable')
-            receipt=await self.source_handler(job)
+        if job['kind'] in ('source_command','recovery_phase'):
+            handler=self.recovery_handler if job['kind']=='recovery_phase' else self.source_handler
+            if handler is None:raise ValueError('fixed native executor unavailable')
+            receipt=await handler(job)
             self.pending=dict(job_id=job['id'],claim=job['claim'],receipt=receipt,
                 **{key:job[key] for key in ('run_id','launch_nonce','runtime_incarnation',
                     'compute_claim','dispatch_generation')})
-            if len(json.dumps(self.pending,allow_nan=False).encode())>15500:
+            if len(json.dumps(self.pending,allow_nan=False).encode())>(130000 if job['kind']=='recovery_phase' else 15500):
                 raise ValueError('source command receipt bound')
             self.changed.set()
             return
@@ -367,7 +373,8 @@ class BgeWssTransport:
                     await put(frame)
                     ready_sent = True
                 if self.pending is not None and result_sent != (self.pending['job_id'], self.pending['claim']):
-                    await put({'type': 'SOURCE_COMMAND_RESULT' if self.job['kind']=='source_command' else 'RESULT', **self.pending}, priority=1)
+                    result_type={'source_command':'SOURCE_COMMAND_RESULT','recovery_phase':'RECOVERY_PHASE_RESULT'}.get(self.job['kind'],'RESULT')
+                    await put({'type': result_type, **self.pending}, priority=1)
                     result_sent = (self.pending['job_id'], self.pending['claim'])
 
         async def reader():
@@ -406,8 +413,9 @@ class BgeWssTransport:
                     self._start_read(frame)
                 elif kind == 'DISPATCH':
                     source=frame.get('kind')=='source_command'
-                    if source:
-                        if (not self.shared_reads or self.source_handler is None
+                    recovery=frame.get('kind')=='recovery_phase'
+                    if source or recovery:
+                        if (not self.shared_reads or (self.recovery_handler if recovery else self.source_handler) is None
                                 or tuple(frame.get(key) for key in ('run_id','launch_nonce','runtime_incarnation'))
                                     !=(self.config['run_id'],self.config['launch_nonce'],self.incarnation)
                                 or any(not self._identifier(frame.get(key)) for key in ('id','claim'))):
@@ -422,16 +430,18 @@ class BgeWssTransport:
                         raise ValueError('durable BGE dispatch contract')
                     if self.shared_reads and (not self._identifier(frame.get('compute_claim'))
                             or type(frame.get('dispatch_generation')) is not int
-                            or frame['dispatch_generation'] < 1 or frame['kind'] not in ('document','source_command')):
+                            or frame['dispatch_generation'] < 1 or frame['kind'] not in ('document','source_command','recovery_phase')):
                         raise ValueError('shared document resource contract')
                     key = (frame['id'], frame['claim'])
                     if key == self.acknowledged:
                         continue  # A control ACK can overtake a buffered replay.
                     if self.job is not None and key == (self.job['id'], self.job['claim']):
-                        if frame['kind'] != self.job['kind'] or (source and any(frame.get(key)!=self.job.get(key)
+                        if frame['kind'] != self.job['kind'] or (recovery and any(frame.get(key)!=self.job.get(key)
+                                for key in ('phase','operation_key','request_sha256','arguments','database_generation','writer_generation',
+                                            'run_id','launch_nonce','runtime_incarnation'))) or (source and any(frame.get(key)!=self.job.get(key)
                                 for key in ('command_b64','command_sha256','accepted','handler_sha256','database_generation','writer_generation',
                                             'run_id','launch_nonce','runtime_incarnation'))
-                                or not source and frame['texts'] != self.job['texts']):
+                                or not (source or recovery) and frame['texts'] != self.job['texts']):
                             raise ValueError('replayed assignment payload mismatch')
                         if self.shared_reads and any(frame.get(key) != self.job.get(key)
                                 for key in ('compute_claim', 'dispatch_generation')):
@@ -495,7 +505,7 @@ class BgeWssTransport:
             async with aiohttp.ClientSession(trust_env=False) as client:
                 async with client.ws_connect(self.config['channel'],
                         headers={'Authorization': 'Bearer ' + self.config['token']},
-                        max_msg_size=2*1024*1024, heartbeat=30) as socket:
+                        max_msg_size=4*1024*1024, heartbeat=30) as socket:
                     class Adapter:
                         async def send(self, raw):
                             await socket.send_str(raw)
@@ -568,6 +578,7 @@ class BgeWssTransport:
                 raise asyncio.CancelledError
 
 
-def run_wss_worker(config, load_encoder, diagnostics, *, query_handler=None, prepare_runtime=None, close_runtime=None):
+def run_wss_worker(config, load_encoder, diagnostics, *, query_handler=None, prepare_runtime=None, close_runtime=None, recovery_handler=None):
     asyncio.run(BgeWssTransport(config, load_encoder, diagnostics, query_handler=query_handler,
-                               prepare_runtime=prepare_runtime, close_runtime=close_runtime).run())
+                               prepare_runtime=prepare_runtime, close_runtime=close_runtime,
+                               recovery_handler=recovery_handler).run())

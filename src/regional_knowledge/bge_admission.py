@@ -373,9 +373,10 @@ class SharedReadAdmission:
         async with self._lock:
             run,owner,docs,resumed=await self._snapshot(run_id,token,connection_generation)
             if (self._state!='idle' or self._work is not None
-                    or (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation'])
-                    or run['status']!='ready' or run['provider_version'] is None
-                    or (run.get('runtime_required') and not run.get('runtime_verified'))):return None
+                    or (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation'])):return None
+            ready=(run['status']=='ready' and run['provider_version'] is not None
+                and (not run.get('runtime_required') or run.get('runtime_verified')))
+            maintenance=getattr(self.queue,'_recovery_phases',None)
             now=self.clock()
             for key,read in tuple(self._reads.items()):
                 if read.deadline<=now or read.ticket.result.done():self._cancel(key)
@@ -385,6 +386,10 @@ class SharedReadAdmission:
                 if not waiting_result:self._document_result=None
             eligible=[];authorized={}
             for doc in ([] if waiting_result else [resumed] if resumed else docs):
+                if doc['kind']=='recovery_phase':
+                    if maintenance is not None and maintenance.eligible(doc,run,connection_generation):eligible.append(doc)
+                    continue
+                if not ready:continue
                 context=self._documents.get(doc['actor'])
                 if context is not None:
                     if doc['actor'] not in authorized:
@@ -396,7 +401,9 @@ class SharedReadAdmission:
                             actor=None
                         authorized[doc['actor']]=actor==doc['actor']
                     if authorized[doc['actor']]:eligible.append(doc)
-            reads=[r for r in self._reads.values() if r.dispatched is None]
+            recovery=[d for d in eligible if d['kind']=='recovery_phase']
+            if recovery:eligible=recovery
+            reads=[r for r in self._reads.values() if r.dispatched is None] if ready and not recovery else []
             if not reads and not eligible:return None
             # Person first, then dialog. Many dialogs cannot multiply a
             # person's share. Forced document turn bounds continuous read runs.
@@ -434,7 +441,11 @@ class SharedReadAdmission:
                 except BaseException:
                     self._state='unknown';raise
                 if payload is None:self._work=None;self._state='idle';return None
-                if payload['kind']=='source_command':
+                if payload['kind']=='recovery_phase':
+                    payload=await maintenance.dispatch_payload(selected_doc['id'],
+                        run_id=run_id,token=token,generation=connection_generation)
+                    work=ChannelWork(resource,document_payload=MappingProxyType(payload))
+                elif payload['kind']=='source_command':
                     payload=await self.queue._source_commands.dispatch_payload(selected_doc['id'],
                         run_id=run_id,token=token,generation=connection_generation)
                     work=ChannelWork(resource,document_payload=MappingProxyType(payload))

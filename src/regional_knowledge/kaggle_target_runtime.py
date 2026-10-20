@@ -125,7 +125,7 @@ class TargetLaunchSpec:
 class TargetRuntime:
     """One owned pool/PG/model preparation across WSS reconnects, on one loop."""
     def __init__(self, config, *, executed_source, pool_factory=None, owner_factory=OwnedPostgres,
-                 probe=None, prepare=prepare_resident_runtime, restored_database=None):
+                 probe=None, prepare=prepare_resident_runtime, restored_database=None, recovery_worker=None):
         from psycopg_pool import AsyncConnectionPool
         self.config = config
         target = config['target_runtime']
@@ -145,6 +145,12 @@ class TargetRuntime:
             from .kaggle_restored_database import VerifiedInitializedDatabase
             if type(restored_database) is not VerifiedInitializedDatabase or self.database.mode!='VERIFIED_INITIALIZED':
                 raise BootstrapUnavailable('target_restore_capability_required')
+        if recovery_worker is not None:
+            from .kaggle_recovery_phases import WorkerRecoveryPhases
+            if (type(recovery_worker) is not WorkerRecoveryPhases or restored_database is not None
+                    or self.database.mode!='VERIFIED_INITIALIZED'):
+                raise BootstrapUnavailable('target_restore_worker_required')
+        self.recovery_worker=recovery_worker
         self.restored_database=restored_database
 
     async def _owned_probe(self, *, acquire):
@@ -177,6 +183,8 @@ class TargetRuntime:
         # BgeWssTransport invokes prepare only after its authenticated ATTACH and
         # model load. Reconnect never re-enters this factory or replaces the pool.
         reader_kwargs=self.database.connection()
+        if self.recovery_worker is not None:
+            self.restored_database=await self.recovery_worker.wait_initialized(self.database,*identity)
         if self.restored_database is not None:
             reader_kwargs=await self.restored_database.verify_for(self.database,run_id,launch_nonce,runtime_incarnation)
             if (not isinstance(reader_kwargs,dict) or any(reader_kwargs.get(key)!=self.database.connection()[key]

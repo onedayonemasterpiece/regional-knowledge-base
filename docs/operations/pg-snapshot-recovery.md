@@ -105,3 +105,22 @@ weakened to impersonate the retired writer. This registration, real scoped
 cross-host byte transfer, native PG17 backup/restore, actual S3/Dataset readback,
 and loss/reconnect drills are still acceptance work. Injected-adapter tests do
 not prove those boundaries.
+
+The existing durable jobs/admission/channel now registers `recovery_phase` with
+fixed capture, prepare, apply, finish and fresh verify phases. Only a configured
+retained `RecoveryPhaseDispatch` can enqueue it. The maintenance assignment uses
+the actual shared document compute claim and durable receipt ACK, including before
+READY; ordinary document/source/read work remains READY gated. Each native phase
+retains its request hash before effects and known result across reconnect. An
+unknown phase refuses blind retry. Native replay wraps the existing fixed accepted
+source executor with the original database writer, then finish compares all tail
+receipts before writer rollover. The current maintenance run/writer remains the
+outer authority. `WssSnapshotPhases` is the concrete controller adapter.
+
+`TargetRuntime(recovery_worker=...)` waits for that native owner's retained
+`VerifiedInitializedDatabase` while the channel continues maintenance traffic.
+The fixed worker needs Stage0 verified native tools, private workspace policy and
+scoped direct-transfer callbacks installed by trusted composition. The wire cannot
+supply filesystem paths, SQL, credentials or replace those callbacks. Native bundle
+construction, provider-ticket registration and the physical fixture drill remain
+separate acceptance work; the synthetic WSS tests do not prove those effects.

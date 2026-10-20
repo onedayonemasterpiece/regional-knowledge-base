@@ -24,6 +24,8 @@ MAX_FRAME_BYTES = 65536
 MAX_DISPATCH_BYTES = 256 * 1024
 MAX_SOURCE_DISPATCH_BYTES = 2 * 1024 * 1024
 MAX_SOURCE_RESULT_BYTES = 16 * 1024
+MAX_RECOVERY_DISPATCH_BYTES = 4 * 1024 * 1024
+MAX_RECOVERY_RESULT_BYTES = 128 * 1024
 SEND_QUEUE_FRAMES = 8
 RECONCILE_SECONDS = .25
 SEND_TIMEOUT_SECONDS = 5
@@ -48,10 +50,12 @@ def _decode(message):
     frame = json.loads(raw, object_pairs_hook=unique, parse_constant=nonfinite)
     if not isinstance(frame, dict) or type(frame.get('protocol_version')) is not int or frame['protocol_version'] != 2:
         raise ValueError('protocol')
-    if frame.get('type') not in ('QUERY_RESULT','PASSAGE_READ_RESULT') and len(raw) > MAX_FRAME_BYTES:
+    if frame.get('type') not in ('QUERY_RESULT','PASSAGE_READ_RESULT','RECOVERY_PHASE_RESULT') and len(raw) > MAX_FRAME_BYTES:
         raise ValueError('frame_size')
     if frame.get('type')=='SOURCE_COMMAND_RESULT' and len(raw)>MAX_SOURCE_RESULT_BYTES:
         raise ValueError('source_receipt_size')
+    if frame.get('type')=='RECOVERY_PHASE_RESULT' and len(raw)>MAX_RECOVERY_RESULT_BYTES:
+        raise ValueError('recovery_receipt_size')
     return frame
 
 
@@ -73,6 +77,7 @@ def channel_route(queue):
         # existing path; attaching a socket never enables the target mode.
         shared = getattr(queue, '_shared_reads', None)
         source_dispatch = getattr(queue, '_source_commands', None)
+        recovery_dispatch = getattr(queue, '_recovery_phases', None)
         generation = run_id = None
         tasks = []
         token = ''
@@ -127,6 +132,7 @@ def channel_route(queue):
                 encoded = json.dumps(frame, allow_nan=False, ensure_ascii=False, separators=(',', ':'))
                 limit = MAX_DISPATCH_BYTES if frame_type == 'DISPATCH' else MAX_FRAME_BYTES
                 if frame_type=='DISPATCH' and payload.get('kind')=='source_command':limit=MAX_SOURCE_DISPATCH_BYTES
+                if frame_type=='DISPATCH' and payload.get('kind')=='recovery_phase':limit=MAX_RECOVERY_DISPATCH_BYTES
                 if len(encoded.encode('utf-8')) > limit:
                     raise ValueError('outgoing_size')
                 await asyncio.wait_for(outgoing.put((priority, next(sequence), frame, encoded, work)), SEND_TIMEOUT_SECONDS)
@@ -207,7 +213,7 @@ def channel_route(queue):
                                        turn_generation=last_work.query.turn_generation,
                                        reason='caller_cancelled')
                             cancelled_work = last_work.resource
-                        if promoted and probe_nonce is None:
+                        if probe_nonce is None and (promoted or getattr(queue,'_recovery_phases',None) is not None):
                             work = await shared.next_channel_work(run_id, token, generation)
                             if work is not None:
                                 last_work = work
@@ -321,6 +327,19 @@ def channel_route(queue):
                                          connection_generation=generation)
                         await send('HEARTBEAT_ACK', provider_version=(str(observed['provider_version'])
                                    if observed['provider_version'] is not None else None))
+                    elif frame['type']=='RECOVERY_PHASE_RESULT':
+                        recovery_dispatch=getattr(queue,'_recovery_phases',None)
+                        _fields(frame,(*common,'job_id','claim','receipt','run_id','launch_nonce',
+                            'runtime_incarnation','compute_claim','dispatch_generation'))
+                        if recovery_dispatch is None or shared is None:
+                            raise ValueError('recovery_executor_unavailable')
+                        _identifier(frame['job_id']);_identifier(frame['claim'])
+                        try:
+                            settled=await recovery_dispatch.receive(frame,run_id=run_id,token=token,generation=generation)
+                        except (StaleClaim,LookupError):
+                            settled=dict(job_id=frame['job_id'],claim=frame['claim'],status='stale')
+                        shared.durable_result_settled(frame['job_id'],frame['claim'],settled['status'])
+                        await send('RESULT_ACK',**settled)
                     elif frame['type']=='SOURCE_COMMAND_RESULT':
                         _fields(frame,(*common,'job_id','claim','receipt','run_id','launch_nonce',
                             'runtime_incarnation','compute_claim','dispatch_generation'))

@@ -60,6 +60,7 @@ class BgeQueue:
         self.clock = clock
         self._shared_reads = None
         self._source_commands = None
+        self._recovery_phases = None
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Serving readers must not rerun schema initialization behind every
         # writer. A missing/older schema still takes the serialized migration.
@@ -575,8 +576,12 @@ class BgeQueue:
                 kinds=('document','source_command') if self._source_commands is not None else ('document','document')
                 row=db.execute("select * from jobs where state='pending' and kind in (?,?) and actor=? order by created,id limit 1",(*kinds,actor)).fetchone()
                 if row is not None:rows.append(dict(row))
+            if self._recovery_phases is not None:
+                row=db.execute("select * from jobs where state='pending' and kind='recovery_phase' and actor=? order by created,id limit 1",
+                    ('maintenance:'+run_id,)).fetchone()
+                if row is not None:rows.append(dict(row))
             rows.sort(key=lambda row:(row['created'],row['id']))
-            resumed=db.execute("select * from jobs where state='claimed' and kind in ('document','source_command') and run_id=? and lease_until>? limit 1",(run_id,self.clock())).fetchone()
+            resumed=db.execute("select * from jobs where state='claimed' and kind in ('document','source_command','recovery_phase') and run_id=? and lease_until>? limit 1",(run_id,self.clock())).fetchone()
             runtime=self._runtime_row(db,run_id)
             projected={**dict(run),'runtime_required':runtime is not None,
                        'runtime_verified':runtime is not None and runtime['accepted_generation']==generation}
@@ -605,15 +610,19 @@ class BgeQueue:
             self._shared_owner(db)
             run=self._authorize(db,run_id,token,now)
             self._dispatch_authorize(run,generation)
-            if self._run_expired(run,now) or run['status']!='ready' or run['provider_version'] is None:return None
+            if self._run_expired(run,now):return None
             job=db.execute('select * from jobs where id=?',(job_id,)).fetchone()
-            if not job or job['kind'] not in ('document','source_command'):return None
+            if not job or job['kind'] not in ('document','source_command','recovery_phase'):return None
+            maintenance=job['kind']=='recovery_phase'
+            if maintenance:
+                if self._recovery_phases is None or not self._recovery_phases.eligible(job,run,generation):return None
+            elif run['status']!='ready' or run['provider_version'] is None:return None
             if job['kind']=='source_command' and self._source_commands is None:return None
             if job['state']=='claimed' and job['run_id']==run_id and job['lease_until']>now:
                 return self._claim_payload(job)
             if job['state']!='pending' or db.execute("select 1 from jobs where run_id=? and state='claimed' and lease_until>?",(run_id,now)).fetchone():return None
             claim=secrets.token_urlsafe(24)
-            db.execute("update jobs set state='claimed',run_id=?,claim=?,lease_until=?,attempt=attempt+1,updated=? where id=?",(run_id,claim,now+JOB_SECONDS,now,job_id))
+            db.execute("update jobs set state='claimed',run_id=?,claim=?,lease_until=?,attempt=attempt+1,updated=? where id=?",(run_id,claim,min(now+(900 if maintenance else JOB_SECONDS),run['started']+MAX_LIFETIME),now,job_id))
             db.execute('update runs set useful=? where id=?',(now,run_id))
             return self._claim_payload({**dict(job),'claim':claim})
 
