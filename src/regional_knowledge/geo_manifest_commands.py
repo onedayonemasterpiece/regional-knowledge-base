@@ -18,7 +18,7 @@ from .recovery_journal import ExactCommand
 
 GEO_MANIFEST_INSTALL='geo.manifest.install.v1'
 GEO_REVISIONS=Revisions('rkb-v4-sql001-011-v1','rkb-v4-source-story-cases-geo-v6','rkb-python-apply-v1')
-GEO_PRECONDITIONS=frozenset({'manifest_state','manifest_index_sha256'})
+GEO_PRECONDITIONS=frozenset({'manifest_state','manifest_index_sha256','installer_person_id'})
 MAX_GEO_PAYLOAD=704*1024
 MAX_GEO_BATCH=256*1024
 
@@ -117,6 +117,8 @@ def validate_geo_manifest_command(command):
             set(command.ids)!={'manifest_id'} or set(command.expected_revisions)!=GEO_PRECONDITIONS):
         raise ValueError('exact fresh11 geographic manifest command required')
     exact_uuid(command.person_id);_digest(command.ids['manifest_id'])
+    if exact_uuid(command.expected_revisions['installer_person_id'])!=command.person_id:
+        raise ValueError('exact accepted geographic installer identity required')
     index=_digest(command.expected_revisions['manifest_index_sha256'])
     value=_validate_payload(command.payload,command.ids['manifest_id'],index)
     if command.expected_revisions['manifest_state']!=('absent' if value['action']=='open' else 'staging'):
@@ -139,7 +141,7 @@ class GeoManifestInstallPlan:
                 request_id=request_id,person_id=person_id,route=GEO_MANIFEST_INSTALL,logical_time=logical_time,
                 schema_revision=GEO_REVISIONS.schema,function_revision=GEO_REVISIONS.function,executor_revision=GEO_REVISIONS.executor,
                 ids={'manifest_id':self.manifest_id},expected_revisions=dict(manifest_state='absent' if action=='open' else 'staging',
-                    manifest_index_sha256=self.index_sha256),payload=payload)
+                    manifest_index_sha256=self.index_sha256,installer_person_id=person_id),payload=payload)
             validate_geo_manifest_command(command)
             if len(command.encode())>1024*1024:raise ValueError('existing canonical command byte bound exceeded')
             result.append(command)

@@ -79,3 +79,11 @@ def test_409_places_540_intents_are_batched_without_clipping_or_new_identities()
     assert len(items)==len(manifest.items)
     assert {item['stable_id'] for item in items if item['payload']['kind']=='place'}=={node['id'] for node in nodes}
     assert sum(item['payload']['kind']=='source_geo_observation' for item in items)==540
+
+
+def test_accepted_installer_cannot_be_changed_between_manifest_phases():
+    resolved=commands(plan_geo_manifest(build_geo_whitelist(**snapshot())))
+    assert all(command.expected_revisions['installer_person_id']==uid(1) for command in resolved)
+    for command in resolved:
+        with pytest.raises(ValueError,match='accepted geographic installer'):
+            validate_geo_manifest_command(replace(command,person_id=uid(99)))

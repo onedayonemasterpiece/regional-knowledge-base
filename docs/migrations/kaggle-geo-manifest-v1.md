@@ -64,3 +64,24 @@ SHA/page/mention closure, source/intent hash mismatch, private owner separation,
 complete inventory counts and refusal of injected old text or omitted declared
 dependencies. Native install/read, remote durability, actual owner readback,
 real GEO manifest generation and cutover remain separate verification steps.
+
+The proposed schema011 installation is explicit and additive after009/010. Its
+five tables hold immutable staged item bytes, bounded exact-name/POI indexes,
+a staging/active manifest head and the activation receipt captured from the
+same accepted-command ledger. `geo.manifest.install.v1` uses three fixed
+phases: open, bounded batches, activate. Every phase binds the original accepted
+installer. Activation requires the exact whole-manifest SHA, independent input
+counts and complete same-owner dependencies. It advances the existing canonical
+read frontier while preserving the prior text/dense readiness proof.
+
+`read_geo_identity_v1` and `read_geo_members_v1` use indexed native predicates,
+private owner scope and keyset pagination. They return immutable manifest bytes
+and activation-ledger identity. These functions alone do not enable a public
+route: typed transport, current accepted-manifest proof verification, authority
+and final output gating are still required. Public source evidence must not be
+fabricated for these legacy-unanchored references.
+
+The opt-in `test_geo_manifest_native.py` requires an existing isolated PG17
+fixture and all eleven ordered schema files. It never starts a database or
+exports a live row. A skipped fixture is not native SQL verification or a
+fresh11 release receipt.
