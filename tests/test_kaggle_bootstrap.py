@@ -17,6 +17,22 @@ from test_bge_wss_worker import CONFIG, module
 from test_bge_shared_worker import Peer, query, result
 
 
+class SyntheticTokenizer:
+    def __init__(self, artifacts, calls=None):
+        self.name_or_path = str(artifacts.model)
+        self.is_fast = True
+        self.backend_tokenizer = SimpleNamespace(truncation=None,
+            to_str=lambda: (artifacts.model/'tokenizer.json').read_text())
+        self.calls = calls if calls is not None else []
+
+    def __call__(self, texts, **kwargs):
+        return {'input_ids': [[1, 2, 3] for _ in texts]}
+
+    def encode(self, text, **kwargs):
+        self.calls.append((text, kwargs, threading.get_ident()))
+        return list(range(int(text))) if text.isdigit() else [1, 2, 3]
+
+
 def observation(**changes):
     values = dict(database_generation='synthetic-db', schema_revision='s1', function_revision='f1',
         executor_revision='e1', applied_seq=5, projection_seq=5, visibility_epoch=3,
@@ -48,7 +64,9 @@ def artifacts(tmp_path, monkeypatch):
     monkeypatch.setattr(boot, 'REQUIRED_DEPENDENCIES', frozenset({'pytest'}))
     monkeypatch.setattr(boot, '_loaded_code_paths', lambda: (root/'handler.py',))
     source = root/'executed.py'; source.write_bytes(b'RUN_CONFIG = {"private":"synthetic-secret"}\n')
-    return SimpleNamespace(root=root, model=model, entries=tuple(entries), source=source)
+    result = SimpleNamespace(root=root, model=model, entries=tuple(entries), source=source)
+    monkeypatch.setattr(boot, '_load_tokenizer_reference', lambda *_: SyntheticTokenizer(result))
+    return result
 
 
 def verify(a):
@@ -57,15 +75,8 @@ def verify(a):
 
 def resident(a):
     calls = []
-    class Tokenizer:
-        name_or_path = str(a.model)
-        is_fast = True
-        backend_tokenizer = SimpleNamespace(truncation=None,
-            to_str=lambda: (a.model/'tokenizer.json').read_text())
-        def encode(self, text, **kwargs):
-            calls.append((text, kwargs, threading.get_ident()))
-            return list(range(int(text))) if text.isdigit() else [1, 2, 3]
-    encoder = boot.ResidentEncoder(lambda _: [1.]+[0.]*1023, Tokenizer(), verify(a), a.model, 1)
+    encoder = boot.ResidentEncoder(lambda _: [1.]+[0.]*1023, SyntheticTokenizer(a, calls), verify(a), a.model, 1)
+    calls.clear()
     return encoder, calls
 
 
@@ -135,8 +146,8 @@ async def test_cancelled_native_token_count_drains_and_serializes_resident_token
         entered.set()
         assert finish.wait(2)
         return [1, 2, 3]
-    encoder.tokenizer.encode = count
     encoder = replace(encoder, encode=lambda _: encoded.set())
+    encoder.tokenizer.encode = count
     task = asyncio.create_task(encoder.count('synthetic'))
     forward = None
     try:
@@ -227,6 +238,8 @@ def test_candidate_has_exact_keys_independent_hashes_and_no_added_fields():
 
 @pytest.mark.asyncio
 async def test_early_control_once_preparation_and_context_reuse_across_reconnect(monkeypatch):
+    # This deadline measures control/model ordering, not cold transport imports.
+    import aiohttp
     transport = module('bge_wss_transport')
     monkeypatch.setattr(transport.random, 'uniform', lambda *_: .001)
     peer = Peer(); stop = asyncio.Event(); allow = asyncio.Event(); entered = asyncio.Event()

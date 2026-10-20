@@ -84,3 +84,25 @@ runtime/output separation, HELLO/READY, Telegram authority, cold bootstrap and
 warm edit-to-useful timings: **NOT RUN**. Local regression fixtures cover wrong
 latest versions, missing/corrupt output, unsafe paths, unknown stop, stale
 terminal evidence and competing runtime incarnations.
+
+## Tokenizer materialization after the first native launch
+
+The first target launch on 2026-10-20 attached successfully with Ubuntu 24.04,
+CPython 3.13.15 and glibc 2.39, then failed before PostgreSQL startup with
+`loaded_tokenizer_settings_mismatch`. The protected Transformers/tokenizers
+versions materialize legacy tokenizer JSON into a different backend structure;
+raw JSON equality is not a valid loaded-state check.
+
+`ResidentEncoder` now independently reloads the tokenizer from the same
+hash-verified local tokenizer/config files, with the protected package versions,
+local-only loading and remote code disabled. It compares complete materialized
+backend state, special-token/configuration metadata, batch-one inputs and exact
+input IDs. Identical explicit counting calls clear per-call padding on both
+handles; no backend fields are excluded. The raw tokenizer SHA, model revision,
+embedding space and 512-token bound remain unchanged.
+
+An independent counter for ingestion must reproduce this protected HF
+materialization. Loading only the raw JSON can produce different counts for
+whitespace and special tokens. A tokenizer-only reproduction uses no Torch,
+model weights or embedding inference. These checks do not establish native PG
+readiness, public hybrid search, accepted imports or product acceptance.
