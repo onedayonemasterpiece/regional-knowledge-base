@@ -64,6 +64,7 @@ class TargetServiceConfig:
     writer_current: Callable
     destination_ref: str = 'rkb-source-http-response'
     refresh_seconds: float = 5
+    writer_owner: object = None
 
     def __post_init__(self):
         if (not isinstance(self.oauth_provider,RegionalOAuthProvider)
@@ -80,6 +81,13 @@ class TargetServiceConfig:
         if (not callable(self.writer_current) or not isinstance(self.writer_generation,str)
                 or not 1<=len(self.writer_generation.encode())<=256):
             raise ValueError('existing current writer authority required')
+        if self.writer_owner is not None:
+            from .queue_writer import QueueWriterAuthority
+            if (type(self.writer_owner) is not QueueWriterAuthority or self.writer_owner.queue is not self.queue
+                    or self.writer_owner.writer_generation!=self.writer_generation
+                    or self.spool.journal.store.writer_guard is not self.writer_owner
+                    or getattr(self.writer_current,'__self__',None) is not self.writer_owner):
+                raise ValueError('same persisted writer owner must guard journal and current reads')
         if (not isinstance(self.destination_ref,str) or not 1<=len(self.destination_ref.encode())<=256
                 or type(self.refresh_seconds) not in (int,float) or not math.isfinite(self.refresh_seconds)
                 or not 0<self.refresh_seconds<=10):
@@ -165,6 +173,8 @@ class TargetServiceStartup:
         if not self.running or self.closed:return False
         try:
             binding=await asyncio.to_thread(current_binding,self.config.queue)
+            if self.config.writer_owner is not None:
+                await self.config.writer_owner.ensure_current(self.config.spool.journal)
             if not self.binding_current(binding):raise PermissionError('current writer binding unavailable')
             if binding==self.binding and self.coverage is not None and self.coverage.current():
                 coverage=await self.history.extend(self.binding)
@@ -207,3 +217,4 @@ class TargetServiceStartup:
                 self.closed=True
                 self.admission.close()
                 self.config.spool.close()
+                if self.config.writer_owner is not None:self.config.writer_owner.close()

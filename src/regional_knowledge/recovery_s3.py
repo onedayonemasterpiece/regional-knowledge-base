@@ -6,6 +6,7 @@ support is checked locally; real bucket conditional semantics still need proof.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Any, TypeVar
@@ -65,9 +66,10 @@ async def _blocking(call: Callable[[], _T]) -> _T:
 class S3ConditionalRecoveryStore:
     """Restricted adapter around S3ObjectStore.client and .bucket.
 
-    writer_guard must be the existing authoritative async generation lock. It
-    validates generation on entry and excludes revocation/generation transitions
-    until exit. An async precheck without held authority is not sufficient.
+    writer_guard must provide held generation-transition exclusion, or a typed
+    publication_guard that records/fences the exact canonical publication.
+    An async precheck without held authority is not sufficient. Other generic
+    admission uses of the guard require their own current-binding recheck.
     """
 
     def __init__(self, *, client: Any, bucket: str, prefix: str,
@@ -91,6 +93,8 @@ class S3ConditionalRecoveryStore:
         self.bucket = bucket
         self.prefix = prefix
         self.writer_guard = writer_guard
+        bind=getattr(writer_guard,'bind_store',None)
+        if bind is not None:bind(self)
 
     def _key(self, key: str) -> None:
         if (not isinstance(key, str) or not key.startswith(self.prefix)
@@ -174,5 +178,12 @@ class S3ConditionalRecoveryStore:
                 or any(ord(c) < 32 for c in expected_token)):
             raise ValueError("expected version must be an opaque native ETag")
         condition = {"IfNoneMatch": "*"} if expected_token is None else {"IfMatch": expected_token}
+        publication=getattr(self.writer_guard,'publication_guard',None)
+        if publication is not None:
+            async with publication(writer_generation,key=key,data_sha256=hashlib.sha256(data).hexdigest(),
+                    data_length=len(data),expected_token=expected_token,store=self) as receipt:
+                result=await _blocking(lambda:self._put(key,data,condition))
+                receipt.resolved(result)
+                return result
         async with self.writer_guard(writer_generation):
             return await _blocking(lambda: self._put(key, data, condition))
