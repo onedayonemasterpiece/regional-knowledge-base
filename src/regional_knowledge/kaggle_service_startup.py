@@ -71,6 +71,7 @@ class TargetServiceConfig:
     import_launch_config_sha256: str | None = None
     geo_manifest_operation_keys: tuple[str,...] = ()
     source_restore: object = None
+    source_snapshot: object = None
 
     def __post_init__(self):
         if (not isinstance(self.oauth_provider,RegionalOAuthProvider)
@@ -110,6 +111,12 @@ class TargetServiceConfig:
             from .kaggle_restore_startup import SourceRestoreConfig
             if type(self.source_restore) is not SourceRestoreConfig or self.writer_owner is None:
                 raise TypeError('typed restore config and same persisted writer owner required')
+        if self.source_restore is not None and self.source_snapshot is not None:
+            raise ValueError('restore and first empty snapshot are distinct startup modes')
+        if self.source_snapshot is not None:
+            from .kaggle_snapshot_startup import SourceSnapshotConfig
+            if type(self.source_snapshot) is not SourceSnapshotConfig or self.writer_owner is None:
+                raise TypeError('typed first snapshot config and same persisted writer required')
         if self.import_originals is not None:
             from .original_intake_controller import OriginalIntakeController
             from .kaggle_import_tokenizer import HfImportTokenCounter
@@ -127,6 +134,8 @@ class TargetServiceConfig:
 
 class _SourceBackend(KaggleSourceBackend):
     def _importer(self):
+        if self.startup.snapshot is not None and not self.startup.snapshot.verified:
+            raise ToolError('{"status":"unavailable","reason":"first_snapshot_unverified"}')
         if self.startup.importer is None:
             raise ToolError('{"status":"unavailable","reason":"target_importer_unavailable"}')
         return self.startup.importer
@@ -257,6 +266,12 @@ class TargetServiceStartup:
             from .kaggle_restore_startup import SourceRestoreCoordinator
             self.restorer=SourceRestoreCoordinator(self,config.source_restore)
 
+        self.snapshot=None
+        if config.source_snapshot is not None:
+            from .kaggle_snapshot_startup import SourceSnapshotCoordinator
+            self.snapshot=SourceSnapshotCoordinator(self,config.source_snapshot)
+            config.spool.configure_intake_guard(lambda:not self.closed and self.snapshot.verified)
+
     def binding_current(self,binding):
         try:
             return (not self.closed and type(binding) is TargetReadBinding
@@ -269,14 +284,15 @@ class TargetServiceStartup:
                                 database_generation,writer_generation):
         try:
             binding=current_binding(self.config.queue)
-            return (writer_generation==self.config.writer_generation and self.binding_current(binding)
+            snapshot=getattr(self,'snapshot',None)
+            return ((snapshot is None or snapshot.verified) and writer_generation==self.config.writer_generation and self.binding_current(binding)
                 and (binding.run_id,binding.runtime_incarnation,binding.connection_generation,binding.database_generation)
                 ==(run_id,runtime_incarnation,connection_generation,database_generation))
         except Exception:return False
 
     def reads_current(self):
         try:
-            return bool(self.running and not self.closed and self.coverage is not None
+            return bool(self.running and not self.closed and (self.snapshot is None or self.snapshot.verified) and self.coverage is not None
                 and self.coverage.current() and self.binding_current(self.binding))
         except Exception:return False
 
@@ -309,6 +325,7 @@ class TargetServiceStartup:
             if not coverage.current() or not self.binding_current(self.binding):
                 raise PermissionError('native history proof no longer current')
             self.coverage=coverage
+            if self.snapshot is not None:self.snapshot.kick(self.binding)
             if self.geo_gate is not None and (self.geo_gate._manifest is None
                     or self.geo_gate._manifest.database!=binding.database_generation):
                 try:
@@ -348,6 +365,7 @@ class TargetServiceStartup:
                 self._maintenance.cancel()
                 try:await self._maintenance
                 except asyncio.CancelledError:pass
+            if self.snapshot is not None:await self.snapshot.aclose()
             if self.restorer is not None:await self.restorer.aclose()
             if self.editorial is not None:await self.editorial.aclose()
             try:await self.source_dispatch.aclose()

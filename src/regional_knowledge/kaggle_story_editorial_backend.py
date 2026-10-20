@@ -45,7 +45,9 @@ class KaggleStoryEditorial:
         if self.queue._story_editorial is not None:raise ValueError('one retained Story workflow required')
         self.queue._story_editorial=self;self._documents={};self.output_gate=StoryEditorialOutputGate(self)
 
-    def _binding_current(self,binding):return self.startup.binding_current(binding)
+    def _binding_current(self,binding):
+        snapshot=getattr(self.startup,'snapshot',None)
+        return self.startup.binding_current(binding) and (snapshot is None or snapshot.verified)
 
     async def _check(self,authority,context,binding):
         await self.read_authority.require(authority,'public_search')

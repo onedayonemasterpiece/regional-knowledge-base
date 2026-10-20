@@ -37,7 +37,9 @@ class SnapshotTicketIssuer:
     async def _sign(self, binding, method, operation_ref, key, size, sha256, params, headers):
         # Scoped immutable orphan bytes cannot promote a snapshot. All canonical
         # effects still hold the existing current writer fence and remote CAS.
-        async with self.store.writer_guard(binding.writer_generation):
+        generation=getattr(binding,'writer_generation',None) or getattr(self.store.writer_guard,'writer_generation',None)
+        if type(generation) is not str:raise SnapshotError('snapshot_ticket_writer_unavailable')
+        async with self.store.writer_guard(generation):
             if not self.current(binding): raise SnapshotError('snapshot_ticket_scope_unavailable')
             url = await _blocking(lambda: self.store.client.generate_presigned_url(
                 'put_object' if method == 'PUT' else 'get_object',

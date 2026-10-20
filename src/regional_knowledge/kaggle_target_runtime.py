@@ -82,9 +82,13 @@ class TargetLaunchSpec:
         object.__setattr__(self,'command_handlers',tuple(json.loads(canonical(self.command_handlers))))
         if self.recovery is not None:
             from .kaggle_recovery_composition import SnapshotRecoveryConfig
-            if (type(self.recovery) is not SnapshotRecoveryConfig or self.database.mode!='VERIFIED_INITIALIZED'
+            if (type(self.recovery) is not SnapshotRecoveryConfig or self.database.mode not in ('VERIFIED_INITIALIZED','NEW_EMPTY_GENERATION')
                     or self.native_bundle is None or self.stage0 is None or not self.command_handlers):
                 raise ValueError('initialized recovery requires exact native/package/command deployment')
+            if self.recovery.drill_empty and self.database.mode!='NEW_EMPTY_GENERATION':
+                raise ValueError('empty snapshot drill requires fresh owned database')
+            if self.database.mode=='NEW_EMPTY_GENERATION' and (self.recovery.native_uid,self.recovery.native_gid)!=(self.database.uid,self.database.gid):
+                raise ValueError('snapshot native identity must match owned fresh database')
         if self.original_intake is not None:
             from .kaggle_original_native import OriginalIntakeConfig
             if type(self.original_intake) is not OriginalIntakeConfig:
@@ -192,8 +196,11 @@ class TargetRuntime:
         callback objects retain attachment/transfer/private-output authority.
         No launch receipt dictionary supplies those permissions.
         """
-        if (self.closed or self.identity is not None or self.recovery_worker is not None
-                or self.restored_database is not None or self.database.mode!='VERIFIED_INITIALIZED'
+        if (self.closed or self.recovery_worker is not None or self.restored_database is not None
+                or (self.database.mode=='VERIFIED_INITIALIZED' and self.identity is not None)
+                or (self.database.mode=='NEW_EMPTY_GENERATION' and (self.prepared is None
+                    or self.identity!=(run_id,launch_nonce,runtime_incarnation)))
+                or self.database.mode not in ('VERIFIED_INITIALIZED','NEW_EMPTY_GENERATION')
                 or (run_id,launch_nonce)!=(self.config['run_id'],self.config['launch_nonce'])
                 or native_bundle.root!=encoder.artifacts.root):
             raise BootstrapUnavailable('target_recovery_configuration_changed')
@@ -204,11 +211,15 @@ class TargetRuntime:
             import psycopg
             async with await psycopg.AsyncConnection.connect(**self.database.connection(reader=False)) as connection:
                 yield connection
+        from .bge_contract import REVISION,SPACE
+        model_pins=dict(model_sha256=sha(canonical(dict(revision=REVISION,space=SPACE,
+            artifacts=encoder.artifacts.role_hash({'weight','model_config','tokenizer'})))),
+            tokenizer_sha256=encoder.artifacts.role_hash({'tokenizer'}))
         worker=await build_recovery_worker(native_bundle=native_bundle,database=self.database,
             identity=(run_id,launch_nonce,runtime_incarnation),tools=tools,native_uid=native_uid,
             native_gid=native_gid,current=current,workspace_private_current=workspace_private_current,
             upload=upload,download=download,workspace=workspace,limits=limits,
-            ticket_channel=ticket_channel,transfer=transfer,acquire=acquire)
+            ticket_channel=ticket_channel,transfer=transfer,acquire=acquire,model_pins=model_pins)
         self.recovery_worker=worker;self._recovery_available.set()
         return worker
 

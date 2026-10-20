@@ -15,7 +15,8 @@ from .kaggle_pg_snapshot_native import SnapshotError, encode, sha
 MAX_PHASE_FRAME_BYTES = 4 * 1024 * 1024
 MAX_PHASE_RESULT_BYTES = 120 * 1024  # Reserve result envelope/claim identity bytes.
 from .original_intake import PHASES as ORIGINAL_PHASES
-PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history'})|ORIGINAL_PHASES
+from .kaggle_snapshot_drill import DRILL_PHASES
+PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history'})|ORIGINAL_PHASES|DRILL_PHASES
 
 
 async def build_recovery_worker(*,native_bundle,database,identity,tools,native_uid,native_gid,
@@ -125,7 +126,7 @@ class WorkerRecoveryPhases:
             raise TypeError('retained native factory and scoped transfer required')
         self.factory,self.download,self.workspace=factory,download,workspace
         self._sessions={};self._results={};self._requests={};self._lock=asyncio.Lock()
-        self._ready=asyncio.Event();self._initialized=None
+        self._ready=asyncio.Event();self._initialized=None;self.drill=None
 
     async def wait_initialized(self,database,run_id,launch_nonce,runtime_incarnation):
         if database!=self.factory.database or (run_id,launch_nonce,runtime_incarnation)!=self.factory.identity:
@@ -139,7 +140,7 @@ class WorkerRecoveryPhases:
             'launch_nonce','runtime_incarnation','database_generation','writer_generation','phase',
             'operation_key','request_sha256','arguments','compute_claim','dispatch_generation'}
         if (not isinstance(frame,dict) or set(frame)-{'download_ticket'}!=fields
-                or 'download_ticket' in frame and frame.get('phase')!='prepare' or frame['type']!='DISPATCH'
+                or 'download_ticket' in frame and frame.get('phase') not in ('prepare','drill_prepare') or frame['type']!='DISPATCH'
                 or frame['protocol_version']!=2 or frame['kind']!='recovery_phase'
                 or frame['phase'] not in PHASES-{'source_history'}-ORIGINAL_PHASES or type(frame['connection_generation']) is not int
                 or frame['connection_generation']<1 or type(frame['dispatch_generation']) is not int
@@ -164,7 +165,8 @@ class WorkerRecoveryPhases:
                 if prior!=request:raise SnapshotError('recovery_phase_operation_changed')
                 if key in self._results:return self._results[key]
                 session=self._sessions.get(frame.get('arguments',{}).get('handle'))
-                if frame['phase']!='finish' or session not in self.factory._finish_intents:
+                if not (frame['phase']=='finish' and session in self.factory._finish_intents
+                        or self.drill is not None and self.drill.can_reconcile(frame['phase'],frame['arguments'])):
                     raise SnapshotError('recovery_phase_unknown_requires_reconciliation')
             if len(self._requests)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
             self._requests[key]=request  # UNKNOWN is retained before effects.
@@ -175,6 +177,7 @@ class WorkerRecoveryPhases:
             return result
 
     async def aclose(self):
+        if self.drill is not None:await self.drill.aclose()
         # Includes a partially restored candidate that never released readiness.
         for candidate in tuple(self.factory._owned_candidates):
             await candidate.aclose()
@@ -191,6 +194,9 @@ class WorkerRecoveryPhases:
     async def _execute(self,phase,args,key,binding,frame):
         from .kaggle_pg_snapshot_native import BlobRef
         if not isinstance(args,dict):raise SnapshotError('recovery_phase_arguments')
+        if phase in DRILL_PHASES:
+            if self.drill is None:raise SnapshotError('drill_fixed_owner_unavailable')
+            return await self.drill(phase,args,key,binding,frame)
         expected={'capture':{'versions','expected_sequence'},
             'prepare':{'manifest_b64','manifest_ref','blob','control_b64','expected_versions','database','identity','restore_operation'},
             'apply':{'handle','command_b64','accepted','handler_sha256','original_pg_writer'},

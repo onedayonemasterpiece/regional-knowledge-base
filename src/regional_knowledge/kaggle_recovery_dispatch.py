@@ -94,7 +94,7 @@ class RecoveryPhaseDispatch:
                 raise StaleClaim('recovery assignment changed')
             identity=json.loads(job['identity'])
             payload=dict(id=job_id,claim=job['claim'],kind='recovery_phase',**identity)
-        if identity['phase']=='prepare' and self.snapshot_tickets is not None:
+        if identity['phase'] in ('prepare','drill_prepare') and self.snapshot_tickets is not None:
             from .kaggle_pg_snapshot_native import BlobRef
             ticket=await self.snapshot_tickets.issue_download(self._bindings[job_id],identity['operation_key'],
                 BlobRef(**identity['arguments']['blob']))

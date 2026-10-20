@@ -57,7 +57,7 @@ def _entry(source,tmp_path):
 def test_real_generated_restore_entrypoint_waits_native_capability_and_refuses_wrong_identity(tmp_path,monkeypatch,wrong_identity):
     q,run=queue_run(tmp_path);source=generate(q,run,target());namespace,entry=_entry(source,tmp_path)
     config=namespace['RUN_CONFIG'];events=[];ready=asyncio.Event();released=[]
-    encoder=SimpleNamespace(artifacts=SimpleNamespace(root=Path('/kaggle/working'),entries=()))
+    encoder=SimpleNamespace(artifacts=SimpleNamespace(root=Path('/kaggle/working'),entries=(),role_hash=lambda roles:'d'*64))
     monkeypatch.setattr('regional_knowledge.kaggle_native_bundle.prepare_native_bundle',
         lambda *a,**k:SimpleNamespace(root=encoder.artifacts.root))
     monkeypatch.setattr('regional_knowledge.kaggle_owned_pg.ensure_private_runtime_root',lambda **k:tmp_path)
@@ -172,3 +172,44 @@ async def test_transport_notifies_restore_owner_before_load_and_revokes_attachme
     await worker.run()
     assert calls[0]==('attached',1,worker.incarnation) and calls[-1]==('detached',1)
     assert 'READY' not in sent or sent.index('HEARTBEAT')<sent.index('READY')
+
+
+def test_generated_fresh_snapshot_owner_configures_after_pg_without_model_reload(tmp_path,monkeypatch):
+    q,run=queue_run(tmp_path)
+    fresh=bundled_spec()
+    value=replace(fresh,stage0=stage0(fresh),recovery=replace(recovery(),drill_empty=True),
+        command_handlers=(dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64),))
+    from regional_knowledge.kaggle_target_launch import persist_empty_intent
+    from test_recovery_journal import fixture
+    from test_kaggle_target_runtime import hashes
+    _,journal=fixture();nonce=q.prepare_channel(run)
+    asyncio.run(persist_empty_intent(q,run,value,launch_nonce=nonce,recovery_journal=journal,sql_hashes=hashes()))
+    namespace,entry=_entry(generate(q,run,value),tmp_path);events=[]
+    encoder=SimpleNamespace(artifacts=SimpleNamespace(root=Path('/kaggle/working'),entries=()))
+    monkeypatch.setattr('pwd.getpwuid',lambda uid:SimpleNamespace(pw_gid=1000))
+    monkeypatch.setattr('regional_knowledge.kaggle_owned_pg.ensure_private_runtime_root',lambda **kw:tmp_path)
+    monkeypatch.setattr('regional_knowledge.kaggle_native_bundle.prepare_native_bundle',lambda *a,**kw:SimpleNamespace(root=encoder.artifacts.root))
+    prepared=object()
+    class Runtime:
+        def __init__(self,config,**kwargs):self.recovery_worker=None
+        async def prepare(self,actual,**kwargs):
+            assert actual is encoder;events.append('prepare-owned-PG-A');return prepared
+        async def configure_recovery(self,actual,**kwargs):
+            assert actual is encoder and events==['prepare-owned-PG-A']
+            events.append('same-model-capture-owner')
+            self.recovery_worker=SimpleNamespace(factory='actual-retained-factory-A',download='scoped-download')
+        async def aclose(self):events.append('close')
+    def drill(serving,**kwargs):
+        assert serving=='actual-retained-factory-A';events.append('isolated-drill-owner-B');return object()
+    monkeypatch.setattr('regional_knowledge.kaggle_target_runtime.TargetRuntime',Runtime)
+    monkeypatch.setattr('regional_knowledge.kaggle_snapshot_drill.EmptySnapshotDrill',drill)
+    def main(**kwargs):
+        owner=kwargs['recovery_handler'];owner.attached(1,runtime_incarnation='inc')
+        async def execute():
+            assert await kwargs['prepare_runtime'](encoder,run_id=run,launch_nonce=nonce,runtime_incarnation='inc') is prepared
+            assert owner.instance.recovery_worker.drill is not None
+            await kwargs['close_runtime']()
+        asyncio.run(execute())
+    namespace.update(main=main,__name__='__main__')
+    exec(compile(entry,'generated-fresh-snapshot','exec'),namespace)
+    assert events==['prepare-owned-PG-A','same-model-capture-owner','isolated-drill-owner-B','close']

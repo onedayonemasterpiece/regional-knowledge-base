@@ -114,6 +114,8 @@ class KaggleSourceImporter:
     def _binding_current(self, binding):
         if not self.startup.binding_current(binding):
             return False
+        snapshot=getattr(self.startup,'snapshot',None)
+        if snapshot is not None and not snapshot.verified:return False
         try:
             with self.queue.connect(write=False) as db:
                 runtime = self.queue._runtime_row(db,binding.run_id)

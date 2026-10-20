@@ -5,6 +5,7 @@ transfer and only the existing native verifier can release database readiness.
 Imports before ATTACH remain standard-library only.
 """
 from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import PurePosixPath
 from types import MappingProxyType
 
@@ -18,21 +19,22 @@ class SnapshotRecoveryConfig:
     max_archive_bytes: int = 8*1024**3
     max_unpacked_bytes: int = 16*1024**3
     seconds: int = 900
+    drill_empty: bool = False
 
     def __post_init__(self):
         from .native_snapshot_transfer import origin
-        if (not isinstance(self.binaries,dict) or set(self.binaries)!={'postgres','pg_basebackup','pg_verifybackup'}
+        if (not isinstance(self.binaries,Mapping) or set(self.binaries)!={'postgres','pg_basebackup','pg_verifybackup'}
                 or type(self.allowed_origins) is not tuple or not 1<=len(self.allowed_origins)<=4
                 or len(set(self.allowed_origins))!=len(self.allowed_origins)
                 or any(origin(value)!=value for value in self.allowed_origins)
                 or any(type(value) is not int or not 1<=value<2**31 for value in (self.native_uid,self.native_gid))
                 or type(self.max_archive_bytes) is not int or not 1<=self.max_archive_bytes<=8*1024**3
                 or type(self.max_unpacked_bytes) is not int or not 1<=self.max_unpacked_bytes<=16*1024**3
-                or type(self.seconds) is not int or not 1<=self.seconds<=900):
+                or type(self.seconds) is not int or not 1<=self.seconds<=900 or type(self.drill_empty) is not bool):
             raise ValueError('exact bounded native recovery deployment required')
         frozen={}
         for name,value in self.binaries.items():
-            if (type(value) is not dict or set(value)!={'path','version_output'}
+            if (not isinstance(value,Mapping) or set(value)!={'path','version_output'}
                     or type(value['path']) is not str or not 1<=len(value['path'])<=512
                     or PurePosixPath(value['path']).is_absolute() or '..' in PurePosixPath(value['path']).parts
                     or str(PurePosixPath(value['path']))!=value['path']
@@ -45,11 +47,12 @@ class SnapshotRecoveryConfig:
     def wire(self):
         return dict(binaries={key:dict(value) for key,value in self.binaries.items()},
             allowed_origins=list(self.allowed_origins),native_uid=self.native_uid,native_gid=self.native_gid,
-            max_archive_bytes=self.max_archive_bytes,max_unpacked_bytes=self.max_unpacked_bytes,seconds=self.seconds)
+            max_archive_bytes=self.max_archive_bytes,max_unpacked_bytes=self.max_unpacked_bytes,seconds=self.seconds,drill_empty=self.drill_empty)
 
     @classmethod
     def from_wire(cls,value):
-        if type(value) is not dict or set(value)!=set(cls.__dataclass_fields__):
+        required=set(cls.__dataclass_fields__)-{'drill_empty'}
+        if type(value) is not dict or not required<=set(value) or set(value)-required-{'drill_empty'}:
             raise ValueError('exact native recovery configuration fields required')
         if type(value['allowed_origins']) is not list:raise ValueError('exact recovery origin list required')
         return cls(**dict(value,allowed_origins=tuple(value['allowed_origins'])))
@@ -61,8 +64,8 @@ class DeferredRecoveryRuntime:
         from .kaggle_snapshot_channel import SnapshotTicketChannel
         self.config,self.executed_source=config,executed_source
         self.spec=SnapshotRecoveryConfig.from_wire(config['target_runtime']['recovery'])
-        if config['target_runtime']['database']['mode']!='VERIFIED_INITIALIZED':
-            raise ValueError('recovery deployment requires initialized mode')
+        if config['target_runtime']['database']['mode'] not in ('VERIFIED_INITIALIZED','NEW_EMPTY_GENERATION'):
+            raise ValueError('fixed snapshot/restore deployment mode required')
         self.ticket_channel=SnapshotTicketChannel(timeout_seconds=min(self.spec.seconds,600))
         self.instance=None;self.identity=None;self.generation=None;self.closed=False;self._preparing=False
         self.workspace_root=None;self._paths=set();self._restore_operation=None
@@ -86,9 +89,13 @@ class DeferredRecoveryRuntime:
         import hashlib
         from pathlib import Path
         if (self.closed or self.workspace_root is None or type(operation) is not str
-                or not 1<=len(operation.encode())<=256 or phase not in ('restore','download','capture')):
+                or not 1<=len(operation.encode())<=256 or phase not in ('restore','download','capture','drill_restore')):
             raise ValueError('owned recovery workspace required')
-        if phase=='restore':
+        if phase=='drill_restore':
+            from .kaggle_snapshot_drill import drill_database
+            from .kaggle_owned_pg import OwnedDatabase
+            path=Path(drill_database(OwnedDatabase(**self.config['target_runtime']['database']),self.identity).socket).parent
+        elif phase=='restore':
             if self._restore_operation not in (None,operation):raise ValueError('another restore operation owns endpoint')
             self._restore_operation=operation
             path=Path(self.config['target_runtime']['database']['socket']).parent
@@ -145,6 +152,8 @@ class DeferredRecoveryRuntime:
             bundle_spec.manifest_sha256,inventory=inventory)
         runtime=TargetRuntime(self.config,executed_source=self.executed_source)
         self.instance=runtime
+        fresh=self.config['target_runtime']['database']['mode']=='NEW_EMPTY_GENERATION'
+        prepared=await runtime.prepare(encoder,**identity) if fresh else None
         await runtime.configure_recovery(encoder,**identity,native_bundle=bundle,
             tools=dict(binaries={k:dict(v) for k,v in self.spec.binaries.items()},
                 command_handlers=self.config['target_runtime']['command_handlers']),
@@ -154,7 +163,12 @@ class DeferredRecoveryRuntime:
                 allowed_origins=frozenset(self.spec.allowed_origins),max_bytes=self.spec.max_archive_bytes,
                 timeout_seconds=self.spec.seconds),limits=SnapshotLimits(max_archive_bytes=self.spec.max_archive_bytes,
                 max_unpacked_bytes=self.spec.max_unpacked_bytes,timeout_seconds=self.spec.seconds))
-        return await runtime.prepare(encoder,**identity)
+        if self.spec.drill_empty:
+            if not fresh:raise ValueError('first snapshot drill requires fresh serving owner')
+            from .kaggle_snapshot_drill import EmptySnapshotDrill
+            runtime.recovery_worker.drill=EmptySnapshotDrill(runtime.recovery_worker.factory,
+                download=runtime.recovery_worker.download,workspace=self._workspace)
+        return prepared if fresh else await runtime.prepare(encoder,**identity)
 
     async def __call__(self,frame):
         import asyncio
@@ -171,7 +185,7 @@ class DeferredRecoveryRuntime:
             for _ in range(3):
                 try:return await self.instance.recovery(frame)
                 except SnapshotError as exc:
-                    if frame.get('phase')!='finish' or str(exc)!='native_restore_binding_changed':raise
+                    if frame.get('phase') not in ('finish','drill_finish','drill_close','drill_verify') or str(exc)!='native_restore_binding_changed':raise
                     previous=frame['connection_generation']
                     while self.generation is None or self.generation==previous:
                         if self.closed:raise

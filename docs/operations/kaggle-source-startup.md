@@ -99,7 +99,8 @@ proof and actual public read acceptance remain required before product routing.
 ## Generated notebook restore owner
 
 `TargetLaunchSpec.recovery` is an explicit `SnapshotRecoveryConfig` for
-`VERIFIED_INITIALIZED` launches. It declares the exact bundle-relative
+`VERIFIED_INITIALIZED` launches, or fresh launches explicitly enabling the
+first-base owner below. It declares the exact bundle-relative
 `postgres`, `pg_basebackup`, and `pg_verifybackup` paths and complete version
 outputs, allowed HTTPS storage origins, observed nonroot UID/GID, and finite
 archive/unpacked/time budgets. The existing native bundle, package closure and
@@ -184,3 +185,41 @@ unbounded cold history or post-GC GEO proof reconstruction supported. A verified
 snapshot/prefix capability and compact durable GEO proof must cover those cases
 before claiming restart/retention acceptance. The current GEO gate still needs
 its accepted raw install rows; do not GC them while that restore gap remains.
+## First empty base and restore drill
+
+A fresh deployment can opt into `SnapshotRecoveryConfig(drill_empty=True)` and
+matching Dev `SourceSnapshotConfig.wire()` under `source_snapshot`. Both retain
+exact native binary/version, model/tokenizer, catalog and schema pins, the same
+storage origin and writer, and explicit finite budgets. For the measured empty
+schema11 base (about 53 MiB), an operator can select 128 MiB archive and 256 MiB
+unpacked limits instead of the larger compatibility defaults. The native owner
+checks free space before the additional download/restore and returns the actual
+free-space observation plus a conservative owned peak bound. This path has no
+model reload or second queue.
+
+After the real serving PG A and ordinary native history proof are ready, the
+same source-service owner retains the canonical spool exclusion for the entire
+empty-prefix operation. It captures A through the existing scoped conditional
+PUT ticket, streams the stored blob back for SHA/size verification and seals an
+immutable candidate manifest. Public reads and all new canonical command
+staging/acceptance/dispatch stay closed; exact already-accepted reconciliation and
+maintenance remain available.
+The fixed maintenance phases derive a distinct private socket and temporary
+writer B from A's identity; caller paths and writer IDs cannot select them.
+They conditionally GET the same immutable blob, verify the physical backup,
+start B, check its catalog, SQL and dense readiness, and close only B. A retained
+drill proof is released only after B's process terminates and socket disappears.
+It is not an adoptable serving-database capability.
+
+Before publishing the existing verified `snapshots/current` pointer, the owner
+requires that retained proof, fresh native observations of A's exact catalog,
+system ID, writer and text/dense frontier zero, an unchanged empty journal head,
+and independent blob readback. A stays the serving writer throughout. Capture
+alone cannot publish this pointer. The same SQLite control database records
+pending, captured and verified states; API restart validates the exact verified
+pointer and immutable base without repeating the backup or drill. An unknown
+capture needs explicit `SourceSnapshotCoordinator.reconcile()` and an already
+durable exact capture result. It cannot allocate another backup or temporary PG.
+Unknown shutdown retains B and blocks promotion until that same owned shutdown
+is proved. Scoped tests use synthetic transfer/native peers; actual Kaggle
+capture, drill, provider readback and recovery remain separate acceptance.

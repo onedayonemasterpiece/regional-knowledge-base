@@ -90,35 +90,41 @@ class PhysicalSnapshotRecovery:
         validate_versions(versions);self._authority(binding)
         async with self.maintenance_guard(binding):
             async with self.history.spool._lock:
-                proof=self.history._coverage
-                if (proof is None or not proof.current() or proof.pending
-                        or proof.accepted_sequence!=proof.applied_sequence
-                        or proof.accepted_sequence!=self.history.spool._source_covered_sequence
-                        or await self.journal.head()!=proof.head):
-                    raise SnapshotError('snapshot_requires_exact_drained_prefix')
-                control=self._control(proof)
-                descriptor=await self.native.capture(binding,versions=versions,expected_sequence=proof.applied_sequence)
-                if (descriptor['database_generation']!=proof.database_generation
-                        or descriptor['writer_generation']!=writer_generation
-                        or descriptor['applied_sequence']!=proof.applied_sequence or descriptor['versions']!=versions):
-                    raise SnapshotError('snapshot_native_capture_binding')
-                blob=BlobRef(**descriptor['blob'])
-                if (not blob.key.startswith(self.journal.prefix+'/snapshots/blobs/')
-                        or blob.size>self.limits.max_archive_bytes):raise SnapshotError('snapshot_blob_scope')
-                # Independent controller-side stream readback; bytes never land
-                # in Dev corpus storage or the 512MiB canonical control spool.
-                await self.transport.verify(blob)
-                self._authority(binding)
-                if await self.journal.head()!=proof.head:raise SnapshotError('snapshot_capture_prefix_changed')
-                control_key=self.journal.prefix+'/source-base-control/'+sha(control)
-                await self.journal._immutable(control_key,control,self.limits.max_control_bytes)
-                manifest=dict(descriptor,codec='rkb.pg-physical-base.v1',stream=self.journal.stream,
-                    journal_head=proof.head.reference.wire() if proof.head else None,
-                    source_control={'key':control_key,'sha256':sha(control),'length':len(control)})
-                data=encode(manifest);key=self.journal.prefix+'/snapshots/manifests/'+sha(data)
-                await self.journal._immutable(key,data,self.limits.max_control_bytes)
-                _LOG.info('snapshot_base_sealed manifest_hash=%s cursor=%s bytes=%s',sha(data),proof.applied_sequence,blob.size)
-                return ObjectRef(key,sha(data),len(data),proof.applied_sequence)
+                return await self._create_base_locked(binding,versions=versions,writer_generation=writer_generation)
+
+    async def _create_base_locked(self,binding,*,versions,writer_generation):
+        """Internal owner path while its actual spool exclusion is retained."""
+        validate_versions(versions);self._authority(binding)
+        if not self.history.spool._lock.locked():raise SnapshotError('snapshot_intake_barrier_required')
+        proof=self.history._coverage
+        if (proof is None or not proof.current() or proof.pending
+                or proof.accepted_sequence!=proof.applied_sequence
+                or proof.accepted_sequence!=self.history.spool._source_covered_sequence
+                or await self.journal.head()!=proof.head):
+            raise SnapshotError('snapshot_requires_exact_drained_prefix')
+        control=self._control(proof)
+        descriptor=await self.native.capture(binding,versions=versions,expected_sequence=proof.applied_sequence)
+        if (descriptor['database_generation']!=proof.database_generation
+                or descriptor['writer_generation']!=writer_generation
+                or descriptor['applied_sequence']!=proof.applied_sequence or descriptor['versions']!=versions):
+            raise SnapshotError('snapshot_native_capture_binding')
+        blob=BlobRef(**descriptor['blob'])
+        if (not blob.key.startswith(self.journal.prefix+'/snapshots/blobs/')
+                or blob.size>self.limits.max_archive_bytes):raise SnapshotError('snapshot_blob_scope')
+        # Independent controller-side stream readback; bytes never land
+        # in Dev corpus storage or the 512MiB canonical control spool.
+        await self.transport.verify(blob)
+        self._authority(binding)
+        if await self.journal.head()!=proof.head:raise SnapshotError('snapshot_capture_prefix_changed')
+        control_key=self.journal.prefix+'/source-base-control/'+sha(control)
+        await self.journal._immutable(control_key,control,self.limits.max_control_bytes)
+        manifest=dict(descriptor,codec='rkb.pg-physical-base.v1',stream=self.journal.stream,
+            journal_head=proof.head.reference.wire() if proof.head else None,
+            source_control={'key':control_key,'sha256':sha(control),'length':len(control)})
+        data=encode(manifest);key=self.journal.prefix+'/snapshots/manifests/'+sha(data)
+        await self.journal._immutable(key,data,self.limits.max_control_bytes)
+        _LOG.info('snapshot_base_sealed manifest_hash=%s cursor=%s bytes=%s',sha(data),proof.applied_sequence,blob.size)
+        return ObjectRef(key,sha(data),len(data),proof.applied_sequence)
 
     async def recover(self,manifest_ref,binding,*,database,expected_versions,expected_final_catalog_sha256,identity,operation_key):
         self._authority(binding);validate_versions(expected_versions);_hash(expected_final_catalog_sha256)
