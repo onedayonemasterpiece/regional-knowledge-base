@@ -66,8 +66,8 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
         c=_command(raw);h=self.spool.registry.resolve(c);dep=h.dependency
         if (dep is None or dep.scope_class!='public_source' or dep.scope_owner!='shared'
                 or dep.resource_keys!=frozenset({'source_id'}) or h.transition is not None
-                or set(c.ids)!={'source_id'} or c.route not in ('source.import.v1','source.withdraw.v1')
-                or c.route=='source.import.v1' and 'source.import' not in self.routes):
+                or set(c.ids)!={'source_id'} or c.route not in ('source.import.v1','source.import.v2','source.withdraw.v1')
+                or c.route in ('source.import.v1','source.import.v2') and 'source.import' not in self.routes):
             raise SpoolConflict('unclassified accepted source dependency')
         _uuid(c.ids['source_id'])
         return c,h,ref
@@ -192,7 +192,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                             if (remote.data!=_json(expected_outcome) or len(body)!=outcome[2] or _hash(body)!=outcome[1]
                                     or used>self.max_history_bytes):raise SpoolConflict('remote outcome differs from native exact prefix')
                             durable=True
-                        if c.route=='source.import.v1' and outcome[0]=='applied':origins.append(c.ids['source_id'])
+                        if c.route in ('source.import.v1','source.import.v2') and outcome[0]=='applied':origins.append(c.ids['source_id'])
                     if not durable:pending.append((c.encode(),h.fingerprint,m))
                     source=c.ids['source_id'];old=changes.get(source)
                     changes[source]=SourceChange(source,c.sequence,_hash(c.encode()),bool(h.dependency.restriction or old and old.restriction),
@@ -201,7 +201,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                 if not await self._head_unchanged(head) or s._writing or s._source_version is not version or not self.binding_current(binding):
                     raise SpoolConflict('source prefix changed during native verification')
                 closed=await self._phase(binding,dict(action='close',session=session,nonce=nonce,
-                    origin_ids=sorted(set(origins)) if mode=='full' else []))
+                    origin_ids=sorted(set(origins))))
                 session=None
                 if (closed.get('nonce')!=nonce or closed.get('applied_sequence')!=applied
                         or type(closed.get('prefix')) is not str or not 1<=len(closed['prefix'])<=256

@@ -33,21 +33,23 @@ Legacy SQLite Story ingestion is not a substitute or fallback for this path.
 
 ## Synthetic native evidence, 2026-10-20
 
-Five bounded PG17.10/pgvector0.8.2 tests passed in a network-isolated disposable
+Six bounded PG17.10/pgvector0.8.2 tests passed in a network-isolated disposable
 fixture. They verified exact saved body/default reference through the ordinary
 native read function, history/variants, direct lexical+dense candidates/hydrate,
 retry and a new connection, withdrawal, mid-Story failure rollback of the entire
 source/frontier/applied receipt, unchanged accepted body/outcome replay into a
 fresh generation, false-quote rejection, and unique full catalog identifiers.
-The fixture consumed 192MiB with 96MiB PGDATA tmpfs; the final run lasted5.241s
+They also verified accepted author/request/op/sequence receipts and rejected a
+consistently forged saved body after a synthetic immutable-trigger bypass.
+The fixture consumed 192MiB with 96MiB PGDATA tmpfs; the final six-test run lasted8.063s
 and verified stop/removal/absence. No BGE, provider, real source or deployment was
 involved. PG17.11 remains a candidate artifact pin rather than this observation.
 
 The new long foreign keys exposed a catalog-observer bug: a CASE branch of
 `pg_catalog.name` truncated combined internal trigger identifiers to63bytes.
 Casting that branch to text preserves the actual unique identifiers. The
-reference catalog has461 records/169694bytes, so the512-record/1MiB bounds
-remain unchanged. Its base64 catalog occupies226260bytes; this is not a claimed
+reference catalog has488 records/183951bytes, so the512-record/1MiB bounds
+remain unchanged. Its base64 catalog occupies245268bytes; this is not a claimed
 actual BOOTSTRAP_OBSERVATION frame size. Native definitions independently report
 SECURITY INVOKER/bootstrap ownership. Safe role/ACL and catalog reference bytes
 are retained separately from code under the central managed artifact task.
@@ -58,3 +60,20 @@ adoption or latest-first replay. A future ordered migration barrier is a separat
 unpassed gate. Native WSS routing, Story output/auth fences, full MCP get/readback,
 private drafts, editing/merging/archive/review parity, and qualitative human
 source-fidelity comparison remain incomplete and do not follow from these tests.
+
+
+The schema7 history observer locks Story rows beside the source/applied prefix
+and checks native rows against the exact captured applied v2 command payload.
+Dev still checks the immutable remote journal and contiguous applied receipt
+prefix; no body or SQL RPC is sent to Dev for that proof. Incremental extension
+checks affected accepted import origins, while unchanged renewal retains the
+same verified immutable prefix. The bounded native origin pass currently caps
+history at10000 applied commands; larger histories require the retained-prefix
+checkpoint improvement before claiming scalable recovery acceptance.
+
+Fresh initialization selects artifacts through
+`kaggle_owned_pg.sql_artifacts(schema_revision)`: schema6 remains001..006 and
+schema7 selects001..007. The schema7 reader receives only the fixed four Story
+read functions and their required read tables; the origin verifier uses the
+separate trusted maintenance connection. No existing generation is adopted or
+modified by this selection.

@@ -44,15 +44,18 @@ TRIGGERS = frozenset((table, name) for table, name in (
     ('source_import_origins', 'immutable_source_origin')))
 
 STORY_TABLES=frozenset({'source_regions','story_assertion_versions','stories','story_versions',
-    'story_variant_versions','story_search','source_story_pending'})
+    'story_variant_versions','story_search','source_story_pending','story_history_receipts'})
 STORY_FUNCTIONS=frozenset('rkb_v4.'+name for name in (
     'check_source_import_v2(bytea,jsonb,jsonb,text)','apply_source_import_v2(bytea,jsonb,jsonb,text)',
     'read_story_v1(uuid,text,bigint,bigint,integer)','story_lexical_candidates_v1(text,integer,uuid[])',
-    'story_dense_candidates_v1(public.vector,integer,uuid[])','story_hydrate_v1(uuid[],uuid[])'))
+    'story_dense_candidates_v1(public.vector,integer,uuid[])','story_hydrate_v1(uuid[],uuid[])',
+    'capture_story_import_receipt_v1()','verify_source_story_origins_v1(uuid[])'))
 STORY_TRIGGERS=frozenset((table,name) for table,name in (
     ('source_regions','immutable_source_region'),('story_assertion_versions','immutable_story_assertion'),
     ('story_versions','immutable_story_version'),('story_variant_versions','immutable_story_variant'),
-    ('stories','story_source_fence'),('story_search','story_projection_fence')))
+    ('stories','story_source_fence'),('story_search','story_projection_fence'),
+    ('applied_ops','capture_story_import_receipt'),('story_history_receipts','immutable_story_receipt'),
+    ('stories','immutable_story_current'),('story_search','immutable_story_projection')))
 
 # Only native metadata in the target namespace; no source/document rows. Each
 # query is wrapped with C ordering, row LIMIT and payload octet-length guards.
@@ -254,7 +257,7 @@ class NativeDatabaseProbe:
             result = ('record' if table_function else 'uuid[]' if 'checked_source_scope(' in name else
                       'jsonb' if 'read_story_v1(' in name else
                       'void' if any(stem in name for stem in ('publish_read_frontier(', 'prepare_read_frontier(')) else
-                      'boolean' if any(stem in name for stem in ('check_source_withdraw_v1(', 'check_source_import_v1(', 'check_source_import_v2(')) else
+                      'boolean' if any(stem in name for stem in ('check_source_withdraw_v1(', 'check_source_import_v1(', 'check_source_import_v2(', 'verify_source_story_origins_v1(')) else
                       'bytea' if any(stem in name for stem in ('apply_source_withdraw_v1(', 'apply_source_import_v1(', 'apply_source_import_v2(')) else 'trigger')
             if (function.get('kind') != 'f' or function.get('security_definer') is not False
                     or function.get('returns_set') is not table_function or function.get('result') != result

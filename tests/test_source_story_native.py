@@ -169,3 +169,19 @@ async def test_native_story_catalog_keeps_full_internal_trigger_identifiers(nati
     assert len(keys)==len(set(keys)) and 0<len(keys)<=512 and len(raw)<=1024*1024
     assert any(section=='triggers' and len(key)>63 for section,key in keys)
     assert fields['schema_revision']==STORY_REVISIONS.schema
+
+@pytest.mark.asyncio
+async def test_native_story_origin_and_authored_receipt_are_exact(native):
+    c=command();receipt=await apply(native,c);conn=native['connection']
+    async with conn.transaction():
+        assert await(await conn.execute('SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])',([SOURCE],))).fetchone()==(True,)
+    history=(await read(conn,'history'))['entries'][0]
+    assert (history['actor_id'],history['request_id'],history['operation_key'],history['sequence'],history['command_sha256'])==(
+        c.person_id,c.request_id,c.operation_key,c.sequence,receipt.command_sha256)
+    # Even a synthetic maintenance bypass of the immutable row trigger cannot
+    # turn a modified saved body into covered accepted history.
+    async with conn.transaction():
+        await conn.execute('ALTER TABLE rkb_v4.story_variant_versions DISABLE TRIGGER immutable_story_variant')
+        await conn.execute("UPDATE rkb_v4.story_variant_versions SET body='tampered body',body_sha256=encode(sha256(convert_to('tampered body','UTF8')),'hex'),data=jsonb_set(data,'{body}',to_jsonb('tampered body'::text)) WHERE variant_id=%s",(VARIANT,))
+        assert await(await conn.execute('SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])',([SOURCE],))).fetchone()==(False,)
+

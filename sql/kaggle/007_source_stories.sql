@@ -53,6 +53,33 @@ CREATE TABLE rkb_v4.source_story_pending (
  source_id uuid NOT NULL REFERENCES rkb_v4.sources,candidate_key text NOT NULL,
  data jsonb NOT NULL CHECK(jsonb_typeof(data)='object'),PRIMARY KEY(source_id,candidate_key)
 );
+CREATE TABLE rkb_v4.story_history_receipts (
+ story_id uuid NOT NULL,revision bigint NOT NULL,operation_key text NOT NULL REFERENCES rkb_v4.applied_ops,
+ sequence bigint NOT NULL,person_id text NOT NULL,request_id text NOT NULL,logical_time text NOT NULL,
+ command_sha256 text NOT NULL,PRIMARY KEY(story_id,revision),
+ FOREIGN KEY(story_id,revision) REFERENCES rkb_v4.story_versions
+);
+CREATE FUNCTION rkb_v4.capture_story_import_receipt_v1() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE command jsonb;
+BEGIN
+ command:=convert_from(NEW.command_bytes,'UTF8')::jsonb;
+ IF NEW.status='applied' AND command->>'route'='source.import.v2' THEN
+  INSERT INTO rkb_v4.story_history_receipts
+  SELECT s.story_id,1,NEW.operation_key,NEW.sequence,command->>'person_id',command->>'request_id',
+   command->>'logical_time',NEW.command_sha256 FROM rkb_v4.stories s
+  WHERE s.source_id=(command->'ids'->>'source_id')::uuid;
+ END IF;
+ RETURN NULL;
+END $$;
+CREATE TRIGGER capture_story_import_receipt AFTER INSERT ON rkb_v4.applied_ops
+ FOR EACH ROW EXECUTE FUNCTION rkb_v4.capture_story_import_receipt_v1();
+CREATE TRIGGER immutable_story_receipt BEFORE UPDATE OR DELETE ON rkb_v4.story_history_receipts
+ FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_revision_update();
+CREATE TRIGGER immutable_story_current BEFORE UPDATE OR DELETE ON rkb_v4.stories
+ FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_revision_update();
+CREATE TRIGGER immutable_story_projection BEFORE UPDATE OR DELETE ON rkb_v4.story_search
+ FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_revision_update();
 CREATE TRIGGER immutable_source_region BEFORE UPDATE OR DELETE ON rkb_v4.source_regions
  FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_revision_update();
 CREATE TRIGGER immutable_story_assertion BEFORE UPDATE OR DELETE ON rkb_v4.story_assertion_versions
@@ -282,9 +309,11 @@ BEGIN
   WHERE variant_id=story.default_variant_id AND revision=story.default_variant_revision AND story_id=wanted;
  IF view_name='history' THEN
   SELECT coalesce(jsonb_agg(row),'[]'::jsonb) INTO entries FROM(
-   SELECT jsonb_build_object('story_id',story_id,'revision',revision,'logical_time',logical_time,
-    'action','source_import','payload_sha256',payload_sha256) row
-   FROM rkb_v4.story_versions WHERE story_id=wanted AND revision>after_revision ORDER BY revision LIMIT page_limit) bounded;
+   SELECT jsonb_build_object('story_id',v.story_id,'revision',v.revision,'logical_time',v.logical_time,
+    'action','source_import','payload_sha256',v.payload_sha256,'actor_id',r.person_id,'request_id',r.request_id,
+    'operation_key',r.operation_key,'sequence',r.sequence,'command_sha256',r.command_sha256) row
+   FROM rkb_v4.story_versions v JOIN rkb_v4.story_history_receipts r USING(story_id,revision)
+   WHERE v.story_id=wanted AND v.revision>after_revision ORDER BY v.revision LIMIT page_limit) bounded;
  ELSIF view_name='variants' THEN
   SELECT coalesce(jsonb_agg(row),'[]'::jsonb) INTO entries FROM(
    SELECT data||jsonb_build_object('body_sha256',body_sha256) row
@@ -337,8 +366,75 @@ RETURNS TABLE(story_id uuid,record jsonb) LANGUAGE sql STABLE SECURITY INVOKER S
 $$;
 
 REVOKE ALL ON rkb_v4.source_regions,rkb_v4.story_assertion_versions,rkb_v4.stories,rkb_v4.story_versions,
- rkb_v4.story_variant_versions,rkb_v4.story_search,rkb_v4.source_story_pending FROM PUBLIC;
+ rkb_v4.story_variant_versions,rkb_v4.story_search,rkb_v4.source_story_pending,rkb_v4.story_history_receipts FROM PUBLIC;
 REVOKE ALL ON FUNCTION rkb_v4.check_source_import_v2(bytea,jsonb,jsonb,text),
  rkb_v4.apply_source_import_v2(bytea,jsonb,jsonb,text),rkb_v4.read_story_v1(uuid,text,bigint,bigint,integer),
  rkb_v4.story_lexical_candidates_v1(text,integer,uuid[]),rkb_v4.story_dense_candidates_v1(public.vector,integer,uuid[]),
- rkb_v4.story_hydrate_v1(uuid[],uuid[]) FROM PUBLIC;
+ rkb_v4.story_hydrate_v1(uuid[],uuid[]),rkb_v4.capture_story_import_receipt_v1() FROM PUBLIC;
+
+CREATE FUNCTION rkb_v4.verify_source_story_origins_v1(scope uuid[])
+RETURNS boolean LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE op record;c jsonb;doc jsonb;sem jsonb;source uuid;item jsonb;v jsonb;
+ verified uuid[]:='{}';seen integer:=0;
+BEGIN
+ IF scope IS NULL OR cardinality(scope)>10000 THEN RETURN false;END IF;
+ IF cardinality(scope)=0 THEN RETURN true;END IF;
+ FOR op IN SELECT command_bytes FROM rkb_v4.applied_ops WHERE status='applied' ORDER BY sequence LIMIT 10001 LOOP
+  seen:=seen+1;IF seen>10000 THEN RETURN false;END IF;
+  c:=convert_from(op.command_bytes,'UTF8')::jsonb;
+  IF c->>'route'<>'source.import.v2' OR NOT((c->'ids'->>'source_id')::uuid=ANY(scope)) THEN CONTINUE;END IF;
+  source:=(c->'ids'->>'source_id')::uuid;
+  doc:=convert_from(decode(c->>'payload_b64','base64'),'UTF8')::jsonb;sem:=doc->'semantic';
+  verified:=array_append(verified,source);
+  IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_import_origins o WHERE o.source_id=source
+    AND o.payload_sha256=encode(sha256(decode(c->>'payload_b64','base64')),'hex'))
+   OR (SELECT count(*) FROM rkb_v4.source_regions r WHERE r.source_id=source)<>jsonb_array_length(sem->'regions')
+   OR (SELECT count(*) FROM rkb_v4.story_assertion_versions a WHERE a.source_id=source)<>jsonb_array_length(sem->'findings')
+   OR (SELECT count(*) FROM rkb_v4.stories s WHERE s.source_id=source)<>jsonb_array_length(sem->'stories')
+   OR (SELECT count(*) FROM rkb_v4.source_story_pending p WHERE p.source_id=source)<>jsonb_array_length(sem->'pending')
+   OR (SELECT count(*) FROM rkb_v4.passage_search p WHERE p.source_id=source)<>jsonb_array_length(doc->'passages') THEN RETURN false;END IF;
+  FOR item IN SELECT value FROM jsonb_array_elements(sem->'regions') LOOP
+   IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_regions r WHERE r.source_id=source AND r.source_revision=1
+      AND r.region_id=(item->>'region_id')::uuid AND r.page_id=(item->>'page_id')::uuid
+      AND r.source_text=item->>'source_text' AND r.source_text_sha256=item->>'source_text_sha256') THEN RETURN false;END IF;
+  END LOOP;
+  FOR item IN SELECT value FROM jsonb_array_elements(sem->'findings') LOOP
+   IF NOT EXISTS(SELECT 1 FROM rkb_v4.story_assertion_versions a WHERE a.source_id=source AND a.source_revision=1
+      AND a.assertion_id=(item->>'assertion_id')::uuid AND a.revision=1 AND a.data=item
+      AND a.candidate_key=item->>'candidate_key' AND a.proposition=item->>'proposition') THEN RETURN false;END IF;
+  END LOOP;
+  FOR item IN SELECT value FROM jsonb_array_elements(doc->'passages') LOOP
+   IF NOT EXISTS(SELECT 1 FROM rkb_v4.passage_search p WHERE p.source_id=source AND p.revision=1
+     AND p.passage_id=(item->>'passage_id')::uuid AND p.ordinal=(item->>'ordinal')::integer
+     AND p.locator=item->>'locator' AND p.body=item->>'body' AND p.language=item->>'language'
+     AND p.embedding OPERATOR(public.=) (item->'embedding')::text::public.vector) THEN RETURN false;END IF;
+  END LOOP;
+  FOR item IN SELECT value FROM jsonb_array_elements(sem->'stories') LOOP
+   v:=item->'default_variant';
+   IF NOT EXISTS(SELECT 1 FROM rkb_v4.stories s JOIN rkb_v4.story_versions r USING(story_id)
+     JOIN rkb_v4.story_variant_versions b ON b.story_id=s.story_id AND b.variant_id=s.default_variant_id
+       AND b.revision=s.default_variant_revision
+     JOIN rkb_v4.story_search p ON p.story_id=s.story_id
+     JOIN rkb_v4.story_history_receipts h ON h.story_id=s.story_id AND h.revision=1
+     WHERE s.source_id=source AND s.source_revision=1 AND s.story_id=(item->>'story_id')::uuid
+       AND s.current_revision=1 AND s.default_variant_id=(v->>'variant_id')::uuid AND s.default_variant_revision=1
+       AND r.revision=1 AND r.data=item-'default_variant' AND r.logical_time=c->>'logical_time'
+       AND r.payload_sha256=encode(sha256(decode(c->>'payload_b64','base64')),'hex')
+       AND b.body=v->>'body' AND b.data=v-'embedding'
+       AND b.body_sha256=encode(sha256(convert_to(v->>'body','UTF8')),'hex')
+       AND p.variant_id=b.variant_id AND p.variant_revision=1 AND p.source_id=source AND p.source_revision=1
+       AND p.body=b.body AND p.embedding OPERATOR(public.=) (v->'embedding')::text::public.vector
+       AND h.operation_key=c->>'operation_key' AND h.sequence=(c->>'sequence')::bigint
+       AND h.person_id=c->>'person_id' AND h.request_id=c->>'request_id' AND h.logical_time=c->>'logical_time') THEN RETURN false;END IF;
+  END LOOP;
+  FOR item IN SELECT value FROM jsonb_array_elements(sem->'pending') LOOP
+   IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_story_pending p WHERE p.source_id=source
+     AND p.candidate_key=item->>'candidate_key' AND p.data=item) THEN RETURN false;END IF;
+  END LOOP;
+ END LOOP;
+ RETURN NOT EXISTS(SELECT 1 FROM rkb_v4.source_regions WHERE source_id=ANY(scope) AND NOT(source_id=ANY(verified)))
+   AND NOT EXISTS(SELECT 1 FROM rkb_v4.story_assertion_versions WHERE source_id=ANY(scope) AND NOT(source_id=ANY(verified)))
+   AND NOT EXISTS(SELECT 1 FROM rkb_v4.stories WHERE source_id=ANY(scope) AND NOT(source_id=ANY(verified)));
+EXCEPTION WHEN data_exception THEN RETURN false;
+END $$;
+REVOKE ALL ON FUNCTION rkb_v4.verify_source_story_origins_v1(uuid[]) FROM PUBLIC;

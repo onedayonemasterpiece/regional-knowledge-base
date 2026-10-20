@@ -119,7 +119,8 @@ class NativeSourceHistoryObserver:
                 or set(args['nonce'])-set('0123456789abcdef') or args['observer_sha256']!=self.code_hash
                 or args['registry_sha256']!=self.registry_hash
                 or args['routes'] not in (['source.fetch','source.search','source.withdraw'],
-                    ['source.fetch','source.import','source.search','source.withdraw'])
+                    ['source.fetch','source.import','source.search','source.withdraw'],
+                    ['source.fetch','source.import','source.search','source.withdraw','story.get','story.history','story.search','story.variants'])
                 or type(args['pending_sequences']) is not list or len(args['pending_sequences'])>self.max_commands
                 or len(set(args['pending_sequences']))!=len(args['pending_sequences'])
                 or any(type(i) is not int or i<1 for i in args['pending_sequences'])):
@@ -147,6 +148,10 @@ class NativeSourceHistoryObserver:
             await connection.execute('SET LOCAL search_path=pg_catalog')
             await connection.execute('LOCK TABLE rkb_v4.sources,rkb_v4.revisions,rkb_v4.active_revision,'
                 'rkb_v4.passage_search,rkb_v4.applied_ops,rkb_v4.recovery_state,rkb_v4.writer_generations IN SHARE MODE')
+            if getattr(self.database,'schema_revision',None)=='rkb-v4-sql001-007-v1':
+                await connection.execute('LOCK TABLE rkb_v4.source_regions,rkb_v4.story_assertion_versions,'
+                    'rkb_v4.stories,rkb_v4.story_versions,rkb_v4.story_variant_versions,rkb_v4.story_search,'
+                    'rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
             if digest(await inspect_acl(connection))!=args['acl_sha256']:
                 raise NativeHistoryError('native_history_acl_changed')
             cursor=await connection.execute('SELECT CASE WHEN octet_length(s.database_generation)<=256 THEN s.database_generation END,CASE WHEN octet_length(s.writer_generation)<=256 THEN s.writer_generation END,s.applied_seq '
@@ -213,6 +218,9 @@ class NativeSourceHistoryObserver:
             cursor=await session.connection.execute('SELECT EXISTS(SELECT 1 FROM rkb_v4.sources '
                 'WHERE NOT (source_id=ANY(%s::uuid[])))',(args['origin_ids'],))
             if await cursor.fetchone()!=(False,):raise NativeHistoryError('native_history_source_origin_uncovered')
+        if getattr(self.database,'schema_revision',None)=='rkb-v4-sql001-007-v1':
+            cursor=await session.connection.execute('SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])',(args['origin_ids'],))
+            if await cursor.fetchone()!=(True,):raise NativeHistoryError('native_history_story_origin_uncovered')
         if digest(await inspect_acl(session.connection))!=session.closure[1] or not self.valid(session.binding):
             raise NativeHistoryError('native_history_closure_changed')
         cursor=await session.connection.execute('SELECT %s::text',(session.nonce,))
