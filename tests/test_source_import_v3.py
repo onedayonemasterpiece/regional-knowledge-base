@@ -64,3 +64,9 @@ def test_fixed_registry_selects_exact_schema8_only():
     entries=[dict(route='source.import.v3',check_sha256='a'*64,apply_sha256='b'*64)]
     assert fixed_registry(db,entries).resolve(command()).route=='source.import.v3'
     with pytest.raises(ValueError):fixed_registry(db,[dict(entries[0],route='source.import.v2')])
+
+
+def test_exact_decimal_exponent_is_preserved_without_conversion():
+    value=facts_payload();value['semantic']['findings'][0]['observations'][0]['value']='1E+8'
+    accepted=command(value)
+    assert validate_import_v3_command(accepted)['semantic']['findings'][0]['observations'][0]['value']=='1E+8'

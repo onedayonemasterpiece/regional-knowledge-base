@@ -105,6 +105,8 @@ async def test_native_pure_fact_preconditions_and_bounded_catalog_measurement(na
     connection=native['connection'];finding=facts_payload()['semantic']['findings'][0]
     async with connection.transaction():
         assert await(await connection.execute('SELECT rkb_v4.check_source_facts_v1(%s::jsonb)',(json.dumps(finding),))).fetchone()==(True,)
+        finding['observations'][0]['value']='1E+8'
+        assert await(await connection.execute('SELECT rkb_v4.check_source_facts_v1(%s::jsonb)',(json.dumps(finding),))).fetchone()==(True,)
         finding['event_dates'][0]['calendar']='gregorian' # Gregorian1900 has no29February.
         assert await(await connection.execute('SELECT rkb_v4.check_source_facts_v1(%s::jsonb)',(json.dumps(finding),))).fetchone()==(False,)
     @asynccontextmanager

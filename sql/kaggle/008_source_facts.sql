@@ -92,7 +92,8 @@ BEGIN
    OR d-ARRAY['original_value_text','value','metric_key','unit_code','subject_label','period_text',
      'period_start_year','period_end_year','method','method_note','precision','rationale','evidence_indexes']<>'{}'
    OR jsonb_typeof(d->'original_value_text') IS DISTINCT FROM 'string' OR length(d->>'original_value_text') NOT BETWEEN 1 AND 100
-   OR jsonb_typeof(d->'value') IS DISTINCT FROM 'string' OR d->>'value' !~ '^-?[0-9]+(\.[0-9]+)?$'
+   OR jsonb_typeof(d->'value') IS DISTINCT FROM 'string' OR length(d->>'value')>64
+   OR d->>'value' !~ '^[+-]?[0-9]+(\.[0-9]+)?([Ee][+-]?[0-9]+)?$'
    OR jsonb_typeof(d->'metric_key') IS DISTINCT FROM 'string' OR d->>'metric_key' !~ '^[a-z][a-z0-9_]{1,63}$'
    OR jsonb_typeof(d->'unit_code') IS DISTINCT FROM 'string' OR d->>'unit_code' !~ '^[a-z][a-z0-9_]{1,63}$'
    OR jsonb_typeof(d->'subject_label') IS DISTINCT FROM 'string' OR length(d->>'subject_label') NOT BETWEEN 1 AND 200
