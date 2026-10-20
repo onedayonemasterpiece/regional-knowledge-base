@@ -653,7 +653,8 @@ BEGIN
    OR (SELECT count(*) FROM rkb_v4.source_entity_mentions WHERE source_id=g.source_id)<>
      (SELECT count(DISTINCT value->'mention'->>'mention_id') FROM jsonb_array_elements(g.data->'entities'))
    OR (SELECT count(*) FROM rkb_v4.source_entity_aliases WHERE source_id=g.source_id)<>
-     (SELECT count(DISTINCT a->>'alias_id') FROM jsonb_array_elements(g.data->'entities') e CROSS JOIN LATERAL jsonb_array_elements(e->'aliases') a)
+     (SELECT count(DISTINCT alias_row.value->>'alias_id') FROM jsonb_array_elements(g.data->'entities') AS node_row(value)
+       CROSS JOIN LATERAL jsonb_array_elements(node_row.value->'aliases') AS alias_row(value))
    OR (SELECT count(*) FROM rkb_v4.source_entity_relations WHERE source_id=g.source_id)<>jsonb_array_length(g.data->'relations')
    OR (SELECT count(*) FROM rkb_v4.source_poi_hypotheses WHERE source_id=g.source_id)<>jsonb_array_length(g.data->'poi_facts')
    OR (SELECT count(*) FROM rkb_v4.source_entity_finding_links WHERE source_id=g.source_id)<>
