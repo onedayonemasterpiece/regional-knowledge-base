@@ -431,6 +431,7 @@ def build_server(
     mcp._target_story_available = (selected=='kaggle_source' and target_startup.gate.story_supported())
     mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
     mcp._target_catalog_available = (selected=='kaggle_source' and target_startup.gate.catalog_supported())
+    mcp._target_geo_available = (selected=='kaggle_source' and getattr(target_startup,'geo_backend',None) is not None)
     mcp._target_startup=target_startup
     mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
     worker_queue = getattr(backend, 'worker_queue', None)
@@ -493,6 +494,34 @@ def build_server(
     # Optional narrow function-call bundles for the client application's own Live agent.
     # The default read-only Live surface above remains unchanged.
     story_profiles = {"full", "story_reader", "story_contributor", "story_editor"}
+    if profile in story_profiles and mcp._target_geo_available:
+        @mcp.tool(name='geo_lookup',title='Find retained private geographic identities',
+            description='Exact normalized name and optional declared source year. Minimal legacy-unanchored provenance; '
+                'canonical geometry and map layers remain with their owners. Unknown validity remains unknown.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_geo_lookup(name:Annotated[str,Field(min_length=1,max_length=200)],
+                year:Annotated[int,Field(ge=1,le=9999)]|None=None,
+                limit:Annotated[int,Field(ge=1,le=3)]=3,cursor:str|None=None)->dict[str,Any]:
+            return await target_startup.geo_backend.geo_lookup(name,_principal(),year=year,limit=limit,cursor=cursor)
+
+        @mcp.tool(name='graph_fetch',title='Read a retained geographic identity or metadata page',
+            description='Exact private GEO entity UUID, with separately paginated minimal provenance, aliases, relations '
+                'and owner references. Old source text and graph discovery are unavailable.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_geo_graph_fetch(entity_id:str,limit:Annotated[int,Field(ge=1,le=3)]=3,
+                cursor:str|None=None,category:Literal['owner_reference','provenance','alias','relation','source_geo_observation']|None=None,
+                discovery_job_id:str|None=None)->dict[str,Any]:
+            return await target_startup.geo_backend.graph_fetch(entity_id,_principal(),limit=limit,cursor=cursor,
+                category=category,discovery_job_id=discovery_job_id)
+
+        @mcp.tool(name='poi_context',title='Read retained links to a physical POI',
+            description='Private RKB geographic identities linked to the exact existing Street Story POI key. '
+                'Returns source locators and owner references; no migrated old book text or Story content.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_geo_poi_context(poi_ref:str,limit:Annotated[int,Field(ge=1,le=3)]=3,
+                cursor:str|None=None)->dict[str,Any]:
+            return await target_startup.geo_backend.poi_context(poi_ref,_principal(),limit=limit,cursor=cursor)
+
     if profile in story_profiles and mcp._target_facts_available:
         @mcp.tool(name='story_calendar',title='Historical events on a calendar day',
             description='Native indexed source-attributed exact event dates, including facts without a Story. '

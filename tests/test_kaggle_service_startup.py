@@ -204,3 +204,14 @@ async def test_native_story_tools_require_installed_v2_and_share_current_source_
             call.release();await release(s,dispatched)
         with pytest.raises(ToolError,match='target_domain_unavailable'):
             await server.call_tool('story_operation',{})
+
+
+@pytest.mark.parametrize('keys',[('single',),['not-tuple'],('same','same'),('valid','x'*257)])
+def test_geo_optin_rejects_unbounded_or_ambiguous_operation_key_configuration(service,keys):
+    with pytest.raises(ValueError,match='GEO manifest operation keys'):
+        replace(service.config,geo_manifest_operation_keys=keys)
+
+
+def test_geo_optin_cannot_fall_back_to_non_geo_runtime(service):
+    with pytest.raises(ValueError,match='fresh11 GEO handler'):
+        TargetServiceStartup(replace(service.config,geo_manifest_operation_keys=('open','activate')))
