@@ -72,6 +72,7 @@ class TargetServiceConfig:
     geo_manifest_operation_keys: tuple[str,...] = ()
     source_restore: object = None
     source_snapshot: object = None
+    geo_bootstrap: object = None
 
     def __post_init__(self):
         if (not isinstance(self.oauth_provider,RegionalOAuthProvider)
@@ -117,6 +118,11 @@ class TargetServiceConfig:
             from .kaggle_snapshot_startup import SourceSnapshotConfig
             if type(self.source_snapshot) is not SourceSnapshotConfig or self.writer_owner is None:
                 raise TypeError('typed first snapshot config and same persisted writer required')
+        if self.geo_bootstrap is not None:
+            from .kaggle_geo_install import SourceGeoInstallConfig
+            if (type(self.geo_bootstrap) is not SourceGeoInstallConfig or not self.geo_manifest_operation_keys
+                    or self.source_snapshot is None and self.source_restore is None):
+                raise TypeError('fixed GEO bootstrap requires exact keys and verified recovery owner')
         if self.import_originals is not None:
             from .original_intake_controller import OriginalIntakeController
             from .kaggle_import_tokenizer import HfImportTokenCounter
@@ -272,6 +278,11 @@ class TargetServiceStartup:
             self.snapshot=SourceSnapshotCoordinator(self,config.source_snapshot)
             config.spool.configure_intake_guard(lambda:not self.closed and self.snapshot.verified)
 
+        self.geo_installer=None
+        if config.geo_bootstrap is not None:
+            from .kaggle_geo_install import SourceGeoInstaller
+            self.geo_installer=SourceGeoInstaller(self,config.geo_bootstrap)
+
     def binding_current(self,binding):
         try:
             return (not self.closed and type(binding) is TargetReadBinding
@@ -302,6 +313,8 @@ class TargetServiceStartup:
         # while those same accepted operations are being reconciled.
         if not self.reads_current():return False
         if not self.gate.graph_supported():return True
+        installer=getattr(self,'geo_installer',None)
+        if installer is not None and not installer.current():return False
         return bool(self.geo_gate is not None and self.geo_gate.installation_current(
             self.binding,self.config.geo_manifest_operation_keys))
 
@@ -334,6 +347,7 @@ class TargetServiceStartup:
                 except Exception as exc:
                     self.geo_gate.invalidate()
                     _LOG.warning('target_geo_routing state=closed reason=%s',type(exc).__name__)
+            if self.geo_installer is not None:self.geo_installer.kick(self.binding)
             _LOG.info('target_source_routing state=ready connection_generation=%s',binding.connection_generation)
             return True
         except asyncio.CancelledError:
@@ -365,6 +379,7 @@ class TargetServiceStartup:
                 self._maintenance.cancel()
                 try:await self._maintenance
                 except asyncio.CancelledError:pass
+            if self.geo_installer is not None:await self.geo_installer.aclose()
             if self.snapshot is not None:await self.snapshot.aclose()
             if self.restorer is not None:await self.restorer.aclose()
             if self.editorial is not None:await self.editorial.aclose()

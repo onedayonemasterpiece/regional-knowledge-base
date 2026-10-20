@@ -81,3 +81,31 @@ def test_status_uses_native_frozen_version_not_old_cli_latest():
             module.version_status(Api(),'owner/stable-slug',bad,request_factory=Request)
     with pytest.raises(RuntimeError,match='unsupported'):
         module.version_status(Api(),'owner/stable-slug',85,request_factory=lambda:object())
+
+
+def test_unknown_launch_source_reconciliation_is_bounded_without_changing_original_state(monkeypatch,tmp_path):
+    import pytest
+    from regional_knowledge.bge_queue import BgeQueue
+    module=controller();queue=BgeQueue(tmp_path/'queue.sqlite')
+    with queue.connect() as db:run_id=queue._ensure(db,queue.clock(),useful=False)
+    ref='fixture-owner/stable-slug';queue.launch_claim(run_id,provider_ref=ref)
+    run=next(r for r in queue.maintenance() if r['id']==run_id)
+    calls=[];probed={}
+    def observation(api,requested):
+        calls.append(requested);return {'run_id':'another-run','version':1}
+    monkeypatch.setattr(module,'notebook_snapshot',observation)
+    assert module.reconcile_launch_due(None,queue,run,ref,probed,now=100) is False
+    for now in (100,105,110,129.9):
+        assert module.reconcile_launch_due(None,queue,run,ref,probed,now=now) is None
+    assert calls==[ref]
+    def unavailable(api,requested):calls.append(requested);raise OSError('synthetic native source unavailable')
+    monkeypatch.setattr(module,'notebook_snapshot',unavailable)
+    with pytest.raises(OSError):module.reconcile_launch_due(None,queue,run,ref,probed,now=130)
+    assert module.reconcile_launch_due(None,queue,run,ref,probed,now=135) is None
+    assert calls==[ref,ref]
+    unchanged=next(r for r in queue.maintenance() if r['id']==run_id)
+    assert unchanged['launch_state']=='dispatching' and unchanged['provider_version'] is None
+    assert queue.launch_claim(run_id,provider_ref=ref) is None
+    monkeypatch.setattr(module,'notebook_snapshot',lambda api,ref:{'run_id':run_id,'version':92})
+    assert module.reconcile_launch_due(None,queue,run,ref,probed,now=160) is True
+    assert next(r for r in queue.maintenance() if r['id']==run_id)['provider_version']==92

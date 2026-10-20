@@ -175,7 +175,8 @@ def test_authenticated_wss_observation_stays_closed_without_shared_admission(tmp
 
 
 @pytest.mark.asyncio
-async def test_generated_bootstrap_transport_idle_reaches_real_default_asgi_queue(tmp_path,monkeypatch):
+@pytest.mark.parametrize('finalize',(False,True))
+async def test_generated_bootstrap_transport_idle_reaches_real_default_asgi_queue(tmp_path,monkeypatch,finalize):
     """Generated transport bytes, real local WebSocket, stub encoder/native proof."""
     import ast
     import time
@@ -219,7 +220,14 @@ async def test_generated_bootstrap_transport_idle_reaches_real_default_asgi_queu
                         message=await wire.receive()
                         if message.type!=aiohttp.WSMsgType.TEXT:raise ConnectionError('fixture wire closed')
                         frame=json.loads(message.data);received.append(frame)
-                        if frame['type']=='BOOTSTRAP_ACK':stop.set()
+                        if frame['type']=='BOOTSTRAP_ACK':
+                            if not finalize:stop.set()
+                            elif frame['status']=='observed_not_ready':
+                                s.q.finalize_bootstrap_runtime(s.run,s.expected,observation_sha256=frame['observation_sha256'],review_evidence='synthetic native fixture pin review')
+                            elif frame['status']=='pins_finalized':
+                                assert worker.bootstrap_finalized is False
+                                asyncio.get_running_loop().call_later(1.1,stop.set)
+
                         return message.data
                 yield Socket()
     def load():
@@ -229,7 +237,7 @@ async def test_generated_bootstrap_transport_idle_reaches_real_default_asgi_queu
         async def query(frame,*,encode):raise AssertionError('bootstrap cannot query')
         return PreparedRuntime(query,CandidateReadiness(**s.value['runtime_readiness']),bootstrap_observation=s.value)
     worker=namespace['BgeWssTransport'](dict(CONFIG,run_id=s.run,token=s.token,launch_nonce=s.nonce,
-        shared_reads=True,target_runtime=dict(bootstrap_only=True,bootstrap_seconds=30)),load,lambda:{},
+        shared_reads=True,target_runtime=dict(bootstrap_only=True,bootstrap_seconds=1 if finalize else 30)),load,lambda:{},
         prepare_runtime=prepare,connector=connect,heartbeat_seconds=.02,maximum_seconds=5,stop=stop)
     worker.incarnation='retained-incarnation'
     try:
@@ -239,6 +247,8 @@ async def test_generated_bootstrap_transport_idle_reaches_real_default_asgi_queu
         assert server.started
         await asyncio.wait_for(worker.run(),5)
         assert len(loads)==1
+        assert worker.bootstrap_pins_finalized==finalize and not worker.bootstrap_finalized
+        if finalize:assert any(f.get('status')=='pins_finalized' for f in received)
         idle=[frame for frame in sent if frame['type']=='RESOURCE_STATE']
         assert idle and all(frame['state']=='idle' for frame in idle)
         assert any(frame['type']=='BOOTSTRAP_ACK' for frame in received)
@@ -275,3 +285,59 @@ def test_default_channel_rejects_resource_state_outside_finite_idle_bootstrap(tm
             if change=='resource':frame['resource_id']='not-allowed'
             socket.send_json(frame)
             with pytest.raises(WebSocketDisconnect):socket.receive_json()
+
+
+def test_prepared_pins_extend_only_post_verification_heartbeat_lifetime_without_ready(tmp_path):
+    from regional_knowledge.bge_queue import MAX_LIFETIME,HEARTBEAT_SECONDS
+    s=setup(tmp_path)
+    assert s.q.bootstrap_pins_current(s.run,s.token,s.generation) is None
+    receipt=s.q.record_bootstrap_observation(s.run,s.token,s.generation,s.value)
+    assert s.q.bootstrap_pins_current(s.run,s.token,s.generation) is None
+    s.q.finalize_bootstrap_runtime(s.run,s.expected,observation_sha256=receipt,review_evidence='independent retained fixture review')
+    proof=s.q.bootstrap_pins_current(s.run,s.token,s.generation)
+    assert proof['hashes']==dict(s.expected.hashes) and proof['observation_sha256']==receipt
+    for _ in range(16):
+        s.now[0]+=60;s.q.heartbeat(s.run,s.token,connection_generation=s.generation)
+    status=s.q.channel_status(s.run,s.token,s.generation)
+    assert status['state']=='starting' and not status['ready']
+    with s.q.connect(write=False) as db:
+        row=db.execute('SELECT * FROM runs WHERE id=?',(s.run,)).fetchone()
+        expected=s.q._runtime_row(db,s.run)
+        assert row['bootstrap_finalized_at']==1000 and expected['accepted_generation'] is None
+        assert not s.q._run_expired(row,s.now[0])
+        assert s.q._run_expired(row,s.now[0]+HEARTBEAT_SECONDS+1)
+        alive=dict(row,heartbeat=row['started']+MAX_LIFETIME,useful=row['started']+MAX_LIFETIME)
+        assert s.q._run_expired(alive,row['started']+MAX_LIFETIME)
+    from regional_knowledge.bge_queue import StaleAttachment
+    with pytest.raises(StaleAttachment,match='runtime readiness required'):
+        s.q.claim(s.run,s.token,connection_generation=s.generation)
+    s.q.detach_channel(s.run,s.token,s.generation)
+    newer=s.q.attach_channel(s.run,s.token,s.nonce,'retained-incarnation')['connection_generation']
+    assert s.q.bootstrap_pins_current(s.run,s.token,newer)==proof
+
+
+def test_unfinalized_heartbeats_never_extend_the_original_cold_budget(tmp_path):
+    s=setup(tmp_path)
+    for _ in range(14):
+        s.now[0]+=60;s.q.heartbeat(s.run,s.token,connection_generation=s.generation)
+    with s.q.connect(write=False) as db:row=db.execute('SELECT * FROM runs WHERE id=?',(s.run,)).fetchone()
+    assert row['bootstrap_finalized_at'] is None and s.q._run_expired(row,1901)
+
+
+def test_prepared_ack_requires_exact_retained_observation_and_never_marks_serving_ready(tmp_path):
+    s=setup(tmp_path);transport=module('bge_wss_transport');calls=[]
+    async def prepare(*args,**kwargs):raise AssertionError('no model/native effects')
+    worker=transport.BgeWssTransport(dict(CONFIG,run_id=s.run,shared_reads=True,target_runtime=dict(bootstrap_only=True)),
+        lambda:None,lambda:{},prepare_runtime=prepare)
+    worker.incarnation='retained-incarnation'
+    async def query(*args,**kwargs):raise AssertionError('no queries')
+    worker.prepared_runtime=PreparedRuntime(query,CandidateReadiness(**s.value['runtime_readiness']),bootstrap_observation=s.value)
+    worker._overall_deadline=40000;worker._lifetime_timeout=SimpleNamespace(reschedule=calls.append)
+    frame=dict(type='BOOTSTRAP_ACK',protocol_version=2,connection_generation=s.generation,status='pins_finalized',run_id=s.run,
+        runtime_incarnation=worker.incarnation,provider_version='7',observation_sha256=digest(canonical(s.value)),hashes=dict(s.expected.hashes))
+    for key,value in [('run_id','other-run'),('runtime_incarnation','other-incarnation'),('connection_generation',99),
+            ('provider_version','8'),('hashes',dict(s.expected.hashes,model='f'*64)),('observation_sha256','f'*64)]:
+        with pytest.raises(ValueError):worker._accept_bootstrap_pins(dict(frame,**{key:value}),s.generation,'7')
+        assert not worker.bootstrap_pins_finalized and calls==[]
+    worker._accept_bootstrap_pins(frame,s.generation,'7')
+    assert worker.bootstrap_pins_finalized and not worker.bootstrap_finalized and calls==[40000]

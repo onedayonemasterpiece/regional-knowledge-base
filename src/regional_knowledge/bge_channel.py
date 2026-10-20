@@ -131,6 +131,7 @@ def channel_route(queue, *, read_telemetry=None):
             cancelled_work = None
             ready = False
             promoted = False
+            pins_announced = False
             runtime_readiness = None
             runtime_blocked = None
             promotion_lock = asyncio.Lock()
@@ -186,15 +187,24 @@ def channel_route(queue, *, read_telemetry=None):
                     expected = queue._runtime_row(db, run_id)
                     if expected is None:
                         raise ValueError('bootstrap_control_unavailable')
-                    plan = BootstrapRuntimeExpectation.from_wire(json.loads(expected['expected_json']))
                     row = db.execute('SELECT * FROM bge_runtime_bootstrap WHERE run_id=?', (run_id,)).fetchone()
-                    if (row is None or row['finalized'] or row['deadline'] <= queue.clock()
+                    if row is not None and row['finalized']:
+                        proof=queue.bootstrap_pins_current(run_id,token,generation)
+                        if proof is None:raise ValueError('bootstrap_control_unavailable')
+                        return proof
+                    plan = BootstrapRuntimeExpectation.from_wire(json.loads(expected['expected_json']))
+                    if (row is None or row['deadline'] <= queue.clock()
                             or run['status'] != 'starting' or queue._run_expired(run, queue.clock())
                             or json.loads(row['plan_json']) != plan.wire()):
                         raise ValueError('bootstrap_control_unavailable')
 
             async def promote(observed):
-                nonlocal promoted, runtime_blocked
+                nonlocal promoted, runtime_blocked, pins_announced
+                if observed.get('runtime_required') and not pins_announced:
+                    proof=await queue_call(queue.bootstrap_pins_current,run_id,token,generation)
+                    if proof is not None:
+                        await send('BOOTSTRAP_ACK',status='pins_finalized',**proof)
+                        pins_announced=True
                 async with promotion_lock:
                     if ready and not promoted and observed['provider_version'] is not None:
                         if observed.get('runtime_required'):
