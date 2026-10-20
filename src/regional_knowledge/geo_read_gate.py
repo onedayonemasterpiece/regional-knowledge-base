@@ -47,6 +47,7 @@ class _Manifest:
     activation_sequence:int
     operation:str
     command_sha256:str
+    operation_keys:tuple[str,...]
 
 
 @dataclass
@@ -142,9 +143,19 @@ class GeoReadGate:
                 proof=_Manifest(binding.database_generation,plan.manifest_id,
                     MappingProxyType({item.key:hashlib.sha256(canonical(item.wire())).hexdigest() for item in manifest.items}),
                     MappingProxyType({item.stable_id:frozenset(item.payload.provenance_keys) for item in manifest.items if item.payload.kind=='place'}),
-                    c.sequence,c.operation_key,last[0].command_sha256)
+                    c.sequence,c.operation_key,last[0].command_sha256,operation_keys)
                 self._manifest=proof
                 return plan.manifest_id
+
+    def installation_current(self,binding,operation_keys):
+        """Only an established durable manifest and its native prefix open import."""
+        proof=self._manifest
+        try:
+            return bool(proof is not None and type(operation_keys) is tuple and
+                proof.operation_keys==operation_keys and len(operation_keys)>=2 and
+                proof.database==binding.database_generation and self.supported() and
+                self._history_current(binding,proof.activation_sequence))
+        except Exception:return False
 
     def knows_entity(self,entity_id):
         # Route selection only. This confers no read permission and never

@@ -74,6 +74,22 @@ def test_env_target_requires_typed_configuration_before_legacy_selection(monkeyp
         build_server()
 
 
+def test_fresh11_import_requires_configured_geo_proof_without_closing_reads():
+    binding=object();keys=('geo-install:0','geo-install:1','geo-install:2');current=[False]
+    seen=[]
+    def installation(actual,operations):
+        seen.append((actual,operations));return current[0]
+    startup=SimpleNamespace(reads_current=lambda:True,gate=SimpleNamespace(graph_supported=lambda:True),
+        binding=binding,config=SimpleNamespace(geo_manifest_operation_keys=keys),geo_gate=None)
+    assert not TargetServiceStartup.imports_current(startup) and startup.reads_current()
+    startup.geo_gate=SimpleNamespace(installation_current=installation)
+    assert not TargetServiceStartup.imports_current(startup)
+    current[0]=True
+    assert TargetServiceStartup.imports_current(startup) and seen[-1]==(binding,keys)
+    startup.reads_current=lambda:False
+    assert not TargetServiceStartup.imports_current(startup)
+
+
 @pytest.mark.asyncio
 async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,monkeypatch):
     s=service;startup=s.startup

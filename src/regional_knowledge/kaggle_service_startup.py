@@ -280,6 +280,15 @@ class TargetServiceStartup:
                 and self.coverage.current() and self.binding_current(self.binding))
         except Exception:return False
 
+    def imports_current(self):
+        # Exact fresh11 source imports require reviewed GEO identities first.
+        # Ordinary reads and GEO command installation must remain available
+        # while those same accepted operations are being reconciled.
+        if not self.reads_current():return False
+        if not self.gate.graph_supported():return True
+        return bool(self.geo_gate is not None and self.geo_gate.installation_current(
+            self.binding,self.config.geo_manifest_operation_keys))
+
     async def refresh(self):
         """Maintenance only; ready reads never wait for native/journal writes."""
         if not self.running or self.closed:return False

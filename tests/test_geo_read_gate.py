@@ -74,6 +74,19 @@ async def test_current_personal_scope_exact_manifest_bytes_and_final_output_refr
 
 
 @pytest.mark.asyncio
+async def test_import_installation_fence_requires_exact_durable_operation_list_and_current_native_prefix(env,auth):
+    gate,authority,b,manifest,resolved,keys=await setup(env,auth)
+    assert gate.installation_current(b,keys)
+    for other in ((),keys[:-1],tuple(reversed(keys)),('different-installation',*keys[1:])):
+        assert not gate.installation_current(b,other)
+    assert not gate.installation_current(SimpleNamespace(**dict(vars(b),database_generation='other-db')),keys)
+    env.spool.invalidate_source_history()
+    assert not gate.installation_current(b,keys)
+    gate.invalidate()
+    assert not gate.installation_current(b,keys)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('change_type',['body','owner','activation','name'])
 async def test_forged_or_unmatched_native_item_is_never_issued(env,auth,change_type):
     gate,authority,b,manifest,resolved,_=await setup(env,auth)

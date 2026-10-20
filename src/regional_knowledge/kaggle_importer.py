@@ -555,7 +555,7 @@ class KaggleSourceImporter:
     def _intake_coverage_current(self,binding):
         # New intake needs the actual startup capability installed by native
         # genesis/history verification, rather than READY/writer status alone.
-        return (self.startup.reads_current() and self.startup.binding==binding
+        return (self.startup.imports_current() and self.startup.binding==binding
             and self.startup.coverage is self.spool._source_anchor)
 
     async def _stage_command(self, access, row, payload):
