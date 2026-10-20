@@ -157,6 +157,32 @@ class BarrierSnapshot:
     scope_complete: bool = False
 
 
+@dataclass(frozen=True)
+class SourceChange:
+    source_id: str
+    sequence: int
+    command_sha256: str
+    restriction: bool
+    pending: bool
+    unknown: bool
+
+
+@dataclass(frozen=True, eq=False)
+class SourceReadFacts:
+    """One local snapshot, usable only while its owner's revision is current."""
+    database_generation: str | None
+    baseline_sequence: int
+    covered_sequence: int
+    scope_sequence: int
+    pending: bool
+    unknown: bool
+    history_complete: bool
+    changes: tuple[SourceChange, ...]
+    _owner: object
+    _anchor: object
+    _version: object
+
+
 class ControlSpool:
     def __init__(self,queue,participants: Participants,journal: RecoveryJournal,registry: HandlerRegistry,
                  *,max_bytes=512*1024*1024,raw_retention_seconds=4*3600,clock=time.time):
@@ -171,6 +197,8 @@ class ControlSpool:
         self.max_command_bytes=min(1048576,journal.max_segment_bytes)
         self.max_outcome_bytes=min(1048576,journal.max_outcome_bytes)
         self._lock=asyncio.Lock();self._loop=None;self._writing=0
+        self._facts_owner=object();self._source_version=object();self._source_anchor=None
+        self._source_head=None;self._source_covered_sequence=0
         self._fd=os.open(queue.path.resolve().with_suffix(queue.path.suffix+'.control-spool.lock'),os.O_RDWR|os.O_CREAT,0o600)
         try:
             fcntl.flock(self._fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -205,6 +233,16 @@ class ControlSpool:
                     BEGIN SELECT RAISE(ABORT,'immutable canonical control intent'); END''')
                 db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_receipts(
                     operation_key TEXT PRIMARY KEY,command_sha256 TEXT NOT NULL,receipt_bytes BLOB NOT NULL)''')
+                # Compact heads derived from verified accepted commands. No book
+                # content, catalog or independent source permission is stored.
+                db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_source_heads(
+                    source_id TEXT PRIMARY KEY,sequence INTEGER NOT NULL,command_sha256 TEXT NOT NULL,
+                    restriction INTEGER NOT NULL,pending INTEGER NOT NULL,unknown INTEGER NOT NULL,
+                    reserved_bytes INTEGER NOT NULL)''')
+                db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_source_head_meta(
+                    id INTEGER PRIMARY KEY CHECK(id=1),sequence INTEGER NOT NULL,
+                    pending_count INTEGER NOT NULL,unknown_count INTEGER NOT NULL)''')
+                db.execute('INSERT OR IGNORE INTO rkb_control_source_head_meta VALUES(1,0,0,0)')
         except BaseException:
             os.close(self._fd);self._fd=None;raise
 
@@ -238,8 +276,35 @@ class ControlSpool:
 
     async def _write(self,call,*args):
         self._active();self._writing+=1
+        # Invalidate before starting a cancellable write, including UNKNOWN
+        # commits. No read may reuse an asynchronously captured stale snapshot.
+        self._source_version=object()
         try:return await _database(call,*args)
-        finally:self._writing-=1
+        finally:
+            self._writing-=1
+            self._source_version=object()
+
+    def invalidate_source_history(self):
+        """Trusted controller calls BEFORE DDL/grant/generation/route changes."""
+        self._active();self._source_anchor=None;self._source_version=object()
+
+    def _advance_source_acceptance(self,command,predecessor,seal):
+        if self._source_anchor is None or command.sequence<=self._source_covered_sequence:return
+        if ((predecessor.reference if predecessor else None)!=self._source_head
+                or command.sequence!=self._source_covered_sequence+1
+                or seal.command_hashes!=(_hash(command.encode()),)
+                or seal.manifest.last_sequence!=command.sequence):
+            self.invalidate_source_history();return
+        self._source_head=seal.manifest;self._source_covered_sequence=command.sequence
+        self._source_version=object()
+
+    def facts_current(self,facts):
+        """Synchronous final issuance fence; perform no await after success."""
+        self._active()
+        return (type(facts) is SourceReadFacts and facts._owner is self._facts_owner
+            and facts._anchor is self._source_anchor and facts._version is self._source_version
+            and not self._writing and facts.history_complete and self._source_anchor is not None
+            and self._source_anchor.current())
 
     def _validate(self,command,database_generation):
         _bounded(database_generation)
@@ -247,6 +312,15 @@ class ControlSpool:
         _bounded(command.operation_key,4096)
         frozen,data=_snapshot(command,self.max_command_bytes)
         handler=self.registry.resolve(frozen)
+        if frozen.route=='source.import.v1':
+            from .source_import import SOURCE_IMPORT,IMPORT_DEPENDENCY,IMPORT_PRECONDITIONS,validate_import_command
+            if (frozen.kind!='domain_command' or frozen.route!=SOURCE_IMPORT
+                    or handler.dependency!=IMPORT_DEPENDENCY or handler.transition is not None
+                    or handler.precondition_keys!=IMPORT_PRECONDITIONS):
+                raise SpoolDenied('only pinned canonical source import intent is supported')
+            _uuid(frozen.person_id);_uuid(frozen.ids.get('source_id'))
+            validate_import_command(frozen)
+            return frozen,data,handler
         if (frozen.kind!='domain_command' or frozen.route!=SOURCE_WITHDRAW
                 or handler.dependency!=WITHDRAW_DEPENDENCY or handler.transition is not None
                 or handler.precondition_keys!=frozenset({'eligibility_revision'})
@@ -288,10 +362,24 @@ class ControlSpool:
 
     async def stage_source_withdraw(self,context,command,*,database_generation):
         self._active()
-        actor=await self._authorize(context)
-        frozen,data,handler=self._validate(command,database_generation)
-        if frozen.person_id!=actor:raise SpoolDenied('command person does not authenticate its actor')
-        return await self._write(self._stage,frozen,data,handler,database_generation)
+        # The same intake lock protects native empty-genesis proof and history
+        # restore. No canonical intent can appear during checkpoint publication.
+        async with self._lock:
+            actor=await self._authorize(context)
+            frozen,data,handler=self._validate(command,database_generation)
+            if frozen.route!=SOURCE_WITHDRAW:raise SpoolDenied('withdrawal intake requires withdrawal route')
+            if frozen.person_id!=actor:raise SpoolDenied('command person does not authenticate its actor')
+            return await self._write(self._stage,frozen,data,handler,database_generation)
+
+    async def stage_source_import(self,context,command,*,database_generation):
+        """Exact already-resolved import bytes; no local inference or raw seed path."""
+        self._active()
+        async with self._lock:
+            actor=await self._authorize(context)
+            frozen,data,handler=self._validate(command,database_generation)
+            if frozen.route!='source.import.v1':raise SpoolDenied('import intake requires import route')
+            if frozen.person_id!=actor:raise SpoolDenied('command person does not authenticate its actor')
+            return await self._write(self._stage,frozen,data,handler,database_generation)
 
     def _row(self,key):
         _bounded(key,4096)
@@ -379,6 +467,8 @@ class ControlSpool:
                 reconciled=await self.journal.locate_accepted(existing.command)
                 if reconciled is not None:
                     await self._write(self._accepted,key,reconciled)
+                    prior=await _database(self._row,key)
+                    self._advance_source_acceptance(existing.command,_head(prior['predecessor_bytes']),reconciled)
                     return reconciled
             if existing.accepted is None:
                 # Waiting for another remote operation must not carry stale
@@ -391,6 +481,7 @@ class ControlSpool:
             if entry.accepted is not None:return entry.accepted
             accepted=await self.journal.seal([entry.command],predecessor=head,writer_generation=writer_generation)
             await self._write(self._accepted,key,accepted)
+            self._advance_source_acceptance(entry.command,head,accepted)
             _LOG.info('control_intent_remote_accepted operation_hash=%s sequence=%s',_hash(key.encode()),entry.command.sequence)
             return accepted
 
@@ -474,24 +565,27 @@ class ControlSpool:
 
     @staticmethod
     def _barrier(row,accepted_row=None,pending_sequence=None,unknown_sequence=None):
-        if accepted_row is None and row['seal_state']=='ACCEPTED':accepted_row=row
+        restriction=bool(json.loads(row['dependency_bytes'])['restriction'])
+        if accepted_row is None and row['seal_state']=='ACCEPTED' and restriction:accepted_row=row
         accepted=(AcceptedRestriction(accepted_row['operation_key'],accepted_row['sequence'],accepted_row['command_sha256'],
             accepted_row['apply_state'],accepted_row['outcome_state']) if accepted_row is not None else None)
         return SourceBarrier(row['operation_key'],row['source_id'],row['sequence'],row['command_sha256'],
             row['database_generation'],row['seal_state']=='ACCEPTED',row['apply_state'],row['outcome_state'],accepted,
             (row['sequence'] if row['outcome_state']!='DURABLE' else 0) if pending_sequence is None else pending_sequence,
-            (row['sequence'] if 'SENT_UNKNOWN' in (row['seal_state'],row['apply_state'],row['outcome_state']) else 0) if unknown_sequence is None else unknown_sequence)
+            (row['sequence'] if 'SENT_UNKNOWN' in (row['seal_state'],row['apply_state'],row['outcome_state']) else 0) if unknown_sequence is None else unknown_sequence,
+            restriction or accepted is not None)
 
     def _barriers_for(self,sources):
         with self._db() as db:
             facts=[]
             for source in sources:
                 row=db.execute('''SELECT operation_key,source_id,sequence,command_sha256,database_generation,
-                    seal_state,apply_state,outcome_state FROM rkb_control_operations
+                    seal_state,apply_state,outcome_state,dependency_bytes FROM rkb_control_operations
                     WHERE source_id=? ORDER BY sequence DESC,operation_key LIMIT 1''',(source,)).fetchone()
                 if row is not None:
                     accepted=db.execute('''SELECT operation_key,sequence,command_sha256,apply_state,outcome_state
                         FROM rkb_control_operations WHERE source_id=? AND seal_state='ACCEPTED'
+                        AND json_extract(CAST(dependency_bytes AS TEXT),'$.restriction')=1
                         ORDER BY sequence DESC,operation_key LIMIT 1''',(source,)).fetchone()
                     pending=db.execute("SELECT sequence FROM rkb_control_operations WHERE source_id=? AND outcome_state<>'DURABLE' ORDER BY sequence DESC LIMIT 1",(source,)).fetchone()
                     unknown=db.execute("SELECT sequence FROM rkb_control_operations WHERE source_id=? AND (seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN') ORDER BY sequence DESC LIMIT 1",(source,)).fetchone()
@@ -535,10 +629,69 @@ class ControlSpool:
             source_ids=tuple(_uuid(source) for source in source_ids)
         return await _database(self._scope_state,source_ids)
 
+    def _replace_source_heads(self,changes):
+        """Recovery only: replace compact derived heads after verified genesis replay."""
+        with self._db(write=True) as db:
+            old=db.execute('SELECT coalesce(sum(reserved_bytes),0) FROM rkb_control_source_heads').fetchone()[0]
+            sizes=[256+len(c.source_id.encode()) for c in changes]
+            used=db.execute('SELECT used_bytes FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]
+            if used-old+sum(sizes)>self.max_bytes:raise SpoolFull('verified source tail exceeds control budget; checkpoint required')
+            db.execute('DELETE FROM rkb_control_source_heads')
+            db.executemany('INSERT INTO rkb_control_source_heads VALUES(?,?,?,?,?,?,?)',
+                [(c.source_id,c.sequence,c.command_sha256,int(c.restriction),int(c.pending),int(c.unknown),n)
+                 for c,n in zip(changes,sizes)])
+            db.execute('UPDATE rkb_control_spool_meta SET used_bytes=used_bytes-?+? WHERE id=1',(old,sum(sizes)))
+            db.execute('''UPDATE rkb_control_source_head_meta SET
+                sequence=(SELECT coalesce(max(sequence),0) FROM rkb_control_source_heads),
+                pending_count=(SELECT coalesce(sum(pending),0) FROM rkb_control_source_heads),
+                unknown_count=(SELECT coalesce(sum(unknown),0) FROM rkb_control_source_heads) WHERE id=1''')
+
+    def _read_facts(self,sources,items,anchor,version,covered):
+        with self._db() as db:
+            def scope(table,columns):
+                where='' if sources is None else (' WHERE source_id IN ('+','.join('?' for _ in sources)+')')
+                if sources==():return (0,0,0)
+                return db.execute('SELECT '+columns+' FROM '+table+where,() if sources is None else sources).fetchone()
+            if sources is None:
+                local=db.execute('SELECT sequence,pending_count,unknown_count FROM rkb_control_spool_meta WHERE id=1').fetchone()
+                history=db.execute('SELECT sequence,pending_count,unknown_count FROM rkb_control_source_head_meta WHERE id=1').fetchone()
+            else:
+                local=scope('rkb_control_operations',"coalesce(max(sequence),0),coalesce(sum(outcome_state<>'DURABLE'),0),coalesce(sum(seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN'),0)")
+                history=scope('rkb_control_source_heads','coalesce(max(sequence),0),coalesce(sum(pending),0),coalesce(sum(unknown),0)')
+            changes=[]
+            for source in items:
+                hist=db.execute('SELECT sequence,command_sha256,restriction,pending,unknown FROM rkb_control_source_heads WHERE source_id=?',(source,)).fetchone()
+                local_head=db.execute("""SELECT sequence,command_sha256,
+                    EXISTS(SELECT 1 FROM rkb_control_operations restrictions WHERE restrictions.source_id=?
+                        AND json_extract(CAST(restrictions.dependency_bytes AS TEXT),'$.restriction')=1),outcome_state<>'DURABLE',
+                    seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN'
+                    FROM rkb_control_operations WHERE source_id=? ORDER BY sequence DESC LIMIT 1""",(source,source)).fetchone()
+                rows=[r for r in (hist,local_head) if r is not None]
+                if rows:
+                    latest=max(rows,key=lambda r:r[0])
+                    changes.append(SourceChange(source,latest[0],latest[1],any(r[2] for r in rows),
+                        any(r[3] for r in rows),any(r[4] for r in rows)))
+            return SourceReadFacts(getattr(anchor,'database_generation',None),0,covered,
+                max(local[0],history[0]),bool(local[1] or history[1]),bool(local[2] or history[2]),
+                anchor is not None,tuple(changes),self._facts_owner,anchor,version)
+
+    async def read_facts(self,query_sources,item_sources=()):
+        """Atomic query-scope + exhaustive top-K facts, never a cloud/read write."""
+        self._active()
+        if query_sources is not None:
+            if not isinstance(query_sources,(tuple,list)) or not 1<=len(query_sources)<=32 or len(set(query_sources))!=len(query_sources):
+                raise ValueError('bounded nonempty query source scope required')
+            query_sources=tuple(_uuid(s) for s in query_sources)
+        if not isinstance(item_sources,(tuple,list)) or len(item_sources)>160 or len(set(item_sources))!=len(item_sources):
+            raise ValueError('bounded exhaustive item source union required')
+        item_sources=tuple(_uuid(s) for s in item_sources)
+        return await _database(self._read_facts,query_sources,item_sources,self._source_anchor,
+            self._source_version,self._source_covered_sequence)
+
     def _pending_page(self,after_key,limit):
         with self._db() as db:
             rows=db.execute('''SELECT operation_key,source_id,sequence,command_sha256,database_generation,
-                seal_state,apply_state,outcome_state FROM rkb_control_operations WHERE operation_key>?
+                seal_state,apply_state,outcome_state,dependency_bytes FROM rkb_control_operations WHERE operation_key>?
                 AND (seal_state<>'ACCEPTED' OR apply_state NOT IN ('APPLIED','REJECTED_PRECONDITION') OR outcome_state<>'DURABLE')
                 ORDER BY operation_key LIMIT ?''',(after_key,limit+1)).fetchall()
             return {'items':tuple(self._barrier(row) for row in rows[:limit]),'has_more':len(rows)>limit,
