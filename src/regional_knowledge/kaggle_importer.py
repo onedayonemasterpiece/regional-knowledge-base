@@ -552,6 +552,12 @@ class KaggleSourceImporter:
             if revisions!=self.import_revisions:raise failure('target_runtime_changed')
             return revisions
 
+    def _intake_coverage_current(self,binding):
+        # New intake needs the actual startup capability installed by native
+        # genesis/history verification, rather than READY/writer status alone.
+        return (self.startup.reads_current() and self.startup.binding==binding
+            and self.startup.coverage is self.spool._source_anchor)
+
     async def _stage_command(self, access, row, payload):
         # Same canonical intake lock as source history/genesis. Reject unresolved
         # predecessors rather than inventing a competing sequence allocator.
@@ -575,6 +581,14 @@ class KaggleSourceImporter:
                 raise failure('small_source_resolved_payload_bound')
             frozen, data, handler = self.spool._validate(command, access.binding.database_generation)
             await self._check(access.authority, access.context, access.binding)
+            facts=await self.spool.read_facts(None)
+            if (not self._intake_coverage_current(access.binding)
+                    or facts.database_generation!=access.binding.database_generation
+                    or facts.scope_sequence>facts.covered_sequence or facts.pending or facts.unknown
+                    or not self.spool.facts_current(facts)):
+                raise failure('source_history_unavailable')
+            # Same intake lock as genesis/history, with no await between this
+            # synchronous capability fence and the new write's invalidation.
             entry = await self.spool._write(self.spool._stage, frozen, data, handler, access.binding.database_generation)
             _LOG.info('source_import_command ingestion_id=%s state=staged route=%s sequence=%s command_sha256=%s',
                 row['ingestion_id'],entry.command.route,entry.command.sequence,entry.command_sha256)
@@ -583,6 +597,8 @@ class KaggleSourceImporter:
     async def _finalize(self, access, row):
         entry = await self._entry(row)
         if entry is None:
+            if not self._intake_coverage_current(access.binding):
+                raise failure('source_history_unavailable')
             if row['phase'] not in ('validated', 'embedding'):
                 raise failure('validate_before_finalize', status='invalid_query')
             receipt = await self._receipt(access, row)

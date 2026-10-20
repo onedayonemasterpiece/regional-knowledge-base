@@ -18,6 +18,7 @@ from regional_knowledge.control_spool import ControlSpool
 from regional_knowledge.kaggle_apply import HandlerRegistry
 from regional_knowledge.kaggle_import_contracts import TargetSourceImportInput, PublicImportRights
 from regional_knowledge.kaggle_import_tokenizer import HfImportTokenCounter
+from regional_knowledge.kaggle_public_backend import current_binding
 from regional_knowledge.kaggle_service_startup import TargetServiceConfig, TargetServiceStartup
 from regional_knowledge.original_intake import NativePagesProof, OriginalIntakeStatus, VerifiedOriginalReceipt
 from regional_knowledge.original_intake_controller import OriginalIntakeController
@@ -108,6 +109,11 @@ async def intake(target, tmp_path, request):
     startup=TargetServiceStartup(TargetServiceConfig(t.auth.provider,t.auth.p.registry,t.queue,spool,
         HistoryAdapter(),'writer-1',lambda **binding: binding['database_generation']=='synthetic-db',
         import_originals=originals,import_tokenizer=tokenizer,import_parser_sha256='2'*64,import_launch_config_sha256='a'*64))
+    # Explicit synthetic history owner; tests do not infer completeness from
+    # an empty spool or a verified runtime. Native genesis is tested separately.
+    startup.running=True;startup.binding=current_binding(t.queue)
+    startup.history.available=True
+    startup.coverage=await startup.history.restore(startup.binding)
     tokens=await issue(t.auth.provider)
     principal=Principal(subject=t.auth.p.owner.subject,client_id=t.auth.provider.client.client_id,
         issuer=t.auth.provider.issuer,access_token=tokens.access_token)
@@ -443,3 +449,51 @@ async def test_same_attachment_retry_preserves_validation_and_document_job_ident
     assert (await start(s)).state=='processing'
     with s.t.queue.connect(write=False) as db:after=[row[0] for row in db.execute('SELECT id FROM jobs ORDER BY id')]
     assert before==after and len(after)==10
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('intake',[11],indirect=True)
+async def test_first_finalize_waits_for_native_genesis_and_reconciles_existing_after_invalidation(intake):
+    s=intake;result=await staged(s)
+    await s.importer.book_ingest(command='validate',principal=s.principal,ingestion_id=result.ingestion_id)
+    # READY/current writer alone must not open the race before native genesis.
+    assert s.startup.binding_current(s.startup.binding)
+    s.startup.coverage=None;s.spool.invalidate_source_history()
+    before_tokens=len(s.token_calls)
+    with pytest.raises(ToolError,match='source_history_unavailable'):
+        await s.importer.book_ingest(command='finalize',principal=s.principal,ingestion_id=result.ingestion_id)
+    assert len(s.token_calls)==before_tokens and await s.spool.journal.head() is None
+    assert not s.spool.journal.store.objects
+    with s.t.queue.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM jobs').fetchone()[0]==0
+    assert (await s.spool.scope_state())['operation_count']==0
+    # Only explicit current native-history coverage opens first acceptance.
+    s.startup.coverage=await s.startup.history.restore(s.startup.binding)
+    waiting=await s.importer.book_ingest(command='finalize',principal=s.principal,ingestion_id=result.ingestion_id)
+    assert waiting.state=='processing'
+    for _ in range(10):await finish_document(s)
+    # Expiry/invalidation while reading the remote predecessor must be caught
+    # again under the intake lock immediately before the new command write.
+    original_head=s.spool.journal.head
+    async def expires_during_head():
+        value=await original_head()
+        s.startup.coverage=None;s.spool.invalidate_source_history()
+        return value
+    s.spool.journal.head=expires_during_head
+    with pytest.raises(ToolError,match='source_history_unavailable'):
+        await s.importer.book_ingest(command='status',principal=s.principal,ingestion_id=result.ingestion_id)
+    s.spool.journal.head=original_head
+    assert await original_head() is None and (await s.spool.scope_state())['operation_count']==0
+    with s.t.queue.connect(write=False) as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==0
+    s.startup.coverage=await s.startup.history.restore(s.startup.binding)
+    await s.importer.book_ingest(command='status',principal=s.principal,ingestion_id=result.ingestion_id)
+    entry=await s.spool.get('source-import:'+result.ingestion_id)
+    assert entry.command.sequence==1 and entry.accepted is not None
+    original=entry.command.encode();token_calls=len(s.token_calls)
+    s.startup.coverage=None;s.spool.invalidate_source_history()
+    pending=await s.importer.book_ingest(command='status',principal=s.principal,ingestion_id=result.ingestion_id)
+    assert pending.state=='processing' and len(s.token_calls)==token_calls
+    assert (await s.spool.get(entry.command.operation_key)).command.encode()==original
+    with s.t.queue.connect(write=False) as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1

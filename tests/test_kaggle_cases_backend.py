@@ -306,3 +306,165 @@ async def test_grant_revoke_between_restriction_lookup_and_source_facts_cannot_b
             await value._check(authority,context,b,operation)
         assert changed
     finally:auth.resolver.release(authority)
+
+
+async def collected_operation(e,a,monkeypatch,*,remote=True):
+    """Real durable journal + compact receipt, collected raw intent, reopened spool.
+
+    Only the worker's native SQL receipt is synthetic; it crosses the actual
+    Case gate. PG reader/receipt provenance is covered by native fixtures.
+    """
+    import base64,hashlib
+    from regional_knowledge.control_spool import ControlSpool
+    from regional_knowledge.case_history import project_cases
+    from regional_knowledge.kaggle_apply import ApplyReceipt
+    from regional_knowledge.kaggle_case_contracts import canonical
+    value,principal,b=await backend(e,a,monkeypatch,current11=True)
+    with capture_read_output() as calls:
+        pending=await value.disagreement_edit('create','collected-create',principal,command=create())
+        calls[0].release()
+    entry=await e.spool.get(pending['operation_key']);c=entry.command
+    native_result=dict(case_id=c.ids['case_id'],object_id=c.ids['object_id'],case_revision=1,event_seq=1,
+        acl_revision=1,version=1,action='create')
+    result_bytes=canonical(native_result)
+    outcome=canonical(dict(codec='rkb.applied-outcome.v1',operation_key=c.operation_key,command_sha256=entry.command_sha256,
+        cursor=c.sequence,status='applied',ids=dict(c.ids),request_id=c.request_id,person_id=c.person_id,
+        route=c.route,logical_time=c.logical_time,before=list(DOMAIN_REVISIONS.wire()),after=list(DOMAIN_REVISIONS.wire()),
+        handler_sha256=entry.handler_sha256,result_b64=base64.b64encode(result_bytes).decode(),
+        result_sha256=hashlib.sha256(result_bytes).hexdigest()))
+    receipt=ApplyReceipt('db-source',c.operation_key,c.sequence,entry.command_sha256,'applied',outcome,hashlib.sha256(outcome).hexdigest(),False)
+    await e.spool.record_apply(c.operation_key,receipt)
+    if remote:await e.spool.publish_outcome(c.operation_key,writer_generation='writer-1')
+    projection=project_cases([(c,None,None)],{c.sequence:'applied'})
+    registry=e.spool.registry
+    # Simulate the raw retention boundary only after known native result. No
+    # production collector policy is changed by this fixture.
+    with e.spool._db(write=True) as db:db.execute('DELETE FROM rkb_control_operations WHERE operation_key=?',(c.operation_key,))
+    e.spool.close()
+    e.spool=ControlSpool(e.q,e.p.registry,e.journal,registry)
+    # Rebuild the backend, not a RAM receipt cache, after the real DB reopen.
+    gate,authority,b,anchor=await setup(e,a)
+    a.resolver.release(authority);e.spool.registry=registry
+    anchor.case_state=projection;anchor.applied_sequence=c.sequence
+    startup=value.startup;startup.config.spool=e.spool;startup.binding_current=lambda current:current is b
+    value=KaggleCasesBackend(startup,case_gate=gate)
+    monkeypatch.setattr('regional_knowledge.kaggle_cases_backend.current_binding',lambda queue:b)
+    native_record=dict(case_id=c.ids['case_id'],source_dependencies=[],result=native_result,
+        operation_key=c.operation_key,sequence=c.sequence,command_sha256=entry.command_sha256,
+        request_id=c.request_id,state='applied',outcome_durability='native_only')
+    async def native(authority,binding,**selector):
+        from test_case_read_gate import request
+        q=request(section='operation',operation_key=selector['operation_key']).model_copy(update={'case_id':selector['case_id']})
+        permit=await value.gate.dispatch(authority,q,binding)
+        # Real native function returns no receipt for another actor/key/Case.
+        if (authority.person_id!=c.person_id or selector['operation_key']!=c.operation_key
+                or selector['case_id']!=c.ids['case_id']):raise PermissionError('native receipt actor scope')
+        gated=await value.gate.finish(permit,result(native_record))
+        if gated.result.status!='ok':
+            value.gate.release(gated.ticket)
+            from regional_knowledge.kaggle_cases_backend import failure
+            raise failure(gated.result.reason,gated.result.status)
+        return gated
+    monkeypatch.setattr(value,'_native',native)
+    return value,principal,c,native_record
+
+
+@pytest.mark.asyncio
+async def test_collected_operation_status_reopens_queue_and_proves_remote_saved_without_effect(env,auth,monkeypatch):
+    value,principal,c,native=await collected_operation(env,auth,monkeypatch)
+    version=env.store.version
+    with capture_read_output() as calls:
+        recovered=await value.disagreement_edit('operation_status',c.operation_key,principal,case_id=c.ids['case_id'])
+        assert recovered['saved'] and recovered['status']=='saved' and recovered['outcome_durability']=='DURABLE'
+        assert recovered['result']==native['result'] and recovered['command_sha256']==native['command_sha256']
+        assert len(calls)==1 and calls[0].gate is value.output_gate
+        await calls[0].gate.refresh(calls[0].gated)
+        assert calls[0].gate.issuance_current(calls[0].gated.ticket)
+        calls[0].release()
+    assert env.store.version==version # reads only: no remote CAS/publication
+    with env.q.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]==0
+        assert db.execute('SELECT count(*) FROM rkb_control_receipts').fetchone()[0]==1
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+    with pytest.raises(Exception,match='case_id_required_after_control_retention'):
+        await value.disagreement_edit('operation_status',c.operation_key,principal)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fault',['native_only','missing_remote','remote_mismatch','native_mismatch','command_mismatch','wrong_case','wrong_key','revoked_case','participant_revoke'])
+async def test_collected_operation_recovery_never_infers_saved_from_unknown_or_wrong_scope(env,auth,monkeypatch,fault):
+    import hashlib
+    from regional_knowledge.kaggle_case_contracts import canonical
+    value,principal,c,native=await collected_operation(env,auth,monkeypatch,remote=fault!='native_only')
+    remote_key=env.journal.prefix+'/outcomes/'+hashlib.sha256(c.operation_key.encode()).hexdigest()
+    key=c.operation_key;case_id=c.ids['case_id']
+    if fault=='missing_remote':del env.store.objects[remote_key]
+    if fault=='remote_mismatch':env.store.write(remote_key,b'{}')
+    if fault=='command_mismatch':
+        env.store.write(env.journal.prefix+'/commands/'+hashlib.sha256(key.encode()).hexdigest(),b'{}')
+    if fault=='native_mismatch':native['result']={'case_id':case_id,'object_id':case_id,'action':'forged'}
+    if fault=='wrong_case':case_id=CASE
+    if fault=='wrong_key':key='different-original-operation'
+    if fault=='revoked_case':
+        data=env.spool._source_anchor.case_state.cases
+        data[case_id]['owner']=auth.p.owner.subject
+        env.spool._source_anchor.case_state=type(env.spool._source_anchor.case_state)(canonical(data))
+    if fault=='participant_revoke':change(auth.p,ParticipantGrant(capability='case_read',granted=False,reason='Synthetic revoke'))
+    version=env.store.version
+    with capture_read_output() as calls:
+        with pytest.raises(Exception):await value.disagreement_edit('operation_status',key,principal,case_id=case_id)
+        assert not calls
+    assert env.store.version==version
+    with env.q.connect(write=False) as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+        assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]==0
+
+
+@pytest.mark.asyncio
+async def test_collected_receipt_is_not_recoverable_by_global_owner_as_other_actor(env,auth,monkeypatch):
+    from test_read_authority import issue
+    value,principal,c,native=await collected_operation(env,auth,monkeypatch)
+    owner_tokens=await issue(auth.provider)
+    version=env.store.version
+    with capture_read_output() as calls:
+        with pytest.raises(Exception,match='access_denied'):
+            await value.disagreement_edit('operation_status',c.operation_key,
+                SimpleNamespace(access_token=owner_tokens.access_token),case_id=c.ids['case_id'])
+        assert not calls
+    assert env.store.version==version
+
+
+@pytest.mark.asyncio
+async def test_recovered_saved_receipt_stays_closed_after_case_revoke_at_final_output(env,auth,monkeypatch):
+    from regional_knowledge.kaggle_case_contracts import canonical
+    value,principal,c,native=await collected_operation(env,auth,monkeypatch)
+    with capture_read_output() as calls:
+        output=await value.disagreement_edit('operation_status',c.operation_key,principal,case_id=c.ids['case_id'])
+        assert output['saved']
+        data=env.spool._source_anchor.case_state.cases
+        data[c.ids['case_id']]['owner']=auth.p.owner.subject
+        env.spool._source_anchor.case_state=type(env.spool._source_anchor.case_state)(canonical(data))
+        with pytest.raises(PermissionError):await calls[0].gate.refresh(calls[0].gated)
+        assert not calls[0].gate.issuance_current(calls[0].gated.ticket)
+        calls[0].release()
+
+
+@pytest.mark.asyncio
+async def test_collected_receipt_current_source_withdrawal_blocks_recovery(env,auth,monkeypatch):
+    from regional_knowledge.kaggle_case_contracts import canonical
+    from test_control_spool import SOURCE,withdraw
+    value,principal,c,native=await collected_operation(env,auth,monkeypatch)
+    data=env.spool._source_anchor.case_state.cases
+    data[c.ids['case_id']]['sources'][SOURCE]=1
+    env.spool._source_anchor.case_state=type(env.spool._source_anchor.case_state)(canonical(data))
+    native['source_dependencies']=[dict(source_id=SOURCE,content_revision=1,eligibility_revision=1)]
+    env.spool.registry=HandlerRegistry([*env.spool.registry.handlers.values(),*env.registry.handlers.values()])
+    await env.spool.stage_source_withdraw(env.p.admin,withdraw(env.p.owner.subject,sequence=2),database_generation='db-source')
+    version=env.store.version
+    with capture_read_output() as calls:
+        with pytest.raises(Exception,match='prior_write_pending|evidence_withdrawn|case_history_unavailable'):
+            await value.disagreement_edit('operation_status',c.operation_key,principal,case_id=c.ids['case_id'])
+        assert not calls
+    assert env.store.version==version
+    with env.q.connect(write=False) as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1

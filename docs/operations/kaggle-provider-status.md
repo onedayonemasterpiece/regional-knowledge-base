@@ -19,3 +19,11 @@ lease or declare a scoped Stop complete. Apply the separate execution-binding,
 freshness and contradictory-evidence gates in `kaggle_readiness` before target
 runtime ownership/termination acceptance. These helpers do not repair all
 legacy launch/expiry semantics or certify target serving readiness.
+
+Launch failures now retain the fixed boundary, exception type and bounded
+numeric HTTP/provider codes, with a fixed source-size reason when supplied by
+the provider. URLs, response messages, credentials and request bodies are never
+logged. A local preparation failure before `kernels_push` is known not sent and
+can be marked failed. Any exception or invalid receipt after calling that
+boundary stays unknown and must be reconciled; logging an error does not
+authorize a second push.

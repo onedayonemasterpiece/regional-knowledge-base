@@ -13,6 +13,25 @@ import re
 import time
 from regional_knowledge.bge_queue import BgeQueue
 
+def provider_error_facts(error):
+    """Bounded provider diagnostics without URLs, messages or request bodies."""
+    result={'error_type':type(error).__name__}
+    response=getattr(error,'response',None)
+    status=getattr(response,'status_code',None)
+    if type(status) is int and 100<=status<=599:result['http_status']=status
+    content=getattr(response,'content',None)
+    if type(content) is bytes and len(content)<=16384:
+        try:
+            value=json.loads(content)
+            if type(value) is dict:
+                code=value.get('code')
+                if type(code) is int and 100<=code<=599:result['provider_code']=code
+                message=value.get('message')
+                if type(message) is str and 'kernel source size exceeds' in message.lower():
+                    result['reason']='kernel_source_size_exceeded'
+        except (ValueError,TypeError):pass
+    return result
+
 def provider_phase(status):
     phase=status.get('status') if isinstance(status,dict) else getattr(status,'status',None)
     return str(getattr(phase,'name',phase)).rsplit('.',1)[-1].upper()
@@ -148,10 +167,12 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
         runs=queue.maintenance()
         for run in runs:
             run_id=run['id'];ref=notebook_ref(run,state);slug=ref.rsplit('/',1)[-1]
+            boundary='observation'
             try:
                 if run['status']=='starting' and run['launch_state']=='pending':
                     token=queue.launch_claim(run_id,provider_ref=ref)
                     if token is None:continue
+                    boundary='launch_preparation'
                     folder=state/run_id;folder.mkdir(mode=0o700,exist_ok=True)
                     if target_spec is not None and target_spec.database.mode=='NEW_EMPTY_GENERATION':
                         import asyncio
@@ -169,6 +190,7 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                     (folder/'kernel-metadata.json').write_text(json.dumps(metadata));(folder/'kernel-metadata.json').chmod(0o600)
                     # Credential is run-bound and source remains private. SDK
                     # provider request is the only notebook creation boundary.
+                    boundary='save_kernel'
                     saved=api.kernels_push(str(folder),timeout=11*3600)
                     if saved.error or saved.ref!=ref or saved.version_number<1:
                         raise RuntimeError('kaggle_save_receipt_invalid')
@@ -193,7 +215,13 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                     # provider cancellation is unavailable in this SDK.
                     queue.launch_record(run_id,ref)
             except Exception as error:
-                logging.warning(json.dumps({'event':'bge_provider_boundary_failed','run_id':run_id,'error_type':type(error).__name__}))
+                if boundary=='launch_preparation':
+                    # No provider save was called; this is a known not-sent
+                    # operation, not an uncertain remote effect to re-dispatch.
+                    queue.launch_record(run_id,ref,failed=True)
+                logging.warning(json.dumps({'event':'bge_provider_boundary_failed','run_id':run_id,
+                    'boundary':boundary,'submission_state':'not_sent' if boundary=='launch_preparation' else 'unknown',
+                    **provider_error_facts(error)}))
         time.sleep(5)
 
 if __name__=='__main__':main()

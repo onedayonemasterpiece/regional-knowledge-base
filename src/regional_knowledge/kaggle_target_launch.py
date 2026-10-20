@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+import zlib
 
 from .bge_contract import REVISION, SPACE
 from .kaggle_owned_pg import SQL_ARTIFACTS, STORY_SQL_ARTIFACTS, FACT_SQL_ARTIFACTS, DOMAIN_SQL_ARTIFACTS, sql_artifacts, canonical, digest
@@ -24,6 +25,8 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
     'kaggle_case_contracts','kaggle_case_read','kaggle_geo_contracts','kaggle_geo_read',
     'kaggle_domain_bindings','kaggle_domain_schema','kaggle_editorial_contracts','kaggle_editorial_read','source_graph','entity_graph','contracts','kaggle_source_graph_read','stage_graph','poi_reference')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
+MAX_BUNDLE_JSON_BYTES = 3 * 1024 * 1024
+MAX_NOTEBOOK_SOURCE_BYTES = 1_000_000
 
 
 def source_bundle(repository):
@@ -116,9 +119,13 @@ def compose_target(template,config,target,*,queue,repository):
     # before control; model imports, pool creation and initdb occur after ATTACH.
     entry = '''
 if __name__ == '__main__':
-    import base64 as _b64, hashlib as _hashlib, sys as _sys
+    import base64 as _b64, hashlib as _hashlib, sys as _sys, json as _json, zlib as _zlib
     from pathlib import Path as _Path
-    _bundle = BUNDLE_FILES
+    _decoder = _zlib.decompressobj()
+    _raw = _decoder.decompress(_b64.b64decode(BUNDLE_PACKED, validate=True), BUNDLE_LIMIT + 1)
+    if len(_raw) > BUNDLE_LIMIT or not _decoder.eof or _decoder.unused_data or _decoder.unconsumed_tail:
+        raise RuntimeError('target_bundle_transport_invalid')
+    _bundle = _json.loads(_raw)
     _root = _Path(BUNDLE_ROOT)
     if _root.parent.resolve(strict=True) != _root.parent:
         raise RuntimeError('target_bundle_parent_invalid')
@@ -157,11 +164,14 @@ if __name__ == '__main__':
                 await self.instance.aclose()
     runtime = _DeferredTargetRuntime()
     main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)
-'''.replace('BUNDLE_FILES',repr(files)).replace('BUNDLE_ROOT',repr(str(root/relative)))
+'''.replace('BUNDLE_PACKED',repr(base64.b64encode(zlib.compress(canonical(files),9)).decode()))\
+    .replace('BUNDLE_LIMIT',str(MAX_BUNDLE_JSON_BYTES)).replace('BUNDLE_ROOT',repr(str(root/relative)))
     if template.count("if __name__=='__main__':main()") != 1:
         raise ValueError('target entrypoint slot missing')
     template = template.replace("if __name__=='__main__':main()",entry)
     source = template.replace('RUN_CONFIG = {}','RUN_CONFIG = '+repr(config),1)
+    if len(source.encode())>MAX_NOTEBOOK_SOURCE_BYTES:
+        raise ValueError('provider notebook source byte budget exceeded')
     def role_hash(roles):
         return digest(canonical(sorted((e['role'],e['name'],e['size'],e['sha256'])
                                       for e in entries if e['role'] in roles)))
