@@ -23,6 +23,7 @@ from regional_knowledge.original_intake_controller import OriginalIntakeControll
 from regional_knowledge.read_issuance import capture_read_output
 from regional_knowledge.recovery_journal import RecoveryJournal
 from regional_knowledge.source_import_v2 import STORY_REVISIONS, source_import_v2_handler
+from regional_knowledge.source_import_v3 import FACT_REVISIONS, source_import_v3_handler
 from test_kaggle_public_backend import target
 from test_kaggle_service_startup import HistoryAdapter
 from test_participants import people
@@ -42,19 +43,21 @@ def options(*, research=False, ingestion_id=None, state='complete'):
 
 
 @pytest_asyncio.fixture
-async def intake(target, tmp_path):
+async def intake(target, tmp_path, request):
     t=target
+    versions=FACT_REVISIONS if getattr(request,'param',7)==8 else STORY_REVISIONS
     with t.queue.connect() as db:
         db.execute('DELETE FROM jobs')
         row=db.execute('SELECT expected_json,observed_json FROM bge_runtime_expectations WHERE run_id=?',(t.run,)).fetchone()
         # Exact future installed revisions; the hash/catalog observations remain
         # synthetic as in the existing target fixture.
-        revision_values=dict(zip(('schema_revision','function_revision','executor_revision'),STORY_REVISIONS.wire()))
+        revision_values=dict(zip(('schema_revision','function_revision','executor_revision'),versions.wire()))
         values=[]
         for raw in row:
             value=json.loads(raw);value.update(revision_values);values.append(json.dumps(value))
         db.execute('UPDATE bge_runtime_expectations SET expected_json=?,observed_json=? WHERE run_id=?',(*values,t.run))
-    handler=source_import_v2_handler(revisions=STORY_REVISIONS,check_sha256='a'*64,apply_sha256='b'*64)
+    builder=source_import_v3_handler if versions==FACT_REVISIONS else source_import_v2_handler
+    handler=builder(revisions=versions,check_sha256='a'*64,apply_sha256='b'*64)
     spool=ControlSpool(t.queue,t.auth.p.registry,RecoveryJournal(ConditionalMemoryStore(),stream='synthetic-intake'),HandlerRegistry([handler]))
     originals=object.__new__(OriginalIntakeController)
     originals.queue,originals.spool,originals.participants=t.queue,spool,t.auth.p.registry
@@ -133,6 +136,7 @@ def test_public_rights_requires_existing_verified_distribution_policy():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('intake',[7,8],indirect=True)
 async def test_owner_only_ten_page_stage_is_provenance_bound_and_batched(intake):
     s=intake;result=await staged(s)
     ready=await s.importer.book_ingest(command='validate',principal=s.principal,ingestion_id=result.ingestion_id)
@@ -273,6 +277,7 @@ async def finish_document(s):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('intake',[7,8],indirect=True)
 async def test_source_and_authored_story_activate_only_after_exact_remote_outcome(intake):
     import base64
     import hashlib
@@ -298,7 +303,7 @@ async def test_source_and_authored_story_activate_only_after_exact_remote_outcom
     assert story['default_variant']['body']==body and story['summary']!=body
     assert story['default_variant']['embedding']==[1.]+[0.]*1023
     assert value['original']==s.originals.receipts[result.ingestion_id].original
-    assert entry.command.route=='source.import.v2'
+    assert entry.command.route==('source.import.v3' if s.importer.import_revisions==FACT_REVISIONS else 'source.import.v2')
     assert 'https://' not in entry.command.payload.decode() and 'download_url' not in entry.command.encode().decode()
     assert len(s.originals.calls)==1
     a=s.startup.admission;t=s.t
@@ -310,7 +315,7 @@ async def test_source_and_authored_story_activate_only_after_exact_remote_outcom
     outcome=canonical(dict(codec='rkb.applied-outcome.v1',operation_key=command.operation_key,
         command_sha256=entry.command_sha256,cursor=command.sequence,status='applied',ids=dict(command.ids),
         request_id=command.request_id,person_id=command.person_id,route=command.route,logical_time=command.logical_time,
-        before=list(STORY_REVISIONS.wire()),after=list(STORY_REVISIONS.wire()),handler_sha256=handler.fingerprint,
+        before=list(s.importer.import_revisions.wire()),after=list(s.importer.import_revisions.wire()),handler_sha256=handler.fingerprint,
         result_b64=base64.b64encode(outcome).decode(),result_sha256=hashlib.sha256(outcome).hexdigest()))
     native=ApplyReceipt('synthetic-db',command.operation_key,command.sequence,entry.command_sha256,
         'applied',outcome,hashlib.sha256(outcome).hexdigest(),False)

@@ -168,6 +168,10 @@ class TargetServiceStartup:
         if self.gate.story_supported():
             self.routes.update({'story.search':self.backend.story_search,'story.get':self.backend.story_get,
                 'story.history':self.backend.story_history,'story.variants':self.backend.story_variants})
+        if self.gate.facts_supported():
+            self.routes.update({'source.fact_read':self.backend.source_fact_read,
+                'source.calendar':self.backend.story_calendar,
+                'source.observations':self.backend.story_observation_search})
         self.history=config.history_adapter.bind(spool=config.spool,routes=self.routes,
             binding_current=self.binding_current,writer_generation=config.writer_generation)
         if (self.history.spool is not config.spool or set(self.history.routes)!=set(self.routes)

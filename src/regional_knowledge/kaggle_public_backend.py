@@ -18,6 +18,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from .contracts import EvidenceSearchOutput, FetchOutput, ReadTrace, SearchOutput, SearchResult
 from .kaggle_protocol import Query, QueryFilters, TrustedActorContext, PassageContinuation, PassageReadRequest, StoryReadRequest
+from .kaggle_fact_contracts import FactReadRequest
 from .query_telemetry import ReadRuntime
 from .read_authority import TrustedReadDestination, VerifiedReadAuthority
 from .read_issuance import retain_read_output
@@ -181,12 +182,22 @@ class KaggleSourceBackend:
             'read_trace':ReadTrace(**attempt.correlation(),
                 backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json')}
 
+    @staticmethod
+    def _render_fact(result, *, attempt):
+        return dict(status=result.status,reason=result.reason,items=list(result.records),
+            has_more=result.next_cursor is not None,next_cursor=result.next_cursor,
+            retrieval_mode='indexed_native_source_facts',
+            observed_data_seq=result.observed_data_seq,
+            observed_projection_seq=result.observed_projection_seq,
+            read_trace=ReadTrace(**attempt.correlation(),
+                backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json'))
+
     async def _search(self, query, principal, *, evidence, source_ids=None, limit=3, exact_locator=None,
-                      story_request=None,kinds=('source',),trusted=None):
+                      story_request=None,fact_request=None,kinds=('source',),trusted=None):
         # One budget includes auth, admission, network, native execution and gate.
         deadline = min(time.monotonic()+2,trusted['deadline']) if trusted is not None else time.monotonic()+2
         telemetry = self.read_telemetry
-        exact=exact_locator is not None or story_request is not None
+        exact=exact_locator is not None or story_request is not None or fact_request is not None
         operation='fetch' if exact else 'knowledge_search' if evidence else 'search'
         attempt = telemetry.begin_attempt(operation,**({'request_id':trusted['request_id']} if trusted else {}))
         authority = trusted['authority'] if trusted is not None else None
@@ -219,7 +230,8 @@ class KaggleSourceBackend:
                         actor=TrustedActorContext(person_id=authority.person_id, audience=authority.destination.key,
                             auth_epoch=authority.auth_revision, visibility_epoch=0, context_ref=authority.context_ref),
                         deadline_ms=max(1, int((deadline-time.monotonic())*1000)))
-                    request = (StoryReadRequest(**story_request,**identity) if story_request is not None else
+                    request = (FactReadRequest(**fact_request,**identity) if fact_request is not None else
+                        StoryReadRequest(**story_request,**identity) if story_request is not None else
                         PassageReadRequest(locator=exact_locator, **identity) if exact_locator is not None else
                         Query(query=query, filters=filters, evidence_limit=limit, **identity))
                 except (ValueError, TypeError):
@@ -240,7 +252,7 @@ class KaggleSourceBackend:
                 status, reason = gated.result.status, gated.result.reason
                 if (gated.result.status != 'ok' if exact else gated.result.mode != 'hybrid'):
                     raise ToolError(json.dumps({'status': status, 'reason': reason}))
-                render = (lambda value:self._render_story(value,attempt=attempt)) if story_request is not None else (lambda value: self._render_fetch(value, locator=exact_locator, attempt=attempt)) if exact_locator is not None else (
+                render = (lambda value:self._render_fact(value,attempt=attempt)) if fact_request is not None else (lambda value:self._render_story(value,attempt=attempt)) if story_request is not None else (lambda value: self._render_fetch(value, locator=exact_locator, attempt=attempt)) if exact_locator is not None else (
                     lambda value: self._render(value, evidence=evidence, attempt=attempt))
                 output = render(gated.result)
                 if not retain_read_output(self.source_gate, gated, render,
@@ -343,3 +355,16 @@ class KaggleSourceBackend:
         if filters or mode!='hybrid' or order!='updated' or cursor is not None or not 1<=limit<=5:
             raise ToolError('{"status":"unavailable","reason":"unsupported_target_story_search"}')
         return await self._search(query,principal,evidence=True,kinds=('story',),limit=limit)
+
+    async def story_calendar(self,principal,*,month,day,calendar='gregorian',limit=3,cursor=None):
+        return await self._search(None,principal,evidence=True,kinds=('fact',),fact_request=dict(
+            action='calendar',month=month,day=day,calendar=calendar,limit=limit,cursor=cursor))
+
+    async def source_fact_read(self,principal,*,source_id,limit=3,cursor=None):
+        """Fixed controller route; no new public MCP tool is introduced."""
+        return await self._search(None,principal,evidence=True,kinds=('fact',),fact_request=dict(
+            action='assertions',source_id=source_id,limit=limit,cursor=cursor))
+
+    async def story_observation_search(self,principal,*,metric_key,unit_code=None,limit=3,cursor=None):
+        return await self._search(None,principal,evidence=True,kinds=('fact',),fact_request=dict(
+            action='observations',metric_key=metric_key,unit_code=unit_code,limit=limit,cursor=cursor))

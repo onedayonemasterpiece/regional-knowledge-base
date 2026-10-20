@@ -71,19 +71,26 @@ class FactReadResult(ReadIdentity):
     observed_visibility_epoch: Nonnegative | None = None
     observed_database_generation: Identifier | None = None
     reason: Literal['projection_lag', 'deadline_exceeded', 'not_ready', 'disconnected',
-        'caller_cancelled', 'turn_replaced', 'invalid_input', 'access_denied',
+        'caller_cancelled', 'turn_replaced', 'query_too_large', 'invalid_input', 'access_denied',
         'prior_write_pending', 'evidence_withdrawn', 'internal_error'] | None = None
     prior_write_pending: bool = False
 
     @model_validator(mode='after')
     def complete_dependencies(self):
+        if self.status == 'ok' and (self.reason is not None or self.prior_write_pending or
+                any(v is None for v in (self.observed_data_seq,self.observed_projection_seq,
+                    self.observed_visibility_epoch,self.observed_database_generation))):
+            raise ValueError('fact read requires exact native frontier')
         if self.status != 'ok' and (self.records or self.evidence or self.next_cursor):
             raise ValueError('failed fact read cannot carry records')
         if len(self.records) != len(self.evidence):
             raise ValueError('every fact record requires exact evidence dependencies')
         for record, evidence in zip(self.records, self.evidence):
             if (evidence.kind != 'fact' or record.get('id') != evidence.id or
-                    record.get('source_id') not in evidence.dependencies.source_ids):
+                    evidence.dependencies.source_ids != (record.get('source_id'),) or
+                    evidence.text != record.get('proposition') or
+                    len(evidence.dependencies.source_revisions)!=1 or
+                    evidence.dependencies.source_revisions[0].content_revision != record.get('source_revision')):
                 raise ValueError('fact record/evidence pairing required')
         if len(canonical(self.model_dump(mode='json'))) > 128 * 1024:
             raise ValueError('fact read result bound')

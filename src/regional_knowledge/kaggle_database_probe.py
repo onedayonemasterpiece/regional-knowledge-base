@@ -56,6 +56,17 @@ STORY_TRIGGERS=frozenset((table,name) for table,name in (
     ('stories','story_source_fence'),('story_search','story_projection_fence'),
     ('applied_ops','capture_story_import_receipt'),('story_history_receipts','immutable_story_receipt'),
     ('stories','immutable_story_current'),('story_search','immutable_story_projection')))
+FACT_TABLES=frozenset({'source_event_dates','source_observations'})
+FACT_FUNCTIONS=frozenset('rkb_v4.'+name for name in (
+    'source_fact_proofs_v1(jsonb,jsonb)','check_source_facts_v1(jsonb)','project_source_facts_v1()',
+    'check_source_import_v3(bytea,jsonb,jsonb,text)','apply_source_import_v3(bytea,jsonb,jsonb,text)',
+    'capture_story_facts_receipt_v1()','verify_source_story_origins_v2(uuid[])',
+    'read_source_calendar_v1(text,integer,integer,uuid,integer,uuid,integer,integer)',
+    'read_source_observations_v1(text,text,uuid,uuid,integer,integer)',
+    'read_source_assertions_v1(uuid,uuid,integer)'))
+FACT_TRIGGERS=frozenset({('source_event_dates','immutable_source_date'),
+    ('source_observations','immutable_source_observation'),
+    ('story_assertion_versions','project_source_facts'),('applied_ops','capture_story_facts_receipt')})
 
 # Only native metadata in the target namespace; no source/document rows. Each
 # query is wrapped with C ordering, row LIMIT and payload octet-length guards.
@@ -219,8 +230,11 @@ class NativeDatabaseProbe:
                             state = json.loads(row[0])
                             fields = self._state(state)
                             if (bool(STORY_TABLES.intersection(observed['tables'])) !=
-                                    (state['schema_revision']=='rkb-v4-sql001-007-v1')):
+                                    (state['schema_revision'] in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1'))):
                                 raise DatabaseProbeUnavailable('database_story_revision_mismatch')
+                            if (bool(FACT_TABLES.intersection(observed['tables'])) !=
+                                    (state['schema_revision']=='rkb-v4-sql001-008-v1')):
+                                raise DatabaseProbeUnavailable('database_fact_revision_mismatch')
                             add('semantics','current',{key:state[key] for key in (
                                 'schema_revision','function_revision','executor_revision','last_migration_id','last_migration_hash')})
             return prefix + b','.join(records) + suffix, fields
@@ -241,6 +255,10 @@ class NativeDatabaseProbe:
         tables=TABLES|STORY_TABLES if stories else TABLES
         functions=FUNCTIONS|STORY_FUNCTIONS if stories else FUNCTIONS
         required_triggers=TRIGGERS|STORY_TRIGGERS if stories else TRIGGERS
+        facts=bool(FACT_TABLES.intersection(observed['tables']))
+        if facts:
+            tables=tables|FACT_TABLES;functions=functions|FACT_FUNCTIONS
+            required_triggers=required_triggers|FACT_TRIGGERS
         env = observed['environment'].get('runtime',{})
         if (type(env.get('server_version_num')) is not int or env['server_version_num']//10000 != 17
                 or env.get('vector_version') != '0.8.2' or env.get('vector_schema') != 'public'
@@ -253,12 +271,12 @@ class NativeDatabaseProbe:
             raise DatabaseProbeUnavailable('database_functions_incomplete')
         for name in functions:
             function = observed['functions'][name]
-            table_function = any(name.startswith('rkb_v4.' + stem) for stem in ('lexical_candidates(', 'dense_candidates(', 'hydrate(', 'lexical_candidates_scoped(', 'dense_candidates_scoped(', 'hydrate_scoped(', 'story_lexical_candidates_v1(', 'story_dense_candidates_v1(', 'story_hydrate_v1('))
+            table_function = any(name.startswith('rkb_v4.' + stem) for stem in ('lexical_candidates(', 'dense_candidates(', 'hydrate(', 'lexical_candidates_scoped(', 'dense_candidates_scoped(', 'hydrate_scoped(', 'story_lexical_candidates_v1(', 'story_dense_candidates_v1(', 'story_hydrate_v1(', 'read_source_calendar_v1(', 'read_source_observations_v1(', 'read_source_assertions_v1('))
             result = ('record' if table_function else 'uuid[]' if 'checked_source_scope(' in name else
-                      'jsonb' if 'read_story_v1(' in name else
+                      'jsonb' if any(stem in name for stem in ('read_story_v1(', 'source_fact_proofs_v1(')) else
                       'void' if any(stem in name for stem in ('publish_read_frontier(', 'prepare_read_frontier(')) else
-                      'boolean' if any(stem in name for stem in ('check_source_withdraw_v1(', 'check_source_import_v1(', 'check_source_import_v2(', 'verify_source_story_origins_v1(')) else
-                      'bytea' if any(stem in name for stem in ('apply_source_withdraw_v1(', 'apply_source_import_v1(', 'apply_source_import_v2(')) else 'trigger')
+                      'boolean' if any(stem in name for stem in ('check_source_withdraw_v1(', 'check_source_import_v1(', 'check_source_import_v2(', 'verify_source_story_origins_v1(', 'check_source_facts_v1(', 'check_source_import_v3(', 'verify_source_story_origins_v2(')) else
+                      'bytea' if any(stem in name for stem in ('apply_source_withdraw_v1(', 'apply_source_import_v1(', 'apply_source_import_v2(', 'apply_source_import_v3(')) else 'trigger')
             if (function.get('kind') != 'f' or function.get('security_definer') is not False
                     or function.get('returns_set') is not table_function or function.get('result') != result
                     or not isinstance(function.get('definition'),str)):
@@ -274,6 +292,11 @@ class NativeDatabaseProbe:
                 or any(indexes.get(name,{}).get('table')!='story_search'
                     for name in ('story_search_dense','story_search_fts'))):
             raise DatabaseProbeUnavailable('database_story_indexes_not_ready')
+        if facts and any(indexes.get(name,{}).get('method')!='btree' or
+                indexes.get(name,{}).get('table')!=table for name,table in (
+                    ('source_event_day','source_event_dates'),('source_event_source','source_event_dates'),
+                    ('source_observation_metric','source_observations'),('source_observation_source','source_observations'))):
+            raise DatabaseProbeUnavailable('database_fact_indexes_not_ready')
         triggers = {(row.get('table'),row.get('name')) for row in observed['triggers'].values() if not row.get('internal')}
         if not required_triggers <= triggers or any(row.get('enabled') not in ('O','A') for row in observed['triggers'].values()):
             raise DatabaseProbeUnavailable('database_triggers_not_ready')

@@ -30,6 +30,10 @@ atomically while applying exact resolved source commands, never by a periodic
 whole-corpus scan. A new catalog/ACL pin and native metadata count must be
 measured before accepting schema8. An already initialized schema7 generation
 requires a supported ordered semantic transition; appending SQL008 is refused.
+Schema8 resolves new imports only as `source.import.v3` under
+`rkb-v4-source-story-facts-v3`; the full existing source/story payload codec is
+retained. New exact selected-evidence literal/index preconditions belong to v3.
+Existing v2 accepted commands keep their exact schema7 handler and bytes.
 
 The native facts read contract has fixed actions and keyset pagination. Its
 cursor binds the verified actor, exact filters, database generation and observed

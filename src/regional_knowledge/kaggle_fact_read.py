@@ -130,6 +130,12 @@ async def execute_fact_read(request: FactReadRequest, *, acquire):
                             record, item, position = _record(row, request.action)
                             if request.source_id is not None and record['source_id'] != request.source_id:
                                 raise ReadUnavailable('internal_error')
+                            if request.action=='calendar' and any(record['fact'][key]!=getattr(request,key)
+                                    for key in ('month','day','calendar')):
+                                raise ReadUnavailable('internal_error')
+                            if request.action=='observations' and (record['fact']['metric_key']!=request.metric_key
+                                    or request.unit_code is not None and record['fact']['unit_code']!=request.unit_code):
+                                raise ReadUnavailable('internal_error')
                             records.append(record); evidence.append(item); positions.append(position)
                         result = FactReadResult(**_identity(request), status='ok',
                             records=tuple(records), evidence=tuple(evidence),

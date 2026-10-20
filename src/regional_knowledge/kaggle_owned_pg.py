@@ -34,8 +34,10 @@ _LOG=logging.getLogger(__name__)
 SQL_ARTIFACTS = ('001_search.sql', '002_recovery.sql', '003_search_scope.sql',
                  '004_read_fences.sql', '005_source_withdraw.sql', '006_source_import.sql')
 STORY_SQL_ARTIFACTS=SQL_ARTIFACTS+('007_source_stories.sql',)
+FACT_SQL_ARTIFACTS=STORY_SQL_ARTIFACTS+('008_source_facts.sql',)
 
 def sql_artifacts(schema_revision):
+    if schema_revision=='rkb-v4-sql001-008-v1':return FACT_SQL_ARTIFACTS
     if schema_revision=='rkb-v4-sql001-007-v1':return STORY_SQL_ARTIFACTS
     return SQL_ARTIFACTS
 
@@ -448,11 +450,16 @@ class OwnedPostgres:
                     GRANT SELECT ON rkb_v4.sources,rkb_v4.revisions,rkb_v4.active_revision,
                         rkb_v4.passage_search,rkb_v4.recovery_state,rkb_v4.read_frontier,
                         rkb_v4.source_visibility TO rkb_reader;''',prepare=False)
-                if spec.schema_revision=='rkb-v4-sql001-007-v1':
+                if len(selected_sql)>=7:
                     await admin.execute('GRANT SELECT ON rkb_v4.source_regions,rkb_v4.story_assertion_versions,'
                         'rkb_v4.stories,rkb_v4.story_versions,rkb_v4.story_variant_versions,rkb_v4.story_search,'
                         'rkb_v4.source_story_pending,rkb_v4.story_history_receipts TO rkb_reader')
-                for signature in READER_FUNCTIONS+(STORY_READER_FUNCTIONS if len(selected_sql)==7 else ()):
+                fact_functions=()
+                if len(selected_sql)==8:
+                    from .kaggle_fact_read import FACT_READER_FUNCTIONS
+                    fact_functions=FACT_READER_FUNCTIONS
+                    await admin.execute('GRANT SELECT ON rkb_v4.source_event_dates,rkb_v4.source_observations TO rkb_reader')
+                for signature in READER_FUNCTIONS+(STORY_READER_FUNCTIONS if len(selected_sql)>=7 else ())+fact_functions:
                     await admin.execute('GRANT EXECUTE ON FUNCTION rkb_v4.'+signature+' TO rkb_reader')
                 await admin.execute(sql.SQL('REVOKE ALL ON DATABASE {} FROM PUBLIC').format(sql.Identifier(spec.dbname)))
                 await admin.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO rkb_writer,rkb_reader').format(sql.Identifier(spec.dbname)))

@@ -390,9 +390,14 @@ def decode_envelope(data: bytes) -> Query | QueryResult | PassageReadRequest | P
                      parse_constant=_reject_constant)
     if not isinstance(raw, dict):
         raise ValueError("envelope must be an object")
-    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT", "STORY_READ_RESULT") else QUERY_MAX_BYTES
+    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT", "STORY_READ_RESULT", "FACT_READ_RESULT") else QUERY_MAX_BYTES
     if len(data) > limit:
         raise ValueError("query_too_large" if raw.get("type") == "QUERY" else "control frame too large")
+    if raw.get('type') in ('FACT_READ', 'FACT_READ_RESULT'):
+        # The fixed optional domain contract imports the base wire models; load
+        # it after this module is initialized rather than adding an import cycle.
+        from .kaggle_fact_contracts import FactReadRequest, FactReadResult
+        return (FactReadRequest if raw['type']=='FACT_READ' else FactReadResult).model_validate_json(data)
     # JSON-mode strict validation accepts JSON arrays for immutable tuples.
     return _ADAPTER.validate_json(data)
 

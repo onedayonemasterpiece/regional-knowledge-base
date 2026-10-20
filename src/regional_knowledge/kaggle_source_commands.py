@@ -44,6 +44,9 @@ def decode_command(data):
         elif command.route=='source.import.v2':
             from .source_import_v2 import validate_import_v2_command
             validate_import_v2_command(command)
+        elif command.route=='source.import.v3':
+            from .source_import_v3 import validate_import_v3_command
+            validate_import_v3_command(command)
         elif (command.route!=SOURCE_WITHDRAW or command.kind!='domain_command'
               or set(command.ids)!={'source_id'} or set(command.expected_revisions)!={'eligibility_revision'}
               or command.payload!=b'{"withdrawn":true}'):
@@ -120,6 +123,9 @@ def fixed_registry(database,entries):
         elif entry['route']=='source.import.v2':
             from .source_import_v2 import source_import_v2_handler
             handler=source_import_v2_handler(revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
+        elif entry['route']=='source.import.v3':
+            from .source_import_v3 import source_import_v3_handler
+            handler=source_import_v3_handler(revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
         elif entry['route']==SOURCE_WITHDRAW:
             handler=HandlerSpec('domain_command',SOURCE_WITHDRAW,revisions,
                 PgFunction('check_source_withdraw_v1',entry['check_sha256']),PgFunction('apply_source_withdraw_v1',entry['apply_sha256']),

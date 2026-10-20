@@ -178,6 +178,8 @@ class KnowledgeMCPServer(MCPServer):
         allowed = {'search','fetch','knowledge_search','profile'}
         if getattr(self,'_target_story_available',False):
             allowed.update({'story_search','story_get','story_history','story_variants'})
+        if getattr(self,'_target_facts_available',False):
+            allowed.update({'story_calendar','story_observation_search'})
         if getattr(self,'_target_import_available',False):
             allowed.update({'book_ingest','book_pages'})
         if getattr(self,'_target_source_profile',False) and name not in allowed:
@@ -425,6 +427,7 @@ def build_server(
     mcp._target_source_profile=selected=='kaggle_source'
     mcp._target_import_available = selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None
     mcp._target_story_available = (selected=='kaggle_source' and target_startup.gate.story_supported())
+    mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
     mcp._target_startup=target_startup
     mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
     worker_queue = getattr(backend, 'worker_queue', None)
@@ -487,6 +490,25 @@ def build_server(
     # Optional narrow function-call bundles for the client application's own Live agent.
     # The default read-only Live surface above remains unchanged.
     story_profiles = {"full", "story_reader", "story_contributor", "story_editor"}
+    if profile in story_profiles and mcp._target_facts_available:
+        @mcp.tool(name='story_calendar',title='Historical events on a calendar day',
+            description='Native indexed source-attributed exact event dates, including facts without a Story. '
+                'Explicit stated calendar; no publication/approximate date substitution or calendar conversion.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_source_calendar(month:Annotated[int,Field(ge=1,le=12)],day:Annotated[int,Field(ge=1,le=31)],
+                calendar:Literal['gregorian','julian','unspecified']='gregorian',
+                limit:Annotated[int,Field(ge=1,le=10)]=3,cursor:str|None=None)->dict[str,Any]:
+            return await backend.story_calendar(_principal(),month=month,day=day,calendar=calendar,limit=limit,cursor=cursor)
+
+        @mcp.tool(name='story_observation_search',title='Find sourced numeric observations',
+            description='Native exact metric/unit indexed source quantities, including facts without a Story. '
+                'Preserves original wording and exact decimal strings; no aggregation, conversion or identity merge.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_source_observations(metric_key:str,unit_code:str|None=None,
+                limit:Annotated[int,Field(ge=1,le=10)]=3,cursor:str|None=None)->dict[str,Any]:
+            return await backend.story_observation_search(_principal(),metric_key=metric_key,
+                unit_code=unit_code,limit=limit,cursor=cursor)
+
     if profile in story_profiles and mcp._target_story_available:
         @mcp.tool(name='story_get',title='Read saved source-bound narrative',
             description='Exact saved model-authored basic Variant body and default reference, with current source-access recheck. '

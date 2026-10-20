@@ -30,6 +30,7 @@ from .original_intake import OriginalIntakeError, TERMINAL_REJECTIONS, VerifiedO
 from .participants import RequestAuthority
 from .source_import import MAX_IMPORT_BYTES
 from .source_import_v2 import IMPORT_V2_DEPENDENCY, SOURCE_IMPORT_V2, STORY_REVISIONS, resolved_import_v2_command
+from .source_import_v3 import IMPORT_V3_DEPENDENCY, SOURCE_IMPORT_V3, FACT_REVISIONS, resolved_import_v3_command
 from .story_contracts import StageStoryCandidateInput
 from .stage_graph import StagedGraph, compile_model_stage, merge_stage, validate_graph
 
@@ -83,9 +84,14 @@ class KaggleSourceImporter:
         if (originals.queue is not self.queue or originals.spool is not self.spool
                 or originals.participants is not self.participants or type(tokenizer) is not HfImportTokenCounter):
             raise TypeError('existing native intake, control owners and exact tokenizer required')
-        handler = self.spool.registry.handlers.get(('domain_command',SOURCE_IMPORT_V2,*STORY_REVISIONS.wire()))
-        if handler is None or handler.dependency != IMPORT_V2_DEPENDENCY:
+        choices = [(versions, builder) for route,versions,dependency,builder in (
+            (SOURCE_IMPORT_V2,STORY_REVISIONS,IMPORT_V2_DEPENDENCY,resolved_import_v2_command),
+            (SOURCE_IMPORT_V3,FACT_REVISIONS,IMPORT_V3_DEPENDENCY,resolved_import_v3_command))
+            if (handler:=self.spool.registry.handlers.get(('domain_command',route,*versions.wire()))) is not None
+            and handler.dependency == dependency]
+        if len(choices)!=1:
             raise TypeError('exact future source findings/narrative handler required before intake')
+        self.import_revisions,self.import_command=choices[0]
         self.originals, self.tokenizer = originals, tokenizer
         self._lock = asyncio.Lock()
         self.output_gate = OwnerImportOutputGate(self)
@@ -110,7 +116,7 @@ class KaggleSourceImporter:
                     return False
                 expected = json.loads(runtime['expected_json'])
                 return (expected['hashes']['launch_config'] == self.launch_config_sha256
-                    and tuple(expected[key] for key in ('schema_revision','function_revision','executor_revision')) == STORY_REVISIONS.wire())
+                    and tuple(expected[key] for key in ('schema_revision','function_revision','executor_revision')) == self.import_revisions.wire())
         except Exception:
             return False
 
@@ -524,7 +530,9 @@ class KaggleSourceImporter:
             if (runtime['accepted_generation'] != binding.connection_generation
                     or expected['database_generation'] != binding.database_generation):
                 raise failure('target_runtime_changed')
-            return Revisions(*(expected[key] for key in ('schema_revision', 'function_revision', 'executor_revision')))
+            revisions=Revisions(*(expected[key] for key in ('schema_revision', 'function_revision', 'executor_revision')))
+            if revisions!=self.import_revisions:raise failure('target_runtime_changed')
+            return revisions
 
     async def _stage_command(self, access, row, payload):
         # Same canonical intake lock as source history/genesis. Reject unresolved
@@ -541,7 +549,7 @@ class KaggleSourceImporter:
             sequence = head.reference.last_sequence if head else 0
             if sequence != scope['accepted_sequence']:
                 raise failure('source_history_unavailable')
-            command = resolved_import_v2_command(sequence=sequence+1, operation_key=self._operation(row),
+            command = self.import_command(sequence=sequence+1, operation_key=self._operation(row),
                 request_id=row['request_id'], person_id=row['person_id'],
                 logical_time=datetime.now(timezone.utc).isoformat(), revisions=self._revisions(access.binding),
                 source_id=row['source_id'], payload=payload)
