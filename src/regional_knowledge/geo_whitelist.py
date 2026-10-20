@@ -118,7 +118,8 @@ def build_geo_whitelist(*,source_inventory_sha256,expected_counts,entities,menti
                 mention.get('evidence') or {},owner)
             keys.append(key)
             if error:failures.append(error)
-        spelling=found[0].get('exact_source_spelling')
+        spelling=next((mention['exact_source_spelling'] for mention in found
+            if mention.get('exact_source_spelling')),None)
         if not spelling:
             block(row,'rkb_entities','missing_source_label','source-spelling:'+identity);continue
         metadata=row.get('metadata') or {}

@@ -98,7 +98,8 @@ class Provenance(Contract):
 
 
 class LegacyResolution(Contract):
-    contract_version: Literal['rkb.geo_claim.v1']
+    # Retain the recorded producer contract verbatim; neither is an owner receipt.
+    contract_version: Literal['rkb.geo_claim.v1','cartography.resolve.v1']
     attempt_ref: Annotated[str,Field(pattern=r'^geoa_[0-9a-f]{32}$')]
     resolution: Literal['owner_alias_candidate']
     identity_state: Short
