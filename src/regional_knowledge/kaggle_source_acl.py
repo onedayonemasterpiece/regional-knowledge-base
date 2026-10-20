@@ -21,14 +21,22 @@ ACL_SQL = """SELECT kind, name, payload FROM (
  UNION ALL SELECT 'column',c.relname||'.'||a.attname,a.attacl::text
  FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
  JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='rkb_v4' AND a.attacl IS NOT NULL
- UNION ALL SELECT 'function',n.nspname||'.'||p.proname||':'||p.proargtypes::text,
+ UNION ALL SELECT 'function',n.nspname||'.'||p.proname||':'||coalesce((
+    SELECT string_agg(tn.nspname||'.'||t.typname,',' ORDER BY a.ordinal)
+    FROM unnest(p.proargtypes) WITH ORDINALITY a(type_oid,ordinal)
+    JOIN pg_type t ON t.oid=a.type_oid JOIN pg_namespace tn ON tn.oid=t.typnamespace),''),
     jsonb_build_array(pg_get_userbyid(p.proowner),p.proacl)::text
  FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='rkb_v4'
- UNION ALL SELECT 'default',d.defaclrole::text||':'||d.defaclnamespace::text||':'||d.defaclobjtype::text,d.defaclacl::text
+ UNION ALL SELECT 'default',pg_get_userbyid(d.defaclrole)||':'||
+    CASE WHEN d.defaclnamespace=0 THEN '*' ELSE
+        (SELECT nspname::text FROM pg_namespace WHERE oid=d.defaclnamespace) END||':'||
+    d.defaclobjtype::text,d.defaclacl::text
  FROM pg_default_acl d
  UNION ALL SELECT 'database',datname,jsonb_build_array(pg_get_userbyid(datdba),datacl)::text
  FROM pg_database WHERE datname=current_database()
- UNION ALL SELECT 'setting',setdatabase::text||':'||setrole::text,setconfig::text FROM pg_db_role_setting
+ UNION ALL SELECT 'setting',
+    CASE WHEN setdatabase=0 THEN '*' ELSE (SELECT datname::text FROM pg_database WHERE oid=setdatabase) END||':'||
+    CASE WHEN setrole=0 THEN '*' ELSE pg_get_userbyid(setrole) END,setconfig::text FROM pg_db_role_setting
  ) q ORDER BY kind COLLATE "C",name COLLATE "C" LIMIT 513"""
 
 

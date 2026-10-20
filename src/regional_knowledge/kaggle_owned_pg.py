@@ -33,9 +33,91 @@ _LOG=logging.getLogger(__name__)
 
 SQL_ARTIFACTS = ('001_search.sql', '002_recovery.sql', '003_search_scope.sql',
                  '004_read_fences.sql', '005_source_withdraw.sql', '006_source_import.sql')
+STORY_SQL_ARTIFACTS=SQL_ARTIFACTS+('007_source_stories.sql',)
+FACT_SQL_ARTIFACTS=STORY_SQL_ARTIFACTS+('008_source_facts.sql',)
+EDITORIAL_SQL_ARTIFACTS=FACT_SQL_ARTIFACTS+('009_story_editorial.sql',)
+CASE_SQL_ARTIFACTS=EDITORIAL_SQL_ARTIFACTS+('010_disagreement_cases.sql',)
+DOMAIN_SQL_ARTIFACTS=CASE_SQL_ARTIFACTS+('011_geo_identity_manifest.sql',)
+
+def sql_artifacts(schema_revision):
+    if schema_revision=='rkb-v4-sql001-011-v1':return DOMAIN_SQL_ARTIFACTS
+    if schema_revision=='rkb-v4-sql001-010-v1':return CASE_SQL_ARTIFACTS
+    if schema_revision=='rkb-v4-sql001-009-v1':return EDITORIAL_SQL_ARTIFACTS
+    if schema_revision=='rkb-v4-sql001-008-v1':return FACT_SQL_ARTIFACTS
+    if schema_revision=='rkb-v4-sql001-007-v1':return STORY_SQL_ARTIFACTS
+    return SQL_ARTIFACTS
+
+STORY_READER_FUNCTIONS=('read_story_v1(uuid,text,bigint,bigint,integer)',
+    'story_lexical_candidates_v1(text,integer,uuid[])','story_dense_candidates_v1(public.vector,integer,uuid[])',
+    'story_hydrate_v1(uuid[],uuid[])')
+
 READER_FUNCTIONS = ('lexical_candidates(text,integer)', 'dense_candidates(public.vector,integer)',
     'hydrate(uuid[])', 'checked_source_scope(uuid[])', 'lexical_candidates_scoped(text,integer,uuid[])',
     'dense_candidates_scoped(public.vector,integer,uuid[])', 'hydrate_scoped(uuid[],uuid[])')
+
+
+async def configure_native_roles(admin,*,selected_sql,dbname):
+    """Harden a newly owned native cluster, using the exact bootstrap grant path.
+
+    The caller owns the transaction. Roles must be absent; this function never
+    adopts existing users or extends privileges from caller-provided SQL names.
+    """
+    selected_sql=tuple(selected_sql)
+    if selected_sql not in (SQL_ARTIFACTS,STORY_SQL_ARTIFACTS,FACT_SQL_ARTIFACTS,
+            EDITORIAL_SQL_ARTIFACTS,CASE_SQL_ARTIFACTS,DOMAIN_SQL_ARTIFACTS):
+        raise ValueError('exact reviewed native SQL prefix required')
+    if type(dbname) is not str or not re.fullmatch(r'[a-z][a-z0-9_]{0,62}',dbname):
+        raise ValueError('exact owned native database name required')
+    await admin.execute('''CREATE ROLE rkb_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        CREATE ROLE rkb_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+        REVOKE ALL ON SCHEMA rkb_v4 FROM PUBLIC;
+        REVOKE ALL ON ALL TABLES IN SCHEMA rkb_v4 FROM PUBLIC;
+        REVOKE ALL ON ALL FUNCTIONS IN SCHEMA rkb_v4 FROM PUBLIC;
+        ALTER DEFAULT PRIVILEGES FOR ROLE rkb_bootstrap IN SCHEMA rkb_v4 REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+        GRANT USAGE ON SCHEMA rkb_v4 TO rkb_writer,rkb_reader;
+        GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA rkb_v4 TO rkb_writer;
+        GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA rkb_v4 TO rkb_writer;
+        GRANT SELECT ON rkb_v4.sources,rkb_v4.revisions,rkb_v4.active_revision,
+            rkb_v4.passage_search,rkb_v4.recovery_state,rkb_v4.read_frontier,
+            rkb_v4.source_visibility TO rkb_reader;''',prepare=False)
+    if len(selected_sql)>=7:
+        await admin.execute('GRANT SELECT ON rkb_v4.source_regions,rkb_v4.story_assertion_versions,'
+            'rkb_v4.stories,rkb_v4.story_versions,rkb_v4.story_variant_versions,rkb_v4.story_search,'
+            'rkb_v4.source_story_pending,rkb_v4.story_history_receipts TO rkb_reader')
+    fact_functions=()
+    if len(selected_sql)>=8:
+        from .kaggle_fact_read import FACT_READER_FUNCTIONS
+        fact_functions=FACT_READER_FUNCTIONS
+        await admin.execute('GRANT SELECT ON rkb_v4.source_event_dates,rkb_v4.source_observations TO rkb_reader')
+    domain_functions=()
+    if len(selected_sql)>=9:
+        await admin.execute('GRANT SELECT ON rkb_v4.editorial_story_heads,rkb_v4.editorial_story_versions,'
+            'rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,rkb_v4.editorial_story_receipts,'
+            'rkb_v4.editorial_story_search,rkb_v4.story_editor_grants,rkb_v4.source_catalog,'
+            'rkb_v4.source_passage_provenance TO rkb_reader')
+        await admin.execute('GRANT SELECT(source_id,source_revision,manifest) ON rkb_v4.source_manifests TO rkb_reader')
+        await admin.execute('GRANT SELECT(source_id,revision,original_sha256) ON rkb_v4.source_import_origins TO rkb_reader')
+        domain_functions=('read_story_edit_context_v1(uuid,uuid)','story_editor_role_v1(uuid,uuid)','read_editorial_story_v1(uuid,bigint,text,bigint,integer,uuid)',
+            'editorial_lexical_candidates_v1(text,integer,uuid[])',
+            'editorial_dense_candidates_v1(public.vector,integer,uuid[])','editorial_hydrate_v1(uuid[],uuid[])',
+            'read_source_manifest_v1(uuid)','find_source_catalog_v1(text,integer)','source_passage_metadata_v1(uuid[])')
+    if len(selected_sql)>=10:
+        from .kaggle_domain_schema import TABLES_10
+        await admin.execute('GRANT SELECT ON '+','.join('rkb_v4.'+name for name in sorted(TABLES_10))+' TO rkb_reader')
+        await admin.execute('GRANT SELECT(operation_key,sequence,status,command_bytes,command_sha256,outcome_bytes) ON rkb_v4.applied_ops TO rkb_reader')
+        domain_functions+=('verify_disagreement_origins_v1(uuid[])','case_role_v1(uuid,uuid)','case_sources_v1(uuid)',
+            'read_disagreement_v1(uuid,uuid,text,bigint,integer,bigint,uuid,bigint,uuid)',
+            'read_disagreement_operation_v1(uuid,uuid,text)')
+    if len(selected_sql)>=11:
+        from .kaggle_domain_schema import TABLES_11
+        await admin.execute('GRANT SELECT ON '+','.join('rkb_v4.'+name for name in sorted(TABLES_11))+' TO rkb_reader')
+        domain_functions+=('read_source_graph_v1(uuid,uuid,text,uuid,text,integer)','read_geo_identity_v1(uuid,uuid,text,text,text,integer,uuid,integer)',
+            'read_geo_members_v1(uuid,uuid,text,text,integer)')
+    for signature in READER_FUNCTIONS+(STORY_READER_FUNCTIONS if len(selected_sql)>=7 else ())+fact_functions+domain_functions:
+        await admin.execute('GRANT EXECUTE ON FUNCTION rkb_v4.'+signature+' TO rkb_reader')
+    await admin.execute(sql.SQL('REVOKE ALL ON DATABASE {} FROM PUBLIC').format(sql.Identifier(dbname)))
+    await admin.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO rkb_writer,rkb_reader').format(sql.Identifier(dbname)))
 
 
 def canonical(value):
@@ -353,7 +435,8 @@ class OwnedPostgres:
             if account.pw_gid!=spec.gid:raise KeyError
         except KeyError:
             raise BootstrapUnavailable('native_pg_service_account_unverified') from None
-        files = {name:(Path(sql_root)/name).read_bytes() for name in SQL_ARTIFACTS}
+        selected_sql=sql_artifacts(spec.schema_revision)
+        files = {name:(Path(sql_root)/name).read_bytes() for name in selected_sql}
         if intent.get('sql_hashes') != {name:digest(data) for name,data in files.items()}:
             raise BootstrapUnavailable('native_pg_sql_binding_mismatch')
         await asyncio.to_thread(ensure_private_runtime_root,native_uid=spec.uid,native_gid=spec.gid)
@@ -416,31 +499,15 @@ class OwnedPostgres:
             await admin.commit()
             async with admin.transaction():
                 await admin.execute('CREATE EXTENSION vector WITH SCHEMA public')
-                for name in SQL_ARTIFACTS[:2]:
+                for name in selected_sql[:2]:
                     await admin.execute(files[name].decode(),prepare=False)
             await initialize_database(admin,database_generation=spec.database_generation,
                 writer_generation=spec.writer_generation,
                 revisions=Revisions(spec.schema_revision,spec.function_revision,spec.executor_revision))
             async with admin.transaction():
-                for name in SQL_ARTIFACTS[2:]:
+                for name in selected_sql[2:]:
                     await admin.execute(files[name].decode(),prepare=False)
-                await admin.execute('''CREATE ROLE rkb_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-                    CREATE ROLE rkb_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-                    REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-                    REVOKE ALL ON SCHEMA rkb_v4 FROM PUBLIC;
-                    REVOKE ALL ON ALL TABLES IN SCHEMA rkb_v4 FROM PUBLIC;
-                    REVOKE ALL ON ALL FUNCTIONS IN SCHEMA rkb_v4 FROM PUBLIC;
-                    ALTER DEFAULT PRIVILEGES FOR ROLE rkb_bootstrap IN SCHEMA rkb_v4 REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
-                    GRANT USAGE ON SCHEMA rkb_v4 TO rkb_writer,rkb_reader;
-                    GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA rkb_v4 TO rkb_writer;
-                    GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA rkb_v4 TO rkb_writer;
-                    GRANT SELECT ON rkb_v4.sources,rkb_v4.revisions,rkb_v4.active_revision,
-                        rkb_v4.passage_search,rkb_v4.recovery_state,rkb_v4.read_frontier,
-                        rkb_v4.source_visibility TO rkb_reader;''',prepare=False)
-                for signature in READER_FUNCTIONS:
-                    await admin.execute('GRANT EXECUTE ON FUNCTION rkb_v4.'+signature+' TO rkb_reader')
-                await admin.execute(sql.SQL('REVOKE ALL ON DATABASE {} FROM PUBLIC').format(sql.Identifier(spec.dbname)))
-                await admin.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO rkb_writer,rkb_reader').format(sql.Identifier(spec.dbname)))
+                await configure_native_roles(admin,selected_sql=selected_sql,dbname=spec.dbname)
         # Fresh empty projections contain no accepted/source data; explicitly
         # publish only cursor zero under the same trusted writer lock.
         admin = await self.connect(**spec.connection(reader=False))

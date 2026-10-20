@@ -74,6 +74,14 @@ def reconcile_launch(api, queue, run, ref):
     queue.launch_record(run['id'],ref,provider_version=observed['version'])
     return True
 
+def target_sql_hashes(target, repository):
+    """Pin exactly the migration prefix the native initializer will execute."""
+    from regional_knowledge.kaggle_owned_pg import sql_artifacts, digest
+    root=Path(repository)/'sql/kaggle'
+    return {name:digest((root/name).read_bytes())
+            for name in sql_artifacts(target.database.schema_revision)}
+
+
 def worker_source(template, queue, run_id, token, broker, *, transport='http', target=None, provider_image=None):
     """Build private launch bytes once; no provider call or inferred version."""
     if transport not in ('http','wss'):
@@ -148,12 +156,10 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                     if target_spec is not None and target_spec.database.mode=='NEW_EMPTY_GENERATION':
                         import asyncio
                         from regional_knowledge.kaggle_target_launch import persist_empty_intent
-                        from regional_knowledge.kaggle_owned_pg import SQL_ARTIFACTS,digest
                         nonce=queue.prepare_channel(run_id)
-                        sql_root=Path(__file__).resolve().parents[2]/'sql/kaggle'
                         asyncio.run(persist_empty_intent(queue,run_id,target_spec,launch_nonce=nonce,
                             recovery_journal=recovery_journal,
-                            sql_hashes={name:digest((sql_root/name).read_bytes()) for name in SQL_ARTIFACTS}))
+                            sql_hashes=target_sql_hashes(target_spec,Path(__file__).resolve().parents[2])))
                     source=worker_source(template,queue,run_id,token,broker,
                                          transport=os.getenv('RKB_BGE_TRANSPORT','http'),target=target_spec,provider_image=image)
                     (folder/'main.py').write_text(source);(folder/'main.py').chmod(0o600)

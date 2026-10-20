@@ -61,7 +61,7 @@ async def forbidden_acquire():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("filters", [QueryFilters(kinds=("story",)), QueryFilters(source_ids=("not-uuid",))])
+@pytest.mark.parametrize("filters", [QueryFilters(kinds=("fact",)), QueryFilters(source_ids=("not-uuid",))])
 async def test_unsupported_filters_fail_before_tokenizer_inference_or_sql(filters):
     async def forbidden(_):
         raise AssertionError("invalid filter reached tokenizer/encoder")

@@ -53,12 +53,23 @@ class _Coverage:
     accepted_sequence: int
     applied_sequence: int
     pending: tuple = ()
+    case_state: object = None
 
     def current(self):
         v = self.verifier
         return (v._coverage is self and self.deadline > v.clock()
                 and binding_key(self.binding) == self.key and v.binding_current(self.binding)
                 and v._registry_hash() == v.registry_hash and v._routes_current())
+
+
+def _case_projection(commands,applied,previous=None,*,after=0):
+    from .case_history import project_cases
+    try:
+        selected=[value for value in commands if value[0].sequence>after and value[0].route.startswith('disagreement.')]
+        return project_cases(selected,{value[0].sequence:json.loads(applied[value[0].sequence][1])['status']
+            for value in selected if value[0].sequence in applied},previous)
+    except (ValueError,TypeError,KeyError):
+        raise SpoolConflict('verified Case policy history differs') from None
 
 
 class NativeSourceHistoryVerifier:
@@ -69,7 +80,8 @@ class NativeSourceHistoryVerifier:
         if (acquire is None and type(self) is NativeSourceHistoryVerifier
                 or acquire is not None and not callable(acquire) or not callable(binding_current) or not isinstance(routes, dict)
                 or not {'source.search', 'source.fetch', 'source.withdraw'} <= routes.keys()
-                or set(routes) - {'source.search', 'source.fetch', 'source.withdraw', 'source.import'}
+                or set(routes) - {'source.search', 'source.fetch', 'source.withdraw', 'source.import', 'story.search', 'story.get', 'story.history', 'story.variants',
+                    'source.fact_read','source.calendar','source.observations','story.edit','story.access','source.catalog','case.read','case.edit','case.access','case.contribute','case.conclusion','geo.identity_read','geo.members_read','source.entity_read','source.entity_list'}
                 or any(not callable(v) for v in routes.values())):
             raise ValueError('closed actual source route inventory required')
         if (type(timeout_seconds) not in (int,float) or not 0 < timeout_seconds <= 10
@@ -135,6 +147,28 @@ class NativeSourceHistoryVerifier:
         except (ValueError,TypeError,KeyError):
             raise SpoolConflict('genesis facts or original closure differ; explicit migration required') from None
         return value
+
+    def _classify(self,raw,reference):
+        """Verify every global command; derive book heads only for book writes.
+
+        Fixed Case/GEO validators confer no public source dependency and never
+        add private domain IDs to the source head cache. Unknown handlers fail.
+        """
+        command=_command(raw)
+        try:command,_,handler=self.spool._validate(command,'history-classification')
+        except (ValueError,TypeError):raise SpoolConflict('unclassified accepted source dependency') from None
+        dep=handler.dependency
+        if dep is None or handler.transition is not None:
+            raise SpoolConflict('unclassified accepted source dependency')
+        if dep.scope_class=='public_source':
+            expected_route=('source.import' if command.route.startswith('source.import.') else
+                {'source.withdraw.v1':'source.withdraw','story.edit.v1':'story.edit','story.access.v1':'story.access'}.get(command.route))
+            if expected_route not in self.routes or dep.scope_owner!='shared' or 'source_id' not in dep.resource_keys:
+                raise SpoolConflict('unclassified accepted source dependency')
+            _uuid(command.ids['source_id'])
+        elif dep.scope_class not in ('case','private_draft','geo_manifest'):
+            raise SpoolConflict('unclassified accepted source dependency')
+        return command,handler,reference
 
     def _checkpoint_key(self, generation):
         return self.spool.journal.prefix + '/source-genesis/' + _hash(generation.encode())
@@ -214,12 +248,7 @@ class NativeSourceHistoryVerifier:
                         used+=len(raw)
                         if used>self.max_history_bytes or len(suffix)+len(proof.pending)>=self.max_commands:
                             raise SpoolConflict('incremental source history budget exceeded')
-                        c=_command(raw);h=s.registry.resolve(c);dep=h.dependency
-                        if (dep is None or dep.scope_class!='public_source' or dep.scope_owner!='shared'
-                                or dep.resource_keys!=frozenset({'source_id'}) or h.transition is not None
-                                or set(c.ids)!={'source_id'} or c.route not in ('source.withdraw.v1','source.import.v1')
-                                or c.route=='source.import.v1' and 'source.import' not in self.routes):
-                            raise SpoolConflict('unclassified incremental source dependency')
+                        c,h,_=self._classify(raw,ref)
                         suffix.append((c,h,ref))
                     ref=previous
                 if ref!=base:raise SpoolConflict('incremental source ancestry budget exceeded')
@@ -252,6 +281,21 @@ class NativeSourceHistoryVerifier:
                             await cursor.execute('LOCK TABLE rkb_v4.sources,rkb_v4.revisions,rkb_v4.active_revision,'
                                 'rkb_v4.passage_search,rkb_v4.applied_ops,rkb_v4.recovery_state,'
                                 'rkb_v4.writer_generations IN SHARE MODE')
+                            if fields.get('schema_revision') in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
+                                await cursor.execute('LOCK TABLE rkb_v4.source_regions,rkb_v4.story_assertion_versions,'
+                                    'rkb_v4.stories,rkb_v4.story_versions,rkb_v4.story_variant_versions,'
+                                    'rkb_v4.story_search,rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
+                            if fields.get('schema_revision') in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
+                                await cursor.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
+                            if fields.get('schema_revision')=='rkb-v4-sql001-011-v1':
+                                await cursor.execute('LOCK TABLE rkb_v4.source_graph_documents,rkb_v4.source_entity_ids,'
+                                    'rkb_v4.source_entity_representations,rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,'
+                                    'rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,rkb_v4.source_entity_finding_links,'
+                                    'rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts IN SHARE MODE')
+                            if fields.get('schema_revision') in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
+                                await cursor.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
+                                    'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
+                                    'rkb_v4.editorial_story_receipts,rkb_v4.story_editor_grants,rkb_v4.editorial_story_search IN SHARE MODE')
                             if _hash(await inspect_acl(connection))!=self.acl_hash:
                                 raise SpoolConflict('incremental native ACL closure differs')
                             await cursor.execute('SELECT s.database_generation,s.writer_generation,s.applied_seq '
@@ -298,11 +342,25 @@ class NativeSourceHistoryVerifier:
                                             raise SpoolConflict('incremental remote outcome differs')
                                         durable=True
                                 if not durable:pending.append((c.encode(),h.fingerprint,m))
+                                if h.dependency.scope_class!='public_source':continue
                                 source=c.ids['source_id'];previous=by_source.get(source)
                                 by_source[source]=SourceChange(source,max(c.sequence,previous.sequence if previous else 0),
                                     _hash(c.encode()) if previous is None or c.sequence>=previous.sequence else previous.command_sha256,
                                     bool(h.dependency.restriction or previous and previous.restriction),
                                     bool(not durable or previous and previous.pending),False)
+                            if fields.get('schema_revision') in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
+                                origins=sorted({c.ids['source_id'] for c,_,_ in known.values()
+                                    if 'source_id' in c.ids and c.sequence in applied})
+                                statement=('SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])'
+                                    if fields['schema_revision'] in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1') else
+                                    'SELECT rkb_v4.verify_source_story_origins_v2(%s::uuid[])'
+                                    if fields['schema_revision']=='rkb-v4-sql001-008-v1' else
+                                    'SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])')
+                                await cursor.execute(statement,(origins,))
+                                if await cursor.fetchone()!=(True,):raise SpoolConflict('native story origin differs')
+                                if fields.get('schema_revision')=='rkb-v4-sql001-011-v1':
+                                    await cursor.execute('SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])',(origins,))
+                                    if await cursor.fetchone()!=(True,):raise SpoolConflict('native graph origin differs')
                             if await j.head()!=head or s._writing or s._source_version is not version:
                                 raise SpoolConflict('source prefix changed during extension')
                             await s._write(self._merge_source_heads,tuple(by_source.values()))
@@ -314,7 +372,8 @@ class NativeSourceHistoryVerifier:
                         or s._writing or s._source_version is not version):
                     raise SpoolConflict('source prefix changed at extension completion')
                 coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,
-                    head,accepted,applied_seq,tuple(pending))
+                    head,accepted,applied_seq,tuple(pending),
+                    _case_projection(known.values(),applied,proof.case_state,after=proof.applied_sequence) if proof.case_state is not None else None)
                 self._coverage=coverage;s._source_anchor=coverage;s._source_head=head.reference if head else None
                 s._source_covered_sequence=accepted;s._source_version=object()
                 _LOG.info('source_history_extended generation_hash=%s accepted_seq=%s applied_seq=%s suffix_count=%s',
@@ -395,6 +454,21 @@ class NativeSourceHistoryVerifier:
                             await cursor.execute('SET TRANSACTION READ ONLY')
                             await cursor.execute("SET LOCAL statement_timeout='2000ms'")
                             await cursor.execute('SET LOCAL search_path=pg_catalog')
+                            if fields.get('schema_revision') in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
+                                await cursor.execute('LOCK TABLE rkb_v4.source_regions,rkb_v4.story_assertion_versions,'
+                                    'rkb_v4.stories,rkb_v4.story_versions,rkb_v4.story_variant_versions,'
+                                    'rkb_v4.story_search,rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
+                            if fields.get('schema_revision') in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
+                                await cursor.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
+                            if fields.get('schema_revision')=='rkb-v4-sql001-011-v1':
+                                await cursor.execute('LOCK TABLE rkb_v4.source_graph_documents,rkb_v4.source_entity_ids,'
+                                    'rkb_v4.source_entity_representations,rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,'
+                                    'rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,rkb_v4.source_entity_finding_links,'
+                                    'rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts IN SHARE MODE')
+                            if fields.get('schema_revision') in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
+                                await cursor.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
+                                    'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
+                                    'rkb_v4.editorial_story_receipts,rkb_v4.story_editor_grants,rkb_v4.editorial_story_search IN SHARE MODE')
                             if _hash(await inspect_acl(connection))!=self.acl_hash:
                                 raise SpoolConflict('native role ACL closure differs during renewal')
                             await cursor.execute('SELECT s.database_generation,s.writer_generation,s.applied_seq '
@@ -411,7 +485,7 @@ class NativeSourceHistoryVerifier:
                         or s._writing or s._source_version is not renewal_version):
                     raise SpoolConflict('source prefix changed at renewal completion')
                 coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,
-                    nonce,proof.head,proof.accepted_sequence,proof.applied_sequence,proof.pending)
+                    nonce,proof.head,proof.accepted_sequence,proof.applied_sequence,proof.pending,proof.case_state)
                 self._coverage=coverage;s._source_anchor=coverage;s._source_version=object()
                 _LOG.info('source_history_renewed generation_hash=%s accepted_seq=%s applied_seq=%s',
                     _hash(key[3].encode()),proof.accepted_sequence,proof.applied_sequence)
@@ -443,6 +517,17 @@ class NativeSourceHistoryVerifier:
                             await cursor.execute('LOCK TABLE rkb_v4.sources,rkb_v4.revisions,rkb_v4.active_revision,'
                                 'rkb_v4.passage_search,rkb_v4.applied_ops,rkb_v4.recovery_state,'
                                 'rkb_v4.writer_generations IN SHARE MODE')
+                            if fields.get('schema_revision') in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
+                                await cursor.execute('LOCK TABLE rkb_v4.source_regions,rkb_v4.story_assertion_versions,'
+                                    'rkb_v4.stories,rkb_v4.story_versions,rkb_v4.story_variant_versions,'
+                                    'rkb_v4.story_search,rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
+                            if fields.get('schema_revision') in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
+                                await cursor.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
+                            if fields.get('schema_revision')=='rkb-v4-sql001-011-v1':
+                                await cursor.execute('LOCK TABLE rkb_v4.source_graph_documents,rkb_v4.source_entity_ids,'
+                                    'rkb_v4.source_entity_representations,rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,'
+                                    'rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,rkb_v4.source_entity_finding_links,'
+                                    'rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts IN SHARE MODE')
                             if _hash(await inspect_acl(connection)) != self.acl_hash:
                                 raise SpoolConflict('native role ACL closure differs')
                             await cursor.execute('SELECT s.database_generation,s.writer_generation,s.applied_seq '
@@ -484,13 +569,7 @@ class NativeSourceHistoryVerifier:
                                     used+=len(raw)
                                     if used>self.max_history_bytes or len(commands)>=self.max_commands:
                                         raise SpoolConflict('full source history budget exceeded')
-                                    command=_command(raw); handler=s.registry.resolve(command); dep=handler.dependency
-                                    if (dep is None or dep.scope_class!='public_source' or dep.scope_owner!='shared'
-                                            or dep.resource_keys!=frozenset({'source_id'}) or handler.transition is not None
-                                            or set(command.ids)!={'source_id'}
-                                            or command.route not in ('source.withdraw.v1','source.import.v1')
-                                            or command.route=='source.import.v1' and 'source.import' not in self.routes):
-                                        raise SpoolConflict('unclassified accepted source dependency')
+                                    command,handler,_=self._classify(raw,ref)
                                     commands.append((command,handler,ref))
                                 ref=previous
                             if ref is not None:raise SpoolConflict('full source genesis traversal incomplete')
@@ -524,7 +603,7 @@ class NativeSourceHistoryVerifier:
                                     used+=len(outcome)
                                     if used>self.max_history_bytes:raise SpoolConflict('native outcome history budget exceeded')
                                     applied[seq]=(oh,bytes(outcome))
-                                    if command.route=='source.import.v1' and status=='applied':
+                                    if command.route in ('source.import.v1','source.import.v2','source.import.v3','source.import.v4') and status=='applied':
                                         successful_imports.add(seq)
                                 if count!=applied_seq:raise SpoolConflict('native applied prefix incomplete')
                             changes={}
@@ -543,11 +622,12 @@ class NativeSourceHistoryVerifier:
                                         if remote.data!=_json(expected):raise SpoolConflict('remote outcome differs from native prefix')
                                         durable=True
                                 if not durable:pending.append((command.encode(),handler.fingerprint,manifest))
-                                if command.route=='source.import.v1' and outcome is not None:
+                                if command.route in ('source.import.v1','source.import.v2','source.import.v3','source.import.v4') and outcome is not None:
                                     # Native success status is checked independently
                                     # from exact remote outcome durability below.
                                     if command.sequence in successful_imports:
                                         imported.append(command.ids['source_id'])
+                                if handler.dependency.scope_class!='public_source':continue
                                 source=command.ids['source_id']; prior=changes.get(source)
                                 changes[source]=SourceChange(source,command.sequence,_hash(command.encode()),
                                     bool(handler.dependency.restriction or prior and prior.restriction),
@@ -556,6 +636,17 @@ class NativeSourceHistoryVerifier:
                                 'WHERE NOT (source_id=ANY(%s::uuid[])))',(imported,))
                             if await cursor.fetchone()!=(False,):
                                 raise SpoolConflict('native source lacks canonical applied import origin')
+                            if fields.get('schema_revision') in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
+                                statement=('SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])'
+                                    if fields['schema_revision'] in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1') else
+                                    'SELECT rkb_v4.verify_source_story_origins_v2(%s::uuid[])'
+                                    if fields['schema_revision']=='rkb-v4-sql001-008-v1' else
+                                    'SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])')
+                                await cursor.execute(statement,(imported,))
+                                if await cursor.fetchone()!=(True,):raise SpoolConflict('native story origin differs')
+                                if fields.get('schema_revision')=='rkb-v4-sql001-011-v1':
+                                    await cursor.execute('SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])',(imported,))
+                                    if await cursor.fetchone()!=(True,):raise SpoolConflict('native graph origin differs')
                             if await j.head()!=head or not self.binding_current(binding):
                                 raise SpoolConflict('source history changed during verification')
                             await s._write(s._replace_source_heads,tuple(changes.values()))
@@ -569,7 +660,7 @@ class NativeSourceHistoryVerifier:
                         or s._writing or s._source_version is not version):
                     raise SpoolConflict('source binding changed at native completion')
                 coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,
-                    head,len(commands),applied_seq,tuple(pending))
+                    head,len(commands),applied_seq,tuple(pending),_case_projection(commands,applied))
                 self._coverage=coverage
                 s._source_anchor=coverage; s._source_head=head.reference if head else None
                 s._source_covered_sequence=len(commands); s._source_version=object()

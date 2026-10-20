@@ -446,6 +446,32 @@ class StageObservationInput(SourceObservationFields):
         default_factory=lambda: [0], min_length=1, max_length=4)
 
 
+class StageNarrativeBlockInput(Strict):
+    start: int = Field(ge=0)
+    end: int = Field(ge=1)
+    evidence_indexes: list[Annotated[int, Field(ge=0,le=3)]] = Field(min_length=1,max_length=4)
+
+
+class StageBasicVariantInput(Strict):
+    """An actual model-authored narrative, never a summary fallback."""
+    body: SmallText
+    audience: ShortText = 'general'
+    language: Annotated[str,Field(min_length=2,max_length=24)] = 'ru'
+    blocks: list[StageNarrativeBlockInput] = Field(min_length=1,max_length=25)
+
+    @model_validator(mode='after')
+    def exact_body_map(self):
+        end=0
+        for block in self.blocks:
+            if block.start!=end or not block.start<block.end<=len(self.body):
+                raise ValueError('Narrative blocks must cover the exact body in order')
+            if len(set(block.evidence_indexes))!=len(block.evidence_indexes):
+                raise ValueError('Narrative block evidence must be unique')
+            end=block.end
+        if end!=len(self.body):raise ValueError('Narrative body map must be complete')
+        return self
+
+
 class StageStoryCandidateInput(Strict):
     candidate_key: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")]
     title: Annotated[str, Field(min_length=3, max_length=250)]
@@ -466,6 +492,18 @@ class StageStoryCandidateInput(Strict):
     # Explicit model-selected GraphBundle entity keys, never automatic co-occurrence.
     entity_keys: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
         default_factory=list, max_length=32)
+    basic_variant: StageBasicVariantInput | None = None
+    narrative_outcome: Literal['needs_context','facts_only'] = 'needs_context'
+
+    @model_validator(mode='after')
+    def narrative_evidence(self):
+        if self.basic_variant is not None:
+            if self.narrative_outcome=='facts_only':
+                raise ValueError('Facts-only candidate cannot supply a narrative')
+            if any(index>=len(self.evidence_refs) for block in self.basic_variant.blocks
+                   for index in block.evidence_indexes):
+                raise ValueError('Narrative block cites missing source evidence')
+        return self
 
 
 # Bounded cross-book comparison. Model-authored conclusions are proposals,

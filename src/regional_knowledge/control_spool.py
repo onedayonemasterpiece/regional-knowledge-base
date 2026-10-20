@@ -222,6 +222,32 @@ class ControlSpool:
                     apply_bytes BLOB,outcome_bytes BLOB,outcome_sha256 TEXT,
                     outcome_state TEXT NOT NULL CHECK(outcome_state IN ('NOT_SENT','SENT_UNKNOWN','DURABLE')),
                     remote_receipt_bytes BLOB)''')
+                # Derived counters for independent public-source reads. The
+                # global stream meta remains the only sequence/intake authority.
+                # Private/case/GEO pending operations do not imply a book write.
+                db.execute('CREATE TABLE IF NOT EXISTS rkb_control_public_source_meta('
+                    'id INTEGER PRIMARY KEY CHECK(id=1),sequence INTEGER NOT NULL,accepted_sequence INTEGER NOT NULL,'
+                    'operation_count INTEGER NOT NULL,pending_count INTEGER NOT NULL CHECK(pending_count>=0),'
+                    'unknown_count INTEGER NOT NULL CHECK(unknown_count>=0))')
+                db.execute("""INSERT OR IGNORE INTO rkb_control_public_source_meta
+                    SELECT 1,coalesce(max(sequence),0),coalesce(max(CASE WHEN seal_state='ACCEPTED' THEN sequence ELSE 0 END),0),
+                    count(*),coalesce(sum(outcome_state<>'DURABLE'),0),
+                    coalesce(sum(seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN'),0)
+                    FROM rkb_control_operations WHERE json_extract(CAST(dependency_bytes AS TEXT),'$.scope_class')='public_source'""")
+                db.execute("""CREATE TRIGGER IF NOT EXISTS rkb_control_public_source_insert AFTER INSERT ON rkb_control_operations
+                    WHEN json_extract(CAST(NEW.dependency_bytes AS TEXT),'$.scope_class')='public_source'
+                    BEGIN UPDATE rkb_control_public_source_meta SET sequence=max(sequence,NEW.sequence),
+                    accepted_sequence=max(accepted_sequence,CASE WHEN NEW.seal_state='ACCEPTED' THEN NEW.sequence ELSE 0 END),
+                    operation_count=operation_count+1,pending_count=pending_count+(NEW.outcome_state<>'DURABLE'),
+                    unknown_count=unknown_count+(NEW.seal_state='SENT_UNKNOWN' OR NEW.apply_state='SENT_UNKNOWN' OR NEW.outcome_state='SENT_UNKNOWN')
+                    WHERE id=1;END""")
+                db.execute("""CREATE TRIGGER IF NOT EXISTS rkb_control_public_source_update AFTER UPDATE OF seal_state,apply_state,outcome_state ON rkb_control_operations
+                    WHEN json_extract(CAST(NEW.dependency_bytes AS TEXT),'$.scope_class')='public_source'
+                    BEGIN UPDATE rkb_control_public_source_meta SET
+                    accepted_sequence=max(accepted_sequence,CASE WHEN NEW.seal_state='ACCEPTED' THEN NEW.sequence ELSE 0 END),
+                    pending_count=pending_count+(NEW.outcome_state<>'DURABLE')-(OLD.outcome_state<>'DURABLE'),
+                    unknown_count=unknown_count+(NEW.seal_state='SENT_UNKNOWN' OR NEW.apply_state='SENT_UNKNOWN' OR NEW.outcome_state='SENT_UNKNOWN')
+                    -(OLD.seal_state='SENT_UNKNOWN' OR OLD.apply_state='SENT_UNKNOWN' OR OLD.outcome_state='SENT_UNKNOWN') WHERE id=1;END""")
                 db.execute('CREATE INDEX IF NOT EXISTS rkb_control_source ON rkb_control_operations(source_id,sequence DESC,operation_key)')
                 db.execute('CREATE INDEX IF NOT EXISTS rkb_control_source_state ON rkb_control_operations(source_id,sequence,seal_state,apply_state,outcome_state)')
                 db.execute('CREATE INDEX IF NOT EXISTS rkb_control_accepted ON rkb_control_operations(source_id,seal_state,sequence DESC,operation_key)')
@@ -274,6 +300,48 @@ class ControlSpool:
         try:return await _database(self.participants.require,context,'import')
         except ParticipantError:raise SpoolDenied('current owner import authority required') from None
 
+    async def authorize_command(self,context,command):
+        """Fixed installed route policy; source import never inherits editor rights.
+
+        Per-Story editor/manager scope is checked by the pinned native function
+        in the ordered apply transaction. This current Participants check only
+        admits a canonical person to the personal editorial intake path.
+        """
+        if command.route.startswith('disagreement.'):
+            from .disagreement_native import validate_case_command,required_capabilities
+            if command.schema_revision=='rkb-v4-sql001-011-v1':
+                from .kaggle_domain_bindings import validate_current_command,required_current_capabilities
+                doc=validate_current_command(command);capabilities=required_current_capabilities(command)
+            else:doc=validate_case_command(command);capabilities=required_capabilities(command)
+            if (not isinstance(context,RequestAuthority) or context.public_only
+                    or context.route not in ('owner','personal','expert')):
+                raise SpoolDenied('current personal case authority required')
+            attr=doc['attribution']
+            if (attr['route']!=context.route or attr['link_id']!=context.link_id
+                    or attr['link_revision']!=context.link_revision
+                    or attr['recorded_by']!=(context.executor_id or context.principal.subject)):
+                raise SpoolDenied('case attribution differs from current authenticated context')
+            try:
+                for capability in sorted(capabilities):
+                    actor=await _database(self.participants.require,context,capability)
+            except ParticipantError:raise SpoolDenied('current case participant capabilities required') from None
+            if actor!=command.person_id:raise SpoolDenied('command person does not authenticate its actor')
+            return actor
+        if command.route=='geo.manifest.install.v1':
+            from .geo_manifest_commands import validate_geo_manifest_command
+            validate_geo_manifest_command(command)
+        if command.route not in ('story.edit.v1','story.access.v1'):
+            actor=await self._authorize(context)
+            if actor!=command.person_id:raise SpoolDenied('command person does not authenticate its actor')
+            return actor
+        if (not isinstance(context,RequestAuthority) or context.public_only
+                or context.route not in ('owner','personal','expert','delegated')):
+            raise SpoolDenied('current personal editorial authority required')
+        try:actor=await _database(self.participants.require,context,'public_search')
+        except ParticipantError:raise SpoolDenied('current participant authority required') from None
+        if actor!=command.person_id:raise SpoolDenied('command person does not authenticate its actor')
+        return actor
+
     async def _write(self,call,*args):
         self._active();self._writing+=1
         # Invalidate before starting a cancellable write, including UNKNOWN
@@ -312,8 +380,55 @@ class ControlSpool:
         _bounded(command.operation_key,4096)
         frozen,data=_snapshot(command,self.max_command_bytes)
         handler=self.registry.resolve(frozen)
-        if frozen.route=='source.import.v1':
-            from .source_import import SOURCE_IMPORT,IMPORT_DEPENDENCY,IMPORT_PRECONDITIONS,validate_import_command
+        if frozen.schema_revision=='rkb-v4-sql001-011-v1':
+            from .kaggle_domain_bindings import current_handler,validate_current_command
+            expected=current_handler(frozen.route,check_sha256=handler.check.definition_sha256,
+                apply_sha256=handler.apply.definition_sha256)
+            if handler!=expected:raise SpoolDenied('only exact reviewed fresh11 handler supported')
+            validate_current_command(frozen)
+            return frozen,data,handler
+        if frozen.route.startswith('disagreement.'):
+            from .disagreement_native import case_handler,validate_case_command
+            expected=case_handler(frozen.route,check_sha256=handler.check.definition_sha256,
+                apply_sha256=handler.apply.definition_sha256)
+            if handler!=expected:raise SpoolDenied('only exact installed case handler supported')
+            validate_case_command(frozen)
+            return frozen,data,handler
+        if frozen.route=='geo.manifest.install.v1':
+            from .geo_manifest_commands import geo_manifest_handler,validate_geo_manifest_command,GEO_REVISIONS
+            expected=geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256=handler.check.definition_sha256,
+                apply_sha256=handler.apply.definition_sha256)
+            if handler!=expected:raise SpoolDenied('only exact installed geographic handler supported')
+            validate_geo_manifest_command(frozen)
+            return frozen,data,handler
+        if frozen.route in ('story.edit.v1','story.access.v1'):
+            from .story_editorial import (STORY_EDIT,STORY_EDIT_DEPENDENCY,STORY_ACCESS_DEPENDENCY,
+                EDIT_PRECONDITIONS,ACCESS_PRECONDITIONS,validate_story_edit_command,validate_story_access_command,
+                editorial_handler)
+            edit=frozen.route==STORY_EDIT
+            expected=editorial_handler(route=frozen.route,check_sha256=handler.check.definition_sha256,
+                apply_sha256=handler.apply.definition_sha256)
+            if handler!=expected:raise SpoolDenied('only exact installed editorial handler supported')
+            (validate_story_edit_command if edit else validate_story_access_command)(frozen)
+            return frozen,data,handler
+        if frozen.route=='source.import.v4':
+            from .source_import_v4 import validate_import_v4_command,IMPORT_V4_DEPENDENCY
+            from .source_import import IMPORT_PRECONDITIONS
+            if handler.dependency!=IMPORT_V4_DEPENDENCY or handler.transition is not None or handler.precondition_keys!=IMPORT_PRECONDITIONS:
+                raise SpoolDenied('only exact installed fresh9 import supported')
+            validate_import_v4_command(frozen)
+            return frozen,data,handler
+        if frozen.route in ('source.import.v1','source.import.v2','source.import.v3'):
+            if frozen.route=='source.import.v1':
+                from .source_import import SOURCE_IMPORT,IMPORT_DEPENDENCY,IMPORT_PRECONDITIONS,validate_import_command
+            elif frozen.route=='source.import.v2':
+                from .source_import import IMPORT_PRECONDITIONS
+                from .source_import_v2 import (SOURCE_IMPORT_V2 as SOURCE_IMPORT,
+                    IMPORT_V2_DEPENDENCY as IMPORT_DEPENDENCY,validate_import_v2_command as validate_import_command)
+            else:
+                from .source_import import IMPORT_PRECONDITIONS
+                from .source_import_v3 import (SOURCE_IMPORT_V3 as SOURCE_IMPORT,
+                    IMPORT_V3_DEPENDENCY as IMPORT_DEPENDENCY,validate_import_v3_command as validate_import_command)
             if (frozen.kind!='domain_command' or frozen.route!=SOURCE_IMPORT
                     or handler.dependency!=IMPORT_DEPENDENCY or handler.transition is not None
                     or handler.precondition_keys!=IMPORT_PRECONDITIONS):
@@ -333,6 +448,19 @@ class ControlSpool:
                 or str(int(revision))!=revision or not 1<=int(revision)<2**63):
             raise ValueError('exact positive source eligibility revision required')
         return frozen,data,handler
+
+    @staticmethod
+    def _resource_key(command,dependency):
+        if dependency is None:raise SpoolDenied('classified typed dependency required')
+        if not dependency.resource_keys<=command.ids.keys():raise SpoolDenied('complete typed resource IDs required')
+        if dependency.scope_class=='public_source':return _uuid(command.ids['source_id'])
+        if dependency.scope_class=='case':return 'case:'+_uuid(command.ids['case_id'])
+        if dependency.scope_class=='private_draft':
+            return 'draft:'+_uuid(command.person_id)+':'+_uuid(command.ids['case_id'])+':'+_uuid(command.ids['object_id'])
+        if dependency.scope_class=='geo_manifest':
+            value=command.ids['manifest_id'];_bounded(value,2048)
+            return 'geo:'+_uuid(command.person_id)+':'+value
+        raise SpoolDenied('independent domain scope unavailable')
 
     def _stage(self,command,data,handler,database_generation):
         dependency=_json(handler.dependency.wire())
@@ -354,7 +482,7 @@ class ControlSpool:
             db.execute('''INSERT INTO rkb_control_operations(operation_key,command_bytes,command_sha256,sequence,
                 source_id,person_id,database_generation,dependency_bytes,handler_sha256,reserved_bytes,created,updated,
                 seal_state,apply_state,outcome_state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'NOT_SENT','NOT_SENT','NOT_SENT')''',
-                (command.operation_key,data,_hash(data),command.sequence,command.ids['source_id'],command.person_id,
+                (command.operation_key,data,_hash(data),command.sequence,self._resource_key(command,handler.dependency),command.person_id,
                  database_generation,dependency,handler.fingerprint,reserved,now,now))
             db.execute('''UPDATE rkb_control_spool_meta SET used_bytes=used_bytes+?,sequence=max(sequence,?),
                 operation_count=operation_count+1,pending_count=pending_count+1 WHERE id=1''',(reserved,command.sequence))
@@ -377,8 +505,28 @@ class ControlSpool:
         async with self._lock:
             actor=await self._authorize(context)
             frozen,data,handler=self._validate(command,database_generation)
-            if frozen.route!='source.import.v1':raise SpoolDenied('import intake requires import route')
+            if frozen.route not in ('source.import.v1','source.import.v2','source.import.v3','source.import.v4'):raise SpoolDenied('import intake requires import route')
             if frozen.person_id!=actor:raise SpoolDenied('command person does not authenticate its actor')
+            return await self._write(self._stage,frozen,data,handler,database_generation)
+
+    async def stage_story_editorial(self,context,command,*,database_generation):
+        self._active()
+        async with self._lock:
+            frozen,data,handler=self._validate(command,database_generation)
+            if frozen.route not in ('story.edit.v1','story.access.v1'):
+                raise SpoolDenied('editorial intake requires an exact editorial route')
+            await self.authorize_command(context,frozen)
+            return await self._write(self._stage,frozen,data,handler,database_generation)
+
+    async def stage_domain_command(self,context,command,*,database_generation):
+        """Fixed installed domain validators; no caller-selected scope or authority."""
+        self._active()
+        async with self._lock:
+            frozen,data,handler=self._validate(command,database_generation)
+            if frozen.route not in ('story.edit.v1','story.access.v1','disagreement.edit.v1',
+                    'disagreement.access.v1','disagreement.draft.v1','disagreement.publish.v1','geo.manifest.install.v1'):
+                raise SpoolDenied('domain intake requires a fixed installed domain route')
+            await self.authorize_command(context,frozen)
             return await self._write(self._stage,frozen,data,handler,database_generation)
 
     def _row(self,key):
@@ -392,7 +540,7 @@ class ControlSpool:
         data=bytes(row['command_bytes'])
         if _hash(data)!=row['command_sha256']:raise SpoolConflict('stored command hash differs')
         command=_command(data)
-        if command.operation_key!=row['operation_key'] or command.sequence!=row['sequence'] or command.person_id!=row['person_id'] or command.ids.get('source_id')!=row['source_id']:
+        if command.operation_key!=row['operation_key'] or command.sequence!=row['sequence'] or command.person_id!=row['person_id'] or self._resource_key(command,self.registry.resolve(command).dependency)!=row['source_id']:
             raise SpoolConflict('stored operation identity differs')
         _,_,handler=self._validate(command,row['database_generation'])
         if bytes(row['dependency_bytes'])!=_json(handler.dependency.wire()) or row['handler_sha256']!=handler.fingerprint:
@@ -473,7 +621,7 @@ class ControlSpool:
             if existing.accepted is None:
                 # Waiting for another remote operation must not carry stale
                 # pre-lock permission into a new acceptance boundary.
-                actor=await self._authorize(context)
+                actor=await self.authorize_command(context,existing.command)
                 if existing.command.person_id!=actor:raise SpoolDenied('control intent belongs to another actor')
             # Accepted commands retain original author/semantics. Outer current
             # receipt/output authorization is independent of internal replay.
@@ -653,7 +801,7 @@ class ControlSpool:
                 if sources==():return (0,0,0)
                 return db.execute('SELECT '+columns+' FROM '+table+where,() if sources is None else sources).fetchone()
             if sources is None:
-                local=db.execute('SELECT sequence,pending_count,unknown_count FROM rkb_control_spool_meta WHERE id=1').fetchone()
+                local=db.execute('SELECT sequence,pending_count,unknown_count FROM rkb_control_public_source_meta WHERE id=1').fetchone()
                 history=db.execute('SELECT sequence,pending_count,unknown_count FROM rkb_control_source_head_meta WHERE id=1').fetchone()
             else:
                 local=scope('rkb_control_operations',"coalesce(max(sequence),0),coalesce(sum(outcome_state<>'DURABLE'),0),coalesce(sum(seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN'),0)")

@@ -105,3 +105,29 @@ async def test_server_main_uses_fixed_owner_composition_without_legacy_backend(o
     server.main()
     assert called==[startup]
     await startup.source_dispatch.aclose();startup.config.spool.close();startup.config.writer_owner.close()
+
+
+@pytest.mark.asyncio
+async def test_optional_importer_reuses_all_control_owners_without_provider_or_subprocess(owner,tmp_path,monkeypatch):
+    from regional_knowledge.kaggle_import_composition import SourceImportOwners
+    from regional_knowledge.kaggle_import_tokenizer import TokenizerProcessSpec
+    from regional_knowledge.source_import_v2 import STORY_REVISIONS,source_import_v2_handler
+    import asyncio
+    e=owner;history=HistoryAdapter()
+    def forbidden(*args,**kwargs):pytest.fail('construction cannot contact provider or start a process')
+    monkeypatch.setattr(asyncio,'create_subprocess_exec',forbidden)
+    imports=SourceImportOwners('a'*64,'b'*64,('https://existing-s3.fixture.invalid',),str(tmp_path/'tokenizer'),
+        TokenizerProcessSpec('/operator/versioned-venv/bin/python','c'*64,'d'*64))
+    assert SourceImportOwners.from_wire(imports.wire())==imports
+    startup=compose_source_service(queue=e.q,oauth_provider=e.auth.provider,participants=e.auth.p.registry,
+        object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),stream=e.j.stream,registry=HandlerRegistry([
+            source_import_v2_handler(revisions=STORY_REVISIONS,check_sha256='a'*64,apply_sha256='b'*64)]),
+        history_adapter=history,run_id=e.run,database_generation='synthetic-db',writer_generation='writer-1',source_import=imports)
+    try:
+        assert startup.importer.originals.queue is e.q is startup.config.spool.queue
+        assert startup.importer.originals.spool is startup.config.spool
+        assert startup.importer.tokenizer.root==tmp_path/'tokenizer'
+        assert startup.importer.parser_sha256=='b'*64
+    finally:
+        await startup.source_dispatch.aclose()
+        startup.config.spool.close();startup.config.writer_owner.close()

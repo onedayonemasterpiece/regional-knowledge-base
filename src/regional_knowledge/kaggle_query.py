@@ -66,7 +66,7 @@ def _unavailable(query, reason, observed, *, invalid=False):
 
 
 def _scope(query):
-    if query.filters.kinds is not None and query.filters.kinds != ("source",):
+    if query.filters.kinds is not None and query.filters.kinds not in (("source",),("story",)):
         raise ReadUnavailable("invalid_filters")
     if query.filters.source_ids is not None:
         try:
@@ -109,7 +109,7 @@ def _item(hit: SearchEvidence, source: SourceDependency, epoch: int, *,
     # This is a typed immutable-row locator, never an opaque capability or URL.
     continuation = f"passage:{hit.passage_id}:r{hit.revision}:t{next_text}:b{next_bib}" if excerpt else None
     return EvidenceItem(id=hit.passage_id, kind="source", text=text,
-        metadata=EvidenceMetadata(citation=citation, locator=hit.locator),
+        metadata=EvidenceMetadata(citation=citation, locator=hit.locator,source_provenance=hit.source_provenance),
         dependencies=ItemDependencies(source_ids=(hit.source_id,), variant_refs=(), grant_refs=(),
                                       source_revisions=(source,)),
         text_form="excerpt" if excerpt else "complete", continuation=continuation,
@@ -190,8 +190,14 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
                     for hit in searched.evidence:
                         # Share finite text budget across remaining items; preserve all<=5.
                         per_item = min(8000, budget // (len(searched.evidence) - len(evidence)))
-                        entry = _item(hit, dependencies[hit.source_id], observed["visibility"],
-                                      database_generation=observed["database"], text_budget=per_item)
+                        if query.filters.kinds == ("story",):
+                            from .kaggle_story_read import story_item
+                            entry = story_item(hit.record)
+                            if entry.dependencies.source_revisions != (dependencies[hit.source_id],):
+                                raise ReadUnavailable("not_ready")
+                        else:
+                            entry = _item(hit, dependencies[hit.source_id], observed["visibility"],
+                                          database_generation=observed["database"], text_budget=per_item)
                         budget -= len(entry.text)
                         evidence.append(entry)
                     result = QueryResult(**_identity(query), status="degraded", mode="hybrid",
@@ -223,13 +229,13 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
             emit_executor_stage(telemetry, query, stages)
 
 
-async def execute_passage_read(request: PassageReadRequest, *, acquire) -> PassageReadResult:
+async def execute_passage_read(request: PassageReadRequest, *, acquire, source_provenance=False) -> PassageReadResult:
     if type(request) is not PassageReadRequest:
         raise TypeError("validated PassageReadRequest required")
-    return await read_continuation(request, request.locator, acquire=acquire)
+    return await read_continuation(request, request.locator, acquire=acquire,source_provenance=source_provenance)
 
 
-async def read_continuation(query: Query | PassageReadRequest, locator: PassageContinuation, *, acquire) -> PassageRead:
+async def read_continuation(query: Query | PassageReadRequest, locator: PassageContinuation, *, acquire,source_provenance=False) -> PassageRead:
     """Internal continuation resolver after renewed upstream authorization.
 
     An unchanged immutable passage/source/eligibility fence is required. The
@@ -285,6 +291,13 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
                                 or observed["visibility"] != locator.visibility_epoch):
                             raise ReadUnavailable("evidence_withdrawn")
                         hit = SearchEvidence(str(row[0]), str(row[1]), *row[2:6])
+                        if source_provenance:
+                            await execute('SELECT metadata FROM rkb_v4.source_passage_metadata_v1(%s::uuid[])',([locator.passage_id],))
+                            metadata=await cursor.fetchone()
+                            if metadata is None or type(metadata[0]) is not dict:
+                                raise ReadUnavailable('not_ready')
+                            from dataclasses import replace
+                            hit=replace(hit,source_provenance=metadata[0])
                         if locator.text_offset>len(hit.body) or locator.bibliography_offset>len(hit.bibliography):
                             raise ReadUnavailable("invalid_input")
                         if locator.text_offset==len(hit.body) and locator.bibliography_offset==len(hit.bibliography):

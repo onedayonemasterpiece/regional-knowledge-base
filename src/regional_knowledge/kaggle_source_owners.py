@@ -26,7 +26,7 @@ from .queue_writer import QueueWriterAuthority
 
 def compose_source_service(*,queue,oauth_provider,participants,object_store,stream,registry,
                            history_adapter,run_id,database_generation,writer_generation,
-                           destination_ref='rkb-source-http-response'):
+                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=()):
     """Reuse the actual owner objects; returns the real server.main input.
 
     object_store is the already configured S3ObjectStore authority/client, not
@@ -51,8 +51,16 @@ def compose_source_service(*,queue,oauth_provider,participants,object_store,stre
             prefix='recovery/v1/'+hashlib.sha256(stream.encode()).hexdigest()+'/',writer_guard=writer)
         journal=RecoveryJournal(store,stream=stream)
         spool=ControlSpool(queue,participants,journal,registry)
+        import_options={}
+        if source_import is not None:
+            from .kaggle_import_composition import SourceImportOwners
+            if type(source_import) is not SourceImportOwners:
+                raise TypeError('explicit typed source import owners required')
+            import_options=source_import.compose(queue=queue,spool=spool,participants=participants,
+                object_store=object_store,writer=writer)
         return TargetServiceStartup(TargetServiceConfig(oauth_provider,participants,queue,spool,history_adapter,
-            writer_generation,writer.current,destination_ref=destination_ref,writer_owner=writer))
+            writer_generation,writer.current,destination_ref=destination_ref,writer_owner=writer,
+            geo_manifest_operation_keys=geo_manifest_operation_keys,**import_options))
     except BaseException:
         if spool is not None:spool.close()
         if writer is not None:writer.close()
@@ -81,8 +89,11 @@ def configured_source_service():
         return result
     value=json.loads(data,object_pairs_hook=unique)
     fields={'codec','run_id','stream','database','command_handlers','catalog_sha256','acl_sha256','observer_sha256'}
-    if type(value) is not dict or set(value)!=fields or value['codec']!='rkb.source-service.v1':
+    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys'}
+            or value['codec']!='rkb.source-service.v1'):
         raise ValueError('exact source owner configuration required')
+    if 'geo_manifest_operation_keys' in value and type(value['geo_manifest_operation_keys']) is not list:
+        raise ValueError('exact GEO manifest operation key list required')
     queue_path=os.getenv('RKB_BGE_QUEUE_PATH','').strip()
     if not queue_path or not Path(queue_path).is_file():raise ValueError('existing configured queue required')
     # Existing fixed app constructors require existing OAuth state/key and
@@ -101,6 +112,11 @@ def configured_source_service():
     registry=fixed_registry(database,value['command_handlers'])
     history=WssNativeHistoryProofAdapter(database=database,expected_catalog_sha256=value['catalog_sha256'],
         expected_acl_sha256=value['acl_sha256'],expected_observer_sha256=value['observer_sha256'])
+    import_owners=None
+    if 'source_import' in value:
+        from .kaggle_import_composition import SourceImportOwners
+        import_owners=SourceImportOwners.from_wire(value['source_import'])
     return compose_source_service(queue=BgeQueue(queue_path),oauth_provider=provider,participants=people,
         object_store=object_store,stream=value['stream'],registry=registry,history_adapter=history,
-        run_id=value['run_id'],database_generation=database.database_generation,writer_generation=database.writer_generation)
+        run_id=value['run_id'],database_generation=database.database_generation,writer_generation=database.writer_generation,
+        source_import=import_owners,geo_manifest_operation_keys=tuple(value.get('geo_manifest_operation_keys',())))

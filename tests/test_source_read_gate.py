@@ -230,3 +230,30 @@ async def test_inflight_write_is_unavailable_with_no_evidence_instead_of_auth_de
         assert not gated.result.evidence and gate.issuance_current(gated.ticket)
     finally:
         env.spool._writing=0
+
+@pytest.mark.asyncio
+async def test_current_editorial_body_revision_is_fenced_and_removed_after_source_withdraw(env,auth):
+    from regional_knowledge.kaggle_apply import HandlerRegistry
+    from regional_knowledge.kaggle_domain_bindings import current_handler
+    from regional_knowledge.kaggle_editorial_contracts import EditorialReadRequest,EditorialReadResult
+    from regional_knowledge.kaggle_story_read import story_item
+    from test_kaggle_editorial_contracts import record
+    gate,authority,b=await setup(env,auth)
+    env.spool.registry=HandlerRegistry([*env.registry.handlers.values(),
+        *[current_handler(route,check_sha256='a'*64,apply_sha256='b'*64)
+          for route in ('source.import.v4','story.edit.v1','story.access.v1')]])
+    assert gate.story_supported() and gate.editorial_supported() and gate.facts_supported() and gate.catalog_supported()
+    r=record();r['source']['source_id']=SOURCE;r['revision']=r['current_revision']=3
+    r['variant']['revision']=r['default_variant_ref']['revision']=2;r['variant'].pop('source_blocks')
+    q=EditorialReadRequest(request_id='editorial-current',connection_generation=1,turn_generation=1,
+        story_id=r['story_id'],min_data_seq=0,deadline_ms=2000,actor=query().actor.model_copy(update={'person_id':'00000000-0000-0000-0000-000000000005'}))
+    permit=await gate.dispatch(authority,q,b)
+    result=EditorialReadResult(request_id=q.request_id,connection_generation=1,turn_generation=1,status='ok',record=r,
+        evidence=(story_item(r),),observed_data_seq=0,observed_projection_seq=0,observed_visibility_epoch=0,
+        observed_database_generation='db-source')
+    gated=await gate.finish(permit,result)
+    assert gated.result.record['default_variant_ref']['revision']==2 and gate.issuance_current(gated.ticket)
+    await stage(env)
+    assert not gate.issuance_current(gated.ticket)
+    closed=await gate.refresh(gated)
+    assert closed.result.record is None and not closed.result.evidence and closed.result.prior_write_pending

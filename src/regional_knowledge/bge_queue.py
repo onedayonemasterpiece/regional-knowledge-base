@@ -60,6 +60,7 @@ class BgeQueue:
         self.clock = clock
         self._shared_reads = None
         self._source_commands = None
+        self._story_editorial = None
         self._recovery_phases = None
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Serving readers must not rerun schema initialization behind every
@@ -577,9 +578,9 @@ class BgeQueue:
     async def wait_channel_work(self, seconds=RECONCILE_SECONDS):
         await self.shared_reads.wait_channel_work(seconds)
 
-    def _admission_snapshot(self, run_id, token, generation, *, document_actors=()):
+    def _admission_snapshot(self, run_id, token, generation, *, document_actors=(),command_actors=(),editorial_documents=()):
         """Bounded indexed heads and current attachment, without a writer lock."""
-        if len(document_actors)>256:raise ValueError('bounded trusted document actors required')
+        if len(editorial_documents)>64 or len(set(document_actors)|set(command_actors))>256:raise ValueError('bounded trusted durable actors required')
         with self.connect(write=False) as db:
             self._shared_owner(db)
             run=self._authorize(db,run_id,token,self.clock())
@@ -591,10 +592,16 @@ class BgeQueue:
             # arbitrarily long pending tail cannot hide another actor's head.
             # No done journal or untrusted actor enumeration is necessary.
             rows=[]
-            for actor in document_actors:
-                kinds=('document','source_command') if self._source_commands is not None else ('document','document')
-                row=db.execute("select * from jobs where state='pending' and kind in (?,?) and actor=? order by created,id limit 1",(*kinds,actor)).fetchone()
-                if row is not None:rows.append(dict(row))
+            for actors,kind in ((document_actors,'document'),(command_actors,'source_command')):
+                if kind=='source_command' and self._source_commands is None:continue
+                for actor in actors:
+                    row=db.execute("select * from jobs where state='pending' and kind=? and actor=? order by created,id limit 1",(kind,actor)).fetchone()
+                    if row is not None:rows.append(dict(row))
+            if self._story_editorial is not None:
+                seen={row['id'] for row in rows}
+                for job_id in editorial_documents:
+                    row=db.execute("select * from jobs where id=? and kind='document' and state='pending'",(job_id,)).fetchone()
+                    if row is not None and row['id'] not in seen:rows.append(dict(row))
             if self._recovery_phases is not None:
                 row=db.execute("select * from jobs where state='pending' and kind='recovery_phase' and actor=? order by created,id limit 1",
                     ('maintenance:'+run_id,)).fetchone()

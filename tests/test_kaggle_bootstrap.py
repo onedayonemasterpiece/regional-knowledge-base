@@ -91,6 +91,19 @@ def test_exact_declared_inventory_bytes_and_model_coverage(artifacts):
         verify(artifacts)
 
 
+def test_complete_fresh11_prepared_inventory_still_checks_every_file(artifacts):
+    entries=list(artifacts.entries)
+    for index in range(130-len(entries)):
+        name='domain-'+str(index)+'.py';data=b'# exact synthetic source\n'
+        (artifacts.root/name).write_bytes(data)
+        entries.append(boot.PreparedArtifact(ArtifactRequirement(name,len(data),hashlib.sha256(data).hexdigest()),'code'))
+    verified=boot.verify_artifacts(artifacts.root,entries,max_total_bytes=100000)
+    assert len(verified.entries)==130
+    (artifacts.root/entries[-1].requirement.name).write_bytes(b'corrupt')
+    with pytest.raises(boot.BootstrapUnavailable):
+        boot.verify_artifacts(artifacts.root,entries,max_total_bytes=100000)
+
+
 @pytest.mark.parametrize('kind', ['changed', 'missing', 'file_symlink', 'directory_symlink', 'fifo', 'wrong_tokenizer_pin'])
 def test_hash_path_and_filetype_fail_closed_without_secret_paths(artifacts, monkeypatch, kind):
     a = artifacts

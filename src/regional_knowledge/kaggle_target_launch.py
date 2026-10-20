@@ -6,17 +6,23 @@ import json
 from pathlib import Path
 
 from .bge_contract import REVISION, SPACE
-from .kaggle_owned_pg import SQL_ARTIFACTS, canonical, digest
+from .kaggle_owned_pg import SQL_ARTIFACTS, STORY_SQL_ARTIFACTS, FACT_SQL_ARTIFACTS, DOMAIN_SQL_ARTIFACTS, sql_artifacts, canonical, digest
 from .kaggle_readiness import SearchRuntimeExpectation
 from .kaggle_target_runtime import TargetLaunchSpec
 from .recovery_journal import RecoveryJournal
+from .kaggle_stage0 import MAX_PREPARED_FILES
 
 MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_search',
     'kaggle_readiness','kaggle_worker_query','kaggle_database_probe','kaggle_bootstrap',
     'kaggle_owned_pg','kaggle_target_runtime','kaggle_apply','recovery_journal','query_telemetry',
     'source_import','kaggle_source_commands','kaggle_stage0','kaggle_restored_database','kaggle_native_bundle',
     'kaggle_environment','kaggle_pg_snapshot_native','kaggle_recovery_phases','kaggle_snapshot_channel',
-    'native_snapshot_transfer','kaggle_bootstrap_pins','kaggle_native_env','kaggle_source_acl','kaggle_source_history_native')
+    'native_snapshot_transfer','kaggle_bootstrap_pins','kaggle_native_env','kaggle_source_acl','kaggle_source_history_native',
+    'original_intake','kaggle_original_native','kaggle_original_parser','file_ingress','source_adapter','ingestion',
+    'source_import_v2','story_contracts','kaggle_story_read','source_import_v3','kaggle_fact_contracts','kaggle_fact_read','kaggle_source_read','source_import_v4','source_manifest',
+    'story_editorial','disagreement_contracts','disagreement_native','geo_migration','geo_manifest_commands',
+    'kaggle_case_contracts','kaggle_case_read','kaggle_geo_contracts','kaggle_geo_read',
+    'kaggle_domain_bindings','kaggle_domain_schema','kaggle_editorial_contracts','kaggle_editorial_read','source_graph','entity_graph','contracts','kaggle_source_graph_read','stage_graph','poi_reference')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 
 
@@ -24,7 +30,7 @@ def source_bundle(repository):
     repository = Path(repository)
     files = {f'regional_knowledge/{name}.py':(repository/'src/regional_knowledge'/f'{name}.py').read_bytes()
              for name in MODULES}
-    files.update({f'sql/{name}':(repository/'sql/kaggle'/name).read_bytes() for name in SQL_ARTIFACTS})
+    files.update({f'sql/{name}':(repository/'sql/kaggle'/name).read_bytes() for name in DOMAIN_SQL_ARTIFACTS})
     if sum(map(len,files.values())) > MAX_SOURCE_BYTES:
         raise ValueError('immutable target source byte budget exceeded')
     manifest = {name:digest(data) for name,data in sorted(files.items())}
@@ -83,11 +89,11 @@ def compose_target(template,config,target,*,queue,repository):
     relative,files,code_entries = source_bundle(repository)
     root = Path(target.artifact_root)
     entries = [dict(e) for e in target.artifacts] + code_entries
-    if len({e['name'] for e in entries}) != len(entries) or len(entries)>128:
+    if len({e['name'] for e in entries}) != len(entries) or len(entries)>MAX_PREPARED_FILES:
         raise ValueError('unique bounded final artifact inventory required')
     intent = read_empty_intent(queue,config['run_id'])
     if target.database.mode == 'NEW_EMPTY_GENERATION':
-        sql_hashes = {name:digest(base64.b64decode(files['sql/'+name])) for name in SQL_ARTIFACTS}
+        sql_hashes = {name:digest(base64.b64decode(files['sql/'+name])) for name in sql_artifacts(target.database.schema_revision)}
         if (intent is None or intent['database']!=target.database.wire()
                 or intent['run_id']!=config['run_id'] or intent['launch_nonce']!=config['launch_nonce']
                 or intent.get('native_bundle')!=(target.native_bundle.wire() if target.native_bundle is not None else None)
@@ -95,6 +101,10 @@ def compose_target(template,config,target,*,queue,repository):
             raise ValueError('persist actual empty-journal initialization intent first')
     runtime_wire=target.wire()
     runtime_wire.pop('stage0',None)  # One copy, consumed only by load_encoder.
+    # The complete external+source inventory is verified once in prepared_model.
+    # Runtime consumes that retained VerifiedArtifacts object, never this second
+    # copy. Keep the complete launch under64KiB as the domain closure grows.
+    runtime_wire.pop('artifacts',None)
     config.update(shared_reads=True,prepared_model=dict(root=str(root),entries=entries,
         max_total_bytes=sum(e['size'] for e in entries)),target_runtime=dict(
         **runtime_wire,sql_root=str(root/relative/'sql'),initialization_intent=intent))

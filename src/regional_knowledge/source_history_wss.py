@@ -62,16 +62,6 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
         if not isinstance(value,dict) or 'error' in value:raise SpoolConflict('native source history observation unavailable')
         return value
 
-    def _classify(self,raw,ref):
-        c=_command(raw);h=self.spool.registry.resolve(c);dep=h.dependency
-        if (dep is None or dep.scope_class!='public_source' or dep.scope_owner!='shared'
-                or dep.resource_keys!=frozenset({'source_id'}) or h.transition is not None
-                or set(c.ids)!={'source_id'} or c.route not in ('source.import.v1','source.withdraw.v1')
-                or c.route=='source.import.v1' and 'source.import' not in self.routes):
-            raise SpoolConflict('unclassified accepted source dependency')
-        _uuid(c.ids['source_id'])
-        return c,h,ref
-
     async def restore(self,binding):return await self._verify_remote(binding,mode='full')
     async def establish_genesis(self,binding):return await self._verify_remote(binding,mode='full',genesis=True)
     async def extend(self,binding):return await self._verify_remote(binding,mode='delta')
@@ -192,8 +182,9 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                             if (remote.data!=_json(expected_outcome) or len(body)!=outcome[2] or _hash(body)!=outcome[1]
                                     or used>self.max_history_bytes):raise SpoolConflict('remote outcome differs from native exact prefix')
                             durable=True
-                        if c.route=='source.import.v1' and outcome[0]=='applied':origins.append(c.ids['source_id'])
+                        if h.dependency.scope_class=='public_source' and outcome[0]=='applied':origins.append(c.ids['source_id'])
                     if not durable:pending.append((c.encode(),h.fingerprint,m))
+                    if h.dependency.scope_class!='public_source':continue
                     source=c.ids['source_id'];old=changes.get(source)
                     changes[source]=SourceChange(source,c.sequence,_hash(c.encode()),bool(h.dependency.restriction or old and old.restriction),
                         bool(not durable or old and old.pending),False)
@@ -201,7 +192,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                 if not await self._head_unchanged(head) or s._writing or s._source_version is not version or not self.binding_current(binding):
                     raise SpoolConflict('source prefix changed during native verification')
                 closed=await self._phase(binding,dict(action='close',session=session,nonce=nonce,
-                    origin_ids=sorted(set(origins)) if mode=='full' else []))
+                    origin_ids=sorted(set(origins))))
                 session=None
                 if (closed.get('nonce')!=nonce or closed.get('applied_sequence')!=applied
                         or type(closed.get('prefix')) is not str or not 1<=len(closed['prefix'])<=256
@@ -210,8 +201,12 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     raise SpoolConflict('native source completion changed')
                 if mode=='full':await s._write(s._replace_source_heads,tuple(changes.values()))
                 elif changes:await s._write(self._merge_source_heads,tuple(changes.values()))
+                from .case_history import project_cases
+                case_state=(project_cases([v for v in known.values() if mode=='full' or v[0].sequence>previous.applied_sequence],
+                    {seq:value[0] for seq,value in observations.items()},None if mode=='full' else previous.case_state)
+                    if mode=='full' or previous.case_state is not None else None)
                 self._native_prefix=closed['prefix']
-                coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,head,accepted,applied,tuple(pending))
+                coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,head,accepted,applied,tuple(pending),case_state)
                 self._coverage=coverage;s._source_anchor=coverage;s._source_head=head.reference if head else None
                 s._source_covered_sequence=accepted;s._source_version=object()
                 return coverage

@@ -13,6 +13,7 @@ import asyncio
 import json
 
 _SCOPE_KEY = 'rkb.current_read_output'
+_JSON_KEY = 'rkb.trusted_json_read_output'
 _capture = ContextVar('rkb_read_output_capture', default=None)
 MAX_RESPONSE_BYTES = 512 * 1024
 
@@ -88,12 +89,28 @@ def bind_request_output(context, calls):
     return True
 
 
+def bind_json_output(request, calls, request_id, render, denied):
+    """Trusted internal receiver only; caller JSON cannot select this renderer."""
+    scope = request.scope
+    if not isinstance(scope, dict) or len(calls) != 1 or _SCOPE_KEY in scope or _JSON_KEY in scope:
+        raise RuntimeError('one actual HTTP read result required')
+    previous = calls[0].render
+    calls[0].render = lambda value: render(previous(value))
+    scope[_SCOPE_KEY] = (request_id, calls[0])
+    scope[_JSON_KEY] = denied
+
+
 def _denied():
     return {'content': [{'type': 'text', 'text': '{"status":"unavailable","reason":"context_gap"}'}],
             'isError': True}
 
 
 def _tool_result(value, previous):
+    from mcp.types import CallToolResult
+    if type(value) is CallToolResult:
+        # Page previews use the ordinary MCP text/image content contract. The
+        # retained gate owns this renderer and refreshes the whole result.
+        return value.model_dump(mode='json', by_alias=True, exclude_none=True)
     payload = value.model_dump(mode='json') if hasattr(value, 'model_dump') else dict(value)
     # The outer existing ReadTelemetry attaches the public trace after the
     # backend creates its render closure. Keep only that allowlisted diagnostic.
@@ -154,32 +171,43 @@ class ReadIssuanceMiddleware:
                 await send({**message, 'body': bytes(buffered)})
                 return
             request_id, issued = bound
+            typed_denied = scope.pop(_JSON_KEY, None)
             envelope = {'jsonrpc': '2.0', 'id': request_id}
             status, reason = 'denied', 'output_gate_denied'
             try:
                 received = json.loads(buffered)
-                if (not isinstance(received, dict) or type(received.get('id')) is not type(request_id)
+                if typed_denied is not None:
+                    if not isinstance(received, dict) or received.get('request_id') != request_id:
+                        raise RuntimeError('guarded typed response identity differs')
+                elif (not isinstance(received, dict) or type(received.get('id')) is not type(request_id)
                         or received.get('id') != request_id
                         or not isinstance(received.get('result'), dict)):
                     raise RuntimeError('guarded MCP response identity differs')
                 envelope = received
-                previous = envelope['result']
+                previous = envelope.get('result', {})
                 for _ in range(2):
                     issued.gated = await issued.gate.refresh(issued.gated)
-                    rendered = _tool_result(issued.render(issued.gated.result), previous)
-                    envelope['result'] = rendered
+                    rendered = issued.render(issued.gated.result)
+                    if typed_denied is not None:
+                        envelope = rendered
+                    else:
+                        rendered = _tool_result(rendered, previous)
+                        envelope['result'] = rendered
                     data = json.dumps(envelope, ensure_ascii=False, allow_nan=False,
                                       separators=(',', ':')).encode('utf-8')
                     if len(data) > MAX_RESPONSE_BYTES:
                         raise ValueError('response bound')
                     if issued.gate.issuance_current(issued.gated.ticket):
-                        payload = rendered.get('structuredContent', {})
+                        payload = rendered if typed_denied is not None else rendered.get('structuredContent', {})
                         status, reason = payload.get('status', 'ok'), payload.get('reason')
                         break
                 else:
                     raise PermissionError('evidence changed during issuance')
             except Exception:
-                envelope['result'] = _denied()
+                if typed_denied is not None:
+                    envelope = typed_denied()
+                else:
+                    envelope['result'] = _denied()
                 data = json.dumps(envelope, separators=(',', ':')).encode()
             # No await between the final synchronous mutation fence and this
             # issuance call. A failed network send is never retried as a second
@@ -199,6 +227,7 @@ class ReadIssuanceMiddleware:
             await self.app(scope, receive, guarded_send)
         finally:
             bound = scope.pop(_SCOPE_KEY, None)
+            scope.pop(_JSON_KEY, None)
             if issued is not None:
                 issued.release()
             elif bound is not None:

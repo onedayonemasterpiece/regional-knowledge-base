@@ -19,7 +19,7 @@ import stat
 import tarfile
 import psycopg
 
-from .kaggle_database_probe import NativeDatabaseProbe
+from .kaggle_database_probe import native_probe_for_schema
 from .kaggle_apply import handover_writer
 from .kaggle_restored_database import VerifiedInitializedDatabase
 from .kaggle_owned_pg import PRIVATE_RUNTIME_ROOT, ensure_private_runtime_root
@@ -304,7 +304,7 @@ class NativeSnapshotFactory:
         self.native_uid,self.native_gid=native_uid,native_gid
         self.acquire,self.limits,self.connect,self.spawn=acquire,limits,connect,spawn
         self.upload_ticket=upload_ticket
-        self.probe=probe or NativeDatabaseProbe()
+        self.probe=probe or native_probe_for_schema(getattr(database,'schema_revision',None))
         self._sessions=set();self._capabilities=set();self._owned_candidates=set()
         self._operations={}
         self._completed={};self._references={}

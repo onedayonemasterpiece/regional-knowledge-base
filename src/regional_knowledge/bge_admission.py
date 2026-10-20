@@ -16,7 +16,13 @@ import time
 from types import MappingProxyType
 
 from .bge_queue import StaleAttachment
-from .kaggle_protocol import Query, QueryResult, PassageReadRequest, PassageReadResult, encode_envelope
+from .kaggle_protocol import Query, QueryResult, PassageReadRequest, PassageReadResult, StoryReadRequest, StoryReadResult, encode_envelope
+from .kaggle_fact_contracts import FactReadRequest, FactReadResult
+from .kaggle_source_read import SourceReadRequest, SourceReadResult
+from .kaggle_case_contracts import CaseReadRequest, CaseReadResult
+from .kaggle_geo_contracts import GeoReadRequest, GeoReadResult
+from .kaggle_editorial_contracts import EditorialReadRequest, EditorialReadResult
+from .kaggle_source_graph_read import SourceGraphReadRequest, SourceGraphReadResult
 from .read_authority import ReadAuthority, VerifiedReadAuthority
 from .participants import RequestAuthority
 
@@ -54,7 +60,7 @@ class ResourceClaim:
 @dataclass(frozen=True)
 class ChannelWork:
     resource: ResourceClaim
-    query: Query | PassageReadRequest | None = None
+    query: Query | PassageReadRequest | StoryReadRequest | FactReadRequest | SourceReadRequest | CaseReadRequest | GeoReadRequest | EditorialReadRequest | SourceGraphReadRequest | None = None
     document_payload: object | None = None
 
     @property
@@ -71,7 +77,7 @@ class ChannelWork:
 class _Read:
     ticket: ReadTicket
     authority: VerifiedReadAuthority
-    query: Query | PassageReadRequest
+    query: Query | PassageReadRequest | StoryReadRequest | FactReadRequest | SourceReadRequest | CaseReadRequest | GeoReadRequest | EditorialReadRequest | SourceGraphReadRequest
     dialog: str
     deadline: float
     timer: object
@@ -107,6 +113,8 @@ class SharedReadAdmission:
         self._loop=None
         self._reads={}
         self._documents={}
+        self._commands={}
+        self._editorial_documents=set()
         self._attachment=None
         self._state='unknown'
         self._work=None
@@ -177,7 +185,7 @@ class SharedReadAdmission:
         if (not isinstance(deadline,(float,int)) or isinstance(deadline,bool)
                 or not math.isfinite(deadline) or not now<deadline<=now+2):
             raise ValueError('absolute remaining deadline must be at most two seconds')
-        if not isinstance(query,(Query,PassageReadRequest)) or not isinstance(authority,VerifiedReadAuthority):
+        if not isinstance(query,(Query,PassageReadRequest,StoryReadRequest,FactReadRequest,SourceReadRequest,CaseReadRequest,GeoReadRequest,EditorialReadRequest,SourceGraphReadRequest)) or not isinstance(authority,VerifiedReadAuthority):
             raise TypeError('typed query and verified authority required')
         if on_dispatch is not None and not callable(on_dispatch):
             raise TypeError('internal dispatch observer must be callable')
@@ -192,7 +200,7 @@ class SharedReadAdmission:
             raise PermissionError('query authority projection mismatch')
         if getattr(query,'compute_claim',None) is not None:
             raise PermissionError('caller cannot choose a compute claim')
-        await self.authority.require(authority,'public_search')
+        await self.authority.require(authority,'case_read' if type(query) is CaseReadRequest else 'public_search')
         self._active()
         if self.clock()>=deadline:raise AdmissionUnavailable('read deadline elapsed')
         if self._attachment is None or query.connection_generation!=self._attachment[1]:
@@ -222,11 +230,40 @@ class SharedReadAdmission:
         self._active()
         if not isinstance(context,RequestAuthority):raise TypeError('internal RequestAuthority required')
         actor=await asyncio.to_thread(self.authority.participants.require,context,'import')
-        if len(self._documents)>=256 and actor not in self._documents:
+        if len(set(self._documents)|set(self._commands)|{actor})>256:
             raise AdmissionUnavailable('document authority capacity exhausted')
         self._documents[actor]=context
         self._event.set()
         return actor
+
+    async def register_command_actor(self,context,command):
+        """Only the retained existing bridge may authorize its exact command.
+
+        This context is distinct from document import authority. Registering a
+        Story editor never makes that person's arbitrary document rows eligible.
+        """
+        self._active()
+        bridge=self.queue._source_commands
+        if bridge is None:raise PermissionError('retained accepted command bridge required')
+        bridge.spool.registry.resolve(command)
+        actor=await bridge.spool.authorize_command(context,command)
+        if len(set(self._documents)|set(self._commands)|{actor})>256:
+            raise AdmissionUnavailable('canonical durable actor capacity exhausted')
+        self._commands[actor]=context
+        self._event.set()
+        return actor
+
+    async def register_editorial_document(self,owner,job_id):
+        """One exact document job from the retained native Story workflow."""
+        self._active()
+        if owner is None or owner is not self.queue._story_editorial:
+            raise PermissionError('retained Story workflow required')
+        if len(self._editorial_documents|{job_id})>64:raise AdmissionUnavailable('bounded editorial documents required')
+        await owner.authorize_document(job_id)
+        self._editorial_documents.add(job_id);self._event.set()
+
+    def release_editorial_document(self,owner,job_id):
+        if owner is self.queue._story_editorial:self._editorial_documents.discard(job_id)
 
     def _observe_attachment(self, run, generation):
         attachment=(run['id'],generation,run['runtime_incarnation'])
@@ -245,7 +282,8 @@ class SharedReadAdmission:
 
     async def _snapshot(self, run_id, token, generation, *, observe=True):
         run,owner,docs,resumed=await asyncio.to_thread(self.queue._admission_snapshot,run_id,token,generation,
-                                                    document_actors=tuple(self._documents))
+                                                    document_actors=tuple(self._documents),command_actors=tuple(self._commands),
+                                                    editorial_documents=tuple(self._editorial_documents))
         if owner['run_id'] is not None and (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation']):
             raise StaleAttachment('prior compute resource remains unknown')
         if observe:self._observe_attachment(run,generation)
@@ -390,6 +428,20 @@ class SharedReadAdmission:
                     if maintenance is not None and maintenance.eligible(doc,run,connection_generation):eligible.append(doc)
                     continue
                 if not ready:continue
+                if doc['kind']=='source_command':
+                    context=self._commands.get(doc['actor'])
+                    if context is not None and self.queue._source_commands is not None:
+                        try:actor=await self.queue._source_commands.authorize_job(context,doc)
+                        except (PermissionError,ValueError,LookupError):actor=None
+                        if actor==doc['actor']:eligible.append(doc)
+                    continue
+                if doc['id'] in self._editorial_documents:
+                    owner=self.queue._story_editorial
+                    if owner is not None:
+                        try:actor=await owner.authorize_document(doc['id'])
+                        except (PermissionError,ValueError,LookupError):actor=None
+                        if actor==doc['actor']:eligible.append(doc)
+                    continue
                 context=self._documents.get(doc['actor'])
                 if context is not None:
                     if doc['actor'] not in authorized:
@@ -418,7 +470,7 @@ class SharedReadAdmission:
                 selected_doc=person_docs[0] if person_docs and not person_reads else None
                 read=min(person_reads,key=lambda r:(self._dialog_turn.get((person,r.dialog),0),r.deadline,r.ticket.request_id)) if selected_doc is None and person_reads else None
             if read is not None:
-                try:await self.authority.require(read.authority,'public_search')
+                try:await self.authority.require(read.authority,'case_read' if type(read.query) is CaseReadRequest else 'public_search')
                 except PermissionError:
                     self._cancel((read.ticket.connection_generation,read.ticket.request_id));return None
                 if read.deadline<=self.clock() or (read.ticket.connection_generation,read.ticket.request_id) not in self._reads:return None
@@ -501,7 +553,7 @@ class SharedReadAdmission:
     async def finish_read(self, run_id, token, connection_generation, result):
         """Consumer delivery only. Source/withdrawal output gate remains separate."""
         self._active()
-        if not isinstance(result,(QueryResult,PassageReadResult)):raise TypeError('typed query result required')
+        if not isinstance(result,(QueryResult,PassageReadResult,StoryReadResult,FactReadResult,SourceReadResult,CaseReadResult,GeoReadResult,EditorialReadResult,SourceGraphReadResult)):raise TypeError('typed query result required')
         encode_envelope(result)
         if isinstance(result,QueryResult) and result.status in {'ok','degraded'} and result.mode!='hybrid':
             raise ValueError('target reads require actual hybrid retrieval')
@@ -513,9 +565,9 @@ class SharedReadAdmission:
                 or read.ticket.turn_generation!=result.turn_generation
                 or read.dispatched is None
                 or read.deadline<=self.clock()):return False
-        if isinstance(read.query,PassageReadRequest)!=isinstance(result,PassageReadResult):
+        if type(result) is not {Query:QueryResult,PassageReadRequest:PassageReadResult,StoryReadRequest:StoryReadResult,FactReadRequest:FactReadResult,SourceReadRequest:SourceReadResult,CaseReadRequest:CaseReadResult,GeoReadRequest:GeoReadResult,EditorialReadRequest:EditorialReadResult,SourceGraphReadRequest:SourceGraphReadResult}.get(type(read.query)):
             raise ValueError('read response operation type differs from admitted request')
-        try:await self.authority.require(read.authority,'public_search')
+        try:await self.authority.require(read.authority,'case_read' if type(read.query) is CaseReadRequest else 'public_search')
         except PermissionError:
             if self._reads.get(key) is read:self._cancel(key)
             return False
@@ -549,7 +601,7 @@ class SharedReadAdmission:
         return {'state':self._state,'pending_reads':len(self._reads),
                 'resource':self._work.resource if self._work else None,
                 'document_result_pending':self._document_result is not None,
-                'document_contexts':len(self._documents)}
+                'document_contexts':len(self._documents),'command_contexts':len(self._commands)}
 
     def close(self):
         """Shutdown only: never clears persistent ownership or compute debt."""

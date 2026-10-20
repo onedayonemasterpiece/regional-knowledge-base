@@ -5,6 +5,9 @@ Models validate shape, never identity or permission. No transport or scheduler l
 from __future__ import annotations
 
 import json
+import hashlib
+import re
+from uuid import UUID
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
@@ -123,6 +126,27 @@ class PassageReadRequest(ReadIdentity):
     compute_claim: Identifier | None = None
 
 
+class StoryReadRequest(ReadIdentity):
+    type: Literal['STORY_READ'] = 'STORY_READ'
+    protocol_version: Literal[2] = PROTOCOL_VERSION
+    operation: Literal['story_read'] = 'story_read'
+    operation_version: Literal[1] = 1
+    story_id: Identifier
+    revision: Annotated[int,Field(ge=1)] | None = None
+    view: Literal['get','history','variants'] = 'get'
+    after_revision: Nonnegative = 0
+    limit: Annotated[int,Field(ge=1,le=10)] = 10
+    actor: TrustedActorContext
+    min_data_seq: Nonnegative
+    deadline_ms: Annotated[int,Field(gt=0)]
+    compute_claim: Identifier | None = None
+
+    @model_validator(mode='after')
+    def canonical_story(self):
+        if str(UUID(self.story_id))!=self.story_id:raise ValueError('canonical story ID required')
+        return self
+
+
 class ItemDependencies(Contract):
     """Exhaustive per-item dependencies, including cross-source compositions.
 
@@ -152,6 +176,14 @@ class EvidenceMetadata(Contract):
     title: Annotated[str, Field(max_length=2048)] | None = None
     citation: Annotated[str, Field(max_length=8192)] | None = None
     locator: Annotated[str, Field(max_length=2048)] | None = None
+    source_provenance: dict | None = None
+
+    @model_validator(mode='after')
+    def bounded_provenance(self):
+        if self.source_provenance is not None and len(json.dumps(self.source_provenance,
+                ensure_ascii=False,allow_nan=False).encode())>128*1024:
+            raise ValueError('bounded safe source provenance required')
+        return self
 
 
 class EvidenceItem(Contract):
@@ -260,6 +292,65 @@ class PassageReadResult(ReadIdentity):
         return self
 
 
+class StoryReadResult(PassageReadResult):
+    """One exact shared basic narrative; publication/private variants excluded."""
+    type: Literal['STORY_READ_RESULT'] = 'STORY_READ_RESULT'
+    record: dict | None = None
+
+    @model_validator(mode='after')
+    def exact_narrative(self):
+        if self.status!='ok':
+            if self.record is not None:raise ValueError('failed story read has no record')
+            return self
+        record=self.record
+        keys={'story_id','revision','title','summary','material_type','body','body_sha256','narrative_availability',
+            'default_variant_ref','variant','bibliography','source','finding_ids','view','entries','next_revision'}
+        if type(record) is not dict or set(record)!=keys or len(json.dumps(record,ensure_ascii=False,allow_nan=False).encode())>131072:
+            raise ValueError('bounded exact story record required')
+        item=self.evidence[0];ref=record['default_variant_ref'];variant=record['variant']
+        if (type(ref) is not dict or set(ref)!={'variant_id','revision'} or ref['revision']!=1
+                or type(ref['revision']) is not int or str(UUID(ref['variant_id']))!=ref['variant_id']
+                or type(variant) is not dict
+                or set(variant)!={'variant_id','revision','audience','format','language','body','blocks','input_tokens'}
+                or variant['variant_id']!=ref['variant_id'] or variant['revision']!=ref['revision']
+                or variant['body']!=record['body'] or variant['format']!='story'
+                or type(record['body']) is not str or not 1<=len(record['body'])<=4000
+                or hashlib.sha256(record['body'].encode()).hexdigest()!=record['body_sha256']
+                or record['narrative_availability']!='available' or record['revision']!=1
+                or type(record['revision']) is not int or str(UUID(record['story_id']))!=record['story_id']
+                or item.id!=record['story_id'] or item.kind!='story' or item.text!=record['body']
+                or item.text_form!='complete' or item.continuation is not None
+                or item.exact_variant_ref!=f"variant:{ref['variant_id']}:r{ref['revision']}"
+                or item.dependencies.variant_refs!=(item.exact_variant_ref,)
+                or item.dependencies.grant_refs or len(item.dependencies.source_revisions)!=1
+                or item.dependencies.source_revisions[0].model_dump()!=record['source']
+                or record['view'] not in ('get','history','variants')
+                or type(record['entries']) is not list or len(record['entries'])>10
+                or type(record['title']) is not str or not 1<=len(record['title'])<=250
+                or type(record['summary']) is not str or len(record['summary'])>1000
+                or type(record['bibliography']) is not str or len(record['bibliography'])>16000
+                or type(record['finding_ids']) is not list or not 1<=len(record['finding_ids'])<=12
+                or len(set(record['finding_ids']))!=len(record['finding_ids'])
+                or any(type(x) is not str or str(UUID(x))!=x for x in record['finding_ids'])
+                or type(variant['input_tokens']) is not int or not 1<=variant['input_tokens']<=512
+                or type(variant['audience']) is not str or not 1<=len(variant['audience'])<=500
+                or type(variant['language']) is not str or not 2<=len(variant['language'])<=24):
+            raise ValueError('exact source-bound default narrative required')
+        if record['view']=='get' and record['entries']:raise ValueError('get has no version page')
+        for entry in record['entries']:
+            if type(entry) is not dict:raise ValueError('typed story version entry required')
+            if record['view']=='variants':
+                if entry!={**variant,'body_sha256':record['body_sha256']}:
+                    raise ValueError('unsupported private/alternate variant')
+            elif (set(entry)!={'story_id','revision','logical_time','action','payload_sha256','actor_id','request_id','operation_key','sequence','command_sha256'}
+                    or entry['story_id']!=record['story_id'] or entry['revision']!=1
+                    or entry['action']!='source_import' or type(entry['sequence']) is not int or entry['sequence']<1
+                    or any(type(entry[k]) is not str or not 1<=len(entry[k])<=256 for k in ('actor_id','request_id','operation_key','logical_time'))
+                    or any(type(entry[k]) is not str or re.fullmatch('[0-9a-f]{64}',entry[k]) is None for k in ('payload_sha256','command_sha256'))):
+                raise ValueError('exact source-import history required')
+        return self
+
+
 class Hello(Contract):
     type: Literal["HELLO"] = "HELLO"
     protocol_version: Literal[2] = PROTOCOL_VERSION
@@ -279,7 +370,7 @@ class Hello(Contract):
     proof_ready: bool | None
 
 
-Envelope = Annotated[Query | QueryResult | PassageReadRequest | PassageReadResult | CancelQuery | Hello, Field(discriminator="type")]
+Envelope = Annotated[Query | QueryResult | PassageReadRequest | PassageReadResult | StoryReadRequest | StoryReadResult | CancelQuery | Hello, Field(discriminator="type")]
 _ADAPTER = TypeAdapter(Envelope)
 
 
@@ -307,9 +398,29 @@ def decode_envelope(data: bytes) -> Query | QueryResult | PassageReadRequest | P
                      parse_constant=_reject_constant)
     if not isinstance(raw, dict):
         raise ValueError("envelope must be an object")
-    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT") else QUERY_MAX_BYTES
+    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT", "STORY_READ_RESULT", "FACT_READ_RESULT", "SOURCE_READ_RESULT", "CASE_READ_RESULT", "GEO_READ_RESULT", "EDITORIAL_READ_RESULT", "SOURCE_GRAPH_READ_RESULT") else QUERY_MAX_BYTES
     if len(data) > limit:
         raise ValueError("query_too_large" if raw.get("type") == "QUERY" else "control frame too large")
+    if raw.get('type') in ('SOURCE_GRAPH_READ','SOURCE_GRAPH_READ_RESULT'):
+        from .kaggle_source_graph_read import SourceGraphReadRequest,SourceGraphReadResult
+        return (SourceGraphReadRequest if raw['type']=='SOURCE_GRAPH_READ' else SourceGraphReadResult).model_validate_json(data)
+    if raw.get('type') in ('EDITORIAL_READ','EDITORIAL_READ_RESULT'):
+        from .kaggle_editorial_contracts import EditorialReadRequest,EditorialReadResult
+        return (EditorialReadRequest if raw['type']=='EDITORIAL_READ' else EditorialReadResult).model_validate_json(data)
+    if raw.get('type') in ('CASE_READ','CASE_READ_RESULT'):
+        from .kaggle_case_contracts import CaseReadRequest,CaseReadResult
+        return (CaseReadRequest if raw['type']=='CASE_READ' else CaseReadResult).model_validate_json(data)
+    if raw.get('type') in ('GEO_READ','GEO_READ_RESULT'):
+        from .kaggle_geo_contracts import GeoReadRequest,GeoReadResult
+        return (GeoReadRequest if raw['type']=='GEO_READ' else GeoReadResult).model_validate_json(data)
+    if raw.get('type') in ('SOURCE_READ','SOURCE_READ_RESULT'):
+        from .kaggle_source_read import SourceReadRequest,SourceReadResult
+        return (SourceReadRequest if raw['type']=='SOURCE_READ' else SourceReadResult).model_validate_json(data)
+    if raw.get('type') in ('FACT_READ', 'FACT_READ_RESULT'):
+        # The fixed optional domain contract imports the base wire models; load
+        # it after this module is initialized rather than adding an import cycle.
+        from .kaggle_fact_contracts import FactReadRequest, FactReadResult
+        return (FactReadRequest if raw['type']=='FACT_READ' else FactReadResult).model_validate_json(data)
     # JSON-mode strict validation accepts JSON arrays for immutable tuples.
     return _ADAPTER.validate_json(data)
 

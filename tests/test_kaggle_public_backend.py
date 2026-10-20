@@ -27,6 +27,11 @@ class Gate:
         self.authority = authority
         self.permits, self.abandoned, self.released = [], [], []
 
+    def catalog_supported(self):
+        # This fixture retains the original source/Story read contract. Current
+        # editorial/catalogue tests supply the actual native registry and gate.
+        return False
+
     async def dispatch(self, authority, query, binding):
         await self.authority.require(authority, 'public_search')
         permit = SimpleNamespace(authority=authority, query=query, binding=binding)
@@ -335,3 +340,31 @@ async def test_invalid_explicit_empty_source_scope_never_widens_to_all_sources(t
         await s.backend.search('synthetic query', s.principal, document_ids=scope)
     assert not s.gate.permits and s.admission.status()['pending_reads'] == 0
     assert s.admission.status()['state'] == 'idle'
+
+@pytest.mark.asyncio
+async def test_current_story_get_uses_paired_editorial_read_and_keeps_exact_saved_body(target):
+    from regional_knowledge.kaggle_editorial_contracts import EditorialReadRequest,EditorialReadResult
+    from regional_knowledge.kaggle_story_read import story_item
+    from test_kaggle_editorial_contracts import record
+    s=target;s.gate.catalog_supported=lambda:True
+    r=record();r['revision']=r['current_revision']=3;r['default_variant_ref']['revision']=r['variant']['revision']=2
+    r['variant'].pop('source_blocks')
+    async def read():
+        with capture_read_output() as calls:
+            value=await s.backend.story_get(r['story_id'],s.principal,revision=3)
+            return value,calls
+    task=asyncio.create_task(read())
+    try:
+        work_item=await work(s)
+        assert type(work_item.query) is EditorialReadRequest and work_item.query.revision==3
+        result=EditorialReadResult(request_id=work_item.query.request_id,connection_generation=s.generation,
+            turn_generation=work_item.query.turn_generation,status='ok',record=r,evidence=(story_item(r),),
+            observed_data_seq=5,observed_projection_seq=5,observed_visibility_epoch=1,observed_database_generation='synthetic-db')
+        assert await s.admission.finish_read(s.run,s.token,s.generation,result)
+        await release(s,work_item)
+        value,calls=await task
+        assert value['body']==r['body'] and value['default_variant_ref']['revision']==2
+        assert len(calls)==1
+        calls[0].release()
+    finally:
+        if not task.done():task.cancel()

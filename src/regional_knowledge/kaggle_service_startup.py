@@ -65,6 +65,11 @@ class TargetServiceConfig:
     destination_ref: str = 'rkb-source-http-response'
     refresh_seconds: float = 5
     writer_owner: object = None
+    import_originals: object = None
+    import_tokenizer: object = None
+    import_parser_sha256: str | None = None
+    import_launch_config_sha256: str | None = None
+    geo_manifest_operation_keys: tuple[str,...] = ()
 
     def __post_init__(self):
         if (not isinstance(self.oauth_provider,RegionalOAuthProvider)
@@ -92,9 +97,57 @@ class TargetServiceConfig:
                 or type(self.refresh_seconds) not in (int,float) or not math.isfinite(self.refresh_seconds)
                 or not 0<self.refresh_seconds<=10):
             raise ValueError('bounded destination and maintenance interval required')
+        if (type(self.geo_manifest_operation_keys) is not tuple or len(self.geo_manifest_operation_keys)>256
+                or len(set(self.geo_manifest_operation_keys))!=len(self.geo_manifest_operation_keys)
+                or any(type(key) is not str or not 1<=len(key.encode())<=256 for key in self.geo_manifest_operation_keys)
+                or len(self.geo_manifest_operation_keys)==1):
+            raise ValueError('bounded exact GEO manifest operation keys required')
+        if (len({value is None for value in (self.import_originals,self.import_tokenizer,
+                self.import_parser_sha256,self.import_launch_config_sha256)}) != 1):
+            raise TypeError('native originals and exact independent tokenizer must be supplied together')
+        if self.import_originals is not None:
+            from .original_intake_controller import OriginalIntakeController
+            from .kaggle_import_tokenizer import HfImportTokenCounter
+            import re
+            if (type(self.import_originals) is not OriginalIntakeController
+                    or type(self.import_tokenizer) is not HfImportTokenCounter
+                    or self.import_originals.queue is not self.queue
+                    or self.import_originals.spool is not self.spool
+                    or self.import_originals.participants is not self.participants):
+                raise TypeError('same existing native intake control owners required')
+            if any(type(value) is not str or re.fullmatch('[0-9a-f]{64}',value) is None
+                    for value in (self.import_parser_sha256,self.import_launch_config_sha256)):
+                raise ValueError('independent target intake parser/config pins required')
 
 
 class _SourceBackend(KaggleSourceBackend):
+    def _importer(self):
+        if self.startup.importer is None:
+            raise ToolError('{"status":"unavailable","reason":"target_importer_unavailable"}')
+        return self.startup.importer
+
+    async def book_ingest(self, **kwargs):
+        return await self._importer().book_ingest(**kwargs)
+
+    async def book_pages(self, **kwargs):
+        return await self._importer().book_pages(**kwargs)
+
+    async def _ingestion_row(self, *, principal, ingestion_id):
+        return await self._importer().owned_row(principal, ingestion_id)
+
+    async def story_edit(self,story_id,principal,*,expected_revision,operations,idempotency_key,reason=None):
+        from .story_contracts import UpsertVariant
+        if self.startup.editorial is None:raise ToolError('{"status":"unavailable","reason":"target_editorial_unavailable"}')
+        if len(operations)!=1 or type(operations[0]) is not UpsertVariant:
+            raise ToolError('{"status":"unavailable","reason":"unsupported_target_story_operation"}')
+        return await self.startup.editorial.mutate(principal,story_id=story_id,expected_revision=expected_revision,
+            idempotency_key=idempotency_key,operation=operations[0],reason=reason)
+
+    async def story_access(self,story_id,principal,*,expected_revision,grantee_user_id,capability,idempotency_key):
+        if self.startup.editorial is None:raise ToolError('{"status":"unavailable","reason":"target_editorial_unavailable"}')
+        return await self.startup.editorial.mutate(principal,story_id=story_id,expected_revision=expected_revision,
+            idempotency_key=idempotency_key,grantee_user_id=grantee_user_id,capability=capability)
+
     async def _search(self,*args,**kwargs):
         if not self.startup.reads_current():
             raise ToolError('{"status":"unavailable","reason":"source_history_unavailable"}')
@@ -131,6 +184,42 @@ class TargetServiceStartup:
         self.backend.startup=self
         self.routes={'source.search':self.backend.search,'source.fetch':self.backend.fetch,
             'source.withdraw':config.spool.stage_source_withdraw,'source.import':config.spool.stage_source_import}
+        if self.gate.catalog_supported():
+            self.routes['source.catalog']=self.backend.book_find
+        if self.gate.story_supported():
+            self.routes.update({'story.search':self.backend.story_search,'story.get':self.backend.story_get,
+                'story.history':self.backend.story_history,'story.variants':self.backend.story_variants})
+        if self.gate.facts_supported():
+            self.routes.update({'source.fact_read':self.backend.source_fact_read,
+                'source.calendar':self.backend.story_calendar,
+                'source.observations':self.backend.story_observation_search})
+        self.editorial=None
+        editorial_available=self.gate.editorial_supported() and config.import_tokenizer is not None
+        if editorial_available:self.routes.update({'story.edit':self.backend.story_edit,'story.access':self.backend.story_access})
+        if self.gate.graph_supported():
+            self.routes.update({'source.entity_read':self.backend.source_graph_fetch,
+                'source.entity_list':self.backend.entity_list})
+        self.geo_gate=self.geo_backend=None
+        if config.geo_manifest_operation_keys:
+            from .geo_read_gate import GeoReadGate
+            from .kaggle_geo_backend import KaggleGeoBackend
+            self.geo_gate=GeoReadGate(authority,config.spool,binding_current=self.binding_current)
+            if not self.geo_gate.supported():
+                raise ValueError('explicit fresh11 GEO handler required for GEO startup')
+            self.geo_backend=KaggleGeoBackend(worker_queue=config.queue,read_authority=authority,
+                geo_gate=self.geo_gate,destination_ref=config.destination_ref,current=self.reads_current)
+            self.routes.update({'geo.identity_read':self.geo_backend.geo_lookup,
+                'geo.members_read':self.geo_backend.graph_fetch})
+        from .case_read_gate import CaseReadGate
+        self.case_gate=CaseReadGate(authority,config.spool,binding_current=self.binding_current)
+        self.cases_backend=None
+        if self.case_gate.cases_supported():
+            from .kaggle_cases_backend import KaggleCasesBackend
+            self.cases_backend=KaggleCasesBackend(self,case_gate=self.case_gate)
+            self.routes.update({'case.read':self.cases_backend.disagreement_get,
+                'case.edit':self.cases_backend.disagreement_edit,'case.access':config.spool.stage_domain_command,
+                'case.contribute':self.cases_backend.disagreement_contribute,
+                'case.conclusion':self.cases_backend.disagreement_conclusion})
         self.history=config.history_adapter.bind(spool=config.spool,routes=self.routes,
             binding_current=self.binding_current,writer_generation=config.writer_generation)
         if (self.history.spool is not config.spool or set(self.history.routes)!=set(self.routes)
@@ -144,6 +233,18 @@ class TargetServiceStartup:
             self.source_dispatch=bridge
         else:
             self.source_dispatch=AcceptedSourceDispatch(config.spool,binding_current=self.command_binding_current)
+        self.importer = None
+        if config.import_originals is not None:
+            from .kaggle_importer import KaggleSourceImporter
+            from .file_ingress import ChatFileDownloader
+            self.importer = KaggleSourceImporter(self, originals=config.import_originals,
+                tokenizer=config.import_tokenizer)
+            # Only bounded stage JSON uses this Dev downloader. Original PDFs
+            # are acquired by the configured native controller.
+            self.backend.file_downloader = ChatFileDownloader()
+        if editorial_available:
+            from .kaggle_story_editorial_backend import KaggleStoryEditorial
+            self.editorial=KaggleStoryEditorial(self,tokenizer=config.import_tokenizer)
 
     def binding_current(self,binding):
         try:
@@ -180,10 +281,20 @@ class TargetServiceStartup:
                 coverage=await self.history.extend(self.binding)
             else:
                 self.coverage=None;self.gate.invalidate();self.binding=binding
+                if self.geo_gate is not None:self.geo_gate.invalidate()
+                self.case_gate.invalidate()
                 coverage=await self.history.restore(binding)
             if not coverage.current() or not self.binding_current(self.binding):
                 raise PermissionError('native history proof no longer current')
             self.coverage=coverage
+            if self.geo_gate is not None and (self.geo_gate._manifest is None
+                    or self.geo_gate._manifest.database!=binding.database_generation):
+                try:
+                    await self.geo_gate.establish(self.config.geo_manifest_operation_keys,binding=self.binding)
+                except asyncio.CancelledError:raise
+                except Exception as exc:
+                    self.geo_gate.invalidate()
+                    _LOG.warning('target_geo_routing state=closed reason=%s',type(exc).__name__)
             _LOG.info('target_source_routing state=ready connection_generation=%s',binding.connection_generation)
             return True
         except asyncio.CancelledError:
@@ -208,10 +319,13 @@ class TargetServiceStartup:
             yield self
         finally:
             self.running=False;self.coverage=None;self.gate.invalidate()
+            if self.geo_gate is not None:self.geo_gate.invalidate()
+            self.case_gate.invalidate()
             if self._maintenance is not None:
                 self._maintenance.cancel()
                 try:await self._maintenance
                 except asyncio.CancelledError:pass
+            if self.editorial is not None:await self.editorial.aclose()
             try:await self.source_dispatch.aclose()
             finally:
                 self.closed=True

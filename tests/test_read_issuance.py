@@ -117,6 +117,22 @@ async def test_authority_exception_withholds_complete_result_and_releases_ticket
 
 
 @pytest.mark.asyncio
+async def test_guarded_native_page_images_keep_normal_mcp_content_and_revoke_together():
+    from mcp.types import CallToolResult, ImageContent, TextContent
+    def page(_):
+        return CallToolResult(content=[TextContent(type='text', text='actual-native-metadata'),
+            ImageContent(type='image', data='cHJpdmF0ZS1wYWdl', mimeType='image/jpeg')])
+    current = Gate()
+    result = issued(await run(current, render=page))['result']
+    assert result['content'][1] == {'type':'image', 'data':'cHJpdmF0ZS1wYWdl', 'mimeType':'image/jpeg'}
+    revoked = Gate(current=(False, False))
+    messages = await run(revoked, render=page)
+    assert issued(messages)['result']['isError'] is True
+    assert 'cHJpdmF0ZS1wYWdl' not in repr(messages) and 'actual-native-metadata' not in repr(messages)
+    assert len(revoked.released) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('wire_id', ['different-request', 123, None])
 async def test_wire_identity_must_match_actual_context_request_id(wire_id):
     gate = Gate()

@@ -24,6 +24,8 @@ class NativeCursor(Cursor):
         elif sql.startswith('SELECT sequence,'):
             start,earlier,enabled,_=args
             self.rows=[r for r in self.pg.receipts if enabled and (r[0]>start or r[0] in earlier)]
+        elif sql.startswith('SELECT rkb_v4.verify_source_graph_origins_'):self.rows=[(getattr(self.pg,'graph_valid',True),)]
+        elif sql.startswith('SELECT rkb_v4.verify_source_story_origins_'):self.rows=[(getattr(self.pg,'origin_valid',True),)]
         elif sql.startswith('SELECT %s'):self.rows=[args]
         else:self.rows=[]
         return self
@@ -36,14 +38,21 @@ class NativePg(Pg):
     async def execute(self,sql,args=None):return await self.cursor().execute(sql,args)
 
 
-def pair(e,*,lease_seconds=10):
+def pair(e,*,lease_seconds=10,schema_revision=None):
     b=binding();pg=NativePg();database=SimpleNamespace(database_generation='db-source',writer_generation='writer-1')
+    if schema_revision is not None:database.schema_revision=schema_revision
+    routes=('source.search','source.fetch','source.withdraw')
+    if schema_revision in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):
+        routes=routes+('source.import','story.get','story.history','story.search','story.variants',
+            'source.fact_read','source.calendar','source.observations')
+    if schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):routes=routes+('story.edit','story.access','source.catalog')
+    if schema_revision=='rkb-v4-sql001-011-v1':routes=routes+('source.entity_read','source.entity_list')
     async def probe(**kwargs):return b'catalog',dict(database_generation='db-source',applied_seq=pg.applied_seq)
     native=NativeSourceHistoryObserver(acquire=pg.acquire,database=database,identity=('run','nonce','inc'),registry=e.registry,
         current=lambda key:key==('run','inc',1),probe=probe,lease_seconds=lease_seconds)
     native.attached(1)
     verifier=WssSourceHistoryVerifier(e.spool,acquire=None,database=database,observer_sha256=native.code_hash,
-        binding_current=lambda current:current is b,routes={k:lambda:None for k in ('source.search','source.fetch','source.withdraw')},
+        binding_current=lambda current:current is b,routes={k:lambda:None for k in routes},
         expected_catalog_sha256=digest(b'catalog'),expected_acl_sha256=digest(canonical(pg.acl)),writer_generation='writer-1')
     calls=[]
     async def phase(binding,args):
@@ -153,3 +162,61 @@ async def test_actual_transport_invokes_prepared_history_handler_on_same_resourc
         assert ('attached',1) in calls and ('observe','same-native-slot') in calls
         await peer.put(dict(type='RESULT_ACK',job_id='history',claim='claim',status='accepted'))
     finally:stop.set();await task
+
+
+@pytest.mark.asyncio
+async def test_fresh8_history_uses_fixed_v2_origin_proof_and_fact_table_locks(env):
+    p=pair(env,schema_revision='rkb-v4-sql001-008-v1')
+    try:
+        proof=await p.v.establish_genesis(p.b)
+        assert proof.current()
+        assert any('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations' in sql for sql in p.pg.sql)
+        assert 'SELECT rkb_v4.verify_source_story_origins_v2(%s::uuid[])' in p.pg.sql
+        assert not any('verify_source_story_origins_v1(' in sql for sql in p.pg.sql)
+        p.pg.origin_valid=False
+        with pytest.raises(SpoolConflict,match='story_origin_uncovered'):await p.v.renew(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()
+
+@pytest.mark.asyncio
+async def test_fresh9_history_requires_exact_manifest_editorial_origin_proof_and_locks(env):
+    p=pair(env,schema_revision='rkb-v4-sql001-009-v1')
+    try:
+        assert (await p.v.establish_genesis(p.b)).current()
+        assert 'SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])' in p.pg.sql
+        assert any('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads' in sql for sql in p.pg.sql)
+        assert not any('verify_source_story_origins_v2(' in sql for sql in p.pg.sql)
+        p.pg.origin_valid=False
+        with pytest.raises(SpoolConflict,match='story_origin_uncovered'):await p.v.renew(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()
+
+
+def test_editorial_history_classification_uses_exact_installed_contract_and_route(env):
+    from regional_knowledge.kaggle_apply import HandlerRegistry
+    from regional_knowledge.story_editorial import editorial_handler,STORY_EDIT
+    from test_story_editorial import command
+    h=editorial_handler(route=STORY_EDIT,check_sha256='a'*64,apply_sha256='b'*64)
+    env.spool.registry=HandlerRegistry([h]);env.registry=env.spool.registry
+    p=pair(env,schema_revision='rkb-v4-sql001-009-v1')
+    c=command()
+    assert p.v._classify(c.encode(),None)[1]==h
+    p.v.routes.pop('story.edit')
+    with pytest.raises(SpoolConflict):p.v._classify(c.encode(),None)
+
+
+@pytest.mark.asyncio
+async def test_fresh11_requires_both_story_and_graph_origin_proofs(env):
+    from regional_knowledge.kaggle_domain_schema import TABLES_11
+    p=pair(env,schema_revision='rkb-v4-sql001-011-v1')
+    try:
+        assert (await p.v.establish_genesis(p.b)).current()
+        assert 'SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])' in p.pg.sql
+        assert 'SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])' in p.pg.sql
+        locks=' '.join(sql for sql in p.pg.sql if sql.startswith('LOCK TABLE'))
+        assert all('rkb_v4.'+name in locks for name in TABLES_11 if name.startswith('source_'))
+        p.pg.graph_valid=False
+        with pytest.raises(SpoolConflict,match='graph_origin_uncovered'):
+            await p.v.renew(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()

@@ -81,6 +81,7 @@ class BgeWssTransport:
         self.bootstrap_finalized=False
         self.source_handler = None
         self.source_history_handler=None
+        self.original_intake_handler=None
         self._connection_generation=None
         if recovery_handler is not None and (not shared or not (inspect.iscoroutinefunction(recovery_handler)
                 or inspect.iscoroutinefunction(getattr(recovery_handler,'__call__',None)))):
@@ -170,17 +171,23 @@ class BgeWssTransport:
 
     @staticmethod
     def _unavailable(frame, reason):
-        exact=frame.get('type')=='PASSAGE_READ'
-        return {'type': 'PASSAGE_READ_RESULT' if exact else 'QUERY_RESULT', 'protocol_version': 2,
+        exact=frame.get('type') in ('PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ')
+        return {'type': 'SOURCE_GRAPH_READ_RESULT' if frame.get('type')=='SOURCE_GRAPH_READ' else 'EDITORIAL_READ_RESULT' if frame.get('type')=='EDITORIAL_READ' else 'CASE_READ_RESULT' if frame.get('type')=='CASE_READ' else 'GEO_READ_RESULT' if frame.get('type')=='GEO_READ' else 'SOURCE_READ_RESULT' if frame.get('type')=='SOURCE_READ' else 'FACT_READ_RESULT' if frame.get('type')=='FACT_READ' else 'STORY_READ_RESULT' if frame.get('type')=='STORY_READ' else 'PASSAGE_READ_RESULT' if exact else 'QUERY_RESULT', 'protocol_version': 2,
             **{key: frame[key] for key in ('request_id', 'connection_generation', 'turn_generation')},
             'status': 'unavailable', **({} if exact else {'mode':None}), 'evidence': [],
             'observed_data_seq': None, 'observed_projection_seq': None, 'reason': reason}
 
     def _validate_query(self, frame):
-        exact=frame.get('type')=='PASSAGE_READ'
+        exact=frame.get('type') in ('PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ')
         if exact:
-            from regional_knowledge.kaggle_protocol import decode_envelope,PassageReadRequest
-            if not isinstance(decode_envelope(json.dumps(frame,allow_nan=False).encode()),PassageReadRequest):
+            from regional_knowledge.kaggle_protocol import decode_envelope,PassageReadRequest,StoryReadRequest
+            from regional_knowledge.kaggle_fact_contracts import FactReadRequest
+            from regional_knowledge.kaggle_source_read import SourceReadRequest
+            from regional_knowledge.kaggle_case_contracts import CaseReadRequest
+            from regional_knowledge.kaggle_editorial_contracts import EditorialReadRequest
+            from regional_knowledge.kaggle_source_graph_read import SourceGraphReadRequest
+            from regional_knowledge.kaggle_geo_contracts import GeoReadRequest
+            if not isinstance(decode_envelope(json.dumps(frame,allow_nan=False).encode()),SourceGraphReadRequest if frame.get('type')=='SOURCE_GRAPH_READ' else EditorialReadRequest if frame.get('type')=='EDITORIAL_READ' else CaseReadRequest if frame.get('type')=='CASE_READ' else GeoReadRequest if frame.get('type')=='GEO_READ' else SourceReadRequest if frame.get('type')=='SOURCE_READ' else FactReadRequest if frame.get('type')=='FACT_READ' else StoryReadRequest if frame.get('type')=='STORY_READ' else PassageReadRequest):
                 raise ValueError('shared exact read contract')
         if (len(json.dumps(frame, allow_nan=False).encode()) > 16384
                 or not all(self._identifier(frame.get(key)) for key in ('request_id', 'compute_claim'))
@@ -193,10 +200,16 @@ class BgeWssTransport:
             raise ValueError('shared QUERY contract')
 
     def _validate_query_result(self, frame, result):
-        if frame.get('type')=='PASSAGE_READ':
-            from regional_knowledge.kaggle_protocol import decode_envelope,PassageReadResult
+        if frame.get('type') in ('PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ'):
+            from regional_knowledge.kaggle_protocol import decode_envelope,PassageReadResult,StoryReadResult
+            from regional_knowledge.kaggle_fact_contracts import FactReadResult
+            from regional_knowledge.kaggle_source_read import SourceReadResult
+            from regional_knowledge.kaggle_case_contracts import CaseReadResult
+            from regional_knowledge.kaggle_editorial_contracts import EditorialReadResult
+            from regional_knowledge.kaggle_source_graph_read import SourceGraphReadResult
+            from regional_knowledge.kaggle_geo_contracts import GeoReadResult
             typed=decode_envelope(json.dumps(result,allow_nan=False).encode())
-            if not isinstance(typed,PassageReadResult) or self._read_identity(result)!=self._read_identity(frame):
+            if type(typed) is not (SourceGraphReadResult if frame.get('type')=='SOURCE_GRAPH_READ' else EditorialReadResult if frame.get('type')=='EDITORIAL_READ' else CaseReadResult if frame.get('type')=='CASE_READ' else GeoReadResult if frame.get('type')=='GEO_READ' else SourceReadResult if frame.get('type')=='SOURCE_READ' else FactReadResult if frame.get('type')=='FACT_READ' else StoryReadResult if frame.get('type')=='STORY_READ' else PassageReadResult) or self._read_identity(result)!=self._read_identity(frame):
                 raise ValueError('exact read result identity/type mismatch')
             return result
         if (not isinstance(result, dict) or result.get('type') != 'QUERY_RESULT'
@@ -254,13 +267,23 @@ class BgeWssTransport:
             self.query_handler, self.prepared_runtime = prepared.query_handler, prepared
             self.source_handler = prepared.source_handler
             self.source_history_handler=prepared.source_history_handler
+            self.original_intake_handler=prepared.original_intake_handler
             if self.source_history_handler is not None:
                 self.source_history_handler.attached(self._connection_generation)
+            if self.original_intake_handler is not None:
+                self.original_intake_handler.attached(self._connection_generation)
         self.changed.set()
+
+    def _native_handler(self,job):
+        if job['kind']!='recovery_phase':return self.source_handler
+        if job.get('phase')=='source_history':return self.source_history_handler
+        if job.get('phase') in {'original_acquire','original_archive','original_verify','original_pages'}:
+            return self.original_intake_handler
+        return self.recovery_handler
 
     async def _encode(self, job):
         if job['kind'] in ('source_command','recovery_phase'):
-            handler=(self.source_history_handler if job.get('phase')=='source_history' else self.recovery_handler) if job['kind']=='recovery_phase' else self.source_handler
+            handler=self._native_handler(job)
             if handler is None:raise ValueError('fixed native executor unavailable')
             if job['kind']=='recovery_phase' and self.snapshot_channel is not None:
                 with self.snapshot_channel.assignment(job):receipt=await handler(job)
@@ -318,6 +341,7 @@ class BgeWssTransport:
             raise ValueError('server attachment generation required')
         self._connection_generation=generation
         if self.source_history_handler is not None:self.source_history_handler.attached(generation)
+        if self.original_intake_handler is not None:self.original_intake_handler.attached(generation)
         attachment_release = attachment_state = None
         if self.shared_reads:
             self._maybe_release()
@@ -425,7 +449,7 @@ class BgeWssTransport:
                     if (self.read_frame is not None
                             and self._read_identity(frame) == self._read_identity(self.read_frame)):
                         self._cancel_read()
-                elif self.shared_reads and kind in ('QUERY','PASSAGE_READ'):
+                elif self.shared_reads and kind in ('QUERY','PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ'):
                     self._validate_query(frame)
                     if (self.read_frame is not None
                             and frame['compute_claim'] == self.read_frame['compute_claim']
@@ -446,7 +470,7 @@ class BgeWssTransport:
                     source=frame.get('kind')=='source_command'
                     recovery=frame.get('kind')=='recovery_phase'
                     if source or recovery:
-                        native_handler=(self.source_history_handler if frame.get('phase')=='source_history' else self.recovery_handler) if recovery else self.source_handler
+                        native_handler=self._native_handler(frame)
                         if (not self.shared_reads or native_handler is None
                                 or tuple(frame.get(key) for key in ('run_id','launch_nonce','runtime_incarnation'))
                                     !=(self.config['run_id'],self.config['launch_nonce'],self.incarnation)
@@ -528,6 +552,7 @@ class BgeWssTransport:
         finally:
             if self._connection_generation==generation:self._connection_generation=None
             if self.source_history_handler is not None:self.source_history_handler.detached(generation)
+            if self.original_intake_handler is not None:self.original_intake_handler.detached(generation)
             if self.shared_reads:
                 self._cancel_read()
             for task in tasks:

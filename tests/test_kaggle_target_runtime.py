@@ -69,6 +69,12 @@ def test_generated_target_persists_final_hash_outside_source_and_is_stable(tmp_p
     assert 'main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)' in source
     assert 'pip install' not in source
     compile(source,'fixture-generated','exec')
+    assignments=[node for node in ast.parse(source).body if isinstance(node,ast.Assign)
+        and any(isinstance(t,ast.Name) and t.id=='RUN_CONFIG' for t in node.targets)]
+    config=ast.literal_eval(assignments[0].value)
+    assert 'artifacts' not in config['target_runtime']
+    assert len(config['prepared_model']['entries'])>len(spec().artifacts)
+    assert {entry['name'] for entry in spec().artifacts}<={entry['name'] for entry in config['prepared_model']['entries']}
     with queue.connect() as db:
         expected=json.loads(db.execute('SELECT expected_json FROM bge_runtime_expectations WHERE run_id=?',(run,)).fetchone()[0])
     assert expected['hashes']['executed_source']==hashlib.sha256(source.encode()).hexdigest()
@@ -144,6 +150,27 @@ async def test_empty_head_read_unknown_never_records_intent(tmp_path):
             recovery_journal=journal,sql_hashes=hashes())
     with queue.connect() as db:
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='bge_empty_generation_intents'").fetchone()
+
+
+@pytest.mark.asyncio
+async def test_controller_intent_includes_the_selected_native_story_migration(tmp_path):
+    from test_bge_controller import controller
+    from regional_knowledge.source_import_v2 import STORY_REVISIONS
+    from regional_knowledge.kaggle_owned_pg import STORY_SQL_ARTIFACTS
+    queue,run=queue_run(tmp_path)
+    base=spec(fresh=True)
+    target=replace(base,database=replace(base.database,schema_revision=STORY_REVISIONS.schema,
+        function_revision=STORY_REVISIONS.function,executor_revision=STORY_REVISIONS.executor))
+    _,journal=journal_fixture()
+    selected=controller().target_sql_hashes(target,ROOT)
+    assert tuple(selected)==STORY_SQL_ARTIFACTS
+    await persist_empty_intent(queue,run,target,launch_nonce=queue.prepare_channel(run),
+        recovery_journal=journal,sql_hashes=selected)
+    # Without migration 007 in the controller's intent the real composer
+    # refuses to generate a launch. This does not push a notebook or open PG.
+    generated=generate(queue,run,target)
+    ast.parse(generated)
+    assert '007_source_stories.sql' in generated
 
 
 @pytest.mark.asyncio

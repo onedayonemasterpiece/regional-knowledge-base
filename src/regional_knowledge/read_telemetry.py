@@ -69,11 +69,15 @@ class ReadTelemetry:
         except Exception:
             self.failed += 1
 
-    def begin_attempt(self, operation='knowledge_search', *, trace_id=None):
+    def begin_attempt(self, operation='knowledge_search', *, trace_id=None, request_id=None):
         """Call before admission/dispatch; the returned request ID is server owned."""
         if operation not in {'search', 'knowledge_search', 'fetch'}:
             raise ValueError('unknown read operation')
         attempt = ReadAttempt(trace_id or current_trace_id.get() or uuid4().hex)
+        if request_id is not None:
+            if type(request_id) is not str or not 1<=len(request_id)<=256:
+                raise ValueError('bounded trusted adapter request identity required')
+            object.__setattr__(attempt,'request_id',request_id)
         self._attempt_record({'event': 'read_attempt_started', 'plane': 'controller', 'terminal': False,
             **attempt.correlation(), 'operation': operation, 'diagnostic_state': 'observed'})
         return attempt
