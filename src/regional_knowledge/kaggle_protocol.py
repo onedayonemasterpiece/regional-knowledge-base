@@ -398,9 +398,12 @@ def decode_envelope(data: bytes) -> Query | QueryResult | PassageReadRequest | P
                      parse_constant=_reject_constant)
     if not isinstance(raw, dict):
         raise ValueError("envelope must be an object")
-    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT", "STORY_READ_RESULT", "FACT_READ_RESULT", "SOURCE_READ_RESULT", "CASE_READ_RESULT", "GEO_READ_RESULT") else QUERY_MAX_BYTES
+    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT", "STORY_READ_RESULT", "FACT_READ_RESULT", "SOURCE_READ_RESULT", "CASE_READ_RESULT", "GEO_READ_RESULT", "EDITORIAL_READ_RESULT") else QUERY_MAX_BYTES
     if len(data) > limit:
         raise ValueError("query_too_large" if raw.get("type") == "QUERY" else "control frame too large")
+    if raw.get('type') in ('EDITORIAL_READ','EDITORIAL_READ_RESULT'):
+        from .kaggle_editorial_contracts import EditorialReadRequest,EditorialReadResult
+        return (EditorialReadRequest if raw['type']=='EDITORIAL_READ' else EditorialReadResult).model_validate_json(data)
     if raw.get('type') in ('CASE_READ','CASE_READ_RESULT'):
         from .kaggle_case_contracts import CaseReadRequest,CaseReadResult
         return (CaseReadRequest if raw['type']=='CASE_READ' else CaseReadResult).model_validate_json(data)

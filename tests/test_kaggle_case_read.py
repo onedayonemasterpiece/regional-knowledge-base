@@ -81,3 +81,23 @@ async def test_case_admission_rejects_cross_operation_result_and_retains_actual_
     assert (await ticket.result).record==dict(case_id=CASE)
     assert s.a.status()['state']=='busy'
     assert await release(s,work)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind',['geo','editorial'])
+async def test_fixed_optional_worker_pairing_calls_only_native_executor(kind,monkeypatch):
+    from regional_knowledge.kaggle_editorial_contracts import EditorialReadRequest,EditorialReadResult
+    from regional_knowledge import kaggle_geo_read,kaggle_editorial_read
+    identity={k:getattr(request(),k) for k in ('request_id','connection_generation','turn_generation','actor','min_data_seq','deadline_ms','compute_claim')}
+    q=GeoReadRequest(entity_id=CASE,**identity) if kind=='geo' else EditorialReadRequest(story_id=CASE,**identity)
+    output_type=GeoReadResult if kind=='geo' else EditorialReadResult
+    called=[]
+    async def native(value,*,acquire):
+        assert type(value) is type(q);called.append(value)
+        return output_type(**{k:getattr(value,k) for k in ('request_id','connection_generation','turn_generation')},
+            status='unavailable',reason='not_ready',observed_data_seq=None,observed_projection_seq=None)
+    monkeypatch.setattr(kaggle_geo_read if kind=='geo' else kaggle_editorial_read,'execute_'+kind+'_read',native)
+    async def no_count(_):raise AssertionError('fixed domain read counted BGE input')
+    handler=KaggleWorkerQuery(Lease().acquire,pinned(no_count))
+    result=decode_envelope(json.dumps(await handler(json.loads(encode_envelope(q)),encode=forbidden_encode)).encode())
+    assert type(result) is output_type and len(called)==1
