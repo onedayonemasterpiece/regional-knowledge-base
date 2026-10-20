@@ -110,6 +110,19 @@ class PassageContinuation(Contract):
     bibliography_offset: Nonnegative
 
 
+class PassageReadRequest(ReadIdentity):
+    """Exact bounded source read; locator is data, never an authorization grant."""
+    type: Literal["PASSAGE_READ"] = "PASSAGE_READ"
+    protocol_version: Literal[2] = PROTOCOL_VERSION
+    operation: Literal["source_passage_read"] = "source_passage_read"
+    operation_version: Literal[1] = 1
+    locator: PassageContinuation
+    actor: TrustedActorContext
+    min_data_seq: Nonnegative
+    deadline_ms: Annotated[int, Field(gt=0)]
+    compute_claim: Identifier | None = None
+
+
 class ItemDependencies(Contract):
     """Exhaustive per-item dependencies, including cross-source compositions.
 
@@ -219,6 +232,34 @@ class QueryResult(ReadIdentity):
         return self
 
 
+class PassageReadResult(ReadIdentity):
+    """Exact source result has no search mode or inferred dense success."""
+    type: Literal["PASSAGE_READ_RESULT"] = "PASSAGE_READ_RESULT"
+    protocol_version: Literal[2] = PROTOCOL_VERSION
+    status: Literal["ok", "unavailable", "invalid_query", "denied", "cancelled"]
+    evidence: tuple[EvidenceItem, ...] = Field(default=(), max_length=1)
+    observed_data_seq: Nonnegative | None
+    observed_projection_seq: Nonnegative | None
+    observed_visibility_epoch: Nonnegative | None = None
+    observed_database_generation: Identifier | None = None
+    reason: Literal["projection_lag", "deadline_exceeded", "not_ready", "disconnected",
+        "caller_cancelled", "turn_replaced", "query_too_large", "invalid_filters", "invalid_input",
+        "access_denied", "prior_write_pending", "context_gap", "evidence_withdrawn", "internal_error"] | None = None
+    prior_write_pending: bool = False
+
+    @model_validator(mode="after")
+    def result_semantics(self) -> Self:
+        if self.status == "ok":
+            if (len(self.evidence) != 1 or self.reason is not None or self.prior_write_pending
+                    or any(value is None for value in (self.observed_data_seq,
+                        self.observed_projection_seq, self.observed_visibility_epoch,
+                        self.observed_database_generation))):
+                raise ValueError("exact read requires one item and observed source frontier")
+        elif self.evidence or self.reason is None:
+            raise ValueError("failed exact read requires reason and no evidence")
+        return self
+
+
 class Hello(Contract):
     type: Literal["HELLO"] = "HELLO"
     protocol_version: Literal[2] = PROTOCOL_VERSION
@@ -238,7 +279,7 @@ class Hello(Contract):
     proof_ready: bool | None
 
 
-Envelope = Annotated[Query | QueryResult | CancelQuery | Hello, Field(discriminator="type")]
+Envelope = Annotated[Query | QueryResult | PassageReadRequest | PassageReadResult | CancelQuery | Hello, Field(discriminator="type")]
 _ADAPTER = TypeAdapter(Envelope)
 
 
@@ -255,7 +296,7 @@ def _reject_constant(value: str) -> None:
     raise ValueError("non-finite JSON number")
 
 
-def decode_envelope(data: bytes) -> Query | QueryResult | CancelQuery | Hello:
+def decode_envelope(data: bytes) -> Query | QueryResult | PassageReadRequest | PassageReadResult | CancelQuery | Hello:
     """Decode one bounded UTF-8 frame; never truncate, authorize, or admit work."""
     if not isinstance(data, bytes):
         raise TypeError("wire frame must be bytes")
@@ -266,14 +307,14 @@ def decode_envelope(data: bytes) -> Query | QueryResult | CancelQuery | Hello:
                      parse_constant=_reject_constant)
     if not isinstance(raw, dict):
         raise ValueError("envelope must be an object")
-    limit = RESULT_MAX_BYTES if raw.get("type") == "QUERY_RESULT" else QUERY_MAX_BYTES
+    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT") else QUERY_MAX_BYTES
     if len(data) > limit:
         raise ValueError("query_too_large" if raw.get("type") == "QUERY" else "control frame too large")
     # JSON-mode strict validation accepts JSON arrays for immutable tuples.
     return _ADAPTER.validate_json(data)
 
 
-def encode_envelope(envelope: Query | QueryResult | CancelQuery | Hello) -> bytes:
+def encode_envelope(envelope: Query | QueryResult | PassageReadRequest | PassageReadResult | CancelQuery | Hello) -> bytes:
     """Validate again at the codec boundary, including byte and aggregate caps."""
     data = envelope.model_dump_json().encode("utf-8")
     decode_envelope(data)

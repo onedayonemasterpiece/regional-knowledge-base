@@ -463,6 +463,11 @@ class FetchOutput(BaseModel):
     text: str
     url: str
     metadata: dict[str, Any] | None = None
+    status: Literal['ok','unavailable','cancelled','invalid_query','denied'] | None = None
+    reason: str | None = None
+    observed_data_seq: int | None = Field(default=None, ge=0)
+    observed_projection_seq: int | None = Field(default=None, ge=0)
+    read_trace: ReadTrace | None = None
 
 
 class EvidenceSearchOutput(BaseModel):

@@ -55,7 +55,9 @@ async def test_uncovered_empty_spool_is_not_complete(env,auth):
     gate,authority,b=await setup(env,auth)
     env.spool.invalidate_source_history()
     permit=await gate.dispatch(authority,query(),b)
-    with pytest.raises(SourceGateDenied):await gate.finish(permit,result())
+    gated=await gate.finish(permit,result())
+    assert gated.result.status=='unavailable' and gated.result.reason=='prior_write_pending'
+    assert not gated.result.evidence and gate.issuance_current(gated.ticket)
 
 
 @pytest.mark.asyncio
@@ -190,3 +192,41 @@ async def test_resolved_import_intake_uses_existing_spool_but_is_not_a_restricti
     assert not (await env.spool.barriers_for((SOURCE,))).barriers[0].restriction_active
     sealed=await env.spool.seal(env.p.admin,command.operation_key,predecessor=None,writer_generation='writer-1')
     assert sealed.manifest.last_sequence==1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('malformation', ['empty','duplicate','noncanonical','missing-revision','mismatched-revision'])
+async def test_bypassed_native_dependency_contract_fails_closed_before_facts(env,auth,monkeypatch,malformation):
+    gate,authority,b=await setup(env,auth)
+    original=item(SOURCE)
+    dependencies=original.dependencies
+    changes={
+        'empty': {'source_ids':(), 'source_revisions':()},
+        'duplicate': {'source_ids':(SOURCE,SOURCE)},
+        'noncanonical': {'source_ids':('not-a-uuid',), 'source_revisions':(
+            dependencies.source_revisions[0].model_copy(update={'source_id':'not-a-uuid'}),)},
+        'missing-revision': {'source_revisions':()},
+        'mismatched-revision': {'source_revisions':(
+            dependencies.source_revisions[0].model_copy(update={'source_id':OTHER}),)},
+    }[malformation]
+    unsafe=original.model_copy(update={'dependencies':dependencies.model_copy(update=changes)})
+    async def forbidden(*args):
+        raise AssertionError('invalid native dependency set reached source facts')
+    monkeypatch.setattr(env.spool,'read_facts',forbidden)
+    permit=await gate.dispatch(authority,query(),b)
+    gated=await gate.finish(permit,result(unsafe))
+    assert gated.result.status=='unavailable' and gated.result.reason=='internal_error'
+    assert not gated.result.evidence and gate.issuance_current(gated.ticket)
+
+
+@pytest.mark.asyncio
+async def test_inflight_write_is_unavailable_with_no_evidence_instead_of_auth_denied(env,auth):
+    gate,authority,b=await setup(env,auth)
+    permit=await gate.dispatch(authority,query(),b)
+    env.spool._writing=1
+    try:
+        gated=await gate.finish(permit,result(item(SOURCE)))
+        assert gated.result.status=='unavailable' and gated.result.reason=='prior_write_pending'
+        assert not gated.result.evidence and gate.issuance_current(gated.ticket)
+    finally:
+        env.spool._writing=0

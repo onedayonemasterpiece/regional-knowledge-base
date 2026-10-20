@@ -8,13 +8,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import time
+from uuid import UUID
 
-from .kaggle_protocol import Query, QueryResult, TrustedActorContext
+from .kaggle_protocol import Query, QueryResult, PassageReadRequest, PassageReadResult, TrustedActorContext
 from .read_authority import ReadAuthority
 
 
 class SourceGateDenied(PermissionError):
     pass
+
+
+def _source_ids(values, *, maximum):
+    if (type(values) is not tuple or not 1 <= len(values) <= maximum
+            or len(set(values)) != len(values)):
+        raise ValueError('bounded unique source dependencies required')
+    for value in values:
+        if type(value) is not str or str(UUID(value)) != value:
+            raise ValueError('canonical source identity required')
+    return values
 
 
 def binding_key(binding):
@@ -31,7 +42,7 @@ def binding_key(binding):
 
 @dataclass(frozen=True, eq=False)
 class DispatchPermit:
-    query: Query
+    query: Query | PassageReadRequest
 
 
 @dataclass(frozen=True, eq=False)
@@ -41,19 +52,19 @@ class OutputTicket:
 
 @dataclass(frozen=True, eq=False)
 class GatedResult:
-    result: QueryResult
+    result: QueryResult | PassageReadResult
     ticket: OutputTicket
 
 
 @dataclass
 class _Read:
     authority: object
-    query: Query
+    query: Query | PassageReadRequest
     binding: object
     key: tuple
     deadline: float
     facts: object = None
-    result: QueryResult | None = None
+    result: QueryResult | PassageReadResult | None = None
 
 
 class SourceReadGate:
@@ -84,16 +95,23 @@ class SourceReadGate:
         except Exception:
             return False
 
-    async def dispatch(self, authority, query: Query, binding):
+    async def dispatch(self, authority, query: Query | PassageReadRequest, binding):
         self._expire()
-        if type(query) is not Query or len(self._permits) + len(self._tickets) >= self.max_retained:
+        if type(query) not in (Query, PassageReadRequest) or len(self._permits) + len(self._tickets) >= self.max_retained:
             raise SourceGateDenied('read capacity or contract unavailable')
         await self.authority.require(authority, 'public_search')
         key = binding_key(binding)
         if not self.binding_current(binding) or query.connection_generation != key[2]:
             raise SourceGateDenied('runtime binding changed')
-        if query.filters.kinds is not None and set(query.filters.kinds) != {'source'}:
+        if type(query) is Query and query.filters.kinds is not None and set(query.filters.kinds) != {'source'}:
             raise SourceGateDenied('independent evidence authority unavailable')
+        if type(query) is Query and query.filters.source_ids is not None:
+            try:
+                _source_ids(query.filters.source_ids, maximum=32)
+            except (ValueError, TypeError, AttributeError):
+                raise SourceGateDenied('source scope contract differs') from None
+        if type(query) is PassageReadRequest and query.locator.database_generation != key[3]:
+            raise SourceGateDenied('source locator database changed')
         # Actor and freshness are controller projections, never caller authority.
         actor = TrustedActorContext(person_id=authority.person_id,
             audience=authority.destination.key, auth_epoch=authority.auth_revision,
@@ -109,21 +127,46 @@ class SourceReadGate:
         if not self._binding(read):
             raise SourceGateDenied('runtime binding changed')
         q = read.query
-        if (type(result) is not QueryResult
+        exact = type(q) is PassageReadRequest
+        if (type(result) is not (PassageReadResult if exact else QueryResult)
                 or (result.request_id, result.connection_generation, result.turn_generation)
                     != (q.request_id, q.connection_generation, q.turn_generation)):
             raise SourceGateDenied('result request binding differs')
+        try:
+            type(result).model_validate(result.model_dump())
+        except (ValueError, TypeError, AttributeError):
+            closed = self._closed(result, 'internal_error')
+            read.facts, read.result = None, closed
+            return closed
         if result.status not in ('ok','degraded'):
-            if result.evidence or result.mode is not None:
+            if result.evidence or (not exact and result.mode is not None):
                 raise SourceGateDenied('non-search result contains evidence')
             # A native failure is already evidence-free. Preserve its actual
             # reason rather than inventing pending-write/cursor observations.
             read.facts,read.result=None,result
             return result
+        try:
+            # Frozen models can still be bypassed with model_copy. Validate the
+            # complete native payload before inspecting its source dependency set.
+            for item in result.evidence:
+                ids = _source_ids(item.dependencies.source_ids, maximum=32)
+                refs = item.dependencies.source_revisions
+                if (len(refs) != len(ids) or {ref.source_id for ref in refs} != set(ids)
+                        or len({ref.source_id for ref in refs}) != len(refs)):
+                    raise ValueError('exact revisions must cover every dependency')
+        except (ValueError, TypeError, AttributeError):
+            closed = self._closed(result, 'internal_error')
+            read.facts, read.result = None, closed
+            return closed
         sources = tuple(sorted({s for item in result.evidence for s in item.dependencies.source_ids}))
         if len(sources) > 160:
             raise SourceGateDenied('dependency bound exceeded')
-        facts = await self.spool.read_facts(q.filters.source_ids, sources)
+        scope = (q.locator.source.source_id,) if exact else q.filters.source_ids
+        if exact and (len(result.evidence) != 1 or result.evidence[0].id != q.locator.passage_id
+                or result.evidence[0].dependencies.source_revisions != (q.locator.source,)
+                or result.observed_visibility_epoch != q.locator.visibility_epoch):
+            raise SourceGateDenied('exact source provenance differs')
+        facts = await self.spool.read_facts(scope, sources)
         if (not self.spool.facts_current(facts) or facts.database_generation != read.key[3]
                 or result.observed_database_generation != read.key[3]
                 or result.observed_data_seq is None or result.observed_data_seq < q.min_data_seq
@@ -138,7 +181,7 @@ class SourceReadGate:
             retained = tuple(item for item in result.evidence
                 if item.kind == 'source' and not item.dependencies.variant_refs
                 and not item.dependencies.grant_refs and item.exact_variant_ref is None
-                and (q.filters.source_ids is None or set(item.dependencies.source_ids) <= set(q.filters.source_ids))
+                and (scope is None or set(item.dependencies.source_ids) <= set(scope))
                 and not restricted.intersection(item.dependencies.source_ids))
             unsupported = any(item.kind != 'source' or item.dependencies.variant_refs
                 or item.dependencies.grant_refs or item.exact_variant_ref is not None
@@ -147,23 +190,32 @@ class SourceReadGate:
                 result = self._closed(result, 'access_denied')
             elif result.status in ('ok', 'degraded') and (facts.pending or facts.unknown or lag
                     or len(retained) != len(result.evidence)):
-                result = result.model_copy(update={'status': 'degraded', 'reason':
+                reason = (
                     'prior_write_pending' if facts.pending or facts.unknown else
-                    'projection_lag' if lag else 'evidence_withdrawn',
+                    'projection_lag' if lag else 'evidence_withdrawn')
+                result = (self._closed(result, reason) if exact else result.model_copy(update={
+                    'status': 'degraded', 'reason': reason,
                     'prior_write_pending': facts.pending or facts.unknown,
-                    'evidence': retained, 'continuation': None})
+                    'evidence': retained, 'continuation': None}))
         # Authority is rechecked again after the local read's await. The final
         # synchronous fence below also rejects mutations during that recheck.
         await self.authority.require(read.authority, 'public_search')
-        if not self._binding(read) or not self.spool.facts_current(facts):
-            raise SourceGateDenied('read authority changed during output check')
+        if not self._binding(read):
+            raise SourceGateDenied('runtime binding changed during output check')
+        if not self.spool.facts_current(facts):
+            # Missing coverage or an in-flight write is availability, not a
+            # participant denial. An evidence-free response needs only the
+            # current authority/runtime fence through final JSON issuance.
+            result = self._closed(result, 'prior_write_pending')
+            facts = None
         read.facts, read.result = facts, result
         return result
 
     @staticmethod
     def _closed(result, reason):
         return result.model_copy(update={'status': 'unavailable' if reason != 'access_denied' else 'denied',
-            'mode': None, 'reason': reason, 'evidence': (), 'continuation': None,
+            **({'mode': None, 'continuation': None} if type(result) is QueryResult else {}),
+            'reason': reason, 'evidence': (),
             'prior_write_pending': reason == 'prior_write_pending'})
 
     async def finish(self, permit, result):

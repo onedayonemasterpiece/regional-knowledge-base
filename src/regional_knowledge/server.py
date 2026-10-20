@@ -827,8 +827,9 @@ def build_server(
     @mcp.tool(
         title="Fetch regional evidence",
         description=(
-            "Fetch the full evidence for an ID returned by search, including page "
-            "provenance, footnotes and illustration descriptors when available."
+            "Fetch evidence for an ID returned by search, including source provenance. "
+            "A bounded source passage includes explicit offsets and next_id when more text "
+            "or bibliography remains; fetch next_id until continuation_complete."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )

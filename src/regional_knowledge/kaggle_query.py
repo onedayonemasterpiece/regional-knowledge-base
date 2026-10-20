@@ -4,18 +4,16 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal
 from uuid import UUID
 
 import psycopg
 from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
-from pydantic import Field
 
 from .bge_contract import MAX_TOKENS, REVISION, SPACE, TOKENIZER_SHA256
 from .kaggle_protocol import (
     EvidenceItem, EvidenceMetadata, ItemDependencies, PassageContinuation, Query,
-    QueryResult, SourceDependency, ReadIdentity, Nonnegative, encode_envelope,
+    QueryResult, SourceDependency, PassageReadRequest, PassageReadResult, encode_envelope,
 )
 from .kaggle_search import SearchEvidence, fused_search, vector_literal
 
@@ -33,15 +31,7 @@ class ReadUnavailable(RuntimeError):
         self.reason = reason
 
 
-class PassageRead(ReadIdentity):
-    """Internal exact-row read, never a completed hybrid QUERY_RESULT."""
-    status: Literal["ok", "unavailable", "invalid_query"]
-    evidence: tuple[EvidenceItem, ...] = Field(default=(), max_length=1)
-    observed_data_seq: Nonnegative | None
-    observed_projection_seq: Nonnegative | None
-    observed_visibility_epoch: Nonnegative | None
-    observed_database_generation: str | None
-    reason: str | None = None
+PassageRead = PassageReadResult  # Preserve the internal resolver's import contract.
 
 
 @dataclass(frozen=True)
@@ -87,7 +77,7 @@ def _scope(query):
             raise ReadUnavailable("invalid_filters")
 
 
-async def _frontier(cursor, execute, query, observed):
+async def _frontier(cursor, execute, query, observed, *, require_dense=True):
     await execute("""SELECT s.applied_seq,f.projection_seq,f.visibility_epoch,f.text_ready,f.dense_ready,s.database_generation
         FROM rkb_v4.recovery_state s CROSS JOIN rkb_v4.read_frontier f
         WHERE s.singleton AND f.singleton""")
@@ -96,7 +86,7 @@ async def _frontier(cursor, execute, query, observed):
         raise ReadUnavailable("not_ready")
     data, projection, visibility, text_ready, dense_ready, database = row
     observed.update(data=data, projection=projection, visibility=visibility, database=database)
-    if projection is None or not text_ready or not dense_ready:
+    if projection is None or not text_ready or (require_dense and not dense_ready):
         raise ReadUnavailable("not_ready")
     if projection != data or data < query.min_data_seq or projection < query.min_data_seq:
         raise ReadUnavailable("projection_lag")
@@ -233,7 +223,13 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
             emit_executor_stage(telemetry, query, stages)
 
 
-async def read_continuation(query: Query, locator: PassageContinuation, *, acquire) -> PassageRead:
+async def execute_passage_read(request: PassageReadRequest, *, acquire) -> PassageReadResult:
+    if type(request) is not PassageReadRequest:
+        raise TypeError("validated PassageReadRequest required")
+    return await read_continuation(request, request.locator, acquire=acquire)
+
+
+async def read_continuation(query: Query | PassageReadRequest, locator: PassageContinuation, *, acquire) -> PassageRead:
     """Internal continuation resolver after renewed upstream authorization.
 
     An unchanged immutable passage/source/eligibility fence is required. The
@@ -251,13 +247,15 @@ async def read_continuation(query: Query, locator: PassageContinuation, *, acqui
 
     try:
         async with asyncio.timeout_at(deadline):
-            _scope(query)
+            if type(query) is Query:
+                _scope(query)
             try:
                 source_id = UUID(locator.source.source_id)
                 UUID(locator.passage_id)
             except ValueError:
                 raise ReadUnavailable("invalid_input") from None
-            if query.filters.source_ids is not None and source_id not in {UUID(v) for v in query.filters.source_ids}:
+            if (type(query) is Query and query.filters.source_ids is not None
+                    and source_id not in {UUID(v) for v in query.filters.source_ids}):
                 raise ReadUnavailable("invalid_filters")
             async with acquire() as connection:
                 if (connection.closed or connection.info.transaction_status != TransactionStatus.IDLE
@@ -272,7 +270,7 @@ async def read_continuation(query: Query, locator: PassageContinuation, *, acqui
                                 (str(max(1, int((deadline - loop.time()) * 1000))),))
                             await cursor.execute(statement, params)
 
-                        await _frontier(cursor, execute, query, observed)
+                        await _frontier(cursor, execute, query, observed, require_dense=False)
                         await execute("""SELECT p.passage_id,p.source_id,p.revision,p.locator,p.body,s.bibliography,
                             v.eligibility_revision FROM rkb_v4.passage_search p
                             JOIN rkb_v4.active_revision a USING(source_id,revision)
@@ -301,8 +299,7 @@ async def read_continuation(query: Query, locator: PassageContinuation, *, acqui
                             evidence=(entry,), observed_data_seq=observed["data"],
                             observed_projection_seq=observed["projection"], observed_visibility_epoch=observed["visibility"],
                             observed_database_generation=observed["database"])
-                if len(result.model_dump_json().encode()) > 256 * 1024:
-                    raise ReadUnavailable("internal_error")
+                encode_envelope(result)
                 if loop.time() >= deadline:
                     raise TimeoutError
                 return result

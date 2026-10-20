@@ -71,7 +71,7 @@ class ReadTelemetry:
 
     def begin_attempt(self, operation='knowledge_search', *, trace_id=None):
         """Call before admission/dispatch; the returned request ID is server owned."""
-        if operation not in {'search', 'knowledge_search'}:
+        if operation not in {'search', 'knowledge_search', 'fetch'}:
             raise ValueError('unknown read operation')
         attempt = ReadAttempt(trace_id or current_trace_id.get() or uuid4().hex)
         self._attempt_record({'event': 'read_attempt_started', 'plane': 'controller', 'terminal': False,

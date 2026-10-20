@@ -6,6 +6,7 @@ The queue, OAuth resolver and source gate are the existing controller owners.
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import dataclass
 import json
 import time
@@ -15,7 +16,7 @@ from uuid import UUID
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .contracts import EvidenceSearchOutput, FetchOutput, ReadTrace, SearchOutput, SearchResult
-from .kaggle_protocol import Query, QueryFilters, TrustedActorContext
+from .kaggle_protocol import Query, QueryFilters, TrustedActorContext, PassageContinuation, PassageReadRequest
 from .query_telemetry import ReadRuntime
 from .read_authority import TrustedReadDestination
 from .read_issuance import retain_read_output
@@ -26,8 +27,31 @@ class TargetUnavailable(RuntimeError):
     pass
 
 
+_PASSAGE_ID = 'rkb:passage:v1:'
+
+
+def passage_fetch_id(locator: PassageContinuation) -> str:
+    """Self-contained versioned locator, without a signature or capability grant."""
+    return _PASSAGE_ID + base64.urlsafe_b64encode(locator.model_dump_json().encode()).decode().rstrip('=')
+
+
+def parse_passage_fetch_id(value: str) -> PassageContinuation:
+    if type(value) is not str or len(value) > 4096 or not value.startswith(_PASSAGE_ID):
+        raise ValueError('invalid exact source locator')
+    token = value[len(_PASSAGE_ID):]
+    try:
+        raw = base64.b64decode(token + '=' * (-len(token) % 4), altchars=b'-_', validate=True)
+        locator = PassageContinuation.model_validate_json(raw)
+        if passage_fetch_id(locator) != value:
+            raise ValueError
+        return locator
+    except (ValueError, TypeError):
+        raise ValueError('invalid exact source locator') from None
+
+
 class PublicQueryInvalid(ValueError):
     pass
+
 
 
 @dataclass(frozen=True)
@@ -98,24 +122,57 @@ class KaggleSourceBackend:
             read_trace=ReadTrace(**attempt.correlation(), backend_elapsed_ms=(time.monotonic()-attempt.started)*1000))
         def locator(item):
             return 'urn:rkb:passage:' + quote(item.id, safe='')
+        def fetch_id(item):
+            if (len(item.dependencies.source_revisions) == 1
+                    and result.observed_database_generation is not None
+                    and result.observed_visibility_epoch is not None):
+                return passage_fetch_id(PassageContinuation(
+                    database_generation=result.observed_database_generation,
+                    visibility_epoch=result.observed_visibility_epoch,
+                    source=item.dependencies.source_revisions[0], passage_id=item.id,
+                    text_offset=0, bibliography_offset=0))
+            return item.id
         if evidence:
-            return EvidenceSearchOutput(evidence=[FetchOutput(id=item.id,
+            return EvidenceSearchOutput(evidence=[FetchOutput(id=fetch_id(item),
                 title=item.metadata.title or item.id, text=item.text, url=locator(item),
                 metadata={'citation': item.metadata.citation, 'locator': item.metadata.locator,
                     'text_form': item.text_form, 'continuation': item.continuation,
                     'source_continuation': item.source_continuation.model_dump(mode='json')
                         if item.source_continuation else None,
                     'continuation_complete': item.continuation_complete,
+                    'next_id': passage_fetch_id(item.source_continuation)
+                        if item.source_continuation and not item.continuation_complete else None,
                     'source_revisions': [source.model_dump() for source in item.dependencies.source_revisions]})
                 for item in result.evidence], **common)
-        return SearchOutput(results=[SearchResult(id=item.id, title=item.metadata.title or item.id,
+        return SearchOutput(results=[SearchResult(id=fetch_id(item), title=item.metadata.title or item.id,
             url=locator(item)) for item in result.evidence], **common)
 
-    async def _search(self, query, principal, *, evidence, source_ids=None, limit=3):
+    @staticmethod
+    def _render_fetch(result, *, locator, attempt):
+        common = dict(id=passage_fetch_id(locator), title=locator.passage_id,
+            url='urn:rkb:passage:' + quote(locator.passage_id, safe=''),
+            status=result.status, reason=result.reason,
+            observed_data_seq=result.observed_data_seq, observed_projection_seq=result.observed_projection_seq,
+            read_trace=ReadTrace(**attempt.correlation(), backend_elapsed_ms=(time.monotonic()-attempt.started)*1000))
+        if result.status != 'ok':
+            return FetchOutput(text='', **common)
+        item = result.evidence[0]
+        next_id = (passage_fetch_id(item.source_continuation)
+            if item.source_continuation is not None and not item.continuation_complete else None)
+        return FetchOutput(text=item.text, metadata={
+            'citation': item.metadata.citation, 'locator': item.metadata.locator,
+            'text_form': item.text_form, 'bounded_passage': True,
+            'text_offset': item.source_continuation.text_offset - len(item.text)
+                if item.source_continuation else locator.text_offset,
+            'bibliography_offset': locator.bibliography_offset,
+            'next_id': next_id, 'continuation_complete': next_id is None,
+            'source_revisions': [source.model_dump() for source in item.dependencies.source_revisions]}, **common)
+
+    async def _search(self, query, principal, *, evidence, source_ids=None, limit=3, exact_locator=None):
         # One budget includes auth, admission, network, native execution and gate.
         deadline = time.monotonic()+2
         telemetry = self.read_telemetry
-        attempt = telemetry.begin_attempt('knowledge_search' if evidence else 'search')
+        attempt = telemetry.begin_attempt('fetch' if exact_locator is not None else 'knowledge_search' if evidence else 'search')
         authority = ticket = permit = gated = None
         retained = False
         status, reason = 'unavailable', 'not_ready'
@@ -133,14 +190,17 @@ class KaggleSourceBackend:
                     destination=self.destination)
                 binding = await asyncio.to_thread(current_binding, self.worker_queue)
                 try:
-                    request = Query(request_id=attempt.request_id,
+                    identity = dict(request_id=attempt.request_id,
                         connection_generation=binding.connection_generation, turn_generation=0,
-                        query=query, filters=filters, min_data_seq=binding.min_data_seq,
+                        min_data_seq=binding.min_data_seq,
                         actor=TrustedActorContext(person_id=authority.person_id, audience=authority.destination.key,
                             auth_epoch=authority.auth_revision, visibility_epoch=0, context_ref=authority.context_ref),
-                        deadline_ms=max(1, int((deadline-time.monotonic())*1000)), evidence_limit=limit)
+                        deadline_ms=max(1, int((deadline-time.monotonic())*1000)))
+                    request = (PassageReadRequest(locator=exact_locator, **identity) if exact_locator is not None else
+                        Query(query=query, filters=filters, evidence_limit=limit, **identity))
                 except (ValueError, TypeError):
                     raise PublicQueryInvalid from None
+
                 permit = await self.source_gate.dispatch(authority, request, binding)
                 def dispatched(resource):
                     telemetry.bind_dispatch(attempt,
@@ -150,13 +210,14 @@ class KaggleSourceBackend:
                 ticket = await self.worker_queue.shared_reads.begin_read(authority, permit.query,
                     dialog_ref=self.destination.key, deadline=deadline, on_dispatch=dispatched)
                 result = await asyncio.shield(ticket.result)
-                branches = ('lexical', 'dense') if result.mode == 'hybrid' else ()
+                branches = ('lexical', 'dense') if getattr(result, 'mode', None) == 'hybrid' else ()
                 gated = await self.source_gate.finish(permit, result)
                 permit = None
                 status, reason = gated.result.status, gated.result.reason
-                if gated.result.mode != 'hybrid':
+                if (gated.result.status != 'ok' if exact_locator is not None else gated.result.mode != 'hybrid'):
                     raise ToolError(json.dumps({'status': status, 'reason': reason}))
-                render = lambda value: self._render(value, evidence=evidence, attempt=attempt)
+                render = (lambda value: self._render_fetch(value, locator=exact_locator, attempt=attempt)) if exact_locator is not None else (
+                    lambda value: self._render(value, evidence=evidence, attempt=attempt))
                 output = render(gated.result)
                 if not retain_read_output(self.source_gate, gated, render,
                         on_release=lambda: self.read_authority.release(authority),
@@ -211,5 +272,9 @@ class KaggleSourceBackend:
             raise ToolError('{"status":"unavailable","reason":"unsupported_target_search_option"}')
         return await self._search(query, principal, evidence=True, source_ids=document_ids, limit=max_evidence)
 
-    async def fetch(self, *args, **kwargs):
-        raise ToolError('{"status":"unavailable","reason":"target_exact_fetch_not_ready"}')
+    async def fetch(self, id, principal):
+        try:
+            locator = parse_passage_fetch_id(id)
+        except (ValueError, TypeError):
+            raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
+        return await self._search(None, principal, evidence=True, exact_locator=locator)
