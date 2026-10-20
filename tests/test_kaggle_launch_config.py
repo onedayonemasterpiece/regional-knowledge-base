@@ -37,3 +37,9 @@ def test_existing_controller_target_file_needs_real_journal_before_provider(tmp_
         controller.main()
     with pytest.raises(ValueError,match='one explicit'):
         controller.main(target_spec=target)
+
+
+def test_target_provider_image_requires_exact_digest_before_provider():
+    controller=module('bge_kaggle_controller')
+    with pytest.raises(ValueError,match='exact pinned'):
+        controller.worker_source('',None,'run','token','https://example.test',provider_image='gcr.io/kaggle-images/python:latest')

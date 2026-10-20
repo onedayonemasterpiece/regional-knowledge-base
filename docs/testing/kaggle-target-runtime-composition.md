@@ -38,6 +38,19 @@ credentials or artifact-hosting service. A fresh target file without the injecte
 real journal is refused before provider authentication. The plain script without
 target metadata remains the existing legacy controller.
 
+`build_bootstrap_target` in `kaggle_bootstrap_config` combines the public protected
+six-file BGE metadata, one exact wheel-lock receipt, actual native manifest bytes
+and published native input receipt/download rows into the complete typed config.
+It checks the actual manifest hash and all six native paths/executable flags,
+retains the full wheel closure, uses an exclusive generation-derived private
+`/kaggle/temp` cluster and leaves the two unavailable pins as None. Pass explicit
+database/writer generations, candidate service UID/GID and identity evidence; no
+secret URL is generated or logged by the builder. Serialize its `.wire()` only
+into the private existing controller state directory. Target controller launches
+also require `RKB_BGE_DOCKER_IMAGE=gcr.io/kaggle-images/python@sha256:<64 hex>`;
+the generated launch config retains that image and provider metadata uses
+`docker_image_pinning_type=original`. A mutable latest image is rejected.
+
 `worker_source(..., target=spec)` assembles the fixed native-safe Python modules and exact
 001–006 SQL bytes into one bounded immutable source package. The generated entrypoint
 extracts and verifies its content-addressed files, then actually calls

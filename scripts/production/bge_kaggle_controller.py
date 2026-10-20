@@ -74,11 +74,15 @@ def reconcile_launch(api, queue, run, ref):
     queue.launch_record(run['id'],ref,provider_version=observed['version'])
     return True
 
-def worker_source(template, queue, run_id, token, broker, *, transport='http', target=None):
+def worker_source(template, queue, run_id, token, broker, *, transport='http', target=None, provider_image=None):
     """Build private launch bytes once; no provider call or inferred version."""
     if transport not in ('http','wss'):
         raise ValueError('unsupported BGE transport')
     config={'run_id':run_id,'token':token,'broker':broker}
+    if provider_image is not None:
+        if re.fullmatch(r'gcr\.io/kaggle-images/python@sha256:[0-9a-f]{64}',provider_image) is None:
+            raise ValueError('exact pinned Kaggle provider image required')
+        config['provider_image']=provider_image
     if transport=='wss':
         from urllib.parse import urlsplit,urlunsplit
         url=urlsplit(broker)
@@ -117,6 +121,10 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
             raise ValueError('fresh launch requires complete pinned Stage0 preparation')
         if target_spec.database.mode=='NEW_EMPTY_GENERATION' and target_spec.native_bundle is None:
             raise ValueError('fresh launch requires complete pinned native bundle')
+        image=os.getenv('RKB_BGE_DOCKER_IMAGE','').strip()
+        if re.fullmatch(r'gcr\.io/kaggle-images/python@sha256:[0-9a-f]{64}',image) is None:
+            raise ValueError('target launch requires exact RKB_BGE_DOCKER_IMAGE digest')
+    else:image=None
     for line in Path('/home/dev/.env').read_text().splitlines():
         if line.startswith(('KAGGLE_USERNAME=','KAGGLE_KEY=')):
             key,value=line.split('=',1);os.environ[key]=shlex.split(value)[0]
@@ -147,9 +155,11 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                             recovery_journal=recovery_journal,
                             sql_hashes={name:digest((sql_root/name).read_bytes()) for name in SQL_ARTIFACTS}))
                     source=worker_source(template,queue,run_id,token,broker,
-                                         transport=os.getenv('RKB_BGE_TRANSPORT','http'),target=target_spec)
+                                         transport=os.getenv('RKB_BGE_TRANSPORT','http'),target=target_spec,provider_image=image)
                     (folder/'main.py').write_text(source);(folder/'main.py').chmod(0o600)
                     metadata={'id':ref,'title':slug,'code_file':'main.py','language':'python','kernel_type':'script','is_private':True,'enable_gpu':False,'enable_tpu':False,'enable_internet':True,'dataset_sources':[],'competition_sources':[],'kernel_sources':[]}
+                    if image is not None:
+                        metadata.update(docker_image=image,docker_image_pinning_type='original')
                     (folder/'kernel-metadata.json').write_text(json.dumps(metadata));(folder/'kernel-metadata.json').chmod(0o600)
                     # Credential is run-bound and source remains private. SDK
                     # provider request is the only notebook creation boundary.
