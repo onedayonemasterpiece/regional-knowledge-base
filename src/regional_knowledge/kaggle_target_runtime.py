@@ -38,6 +38,7 @@ class TargetLaunchSpec:
     bootstrap_only: bool = False
     bootstrap_seconds: int = 900
     original_intake: object = None
+    recovery: object = None
 
     def __post_init__(self):
         if type(self.database) is not OwnedDatabase:
@@ -79,6 +80,11 @@ class TargetLaunchSpec:
             from .kaggle_source_commands import fixed_registry
             fixed_registry(self.database,self.command_handlers)
         object.__setattr__(self,'command_handlers',tuple(json.loads(canonical(self.command_handlers))))
+        if self.recovery is not None:
+            from .kaggle_recovery_composition import SnapshotRecoveryConfig
+            if (type(self.recovery) is not SnapshotRecoveryConfig or self.database.mode!='VERIFIED_INITIALIZED'
+                    or self.native_bundle is None or self.stage0 is None or not self.command_handlers):
+                raise ValueError('initialized recovery requires exact native/package/command deployment')
         if self.original_intake is not None:
             from .kaggle_original_native import OriginalIntakeConfig
             if type(self.original_intake) is not OriginalIntakeConfig:
@@ -137,7 +143,8 @@ class TargetLaunchSpec:
             stage0=self.stage0.wire() if self.stage0 is not None else None,
             native_bundle=self.native_bundle.wire() if self.native_bundle is not None else None,
             bootstrap_only=self.bootstrap_only,bootstrap_seconds=self.bootstrap_seconds,
-            original_intake=self.original_intake.wire() if self.original_intake is not None else None)
+            original_intake=self.original_intake.wire() if self.original_intake is not None else None,
+            **(dict(recovery=self.recovery.wire()) if self.recovery is not None else {}))
 
 
 class TargetRuntime:
@@ -191,11 +198,17 @@ class TargetRuntime:
                 or native_bundle.root!=encoder.artifacts.root):
             raise BootstrapUnavailable('target_recovery_configuration_changed')
         from .kaggle_recovery_phases import build_recovery_worker
+        from contextlib import asynccontextmanager
+        @asynccontextmanager
+        async def acquire():
+            import psycopg
+            async with await psycopg.AsyncConnection.connect(**self.database.connection(reader=False)) as connection:
+                yield connection
         worker=await build_recovery_worker(native_bundle=native_bundle,database=self.database,
             identity=(run_id,launch_nonce,runtime_incarnation),tools=tools,native_uid=native_uid,
             native_gid=native_gid,current=current,workspace_private_current=workspace_private_current,
             upload=upload,download=download,workspace=workspace,limits=limits,
-            ticket_channel=ticket_channel,transfer=transfer)
+            ticket_channel=ticket_channel,transfer=transfer,acquire=acquire)
         self.recovery_worker=worker;self._recovery_available.set()
         return worker
 
@@ -348,4 +361,7 @@ class TargetRuntime:
                 if self.restored_database is not None:
                     await self.restored_database.aclose()
             finally:
-                await self.owner.aclose()
+                try:
+                    if self.recovery_worker is not None:await self.recovery_worker.aclose()
+                finally:
+                    await self.owner.aclose()

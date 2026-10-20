@@ -23,7 +23,7 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
     'source_import_v2','story_contracts','kaggle_story_read','source_import_v3','kaggle_fact_contracts','kaggle_fact_read','kaggle_source_read','source_import_v4','source_manifest',
     'story_editorial','disagreement_contracts','disagreement_native','geo_migration','geo_manifest_commands',
     'kaggle_case_contracts','kaggle_case_read','kaggle_geo_contracts','kaggle_geo_read',
-    'kaggle_domain_bindings','kaggle_domain_schema','kaggle_editorial_contracts','kaggle_editorial_read','source_graph','entity_graph','contracts','kaggle_source_graph_read','stage_graph','poi_reference')
+    'kaggle_domain_bindings','kaggle_domain_schema','kaggle_editorial_contracts','kaggle_editorial_read','source_graph','entity_graph','contracts','kaggle_source_graph_read','stage_graph','poi_reference','kaggle_recovery_composition')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_BUNDLE_JSON_BYTES = 3 * 1024 * 1024
 MAX_NOTEBOOK_SOURCE_BYTES = 1_000_000
@@ -162,8 +162,14 @@ if __name__ == '__main__':
         async def aclose(self):
             if self.instance is not None:
                 await self.instance.aclose()
-    runtime = _DeferredTargetRuntime()
-    main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)
+    if RUN_CONFIG['target_runtime'].get('recovery') is not None:
+        from regional_knowledge.kaggle_recovery_composition import DeferredRecoveryRuntime
+        runtime = DeferredRecoveryRuntime(RUN_CONFIG, executed_source=str(_Path(__file__).resolve()))
+        main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose,
+             recovery_handler=runtime, snapshot_channel=runtime.ticket_channel)
+    else:
+        runtime = _DeferredTargetRuntime()
+        main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)
 '''.replace('BUNDLE_PACKED',repr(base64.b64encode(zlib.compress(canonical(files),9)).decode()))\
     .replace('BUNDLE_LIMIT',str(MAX_BUNDLE_JSON_BYTES)).replace('BUNDLE_ROOT',repr(str(root/relative)))
     if template.count("if __name__=='__main__':main()") != 1:

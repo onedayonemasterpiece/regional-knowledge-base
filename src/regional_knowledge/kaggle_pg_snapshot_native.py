@@ -303,6 +303,7 @@ class NativeSnapshotFactory:
         self.workspace_private_current=workspace_private_current
         self.native_uid,self.native_gid=native_uid,native_gid
         self.acquire,self.limits,self.connect,self.spawn=acquire,limits,connect,spawn
+        self.native_env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'}
         self.upload_ticket=upload_ticket
         self.probe=probe or native_probe_for_schema(getattr(database,'schema_revision',None))
         self._sessions=set();self._capabilities=set();self._owned_candidates=set()
@@ -420,7 +421,7 @@ class NativeSnapshotFactory:
             '-c','local_preload_libraries=','-c','max_connections=8','-c','shared_buffers=32MB',
             '-c','work_mem=4MB','-c','maintenance_work_mem=16MB',stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL,
-            env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'},**self._identity())
+            env=self.native_env,**self._identity())
         candidate=_CandidatePg(process,self.database,self.connect);self._owned_candidates.add(candidate)
         try:
             async with asyncio.timeout(20):
@@ -569,7 +570,7 @@ class NativeSnapshotFactory:
     async def _run(self,*args,timeout=30):
         process=await self.spawn(*args,stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,
-            env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'},**self._identity())
+            env=self.native_env,**self._identity())
         try:
             async with asyncio.timeout(timeout):
                 output=bytearray()

@@ -87,6 +87,11 @@ class BgeWssTransport:
                 or inspect.iscoroutinefunction(getattr(recovery_handler,'__call__',None)))):
             raise ValueError('shared async recovery handler required')
         self.recovery_handler=recovery_handler
+        self.recovery_attachment=None
+        if recovery_handler is not None and (hasattr(recovery_handler,'attached') or hasattr(recovery_handler,'detached')):
+            if not all(callable(getattr(recovery_handler,key,None)) for key in ('attached','detached')):
+                raise ValueError('paired recovery attachment callbacks required')
+            self.recovery_attachment=recovery_handler
         if snapshot_channel is not None:
             from regional_knowledge.kaggle_snapshot_channel import SnapshotTicketChannel
             if type(snapshot_channel) is not SnapshotTicketChannel or recovery_handler is None:
@@ -340,6 +345,8 @@ class BgeWssTransport:
         if welcome.get('type') != 'WELCOME' or type(generation) is not int or generation < 1:
             raise ValueError('server attachment generation required')
         self._connection_generation=generation
+        if self.recovery_attachment is not None:
+            self.recovery_attachment.attached(generation,runtime_incarnation=self.incarnation)
         if self.source_history_handler is not None:self.source_history_handler.attached(generation)
         if self.original_intake_handler is not None:self.original_intake_handler.attached(generation)
         attachment_release = attachment_state = None
@@ -551,6 +558,7 @@ class BgeWssTransport:
                 task.result()
         finally:
             if self._connection_generation==generation:self._connection_generation=None
+            if self.recovery_attachment is not None:self.recovery_attachment.detached(generation)
             if self.source_history_handler is not None:self.source_history_handler.detached(generation)
             if self.original_intake_handler is not None:self.original_intake_handler.detached(generation)
             if self.shared_reads:

@@ -80,6 +80,8 @@ async def build_recovery_worker(*,native_bundle,database,identity,tools,native_u
         current=current,workspace_private_current=workspace_private_current,native_uid=native_uid,
         native_gid=native_gid,acquire=acquire,upload_ticket=upload,limits=limits or SnapshotLimits())
     # Verify exact installed ELF revisions before any backup/restore operation.
+    from .kaggle_native_env import verified_native_environment
+    factory.native_env=await asyncio.to_thread(verified_native_environment,native_bundle)
     await factory.tools.verify(factory._run)
     return WorkerRecoveryPhases(factory=factory,download=download,workspace=workspace)
 
@@ -163,6 +165,14 @@ class WorkerRecoveryPhases:
             result={'phase':frame['phase'],'request_sha256':request,'value':value}
             self._results[key]=result
             return result
+
+    async def aclose(self):
+        # Includes a partially restored candidate that never released readiness.
+        for candidate in tuple(self.factory._owned_candidates):
+            await candidate.aclose()
+            self.factory._owned_candidates.discard(candidate)
+        self.factory._capabilities.clear()
+        self._initialized=None
 
     def _session(self,args,binding):
         session=self._sessions.get(args['handle'])

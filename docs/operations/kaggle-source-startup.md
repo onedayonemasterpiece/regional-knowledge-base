@@ -95,3 +95,32 @@ SQLite/OAuth and synthetic native-S3 race/cancellation tests. They perform no
 Kaggle, PostgreSQL, model or real object-store operations. Native SOURCE_HISTORY
 registration, exact current function/catalog/ACL pins, real provider recovery
 proof and actual public read acceptance remain required before product routing.
+
+## Generated notebook restore owner
+
+`TargetLaunchSpec.recovery` is an explicit `SnapshotRecoveryConfig` for
+`VERIFIED_INITIALIZED` launches. It declares the exact bundle-relative
+`postgres`, `pg_basebackup`, and `pg_verifybackup` paths and complete version
+outputs, allowed HTTPS storage origins, observed nonroot UID/GID, and finite
+archive/unpacked/time budgets. The existing native bundle, package closure and
+command handler pins remain mandatory. Old launch wire without this optional
+field remains valid; a receipt dictionary never supplies a restored capability.
+
+The generated notebook registers one retained `DeferredRecoveryRuntime` and
+`SnapshotTicketChannel` on the existing WSS transport before runtime preparation.
+ATTACH/WELCOME binds its current incarnation and connection generation. After
+Stage0, the owner rechecks the native bundle, grants only its verified native code
+access, builds the existing `WorkerRecoveryPhases` through
+`TargetRuntime.configure_recovery`, and waits for its retained verified database
+capability. The reader pool, queries and READY remain unavailable until physical
+verification, exact accepted-command replay and native final checks complete.
+Reconnect preserves the owner/model/session and invalidates the detached
+generation. Native children use only the retained bundle's verified library
+paths; no ambient `LD_*` settings or cloud credentials enter the notebook.
+
+The controller must supply its existing pre-READY `RecoveryPhaseDispatch`,
+`SnapshotTicketIssuer`, and `PhysicalSnapshotRecovery` operation. The notebook
+hook alone does not orchestrate that controller operation or prove production
+recovery. Unknown operations preserve their original identities and remain
+closed. Shutdown closes partial native candidates as well as an adopted pool;
+it does not overwrite or delete an accepted cluster to restart a failed restore.
