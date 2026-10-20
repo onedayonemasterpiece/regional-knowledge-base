@@ -74,6 +74,8 @@ workflows. Unknown/cancelled native phases remain durable pending operations;
 they are never reported as saved or accepted source imports.
 
 Tests use actual SQLite/OAuth/control admission, native file hashes, transport
-reconnect/result replay and synthetic HTTP/parser peers. No real provider
+reconnect/result replay and synthetic HTTP/parser peers. Additional tests use the
+installed PDF library on generated synthetic 10-page and truncated-text fixtures.
+No real provider
 download, archive write, PG startup, model load or semantic import acceptance is
 claimed by these tests.
