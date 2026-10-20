@@ -162,6 +162,7 @@ def channel_route(queue):
                     if shared is not None:
                         if (last_work is not None and last_work.query is not None
                                 and last_work.query.connection_generation == generation
+                                and shared.status()['resource'] == last_work.resource
                                 and cancelled_work != last_work.resource
                                 and not shared.read_consumer_active(last_work)):
                             # Consumer cancellation is independent from actual
