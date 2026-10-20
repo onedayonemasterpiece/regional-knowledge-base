@@ -6,10 +6,32 @@ from pathlib import Path
 import pwd
 import re
 import sys
+import json
+import time
+from contextlib import contextmanager
 
 _FIELDS = frozenset({'python', 'cache_tag', 'machine', 'libc_name', 'libc_version',
                     'os_id', 'os_version_id'})
 _PASSWD=Path('/etc/passwd')
+
+
+@contextmanager
+def bootstrap_stage(run_id,stage):
+    """Fixed nonsecret cold-path events; no exception/payload serialization."""
+    if (type(run_id) is not str or not 1<=len(run_id)<=256 or any(ord(c)<32 for c in run_id)
+            or stage not in {'stage0_download','stage0_install','model_tokenizer_load','tokenizer_guard',
+                'native_pg_start','native_pg_probe'}):
+        raise ValueError('bootstrap_timing_identity')
+    before=time.monotonic()
+    print(json.dumps(dict(event='bootstrap_stage',run_id=run_id,stage=stage,state='start')),flush=True)
+    try:yield
+    except BaseException:
+        print(json.dumps(dict(event='bootstrap_stage',run_id=run_id,stage=stage,state='failed',
+            duration_seconds=round(time.monotonic()-before,6))),flush=True)
+        raise
+    else:
+        print(json.dumps(dict(event='bootstrap_stage',run_id=run_id,stage=stage,state='complete',
+            duration_seconds=round(time.monotonic()-before,6))),flush=True)
 
 
 def _numeric_id(value):

@@ -204,6 +204,7 @@ async def test_repeated_cancel_drains_close_on_worker_loop():
 @pytest.mark.asyncio
 async def test_native_bootstrap_refuses_existing_cluster_before_initdb(tmp_path,monkeypatch):
     target=spec(fresh=True);database=target.database
+    monkeypatch.setattr('regional_knowledge.kaggle_owned_pg.PRIVATE_RUNTIME_ROOT',tmp_path)
     cluster=tmp_path/'existing';cluster.mkdir()
     # Path redirection fixture; construction remains validated against Kaggle.
     object.__setattr__(database,'cluster',str(cluster))

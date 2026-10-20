@@ -86,6 +86,7 @@ def test_private_native_workspace_excludes_notebook_outputs(tmp_path,monkeypatch
     with pytest.raises(SnapshotError,match='private_workspace_required'):
         private_workspace('/kaggle/working/corpus',1)
     monkeypatch.setattr(native,'PRIVATE_RUNTIME_ROOT',tmp_path)
+    monkeypatch.setattr('regional_knowledge.kaggle_owned_pg.PRIVATE_RUNTIME_ROOT',tmp_path)
     candidate=tmp_path/'fresh-owned'
     assert private_workspace(candidate,1)==candidate
     assert candidate.stat().st_mode&0o777==0o700
