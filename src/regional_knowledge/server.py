@@ -182,6 +182,8 @@ class KnowledgeMCPServer(MCPServer):
             allowed.update({'story_calendar','story_observation_search'})
         if getattr(self,'_target_import_available',False):
             allowed.update({'book_ingest','book_pages'})
+        if getattr(self,'_target_geo_available',False):
+            allowed.update({'geo_lookup','graph_fetch','poi_context'})
         if getattr(self,'_target_catalog_available',False):
             allowed.add('book_find')
         if getattr(self,'_target_source_profile',False) and name not in allowed:
@@ -1232,23 +1234,25 @@ def build_server(
             if not row or row['active_revision']!=revision:raise ValueError("active document revision required")
         return await service.stage(principal,document_id,revision,candidates)
 
-    @mcp.tool(title="Read one evidence-backed graph entity",description="One entity, authorized aliases/mentions and at most 20 one-hop relations with exact source evidence. No recursive traversal or graph dump.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
-    async def graph_fetch(entity_id:str|None=None,limit:int=20,discovery_job_id:str|None=None)->dict[str,Any]:
-        if discovery_job_id is not None:return await GraphService(backend).job_read(_principal(),discovery_job_id,limit)
-        if entity_id is None:raise ValueError("entity or discovery job required")
-        return await GraphService(backend).read(_principal(),entity_id,limit)
+    if not mcp._target_geo_available:
+        @mcp.tool(title="Read one evidence-backed graph entity",description="One entity, authorized aliases/mentions and at most 20 one-hop relations with exact source evidence. No recursive traversal or graph dump.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def graph_fetch(entity_id:str|None=None,limit:int=20,discovery_job_id:str|None=None)->dict[str,Any]:
+            if discovery_job_id is not None:return await GraphService(backend).job_read(_principal(),discovery_job_id,limit)
+            if entity_id is None:raise ValueError("entity or discovery job required")
+            return await GraphService(backend).read(_principal(),entity_id,limit)
 
     @mcp.tool(title="Find related entity evidence",description="One authorized entity context and bounded related evidence through the existing E5/BGE/lexical retrieval. Hits are identity candidates, not facts.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
     async def graph_related(entity_id:str,query:str|None=None,limit:int=8)->dict[str,Any]:
         return await GraphService(backend).related(_principal(),entity_id,query,limit)
 
-    @mcp.tool(name="poi_context",title="Historical knowledge linked to a Street Story POI",
-        description="Read actor-authorized source passages, linked people/events and editorial stories "
-                    "for an existing physical POI identity. Missing links are not proof of no history.",
-        annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
-    async def poi_context(poi_ref:str,limit:Annotated[int,Field(ge=1,le=10)]=5)->dict[str,Any]:
-        from .poi_registry_bridge import PoiRegistry
-        return await PoiRegistry(backend).context(_principal(),poi_ref,limit=limit)
+    if not mcp._target_geo_available:
+        @mcp.tool(name="poi_context",title="Historical knowledge linked to a Street Story POI",
+            description="Read actor-authorized source passages, linked people/events and editorial stories "
+                        "for an existing physical POI identity. Missing links are not proof of no history.",
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def poi_context(poi_ref:str,limit:Annotated[int,Field(ge=1,le=10)]=5)->dict[str,Any]:
+            from .poi_registry_bridge import PoiRegistry
+            return await PoiRegistry(backend).context(_principal(),poi_ref,limit=limit)
 
     @mcp.tool(name="poi_registry",title="Find, select or create Street Story POI for a source place",
         description="The calling model searches first, then explicitly selects an existing physical POI "

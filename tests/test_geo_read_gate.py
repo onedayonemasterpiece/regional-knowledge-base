@@ -23,26 +23,27 @@ from test_geo_migration import snapshot,uid
 from test_kaggle_geo_read import request
 
 
-async def setup(e,a,*,durable=True):
+async def setup(e,a,*,durable=True,binding=None):
     e.registry=HandlerRegistry([geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256='1'*64,apply_sha256='2'*64)])
     e.spool.registry=e.registry
     manifest=build_geo_whitelist(**snapshot()).require_ready()
     manifest=GeoMigrationManifest.from_wire(dict(manifest.wire(),items=[dict(item.wire(),owner_person_id=a.p.other.subject) for item in manifest.items])).require_ready()
     resolved=plan_geo_manifest(manifest).commands(first_sequence=1,operation_key='geo-fixture',request_id='geo-request',
         person_id=e.p.owner.subject,logical_time='2026-10-20T18:00:00Z')
+    generation=binding.database_generation if binding is not None else 'db-source'
     for c in resolved:
-        await e.spool.stage_domain_command(e.p.admin,c,database_generation='db-source')
+        await e.spool.stage_domain_command(e.p.admin,c,database_generation=generation)
         await e.spool.seal(e.p.admin,c.operation_key,writer_generation='writer-1',predecessor=await e.journal.head())
-        await e.spool.record_apply(c.operation_key,receipt(c))
+        await e.spool.record_apply(c.operation_key,receipt(c,database=generation))
         if durable:await e.spool.publish_outcome(c.operation_key,writer_generation='writer-1')
-    b=SimpleNamespace(run_id='run',runtime_incarnation='inc',connection_generation=2,database_generation='db-source',min_data_seq=0,provider_version='1')
+    b=binding or SimpleNamespace(run_id='run',runtime_incarnation='inc',connection_generation=2,database_generation='db-source',min_data_seq=0,provider_version='1')
     # Unit-only actual _Coverage identity: native catalog/ledger verifier has
     # separate guarded integration tests. No caller can inject this through API.
-    v=SimpleNamespace(clock=time.monotonic,binding_current=lambda current:current is b,
+    v=SimpleNamespace(clock=time.monotonic,binding_current=lambda current:binding_key(current)==binding_key(b),
         registry_hash='fixture-registry',_registry_hash=lambda:'fixture-registry',_routes_current=lambda:True)
-    anchor=_Coverage('db-source',v,b,binding_key(b),time.monotonic()+30,'fixture',None,len(resolved),len(resolved))
+    anchor=_Coverage(generation,v,b,binding_key(b),time.monotonic()+30,'fixture',None,len(resolved),len(resolved))
     v._coverage=anchor;e.spool._source_anchor=anchor
-    gate=GeoReadGate(a.resolver,e.spool,binding_current=lambda current:current is b)
+    gate=GeoReadGate(a.resolver,e.spool,binding_current=lambda current:binding_key(current)==binding_key(b))
     authority=await a.resolver.resolve_oauth(a.tokens.access_token,destination=a.destination)
     keys=tuple(c.operation_key for c in resolved)
     if durable:assert await gate.establish(keys,binding=b)==manifest.sha256
