@@ -279,9 +279,10 @@ class TargetRuntime:
         self.pool = self.pool_factory(kwargs=reader_kwargs,min_size=1,max_size=4,
             open=False,timeout=2,max_waiting=4)
         await self.pool.open(wait=True,timeout=10)
+        read_events=asyncio.Queue(maxsize=64)
         prepared = await self.prepare_resident(encoder,acquire=self.pool.connection,
             probe_database=self._owned_probe,launch_config=self.config,executed_source=self.executed_source,
-            source_binding_verified=True,dependency_packages=self.target['dependency_packages'])
+            source_binding_verified=True,dependency_packages=self.target['dependency_packages'],telemetry=read_events)
         readiness = prepared.readiness
         if (readiness.database_generation != self.database.database_generation
                 or any(getattr(readiness,key) != getattr(self.database,key) for key in
@@ -338,7 +339,9 @@ class TargetRuntime:
                 await asyncio.to_thread(shutil.rmtree,workspace)
                 raise
             self.original_intake_handler=original_handler
-        self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler,original_handler)
+        from .query_telemetry import drain_native_read_events
+        self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler,original_handler,
+            read_event_drain=lambda frame:drain_native_read_events(read_events,frame))
         return self.prepared
 
     async def aclose(self):

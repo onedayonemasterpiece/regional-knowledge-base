@@ -253,6 +253,16 @@ class BgeWssTransport:
             except Exception:
                 reason = 'deadline_exceeded' if asyncio.get_running_loop().time() >= deadline else 'internal_error'
                 result = self._unavailable(frame, reason)
+            # Optional lossy metadata is drained from the same prepared owner;
+            # it cannot change the validated result or extend its wire budget.
+            drain=getattr(self.prepared_runtime,'read_event_drain',None)
+            if drain is not None:
+                try:
+                    events=drain(frame)
+                    with_events={**result,'read_events':events}
+                    if events and len(json.dumps(events,allow_nan=False,separators=(',',':')).encode())<=8192 and len(json.dumps(with_events,allow_nan=False,separators=(',',':')).encode())<=262144:
+                        result=with_events
+                except Exception:pass  # Telemetry never turns a result into failure.
             if not self.read_discard:
                 self.read_pending = result
                 self.changed.set()

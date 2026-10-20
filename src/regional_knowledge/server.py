@@ -456,7 +456,7 @@ def build_server(
             if worker_queue.path.resolve() != Path(os.environ['RKB_BGE_QUEUE_PATH']).resolve():
                 raise RuntimeError('backend and channel must share the same owned queue')
         register_routes(mcp,worker_queue)
-        mcp._bge_channel_route = channel_route(worker_queue)
+        mcp._bge_channel_route = channel_route(worker_queue,read_telemetry=read_telemetry)
 
     if projects_hub_receiver is not None:
         from .projects_hub_reader import ProjectsHubReader, PATH

@@ -343,8 +343,11 @@ class PreparedRuntime:
     bootstrap_observation: object = None
     source_history_handler: object = None
     original_intake_handler: object = None
+    read_event_drain: object = None
 
     def __post_init__(self):
+        if self.read_event_drain is not None and (not callable(self.read_event_drain) or inspect.iscoroutinefunction(self.read_event_drain)):
+            raise BootstrapUnavailable('read_event_drain_invalid')
         if (not (inspect.iscoroutinefunction(self.query_handler)
                  or inspect.iscoroutinefunction(getattr(self.query_handler, '__call__', None)))
                 or type(self.readiness) is not CandidateReadiness

@@ -79,7 +79,7 @@ def _identifier(value):
     return value
 
 
-def channel_route(queue):
+def channel_route(queue, *, read_telemetry=None):
     """Return a native route for the existing MCP ASGI application."""
     async def endpoint(socket):
         # Explicit startup configuration only. Legacy encoding stays on its
@@ -322,6 +322,7 @@ def channel_route(queue):
                             probe_nonce = await shared.begin_resource_probe(run_id, token, generation)
                             await send('RESOURCE_PROBE', probe_nonce=probe_nonce)
                     elif shared is not None and frame['type'] in ('QUERY_RESULT','PASSAGE_READ_RESULT','STORY_READ_RESULT','FACT_READ_RESULT','SOURCE_READ_RESULT','CASE_READ_RESULT','GEO_READ_RESULT','EDITORIAL_READ_RESULT','SOURCE_GRAPH_READ_RESULT'):
+                        events=frame.pop('read_events',None)
                         result = decode_envelope(json.dumps(frame, allow_nan=False,
                             ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
                         if not isinstance(result, (QueryResult,PassageReadResult,StoryReadResult,FactReadResult,SourceReadResult,CaseReadResult,GeoReadResult,EditorialReadResult,SourceGraphReadResult)):
@@ -329,6 +330,10 @@ def channel_route(queue):
                         if not ready or observed['provider_version'] is None:
                             raise ValueError('not_ready')
                         await shared.finish_read(run_id, token, generation, result)
+                        if events is not None and read_telemetry is not None:
+                            read_telemetry.native_events(events,request_id=result.request_id,run_id=run_id,
+                                runtime_incarnation=hello['runtime_incarnation'],connection_generation=generation,
+                                turn_generation=result.turn_generation)
                         # Ephemeral response: no durable ACK, receipt, replay or
                         # release of actual compute is implied by this frame.
                     elif frame['type']=='BOOTSTRAP_OBSERVATION':

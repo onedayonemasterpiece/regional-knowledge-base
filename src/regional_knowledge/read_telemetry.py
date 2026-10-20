@@ -109,6 +109,18 @@ class ReadTelemetry:
         self._attempt_record(record)
         return True
 
+    def native_events(self,events,**identity):
+        # Reuse this server's existing nonblocking sink. Authentication and the
+        # result path never wait for a telemetry file/network operation.
+        from .query_telemetry import clean_native_read_events
+        try:
+            records=clean_native_read_events(events,**identity)
+            for record in records:
+                record=dict(record,controller_loss_before={'dropped':self.dropped,'failed':self.failed})
+                if self.dropped or self.failed:record['diagnostic_state']='inconclusive'
+                self._record(json.dumps(record,allow_nan=False,separators=(',',':')))
+        except Exception:self.failed+=1
+
     async def measure(self, operation, awaitable):
         """Measure backend execution, excluding auth, MCP serialization and I/O."""
         if operation not in {"search", "knowledge_search"}:

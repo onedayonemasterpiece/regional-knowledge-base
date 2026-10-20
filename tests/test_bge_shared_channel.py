@@ -14,6 +14,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from regional_knowledge.bge_channel import channel_route
 from regional_knowledge.bge_contract import REVISION, SPACE
 from regional_knowledge.bge_queue import BgeQueue
+from regional_knowledge.read_telemetry import ReadTelemetry
 from regional_knowledge.kaggle_protocol import Query, TrustedActorContext
 from test_participants import people
 from test_read_authority import auth, issue
@@ -30,12 +31,13 @@ def peer(auth, tmp_path):
     queue.launch_claim(run)
     queue.launch_record(run, 'fixture-owner/stable-slug', provider_version=7)
     admission = queue.configure_shared_reads(auth.resolver)
-    with TestClient(Starlette(routes=[channel_route(queue)])) as client:
+    records=[];telemetry=ReadTelemetry(sink=lambda value:records.append(json.loads(value)))
+    with TestClient(Starlette(routes=[channel_route(queue,read_telemetry=telemetry)])) as client:
         async def resolve():
             return await auth.resolver.resolve_oauth(auth.tokens.access_token, destination=auth.destination)
         context = client.portal.call(resolve)
         state = SimpleNamespace(q=queue, a=admission, auth=auth, client=client,
-            run=run, token=token, nonce=nonce, document=document, context=context)
+            run=run, token=token, nonce=nonce, document=document, context=context,telemetry=telemetry,records=records)
         try:
             yield state
         finally:
@@ -321,3 +323,28 @@ def test_retained_document_release_precedes_probe_idle_and_preserves_result_debt
         assert duplicate['type'] == 'RESULT_ACK' and duplicate['status'] == 'duplicate'
         with p.q.connect(write=False) as db:
             assert db.execute('SELECT attempt FROM jobs WHERE id=?', (p.document,)).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize('bad',[False,True])
+def test_native_diagnostics_use_same_result_and_nonblocking_sink_without_payload(peer,bad):
+    from hashlib import sha256
+    p=peer
+    with connect(p) as socket:
+        generation=attach(p,socket);ready(socket,generation)
+        ticket=begin(p,generation,'native-timing')
+        frame=receive_expected(socket,'QUERY')
+        event=dict(event='kaggle_read_adapter_terminal',plane='adapter',terminal=True,
+            request_ref=sha256(frame['request_id'].encode()).hexdigest(),run_id=p.run,
+            runtime_incarnation='synthetic-incarnation',connection_generation=generation,turn_generation=17,
+            diagnostic_state='observed',executed_branches=['lexical','dense'],stages_ms={'encode_ms':5.},
+            timing_semantics='overlapping_do_not_sum',status='degraded',reason='bounded_retrieval',loss_before={})
+        if bad:event['private_query']='NEVER_LOG_PRIVATE_PAYLOAD'
+        socket.send_json(dict(answer(frame),read_events=[event]))
+        async def observed():return await ticket.result
+        assert p.client.portal.call(observed).status=='degraded'
+        p.telemetry._queue.join()
+        assert p.telemetry.failed==int(bad)
+        assert len(p.records)==(0 if bad else 1)
+        assert 'NEVER_LOG' not in json.dumps(p.records)
+        if not bad:assert p.records[0]['stages_ms']=={'encode_ms':5.}
+        release(socket,generation,frame)

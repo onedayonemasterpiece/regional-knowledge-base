@@ -282,3 +282,25 @@ async def test_read_diagnostics_do_not_touch_held_sqlite_writer(tmp_path, monkey
     finally:
         held.rollback()
         held.close()
+
+
+@pytest.mark.asyncio
+async def test_native_result_drain_is_exact_generation_bounded_and_payload_free():
+    from regional_knowledge.query_telemetry import NativeReadTelemetry,drain_native_read_events,clean_native_read_events
+    native=asyncio.Queue(maxsize=64);runtime=ReadRuntime('run-a','inc-a')
+    request=dict(request_id='same-native-request',connection_generation=2,turn_generation=3)
+    with bind_read_runtime(runtime):
+        with NativeReadTelemetry(native,dict(request,connection_generation=1)) as event:
+            event.finish(status='cancelled',reason='consumer_cancelled')
+        with NativeReadTelemetry(native,request) as event:
+            event.stages={'encode_ms':12.,'lexical_ms':3.,'dense_ms':4.}
+            event.finish(status='degraded',reason='bounded_retrieval')
+    values=drain_native_read_events(native,request)
+    assert native.empty() and len(values)==1 and values[0]['connection_generation']==2
+    assert values[0]['diagnostic_state']=='inconclusive' and values[0]['loss_before']['dropped']==1
+    identity=dict(request_id=request['request_id'],run_id='run-a',runtime_incarnation='inc-a',
+        connection_generation=2,turn_generation=3)
+    assert clean_native_read_events(values,**identity)[0]['stages_ms']['encode_ms']==12.
+    with pytest.raises(ValueError):clean_native_read_events([dict(values[0],private_query='SECRET')],**identity)
+    with pytest.raises(ValueError):clean_native_read_events(values,**dict(identity,runtime_incarnation='other'))
+    with pytest.raises(ValueError):clean_native_read_events(values*5,**identity)
