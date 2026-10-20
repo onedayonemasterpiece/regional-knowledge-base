@@ -33,6 +33,7 @@ class TargetLaunchSpec:
     initialized_receipt: dict | None = None
     min_data_seq: int = 0
     command_handlers: tuple[dict, ...] = ()
+    stage0: object = None
 
     def __post_init__(self):
         if type(self.database) is not OwnedDatabase:
@@ -69,19 +70,48 @@ class TargetLaunchSpec:
             from .kaggle_source_commands import fixed_registry
             fixed_registry(self.database,self.command_handlers)
         object.__setattr__(self,'command_handlers',tuple(json.loads(canonical(self.command_handlers))))
+        if self.stage0 is not None:
+            from .kaggle_stage0 import Stage0Spec
+            if type(self.stage0) is not Stage0Spec:
+                raise TypeError('typed pinned Stage0 preparation required')
+            declared={e['name']:e for e in entries}
+            if any(name.startswith('rkb-target-') for name in declared):
+                raise ValueError('generated target source cannot be a Stage0 download')
+            downloads={item.name:item for item in self.stage0.downloads}
+            if set(downloads)!=set(declared):
+                raise ValueError('Stage0 must pin every external prepared artifact exactly')
+            if any((item.size,item.sha256)!=(declared[name]['size'],declared[name]['sha256'])
+                   for name,item in downloads.items()):
+                raise ValueError('Stage0 download differs from prepared artifact pin')
+            if set(self.stage0.packages)!=set(self.dependency_packages):
+                raise ValueError('Stage0 packages must match exact dependency hash inventory')
+            protected={'torch':'2.11.0+cpu','transformers':'5.16.1','tokenizers':'0.23.1','huggingface-hub':'1.29.0'}
+            if any(self.stage0.packages.get(name)!=version for name,version in protected.items()):
+                raise ValueError('protected BGE runtime versions cannot change through Stage0')
+            if any(declared[name]['role']!='code' for name in self.stage0.wheels):
+                raise ValueError('Stage0 wheels require separate pinned code artifacts')
+            if self.database.mode=='NEW_EMPTY_GENERATION':
+                native={str(root/e['name']) for e in entries if e['role']=='code'}
+                if not set(self.database.native_paths.values())<=native:
+                    raise ValueError('Stage0 exact native PostgreSQL path inventory required')
+                for name in ('initdb','postgres','pg_config'):
+                    relative=str(Path(self.database.native_paths[name]).relative_to(root))
+                    if not downloads[relative].executable:
+                        raise ValueError('Stage0 native PostgreSQL binaries must be executable')
 
     def wire(self):
         return dict(database=self.database.wire(),artifact_root=self.artifact_root,
             artifacts=list(self.artifacts),dependency_packages=list(self.dependency_packages),
             dependency_sha256=self.dependency_sha256,schema_sha256=self.schema_sha256,
             stage0_receipt=self.stage0_receipt,initialized_receipt=self.initialized_receipt,
-            min_data_seq=self.min_data_seq,command_handlers=list(self.command_handlers))
+            min_data_seq=self.min_data_seq,command_handlers=list(self.command_handlers),
+            stage0=self.stage0.wire() if self.stage0 is not None else None)
 
 
 class TargetRuntime:
     """One owned pool/PG/model preparation across WSS reconnects, on one loop."""
     def __init__(self, config, *, executed_source, pool_factory=None, owner_factory=OwnedPostgres,
-                 probe=None, prepare=prepare_resident_runtime):
+                 probe=None, prepare=prepare_resident_runtime, restored_database=None):
         from psycopg_pool import AsyncConnectionPool
         self.config = config
         target = config['target_runtime']
@@ -97,6 +127,11 @@ class TargetRuntime:
         self.prepared = None
         self.identity = None
         self.closed = False
+        if restored_database is not None:
+            from .kaggle_restored_database import VerifiedInitializedDatabase
+            if type(restored_database) is not VerifiedInitializedDatabase or self.database.mode!='VERIFIED_INITIALIZED':
+                raise BootstrapUnavailable('target_restore_capability_required')
+        self.restored_database=restored_database
 
     async def _owned_probe(self, *, acquire):
         # The native catalog hash and actual current writer binding have
@@ -127,9 +162,16 @@ class TargetRuntime:
         self.identity = identity
         # BgeWssTransport invokes prepare only after its authenticated ATTACH and
         # model load. Reconnect never re-enters this factory or replaces the pool.
-        await self.owner.start_empty(intent=self.target.get('initialization_intent'),
-            artifacts=encoder.artifacts,sql_root=self.target['sql_root'])
-        self.pool = self.pool_factory(kwargs=self.database.connection(),min_size=1,max_size=4,
+        reader_kwargs=self.database.connection()
+        if self.restored_database is not None:
+            reader_kwargs=await self.restored_database.verify_for(self.database,run_id,launch_nonce,runtime_incarnation)
+            if (not isinstance(reader_kwargs,dict) or any(reader_kwargs.get(key)!=self.database.connection()[key]
+                    for key in ('host','port','dbname','user'))):
+                raise BootstrapUnavailable('target_restore_connection_binding_mismatch')
+        else:
+            await self.owner.start_empty(intent=self.target.get('initialization_intent'),
+                artifacts=encoder.artifacts,sql_root=self.target['sql_root'])
+        self.pool = self.pool_factory(kwargs=reader_kwargs,min_size=1,max_size=4,
             open=False,timeout=2,max_waiting=4)
         await self.pool.open(wait=True,timeout=10)
         prepared = await self.prepare_resident(encoder,acquire=self.pool.connection,
@@ -170,4 +212,8 @@ class TargetRuntime:
                 if self.pool is not None:
                     await self.pool.close(timeout=10)
         finally:
-            await self.owner.aclose()
+            try:
+                if self.restored_database is not None:
+                    await self.restored_database.aclose()
+            finally:
+                await self.owner.aclose()

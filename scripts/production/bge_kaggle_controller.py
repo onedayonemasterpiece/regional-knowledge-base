@@ -107,6 +107,8 @@ def main(*, target_spec=None, recovery_journal=None):
             raise ValueError('explicit typed target requires WSS configuration')
         if target_spec.database.mode=='NEW_EMPTY_GENERATION' and not isinstance(recovery_journal,RecoveryJournal):
             raise TypeError('fresh generation requires existing real RecoveryJournal')
+        if target_spec.database.mode=='NEW_EMPTY_GENERATION' and target_spec.stage0 is None:
+            raise ValueError('fresh launch requires complete pinned Stage0 preparation')
     for line in Path('/home/dev/.env').read_text().splitlines():
         if line.startswith(('KAGGLE_USERNAME=','KAGGLE_KEY=')):
             key,value=line.split('=',1);os.environ[key]=shlex.split(value)[0]

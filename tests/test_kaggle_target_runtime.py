@@ -283,3 +283,91 @@ def test_verified_nonroot_native_identity_does_not_attempt_privileged_setgroups(
     assert owner._identity()=={}
     monkeypatch.setattr(os,'getgroups',lambda:[1000,77])
     with pytest.raises(Exception,match='identity_mismatch'): owner._identity()
+
+
+def stage0(target):
+    from regional_knowledge.kaggle_stage0 import Stage0Download,Stage0Spec
+    versions={name:'0.0' for name in target.dependency_packages}
+    versions.update(torch='2.11.0+cpu',transformers='5.16.1',tokenizers='0.23.1',**{'huggingface-hub':'1.29.0'})
+    return Stage0Spec(tuple(Stage0Download(e['name'],'https://fixture.invalid/'+e['name'],e['size'],e['sha256'],
+        executable=e['name'] in {'native/initdb','native/postgres','native/pg_config'}) for e in target.artifacts),
+        (),versions,install_bytes=0,total_seconds=60)
+
+
+def test_typed_stage0_complete_inventory_versions_and_source_bundle_binding(tmp_path):
+    target=spec();plan=stage0(target);target=replace(target,stage0=plan)
+    queue,run=queue_run(tmp_path);source=generate(queue,run,target)
+    config=next(ast.literal_eval(node.value) for node in ast.parse(source).body
+        if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='RUN_CONFIG' for t in node.targets))
+    assert config['stage0']==plan.wire()
+    assert 'stage0' not in config['target_runtime']
+    assert any(e['name'].endswith('/regional_knowledge/kaggle_stage0.py') for e in config['prepared_model']['entries'])
+    assert all(e['name'] in {x['name'] for x in config['prepared_model']['entries']} for e in config['stage0']['downloads'])
+    with pytest.raises(ValueError,match='every external'):
+        replace(target,stage0=replace(plan,downloads=plan.downloads[:-1]))
+    changed=replace(plan.downloads[0],sha256='f'*64)
+    with pytest.raises(ValueError,match='artifact pin'):
+        replace(target,stage0=replace(plan,downloads=(changed,)+plan.downloads[1:]))
+    with pytest.raises(ValueError,match='protected BGE'):
+        replace(target,stage0=replace(plan,packages=dict(plan.packages,torch='9.0')))
+    with pytest.raises(ValueError,match='dependency hash inventory'):
+        replace(target,stage0=replace(plan,packages=dict(plan.packages,extra='1.0')))
+
+
+def test_stage0_fresh_native_binaries_need_exact_executable_downloads():
+    target=spec(fresh=True);plan=stage0(target)
+    target=replace(target,stage0=plan)
+    bad=tuple(replace(item,executable=False) if item.name=='native/postgres' else item for item in plan.downloads)
+    with pytest.raises(ValueError,match='must be executable'):
+        replace(target,stage0=replace(plan,downloads=bad))
+
+
+def test_controller_fresh_launch_requires_complete_stage0_before_provider(monkeypatch):
+    from test_recovery_journal import fixture
+    controller=module('bge_kaggle_controller')
+    monkeypatch.setenv('RKB_BGE_TRANSPORT','wss')
+    _,journal=fixture()
+    with pytest.raises(ValueError,match='complete pinned Stage0'):
+        controller.main(target_spec=spec(fresh=True),recovery_journal=journal)
+
+
+@pytest.mark.asyncio
+async def test_restored_runtime_requires_retained_capability_and_closes_owned_candidate():
+    from regional_knowledge.kaggle_restored_database import VerifiedInitializedDatabase
+    target=spec();config=dict(CONFIG,target_runtime=dict(target.wire(),sql_root='/unused'))
+    with pytest.raises(Exception,match='restore_capability_required'):
+        TargetRuntime(config,executed_source='/fixture',restored_database={'verified':True})
+    events=[];identity=(CONFIG['run_id'],CONFIG['launch_nonce'],'restored-incarnation')
+    class Candidate:
+        async def aclose(self):events.append('candidate-close')
+    candidate_owner=Candidate()
+    class Factory:
+        _capabilities=set()
+        _owned_candidates={candidate_owner}
+        async def verify_initialized(self,cap,database,observed):
+            if cap not in self._capabilities or observed!=identity or database!=target.database:
+                raise PermissionError('retained verified restore required')
+            events.append('verify-capability')
+            return database.connection()
+    factory=Factory()
+    cap=VerifiedInitializedDatabase(factory,candidate_owner,target.database,identity,None,None,0,b'',None)
+    factory._capabilities.add(cap)
+    class Owner:
+        def __init__(self,spec):pass
+        async def start_empty(self,**kwargs):raise AssertionError('restored database was initialized')
+        async def aclose(self):events.append('owner-close')
+    class Pool:
+        def __init__(self,**kwargs):
+            assert kwargs['kwargs']['user']=='rkb_reader';events.append('pool')
+        async def open(self,**kwargs):pass
+        async def close(self,**kwargs):events.append('pool-close')
+        def connection(self):pass
+    async def prepare(encoder,**kwargs):
+        async def read(frame,*,encode):pass
+        return PreparedRuntime(read,candidate())
+    runtime=TargetRuntime(config,executed_source='/fixture',restored_database=cap,
+        owner_factory=Owner,pool_factory=Pool,prepare=prepare)
+    await runtime.prepare(None,run_id=identity[0],launch_nonce=identity[1],runtime_incarnation=identity[2])
+    await runtime.aclose()
+    assert events==['verify-capability','pool','pool-close','candidate-close','owner-close']
+    assert cap not in factory._capabilities and not factory._owned_candidates

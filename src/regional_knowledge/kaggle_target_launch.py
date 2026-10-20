@@ -14,7 +14,7 @@ from .recovery_journal import RecoveryJournal
 MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_search',
     'kaggle_readiness','kaggle_worker_query','kaggle_database_probe','kaggle_bootstrap',
     'kaggle_owned_pg','kaggle_target_runtime','kaggle_apply','recovery_journal','query_telemetry',
-    'source_import','kaggle_source_commands')
+    'source_import','kaggle_source_commands','kaggle_stage0','kaggle_restored_database')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 
 
@@ -89,9 +89,15 @@ def compose_target(template,config,target,*,queue,repository):
                 or intent['run_id']!=config['run_id'] or intent['launch_nonce']!=config['launch_nonce']
                 or intent['sql_hashes']!=sql_hashes):
             raise ValueError('persist actual empty-journal initialization intent first')
+    runtime_wire=target.wire()
+    runtime_wire.pop('stage0',None)  # One copy, consumed only by load_encoder.
     config.update(shared_reads=True,prepared_model=dict(root=str(root),entries=entries,
         max_total_bytes=sum(e['size'] for e in entries)),target_runtime=dict(
-        **target.wire(),sql_root=str(root/relative/'sql'),initialization_intent=intent))
+        **runtime_wire,sql_root=str(root/relative/'sql'),initialization_intent=intent))
+    if target.stage0 is not None:
+        config['stage0']=target.stage0.wire()
+    if len(canonical(config))>65536:
+        raise ValueError('bounded complete target launch configuration required')
     # This extractor only writes predetermined bounded source files. It runs
     # before control; model imports, pool creation and initdb occur after ATTACH.
     entry = '''

@@ -6,7 +6,7 @@ an existing Stage0 prepared inventory rooted in `/kaggle/working`, independently
 observed dependency and native catalog hashes, and an explicit owned database binding.
 No environment variable silently creates this authority or supplies a new journal.
 
-`worker_source(..., target=spec)` assembles fifteen fixed Python modules and the exact
+`worker_source(..., target=spec)` assembles the fixed native-safe Python modules and exact
 001–006 SQL bytes into one bounded immutable source package. The generated entrypoint
 extracts and verifies its content-addressed files, then actually calls
 `main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)`. The controller
@@ -22,6 +22,18 @@ same model and pool. Each handler invocation binds the actual run/incarnation to
 existing lossy telemetry adapter. Shutdown drains read cleanup and every tracked native
 forward before closing the pool and its owned postmaster on the same event loop.
 Repeated cancellation also drains the asynchronous close task.
+
+Fresh controller launches require an explicit typed Stage0Spec before provider
+authentication or launch claim. Its download name/size/hash inventory must match every
+external prepared model/native/wheel artifact; bundled Python and SQL are extracted
+directly and never downloaded. Exact package versions match the dependency-hash
+inventory and preserve the four protected BGE runtime pins. Native PostgreSQL binaries
+must have explicit executable flags. The complete launch configuration is bounded.
+After ATTACH/WELCOME, load_encoder invokes the standard-library Stage0 preparer before
+psycopg/pool/pydantic/torch imports. It checks/reuses cached bytes, streams missing pinned
+assets and installs only the declared offline hash-pinned wheel closure. A deferred
+runtime proxy imports and constructs TargetRuntime only after that preparation and
+encoder loading succeed. No downloads, installation or model load occur in Dev tests.
 
 Fresh mode is `OwnedDatabase(mode='NEW_EMPTY_GENERATION', ...)`. Before source generation,
 `persist_empty_intent` reads the injected existing `RecoveryJournal.head()` and refuses
@@ -46,8 +58,13 @@ route-registry closure before product intake can open.
 `VERIFIED_INITIALIZED` mode requires an explicit receipt bound to the complete database,
 schema pin and Stage0 evidence, then probes actual current native state. It never adopts
 an arbitrary directory or starts PostgreSQL. Existing accepted history still requires a
-real verified restore and ordered replay path. This composition does not implement that
-restore and does not establish product acceptance, deployment or provider capabilities.
+real verified restore and ordered replay path. The optional restored_database hook accepts
+only the native-safe owner-retained VerifiedInitializedDatabase capability, calls its
+identity/generation verification before creating the pool, and closes its owned candidate
+after pool draining. A serialized dictionary cannot satisfy that hook. Distributed restore
+orchestration and provider verification remain separate from this composition and must
+not move Dev controller/identity/storage authority into the notebook. These hooks do not
+establish product acceptance, deployment or provider capabilities.
 
 Local verification uses synthetic artifacts, existing conditional-store fixtures,
 source extraction redirected into the managed fixture directory, stub native processes
