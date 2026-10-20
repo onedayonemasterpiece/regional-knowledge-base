@@ -97,6 +97,37 @@ async def seal(journal, commands, predecessor=None, writer="writer-1"):
 
 
 @pytest.mark.asyncio
+async def test_executor_acceptance_proof_verifies_exact_published_command():
+    store, journal = fixture()
+    original = command()
+    accepted = await seal(journal, [original])
+    assert await journal.verify_accepted(accepted, original) == hashlib.sha256(original.encode()).hexdigest()
+    with pytest.raises(JournalConflict):
+        await journal.verify_accepted(accepted, replace(original, payload=b'different command'))
+    store.reads.clear()
+    with pytest.raises(ValueError):
+        await journal.verify_accepted(replace(accepted, command_hashes=('x' * 64,)), original)
+    assert not store.reads
+    store.read_failures.add('/accepted/')
+    with pytest.raises(JournalUnknown):
+        await journal.verify_accepted(accepted, original)
+
+
+@pytest.mark.asyncio
+async def test_executor_rejects_receipt_for_uploaded_unpublished_orphan():
+    store, journal = fixture()
+    original = command()
+    store.faults.append(('cas-before', '/head'))
+    with pytest.raises(JournalUnknown):
+        await seal(journal, [original])
+    key = next(key for key in store.objects if '/manifests/' in key)
+    reference = journal._ref(key, store.objects[key].data, 1)
+    forged = AcceptedSeal(reference, (hashlib.sha256(original.encode()).hexdigest(),))
+    with pytest.raises(JournalConflict):
+        await journal.verify_accepted(forged, original)
+
+
+@pytest.mark.asyncio
 async def test_old_accepted_outcome_does_not_age_out_of_reconciliation_budget():
     store, journal = fixture(max_reconcile_hops=4)
     first = await seal(journal, [command()])

@@ -437,6 +437,32 @@ class RecoveryJournal:
             ref = previous
         raise JournalUnknown("acceptance index absent; bounded bootstrap_indexes is required")
 
+    async def verify_accepted(self, seal: AcceptedSeal, command: ExactCommand) -> str:
+        """Prove exact remote acceptance before a trusted domain executor starts.
+
+        A supplied receipt is a locator, never authority. This establishes only
+        journal membership; current writer, person and SQL preconditions remain
+        the executor's responsibility. It does not apply or deliver anything.
+        """
+        if not isinstance(seal, AcceptedSeal) or not isinstance(command, ExactCommand):
+            raise ValueError("exact command and acceptance locator are required")
+        if (not isinstance(seal.manifest, ObjectRef) or not isinstance(seal.command_hashes, tuple)
+                or not 1 <= len(seal.command_hashes) <= self.max_commands
+                or any(not isinstance(value, str) or len(value) != 64
+                       or any(c not in "0123456789abcdef" for c in value)
+                       for value in seal.command_hashes)):
+            raise ValueError("bounded acceptance command hashes are required")
+        self._parse_ref(seal.manifest.wire())
+        _preflight_command(command, self.max_segment_bytes)
+        encoded = command.encode()
+        if len(encoded) > self.max_segment_bytes:
+            raise JournalLimit("command exceeds segment byte budget")
+        command_hash = _hash(encoded)
+        accepted = await self._published(seal.manifest)
+        if accepted != seal or command_hash not in accepted.command_hashes:
+            raise JournalConflict("command does not match an accepted publication")
+        return command_hash
+
     async def _finish_seal(self, target: ObjectRef, writer_generation: str) -> AcceptedSeal:
         accepted = await self._published(target)
         _, commands = await self.read_segment(target)
