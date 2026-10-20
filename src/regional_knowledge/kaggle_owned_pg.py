@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import stat
 from collections.abc import Mapping
 from types import MappingProxyType
 
@@ -36,6 +37,76 @@ def canonical(value):
 
 def digest(value):
     return hashlib.sha256(value).hexdigest()
+
+
+def _can_access(info,uid,gid,bits):
+    shift=6 if info.st_uid==uid else 3 if info.st_gid==gid else 0
+    return ((stat.S_IMODE(info.st_mode)>>shift)&bits)==bits
+
+
+def grant_native_code_access(root,pins,*,uid,gid):
+    """Give only the owned native identity access to exact verified public code.
+
+    No recursion, model/credential access, owner changes, root chmod or new
+    group-write/world permissions. Descriptors reject symlink parent swaps.
+    """
+    root=Path(root)
+    if root.resolve(strict=True)!=root:raise BootstrapUnavailable('native_pg_permission_root_invalid')
+    if os.geteuid()!=0 and (os.geteuid()!=uid or os.getegid()!=gid or not set(os.getgroups())<={gid}):
+        raise BootstrapUnavailable('native_pg_identity_mismatch')
+    root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        if not _can_access(os.fstat(root_fd),uid,gid,1):
+            raise BootstrapUnavailable('native_pg_working_root_not_traversable')
+        if not 1<=len(pins)<=16384:raise BootstrapUnavailable('native_pg_permission_inventory_bound')
+        seen=set()
+        for absolute,size,expected,executable in pins:
+            path=Path(absolute)
+            if not path.is_relative_to(root) or path==root or '..' in path.parts or str(path) in seen:
+                raise BootstrapUnavailable('native_pg_permission_path_invalid')
+            seen.add(str(path))
+            parts=path.relative_to(root).parts
+            if len(parts)>32:raise BootstrapUnavailable('native_pg_permission_inventory_bound')
+            parent=os.dup(root_fd)
+            try:
+                for part in parts[:-1]:
+                    child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent)
+                    os.close(parent);parent=child
+                    info=os.fstat(parent)
+                    if info.st_uid not in (os.geteuid(),uid):
+                        raise BootstrapUnavailable('native_pg_permission_parent_unowned')
+                    if os.geteuid()==0:
+                        mode=(stat.S_IMODE(info.st_mode)|0o010)&~0o020
+                        if info.st_gid!=gid:os.fchown(parent,-1,gid)
+                        if mode!=stat.S_IMODE(info.st_mode):os.fchmod(parent,mode)
+                    elif not _can_access(info,uid,gid,1):
+                        raise BootstrapUnavailable('native_pg_permission_parent_denied')
+                fd=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent)
+                try:
+                    before=os.fstat(fd)
+                    if not stat.S_ISREG(before.st_mode) or before.st_size!=size or before.st_uid not in (os.geteuid(),uid):
+                        raise BootstrapUnavailable('native_pg_permission_file_invalid')
+                    actual=hashlib.sha256();remaining=size
+                    while remaining:
+                        chunk=os.read(fd,min(1024*1024,remaining))
+                        if not chunk:raise BootstrapUnavailable('native_pg_permission_file_invalid')
+                        actual.update(chunk);remaining-=len(chunk)
+                    after=os.fstat(fd)
+                    if (os.read(fd,1) or actual.hexdigest()!=expected
+                            or (before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_size,after.st_mtime_ns,after.st_ctime_ns)):
+                        raise BootstrapUnavailable('native_pg_artifact_hash_mismatch')
+                    if os.geteuid()==0:
+                        mode=(stat.S_IMODE(after.st_mode)|0o040)&~0o030
+                        if executable:mode|=0o010
+                        if after.st_gid!=gid:os.fchown(fd,-1,gid)
+                        if mode!=stat.S_IMODE(after.st_mode):os.fchmod(fd,mode)
+                    elif not _can_access(after,uid,gid,5 if executable else 4):
+                        raise BootstrapUnavailable('native_pg_permission_file_denied')
+                finally:os.close(fd)
+            finally:os.close(parent)
+    except OSError:
+        raise BootstrapUnavailable('native_pg_permission_verification_failed') from None
+    finally:os.close(root_fd)
 
 
 @dataclass(frozen=True)
@@ -132,10 +203,13 @@ class OwnedPostgres:
                 process.kill()
                 await process.wait()
 
-    async def start_empty(self, *, intent, artifacts, sql_root):
+    async def start_empty(self, *, intent, artifacts, sql_root, native_bundle=None):
         spec = self.spec
         if spec.mode != 'NEW_EMPTY_GENERATION':
             return
+        cluster=Path(spec.cluster)
+        if cluster.exists() or cluster.is_symlink():
+            raise BootstrapUnavailable('native_pg_existing_cluster_refused')
         if (type(intent) is not dict or intent.get('codec') != 'rkb.empty-generation.v1'
                 or intent.get('database') != spec.wire() or intent.get('journal_head') is not None
                 or not intent.get('journal_stream') or not intent.get('run_id') or not intent.get('launch_nonce')):
@@ -147,6 +221,9 @@ class OwnedPostgres:
             requirement = verified[path]
             if _file_hash(path,requirement.size) != requirement.sha256:
                 raise BootstrapUnavailable('native_pg_artifact_hash_mismatch')
+        executable={spec.native_paths[name] for name in ('initdb','postgres','pg_config')}
+        pins=[(path,e.size,e.sha256,path in executable) for path,e in verified.items()]
+        await asyncio.to_thread(grant_native_code_access,artifacts.root,pins,uid=spec.uid,gid=spec.gid)
         files = {name:(Path(sql_root)/name).read_bytes() for name in SQL_ARTIFACTS}
         if intent.get('sql_hashes') != {name:digest(data) for name,data in files.items()}:
             raise BootstrapUnavailable('native_pg_sql_binding_mismatch')
