@@ -43,6 +43,17 @@ TRIGGERS = frozenset((table, name) for table, name in (
     ('read_frontier', 'reject_orphan_frontier_proof'),
     ('source_import_origins', 'immutable_source_origin')))
 
+STORY_TABLES=frozenset({'source_regions','story_assertion_versions','stories','story_versions',
+    'story_variant_versions','story_search','source_story_pending'})
+STORY_FUNCTIONS=frozenset('rkb_v4.'+name for name in (
+    'check_source_import_v2(bytea,jsonb,jsonb,text)','apply_source_import_v2(bytea,jsonb,jsonb,text)',
+    'read_story_v1(uuid,text,bigint,bigint,integer)','story_lexical_candidates_v1(text,integer,uuid[])',
+    'story_dense_candidates_v1(public.vector,integer,uuid[])','story_hydrate_v1(uuid[],uuid[])'))
+STORY_TRIGGERS=frozenset((table,name) for table,name in (
+    ('source_regions','immutable_source_region'),('story_assertion_versions','immutable_story_assertion'),
+    ('story_versions','immutable_story_version'),('story_variant_versions','immutable_story_variant'),
+    ('stories','story_source_fence'),('story_search','story_projection_fence')))
+
 # Only native metadata in the target namespace; no source/document rows. Each
 # query is wrapped with C ordering, row LIMIT and payload octet-length guards.
 CATALOG_QUERIES = (
@@ -83,7 +94,7 @@ CATALOG_QUERIES = (
         JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_class idx ON idx.oid=i.indexrelid
         JOIN pg_am am ON am.oid=idx.relam WHERE n.nspname='rkb_v4'"""),
     ('triggers', """SELECT c.relname||':'||CASE WHEN t.tgisinternal THEN
-        'internal:'||coalesce(k.conname,'')||':'||t.tgtype||':'||p.proname ELSE t.tgname END AS identifier,
+        'internal:'||coalesce(k.conname,'')||':'||t.tgtype||':'||p.proname ELSE t.tgname::text END AS identifier,
         jsonb_build_object('table',c.relname,'name',CASE WHEN t.tgisinternal THEN NULL ELSE t.tgname END,
         'internal',t.tgisinternal,'enabled',t.tgenabled,'function',p.oid::regprocedure::text,
         'type',t.tgtype,'deferrable',t.tgdeferrable,'initially_deferred',t.tginitdeferred,
@@ -204,6 +215,9 @@ class NativeDatabaseProbe:
                                 raise DatabaseProbeUnavailable('database_state_unavailable')
                             state = json.loads(row[0])
                             fields = self._state(state)
+                            if (bool(STORY_TABLES.intersection(observed['tables'])) !=
+                                    (state['schema_revision']=='rkb-v4-sql001-007-v1')):
+                                raise DatabaseProbeUnavailable('database_story_revision_mismatch')
                             add('semantics','current',{key:state[key] for key in (
                                 'schema_revision','function_revision','executor_revision','last_migration_id','last_migration_hash')})
             return prefix + b','.join(records) + suffix, fields
@@ -220,23 +234,28 @@ class NativeDatabaseProbe:
 
     @staticmethod
     def _validate_catalog(observed):
+        stories=bool(STORY_TABLES.intersection(observed['tables']))
+        tables=TABLES|STORY_TABLES if stories else TABLES
+        functions=FUNCTIONS|STORY_FUNCTIONS if stories else FUNCTIONS
+        required_triggers=TRIGGERS|STORY_TRIGGERS if stories else TRIGGERS
         env = observed['environment'].get('runtime',{})
         if (type(env.get('server_version_num')) is not int or env['server_version_num']//10000 != 17
                 or env.get('vector_version') != '0.8.2' or env.get('vector_schema') != 'public'
                 or env.get('server_encoding') != 'UTF8'
                 or env.get('collation_version') != env.get('actual_collation_version')):
             raise DatabaseProbeUnavailable('database_native_runtime_mismatch')
-        if not TABLES <= observed['tables'].keys() or any(observed['tables'][name].get('kind') != 'r' for name in TABLES):
+        if not tables <= observed['tables'].keys() or any(observed['tables'][name].get('kind') != 'r' for name in tables):
             raise DatabaseProbeUnavailable('database_schema_incomplete')
-        if not FUNCTIONS <= observed['functions'].keys():
+        if not functions <= observed['functions'].keys():
             raise DatabaseProbeUnavailable('database_functions_incomplete')
-        for name in FUNCTIONS:
+        for name in functions:
             function = observed['functions'][name]
-            table_function = any(name.startswith('rkb_v4.' + stem) for stem in ('lexical_candidates(', 'dense_candidates(', 'hydrate(', 'lexical_candidates_scoped(', 'dense_candidates_scoped(', 'hydrate_scoped('))
+            table_function = any(name.startswith('rkb_v4.' + stem) for stem in ('lexical_candidates(', 'dense_candidates(', 'hydrate(', 'lexical_candidates_scoped(', 'dense_candidates_scoped(', 'hydrate_scoped(', 'story_lexical_candidates_v1(', 'story_dense_candidates_v1(', 'story_hydrate_v1('))
             result = ('record' if table_function else 'uuid[]' if 'checked_source_scope(' in name else
+                      'jsonb' if 'read_story_v1(' in name else
                       'void' if any(stem in name for stem in ('publish_read_frontier(', 'prepare_read_frontier(')) else
-                      'boolean' if any(stem in name for stem in ('check_source_withdraw_v1(', 'check_source_import_v1(')) else
-                      'bytea' if any(stem in name for stem in ('apply_source_withdraw_v1(', 'apply_source_import_v1(')) else 'trigger')
+                      'boolean' if any(stem in name for stem in ('check_source_withdraw_v1(', 'check_source_import_v1(', 'check_source_import_v2(')) else
+                      'bytea' if any(stem in name for stem in ('apply_source_withdraw_v1(', 'apply_source_import_v1(', 'apply_source_import_v2(')) else 'trigger')
             if (function.get('kind') != 'f' or function.get('security_definer') is not False
                     or function.get('returns_set') is not table_function or function.get('result') != result
                     or not isinstance(function.get('definition'),str)):
@@ -247,8 +266,13 @@ class NativeDatabaseProbe:
                 or any(indexes.get(name,{}).get('table') != 'passage_search' for name in ('passage_dense','passage_lexical'))
                 or any(not all(index.get(key) is True for key in ('valid','ready','live')) for index in indexes.values())):
             raise DatabaseProbeUnavailable('database_indexes_not_ready')
+        if stories and (indexes.get('story_search_dense',{}).get('method')!='hnsw'
+                or indexes.get('story_search_fts',{}).get('method')!='gin'
+                or any(indexes.get(name,{}).get('table')!='story_search'
+                    for name in ('story_search_dense','story_search_fts'))):
+            raise DatabaseProbeUnavailable('database_story_indexes_not_ready')
         triggers = {(row.get('table'),row.get('name')) for row in observed['triggers'].values() if not row.get('internal')}
-        if not TRIGGERS <= triggers or any(row.get('enabled') not in ('O','A') for row in observed['triggers'].values()):
+        if not required_triggers <= triggers or any(row.get('enabled') not in ('O','A') for row in observed['triggers'].values()):
             raise DatabaseProbeUnavailable('database_triggers_not_ready')
         if {row.get('config') for row in observed['text_config'].values()} != {'russian','german','simple'}:
             raise DatabaseProbeUnavailable('database_text_config_incomplete')
