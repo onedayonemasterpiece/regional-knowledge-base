@@ -7,7 +7,7 @@ RAM locators, not grants or durable request/executor authority.
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 import math
 import secrets
@@ -80,7 +80,8 @@ class _Current:
 
 class ReadAuthority:
     def __init__(self, participants: Participants, *, oauth_provider, issuer: str,
-                 resource: str, clock=time.time, ttl_seconds=120.0, max_contexts=256):
+                 resource: str, clock=time.time, ttl_seconds=120.0, max_contexts=256,
+                 max_contexts_per_person=None):
         if (oauth_provider.issuer != issuer or oauth_provider.resource != resource
                 or oauth_provider.owner_subject != participants.owner):
             raise ValueError('configured OAuth authority must match exactly')
@@ -88,6 +89,10 @@ class ReadAuthority:
                 or not math.isfinite(ttl_seconds) or ttl_seconds <= 0
                 or type(max_contexts) is not int or not 1 <= max_contexts <= 4096):
             raise ValueError('finite context lifetime and bounded RAM capacity required')
+        if max_contexts_per_person is None:
+            max_contexts_per_person = max(1, max_contexts // 4)
+        if type(max_contexts_per_person) is not int or not 1 <= max_contexts_per_person <= max_contexts:
+            raise ValueError('per-person RAM capacity must fit total capacity')
         if (oauth_provider.personal_policy is None
                 or oauth_provider.personal_policy.participants is not participants):
             raise ValueError('explicit existing participant projection policy required')
@@ -96,6 +101,7 @@ class ReadAuthority:
         self.issuer, self.resource = issuer, resource
         self.clock, self.ttl_seconds = clock, float(ttl_seconds)
         self.max_contexts = max_contexts
+        self.max_contexts_per_person = max_contexts_per_person
         self._contexts = {}
         self._contexts_lock = threading.Lock()
 
@@ -111,10 +117,10 @@ class ReadAuthority:
         finally:
             db.close()
 
-    def _state(self, principal, route, link_id=None, link_revision=None, family_ref=None):
+    def _state(self, principal, route, link_id=None, link_revision=None, family_ref=None, *, connection=None):
         context = RequestAuthority(principal, route, link_id, link_revision)
         try:
-            with self._read() as db:
+            with (self._read() if connection is None else nullcontext(connection)) as db:
                 actor = self.participants.require(context, 'public_search', connection=db)
                 if family_ref is not None and not allowed(
                         db, family_ref, actor, self.resource, self.clock(),
@@ -148,7 +154,9 @@ class ReadAuthority:
             for key, value in tuple(self._contexts.items()):
                 if value.expires_at <= now:
                     del self._contexts[key]
-            if len(self._contexts) >= self.max_contexts or expires_at <= now:
+            person_count = sum(value.person_id == person_id for value in self._contexts.values())
+            if (len(self._contexts) >= self.max_contexts or expires_at <= now
+                    or person_count >= self.max_contexts_per_person):
                 raise ReadAuthorityError('read context unavailable or capacity exhausted')
             self._contexts[authority.context_ref] = authority
         return authority
@@ -189,7 +197,7 @@ class ReadAuthority:
                 context = self.participants.resolve_external(provider=provider, tenant=tenant,
                     provider_subject=provider_subject, principal_factory=lambda person: Principal(
                         subject=person, client_id=destination.transport, issuer=provider, access_token=''), connection=db)
-                current = self._state(context.principal, context.route, context.link_id, context.link_revision)
+                current = self._state(context.principal, context.route, context.link_id, context.link_revision, connection=db)
                 return context, current
         try:
             context, current = await asyncio.to_thread(resolve)
@@ -204,18 +212,26 @@ class ReadAuthority:
         with self._contexts_lock:
             retained = (isinstance(authority, VerifiedReadAuthority)
                         and self._contexts.get(authority.context_ref) is authority)
-        if not retained or authority.expires_at <= self.clock():
+        if not retained:
             raise ReadAuthorityError('read context expired or unknown')
-        principal = Principal(subject=authority.person_id, client_id=authority.client_id,
-                              issuer=authority.issuer, access_token='')
-        current = await asyncio.to_thread(self._state, principal, authority.route,
-            authority.link_id, authority.link_revision, authority.oauth_family_ref)
-        with self._contexts_lock:
-            retained = self._contexts.get(authority.context_ref) is authority
-        if (not retained or current.revision != authority.auth_revision
-                or authority.expires_at <= self.clock()):
-            raise ReadAuthorityError('participant authority changed during read')
-        return current
+        try:
+            if authority.expires_at <= self.clock():
+                raise ReadAuthorityError('read context expired or unknown')
+            principal = Principal(subject=authority.person_id, client_id=authority.client_id,
+                                  issuer=authority.issuer, access_token='')
+            current = await asyncio.to_thread(self._state, principal, authority.route,
+                authority.link_id, authority.link_revision, authority.oauth_family_ref)
+            with self._contexts_lock:
+                retained = self._contexts.get(authority.context_ref) is authority
+            if (not retained or current.revision != authority.auth_revision
+                    or authority.expires_at <= self.clock()):
+                raise ReadAuthorityError('participant authority changed during read')
+            return current
+        except BaseException:
+            # Includes cancellation: a failed consumer cannot leave a dead RAM
+            # slot behind. release checks object identity, never merely its key.
+            self.release(authority)
+            raise
 
     async def require(self, authority: VerifiedReadAuthority, capability: str):
         current = await self.recheck(authority)

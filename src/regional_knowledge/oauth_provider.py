@@ -708,11 +708,15 @@ class RegionalOAuthProvider(PersonalOAuthMixin):
             client = await ClientAuthenticator(self).authenticate_request(request)
         except AuthenticationError:
             return JSONResponse({"error": "unauthorized_client"}, status_code=401)
-        token = await self.load_access_token(supplied)
-        if token is None:
-            token = await self.load_refresh_token(client, supplied)
-        if token is not None and token.client_id == client.client_id:
-            await self.revoke_token(token)
+        key = _digest(supplied)
+        def revoke(state: dict[str, Any]) -> None:
+            # Revocation is independent of current eligibility/expiry/projection.
+            # Looking up and removing under the same store lock also prevents a
+            # concurrent refresh from resurrecting the identified family.
+            record = state['access'].get(key) or state['refresh'].get(key)
+            if record and record.get('client_id') == client.client_id:
+                self._revoke_family(state, str(record['family']))
+        await asyncio.to_thread(self.store.mutate, revoke)
         _LOGGER.info("oauth_revocation outcome=accepted method=%s", client.token_endpoint_auth_method)
         return Response(status_code=200, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 

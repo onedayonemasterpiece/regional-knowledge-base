@@ -16,6 +16,12 @@ weight and account begin/confirm/unlink command advances the same participant
 profile revision transactionally with its event and idempotency receipt. That
 revision is the read `auth_revision` / auth epoch. Expiry and current canonical
 user status are independently rechecked and do not depend on an epoch increment.
+Owner profile updates reject `expires_at` with `cannot_expire_owner`, matching
+the existing prohibition on disabling the owner. Legacy owner-profile expiry is
+ignored so the owner can repair it through existing personal-route administration
+and OAuth reads. This exception does not ignore the profile disabled bit or the
+canonical `rkb_users.status`: either can still deny owner authority. No runtime
+profile is rewritten by this source change.
 
 ## Existing OAuth, explicit participant policy
 
@@ -40,6 +46,14 @@ lock. Revocation disables it before an auth mutation completes; a disabled famil
 cannot be resurrected by refresh. The projection binds exact canonical person,
 client, resource, issuer and personal credential identity/epoch. Ready access-token
 verification only reads that projection; it does not create or extend it.
+Authenticated `/revoke` looks up the supplied access/refresh digest directly under
+the existing auth-file mutation lock and checks the exact registered client before
+revoking its whole family. Revocation of a retained token does not require a
+currently eligible person or existing projection; normal expired-record pruning
+is unchanged. Suspending a person or deleting a legacy
+projection therefore cannot turn an acknowledged revocation into a later refresh.
+Unknown tokens and wrong-client tokens retain the same non-disclosing HTTP200
+response. Default owner mode keeps its existing registration/resource behavior.
 
 Opting in with pre-existing personal-policy families may require a real refresh:
 legacy/unprojected families or rows lacking the new issuer field fail closed
@@ -63,7 +77,8 @@ instance. Construction and ready read resolution do not initialize schemas.
 - `resolve_adapter(provider=..., tenant=..., provider_subject=..., destination=...)`
   is an internal trusted adapter hook after transport identity verification.
   It resolves only the complete verified tuple through existing Participants and
-  retains the current verified link ID/revision. It is not a public tool or a
+  retains the current verified link ID/revision. Link resolution and participant
+  policy use one query-only SQLite transaction on a worker thread. It is not a public tool or a
   provider verifier. A raw client payload must never call it or construct its
   routing context.
 - `TrustedReadDestination` comes from authenticated server routing, including its
@@ -76,6 +91,26 @@ instance. Construction and ready read resolution do not initialize schemas.
   (configurable up to 4096), default lifetime 120 seconds, further bounded by the
   verified access token's expiry. Release or expiry invalidates delayed use;
   restart loses these ephemeral locators.
+
+`max_contexts_per_person` defaults to `max(1,max_contexts//4)` and must be an integer
+between1and the global cap. It counts the canonical person across both OAuth and
+all adapter providers. With256slots, one person can retain at most64, leaving192
+for other people; four distinct people can each hold64. This bounds the existing
+resolver's RAM map, not model admission or execution capacity, and does not promise
+reserved capacity for an arbitrary number of people. Expired entries are pruned
+on retain. An identical retained context is released when recheck expires, fails,
+observes revocation/revision change or is cancelled. A forged copy cannot remove
+the original context. Callers must still release in `finally` after every read;
+successful checks alone do not release live contexts.
+
+For both routes, context `issuer` and `resource` identify this configured **RKB
+authority and protected resource**, not an external login provider. OAuth origin
+is its verified family/client; adapter origin is `route=expert` and the verified
+tenant-qualified external identity row referenced by `link_id/link_revision`.
+Adapter `client_id` identifies the trusted destination transport. Future audits
+and output gates must use that route/link binding for origin; interpreting the
+OAuth issuer field as Slack/Projects Hub provenance would be incorrect. No field
+is silently repurposed as an external issuer or new identity provider.
 
 `recheck` opens a query-only SQLite snapshot on a worker thread and checks current
 person/profile, grant expiry, external link state/revision, exact OAuth family
@@ -108,6 +143,19 @@ read-only projections and off-event-loop I/O. A real HTTP/PKCE test obtains a
 non-owner opaque token through existing login/consent endpoints. Existing OAuth
 regressions also run; the paused PR's unrelated journal/executor tests are not
 ported or claimed.
+
+The source-only `claude-opus-5-5` audit at `3c4017d6` was independently reproduced
+against baseline `4e3bd5a`: disabled/unprojected access revocation, owner expiry,
+nested adapter snapshots and dead-context retention failed before correction.
+The new regressions use synthetic HTTP/PKCE credentials, verify family projection
+disablement and failed refresh after re-enable, verify owner repair and unchanged
+disabled policy, and check the shared canonical-person cap. The ready-read check
+installs a SQLite authorizer denying DML, schema mutations and persistent PRAGMAs
+on every newly opened connection. Connection-local busy timeout, foreign-key
+enforcement and query-only settings remain permitted. The inspected
+`SQLiteCorpus.connect()` performs connection setup and commits on exit, with no
+per-open DDL or explicit fsync; a SELECT-only transaction does not make a database
+mutation. This is local source/test evidence, not production I/O measurement.
 
 Server/search/WSS wiring, source withdrawal/output dependencies, actual non-owner
 client acceptance, live credentials and production deployment remain outside this

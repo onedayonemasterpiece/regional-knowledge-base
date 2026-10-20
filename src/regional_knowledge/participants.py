@@ -112,7 +112,10 @@ class Participants:
         if not user or user.get("status") != "active":
             fail("capability_denied")
         profile = db.execute("SELECT * FROM rkb_participant_profiles WHERE person_id=?", (actor,)).fetchone()
-        if profile and (profile["disabled"] or self._expired(json.loads(profile["payload"]).get("expires_at"))):
+        # Legacy owner expiry must not permanently lock out the only repair
+        # authority. Canonical user status and the disabled bit still apply.
+        if profile and (profile["disabled"] or (actor != self.owner
+                and self._expired(json.loads(profile["payload"]).get("expires_at")))):
             fail("capability_denied")
         if actor != self.owner and not profile:
             fail("capability_denied")
@@ -229,6 +232,8 @@ class Participants:
             db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN IMMEDIATE")
             actor=self._authority(db,context,admin=True)
+            if isinstance(command,ParticipantUpsert) and person_id==self.owner and payload.get('expires_at') is not None:
+                fail('cannot_expire_owner')
             saved=db.execute("SELECT * FROM rkb_participant_operations WHERE actor_id=? AND operation_key=?",(actor,operation_key)).fetchone()
             if saved:
                 if saved["request_hash"]!=digest: fail("idempotency_conflict")
