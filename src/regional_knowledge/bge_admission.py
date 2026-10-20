@@ -22,6 +22,7 @@ from .kaggle_source_read import SourceReadRequest, SourceReadResult
 from .kaggle_case_contracts import CaseReadRequest, CaseReadResult
 from .kaggle_geo_contracts import GeoReadRequest, GeoReadResult
 from .kaggle_editorial_contracts import EditorialReadRequest, EditorialReadResult
+from .kaggle_source_graph_read import SourceGraphReadRequest, SourceGraphReadResult
 from .read_authority import ReadAuthority, VerifiedReadAuthority
 from .participants import RequestAuthority
 
@@ -59,7 +60,7 @@ class ResourceClaim:
 @dataclass(frozen=True)
 class ChannelWork:
     resource: ResourceClaim
-    query: Query | PassageReadRequest | StoryReadRequest | FactReadRequest | SourceReadRequest | CaseReadRequest | GeoReadRequest | EditorialReadRequest | None = None
+    query: Query | PassageReadRequest | StoryReadRequest | FactReadRequest | SourceReadRequest | CaseReadRequest | GeoReadRequest | EditorialReadRequest | SourceGraphReadRequest | None = None
     document_payload: object | None = None
 
     @property
@@ -76,7 +77,7 @@ class ChannelWork:
 class _Read:
     ticket: ReadTicket
     authority: VerifiedReadAuthority
-    query: Query | PassageReadRequest | StoryReadRequest | FactReadRequest | SourceReadRequest | CaseReadRequest | GeoReadRequest | EditorialReadRequest
+    query: Query | PassageReadRequest | StoryReadRequest | FactReadRequest | SourceReadRequest | CaseReadRequest | GeoReadRequest | EditorialReadRequest | SourceGraphReadRequest
     dialog: str
     deadline: float
     timer: object
@@ -183,7 +184,7 @@ class SharedReadAdmission:
         if (not isinstance(deadline,(float,int)) or isinstance(deadline,bool)
                 or not math.isfinite(deadline) or not now<deadline<=now+2):
             raise ValueError('absolute remaining deadline must be at most two seconds')
-        if not isinstance(query,(Query,PassageReadRequest,StoryReadRequest,FactReadRequest,SourceReadRequest,CaseReadRequest,GeoReadRequest,EditorialReadRequest)) or not isinstance(authority,VerifiedReadAuthority):
+        if not isinstance(query,(Query,PassageReadRequest,StoryReadRequest,FactReadRequest,SourceReadRequest,CaseReadRequest,GeoReadRequest,EditorialReadRequest,SourceGraphReadRequest)) or not isinstance(authority,VerifiedReadAuthority):
             raise TypeError('typed query and verified authority required')
         if on_dispatch is not None and not callable(on_dispatch):
             raise TypeError('internal dispatch observer must be callable')
@@ -531,7 +532,7 @@ class SharedReadAdmission:
     async def finish_read(self, run_id, token, connection_generation, result):
         """Consumer delivery only. Source/withdrawal output gate remains separate."""
         self._active()
-        if not isinstance(result,(QueryResult,PassageReadResult,StoryReadResult,FactReadResult,SourceReadResult,CaseReadResult,GeoReadResult,EditorialReadResult)):raise TypeError('typed query result required')
+        if not isinstance(result,(QueryResult,PassageReadResult,StoryReadResult,FactReadResult,SourceReadResult,CaseReadResult,GeoReadResult,EditorialReadResult,SourceGraphReadResult)):raise TypeError('typed query result required')
         encode_envelope(result)
         if isinstance(result,QueryResult) and result.status in {'ok','degraded'} and result.mode!='hybrid':
             raise ValueError('target reads require actual hybrid retrieval')
@@ -543,7 +544,7 @@ class SharedReadAdmission:
                 or read.ticket.turn_generation!=result.turn_generation
                 or read.dispatched is None
                 or read.deadline<=self.clock()):return False
-        if type(result) is not {Query:QueryResult,PassageReadRequest:PassageReadResult,StoryReadRequest:StoryReadResult,FactReadRequest:FactReadResult,SourceReadRequest:SourceReadResult,CaseReadRequest:CaseReadResult,GeoReadRequest:GeoReadResult,EditorialReadRequest:EditorialReadResult}.get(type(read.query)):
+        if type(result) is not {Query:QueryResult,PassageReadRequest:PassageReadResult,StoryReadRequest:StoryReadResult,FactReadRequest:FactReadResult,SourceReadRequest:SourceReadResult,CaseReadRequest:CaseReadResult,GeoReadRequest:GeoReadResult,EditorialReadRequest:EditorialReadResult,SourceGraphReadRequest:SourceGraphReadResult}.get(type(read.query)):
             raise ValueError('read response operation type differs from admitted request')
         try:await self.authority.require(read.authority,'case_read' if type(read.query) is CaseReadRequest else 'public_search')
         except PermissionError:
