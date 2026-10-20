@@ -1,5 +1,13 @@
 # Explicit Kaggle source startup
 
+The native bundle receives the complete prepared inventory (source, SQL, wheels
+and model assets), so it shares `MAX_PREPARED_FILES` with Stage0 and bootstrap.
+The v92 live launch on 2026-10-20 loaded BGE but stopped before PostgreSQL with
+`native_bundle_preparation_failed`: its134 entries exceeded the extractor's old
+128-entry check. Extraction regressions now cover134 and144 entries and refuse
+145. The package-count, extracted-file, byte, hash and ABI limits are unchanged;
+this correction does not establish live PG readiness.
+
 The existing server entrypoint accepts `main(target_startup=...)`, where the value
 is a `TargetServiceStartup(TargetServiceConfig(...))`. Set
 `RKB_BACKEND_PROFILE=kaggle_source` to make a missing typed composition a startup

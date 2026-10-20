@@ -25,7 +25,7 @@ import time
 import weakref
 import zlib
 
-from .kaggle_stage0 import CHUNK_BYTES, _hash, _integer, _name, _parent, _verify, _remaining
+from .kaggle_stage0 import CHUNK_BYTES, MAX_PREPARED_FILES, _hash, _integer, _name, _parent, _verify, _remaining
 
 TRUSTED_ROOT=Path('/kaggle/working')
 OS_RELEASE=Path('/etc/os-release')
@@ -401,8 +401,8 @@ def _materialize_links(stage_fd,manifest,records,materialized,deadline):
 
 
 def _inventory_records(inventory):
-    if type(inventory) not in (tuple,list) or not 1<=len(inventory)<=128:
-        raise ValueError('native_bundle_top_inventory_required')
+    if type(inventory) not in (tuple,list) or not 1<=len(inventory)<=MAX_PREPARED_FILES:
+        raise NativeBundleError('native_bundle_top_inventory_required')
     records={}
     for item in inventory:
         if type(item) is not dict or set(item)!={'name','size','sha256','role'}:

@@ -105,6 +105,25 @@ def test_small_descriptor_roundtrip_rejects_unbounded_unknown_fields():
     with pytest.raises(ValueError):NativeBundleSpec.from_wire(dict(value.wire(),files=[]))
 
 
+@pytest.mark.parametrize('count',[134,144])
+def test_native_extraction_accepts_complete_prepared_source_inventory(fixture,count):
+    root,spec,inventory,manifest=fixture()
+    # Full generated notebook inventory includes code, SQL and model assets,
+    # in addition to the native manifest/archive used by this extractor.
+    extra=[]
+    for number in range(count-len(inventory)):
+        name=f'code/source-{number}.py';data=b'# immutable source\n'
+        path=root/name;path.parent.mkdir(exist_ok=True);path.write_bytes(data)
+        extra.append(dict(name=name,size=len(data),sha256=sha(data),role='code'))
+    complete=inventory+tuple(extra)
+    cap=prepare_native_bundle(root,spec.manifest_name,spec.manifest_sha256,inventory=complete)
+    assert cap.current() and len(cap.pins)==4
+    overflow=complete+tuple(dict(name=f'extra-{n}',size=0,sha256=sha(b''),role='code')
+                            for n in range(145-count))
+    with pytest.raises(NativeBundleError,match='native_bundle_top_inventory_required'):
+        prepare_native_bundle(root,spec.manifest_name,spec.manifest_sha256,inventory=overflow)
+
+
 @pytest.mark.parametrize('compression',['xz','gz','bz2','none','zst'])
 def test_verified_extraction_materializes_link_as_regular_file_and_retains_capability(fixture,compression):
     value=fixture(compression=compression)
