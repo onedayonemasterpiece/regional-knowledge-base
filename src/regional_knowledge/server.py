@@ -237,6 +237,7 @@ def build_server(
     profile: Literal["full", "live", "story_reader", "story_contributor", "story_editor"] = "full",
     backend_profile: Literal['legacy','kaggle_source'] | None = None,
     target_startup=None,
+    projects_hub_receiver=None,
 ) -> MCPServer:
     selected=backend_profile or os.getenv('RKB_BACKEND_PROFILE','').strip() or (
         'kaggle_source' if target_startup is not None else 'legacy')
@@ -439,6 +440,13 @@ def build_server(
                 raise RuntimeError('backend and channel must share the same owned queue')
         register_routes(mcp,worker_queue)
         mcp._bge_channel_route = channel_route(worker_queue)
+
+    if projects_hub_receiver is not None:
+        from .projects_hub_reader import ProjectsHubReader, PATH
+        if (selected != 'kaggle_source' or type(projects_hub_receiver) is not ProjectsHubReader
+                or projects_hub_receiver.backend is not backend):
+            raise RuntimeError('PH receiver requires the same configured target backend')
+        mcp.custom_route(PATH, methods=['POST'])(projects_hub_receiver.__call__)
 
     @mcp.custom_route("/fast-tier/health", methods=["GET"])
     async def fast_tier_health(request: Request):
@@ -1273,7 +1281,7 @@ def build_server(
     return mcp
 
 
-def main(*,target_startup=None) -> None:
+def main(*,target_startup=None,projects_hub_receiver=None) -> None:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("regional_knowledge.oauth_provider").setLevel(logging.INFO)
     logging.getLogger("regional_knowledge.reads").setLevel(logging.INFO)
@@ -1283,7 +1291,13 @@ def main(*,target_startup=None) -> None:
     if target_startup is None and os.getenv('RKB_BACKEND_PROFILE','').strip()=='kaggle_source':
         from .kaggle_source_owners import configured_source_service
         target_startup=configured_source_service()
-    build_server(profile=profile,target_startup=target_startup).run(
+    reader_config=os.getenv('RKB_PROJECTS_HUB_READER_CONFIG','').strip()
+    if reader_config and projects_hub_receiver is None:
+        if target_startup is None:
+            raise RuntimeError('PH receiver requires explicit target composition')
+        from .projects_hub_reader import ProjectsHubReader
+        projects_hub_receiver=ProjectsHubReader.from_file(reader_config,backend=target_startup.backend)
+    build_server(profile=profile,target_startup=target_startup,projects_hub_receiver=projects_hub_receiver).run(
         transport="streamable-http",
         stateless_http=True,
         json_response=True,
