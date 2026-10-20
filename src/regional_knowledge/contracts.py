@@ -431,6 +431,12 @@ class IndexingStatus(BaseModel):
     required_vector_spaces: list[Literal['e5','bge']] = Field(default_factory=list)
 
 
+class ReadTrace(BaseModel):
+    """Backend-only monotonic duration; client transport time is measured separately."""
+    trace_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    backend_elapsed_ms: float = Field(ge=0, allow_inf_nan=False)
+
+
 class SearchOutput(BaseModel):
     results: list[SearchResult]
     mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
@@ -441,6 +447,7 @@ class SearchOutput(BaseModel):
     main_job_id: str | None = None
     indexing: IndexingStatus | None = None
     timings: dict[str, float] = Field(default_factory=dict, exclude=True)
+    read_trace: ReadTrace | None = None
 
 
 class FetchOutput(BaseModel):
@@ -461,6 +468,7 @@ class EvidenceSearchOutput(BaseModel):
     main_job_id: str | None = None
     indexing: IndexingStatus | None = None
     timings: dict[str, float] = Field(default_factory=dict, exclude=True)
+    read_trace: ReadTrace | None = None
 
 
 class ChatFile(BaseModel):

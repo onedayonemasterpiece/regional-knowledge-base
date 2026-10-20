@@ -102,6 +102,14 @@ PH adapter на проверенном main `940864ae70bbcf334610712fa0b33cf2f78
 
 ### 4.3. Три ограниченных ветви и один deadline
 
+Уточнение владельца 2026-10-20: обычный поиск всегда выполняет как минимум
+гибридный путь — лексическую и фактическую BGE-векторную ветвь. Недоступный BGE,
+ошибка encode или истёкший deadline дают явный unavailable/pending, а не успешную
+lexical-only подмену. В профилировании фиксируются выполнение обеих ветвей и
+сквозное время вызова; наличие только лексических результатов не доказывает
+успешный гибридный поиск. Неполный bounded recall после выполнения обеих ветвей
+остаётся явно обозначенным ограничением.
+
 **Одна операция поиска целиком внутри Kaggle:** typed query/filters/context → tokenize/encode + независимые lexical/alias SQL → dense nearest neighbors → RRF/fusion → один batched hydrate top-K с bibliography/evidence/current eligibility → готовый bounded evidence response. Query vector, промежуточные candidate IDs и задания на следующий SQL не ходят через Dev. Поиск историй использует ту же схему и actual default body; facts/calendar/GEO не требуют генерации Story. Dev проверяет identity/admission, маршрутизирует запрос и проверяет актуальность результата, не строит поисковый pipeline из удалённых шагов.
 
 Параллельно в общем budget: (1) query BGE → dense nearest neighbors; (2) GIN lexical; (3) exact alias/entity matches. Lexical/alias запускаются до ожидания encode, если это допускает общий CPU budget. Dense branch не ограничивается лексическими кандидатами. PG `ts_rank_cd` не равен SQLite BM25: качество измеряется, прежние численные веса не переносятся как тождественные.

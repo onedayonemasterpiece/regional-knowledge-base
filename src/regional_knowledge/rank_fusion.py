@@ -12,3 +12,10 @@ def fuse(rows, branches, *, limit=20):
     return ranked,{chunk:diagnostics[chunk] for chunk in ranked}
 
 MODES={'lexical':('lexical',),'e5':('e5',),'bge':('bge',),'e5_lexical':('e5','lexical'),'bge_lexical':('bge','lexical'),'e5_bge':('e5','bge'),'e5_bge_lexical':('e5','bge','lexical')}
+
+
+def public_hybrid_mode(configured):
+    """Keep private branch probes separate from mandatory public hybrid serving."""
+    if configured not in ('bge', 'bge_lexical', 'e5_bge', 'e5_bge_lexical'):
+        raise ValueError('invalid BGE warm path')
+    return 'e5_bge_lexical' if 'e5' in MODES[configured] else 'bge_lexical'

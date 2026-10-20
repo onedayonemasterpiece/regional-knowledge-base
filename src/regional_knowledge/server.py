@@ -75,6 +75,17 @@ def _principal() -> Principal:
     )
 
 
+def _require_hybrid_read(result):
+    """Public search never substitutes lexical evidence for unavailable BGE."""
+    if (result.mode != "hybrid" or result.main_state != "ready"
+            or result.retrieval_mode not in {"bge_lexical", "e5_bge_lexical"}):
+        raise ToolError(json.dumps({"status": "unavailable", "reason": "hybrid_search_required",
+            "main_state": result.main_state, "main_job_id": result.main_job_id,
+            "read_trace": result.read_trace.model_dump() if result.read_trace else None},
+            separators=(",", ":")))
+    return result
+
+
 async def _attach_story_extraction(
     backend: KnowledgeBackend,
     principal: Principal,
@@ -190,6 +201,8 @@ def build_server(
     profile: Literal["full", "live", "story_reader", "story_contributor", "story_editor"] = "full",
 ) -> MCPServer:
     backend = backend or backend_from_env()
+    from .read_telemetry import ReadTelemetry
+    read_telemetry = ReadTelemetry()
     issuer = (
         issuer
         or os.getenv("RKB_AUTH_ISSUER", "").strip()
@@ -402,12 +415,15 @@ def build_server(
                 description="ACL-scoped compact editorial story search; story content and book evidence remain distinct.",
                 annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
             async def story_search(query: str = "", filters: dict[str,str] | None = None,
-                    mode: Literal["lexical","semantic","hybrid"] = "lexical",
+                    mode: Literal["lexical","semantic","hybrid"] = "hybrid",
                     order: Literal["updated","potential"] = "updated",
                     limit: Annotated[int, Field(ge=1,le=20)] = 3,
                     cursor: str | None = None) -> dict[str,Any]:
                 vector = None
                 kaggle_state = None
+                if mode == "lexical" or not query.strip():
+                    raise ToolError("hybrid_search_required: provide a nonempty query and hybrid mode")
+                mode = "hybrid"
                 if mode != "lexical" and query.strip():
                     try:
                         from .bge_queue import BgeQueue
@@ -423,12 +439,16 @@ def build_server(
                             "event": "story_kaggle_query_degraded",
                             "error_type": type(error).__name__,
                         }))
+                if vector is None:
+                    return {"status": "unavailable", "reason": "hybrid_search_required",
+                            "kaggle_query_state": kaggle_state or "kaggle_unavailable"}
                 result = await story_call(
                     registry.search, query, filters, mode, order, limit, cursor, vector)
-                if kaggle_state and isinstance(result, dict) and "error" not in result:
+                if isinstance(result, dict) and "error" not in result:
+                    if result.get("retrieval_mode") not in {"story_bge", "story_bge_partial"}:
+                        return {"status": "unavailable", "reason": "hybrid_search_required",
+                                "kaggle_query_state": kaggle_state or "projection_unavailable"}
                     result["kaggle_query_state"] = kaggle_state
-                    if vector is None:
-                        result["indexing_state"] = kaggle_state
                 return result
 
             @mcp.tool(name="story_calendar", title="Historical events on a calendar day",
@@ -756,13 +776,13 @@ def build_server(
             main_job_id: str | None = None,
             document_ids: list[str] | None = None,
         ) -> EvidenceSearchOutput:
-            return await backend.search_evidence(
+            return _require_hybrid_read(await read_telemetry.measure("knowledge_search", backend.search_evidence(
                 query.strip(),
                 _principal(),
                 max_evidence=max(1, min(max_evidence, 5)),
                 **({'main_job_id': main_job_id} if main_job_id else {}),
                 **({'document_ids': document_ids} if document_ids is not None else {}),
-            )
+            )))
 
         return mcp
 
@@ -779,7 +799,7 @@ def build_server(
         if document_ids is not None:options['document_ids']=document_ids
         if main_job_id:options['main_job_id']=main_job_id
         if aliases:options['aliases']=aliases
-        return await backend.search(query.strip(), _principal(),**options)
+        return _require_hybrid_read(await read_telemetry.measure("search", backend.search(query.strip(), _principal(),**options)))
 
     @mcp.tool(
         title="Fetch regional evidence",
@@ -1153,6 +1173,7 @@ def build_server(
 def main() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("regional_knowledge.oauth_provider").setLevel(logging.INFO)
+    logging.getLogger("regional_knowledge.reads").setLevel(logging.INFO)
     profile = os.getenv("RKB_MCP_PROFILE", "full").strip().lower()
     if profile not in {"full", "live", "story_reader", "story_contributor", "story_editor"}:
         raise RuntimeError("RKB_MCP_PROFILE must be full, live or an enabled story capability bundle")
