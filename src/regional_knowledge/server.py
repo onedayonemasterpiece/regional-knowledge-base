@@ -162,6 +162,8 @@ class KnowledgeMCPServer(MCPServer):
     """Advertise the public PKCE clients supported by our embedded provider."""
 
     async def call_tool(self, name, arguments, context=None):
+        if getattr(self,'_target_source_profile',False) and name not in {'search','fetch','knowledge_search','profile'}:
+            raise ToolError('{"status":"unavailable","reason":"target_domain_unavailable"}')
         from .read_issuance import capture_read_output, bind_request_output
         with capture_read_output() as calls:
             result = await super().call_tool(name, arguments, context)
@@ -215,8 +217,31 @@ def build_server(
     jwks_url: str | None = None,
     oauth_provider: RegionalOAuthProvider | None = None,
     profile: Literal["full", "live", "story_reader", "story_contributor", "story_editor"] = "full",
+    backend_profile: Literal['legacy','kaggle_source'] | None = None,
+    target_startup=None,
 ) -> MCPServer:
-    backend = backend or backend_from_env()
+    selected=backend_profile or os.getenv('RKB_BACKEND_PROFILE','').strip() or (
+        'kaggle_source' if target_startup is not None else 'legacy')
+    if selected not in {'legacy','kaggle_source'}:
+        raise RuntimeError('RKB_BACKEND_PROFILE must be legacy or kaggle_source')
+    if selected=='kaggle_source':
+        from .kaggle_service_startup import TargetServiceStartup
+        if type(target_startup) is not TargetServiceStartup:
+            raise RuntimeError('kaggle_source requires explicit typed TargetServiceStartup')
+        if backend is not None or oauth_provider is not None:
+            raise RuntimeError('target startup owns the configured backend and OAuth provider')
+        if profile not in {'full','live'}:
+            raise RuntimeError('target story capability bundle is unavailable')
+        backend=target_startup.backend
+        oauth_provider=target_startup.config.oauth_provider
+        if ((issuer is not None and issuer.rstrip('/')!=oauth_provider.issuer)
+                or (resource_url is not None and resource_url.rstrip('/')!=oauth_provider.resource)):
+            raise RuntimeError('target OAuth issuer/resource must match existing authority')
+        issuer,resource_url=oauth_provider.issuer,oauth_provider.resource
+    elif target_startup is not None:
+        raise RuntimeError('target startup cannot use legacy backend profile')
+    else:
+        backend = backend if backend is not None else backend_from_env()
     from .read_telemetry import ReadTelemetry
     read_telemetry = getattr(backend, 'read_telemetry', None) or ReadTelemetry()
     issuer = (
@@ -240,6 +265,8 @@ def build_server(
         raise RuntimeError("RKB_AUTH_MODE must be 'embedded' or 'external'")
 
     kwargs: dict[str, Any] = {}
+    if selected=='kaggle_source':
+        kwargs['lifespan']=target_startup.lifespan
     embedded_provider: RegionalOAuthProvider | None = None
     if auth_mode == "embedded":
         if not issuer or not resource_url:
@@ -366,6 +393,8 @@ def build_server(
     if embedded_provider is not None:
         embedded_provider.register_routes(mcp)
 
+    mcp._target_source_profile=selected=='kaggle_source'
+    mcp._target_startup=target_startup
     mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
     worker_queue = getattr(backend, 'worker_queue', None)
     if worker_queue is not None or os.getenv('RKB_BGE_QUEUE_PATH'):
@@ -1194,18 +1223,19 @@ def build_server(
     return mcp
 
 
-def main() -> None:
+def main(*,target_startup=None) -> None:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("regional_knowledge.oauth_provider").setLevel(logging.INFO)
     logging.getLogger("regional_knowledge.reads").setLevel(logging.INFO)
     profile = os.getenv("RKB_MCP_PROFILE", "full").strip().lower()
     if profile not in {"full", "live", "story_reader", "story_contributor", "story_editor"}:
         raise RuntimeError("RKB_MCP_PROFILE must be full, live or an enabled story capability bundle")
-    build_server(profile=profile).run(
+    build_server(profile=profile,target_startup=target_startup).run(
         transport="streamable-http",
         stateless_http=True,
         json_response=True,
-        transport_security=_transport_security(),
+        transport_security=_transport_security(
+            target_startup.config.oauth_provider.resource if target_startup is not None else None),
     )
 
 
