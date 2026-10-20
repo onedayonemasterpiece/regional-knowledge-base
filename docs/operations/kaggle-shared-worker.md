@@ -191,3 +191,34 @@ Actual loaded artifacts/native PG probe and provider runtime remain NOT RUN.
 The old monolithic runtime has no verified live installation hook; initial
 adoption without a model reload is explicitly unverified. No eval, reload,
 second dispatcher, model service or public listener is added.
+
+`NativeDatabaseProbe` supplies the concrete read-only probe over an exclusively
+checked-out, idle, tuple-row connection from that existing Kaggle pool. It uses
+one repeatable-read read-only transaction, a total deadline including acquisition,
+local statement timeouts, bounded named-cursor fetches, SQL row limits and byte
+limits. It observes the existing recovery/read-frontier singleton and PostgreSQL
+17 / pgvector 0.8.2, native 1024-dimensional vector support, required SQL 001–005
+functions with their scalar/table result contracts, enabled fences, valid/ready
+GIN and HNSW indexes and native text-search configuration. Missing or invalid
+objects fail with fixed sanitized codes. Cancellation propagates after transaction
+cleanup; the pool retains responsibility for exclusive leasing and disposal of
+broken connections.
+
+Canonical catalog bytes include actual table/column/constraint/index/trigger and
+function definitions, relevant settings, privileges and text-search mappings.
+Internal trigger OID-derived names are normalized. Actual semantic revisions and
+migration binding are included; mutable applied/projection cursors are returned
+separately, so an ordinary accepted command does not change the schema hash.
+Lagging projections force both readiness flags false while preserving actual
+observed cursors. Archive/proof readiness remains unknown. No corpus rows are
+scanned, modified, initialized or restored. The controller must still compare the
+observed catalog hash and exact database/revision binding with its independent
+expectations; object presence alone does not verify trusted function semantics,
+retrieval quality, product permissions or deployment readiness.
+
+Synthetic tests exercise bounds, ABI failures, deterministic hashing and cleanup.
+Opt-in native cases reuse only the existing guarded disposable PG fixture and
+install SQL 005 there; they include catalog mutation/hash, frontier lag, missing
+or invalid indexes and lock-timeout cleanup. These tests do not authorize probing
+or changing a product database. Runtime artifact/model/provider observations and
+public delivery remain separate acceptance work.

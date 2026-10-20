@@ -172,10 +172,10 @@ def _model_directory(artifacts):
 
 
 def _loaded_code_paths():
-    from . import bge_contract, kaggle_protocol, kaggle_query, kaggle_search, kaggle_readiness, kaggle_worker_query
+    from . import bge_contract, kaggle_protocol, kaggle_query, kaggle_search, kaggle_readiness, kaggle_worker_query, kaggle_database_probe
     return tuple(Path(module.__file__).resolve() for module in (
         sys.modules[__name__], bge_contract, kaggle_protocol, kaggle_query,
-        kaggle_search, kaggle_readiness, kaggle_worker_query))
+        kaggle_search, kaggle_readiness, kaggle_worker_query, kaggle_database_probe))
 
 
 @dataclass(frozen=True)
