@@ -245,6 +245,17 @@ class QueueWriterAuthority:
                     raise StaleWriter('recovered READY cursor differs from native proof')
                 if db.execute('SELECT publication_json FROM rkb_writer_control WHERE id=1').fetchone()[0] is not None:
                     raise JournalUnknown('recovery publication requires exact reconciliation')
+                db.execute("UPDATE rkb_writer_restore_control SET state='verified' WHERE id=1")
+        # A captured base is not a verified current snapshot. Only this retained
+        # physical restore/readiness proof may promote the canonical pointer.
+        current=await proof._factory.current_snapshot()
+        await proof._factory.promote(proof,binding,expected_token=current[1] if current else None)
+        async with self._lock():
+            with self.queue.connect() as db:
+                self._binding(db,require_current=False);self._restore_runtime(db,binding)
+                self._runtime(db)
+                if db.execute('SELECT publication_json FROM rkb_writer_control WHERE id=1').fetchone()[0] is not None:
+                    raise JournalUnknown('verified snapshot pointer publication requires reconciliation')
                 db.execute("UPDATE rkb_writer_restore_control SET state='active' WHERE id=1")
         _LOG.info('target_writer state=recovered_active run_id=%s writer_generation=%s',self.run_id,self.writer_generation)
 

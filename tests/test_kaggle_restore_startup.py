@@ -79,12 +79,24 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
                 await startup.admission.resource_released(e.run,e.token,e.generation,runtime_incarnation=r.runtime_incarnation,
                     resource_kind='document',resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
             assert await task
-        assert phases==['prepare','finish','verify','verify']
+        assert phases==['prepare','finish','verify','verify','verify']
         assert signatures and startup.config.writer_owner.current(database_generation='synthetic-db',writer_generation='writer-2')
         assert not startup.reads_current()  # Full native source history remains a separate mandatory gate.
         from regional_knowledge.kaggle_public_backend import current_binding
         assert startup.restorer.dispatch.current(current_binding(e.q))
         assert startup.config.spool.queue is startup.backend.worker_queue is e.q
+        # API-only restart must not replay an already activated physical base,
+        # even when later accepted writes have advanced the original head.
+        from regional_knowledge.kaggle_restore_startup import SourceRestoreCoordinator
+        from test_control_spool import withdraw
+        later=replace(withdraw(e.old.auth.p.owner.subject),schema_revision='s1',function_revision='f1',executor_revision='e1')
+        accepted=await startup.config.spool.journal.seal([later],predecessor=None,writer_generation='writer-2')
+        assert await startup.config.spool.journal.verify_accepted(accepted,later)==sha(later.encode())
+        advanced=dict(ready,applied_seq=1,projection_seq=1)
+        assert e.q.accept_search_runtime(e.run,e.token,e.generation,advanced).ok
+        restarted=SourceRestoreCoordinator(startup,plan)
+        assert await restarted.refresh() and restarted.complete and restarted.dispatch is None
+        assert phases==['prepare','finish','verify','verify','verify']
     finally:
         if not task.done():task.cancel()
         await asyncio.gather(task,return_exceptions=True)

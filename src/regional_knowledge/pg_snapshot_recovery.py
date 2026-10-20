@@ -237,6 +237,8 @@ class PhysicalSnapshotRecovery:
             'verified_head':proof.journal_head.reference.wire() if proof.journal_head else None,
             'writer_generation':proof.database.writer_generation,'control_sha256':sha(proof.control)})
         key=self.journal.prefix+'/snapshots/current'
+        existing=await self.journal._read(key,self.limits.max_control_bytes)
+        if existing is not None and existing.data==data:return existing
         await self.journal._fenced_exact(key,data,expected_token=expected_token,
             writer_generation=proof.database.writer_generation,limit=self.limits.max_control_bytes)
         _LOG.info('snapshot_pointer_promoted manifest_hash=%s cursor=%s',proof.manifest.sha256,proof.applied_sequence)
