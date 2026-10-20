@@ -479,7 +479,7 @@ Slack-тред регистрируется как обсуждение конк
 
 ## 12. PostgreSQL/pgvector на Kaggle и надёжность
 
-PG/Kaggle — принятое целевое решение, не отложенная миграционная развилка. Один writer владеет корпусом, делами, вкладом, conclusions, Stories, revisions/provenance и index material. Readers используют согласованный snapshot. DevCoveer сохраняет durable commands/results/delivery, а notebook соединяется исходящим WSS с existing ASGI broker; та же BgeQueue/controller обеспечивает admission, replay и ACK. Не создавать вторую каноническую копию cases или независимый scheduler.
+PG/Kaggle — принятое целевое решение, не отложенная миграционная развилка. Один writer владеет корпусом, делами, вкладом, conclusions, Stories, revisions/provenance и index material. Readers используют согласованный snapshot. DevCoveer сохраняет durable commands/results/delivery, а notebook соединяется исходящим WSS с existing ASGI; одна BgeQueue/controller authority обеспечивает общий admission, а replay/ACK — для принятых durable вопросов/эффектов. Обычный read_query использует RAM permit и QUERY/QUERY_RESULT/CANCEL_QUERY, без durable row/fsync/seal/RESUME/resultSaved. Не создавать вторую каноническую копию cases или независимый scheduler.
 
 Успех команды означает соответствующий handoff durability/commit state, не «SQL записан в живом notebook, выгрузим в конце». Recovery восстанавливает snapshot плюс предусмотренные durable commands/receipts, дедуплицирует результаты, соблюдает generation fence и проверяет точный readback. Один подтверждённый вклад не должен исчезнуть из-за остановки notebook. Private данные не уходят в публичный dataset. Согласованный export/backup и rebuild производного индекса проверяются отдельно; произвольное копирование работающего PG directory не backup.
 
@@ -489,7 +489,7 @@ PG/Kaggle — принятое целевое решение, не отложе�
 | Кандидат найден, но не использован | Прочитанный контекст, prompt, смысловое решение и visible gaps. |
 | Dense слишком дорог | Порции, snapshot/index, измеренный ANN с quality gates, без новых моделей по умолчанию. |
 | Writer ждёт сеть/LLM | Сократить транзакцию; исследование вне write lock, stage permit не держится всей книгой. |
-| Потеря notebook или ACK | Durable receipt/replay/fencing/readback; не подтверждать неподтверждённую долговечность. |
+| Потеря notebook или ACK | Для accepted durable question/effect — receipt/replay/fencing/readback; не подтверждать неподтверждённую долговечность. Ephemeral read завершается bounded status, старый результат не replay в новую generation. |
 | Старый snapshot/отзыв | Явная freshness и current revocation перед раскрытием/доставкой/публикацией. |
 
 Protected gates не ослаблены: backend p95≤1000 ms; MCP p95≤1500 ms/hard 2000 ms; BGE Hit@5≥85%, Hit@10≥90%, RU→DE@10≥85%, ≥30 held-out families; ≥100 sources/100000 chunks; storage≤80% steady/≤90% peak. Архитектурный документ не является измерением PASS.
@@ -616,7 +616,9 @@ Protected gates не ослаблены: backend p95≤1000 ms; MCP p95≤1500 m
 
 [Контракт коллаборации](rkb-kaliningrad-base-collaboration-20261018.md) сохраняет один видимый Slack bot: verified event → durable request → разрешённый модельный исполнитель → коррелированный result → ответ Kaliningrad Base и native receipt/ACK. Dot не нужен в экспертном workspace и не даёт owner-прав чужому request. Один person/dialog sequence/explicit request ID используются общим протоколом нагрузки, без второй очереди. Owner может тестировать этот route, но импорт и администрирование здесь недоступны.
 
-Mira остаётся PH-клиентом. Нынешний search-only typed adapter требуется расширить pending/request/result/ACK, proof, Stories/cases и exact readback; не нужен новый assistant, OAuth-flow между same-host сервисами, IAM или копия дел. Same-host связь использует loopback machine identity с verified delegated actor; external clients получают действительные resource grants.
+Mira остаётся PH-клиентом. Dot→tools и Mira→tools — независимые smart routes; Dot сохраняется, но обычный запрос Миры не проходит через него. PH typed provider обращается к existing Dev auth/admission и outbound notebook WSS. Нынешний search-only adapter требует v2 status/freshness/min-cursor/detail continuation, proof, Stories/cases и exact readback; pending/request/result/native ACK сохраняется отдельно для accepted durable question/effect. Read_query не получает durable receipt/RESUME, соблюдает исходные deadline/generation и min_data_seq; после UNKNOWN записи своего dialog — prior_write_pending с известной freshness, не latest/not-found. V1 допускает только полностью представимый success, иначе existing unavailable/error. Не нужен новый assistant, OAuth-flow между same-host сервисами, IAM или копия дел. Same-host связь использует scoped machine identity с verified delegated actor; external clients получают действительные resource grants.
+
+Реальное сравнение Mira/Dot — [handoff §14.4](../prompts/rkb-scalable-kaggle-implementation-20261019.md): сначала одинаковый текст queries, corpus/revisions, права и common tool profile/budget, отдельно реальные ASR/voice/Slack маршруты. Quality/completeness/source grounding и время первого полезного/полного ответа не смешиваются с преимуществом профиля или cache. После actual provider и показанной пользы можно обсуждать future «Мира, хорошо подумай»/делегирование Dot; base implementation этого не включает.
 
 Сохраняются личные drafts, contributed/assigned/following, subscriptions/digests, текущие и поддержанные conclusions, участие с управляемым предметным весом. Все active accepted book text/bibliography и illustrations доступны согласно §1; page/stripe proof требует scan_proof_read, full PDF private. Группа не наследует proof/черновики инициатора.
 

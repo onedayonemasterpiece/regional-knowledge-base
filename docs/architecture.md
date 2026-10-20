@@ -1,6 +1,6 @@
 # Архитектура базы знаний региона
 
-Обновлено 20.10.2026. Это целевой контракт, а не отчёт о внедрении. Проверенный исходный main — [a8cf41b](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/a8cf41b50b8ccb62409d046d009d53c09d74b1d7): corpus/FTS/graph/stories ещё используют SQLite, книжные vectors — Supabase, story vectors — отдельный SQLite/Python путь.
+Обновлено 20.10.2026. Это целевой контракт, а не отчёт о внедрении. Исходная реализация проверена на [main b1c0689](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/b1c0689b1a09373a900a317a3bac9cf4f86fdaf4): corpus/FTS/graph/stories ещё используют SQLite, книжные vectors — Supabase, story vectors — отдельный SQLite/Python путь.
 
 Единое самодостаточное [задание кодовому агенту](prompts/rkb-scalable-kaggle-implementation-20261019.md) задаёт внедрение и отладку. Здесь описаны компоненты и пути данных; [storage](storage.md), [configuration](configuration.md), [управление нагрузкой](designs/user-request-load-management-20261019.md) и [приёмка](testing/rkb-scalable-kaggle-acceptance-20261019.md) раскрывают соответствующие контракты.
 
@@ -8,7 +8,7 @@
 
 | Компонент | Ответственность |
 |---|---|
-| DevCoveer: существующий MCP/ASGI, BgeQueue/controller | Проверенная identity, request/dialog/fairness, admission, writer/run/connection authority, доставка. Короткий raw spool и компактные request/UNKNOWN/receipt metadata; рабочего корпуса и vectors здесь нет. |
+| DevCoveer: существующий MCP/ASGI, BgeQueue/controller | Тонкий auth/admission relay QUERY; проверенная identity, общие fairness/permits и writer/run/connection authority. Durable request/dialog/delivery lifecycle для соответствующего класса работы. Короткий raw spool и компактные request/UNKNOWN/receipt metadata; рабочего корпуса и vectors здесь нет. |
 | Один Kaggle writer | PostgreSQL 17 с закреплённым pgvector, принятый corpus, bibliography/provenance, факты, entities/relations, истории/варианты, даты/observations, cases/private drafts и индексы. BGE-M3 и разрешённая обработка исходников. |
 | Kaggle readers при измеренной необходимости | Восстановленная проверенная snapshot, SQL/BGE/search/proof; запрещены независимые domain writes, jobs/outbox и выбор canonical snapshot. |
 | Private Kaggle Dataset | Версионированные PG base snapshots с indexes, manifest, hashes и внутренним applied cursor. Dataset не является живой БД или append-log. |
@@ -21,19 +21,21 @@ E5 и Supabase отсутствуют в target. Один BGE space: сущес�
 
 ## Один транспорт и одна authority
 
-Notebook открывает постоянный authenticated outbound WSS к существующему DevCoveer ASGI по HTTPS/443. По одному соединению идут задания, прогресс, результаты и application ACK. PostgreSQL наружу не публикуется. HTTP pull и WSS не становятся двумя одновременно действующими dispatchers; очередь, job IDs, claims и controller общие.
+Сохраняются два независимых интеллектуальных маршрута: Dot → RKB и Mira → RKB. Mira не проходит через Dot; Dot сохраняет собственный прямой путь к тому же RKB. DevCoveer выполняет auth/admission/relay, без промежуточного reasoning-агента. Notebook сам открывает постоянный authenticated outbound WSS к существующему ASGI по HTTPS/443; публичного Kaggle listener и открытого PostgreSQL нет.
 
-Каждая запись проверяет current writer epoch, run, claim и connection generation. Reconnect заменяет attachment и fencing старого socket; stale claim — ошибка конкретного задания, revocation run — отдельное событие. Пока Kaggle-сессия жива, временная потеря WSS сохраняет загруженные PG/BGE. Завершение самой сессии требует нового run, restore и warmup.
+По одному transport идут разные классы: ephemeral QUERY/QUERY_RESULT для bounded reads и durable DISPATCH/RESULT/ACK для jobs/mutations. QUERY не получает durable queue row, fsync/cloud seal или mutation RESUME; общий controller выдаёт ему read permit из того же ресурсного учёта/search reserve. HTTP pull и WSS не становятся двумя dispatchers. Job IDs/claims и durable replay сохраняются для своего класса работы.
+
+Каждая domain запись проверяет current writer epoch, run, claim и connection generation. QUERY проверяет request/turn/connection generation, общий deadline, текущие grant/scope и min_data_seq; late/cancelled result не переходит в новую реплику и не replay после reconnect. Reconnect заменяет attachment и fencing старого socket; stale claim — ошибка конкретного задания, revocation run — отдельное событие. Пока Kaggle-сессия жива, временная потеря WSS сохраняет загруженные PG/BGE. Завершение самой сессии требует нового run, restore и warmup.
 
 Ping/Pong, полезный спрос, task progress, короткая writer lease и 30-минутный useful-idle — разные таймеры. Сокет без полезной работы не удерживает notebook бесконечно. Frames, bytes, inflight credits, reconnect backoff и task deadlines ограничены. Большие payloads передаются существующим bounded byte transport по проверенным refs, а не огромным WSS JSON.
 
 ## Долговечность и ACK
 
-Ранний local receipt означает **pending**. Финальный accepted/Saved разрешён только после remote confirmation точных payload и intent; Saved дополнительно означает domain commit и remotely verified exact outcome/receipt; облачно сохранённый intake ещё не является applied результатом. Group commit удерживает готовые accepted mutations и реальные пользовательские turns не более 1 секунды до flush; provider latency не выдаётся за гарантированную секунду сохранения.
+Ранний local receipt означает **pending**. Финальный accepted/Saved разрешён только после remote confirmation точных payload и intent; Saved дополнительно означает domain commit и remotely verified exact outcome/receipt; облачно сохранённый intake ещё не является applied результатом. Этот контракт относится к mutations и явно принятым durable requests. Group commit удерживает их готовую группу не более 1 секунды до flush; provider latency не выдаётся за гарантированную секунду сохранения. Обычный read-only turn не становится durable request только потому, что его задал человек.
 
 Existing S3ObjectStore обеспечивает put/get/delete transport. Immutable sealing, exact verification и CAS manifest ещё предстоит реализовать поверх него; generic put не доказывает CAS. Segment связывает sequence range/count, payload hashes и previous hash; orphan upload не accepted. Один existing controller выполняет bounded compaction sealed segments с сохранением logical IDs/hashes/seq и CAS refs, чтобы не накапливать по одному объекту на каждую секунду бесконечно.
 
-Обычный read-only evidence search не ждёт remote journal и не пишет туда каждую страницу результатов. Долговечный человеческий диалог использует request lifecycle, а его отдельные чтения — короткий serving path.
+Обычный read-only evidence search не ждёт remote journal ни перед dispatch, ни перед ответом. Audit refs/hashes/timings пишутся параллельно через bounded buffer, без raw query/private evidence в logs и без общей blocking write-lock на serving path. Переполнение/потеря такого audit отражается счётчиком и не выдаётся за durable receipt. Если нужны гарантированные продолжение/сохранение результата, это явный durable request другого класса. Зависимый read несёт min_data_seq и состояние неподтверждённой записи диалога; быстрый ответ не должен ложно объявлять её отсутствие.
 
 DevCoveer raw spool: стартовый горизонт 4 часа, hard byte cap 512 MiB, с проверкой реального envelope до cutover. Компактные UNKNOWN/request/receipt metadata живут до reconciliation, а не до spool TTL. Local GC требует remotely sealed payloads и verified metadata; суточная backup не задерживает local GC. Remote-tail GC, напротив, сохраняет всё необходимое designated retained verified baselines и unfinished consumers.
 
@@ -56,12 +58,14 @@ Canonical source data и serving projections находятся в одной PG
 
 Revision projections immutable. После готового staging атомарно переключается небольшой active pointer и создаётся persisted research frontier; activation не переписывает 100000 строк с active flag. Inactive versions ограничиваются retention/GC, а current-pointer filter вместе с iterative/exact path не допускает ANN scope starvation. Неудачная новая revision не лишает поиска прежнюю принятую. Вывод старых derived indexes в GC не уничтожает immutable evidence history.
 
-## Путь поиска
+## Fused QUERY: весь retrieval внутри Kaggle
 
-1. Проверить текущий доступ и query/scope; получить один query embedding от прогретой BGE.
-2. Независимо выбрать bounded lexical, dense и exact/alias candidates.
-3. Выполнить dedup/RRF, затем batch hydrate top-K exact evidence и обязательную библиографию.
-4. Проверить текущие revision/withdrawal и применимые output capabilities перед cache reuse и delayed delivery. При отбрасывании stale candidates сделать bounded refill либо явно отметить partial.
+Один typed QUERY передаёт query, проверенный scope, request/turn generation, остаток общего deadline и min_data_seq. DevCoveer не запрашивает embedding отдельным round trip и не отправляет вектор обратно в SQL. Kaggle возвращает bounded evidence/bibliography DTO с freshness и retrieval mode; отдельные большие pixel artifacts используют свой authorized transport.
+
+1. Dev проверяет principal/current grants и получает permit общей authority; Kaggle проверяет scope, revision/visibility и допустимую freshness.
+2. В том же notebook запускаются lexical/alias SQL и query encode одного resident BGE. Независимые SQL branches не ждут encode; dense SQL использует полученный vector локально.
+3. Здесь же выполняются bounded dedup/RRF и один batched hydrate top-K exact evidence с обязательной библиографией. Полный corpus и промежуточные vectors не пересылаются Dev.
+4. Kaggle проверяет current source eligibility, Dev — current person/grant/turn fence перед выдачей. При отзыве или недоборе допускается bounded refill либо честный partial/degraded в оставшемся budget; это не новое полное retry окно.
 
 Нельзя каждый раз строить allowed-map всех книг, отправлять весь каталог JSON в vector query, вычислять все story similarities в Python или делать запрос на каждый title/evidence. Поиск active accepted book text не требует per-book owner ACL. Private drafts и mutation scopes сохраняются отдельно.
 
@@ -74,6 +78,16 @@ Actual prepared ANN plan проверяется после не менее ше�
 Canonical command outcome hash включает exact domain IDs/body/evidence, но не заново вычисленные BGE floats, FTS или crops. Derived projections при необходимости отмечаются dirty и rebuild отдельно; durable accepted BGE artifacts можно reuse. Dense lag является отдельной readiness и не блокирует canonical replay. Уже delivered artifact сохраняет exact bytes/hash/receipt и не подменяется новой картинкой под прежним receipt.
 
 Spatial predicates используют индексируемые ST_DWithin/ST_Intersects и согласованный CRS. Не вычислять ST_Transform для каждой строки без соответствующего expression index. Не создавать partition/HNSW на каждую книгу и не индексировать все поля без query owner.
+
+## Язык runtime и общие ресурсы
+
+Default — тонкий Python bootstrap/control и QUERY handler, один resident PyTorch FP32 BGE process, нативные PostgreSQL/pgvector/PostGIS kernels. Вызов Python API не означает вычисление tensor math в Python; фактический tokenizer backend проверяется вместе с pinned assets. Encode и blocking operations вынесены из event loop; модель/процессы не загружаются и не создаются на каждый запрос. Torch threads, PG pool/parallel workers, import/proof и maintenance делят один measured CPU/RAM budget с search reserve; четыре Torch threads и один interop — исходный профиль, не универсально свободные ядра.
+
+Заранее собранный Go/Rust executable допустим в совместимой Linux-сессии; baseline остаётся Python glue, native sidecar не является default, полный rewrite не требуется. Go на DevCoveer может заменить измеренный transport/serialization component существующей authority, а не добавиться proxy перед ним; Rust — конкретную дорогую функцию или компонент с воспроизводимой проблемой памяти/lifecycle. Память, deadlines, backpressure и control-loop isolation могут обосновать native выбор для нового компонента и до доказанного CPU hot loop. Подходящий проверенный native компонент допускается переиспользовать без полного Python дубля; готовый fused RKB executor пока не подтверждён.
+
+Проверяется один узкий вариант: полезная задержка, ресурсы или отказы должны улучшиться без регрессии quality, прав и recovery. Замена сохраняет один controller/model и удаляет заменяемый путь. Local IPC допустим при подтверждённом суммарном выигрыше; его copies/serialization/backpressure и дополнительный lifecycle, включая Python BGE child, входят в стоимость вместе с cold recovery. Нулевой IPC и обязательный процентный порог не являются условиями выбора. ONNX, GPU, quantization и новый tokenizer/inference backend — отдельный quality-gated track.
+
+Release bundle закрепляет source/toolchain/hash, Linux architecture/ISA/libc и shared-library ABI, protocol/model/tokenizer/PG pins. Сборка вне notebook, immutable artifact проверяется до исполнения. Supervisor удерживает lifecycle, собирает exit status, ограниченно читает logs и корректно завершает PG; SIGKILL/session end не гарантируют cleanup. Бинарник не продлевает Kaggle lifetime. Детали и первичные источники — в [оценке runtime](designs/kaggle-regional-knowledge-service-assessment-20261019.md).
 
 ## Функции, которые сохраняются
 

@@ -48,7 +48,7 @@ BGE-only Hit@5≥85%, Hit@10≥90%, каждый critical language slice вкл�
 
 Warm ranked-candidate backend p95≤1000 ms при representative concurrency. Public MCP p95≤1500 ms, hard evidence-search deadline2000 ms. Ни branch, ни повтор alias, ни скрытое ожидание encoder не получают дополнительные секунды поверх общего deadline.
 
-Queue wait полного human question и time to final answer измеряются отдельно. Read-only search не пишет remote recovery journal на critical path. Быстрый pending response не является завершённым semantic query; percentiles/errors/degradation публикуются честно.
+Queue wait полного human question и time to final answer измеряются отдельно. Ephemeral read_query не создаёт durable queue row и не ждёт fsync/remote recovery journal/ordinary telemetry. Один fused query выполняет BGE→SQL/fusion/hydrate в Kaggle, без vector roundtrip через Dev; готовый query не ждёт заполнения batch. Быстрый pending response не является завершённым semantic query; percentiles/errors/degradation публикуются честно.
 
 ## CORE-BOOK-IMPORT-QUALITY
 
@@ -84,21 +84,23 @@ Import/admin остаются owner personal route. Owner/case manager не чи
 
 Сохраняются story CRUD/history/variants, dates/calendar, entities/relations, observations/comparison, geo queue/POI refs, independent cases/contributions/conclusions и private drafts. Fresh scope не разрешает уничтожить прежнюю reference работу или дублировать Cartography/Street Story authority.
 
-Мира в Projects Hub расширяет existing typed adapter/shared live-interaction: delegated identity, progressive research, durable pending/result/receipt, voice reconnect и screen bibliography/evidence. Search-only adapter/emulator не full acceptance.
+Dot и Мира остаются двумя самостоятельными интеллектуальными маршрутами к тем же инструментам. Мира в Projects Hub расширяет actual provider/typed adapter/shared live-interaction: delegated identity, fast read v2 со status/freshness/generation, progressive research и durable pending/result/receipt для принятых долгих задач/изменений, voice reconnect и screen bibliography/evidence. PH input-utterance checkpoint не является lossy telemetry. Search-only protocol/test fake не full acceptance. После реального подключения выполнить парную ПМИ Mira/Dot (§14.4 handoff); «хорошо подумай»/делегирование Dot остаётся будущей опцией.
 
 ## CORE-REQUEST-LOAD-MANAGEMENT
 
-Один durable lifecycle сохраняет per-dialog order/context, canonical-person fairness, measured resource admission и arithmetic ETA. Normal load ставит accepted вопрос в ожидание, не отбрасывает его.
+Одна admission authority сохраняет canonical-person fairness и measured stage permits. Ephemeral read_query использует RAM permits без второго durable turn; durable questions/mutations сохраняют per-dialog order/context, exact result/ACK и arithmetic ETA. Normal load ставит accepted вопрос в ожидание, не отбрасывает его.
 
-Все claim/wake/resume/explicit-ID paths используют один guard. UNKNOWN predecessor блокирует свой dialog, остальные продолжаются. UNKNOWN admission/reconciliation bounded per provider/route, не весь import; operation resolve verified_delivered/not_delivered/abandoned_no_resend требует evidence/operator authority. Restart восстанавливает точный result и delivery outcome; result_ready не запускает новую генерацию. TTL raw spool и terminal receipt horizon не удаляют unfinished requests.
+Все claim/wake/resume/explicit-ID paths используют один guard. UNKNOWN predecessor блокирует зависимое durable продолжение своего dialog, остальные продолжаются. Проверочное/независимое read может вернуть prior_write_pending/context gap и observed cursor, но не выдать старое значение за последнее; min_data_seq обязателен. UNKNOWN admission/reconciliation bounded per provider/route, не весь import; operation resolve verified_delivered/not_delivered/abandoned_no_resend требует evidence/operator authority. Restart восстанавливает точный result и delivery outcome; result_ready не запускает новую генерацию. TTL raw spool и terminal receipt horizon не удаляют unfinished requests.
 
 ETA≤10 s не вызывает notice; >10 s и существенные увеличения имеют durable coalesced notices только ближайшего request человека. Final имеет приоритет. ETA использует measured duration/fair sequence, не LLM и не выдуманное число concurrency.
 
 Stage permits учитывают co-located PG/BGE/proof/import/maintenance и Dev control; resize адаптирует допуск. Search reserve минимум для одного supported query сохраняется во время import, proof/import получают bounded aging. Capacity wait не расходует outage retries; proven external unavailable даёт один честный итог, poison stage остаётся recoverable.
 
-Outbound duplex WSS использует existing queue/controller, claims/hashes и writer/connection fence. Reconnect живой session сохраняет model; после session end новый run restore/warmup. Application ACK, socket Pong, Saved и Delivered различаются.
+Outbound duplex WSS использует existing queue/controller, claims/hashes и writer/connection fence. Reconnect живой session сохраняет model; после session end новый run restore/warmup. Application ACK, socket Pong, Saved и Delivered различаются. QUERY_RESULT не имеет Saved/RESUME: reconnect/новый turn отменяет его прежнюю generation. Async read telemetry ограничена и не держит queue write lock; drops видны. Durable effects и audit не теряют гарантий.
 
 Перед выпуском проверить cross-client/dialog fairness, actual second-client result/ACK, restart/generation/remote seal/CAS gaps, notification thresholds, real resize/import+search, held-out ETA error. Terminal receipts 30 days допустимы лишь для verifiable server-issued IDs: expired never-new-execution; arbitrary legacy keys и UNKNOWN не GC blindly.
+
+Go/Rust допускаются как scoped component replacement для подтверждённой задержки/ресурсов либо воспроизводимой проблемы памяти/control/lifecycle. Baseline — thin Python и один resident native PyTorch/PG. IPC, threads, ABI, model-space и recovery включаются в сравнение. Не требовать полный rewrite, не приписывать старым backend/connector числам текущий voice E2E. Измерять PH tool-lock wait и время первого полезного/полного слышимого ответа; все прежние gates неизменны.
 
 ## Историческое evidence и текущий статус
 

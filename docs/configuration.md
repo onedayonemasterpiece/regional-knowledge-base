@@ -15,6 +15,12 @@
 
 E5, его vector indexes, runtime/fallback и обязательные token counts удаляются из target. Supabase не является target dependency. Независимые shared Python consumers и pinned BGE tokenizer сохраняются; исторический каталог с именем fast-e5 сам по себе не основание удалить нужный tokenizer. Generic 768-dimensional embedding provider не подставляется вместо BGE.
 
+## Bootstrap и optional native bundle
+
+Default: Python bootstrap/QUERY handler и существующая authority, один resident PyTorch FP32 model, PostgreSQL native kernels. Manifest фиксирует Python/packages, actual tokenizer backend и model/tokenizer hashes. Go/Rust optional: замена измеренного transport/hot function либо компонента с воспроизводимой проблемой памяти/lifecycle/backpressure. Для нового компонента эти эксплуатационные требования допустимы и без доказанного CPU hot loop; проверенный native reuse не требует полного Python дубля. Go на DevCoveer заменяет существующий компонент, а не добавляет proxy/authority. Sidecar не является default; полный rewrite и второй model/controller не нужны. Local IPC допустим при подтверждённом net benefit полезной задержки/ресурсов/отказов с учётом copies, serialization, Python BGE child и lifecycle, без регрессии quality/прав/recovery; заменяемый путь удаляется.
+
+Precompiled artifact закреплён source SHA/toolchain/dependency lock/hash, protocol version, Linux architecture, minimum CPU ISA и libc/shared-library ABI. Не собирать с неподтверждённым target-cpu=native и не предполагать одинаковый host после restart. Bundle проверяется до execute из writable runtime directory; no per-request spawn/compile/model load. Supervisor использует явные process groups/exit codes, bounded log drains и PG shutdown; session kill не даёт guaranteed finally/cleanup. Shared libs/CA assets входят в совместимость; CGO_ENABLED=0 или musl не делают любой inference stack автоматически статическим.
+
 ## Обязательные настройки реализации
 
 Ниже имена контрактов, а не утверждение о наличии уже реализованных новых env flags. Агент фиксирует реальные имена/defaults в коде и readback до выпуска.
@@ -36,11 +42,15 @@ Cadence не является TTL: нельзя удалять неподтве�
 
 ## WSS и event loop
 
-Notebook использует единственное outbound authenticated WSS attachment к existing ASGI/HTTPS service. Проверить реальный reverse-proxy upgrade path. Задать handshake/send deadlines, bounded frame/total-buffer bytes, credits, Ping/Pong, jittered reconnect и resume window. Large artifacts — по existing byte transport и immutable refs.
+Notebook использует единственное outbound authenticated WSS attachment к existing ASGI/HTTPS service; public Kaggle listener отсутствует. Два самостоятельных клиента Dot → RKB и Mira → RKB используют ту же auth/admission authority; Dev relay не добавляет reasoning hop. Проверить реальный reverse-proxy upgrade path. Задать handshake/send deadlines, bounded frame/total-buffer bytes, credits, Ping/Pong, jittered reconnect и resume window. Large artifacts — по existing byte transport и immutable refs.
 
-Run credentials scoped к конкретному run/generation; user bearer не передаётся notebook. Reconnect не вызывает kernels_push и не выгружает BGE, пока текущая Kaggle-сессия жива. После её завершения новый run восстанавливает PG и модель. Late old-socket results fenced; same-ID same-hash replay idempotent, different-hash conflict.
+Run credentials scoped к конкретному run/generation; user bearer не передаётся notebook. Reconnect не вызывает kernels_push и не выгружает BGE, пока текущая Kaggle-сессия жива. После её завершения новый run восстанавливает PG и модель. Late old-socket results fenced. Durable jobs: same-ID same-hash replay idempotent, different-hash conflict. Ephemeral QUERY: request/turn/connection generation + общий deadline/min_data_seq; без durable replay/RESUME, late/cancelled answer не выдаётся в новой реплике.
 
 Blocking encode, PG backup, render, file I/O и external download не выполняются в ASGI event loop. Read polling/control views не открывают BEGIN IMMEDIATE. Wakeup после commit поддерживает межпроцессный путь; process-local Event не заменяет durable work и bounded reconciliation.
+
+QUERY целиком выполняет в Kaggle encode + dense/FTS/alias SQL + RRF + batched hydrate. На Dev передаются bounded bibliography/evidence, mode/freshness, а не vector.tolist() для обратной отправки в PG. При encode lexical/alias SQL может выполняться параллельно. One resident model и один общий admission/search reserve сохраняются для read и import jobs.
+
+Read-only audit асинхронен и не ожидается перед request/response: bounded buffer refs/hashes/timings, без raw private body. Потери audit отражаются отдельно, не превращаются в blocking queue и не объявляются durable receipt. Remote accepted/Saved относится к mutations и явно выбранному durable request, не любому read-turn.
 
 ## SQL и query budgets
 
@@ -48,7 +58,7 @@ Pool size считается суммарно по всем notebook processes, 
 
 У query paths явные statement/lock timeouts, общий request deadline, bounded candidate depth, alias expansion и hydration window. ANN ef/search scan/memory параметры устанавливаются через SET LOCAL внутри transaction, имеют конечные максимумы и не протекают через pool. Actual prepared ANN plan проверяется после 6+ executions и на крайних selectivity; custom plan/disableprepare только для ANN при доказанном regression. FTS per-row RU/DE/simple и bounded query configurations исключают alias loop. Narrow scope и broad ANN — отдельные проверенные SQL shapes.
 
-work_mem лимитирует отдельные sort/hash операции и умножается на concurrency; maintenance_work_mem/autovacuum_work_mem/shared_buffers/parallel workers/temp_file_limit выбираются совместно с BGE RSS и OS reserve. Autovacuum не выключается ради краткого benchmark. Один controller ограничивает тяжёлые index builds/snapshots; фоновый task не создаёт собственный независимый scheduler.
+work_mem лимитирует отдельные sort/hash операции и умножается на concurrency; maintenance_work_mem/autovacuum_work_mem/shared_buffers/parallel workers/temp_file_limit выбираются совместно с BGE RSS и OS reserve. Torch intra/inter-op threads, PG parallel workers, render/import и возможный native runtime используют единый измеренный CPU budget; Python worker не размножается вместе с model. Исходные 4 Torch threads/1 interop не являются гарантированной доступной capacity. Autovacuum не выключается ради краткого benchmark. Один controller ограничивает тяжёлые index builds/snapshots; фоновый task не создаёт собственный независимый scheduler.
 
 ## Application identity и credentials
 
@@ -66,6 +76,8 @@ Existing S3ObjectStore пока предоставляет put/get/delete transp
 Yandex/archive credentials и Telegram sessions выдаются раздельно с минимальными правами. Existing RKB_S3_* имена требуют проверки фактического bucket назначения: временный ingestion bucket не становится recovery archive по совпадению prefix. Не наследовать случайные OPENAI/GOOGLE/GEMINI keys или общие owner credentials.
 
 Secrets/configs с секретами размещаются вне архивируемого PG data directory, Git, logs, public notebook outputs и snapshots. Physical backup содержит cluster files, поэтому отсутствие секретов проверяется на итоговом archive. Владелец указал `TELEGRAM_RKB1` и `TELEGRAM_RKB2` (вторая пока пустая). До запуска проверить их фактическую независимость и archive access; одна session выдаётся exclusive lease одному Kaggle run. Число одновременных runs не превышает числа проверенных sessions и доступной Kaggle capacity. Имена здесь — ссылки на защищённую конфигурацию, не секретные значения; StringSession не клонируется между процессами.
+
+Изменение Go/Rust glue не меняет embedding contract. ONNX/GPU/quantization или другой tokenizer backend с иными token IDs/numerical behavior — отдельный quality/latency track; прежний space нельзя молча использовать для несовместимых vectors. Дополнительные первичные sources и границы выводов: [runtime assessment](designs/kaggle-regional-knowledge-service-assessment-20261019.md).
 
 ## Rights и readiness
 

@@ -7,7 +7,7 @@ Updated2026-10-20. Active contracts below describe one target; historical report
 1. **[Single implementation/debugging handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md)** — the complete file to give a coding agent.
 2. [Architecture](architecture.md), [storage/recovery](storage.md), [configuration](configuration.md), [operations](operations.md).
 3. [Protected readiness](mass-ingestion-readiness.md), [target acceptance](testing/rkb-scalable-kaggle-acceptance-20261019.md), [testing method](testing.md).
-4. [Opus5.5 repeated audit and decisions20.10](reports/rkb-opus55-story-storage-speed-20261020.md).
+4. [Go/Rust and voice-path audit with Opus 5.5 and Dot](reports/rkb-native-runtime-voice-critical-audit-20261020.md); [previous story/storage/speed audit](reports/rkb-opus55-story-storage-speed-20261020.md).
 
 ## Active domain contracts
 

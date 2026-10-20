@@ -4,7 +4,7 @@
 
 Самодостаточный [handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md) содержит тот же нормативный набор gates. Этот файл предназначен для отметок конкретных запусков с exact SHA/config/corpus и evidence. Числа и сценарии ниже синхронизированы с его §14; нумерация сохранена для прямой сверки. При изменении критериев обновлять оба места в одном PR.
 
-Аудированная документационная база — `a8cf41b50b8ccb62409d046d009d53c09d74b1d7`. Перед запуском фиксировать фактические source/runtime heads. Условия отличаются от прежнего SQLite/Supabase/E5; старые PASS не переносятся автоматически. Дополнительные предметные сценарии сохраняет [ПМИ разногласий](rkb-disagreement-pmi-20261018.md).
+Аудированная документационная база — `b1c0689b1a09373a900a317a3bac9cf4f86fdaf4`. Перед запуском фиксировать фактические source/runtime heads. Условия отличаются от прежнего SQLite/Supabase/E5; старые PASS не переносятся автоматически. Дополнительные предметные сценарии сохраняет [ПМИ разногласий](rkb-disagreement-pmi-20261018.md).
 
 ## 14. Приёмка: обязательные численные gates и конкретные отказы
 
@@ -53,6 +53,17 @@
 | WSS-2 | Drop до RESULT, после commit, до ACK | Bounded reconciliation IDs/hashes; повторный эффект отсутствует, hash mismatch явный. |
 | WSS-3 | Старый и новый sockets одного run | Только один dispatch attachment; old generation fenced. |
 | WSS-4 | Expired claim / heavy encode / cross-process enqueue | Stale claim не убивает warm worker; control/ping живы; очередь из другого процесса доставляется promptly. |
+| FAST-1 | Свободный ready read, отключённый/заполненный telemetry sink | QUERY отправлен без fsync/seal/fixed batch wait; drop/error счётчик растёт, результат и permits не ждут журнал. |
+| FAST-2 | Fused search / oversize query/result / распространённый FTS term | Вектор не идёт через Dev; caps bytes/tokens/candidates и actual SQL cost проверены; no silent truncation/false empty success. |
+| FAST-3 | Barge-in, reconnect, late SQL/forward и четвёртый параллельный пользователь | Старый output/audio fenced; cancel достигает поддерживаемых стадий, PG очищен, credits освобождены по факту; чужой batch не убит, read не RESUME. |
+| FAST-4 | Mira write UNKNOWN → тот же ресурс через Dot; reader ниже min_data_seq | Resource/scope index across routes даёт prior_write_pending; независимый accepted-corpus query продолжает работать. Нет ложного последнего значения/not-found. |
+| FAST-5 | Scoped revoke в полёте, cross-book item, continuation/cache; notebook offline | Все зависимости item проверены; affected text/bibliography не выдаются, unrelated response сохраняется. Remote-durable barrier блокирует новую выдачу без ожидания Kaggle; PG effect pending не назван Saved. |
+| FAST-6 | Telegram reconnect/FLOOD_WAIT без потери PG/BGE | Text search продолжает работать, proof имеет собственный pending; число runs и exclusive session leases неизменны. |
+| PH-1 | Factory не подключена / v1 normalizer встречает v2 status | Honest unavailable/config gate; не пустой hybrid и не объявление live support по fake provider. |
+| PH-2 | Tool-lock wait / user interrupt / input checkpoint | Весь wait измерен; новое чтение не держится за отменённый read; mutations сохраняют порядок, utterance recovery не стал lossy telemetry. |
+| PH-3 | Reconnect после read до/после evidence context checkpoint | Exact scoped refs либо явный context gap; новый ranking не выдаётся за старый, текущие grants проверены. |
+| NAT-1 | Native candidate с несовместимым ABI/CPU/hash или лишним IPC | Не READY; если эксперимент выбран, сравнение включает полный путь/ресурсы/lifecycle, без implicit model-space change. |
+| VIS-1 | Opt-in page continuation / новый visual context | Reuse только exact same page/render; при потере контекста actual ImageContent возвращается, review не подменён text-only. |
 | REC-1 | Concurrent backup и записи | Restore имеет подтверждённый внутренний cursor и нужный WAL; replay непрерывен. |
 | REC-2 | Corrupt snapshot / wrong version / несовместимый codec | Candidate не становится canonical; доступна прежняя verified baseline или явный controlled recovery. |
 | REC-3 | Yandex candidate upload/verify fail | Старая baseline сохраняется, remote tail GC учитывает её watermark и consumers; local sealed spool может compact независимо. |
@@ -106,3 +117,21 @@
 Это набор различающих сценариев, а не предписание создать по сервису/fixture на строку. Повторяющиеся механизмы проверяются одним meaningful тестом с несколькими условиями; существующее доказательство переиспользуется для неизменённого кода.
 
 Тесты с реальными источниками по умолчанию используют isolated case/corpus fixture и один test_run_id. Не публиковать вымышленные экспертные мнения в live cases, subscriptions или VK. Если требуется canonical mutation, заранее baseline/allowed effects и узкая idempotent CAS compensation своих действий, сохраняющая поздние реальные вклады; rollback_conflict не лечится force overwrite. Component tests не требуют подделывать Slack event; actual user-sender E2E отдельно и без impersonation.
+
+### 14.4. Скорость полезного ответа, выбор native и сравнение Mira/Dot
+
+**Статус: NOT RUN.** Сначала подключить настоящий PH provider; сейчас нет измеренного голосового PH→RKB пути. Собрать один trace ID через клиент/PH→Dev→Kaggle→клиент. Записывать monotonic durations каждого host, включая PH capability activation, utterance checkpoint, tool-lock wait, admission wait, encode, lexical/alias, ANN, fusion, hydrate, serialization/validation и доставку. Queue wait до запуска инструмента не пропадает из E2E. Межхостовые wall clocks не считать синхронными; суммы p95 отдельных стадий не являются p95 общего ответа.
+
+Сравнивать на одном exact corpus/model/config: до и после устранения hops/polling/full scans, затем **только при оставшемся основании §4.6** один native candidate. Отдельно показывать single-user и четыре пользователя, concurrent import и scheduled snapshot/maintenance; warm/cold, cache hit/miss, длину query и source scope. Размер выборки/повторы/метод percentile указать. Все попытки, timeout/cancel/degraded/denied входят в отчёт соответствующей категории, ошибки не исчезают из denominator. Protected 1000/1500/2000 ms остаются самостоятельными gates; ожидаемый выигрыш 0.5 s не является уже достигнутым результатом или причиной ослабить качество.
+
+Для голоса две главные метрики: **конец реального пользовательского высказывания → первый полезный слышимый source-grounded ответ** и → полный ответ. Отдельно tool start→usable evidence и model/TTS/audio delay. «Сейчас посмотрю» и первый несодержательный звук не засчитываются. Метрика backend search не включает всю ASR/model/TTS цепочку и не подменяет её. Включить barge-in, ошибку ASR имени/даты и последующий уточняющий запрос без смешения generations.
+
+После actual PH wiring провести парное сравнение **Мира и Dot**, не интеграцию одного внутрь другого:
+
+- Одинаковые source-grounded задания, corpus/revisions, права/аудитория, scope и известные evidence. В наборе — RU→DE, имена/топонимы, даты/измерения, неоднозначность, cross-book разногласия, actual story body, отсутствующие сведения, forbidden proof/private draft и продолжение после reconnect. Использовать существующие held-out families, не заводить второй огромный benchmark.
+- Для сравнения интерпретации дать одинаковый текст запроса и сопоставимый common tool profile/budget. Отдельно измерить реальные пользовательские маршруты с их ASR/voice/Slack и зафиксировать различия доступных tools; не приписывать модели преимущество другого профиля или тёплого кеша.
+- Слепая проверка по первоисточникам: точность, полнота, корректность source refs/атрибуции, честная неопределённость, сохранённый body вместо summary, отсутствие unsupported claims. Tool Hit@K не является оценкой финального рассказа. Сопоставить время первого полезного/полного ответа, число tool calls, ошибки и стоимость доступных операций; не ранжировать по красноречию.
+- Результат — paired таблица с примерами преимуществ/провалов и evidence, без заранее назначенного победителя. Будущая опция «Мира, хорошо подумай»/Dot delegation рассматривается лишь при наблюдаемой пользе для определённого класса вопросов и приемлемой задержке. **В базовой реализации эту опцию не создавать.**
+
+Это ограниченная приёмка конкретных изменений, не обязательный постоянный трёхъязычный tournament или второй LLM-судья. Для неизменённого пути переиспользовать подходящее проверенное evidence; повторить только затронутые gates.
+

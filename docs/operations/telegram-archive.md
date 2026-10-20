@@ -6,6 +6,8 @@ Updated 2026-10-20. Normative target: [single implementation handoff](../prompts
 
 One PostgreSQL/pgvector corpus with BGE-only retrieval and source/image processing runs on Kaggle. DevCoveer holds the existing MCP/ASGI authorization/controller and bounded durable request/change/delivery state. The notebook connects outbound over one WSS channel; do not create another scheduler, full-corpus staging host or polling control plane.
 
+Ordinary ephemeral `read_query` performs one fused encode/SQL/fusion/hydration operation inside Kaggle and returns a compact evidence pack. It uses the same admission authority, without durable fsync/seal/RESUME or Telegram/archive preflight. Read telemetry is bounded and asynchronous outside queue SQLite/write locks. Durable questions, mutations, accepted archive work and external sends retain their exact remote ACK/recovery contract.
+
 Only GEO content migrates. All old non-GEO book text/chunks/vectors/stories/drafts/contributions/cases are excluded; fresh MCP import reexamines verified original bytes and accepts a new semantic graph. Legacy chunk backfills/migration017 are not target cutover. An existing verified archive can supply the exact original without copying its old accepted transcription or review stamps. Preserve model-accepted text, semantic boundaries, locators and IDs durably; source SHA plus parser version cannot regenerate them.
 
 Original source identity includes exact bytes/SHA and edition; native archive identity includes connection/chat/topic/message/document/origin. Read that registered identity, not a filename search or a guessed message. Full PDF/DjVu uses topic 2; illustrations use **forum topic 4**. A public illustration remains public even though its recovery archive is private. A private archive locator is never an access grant.
@@ -13,6 +15,8 @@ Original source identity includes exact bytes/SHA and edition; native archive id
 ## Direct reads and one uploader
 
 Kaggle reads approved originals/media directly using genuine separately authorized Telegram sessions supplied for implementation. The owner named `TELEGRAM_RKB1` and `TELEGRAM_RKB2` (the second is currently empty): verify actual independent authorization and archive access at stage 0. Bind one exclusive session lease to each Kaggle run; simultaneous runs cannot exceed verified available sessions or Kaggle capacity. More sessions extend the existing pool. Copying an existing StringSession/auth key is not a new independent authorization. Keep credentials out of repository, notebooks' public output, reports and logs. Account-wide provider limits still apply; honor FloodWait and per-session state without treating multiple sessions as permission to bypass the account budget.
+
+Within those authorized runs publish separate `text_search_ready`, `archive_read_ready` and `proof_ready`. A Telegram reconnect/FloodWait, original cache miss or pending crop affects that dependency only; warmed PG/BGE continue answering text queries. Completed evidence is not held until proof finishes. This capability split does not remove the owner's session/run cap or justify an extra notebook.
 
 VibePublish remains the sole archive uploader and owner of its native provider queue/pacing. Its DevCoveer bridge uses the existing authenticated loopback HTTP endpoint and a dedicated nonowner service identity restricted to the archive destination and topics 2/4. Kaggle is not on that loopback host; use the existing controller/bridge route for upload work. No browser/human OAuth, owner bearer, extra daemon or alternate uploader is needed. Follow the [same-host policy](https://github.com/onedayonemasterpiece/codex-devcoveer-mcp/blob/main/docs/operations/local-service-connections.md).
 
@@ -32,6 +36,10 @@ Detect source format from container signatures. PDF uses PyMuPDF; DjVu uses DjVu
 
 Do not archive every rendered page as an import or proof gate. Render bounded requested pages/regions from verified originals; page readiness and precise quote geometry are per-item. For proof, bind source SHA/revision, physical/printed page, dimensions/transform and preview hash, retain live locator dependencies, and return actual MIME/ImageContent. See [illustration/proof pipeline](illustration-pipeline.md).
 
+Use bounded single-flight downloads for the same exact source identity and reuse verified immutable originals/renders under leases. Hash while streaming and verify before atomic install/restore; unchanged warm cache objects do not require full hashing, repacking or another archive roundtrip on every read. Changed bytes/identity or integrity doubt triggers reverification. Cache refs retain render/geometry/class/scope boundaries and current access checks; public illustration reuse never includes restricted neighboring text pixels. Useful caches are allowed for speed within shared 80/90% capacity gates.
+
+Native block continuation may avoid retransmitting the same page image only through the versioned opt-in in [ingestion](../ingestion.md): actual image first, then exact page/render refs in the same live visual context. A new chat, lost context/image or changed render sends actual pixels again. This does not weaken visual review, full native-text coverage, independent quote-strip verification or preview lifetime.
+
 ## Admission, retry and fairness
 
 Reserve the measured cache/staging/render budget before I/O. Count concurrent downloads, decompression, full originals, previews, generated crops and provider-bound copies; a per-file limit alone is not a total bound. Backpressure before admission must be resumable. Already accepted payloads retain a verified recovery path during provider outages.
@@ -41,6 +49,8 @@ Persist stable publication/read keys and attempt state. Unknown send outcome fir
 Reads continue through [durable read continuation](archive-read-continuation.md). The released Vibe terminal-read recovery persists a next key and 15-minute cooldown only for `telegram_transport_unhealthy` / `provider_read_deadline`. Auth/digest/unknown failures do not mint keys. Verified-asset 404/410 is a separate bounded read-expiry path. Direct Telegram transfer can reread bounded chunks after restart; do not claim exactly-once network transfer.
 
 Use one fair controller/maintenance owner. Source/vector/story backlog cannot starve accepted archive work indefinitely; ready receipts take precedence over cooling retries. Preserve the established Vibe account-wide rolling pacing, including all topics/album members and stricter FloodWait. A source upload does not consume a separate independent allowance merely by using another topic.
+
+Text search, downloads, render, imports and snapshot/restore share measured CPU/RAM/I/O admission and search reserve. Do not hold a text permit while awaiting archive cooldown. Available query permits dispatch already-ready reads immediately; batching does not wait for a full group. Maintenance uses an already authorized run and cannot create new capacity by ignoring Telegram leases.
 
 ## GC and bounded recovery
 

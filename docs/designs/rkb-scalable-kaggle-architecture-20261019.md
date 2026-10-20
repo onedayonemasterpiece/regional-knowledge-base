@@ -1,12 +1,12 @@
 # Целевая архитектура RKB: Kaggle PG 17/BGE и короткий DevCoveer control
 
-Обновлено 20.10.2026; канонический путь документа сохранён. Статус: решение для реализации, не выполненный deploy. Проверенный source baseline — [main a8cf41b](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/a8cf41b50b8ccb62409d046d009d53c09d74b1d7).
+Обновлено 20.10.2026; канонический путь документа сохранён. Статус: решение для реализации, не выполненный deploy. Проверенный source baseline — [main b1c0689](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/b1c0689b1a09373a900a317a3bac9cf4f86fdaf4).
 
 **Один самодостаточный [handoff кодовому агенту](../prompts/rkb-scalable-kaggle-implementation-20261019.md)** содержит функциональный контракт, порядок внедрения и отладки. Этот документ объясняет принятое размещение; подробные query/index paths — в [architecture](../architecture.md), durability/GC — в [storage](../storage.md).
 
 ## Решение владельца и область
 
-Рабочая БД PostgreSQL **17** с закреплённым pgvector и BGE-M3 находится на Kaggle. E5 и Supabase в target отсутствуют. Существующий BGE baseline — 1024 FP32, pinned revision/tokenizer, final input≤512 tokens; coherent passages около 256 tokens. Поиск и экономичность хранения — приоритеты; сохранение фактов и exact provenance не сокращается ради quota.
+Рабочая БД PostgreSQL **17** с закреплённым pgvector и BGE-M3 находится на Kaggle. E5 и Supabase в target отсутствуют. Существующий BGE baseline — 1024 FP32, pinned revision/tokenizer, final input≤512 tokens; coherent passages около 256 tokens. Скорость поиска приоритетна относительно экономии хранения при сохранении обязательных capacity/quality gates; факты и exact provenance не сокращаются ради quota. Даже около 0.5 s выигрыша полезны, но требуют измерения полного полезного пути.
 
 Миграция переносит **только geo**: layers/places, geometry/CRS/оси/единицы, transform/GCP, временные aliases, provenance и необходимые минимальные source refs. Негеографические facts, старые книги/chunks/vectors/receipts, stories, cases и drafts не копируются в новую БД; они создаются fresh через проверенный import/workflow. Старое состояние сохраняется отдельно как reference, без второй live write authority. GEO identity manifest со stable layer/place IDs, aliases и CRS готов до production book imports; bulk raster transfer допустим в phase 4. Stage 2 без manifest использует только isolated fixture.
 
@@ -23,11 +23,11 @@ Accepted active book text/bibliography и illustrations доступны все�
 | Existing Yandex recovery storage | Immutable command/control/receipt tail, accepted payloads и одна latest verified daily base независимая от Kaggle. |
 | Existing integrations | VibePublish/Telegram archive/delivery, Regional Cartography, Street Story, Projects Hub/Мира; их ownership сохраняется. |
 
-Notebook открывает direct authenticated outbound WSS к existing ASGI broker. Команды и результаты идут в обе стороны; публичный notebook endpoint и открытый PostgreSQL не нужны. Один dispatcher и одна queue authority; HTTP polling и WSS не dispatch одновременно.
+Существуют два независимых интеллектуальных маршрута Dot → RKB и Mira → RKB. Ни один агент не удаляется; Mira не проходит через Dot. DevCoveer — тонкий auth/admission relay existing ASGI. Notebook открывает authenticated outbound WSS, public listener и открытый PostgreSQL не нужны. Ephemeral QUERY/QUERY_RESULT и durable DISPATCH/RESULT/ACK — разные классы одного transport и одной admission authority; HTTP polling и WSS не dispatch одновременно.
 
 ## Инварианты
 
-1. Local receipt pending; final accepted/Saved только после exact intent/payload remote confirmation. Saved дополнительно означает applied PG result и remotely verified exact outcome/receipt. Готовые accepted mutations/реальные user turns ждут group flush ≤1 s. Read-only search не ждёт remote journal.
+1. Local receipt pending; final accepted/Saved только после exact intent/payload remote confirmation. Saved дополнительно означает applied PG result и remotely verified exact outcome/receipt. Готовые mutations и явно принятые durable requests ждут group flush ≤1 s. Обычный read-turn использует ephemeral QUERY без durable row/RESUME; bounded async audit не задерживает request/response и не обещает durable receipt.
 2. Domain effects, applied_ops и непрерывный applied cursor фиксируются одной PG transaction. IDs, logical timestamps и принятые значения не генерируются заново при replay.
 3. New submissions проверяют current writer/run/claim/connection generation. Уже принятые команды прежнего epoch остаются обязательными для replay.
 4. Canonical pointer, external effect и delivery проверяются внешней authority. Старый writer не выбирает late snapshot и не публикует поздний результат сам.
@@ -44,11 +44,19 @@ Notebook открывает direct authenticated outbound WSS к existing ASGI b
 
 Исходный backend перечисляет все документы перед поиском и каталогом; story semantic path считает similarity в Python. Перенос этих алгоритмов в PG без изменения query shape не решает масштабирование.
 
-Target: активные passage_search и story_search, GIN tsvector + HNSW BGE, B-tree scope/catalog/links, aliases с языком/временем, PostGIS GiST под spatial predicates. Broad dense, lexical и exact-alias branches выбирают bounded candidates независимо; RRF/dedup затем batch hydration. Полный revision map всех книг не пересылается на каждый запрос. Dense не prefilter lexical.
+Target: активные passage_search и story_search, GIN tsvector + HNSW BGE, B-tree scope/catalog/links, aliases с языком/временем, PostGIS GiST под spatial predicates. Один fused QUERY целиком в Kaggle выполняет query encode + local PG dense/FTS/alias SQL + RRF/dedup + batch hydration; возвращает bibliography/evidence, не промежуточный vector на Dev. Lexical/alias branches идут параллельно encode, dense использует локальный vector. Полный revision map всех книг не пересылается на каждый запрос. Dense не prefilter lexical.
 
 Immutable revision projections готовятся заранее; activation меняет небольшой active pointer и research frontier, не active flags 100000 rows. Inactive versions ограничены GC; current-pointer filtering проверяется совместно с ANN selectivity. Prepared ANN plans проверяются после 6+ executions на крайних scopes; custom-plan/disableprepare только для ANN при доказанном regression, SET LOCAL knobs pool-safe. FTS per-row RU/DE/simple и bounded query configs, без alias loop.
 
 Для маленьких scoped множеств — индексированный filter и exact distance; для broad ANN — bounded iterative scan и честный partial при исчерпании budget. Проверять plans и recall на настоящей application role. FTS ranking, query material, ANN parameters и scope входят в change gate.
+
+## Python default, узкий native при измеренной пользе
+
+Один resident PyTorch FP32 BGE process и native PG kernels выполняют тяжёлую работу; Python остаётся bootstrap/QUERY glue. Tokenizer backend определяется по фактическому pinned run. Нет per-request model load, spawn или compile. Общий CPU/RAM budget включает Torch threads, PG pool/parallel workers, import/proof и maintenance; transport/event loop не блокируются encode.
+
+Precompiled Go/Rust executable допустим с immutable bundle и проверенным architecture/ISA/libc/shared-library ABI, protocol/hash/source pins. Default остаётся Python glue и существующая authority. Go на DevCoveer может заменить transport/serialization component, Rust — дорогую функцию или компонент с воспроизводимой проблемой памяти/lifecycle. Память, deadlines, backpressure и control-loop isolation допускают native выбор для нового компонента без предварительного CPU hot loop; проверенный native reuse не требует полного Python дубля. Готовый fused RKB executor пока не подтверждён.
+
+Native sidecar не является default; нет второго model/controller или дополнительного proxy, полный rewrite не нужен. Проверяется один узкий вариант с удалением заменяемого пути; полезная задержка, ресурсы или отказы должны улучшиться без регрессии quality, прав и recovery. Local IPC допустим, если суммарный выигрыш учитывает copies/serialization/backpressure, Python BGE child, дополнительный lifecycle и cold recovery. Обязательного процентного порога нет. ONNX/GPU/quantization — самостоятельный quality-gated track. Подробности и primary evidence: [runtime assessment](kaggle-regional-knowledge-service-assessment-20261019.md).
 
 ## Надёжность без лишних компонентов
 
