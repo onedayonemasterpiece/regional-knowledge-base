@@ -210,7 +210,9 @@ def _zstd_reader(raw):
     if importlib.metadata.version('zstandard')!='0.25.0':
         raise NativeBundleError('native_bundle_zstd_decoder_unverified')
     import zstandard
-    return zstandard.ZstdDecompressor(max_window_size=128*1024).stream_reader(
+    # The 0.25.0 C extension passes this value directly to zstd in bytes
+    # (its Python documentation incorrectly calls the unit KiB).
+    return zstandard.ZstdDecompressor(max_window_size=128*1024*1024).stream_reader(
         raw,read_size=65536,read_across_frames=True,closefd=False)
 
 

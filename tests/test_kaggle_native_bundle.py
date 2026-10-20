@@ -354,3 +354,19 @@ def test_python312_zstd_path_requires_exact_preinstalled_decoder_pin(monkeypatch
     monkeypatch.setattr(importlib.metadata,'version',lambda name:'unverified')
     with pytest.raises(NativeBundleError,match='zstd_decoder_unverified'):
         native._zstd_reader(None)
+
+
+def test_pinned_zstd_c_extension_window_uses_bytes_not_documented_kib(monkeypatch):
+    import importlib.metadata
+    import sys
+    from types import SimpleNamespace
+    calls=[];sentinel=object()
+    class Decoder:
+        def __init__(self,**kwargs):calls.append(kwargs)
+        def stream_reader(self,raw,**kwargs):calls.append(kwargs);return sentinel
+    monkeypatch.setattr(native.sys,'version_info',(3,12))
+    monkeypatch.setattr(importlib.metadata,'version',lambda name:'0.25.0')
+    monkeypatch.setitem(sys.modules,'zstandard',SimpleNamespace(ZstdDecompressor=Decoder))
+    assert native._zstd_reader(None) is sentinel
+    assert calls[0]['max_window_size']==128*1024*1024
+    assert calls[1]['read_size']==65536 and calls[1]['read_across_frames'] and not calls[1]['closefd']
