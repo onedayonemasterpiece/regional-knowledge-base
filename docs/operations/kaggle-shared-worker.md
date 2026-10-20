@@ -91,3 +91,97 @@ one last release, the existing durable result/ACK state and tracked native tasks
 No unbounded history, separate registry or admission authority is introduced.
 Live loaded-model/tokenizer identity, actual PG cleanup and controller integration
 require their own verification; synthetic transport tests do not establish them.
+
+## Explicit resident preparation
+
+Source unit A starts at `04bbf6dcfaed71fa833020c2c7df871b2188a887` and adds the
+optional async `prepare_runtime(encoder,run_id=...,launch_nonce=...,
+runtime_incarnation=...)` hook. It runs once, after early authenticated ATTACH,
+initial RESOURCE_STATE and the existing model load. Reconnect retains that same
+prepared context, encoder and already owned pool. Direct `query_handler` injection
+and legacy behavior remain compatible. The hook requires explicit shared mode;
+it is not selected from a client field or environment import string.
+
+The hook returns exact `PreparedRuntime(query_handler,CandidateReadiness)` types
+from `regional_knowledge.kaggle_bootstrap`. Target READY and target dispatch stay
+closed until preparation completes. Its READY adds only `runtime_readiness` with
+the following exact fields: `hashes` containing all six `code`, `launch_config`,
+`executed_source`, `dependency`, `model`, `schema` SHA256 values;
+`database_generation`, `schema_revision`, `function_revision`, `executor_revision`;
+`applied_seq`, `projection_seq`, `visibility_epoch`; `text_search_ready`,
+`dense_search_ready`, `archive_read_ready`, `proof_ready`. No actor, user, run,
+provider or credential appears inside this observation. Counters are bounded
+nonnegative PostgreSQL bigint values and exclude booleans. Text/dense readiness
+requires a caught-up projection and known visibility cursor. Archive/proof can
+remain unknown independently. The payload is at most16KiB and revalidated before
+serialization. Existing model-only READY is unchanged without this opt-in hook;
+it cannot by itself certify target database/search readiness.
+
+`verify_artifacts(root,entries,max_total_bytes=...)` accepts a bounded explicit
+inventory of `PreparedArtifact(ArtifactRequirement(name,size,sha256),role)`.
+It streams exact declared bytes, checks count/total budgets, rejects traversal,
+symlink components, missing/changed/nonregular files and mismatched hashes, and
+closes every descriptor. The model directory must contain exactly its declared
+tokenizer/config/weight files. Its tokenizer.json must match the canonical pinned
+tokenizer SHA. Code files stay outside that model directory. The owning factory
+must keep these content-addressed directories immutable across verification/load;
+hashing cannot fence an arbitrary concurrent filesystem writer.
+
+The worker template supports explicit controller-owned `prepared_model` config
+with exactly `root`, `entries` and `max_total_bytes`. In this path it verifies
+artifacts before loading, pins the tokenizer.json file explicitly, uses only the
+local model directory and sets `local_files_only=True,trust_remote_code=False`
+for model/tokenizer loading. There is no download/install fallback in this path.
+It returns a callable `ResidentEncoder` exposing the actual locally loaded fast
+tokenizer, verified artifact binding, model directory and actual load counter.
+The effective native tokenizer backend must match the pinned tokenizer.json
+structure (apart from per-call padding), with truncation disabled. Any observed
+settings difference fails closed; real pinned-runtime compatibility remains a
+Stage0 check. The tokenizer settings document is bounded to64MiB.
+Its nonblocking `count` uses `to_thread` with complete special-token-inclusive,
+no-truncation/no-padding token IDs. The same resident encoder remains the only
+model; this unit does not load a model in tests or on DevCoveer.
+
+`prepare_resident_runtime` composes that handle with `acquire` from the already
+owned initialized **Kaggle** PG pool, `probe_database`, the actual launch config,
+executed-source path plus explicit Stage0 path-equivalence attestation, and an
+explicit installed dependency inventory. It verifies that code inventory paths
+cover the actual loaded target modules. Observed hashes come from actual verified
+file bytes, canonical actual launch config, actual installed dependency/runtime
+fingerprint and actual native catalog bytes returned by the probe. They are not
+copied from the controller's expected six hashes. The executed-source expected
+hash belongs outside the source bytes it hashes; the controller compares it.
+The dependency inventory must cover torch, transformers, tokenizers,
+huggingface-hub, psycopg, psycopg-pool, aiohttp and pydantic; missing packages or
+incomplete coverage fail preparation. No dependency is installed by the check.
+
+The trusted `probe_database(acquire=...)` callback returns bounded native catalog
+bytes plus the exact readiness fields above excluding hashes. It must verify the
+existing DB generation, semantic revisions/catalog/index contract, actual
+applied/projection frontier and native text+dense readiness under finite query
+budgets. It must not initialize, restore or migrate an unknown DB. This unit
+neither constructs a PG process/pool nor updates a readiness frontier. Existing
+ordered recovery/apply/prepare-frontier contracts remain the only mutation path.
+The helper creates the existing PinnedTokenizer and KaggleWorkerQuery only after
+artifact and native probe checks pass, forwarding the existing finite telemetry
+queue unchanged. The caller owns pool shutdown and actual probe completeness.
+
+Physical placement remains thin SQLite control/short operation journal and rights
+on DevCoveer; corpus, indexes, pool and complete hybrid retrieval remain in Kaggle
+PostgreSQL beside the resident BGE. No Dev PG/model/data fallback is introduced.
+Control stays responsive while preparation runs. Session loss does not restart
+preparation; outer shutdown drains started load/preparation through repeated
+cancellation before returning. Native probes/preparation need explicit finite
+budgets; cancellation/expiry is never treated as proof of completion.
+
+Controller integration B must persist expectations before promotion, bind the
+observation to the authenticated current run/incarnation/provider version and
+call the existing readiness validators before routing target QUERY. This unit
+does not enable that factory or supply a provider/PG capability receipt. Tests
+use clearly marked synthetic tokenizer-pin/dependency overrides and artifact/PG probe stubs,
+and prove control-before-preparation, no premature READY, actual byte/hash/path
+checks, exact wire bounds, off-loop complete counting, context reuse and drain.
+Actual loaded artifacts/native PG probe and provider runtime remain NOT RUN.
+The old monolithic runtime has no verified live installation hook; initial
+adoption without a model reload is explicitly unverified. No eval, reload,
+second dispatcher, model service or public listener is added.

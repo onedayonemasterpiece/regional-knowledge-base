@@ -41,7 +41,7 @@ class BgeWssTransport:
 
     def __init__(self, config, load_encoder, diagnostics, *, connector=None,
                  heartbeat_seconds=20, maximum_seconds=11 * 3600, stop=None,
-                 query_handler=None):
+                 query_handler=None, prepare_runtime=None):
         url = urlsplit(config['channel'])
         if (url.scheme != 'wss' or not url.hostname or url.port not in (None, 443)
                 or url.username or url.password or url.query or url.fragment):
@@ -51,7 +51,11 @@ class BgeWssTransport:
         if not math.isfinite(maximum_seconds) or not 0 < maximum_seconds <= 11 * 3600:
             raise ValueError('bounded worker lifetime required')
         shared = config.get('shared_reads', False)
-        if type(shared) is not bool or (shared and not (
+        async_prepare = (inspect.iscoroutinefunction(prepare_runtime)
+                         or inspect.iscoroutinefunction(getattr(prepare_runtime, '__call__', None)))
+        if prepare_runtime is not None and (not shared or not async_prepare):
+            raise ValueError('shared preparation requires an async prepare_runtime')
+        if type(shared) is not bool or (shared and not async_prepare and not (
                 inspect.iscoroutinefunction(query_handler)
                 or inspect.iscoroutinefunction(getattr(query_handler, '__call__', None)))):
             raise ValueError('shared_reads requires an async query_handler')
@@ -69,6 +73,7 @@ class BgeWssTransport:
         self.acknowledged = None
         self.changed = asyncio.Event()
         self.shared_reads, self.query_handler = shared, query_handler
+        self.prepare_runtime, self.prepared_runtime = prepare_runtime, None
         self.forward_lock = asyncio.Lock()
         self.forwards = set()
         self.resource = None
@@ -156,7 +161,8 @@ class BgeWssTransport:
                 or type(frame.get('deadline_ms')) is not int or not 0 < frame['deadline_ms'] <= 2000
                 or not isinstance(frame.get('query'), str) or not frame['query'].strip()
                 or len(frame['query']) > 1000 or len(frame['query'].encode()) > 4096
-                or self.encoder is None):
+                or self.encoder is None
+                or self.prepare_runtime is not None and self.prepared_runtime is None):
             raise ValueError('shared QUERY contract')
 
     def _validate_query_result(self, frame, result):
@@ -204,6 +210,15 @@ class BgeWssTransport:
 
     async def _load(self):
         self.encoder = await asyncio.to_thread(self.load_encoder)
+        if self.prepare_runtime is not None:
+            prepared = await self.prepare_runtime(self.encoder, run_id=self.config['run_id'],
+                launch_nonce=self.config['launch_nonce'], runtime_incarnation=self.incarnation)
+            from regional_knowledge.kaggle_bootstrap import PreparedRuntime
+            if type(prepared) is not PreparedRuntime:
+                raise ValueError('typed PreparedRuntime required')
+            prepared.__post_init__()
+            prepared.readiness.to_wire()
+            self.query_handler, self.prepared_runtime = prepared.query_handler, prepared
         self.changed.set()
 
     async def _encode(self, job):
@@ -310,8 +325,12 @@ class BgeWssTransport:
                     if state != state_sent:
                         await put(state)
                         state_sent = state
-                if self.encoder is not None and not ready_sent:
-                    await put({'type': 'READY', 'space': SPACE, 'model_revision': REVISION})
+                if (self.encoder is not None and not ready_sent
+                        and (self.prepare_runtime is None or self.prepared_runtime is not None)):
+                    frame = {'type': 'READY', 'space': SPACE, 'model_revision': REVISION}
+                    if self.prepared_runtime is not None:
+                        frame['runtime_readiness'] = self.prepared_runtime.readiness.to_wire()
+                    await put(frame)
                     ready_sent = True
                 if self.pending is not None and result_sent != (self.pending['job_id'], self.pending['claim']):
                     await put({'type': 'RESULT', **self.pending}, priority=1)
@@ -357,7 +376,8 @@ class BgeWssTransport:
                             or not isinstance(frame['texts'][0], str)
                             or not 0 < len(frame['texts'][0]) <= 40000
                             or any(not isinstance(frame.get(key), str) or not 0 < len(frame[key]) <= 256
-                                   for key in ('id', 'claim')) or self.encoder is None):
+                                   for key in ('id', 'claim')) or self.encoder is None
+                            or self.prepare_runtime is not None and self.prepared_runtime is None):
                         raise ValueError('durable BGE dispatch contract')
                     if self.shared_reads and (not self._identifier(frame.get('compute_claim'))
                             or type(frame.get('dispatch_generation')) is not int
@@ -495,5 +515,6 @@ class BgeWssTransport:
                 raise asyncio.CancelledError
 
 
-def run_wss_worker(config, load_encoder, diagnostics, *, query_handler=None):
-    asyncio.run(BgeWssTransport(config, load_encoder, diagnostics, query_handler=query_handler).run())
+def run_wss_worker(config, load_encoder, diagnostics, *, query_handler=None, prepare_runtime=None):
+    asyncio.run(BgeWssTransport(config, load_encoder, diagnostics, query_handler=query_handler,
+                               prepare_runtime=prepare_runtime).run())

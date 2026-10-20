@@ -1,7 +1,7 @@
 """Private Kaggle CPU worker template. Controller substitutes only RUN_CONFIG.
 
-This worker cannot execute arbitrary jobs or access the corpus/DB/object store.
-Query/document text is delivered only through authenticated, bounded jobs.
+Legacy execution encodes bounded jobs only. Explicit prepared target factories
+can attach the owned Kaggle PG pool after control; no arbitrary code is accepted.
 """
 import os
 os.environ['CUDA_VISIBLE_DEVICES']=''
@@ -18,8 +18,20 @@ from pathlib import Path
 RUN_CONFIG = {}  # Replaced in the private generated notebook, never committed.
 REVISION = '5617a9f61b028005a4858fdac845db406aefb181'
 SPACE = 'bge-m3:5617a9f:t211-tr5161:cls-l2-512:q1-d1:v1'
+_MODEL_LOAD_COUNT = 0
 
 def load_encoder():
+    global _MODEL_LOAD_COUNT
+    prepared = RUN_CONFIG.get('prepared_model')
+    artifacts = None
+    if prepared is not None:
+        from regional_knowledge.kaggle_bootstrap import PreparedArtifact, verify_artifacts, ResidentEncoder
+        from regional_knowledge.kaggle_readiness import ArtifactRequirement
+        if not isinstance(prepared, dict) or set(prepared) != {'root', 'entries', 'max_total_bytes'}:
+            raise ValueError('explicit prepared model inventory required')
+        entries = tuple(PreparedArtifact(ArtifactRequirement(e['name'], e['size'], e['sha256']), e['role'])
+                        for e in prepared['entries'])
+        artifacts = verify_artifacts(prepared['root'], entries, max_total_bytes=prepared['max_total_bytes'])
     import torch
     import importlib.metadata
     versions={name:importlib.metadata.version(name) for name in ('torch','transformers','tokenizers','huggingface-hub')}
@@ -27,8 +39,16 @@ def load_encoder():
         raise RuntimeError('pinned BGE CPU runtime mismatch')
     from transformers import AutoModel,AutoTokenizer
     torch.set_num_threads(4);torch.set_num_interop_threads(1)
-    tokenizer=AutoTokenizer.from_pretrained('BAAI/bge-m3',revision=REVISION)
-    model=AutoModel.from_pretrained('BAAI/bge-m3',revision=REVISION,torch_dtype=torch.float32).to('cpu').eval()
+    if artifacts is None:
+        tokenizer=AutoTokenizer.from_pretrained('BAAI/bge-m3',revision=REVISION)
+        model=AutoModel.from_pretrained('BAAI/bge-m3',revision=REVISION,torch_dtype=torch.float32).to('cpu').eval()
+    else:
+        model_path = artifacts.model_directory
+        tokenizer=AutoTokenizer.from_pretrained(str(model_path),use_fast=True,
+            tokenizer_file=str(model_path/'tokenizer.json'),local_files_only=True,trust_remote_code=False)
+        model=AutoModel.from_pretrained(str(model_path),torch_dtype=torch.float32,
+            local_files_only=True,trust_remote_code=False).to('cpu').eval()
+    _MODEL_LOAD_COUNT += 1
     if model.config.hidden_size!=1024:raise RuntimeError('BGE dimension mismatch')
     def encode(text):
         # Same no-prefix CLS/L2 FP32 batch1 contract for query and document.
@@ -39,10 +59,14 @@ def load_encoder():
             result=torch.nn.functional.normalize(hidden,p=2,dim=1).float()[0].tolist()
         return result
     encode('readiness')
+    if artifacts is not None:
+        return ResidentEncoder(encode,tokenizer,artifacts,artifacts.model_directory,_MODEL_LOAD_COUNT)
     return encode
 
-def main():
+def main(*, prepare_runtime=None):
     config=RUN_CONFIG;started=time.monotonic();stop=threading.Event()
+    if prepare_runtime is not None and config.get('transport') != 'wss':
+        raise ValueError('resident preparation requires the existing WSS channel')
     def diagnostics():
         status=Path('/proc/self/status').read_text().splitlines()
         values={line.split(':',1)[0]:int(line.split()[1]) for line in status if line.startswith(('VmRSS:','VmHWM:'))}
@@ -50,7 +74,7 @@ def main():
         cpu=os.times();return {'rss_kib':values['VmRSS'],'hwm_kib':values['VmHWM'],'pss_kib':pss,'cpu_seconds':cpu.user+cpu.system,'cpu_threads':4,'pid':os.getpid()}
     if config.get('transport')=='wss':
         try:
-            run_wss_worker(config,load_encoder,diagnostics)
+            run_wss_worker(config,load_encoder,diagnostics,prepare_runtime=prepare_runtime)
         finally:
             Path('/kaggle/working/bge-run-summary.json').write_text(json.dumps({
                 'run_id':config['run_id'],'space':SPACE,'transport':'wss',
