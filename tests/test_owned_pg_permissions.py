@@ -64,7 +64,8 @@ def test_verified_code_only_becomes_readable_by_exact_native_identity(code,monke
     assert stat.S_IMODE((root/'main.py').stat().st_mode)==0o600
     assert stat.S_IMODE((root/'model').stat().st_mode)==0o700
     assert stat.S_IMODE((root/'model/weight').stat().st_mode)==0o400
-    assert stat.S_IMODE((root/'native/bin').stat().st_mode)&0o070==0o010
+    assert stat.S_IMODE((root/'native/bin').stat().st_mode)&0o070==0o050
+    assert stat.S_IMODE((root/'native/lib').stat().st_mode)&0o070==0o050
 
 
 @pytest.mark.parametrize('case',['symlink_parent','changed_bytes','root_not_traversable'])
