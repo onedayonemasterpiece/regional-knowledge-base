@@ -1,0 +1,219 @@
+"""Fixed opt-in GEO bootstrap using the existing controller's retained owners."""
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime,timezone
+import json
+import logging
+import os
+from pathlib import Path
+import stat
+
+from .control_spool import SpoolError,SpoolConflict
+from .geo_inventory import GeoInventoryObservation,geo_watermark
+from .geo_migration import GeoMigrationManifest,canonical
+from .geo_manifest_commands import plan_geo_manifest
+
+_LOG=logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SourceGeoInstallConfig:
+    manifest_path:str
+    manifest_sha256:str
+
+    def __post_init__(self):
+        if (type(self.manifest_path) is not str or not Path(self.manifest_path).is_absolute()
+                or type(self.manifest_sha256) is not str or len(self.manifest_sha256)!=64
+                or set(self.manifest_sha256)-set('0123456789abcdef')):
+            raise ValueError('private GEO manifest path and exact canonical SHA required')
+
+    def wire(self):return dict(manifest_path=self.manifest_path,manifest_sha256=self.manifest_sha256)
+
+    @classmethod
+    def from_wire(cls,value):
+        if type(value) is not dict or set(value)!=set(cls.__dataclass_fields__):raise ValueError('exact GEO bootstrap configuration required')
+        return cls(**value)
+
+
+def read_manifest(config):
+    path=Path(config.manifest_path)
+    if (path.resolve(strict=True)!=path or path.parent.stat().st_mode&0o077
+            or path.parent.stat().st_uid!=os.geteuid()):
+        raise ValueError('private nonsymlink GEO manifest parent required')
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    try:
+        info=os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o077
+                or not 1<=info.st_size<=4*1024*1024+1):raise ValueError('private bounded GEO manifest required')
+        with os.fdopen(fd,'rb',closefd=False) as stream:raw=stream.read(4*1024*1024+2)
+    finally:os.close(fd)
+    value=GeoMigrationManifest.from_wire(json.loads(raw)).require_ready()
+    if (value.sha256!=config.manifest_sha256 or raw not in (canonical(value.wire()),canonical(value.wire())+b'\n')):
+        raise ValueError('GEO manifest canonical bytes or SHA changed')
+    return value
+
+
+class SourceGeoInstaller:
+    def __init__(self,startup,config):
+        if type(config) is not SourceGeoInstallConfig:raise TypeError('typed fixed GEO bootstrap configuration required')
+        self.startup,self.config=startup,config
+        self.spool=startup.config.spool;self.queue=startup.config.queue
+        if (self.spool.queue is not self.queue or startup.geo_gate is None or not startup.geo_gate.supported()
+                or startup.config.writer_owner is None or
+                startup.config.source_snapshot is None and startup.config.source_restore is None):
+            raise ValueError('same fixed GEO/recovery/writer owners required')
+        self.manifest=read_manifest(config);self.plan=plan_geo_manifest(self.manifest)
+        self.keys=tuple('geo-bootstrap11:'+self.plan.manifest_id+':'+str(n) for n in range(len(self.plan.payloads)))
+        if startup.config.geo_manifest_operation_keys!=self.keys:
+            raise ValueError('exact ordered configured GEO bootstrap keys required')
+        self.expected_watermark=geo_watermark(self.manifest)
+        self.inventory=GeoInventoryObservation(startup.config.participants.corpus.path)
+        self.task=None;self.complete=False;self.closed=False;self.commands=None;self.command_identity=None
+        self.plan_json=canonical(dict(config=config.wire(),operation_keys=self.keys,
+            index_sha256=self.plan.index_sha256,source_watermark=self.expected_watermark)).decode()
+        with self.queue.connect() as db:
+            db.execute('''CREATE TABLE IF NOT EXISTS rkb_geo_bootstrap(
+                id INTEGER PRIMARY KEY CHECK(id=1),plan_json TEXT NOT NULL,database_generation TEXT NOT NULL,
+                person_id TEXT NOT NULL,first_sequence INTEGER NOT NULL,logical_time TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('prepared','complete')))''')
+
+    def current(self):
+        return bool(not self.closed and self.complete and self.startup.reads_current()
+            and self.inventory.current(self.expected_watermark)
+            and self.startup.geo_gate.installation_current(self.startup.binding,self.keys))
+
+    def _context(self):
+        policy=self.startup.config.oauth_provider.personal_policy
+        if policy.participants is not self.startup.config.participants:raise SpoolConflict('GEO owner policy changed')
+        return policy._context(policy.participants.owner,owner=True)
+
+    def _metadata(self):
+        with self.queue.connect(write=False) as db:
+            row=db.execute('SELECT * FROM rkb_geo_bootstrap WHERE id=1').fetchone()
+            return dict(row) if row else None
+
+    def _prepare(self,binding,person):
+        with self.queue.connect() as db:
+            row=db.execute('SELECT * FROM rkb_geo_bootstrap WHERE id=1').fetchone()
+            if row is None:
+                db.execute("INSERT INTO rkb_geo_bootstrap VALUES(1,?,?,?,1,?,'prepared')",
+                    (self.plan_json,binding.database_generation,person,datetime.now(timezone.utc).isoformat()))
+                row=db.execute('SELECT * FROM rkb_geo_bootstrap WHERE id=1').fetchone()
+            if (row['plan_json']!=self.plan_json or row['database_generation']!=binding.database_generation
+                    or row['person_id']!=person):raise SpoolConflict('existing GEO bootstrap plan or owner changed')
+            return dict(row)
+
+    def _reserved(self,metadata):
+        with self.queue.connect(write=False) as db:
+            return [tuple(row) for row in db.execute('SELECT sequence,operation_key FROM rkb_control_operations '
+                'WHERE sequence>=? AND sequence<? ORDER BY sequence',
+                (metadata['first_sequence'],metadata['first_sequence']+len(self.keys)))]
+
+    def _source_ready(self,binding):
+        return self.startup.binding==binding and self.startup.reads_current()
+
+    async def _reserve(self,binding,context,*,source_current):
+        async with self.spool._lock:
+            metadata=await asyncio.to_thread(self._metadata)
+            if not self._source_ready(binding):raise SpoolConflict('GEO native startup coverage unavailable')
+            if metadata is None:
+                if not source_current:raise SpoolConflict('GEO source watermark changed')
+                snapshot=self.startup.snapshot;coverage=self.startup.coverage
+                if (snapshot is None or not snapshot.verified or coverage.accepted_sequence!=0
+                        or coverage.applied_sequence!=0 or await self.spool.journal.head() is not None
+                        or (await self.spool.scope_state())['operation_count']):
+                    raise SpoolConflict('GEO requires verified empty cursor-zero snapshot before first intake')
+            person=await asyncio.to_thread(self.spool.participants.require,context,'import')
+            if metadata is None and not self.inventory.current(self.expected_watermark):raise SpoolConflict('GEO source observation expired')
+            metadata=await asyncio.to_thread(self._prepare,binding,person)
+            identity=(metadata['first_sequence'],metadata['person_id'],metadata['logical_time'])
+            if self.command_identity!=identity:
+                self.commands=await asyncio.to_thread(self.plan.commands,first_sequence=metadata['first_sequence'],
+                    operation_key='geo-bootstrap11:'+self.plan.manifest_id,request_id='geo-bootstrap11:'+self.plan.manifest_id,
+                    person_id=metadata['person_id'],logical_time=metadata['logical_time'])
+                self.command_identity=identity
+            commands=self.commands
+            for sequence,key in await asyncio.to_thread(self._reserved,metadata):
+                if key!=self.keys[sequence-metadata['first_sequence']]:raise SpoolConflict('another command occupies GEO reserved sequence')
+            for command in commands:
+                try:entry=await self.spool.get(command.operation_key)
+                except SpoolError as exc:
+                    if type(exc) is not SpoolError:raise
+                    entry=None
+                if entry is not None:
+                    if entry.command_bytes!=command.encode() or entry.database_generation!=binding.database_generation:
+                        raise SpoolConflict('retained GEO command bytes changed')
+                    continue
+                if not source_current:return commands
+                frozen,data,handler=await asyncio.to_thread(self.spool._validate,command,binding.database_generation)
+                await self.spool.authorize_command(context,frozen)
+                if not self._source_ready(binding) or not self.inventory.current(self.expected_watermark):
+                    raise SpoolConflict('GEO reservation authority changed')
+                await self.spool._write(self.spool._stage,frozen,data,handler,binding.database_generation)
+            return commands
+
+    async def advance(self,binding):
+        """One bounded continuation. Every effect uses its original durable key."""
+        if self.closed or not self._source_ready(binding):return False
+        if self.current():return True
+        async with asyncio.timeout(10):
+            source_current=True
+            try:await asyncio.to_thread(self.inventory.refresh,self.expected_watermark)
+            except ValueError:
+                self.complete=False;source_current=False
+                _LOG.warning('geo_bootstrap state=source_changed reason=geo_source_watermark_changed manifest_sha256=%s',self.plan.manifest_id)
+                if await asyncio.to_thread(self._metadata) is None:raise
+            context=self._context()
+            commands=await self._reserve(binding,context,source_current=source_current)
+            for command in commands:
+                try:entry=await self.spool.get(command.operation_key)
+                except SpoolError as exc:
+                    if type(exc) is not SpoolError:raise
+                    return False
+                if entry.command.encode()!=command.encode():raise SpoolConflict('retained GEO command bytes changed')
+                if entry.apply_state=='REJECTED_PRECONDITION':raise SpoolConflict('GEO native precondition rejected')
+                if entry.accepted is None:
+                    if not source_current or not self.inventory.current(self.expected_watermark):return False
+                    if entry.seal_state=='NOT_SENT':
+                        head=await self.spool.journal.head()
+                        if (head.reference.last_sequence if head else 0)!=command.sequence-1:
+                            raise SpoolConflict('GEO predecessor is not the exact accepted prefix')
+                        await self.spool.seal(context,command.operation_key,
+                            writer_generation=self.startup.config.writer_generation,predecessor=head)
+                    else:
+                        # UNKNOWN retains its original predecessor and identity.
+                        await self.spool.seal(context,command.operation_key,
+                            writer_generation=self.startup.config.writer_generation)
+                    entry=await self.spool.get(command.operation_key)
+                if entry.apply_state!='APPLIED' or entry.outcome_state!='DURABLE':
+                    await self.startup.source_dispatch.enqueue(context,command.operation_key,
+                        writer_generation=self.startup.config.writer_generation)
+                    _LOG.info('geo_bootstrap state=pending phase=%s command_sha256=%s',command.sequence,entry.command_sha256)
+                    self.complete=False
+                    return False
+            if not source_current or not self.startup.geo_gate.installation_current(binding,self.keys):return False
+            # A fresh relevant-source snapshot after remote outcomes and native
+            # activation is required; initial file/ACK alone cannot open imports.
+            await asyncio.to_thread(self.inventory.refresh,self.expected_watermark)
+            if not self._source_ready(binding):return False
+            with self.queue.connect() as db:
+                db.execute("UPDATE rkb_geo_bootstrap SET state='complete' WHERE id=1 AND plan_json=?",(self.plan_json,))
+            self.complete=True
+            _LOG.info('geo_bootstrap state=durable manifest_sha256=%s phases=%s',self.plan.manifest_id,len(commands))
+            return self.current()
+
+    def kick(self,binding):
+        if self.closed or self.task is not None and not self.task.done():return
+        async def run():
+            try:await self.advance(binding)
+            except asyncio.CancelledError:raise
+            except Exception as exc:
+                self.complete=False
+                _LOG.warning('geo_bootstrap state=pending reason=%s',type(exc).__name__)
+        self.task=asyncio.create_task(run(),name='rkb-fixed-geo-bootstrap')
+
+    async def aclose(self):
+        self.closed=True;self.complete=False
+        if self.task is not None:
+            self.task.cancel();await asyncio.gather(self.task,return_exceptions=True)
+        await asyncio.to_thread(self.inventory.close)

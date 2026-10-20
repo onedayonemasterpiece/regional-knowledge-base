@@ -231,3 +231,43 @@ durable exact capture result. It cannot allocate another backup or temporary PG.
 Unknown shutdown retains B and blocks promotion until that same owned shutdown
 is proved. Scoped tests use synthetic transfer/native peers; actual Kaggle
 capture, drill, provider readback and recovery remain separate acceptance.
+
+
+## Fixed opt-in GEO bootstrap
+
+The same private source-service config can include `geo_bootstrap` with exactly
+`manifest_path` and the canonical `manifest_sha256`. Keep the manifest0600 below
+its0700 nonsymlink parent. The existing `geo_manifest_operation_keys` must equal
+`geo-bootstrap11:<manifest_sha256>:0`,`:1`,… in exact payload order. Select this
+before initial route/genesis closure, together with the first empty snapshot
+configuration. This adds no public/admin RPC, native phase, notebook module,
+queue, credential or authority.
+
+`SourceGeoInstaller` is constructed with the same TargetServiceStartup, spool,
+writer, OAuth/Participants and source dispatcher. Its owned in-process task
+waits for the actual snapshot drill/verified pointer and current native history.
+Before any GEO intake it requires empty accepted/applied cursor zero and an
+unchanged empty remote head. It records one exact plan/owner/sequence/time,
+reserves contiguous commands under the existing intake lock, then uses ordinary
+remote seals, SOURCE_COMMAND dispatch, native receipts and durable outcomes.
+Each phase waits for the previous applied durable outcome. An unknown seal
+retains its original predecessor; cancellation/API restart preserves staged bytes
+and original operation keys. A changed plan cannot overwrite that state.
+
+A fixed read-only collector observes the existing Participants corpus path. It
+selects bounded metadata and hashes selected evidence in RAM; it exports no
+chapter, vector, original or credential. Its watermark includes required GEO
+items/dependencies/counts and source provenance. It excludes the old full-input
+header and non-GEO exclusion rows, so unrelated book/Story changes do not become
+GEO drift. SQLite data_version invalidates a cached observation after any commit;
+maintenance then rechecks the relevant subset. Required GEO drift blocks new
+acceptance/cutover while already accepted pending phases retain exact
+reconciliation. Coordinate only actual legacy GEO/graph writers when a drift
+requires a stable cutover interval.
+
+Fresh imports remain closed until every configured GEO outcome is remotely
+durable, the exact native activation prefix has established GeoReadGate, and a
+fresh post-activation source watermark matches. Delayed outputs/authority still
+use the existing fences. This is prepared implementation; native installation,
+actual source cutover and post-GC compact GEO recovery need their separate
+runtime proofs.
