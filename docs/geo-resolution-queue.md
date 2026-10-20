@@ -1,44 +1,37 @@
 # Geography enrichment: optional downstream queue
 
-## Применение в переработке 19.10.2026
+Updated 2026-10-20. Normative target: [single implementation handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md). Use the same PostgreSQL/pgvector corpus on Kaggle, existing DevCoveer controller and one outbound WSS connection. The source graph and optional geographic enrichment share that workflow; no new queue service or canonical location database is introduced.
 
-Нормативный целевой контракт: [единый файл агенту](prompts/rkb-scalable-kaggle-implementation-20261019.md) и [архитектура](designs/rkb-scalable-kaggle-architecture-20261019.md). Текущий runtime ещё не перенесён этой документационной задачей.
+## Ordinary ingestion needs no geo queue
 
-- Один PostgreSQL/pgvector corpus в Kaggle, BGE-only (1024 FP32 baseline, exact pinned BGE input≤512); небольшой durable control journal на DevCoveer.
-- Прямой исходящий WSS notebook→existing DevCoveer ASGI с двусторонними заданиями/результатами, durable ACK/RESUME и одной BgeQueue authority. Старые polling/локальный E5/Supabase инструкции не целевой deployment.
-- Fresh MCP import книг; перенос только historical/cartographic layers и согласованных зависимостей, со stable IDs/provenance и проверенным reanchor. Ручная работа не уничтожается из-за отказа от старого corpus.
-- Source-bound facts/dates/observations сохраняются без обязательной Story; эпизод/досье/Variant/private draft/independent case различаются. Один persisted research workflow, bounded compose, без квот и выдуманной драматургии.
-- Поиск accepted active book text и bibliography без per-book owner ACL; current withdrawal/revision, pixels/original/private draft grants и delivery audience остаются обязательными.
-- One canonical person/request/dialog, fair admission и confirmed result/hash ACK; Мира в PH расширяет existing typed adapter, не создаёт отдельный voice/IAM/queue.
+Use [location-first ingestion](location-registry.md). The calling model reads the source, searches existing locations, chooses an ID or creates a distinct place, and records evidence and geographical relationships. A map, coordinates, Street Story identity or queue completion is not required. Existing `poi_ref` graph nodes are source-side locations; `unresolved` means the external POI reference is absent, not that the source location is unusable.
 
-Численные protected gates сохранены: backend p95≤1000ms, MCP p95≤1500ms/hard2000ms, BGE Hit@5≥85%/@10≥90%, RU→DE@10≥85%, ≥30 held-out families, ≥100 sources/100000 chunks, storage≤80% steady/≤90% peak. Документ не является доказательством PASS.
+Use `book_ingest(stage).entity_candidates` during fresh import and `graph_stage` on accepted target material. `entity_list` searches labels, aliases and literal mentions; `graph_fetch` supplies bounded context. The model may add a source-backed `located_in` relation for a building/square/street/island/city. Web clarification stays separate in `research_sources`. Facts, dates and observations may exist without Stories.
 
-Основные entity, temporal, identity, provenance и ownership контракты ниже сохраняют силу. Их SQL/storage привязки переносятся на PG, а старый per-book search ACL трактуется согласно новому правилу выше. Карта, пользовательский профиль и физический POI не становятся новой канонической копией в RKB.
+## Purpose and decision boundary
 
-## Сохраняемый предметный контракт
+The existing downstream queue is a bounded adapter for changed owner-catalog/cartography dependencies. Its durable states make interrupted work resumable; they are not semantic acceptance or extra user approval steps.
 
-## Current rule (owner decision, 2026-10-10)
+A worker may read the owner catalog and save `candidate_discovery`. It leaves `awaiting_agent` with `identity_selected=false`; it never calls semantic stage/apply automatically. A unique name, external-ID hint or proximity is not a model identity decision. Lookup failure remains a bounded dependency state, not proof no place exists.
 
-The ordinary workflow is [location-first model ingestion](location-registry.md). The model reads the source, searches existing locations, chooses an ID or creates a location, and records evidence and geographical relationships. No map, coordinates, Street Story identity or geo-queue completion is required. Existing `poi_ref` graph nodes serve as source-side locations; `unresolved` means an external POI reference is absent, not that the source location cannot be used.
+The model can directly enrich an existing entity through `graph_stage` with its `entity_id` and explicitly selected existing `canonical_poi_ref` or `map_refs`. Check the current producer authority and exact key. Preserve source identity/mentions. Today's coordinates do not prove a historical footprint; a map URI does not certify accepted geometry, site/generation identity or publication rights.
 
-Use `book_ingest(stage).entity_candidates` during import and `graph_stage` for accepted material. Both preserve source mentions. `entity_list` searches labels, aliases and literal mentions; `graph_fetch` gives context and neighbors. Model-authored `located_in` connects a building, square, street, island, city or other place. Web clarification is recorded separately in `research_sources`.
+## Existing operations and bounded scheduling
 
-## Why the queue still exists
+`geo_status`/`geo_get` inspect work. `geo_claim`, `geo_stage`, `geo_apply` support explicit external processing without becoming ordinary book-import steps. Keep current actor authorization, exact evidence scope, dependency versions, lease fencing and idempotent accepted receipts. A model-selected existing owner ID is not rejected merely because its present name differs from the source's old spelling.
 
-The already deployed queue is a bounded adapter for later owner-catalog and cartography changes. Existing jobs, identities and receipts are retained; no new approval workflow is required for imports. Its durable states make interrupted downstream work resumable, but they are not semantic acceptance rules.
+`geo_recheck` opens a new relevant attempt only for a meaningful dependency change. Target-source mentions may populate intents without reimport/re-embedding. Separate candidate discovery from source activation/indexing; do not poll identical dependencies repeatedly. A stale owner/cartography context requires recheck, not reuse of its old decision. The queue is outside the Live query path and cannot starve interactive or accepted source work.
 
-The worker may read the owner catalog and store `candidate_discovery` with candidate references. It leaves the attempt in `awaiting_agent`, with `identity_selected=false`, and never calls semantic stage/apply automatically. A single identical name, a matching external-ID hint, or proximity is not a model identity decision. Lookup failure remains a bounded dependency condition, not an assertion that no location exists.
+## GEO cutover and state retention
 
-The importing model can directly enrich a known entity through `graph_stage` using its `entity_id` and an explicitly selected `canonical_poi_ref` or `map_refs`. The canonical owner reference must exist; current coordinates are not retroactive proof of a historical footprint. Source-side location identity and its existing mentions remain unchanged.
+Only whitelisted GEO data and minimal provenance migrate; [cutover details](migrations/rkb-layers-only-cutover-20261019.md). Old books, stories, drafts, contributions, cases and their pending delivery/discovery jobs are not target bootstrap content. Do not replay an old source command merely because a queue row survived.
 
-## Existing optional operations
+Production fresh imports require the minimal layer/place identity manifest, aliases, owner refs and CRS first; pre-manifest A+B imports are isolated fixtures only. Bulk rasters/geometry can follow through this existing queue with explicit unresolved availability and no reimport of accepted books. Any retained/reconstructed GEO intent must refer to transferred GEO identities and verified current dependencies; a legacy book evidence reference remains `legacy_unanchored` until exact SHA/edition/page mapping. Keep infrastructure identity/configuration and live control-plane receipts according to the bounded recovery contract. Byte-cache/journal GC must not discard the sole recovery record for an accepted nonterminal target operation; historical jobs do not justify unbounded hot-log retention.
 
-`geo_status`/`geo_get` inspect work. `geo_claim`, `geo_stage`, `geo_apply` support explicit external processing; they are not steps users must request when adding a book. Stage/apply preserve actor authorization, evidence scope, lease fencing and replay integrity. An explicit model-selected existing owner ID is not vetoed because its current name differs from an old spelling.
+## Ownership and visibility
 
-`geo_recheck` can reopen relevant work after a genuinely changed dependency. Backfill can populate queue entries from existing source-side mentions without reimporting books. Candidate discovery, source import and vector indexing remain independently bounded. Do not run repeated identical checks or promote optional verification into an import gate.
+RKB owns source evidence and source-side places; Street Story owns canonical physical POI identity; Cartography owns map observations and geometric interpretation. None writes replacement IDs or canonical state in another owner's store. No copied modern-map corpus or embeddings for every geographic primitive are required.
 
-## Boundaries
+Accepted active book text/bibliography and accepted illustration renditions use the public projection. Proof scans require current owner/demo/expert/local_historian `scan_proof_read` authorization materialized by verified-category changes under [rights.md](rights.md), with no category-name fallback or recreation after manual revoke; full originals/private drafts remain separate. Source withdrawal/current revision/audience are rechecked on reads and delivery. A public POI is not a proof-pixel grant. Updating a place does not mutate source text or trigger a full BGE reindex.
 
-RKB owns evidence, stories, mentions and its source-side place graph. Street Story owns accepted physical POI identity. Regional Cartography owns source-specific map observations and geometric interpretation. No component creates replacement canonical IDs on another component's behalf. No extra Supabase account, graph database, copied modern map or embeddings for every cartographic primitive are required.
-
-Existing search latency and source-fidelity requirements remain unchanged. This queue is not on the Live query path. Updating a location does not change book text or trigger full vector reindexing.
+Acceptance preserves map-free ingestion, exact source identity, explicit model selection, stale-dependency fencing, current access, unchanged owner keys, idempotent retry and honest unresolved output. Old queue implementation evidence does not establish target deployment.

@@ -1,171 +1,38 @@
-# Cross-project integrations
+# Cross-project integration contracts
 
-## Target integration contract — 2026-10-19
+Updated2026-10-20. The [single handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md) is the target; prior release reports are scoped historical evidence. Reuse stable references and narrow owner APIs, without copying product databases or adding a new integration service.
 
-Use [the scalable Kaggle architecture](designs/rkb-scalable-kaggle-architecture-20261019.md) and [implementation handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md) as the normative target. The original body below preserves baseline capabilities and dated reports, not proof of a current production deployment.
+| Product | Owns | RKB relationship |
+|---|---|---|
+| Regional Knowledge Base | Source provenance, accepted knowledge, historical entities, actual stories/variants, independent disagreement cases, source needs. | Typed evidence/ref API and durable request/receipt lifecycle. |
+| Street Story | Physical POI identity, aliases, geometry/lifecycle decisions and its own POI arbitration. | Source evidence events, model-selected POI links, poi_context; RKB independent case may link POI but is not owned by POI arbitration. |
+| Regional Cartography | Historical map/layer interpretation, georeferencing/geometry and calibration. | Versioned layer refs/temporal place context, unresolved/outside_coverage; do not fabricate coordinates. |
+| Projects Hub / Mira | Project routing, tasks, one live voice runtime and user-facing screen/voice. | Existing live-interaction + expanded typed RKB provider; RKB owns research need, PH owns task execution/deadline. |
+| VibePublish | Native provider operations, uploads/media-store entries, Telegram/VK credentials, rate limits and receipts. | One existing uploader, binary ingress, exact operation refs/readback; RKB owns source/figure semantics and publication intent. |
+| Wonderful Lections | Lecture/editorial product. | Sourced research, historical illustrations, page provenance and existing Vibe asset bridge; no coupling to its business DB. |
 
-One PostgreSQL/pgvector with BGE on Kaggle owns the RKB domain data. E5 and the former Supabase retrieval plane are removed. DevCoveer retains MCP/ASGI, authorization, durable request/receipt control and the existing BgeQueue/controller. The notebook opens outbound WSS to the existing DevCoveer ASGI broker. This connection reuses existing request identity/recovery and does not add a second queue, relay service or corpus authority.
+## Clients and request completion
 
-Accepted book text and bibliography are publicly searchable without a book-owner ACL. Original files/pixels, reproduction rights, private drafts and writes are separately authorized. A public source does not make a personal request or draft public. Stable references carry identity, not authority, secrets or permanent signed URLs.
+Kaliningrad Base is the single RKB Slack bot; Dot is a replaceable executor. Personal MCP and Mira need no mandatory Slack intermediary. All routes share verified person, per-dialog order, equal-person fairness and resource permits. Real user request accepted, domain Saved and provider delivered/ACK are separate durable facts. Unknown delivery reconciles before resend; another dialog continues.
 
-### Clients and delivery receipts
+Expand PH's current search-only adapter with resource-bound transport/identity, versioned pending/result/artifact envelopes, allowed research operations and receipt continuation after voice reconnect. Keep the Live tool surface small (`knowledge_search`); progressive research capability belongs to the typed owning-product adapter, not an indiscriminate dump of admin tools into voice. No second voice app/session/IAM/queue. A spoken story reads the saved body or saved adaptation, not praise/summary invented during delivery. Evidence and bibliography appear on screen; proof follows its audience policy.
 
-Mira remains the Projects Hub assistant and an external RKB client. The current PH/live-interaction adapter is search/evidence-only; extend that existing adapter and RKB resource to support pending/request/result/ACK, authorized proof, stories/dossiers and independent cases. Existing search support does not establish conversational completion or case-edit capability. Restricted operations use real resource-bound grants; PH never forwards its own bearer token or invents an owner identity.
+## Evidence and media contracts
 
-Kaliningrad Base is the single RKB Slack bot. Mira is an optional additional client, not a required intermediary. All clients share verified person/dialog identity, fairness, sequence and resource admission; there is no Slack-only scheduler.
+Use stable opaque `knowledge://documents/...`, `knowledge://illustrations/...`, POI/layer refs and native provider entry refs. Identity is not authority. No permanent signed URLs or bearer tokens inside refs. Source activation and outbox event commit together; downstream map/provider downtime does not roll back a valid book. Exact source revision/payload/operation keys and native receipts make retry idempotent.
 
-Reuse late draft PR151 at `adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4`: person fairness, dialog/explicit-ID guards, native client result ACK, BGE consumer checkpoints and private drafts are branch-level material to verify during integration, not production PASS. Intake ACK, result commit and final delivery ACK/readback are distinct. Reconnect/retry resumes the accepted request and saved result, not a new Variant, case or publication. An uncertain external send is reconciled before resend.
+Source facts, people, dates, observations, GEO, stories and disagreement proposals share one bounded reading/research frontier. Reconcile semantic identity before linking entities/POIs; nearby coordinates/name similarity does not suffice. Preserve graph_fetch/related/stage, poi_registry search/get/select/create and poi_context without whole graph dumps. Accepted source-side places can remain unmapped.
 
-### Domain boundaries
+Illustrations are public; stripe quote/page proof requires owner/demo/expert/local_historian capability and suitable delivery route. Full originals and private drafts are separate. A mirror's private storage location does not determine the public class of a returned illustration. Keep source, display, provider rendition and delivery SHA separately; exact originals require exact SHA, transformed media need their own native rendition readback. Do not require equality of different renditions or pHash as proof. Missing provider digest fails closed.
 
-Street Story owns canonical POI identity/state and its POI arbitration. RKB owns source evidence, historical entities and independent disagreement cases with optional POI/Story links. The client submits a typed decision to the actual owner and records its receipt; it does not create another truth copy. Existing graph_fetch/related/stage, poi_registry/context, bounded discovery and finalized-source delivery remain capabilities to preserve.
+VibePublish remains uploader and provider limiter. Owner-provided `TELEGRAM_RKB1`/`TELEGRAM_RKB2` are the initial independent session pool for direct Kaggle reads, subject to stage-0 authorization/archive-access checks (the second is currently empty). One exclusive session lease per run limits simultaneous runs together with Kaggle capacity; no cloned auth keys, second uploader or unbounded PDF in model JSON. Topic2 originals/topic4 images are configuration verified during implementation, not credentials copied here.
 
-Source facts, dates/observations, episodes, entities, POI and disagreements use one research pass and shared search/read receipts. A useful fact does not require a narrative Story. Existing angle/gaps/Variant serve editorial work; private drafts remain private. Only agreed historical/cartographic layers migrate, with checked source reanchoring; books/chunks/embeddings are freshly imported.
+Same-host RKB↔Street Story/Vibe calls use dedicated target-scoped identity on loopback/Unix socket. Do not use owner browser OAuth, public detours or another proxy. Kaggle must reach the owner via authenticated approved transport; its localhost is not DevCoveer.
 
-Same-host owner calls use the existing machine identity/loopback contract. Kaggle localhost cannot stand in for Street Story's host. Source activation commits its outbox event and remains independent of downstream availability.
+## Public discussion and tasks
 
-### Media and public projections
+Preserve VK editorial queue/scheduling/cancellation, registered-post comment ingestion/moderation and subscriptions through VibePublish. Actual provider allowlist/token permissions must be verified; generic read.thread is not VK comments support. RKB retains case question/arguments/conclusions and history; PH task_done does not resolve a research need automatically.
 
-Wonderful Lections retains sourced research, historical illustrations and page provenance. VibePublish remains the actual provider/uploader and secondary media mirror. Reuse its binary ingress, stable operation/media-entry receipts and resource/destination grants. RKB does not acquire a second Telegram session or provider limiter; VibePublish owns provider/account limits.
+Astro static pages use public selected projection, permanent opaque slugs, no login/backend dependency, current and last-supported conclusion, exact published revision and last-known-good output. Real URL exists only after first successful readback. Late build/revocation is generation-fenced and purges/rebuilds HTML/JSON/OG/assets. Restricted proof/private drafts never enter the export.
 
-Direct downloads, authorized source/proof reads and case construction do not depend on new Telegram sessions. Mirror acceptance uses resource identity and native receipts, not source/delivered image SHA equality or compulsory visual matching; exact PDF SHA remains a distinct source-deduplication rule.
-
-Public disagreement pages are static desktop/mobile projections without login, with stable opaque slugs and no private drafts or restricted pixels. The first URL requires actual upload/readback. Failed updates retain last-good unless revoked; desired/published revision and generation fences prevent stale publication. Domain acceptance, client E2E, provider delivery and page readback are separate checks.
-
-Preserve all nine [protected requirements](../.devcoveer/requirements.json) with the approved BGE/public-accepted-text revision; branch metadata and historical reports do not replace exact-SHA restore/load/client acceptance.
-
-## Preserved implementation and historical record
-
-
-## Principle
-
-Synergy comes from shared identity + stable resource references + narrow service contracts, not from one database or one giant MCP.
-
-## Wonderful Lections
-
-Use Regional Knowledge Base for:
-- sourced research while writing lectures;
-- historical illustrations;
-- citation/page provenance.
-
-Wonderful Lections already has a verified VibePublish asset bridge. For media mirrored to VibePublish, Knowledge Base can return the stable media-store entry reference and the bridge can obtain a temporary verified asset. Long term, Wonderful Lections should also accept a direct `knowledge://illustrations/<id>` source after authorization.
-
-## Street Story
-
-Street Story is the canonical owner of the regional POI graph, POI aliases,
-POI lifecycle/location identity, atomic POI claims, contradiction ledger and
-expert arbitration state.
-
-Knowledge Base remains the authority for book/journal provenance and exact
-page/region evidence. It also owns the small accumulative knowledge projection for
-historical entities: people, organizations, events, historical threads and
-source-side places. A source-side place can exist without a map, coordinates or
-a Street Story POI. Model-selected physical POI references enrich the same entity;
-see the current [location-first policy](location-registry.md). During book ingestion it may extract
-evidence-backed POI fact candidates and evidence-backed person/event relations and
-deliver POI evidence asynchronously after a successful finalize.
-
-The two graphs are not competing copies: Street Story owns POI identity; Regional
-Knowledge owns cross-source historical evidence/navigation and references POIs by
-stable external identity.
-
-Never copy the whole corpus into Street Story. Deliver only typed evidence events
-with stable knowledge:// references and inherited access scope.
-
-See [POI evidence bridge](poi-integration.md). Since 2026-10-19 a delivery worker sends finalized book POI evidence from the outbox to Street Story's loopback intake with a dedicated service key (owner-granted for the owner's private books); see its "Delivery to Street Story" section.
-
-## Projects Hub
-
-Projects Hub is the natural user-facing orchestration surface:
-- one Live assistant;
-- project selection/routing;
-- Knowledge Base read capability alongside other project tools.
-
-It consumes the Knowledge Base Live profile (`knowledge_search`, a compact evidence pack in one call) through `live-interaction`. The full profile separately exposes `search` and `fetch`. For private knowledge, Projects Hub holds a user-approved, resource-bound Knowledge OAuth delegation; it never forwards its own bearer token. Projects Hub does not become the identity provider.
-
-## VibePublish
-
-VibePublish is a secondary media mirror/catalog and publication layer. Regional Knowledge Base owns:
-- document/page/illustration semantics;
-- ACL and rights;
-- object-store source.
-
-VibePublish owns:
-- its provider/media-store entry;
-- Telegram/provider identity;
-- exact-byte evidence;
-- optional model preview.
-
-The VibePublish media-store origin metadata binds an entry back to a stable Knowledge resource without granting Knowledge access.
-
-For illustration mirroring, use the illustration reference and a stable request
-key based on owner/document/revision/illustration identity. Do not compare source
-and delivered image SHA values or require image-similarity verification before
-accepting the mirror. Compression or cropping must not become a delivery gate.
-Optional crop SHA is technical provenance only. If visual deduplication is needed
-later, reuse the existing perceptual-image tools from other projects; exact-byte
-SHA does not establish visual sameness and ordinary pHash alone does not cover
-partial crops. Exact PDF source deduplication remains a separate SHA-based rule.
-
-The existing indexing owner also reconciles active private illustrations through
-VibePublish binary asset ingress and media-store put/status/search/get. It persists
-native operation IDs and verified entry references; failed provider/grant reads
-leave missing mirrors recoverable without holding activation or vector indexing.
-Only the RKB owner named in the private resource-specific OAuth grant is eligible.
-Destination alias/topic stay in that runtime grant, and token rotation is written
-atomically. RKB owns no Telegram session or second provider limiter.
-
-## Cross-service references
-
-Use typed stable opaque references, for example:
-
-```text
-knowledge://documents/<uuid>
-knowledge://illustrations/<uuid>
-vibepublish://assets/<id>
-```
-
-A reference is identity, not authority. Receiving a reference never bypasses the target service's authorization check.
-
-## Authorization pattern for integrations
-
-For private user data the integration itself must be authorized:
-
-```text
-Wonderful Lections / Street Story / Projects Hub
-        |
-        | OAuth client of Knowledge resource
-        v
-shared application/platform identity
-        |
-        | same stable platform user UUID, Knowledge resource
-        v
-Regional Knowledge MCP/API
-```
-
-This makes cross-product synergy explicit and revocable. A service identity is
-not a substitute for the user's grant.
-
-See also [accumulative knowledge graph decision](reports/accumulative-knowledge-graph-decision-20261004.md).
-
-## Implemented entity/POI discovery MVP
-
-`graph_fetch` returns one authorized entity and at most 20 one-hop evidenced
-relations; `graph_related` reuses accepted retrieval around its authorized aliases.
-`graph_stage` writes model-authored candidates/aliases with exact evidence. These
-three narrow tools are available only in the regular MCP profile; Live stays
-search/evidence-only. No graph dump or automatic narrative service exists.
-
-The background discovery adapter reads Street Story's local canonical identity
-projection (`RKB_STREET_STORY_POI_DB`), reading only POI identity/name aliases.
-No end-user bearer, book text or private claim is sent to another MCP. The adapter
-never creates POIs and never copies claims/location/lifecycle records. Alias-set
-versions on already referenced canonical POIs schedule bounded reverse discovery.
-Separately, the implemented `poi_registry(search|get|select|create)` bridge calls
-the configured Street Story owner service with its dedicated service credential,
-never an end-user MCP bearer. The calling model explicitly selects/creates a
-physical POI from an evidence-backed RKB entity; the owner receipt links the
-same entity to its canonical POI. `poi_context` provides authorized evidence
-for an existing POI. This optional integration is not an activation prerequisite;
-a missing configuration or owner service is an explicit integration blocker,
-not a reason to invent an identity. See [model-selected POI linking](poi-model-link.md).
+Do not import old non-GEO content while preserving these functions. Reuse PR151 code only after current-diff review; branch-level tests are not production PASS. Verify at least one real non-owner across personal MCP/Slack/Mira, authoritative POI/map receipt, actual provider result/hash ACK and safe public page. [Rights](rights.md), [POI](poi-integration.md), [case collaboration](design/rkb-kaliningrad-base-collaboration-20261018.md).

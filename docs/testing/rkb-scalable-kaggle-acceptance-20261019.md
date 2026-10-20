@@ -1,8 +1,10 @@
-# Приёмка новой RKB: PostgreSQL, WSS, stories и пользовательские каналы
+# Приёмка новой RKB: PostgreSQL, WSS, истории и пользовательские каналы
 
-Дата: 2026-10-19. **NOT RUN**: план проверок будущего внедрения, не новый runtime report.
+Обновлено: 2026-10-20. **NOT RUN**: план будущего внедрения, не runtime report.
 
-Самодостаточный [handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md) содержит тот же нормативный набор gates. Этот файл предназначен для отметок конкретных запусков с exact SHA/config/corpus и evidence. Условия отличаются от исходного SQLite/Supabase/E5; старые PASS не переносить автоматически.
+Самодостаточный [handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md) содержит тот же нормативный набор gates. Этот файл предназначен для отметок конкретных запусков с exact SHA/config/corpus и evidence. Числа и сценарии ниже синхронизированы с его §14; нумерация сохранена для прямой сверки. При изменении критериев обновлять оба места в одном PR.
+
+Аудированная документационная база — `a8cf41b50b8ccb62409d046d009d53c09d74b1d7`. Перед запуском фиксировать фактические source/runtime heads. Условия отличаются от прежнего SQLite/Supabase/E5; старые PASS не переносятся автоматически. Дополнительные предметные сценарии сохраняет [ПМИ разногласий](rkb-disagreement-pmi-20261018.md).
 
 ## 14. Приёмка: обязательные численные gates и конкретные отказы
 
@@ -28,7 +30,17 @@
 
 В latency отчёте показывать p50/p95, end-to-end и этапы queue/dispatch/wire/SQL/encode/render; cold/warm и cache-hit/miss отдельно, error/pending denominator не исчезает. Не выдавать retrieval Hit@K за accuracy готового исторического ответа. Для ANN сравнить с exact vector search на той же выборке; фильтрация tenant/source/revision после ANN может уменьшить recall, что требует bounded refill/настройки, а не «в корпусе ничего нет».
 
-### 14.2. Минимальная матрица конкретных рисков
+### 14.2. Какие проверки что разрешают
+
+| Граница | Обязательное подтверждение |
+|---|---|
+| Production GEO/runtime cutover | Protected scale/capacity/dense/latency/source gates; DUR/FEN/WSS/REC, MIG, IMP, STO/MET/CAS, SRC/IDX, PRF rights, ID-1, fair request core и один настоящий non-owner personal MCP. Новые знания/истории/cases обязаны работать до переключения. |
+| Включение конкретного нового канала/функции | Реальные CHN/Slack/Mira (включая phone/voice), VK, PUB/Astro, NEED/PH задачи относятся к их release. Пока NOT RUN/BLOCKED, соответствующая новая функция не включается и не объявляется готовой. Регрессия **уже включённого** канала блокирует переключение; его нельзя молча отключить ради cutover. |
+| Завершение всего задания владельца | Все перечисленные в §3 функции реализованы и прошли собственные applicable gates. Частичный core cutover не является завершением всего проекта; оставшиеся каналы остаются явной незаконченной частью, не исключённым scope. |
+
+Для 100 book-equivalent / 100 000 chunks использовать **изолированную benchmark DB/fixture**, не публичный tenant и не новую IAM-систему. Manifest описывает разрешённые originals/source units и текущие chunk/tokenizer/BGE/lexical версии. Старые chunks/vectors не зачитываются в target gate. Масштабный load fixture может пройти только новый source/chunk/retrieval путь без дорогой story/case композиции; это не production import и не отмена её функций. Контролируемое синтетическое увеличение допускается лишь как явно обозначенная инженерная нагрузка, не доказательство dense quality или 100 реальных книг. Dense held-out families и языковые slices проверять на реальных source-grounded фрагментах новых passages; не считать копии одним за другим независимыми доказательствами. Test DB никогда не активируется в public search, удаляется по bounded fixture retention.
+
+### 14.3. Минимальная матрица конкретных рисков
 
 | ID | Сценарий | Ожидаемый наблюдаемый результат |
 |---|---|---|
@@ -43,16 +55,25 @@
 | WSS-4 | Expired claim / heavy encode / cross-process enqueue | Stale claim не убивает warm worker; control/ping живы; очередь из другого процесса доставляется promptly. |
 | REC-1 | Concurrent backup и записи | Restore имеет подтверждённый внутренний cursor и нужный WAL; replay непрерывен. |
 | REC-2 | Corrupt snapshot / wrong version / несовместимый codec | Candidate не становится canonical; доступна прежняя verified baseline или явный controlled recovery. |
-| REC-3 | Yandex candidate upload/verify fail | Старая baseline сохраняется, compaction учитывает её watermark и незавершённые consumers. |
-| REC-4 | Потеря DevCoveer control disk | Восстановление соответствует согласованному RPO; нулевые потери не приписаны суточному backup. |
+| REC-3 | Yandex candidate upload/verify fail | Старая baseline сохраняется, remote tail GC учитывает её watermark и consumers; local sealed spool может compact независимо. |
+| REC-4 | Потеря DevCoveer control disk | Все final accepted/saved восстанавливаются из verified remote tail; локальный received остаётся pending, epoch/UNKNOWN/grants/receipts восстановлены. |
+| REC-5 | Remote tail outage / local byte cap / старый daily base | Нет false accepted/Saved, backpressure до переполнения; local GC не ждёт daily base, remote GC сохраняет покрытие. |
+| REC-6 | Expired operation ID / same key different hash / UNKNOWN старше 4 h | Expired не исполняется заново, hash conflict явный, UNKNOWN не исчезает по TTL. |
+| REC-7 | Crash на upload/manifest/control checkpoint boundary | Выбирается только целая sealed chain без gaps; orphan не становится принятой командой; outcome receipt восстанавливаем. |
+| REC-8 | Base на другом collation/runtime; derived BGE после иной batch/thread конфигурации | Несовместимый index repair до READY; canonical outcome неизменен, projection lag честный и quality gate сохранён. |
+| REC-9 | Много provider UNKNOWN без readback | Нет autoresend/false delivery; scoped explicit resolve, unrelated imports/saves работают в своих budgets. |
+| REC-10 | Старый worker завершил presigned upload после epoch change | Orphan не становится current; DELETE/admin недоступен notebook, large bytes не попали в control spool. |
 | IMP-1 | Fresh A→B, B→A и concurrent activation | Каждая revision активирована корректно, research frontier сохранён, позднее основание замечено по cursor. |
 | IMP-2 | Retry stage/finalize/reextract/rename | Нет дубля book/findings/Story/Variant/case; corrected metadata не меняет corpus. |
 | IMP-3 | Table/caption/footnote без эпизода | Facts, dates, observations, entities и exact evidence доступны, zero new story допустим. |
 | STO-1 | Эпизод через windows/страницы | Сохранённое continuation приводит к одному связному досье, не набору chunk stories. |
-| STO-2 | One-sentence episode / everyday practice | Нет ложного отказа из-за длины, отсутствия конфликта или точного дня. |
+| STO-2 | Короткий связный рассказ / everyday practice | Нет ложного отказа из-за длины, отсутствия конфликта или точного дня. |
 | STO-3 | Новый источник / contradiction / uncertain identity | Не выдуманы причинность и единый эпизод; case независим; exact approved variant не переписан. |
-| STO-4 | Spoken rendering / exact source | Нет оборванного слова/оговорки и повторной attribution wall; source quote/offsets не изменены. |
+| STO-4 | Spoken rendering / exact source | Читается сохранённый body/корректная адаптация, не summary-prefix; нет утраченной развязки/оговорки; bibliography отдельно, exact source неизменен. |
 | STO-5 | Инструкции или команды внутри source text | Источник сохранён как данные/evidence; его текст не меняет actor, grants, workflow или инструменты агента. |
+| STO-6 | Body отсутствует / `variants=[]` / compact get | Кандидат явно без рассказа; ни рейтинг, ни summary не выдаются за narrative. Достаточный эпизод обязан сохранить default body. |
+| STO-7 | Save → retry → restart → get/search/read-export/voice | Один exact body/revision/hash, доступен по Story read scope до publish_ready; private draft не раскрыт. |
+| STO-8 | Заголовок «Как/Почему» при известном лишь результате | Честный title/needs_context, ни сочинённого механизма, ни оценки потенциала вместо body. |
 | MET-1 | Calendar/units/people boundary | Julian/Gregorian precision, exact decimals, period/method, тёзки и historical aliases не нормализованы с потерей смысла. |
 | CAS-1 | Третий источник/merge/новый аргумент после вывода | Stable subject case, aliases и evidence history; новое основание явно вне старого based_on. |
 | CAS-2 | Модель через личное подключение / ошибочная identity | Нет ложного human support; attribution_review_required адресно, история сохранена. |
@@ -60,10 +81,15 @@
 | MIG-2 | Legacy anchor / другое издание / поздний delta | Нет ложного reanchor; layer writes accounted; book corpus не мигрирован. |
 | MIG-3 | Rollback после target writes | Новые принятые вклады сохранены; whole old DB не затирает target tail. |
 | SRC-1 | Public text search / stale reader / withdrawal | Все разрешённые active accepted book texts доступны, stale/revoked material не возвращается; min_data_seq соблюдён. |
+| IDX-1 | Broad/scoped prepared query на 100k+ chunks, большие stories | EXPLAIN/latency подтверждают bounded SQL, indexable ANN, keyset catalog и batch hydrate; нет full-corpus Python path. |
+| IDX-2 | Новая revision / body update / shadow rebuild / withdrawn source | Инкрементальная projection и dirty revision работают; stale output запрещён, peak ≤90%, gates повторены. |
+| IDX-3 | Autovacuum/maintenance/snapshot при import+search | Search reserve/deadline сохранены; maintenance не запускает без нужды full reembed/REINDEX. |
 | SRC-2 | Dense vs exact ANN / filtering | Recall и eligible top-K измерены; empty after filter не выдан за отсутствие evidence. |
 | PRF-1 | PG corpus adapter / revoked pixel grant | Proof работает на target, unauthorized preview/full page не строится и не отправляется. |
 | PRF-2 | Preview retained / late polygon / rerender | Hash/transform/generation совпадают; lost preview требует новый locator task. |
 | PRF-3 | Mixed ready/pending/failed pages | Успехи возвращены по items, continuation сохранён, actual MIME верен. |
+| PRF-4 | Owner/demo/expert/local_historian и обычный читатель | Все получают illustration; первые четыре категории при scope получают proof, остальные — denial; full PDF не открыт. |
+| PRF-5 | Full page labelled illustration / shared-channel request | Серверная classification/geometry и current audience закрывают обход; public cache не содержит proof. |
 | ARC-1 | Oversize/stream break/FLOOD_WAIT/duplicate upload | Ресурсы ограничены, bytes/hash проверены, independent session leases соблюдены, receipt reconciled. |
 | QUE-1 | Один пользователь с многими dialog и explicit IDs | Canonical-person fairness без обхода fair head. |
 | QUE-2 | UNKNOWN delivery / новая реплика / cancel | Порядок своего диалога сохранён, другие люди работают, подтверждённые эффекты не удалены. |
@@ -80,12 +106,3 @@
 Это набор различающих сценариев, а не предписание создать по сервису/fixture на строку. Повторяющиеся механизмы проверяются одним meaningful тестом с несколькими условиями; существующее доказательство переиспользуется для неизменённого кода.
 
 Тесты с реальными источниками по умолчанию используют isolated case/corpus fixture и один test_run_id. Не публиковать вымышленные экспертные мнения в live cases, subscriptions или VK. Если требуется canonical mutation, заранее baseline/allowed effects и узкая idempotent CAS compensation своих действий, сохраняющая поздние реальные вклады; rollback_conflict не лечится force overwrite. Component tests не требуют подделывать Slack event; actual user-sender E2E отдельно и без impersonation.
-
-
-## Формат отчёта исполнения
-
-Для каждой применимой группы: status PASS/FAIL/BLOCKED/NOT RUN, exact code/contract/schema/model/tokenizer revisions, corpus/source revisions, run timestamps, sample size, errors/pending denominator, latency percentiles, measured storage/peak и artifact/readback. Для story — source-grounded blinded pairs и замечания владельца; текст приватных источников в публичный GitHub отчёт не копировать.
-
-Соблюдать минимальность: component invariants до реального provider E2E, переносимые evidence для неизменённых механизмов, только meaningful tests против конкретных рисков. Полный тест matrix не является обязательством построить новый test-service или запускать все внешние сценарии после каждой docs-правки.
-
-[Исходная ПМИ разногласий](rkb-disagreement-pmi-20261018.md) сохраняет детальные пользовательские сценарии в части, совместимой с новым handoff. [Массовая готовность](../mass-ingestion-readiness.md) и protected manifest сохраняют численные пороги.

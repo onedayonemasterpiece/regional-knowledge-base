@@ -1,58 +1,44 @@
 # Durable archive read continuation
 
-## Target durable read continuation (2026-10-19)
+Updated 2026-10-20. Target contract: [single implementation handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md). This document describes one resumable read lifecycle across the DevCoveer control journal and Kaggle processing; it does not claim the new deployment is complete.
 
-**Target contract, not deployment evidence.** Follow the [single handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md). Processing moves to Kaggle; callers retain one durable request lifecycle without a second archive workflow.
+## Admission and identities
 
-Persist request/attempt identity, exact source/entry/hash, actor/audience/pixel scope and dependency revisions before I/O. Return bounded pending and resume the same work from a new chat/process. Status reads do not create imports, semantic requests or publications.
+Persist the logical request, attempt key, exact source/entry/hash, artifact purpose, actor/audience/scope and dependency versions before provider I/O. Commit admission before returning an operation identity. A bounded `pending` response is not a missing-original verdict. A new chat/process resumes the same work; status reads never create a fresh import, semantic request or publication.
 
-Preserve keyed provider receipts where supported. Direct Telegram reads do not automatically inherit Vibe keyed-get guarantees: restarted transfer may repeat bounded chunks while one logical result is accepted. Do not claim exactly-once network transfer or invent provider operation IDs.
+The Vibe keyed-get path stores the opaque owner/issuer/archive-entry scope, random request key and provider operation ID. Repeating the request rechecks current provider authorization/binding and resumes the same operation. An operation-ID conflict fails closed. Lost replies, process restarts and unknown provider outcomes do not authorize a fresh key. Use the existing dedicated same-host service identity, not a user's OAuth or owner bearer.
 
-Separate byte verification, render readiness, locator acceptance, artifact readiness, result acceptance and external delivery. Save exact accepted payloads/IDs before durable success; retry/failover restores them. Stale new submissions are fenced, already accepted commands replay.
+Direct Kaggle Telegram reads use exact registered native locators and genuine separately authorized sessions. They do not automatically acquire Vibe's keyed-get guarantees. Restart may reread bounded byte ranges; only one logical verified result is accepted. Do not claim exactly-once network transfer or invent provider operation IDs.
 
-Recheck current source/pixel permissions on cache/callback/delivery; history is not a permanent grant. Partial successes remain available without exposing denied inventory. Retain preview/render dependencies until locator callbacks are terminal; image ACK alone is not GC.
+## Read, render and result are different states
 
-Pending/unknown outcomes reconcile the same attempt. Confirmed transient failures use persisted bounded retry/cooldown; FloodWait releases capacity until retry. Auth/digest failures are not repaired by new request keys. Verified asset expiry follows its exact source continuation, not a new send.
+Distinguish verified original bytes, render readiness, accepted localization, artifact readiness, accepted result and external delivery. Persist exact accepted payloads and IDs through the existing fenced controller; a local Kaggle commit or an image send alone is not durable acceptance. Current attempts reject stale new writes while replaying already accepted commands.
 
-Existing Vibe guarded terminal blocked recovery for telegram_transport_unhealthy/provider_read_deadline uses a persisted next key and15-minute cooldown; verified-asset HTTP404/410 is a separate expiry path. Preserve the [released fix](../reports/illustration-audit-remediation-20261019.md). Attempt/receipt identity survives ordinary cache cleanup.
+A locator is bound to source SHA/revision, page, render hash/dimensions, crop/rotation/transform, quote/span and pixel scope. Retain the exact preview/render or an exactly reproducible descriptor until locator callbacks are terminal. Image delivery ACK is not permission to evict outstanding localization input. If the same preview cannot be recovered, start an explicit new render/localization generation and reject old callbacks.
 
-## Retained keyed-Vibe baseline
+Multi-page or multi-item operations return allowed completed results with per-item `ready`, `pending`, `unavailable`, `denied` or `failed`. Do not discard a verified page because another page is slow, or reveal inaccessible inventory in an error. Deliver real MCP ImageContent with actual MIME and separate canonical/provider/delivery hashes.
 
-Following sections describe the prior keyed-get implementation. Its blanket terminal-failure language is qualified by the released exceptions above. Existing tests do not prove direct Telegram or Kaggle-reset acceptance.
+## Current access at every boundary
 
+Apply the [artifact access policy](../rights.md): accepted illustration renditions are public; quote stripes/page/crop scans and localization previews require owner or the existing `scan_proof_read` grant for demo/expert/local_historian; full originals retain separate private access. Verified category assignment creates the audited capability grant atomically under [rights.md](../rights.md); `claimed` does not. Proof rendering checks the current grant/scope; category removal/demo expiry and manual revocation remain effective, with no grant recreation on reads. A proof renderer uses purpose-scoped internal source access after caller authorization, never owner impersonation.
 
-Deploy the matching VibePublish opt-in `media_store get` idempotency implementation
-before this RKB change. Old Vibe deployments ignore get request keys and do not
-provide the required lost-response guarantee. This changes retrieval only, never
-source publication or archive grants.
+Check withdrawal, source revision, current policy, grants and audience on warm cache, retry, callback and final delivery. An old receipt or signed asset URL is not a permanent grant. Shared Slack `public_only` can receive public illustrations, not the union of members' private proof grants. Output geometry must actually fit its permitted artifact class/scope.
 
-The existing private OriginalCache SQLite stores one opaque scope, random request
-key and operation ID per owner/issuer/archive entry. Admission identity is committed
-before provider I/O. Repeating an invocation replays the SAME keyed get, which
-rechecks current Vibe ACL/binding, and resumes the same durable operation. An
-operation-ID conflict fails closed. No credentials or source text are stored in
-this metadata.
+## Bounded recovery
 
-The synchronous polling budget remains bounded. A provider still running returns
-`archive_source_pending` with its operation ID, not a missing-original verdict.
-Retrying the same source resumes the attempt. Lost admission responses, process
-restarts, network failures, authorization failures and terminal provider failures
-do not silently generate fresh requests.
+| Observed outcome | Continuation |
+| --- | --- |
+| Pending, timeout, lost admission reply or unknown result | Reconcile the same key/operation; return bounded pending |
+| Verified receipt, process crashed before installing bytes | Reuse receipt and verify/install exact bytes |
+| Definitive HTTP 404/410 for the asset of that verified receipt | Retire only that attempt with compare-and-delete; admit a new read, never a publication |
+| Exact terminal blocked code `telegram_transport_unhealthy` or `provider_read_deadline` in the Vibe path | Persist next read key and 15-minute cooldown atomically; concurrent callers share the transition |
+| Authorization failure, digest mismatch, receipt conflict or unknown terminal code | Preserve evidence and report the specific failure; no blind fresh-key retry |
+| FloodWait or confirmed transient dependency failure | Persist provider retry-after/cooldown, release capacity and resume fairly |
 
-Verified receipts remain recorded even after payload return: a caller may crash
-before installing the original in the byte cache. Only a definitive HTTP404/410
-from that verified receipt's asset retires the attempt, allowing the next call to
-make a new retrieval with a new key. This is not a new publication. Other HTTP
-failures retain the receipt. Compare-and-delete cannot remove a concurrent newer
-attempt.
+The guarded terminal recovery, keyed first verification GET, cooldown/fairness and missing-digest failure behavior were fixed in the [19 October remediation](../reports/illustration-audit-remediation-20261019.md). Preserve these repairs; they are not new unresolved defects. Direct Telegram/new-session/reset behavior needs its own target acceptance.
 
-Attempt metadata is bounded by the archive entries requested and is deliberately
-not evicted by the original-byte cache's idle/size cleanup. Evicting an unresolved
-admission would discard the information needed for safe replay. Terminal provider
-failures remain available for diagnosis rather than being retried indefinitely.
+## Retention and verification
 
-Regression coverage includes slow provider completion, restart, lost response,
-concurrent admission, crash after payload return, owner/entry isolation, current
-authorization denial, expired assets, unknown failures and receipt conflicts.
-Unit tests model the paired Vibe contract; release acceptance must additionally
-exercise the actual deployed keyed-get endpoint and current source-byte hashes.
+Byte-cache expiry does not erase unresolved attempt identity or a still-live locator dependency. Keep live operation state and compact receipts until terminal reconciliation/checkpoint requirements are satisfied; they are domain recovery state, not arbitrary copies of the entire hot journal. Completed payloads/receipts follow the bounded retention in the handoff. Older historical backups do not pin an unlimited local replay tail.
+
+Verify slow completion, lost response, restart, concurrent admission, crash after payload return, current permission denial, expired asset, missing/mismatching hash, stale locator, partial result and receipt conflict. Mock tests of keyed Vibe reads do not prove a real direct Telegram download; acceptance includes exact-byte native readback using the actual target path.

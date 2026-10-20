@@ -1,578 +1,120 @@
 # Regional Knowledge → Street Story POI integration
 
-## Current target and historical baseline — 2026-10-19
+Updated 2026-10-20. Normative target: [single implementation handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md). One PostgreSQL/pgvector corpus on Kaggle and BGE-only retrieval replace the old corpus placement. DevCoveer retains the existing authorization/controller and durable request/change/delivery state; one outbound notebook WSS connects them. This document is not a target deployment claim.
 
-The [scalable Kaggle architecture](designs/rkb-scalable-kaggle-architecture-20261019.md) and [implementation handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md) take precedence over historical storage, private-book visibility and mandatory-client assumptions below. Dated checkpoints preserve evidence of existing capabilities; they do not establish the current deployed SHA or target acceptance.
+## Ownership and functional boundary
 
-RKB domain data/outbox move to one PostgreSQL/pgvector with BGE on Kaggle. E5 and the former Supabase retrieval plane are removed. DevCoveer retains MCP/ASGI, authorization, durable request/receipt control and the existing BgeQueue/controller. The notebook connects outbound WSS to the existing DevCoveer ASGI broker; no second queue is introduced.
+| Authority | Owns |
+| --- | --- |
+| RKB | Exact source/publication/page/region evidence; contributor metadata; source-bound facts, dates and observations; source-side historical entities; independent disagreement register/cases; source verification-score components |
+| Street Story | Canonical physical POI IDs, aliases/external identities and lifecycle; its atomic POI claims/evidence sets; arbitration of its canonical POI state |
+| Cartography | Source-specific map observations, geometry/topology, georeferencing and accepted geographic interpretation |
+| Projects Hub / Mira | Authorized user/expert interaction through typed adapters; no second facts/case/POI authority |
 
-Street Story remains the owner of canonical POI IDs, aliases, location/lifecycle state, atomic POI claims and arbitration of **its canonical POI state**. RKB owns exact source provenance, historical entities, source-bound factual findings and **independent disagreement cases**, including cases without a Story or mapped place. Typed links and owner receipts connect these domains; do not create competing case authorities or automatically duplicate an RKB case as a Street Story review task.
+An RKB disagreement case can concern a question with no Story or mapped POI. Link it to a Street Story case when relevant; do not duplicate every RKB case or let either system silently settle the other's canonical state. A source assertion, a model synthesis, accepted geometry and verified physical POI identity are separate claims.
 
-### Facts and source visibility
+Facts/dates/quantities can be source-bound without an artificial Story parent. Preserve event/calendar precision, people/roles, uncertainty, geographic time scope and quantities with units/period/method. Sparse chronology/statistics can yield no new episode. One source reading pass and comparison receipts supply facts, stories and disagreement candidates. See [Story Registry](story-registry.md).
 
-Accepted book text and bibliography are publicly searchable without a book-owner ACL. Owner/uploader identity can remain provenance without becoming an owner-only read filter. Exact originals, PDF/page/crop pixels, reproduction rights, private drafts and writes retain separate authorization. The private/workspace envelopes below continue to apply to genuinely restricted resources; they must not silently reinstate private-book filtering for accepted public text.
+## GEO-only cutover
 
-A POI fact, date or quantity does not require an artificial Story parent. Preserve source-bound assertions/evidence before optional dossier/episode links, including calendar precision, people/roles, geographic time scope and quantities/units/periods/methods. Facts, episodes, POI and disagreement candidates use the same source reading pass, searches and comparison receipts. Sparse chronology/statistics may yield zero new episodes. See [story quality](story-registry.md).
+Only geographic/cartographic identities, layers/toponyms/geometry, temporal interpretation and minimal provenance transfer. Old books/chunks/vectors, stories/manual drafts, expert contributions, cases and general facts are freshly imported/recreated; they are not copied because they have a POI link. Do not replay their old outbox commands into the new corpus.
 
-Only agreed historical/cartographic layers migrate. Books/chunks/embeddings are imported afresh. Old layer-to-book references retain minimal immutable provenance and an unresolved/reanchor state until exact new source SHA/page/context is verified; do not relabel an old source ID as a newly accepted source. Canonical Street Story POI keys are preserved.
+Before production fresh imports, establish the minimal GEO identity manifest (layer/place IDs, aliases, owner refs, CRS). Bulk rasters/geometry may arrive through the existing GEO queue later, explicitly unresolved until ready, without book reimport. Earlier A+B imports are isolated fixtures only. Preserve exact existing Street Story/Cartography keys and source-side GEO IDs. Legacy book references remain minimal `legacy_unanchored` edition/SHA/page/locator provenance until the fresh import's exact mapping is verified. Infrastructure identities/service registrations/configuration are preserved separately. No mandatory export/permanent copy of old non-GEO content is required. Follow the [GEO cutover](migrations/rkb-layers-only-cutover-20261019.md).
 
-### Delivery and expert work
+## Canonical POI identity and source locations
 
-Activation and its domain/outbox event commit together; Street Story delivery is asynchronous and idempotent. A missing owner service, identity or grant cannot make an accepted source fail or authorize an invented POI. Reuse the existing same-host machine identity and loopback bridge. Kaggle localhost is not Street Story's host; delivery must execute or route where the owner endpoint is reachable. A service credential does not impersonate a human or replace a restricted-resource grant.
+Street Story owns opaque canonical POI keys. Existing accepted encodings include UUIDs and `poi_ss_<24 lowercase hex>`; preserve the exact owner key under `streetstory://poi/<key>`. Do not convert one format to another or mint an RKB replacement. Aliases may include Wikipedia/Wikidata/OSM IDs, old candidate IDs and historical names, but an alias is not a new canonical object.
 
-Mira remains the Projects Hub client; the baseline PH adapter is search/evidence-only and must be extended on the same RKB resource for pending/request/result/ACK, proof, stories and cases. The single Kaliningrad Base Slack bot is another client of the same request lifecycle. Mira is optional, and no universal two-expert review gate is introduced. Typed decisions go to the actual case owner and are announced only after its durable receipt/readback.
+A producer sends a `poi_locator`, not a self-declared canonical identity. A shortlist/name/proximity/external-ID hint is discovery evidence. The importing model compares physical site/generation/context and explicitly selects an existing owner ID or uses the existing owner create operation for a real candidate site. Name-only ambiguity stays unresolved; no automatic merge/duplicate place is permitted. A canonical `candidate` remains distinct from an independently verified identity.
 
-Preserve author/contributor attribution, source-family independence, versioned score components and null-for-unknown. A score does not settle a contradiction, create independent corroboration or expand visibility. Different dates can describe different event phases. Append-only decisions, scope/temporal distinctions and reopen remain supported.
+A source location can be useful without coordinates or a physical POI. The normal [location-first workflow](location-registry.md) and [model-selected POI link](poi-model-link.md) do not block source activation on owner reachability. A modern representative point is not a historical entrance, footprint or surveyed polygon. Late map references enrich the same source-side identity without replacing it.
 
-An independent RKB case page is a desktop/mobile static public projection without login, with a permanent opaque slug. Return its first URL only after actual publication/readback; failed updates retain last-good unless revoked, with desired/published revision and stale-builder fencing. Private drafts and restricted proof pixels are excluded.
+## Fact-evidence event contract
 
-Target acceptance preserves all nine [protected requirements](../.devcoveer/requirements.json), with the approved E5 removal/public-text change. Verify facts and calendar/observations without Story, exact reanchoring, no competing case authority, idempotent receipts and one usable search during import. New Telegram sessions are not prerequisites for domain or direct-download/proof tests.
+Reuse logical contract `poi.fact_evidence.v1` and its stable field semantics. Example for the approved public book-text projection:
 
-## Preserved implementation and historical record
-
-
-## Ownership boundary
-
-Regional Knowledge Base does **not own the canonical POI database**.
-
-Street Story owns:
-- stable regional poi_id;
-- aliases and external identities;
-- canonical atomic POI claims;
-- evidence sets;
-- contradiction ledger;
-- arbitration state.
-
-Regional Knowledge Base owns:
-- books/journals and their provenance;
-- page/region graph;
-- author/contributor metadata;
-- extraction of evidence-backed POI fact candidates;
-- exact knowledge:// evidence references;
-- author/source verification-score calculation.
-
-Projects Hub owns neither facts nor conflicts. It is the user/expert work surface.
-
-## Why the current Street Story candidate_id is not enough
-
-Street Story currently has stable accepted object candidates such as Wikipedia/OSM
-identities. Cross-service ingestion adds books that may name the same physical
-object without one of those identifiers.
-
-The deployed Street Story **already owns an opaque canonical POI key**. Existing
-keys may be standard UUIDs or stable `poi_ss_<24 lowercase hex>` IDs; do not
-rewrite either format or create a replacement ID in RKB:
-
-~~~text
-poi_id
-  ├── external alias: wikipedia:...
-  ├── external alias: wikidata:Q...
-  ├── external alias: osm:way/...
-  ├── legacy Street Story candidate_id
-  ├── historical names
-  └── normalized geo/name aliases
-~~~
-
-A Knowledge producer sends a poi_locator, not a self-declared canonical POI.
-Street Story resolves it.
-
-Ambiguous identity creates an unresolved POI-link review case; it must not
-silently create a duplicate POI or merge two places.
-
-## Evidence event contract
-
-Logical version: poi.fact_evidence.v1.
-
-Example:
-
-~~~json
+```json
 {
   "contract_version": "poi.fact_evidence.v1",
   "event_id": "uuid",
   "idempotency_key": "knowledge:<document>:<revision>:<candidate>",
   "producer": "regional_knowledge",
-  "scope": {
-    "visibility": "private",
-    "owner_sub": "uuid",
-    "workspace_id": null
-  },
-  "source": {
-    "document_ref": "knowledge://documents/<uuid>",
-    "revision": 1,
-    "title": "...",
-    "publication_year": 1936
-  },
+  "scope": {"visibility": "public", "owner_sub": "source-owner-uuid", "workspace_id": null},
+  "source": {"document_ref": "knowledge://documents/<uuid>", "revision": 1, "title": "...", "publication_year": 1936},
   "poi_locator": {
     "names": ["Königstor", "Королевские ворота"],
-    "external_ids": {
-      "wikidata": "Q...",
-      "wikipedia": "...",
-      "osm": "way/..."
-    },
-    "latitude": null,
-    "longitude": null
+    "external_ids": {"wikidata": "Q...", "wikipedia": "...", "osm": "way/..."},
+    "latitude": null, "longitude": null
   },
   "claim": {
-    "candidate_id": "uuid",
-    "semantic_key": "construction:1843-1850",
-    "kind": "construction",
-    "text": "Построены в 1843–1850 годах.",
-    "time_scope": "1843/1850"
+    "candidate_id": "uuid", "semantic_key": "construction:1843-1850",
+    "kind": "construction", "text": "Построены в 1843–1850 годах.", "time_scope": "1843/1850"
   },
   "evidence": {
-    "evidence_ref": "knowledge://evidence/<uuid>",
-    "page_ids": ["..."],
-    "region_ids": ["..."],
-    "source_family_id": "book:<edition-or-lineage>",
-    "author_profile_refs": ["knowledge://authors/<uuid>"],
-    "author_subject_authority": 88,
-    "publication_method_score": 82,
-    "provenance_precision_score": 100,
-    "evidence_verification_score": 88,
+    "evidence_ref": "knowledge://evidence/<uuid>", "page_ids": ["..."], "region_ids": ["..."],
+    "source_family_id": "book:<edition-or-lineage>", "author_profile_refs": ["knowledge://authors/<uuid>"],
+    "author_subject_authority": 88, "publication_method_score": 82,
+    "provenance_precision_score": 100, "evidence_verification_score": 88,
     "score_policy_version": "book-evidence-v1"
   }
 }
-~~~
+```
 
-Never expose object-store keys or signed URLs in this envelope.
+The source owner is provenance, not a per-book reader filter. Preserve `private`/workspace scopes for genuinely restricted resources/contributions; do not place private draft text, proof pixels or archive locators in a public event. Never expose object-store keys, signed original URLs or Telegram credentials in the envelope. Source activation, validated document/revision/page/region provenance and domain outbox insertion are atomic at the domain boundary, with durable acceptance/replay as specified in the handoff.
 
-## Privacy inheritance
+## Author, contributor and evidence strength
 
-A fact extracted from a private book may enter the POI graph only with its access
-scope preserved.
+Use versioned profiles with canonical name/aliases, roles/affiliations, geography/subject/period expertise, evidence refs, authority components/policy and actual review provenance. Context-specific authority must not be an ungrounded model reputation guess. Unknown authority is `null`, not an invented midpoint.
 
-~~~text
-private book
-  -> private claim/evidence branch
-  -> not visible in public POI retrieval
-  -> not assigned to an expert without a matching grant
-~~~
+Prefer the chapter/article contributor, then named monograph author or co-author group. Attribute an editor/translator only to material actually theirs. Do not make the issue editor author of every article or infer a principal author solely from list position.
 
-Public canonical POI facts require evidence whose policy permits that visibility,
-or an explicit expert resolution based only on evidence the target visibility may
-use.
+The existing `book-evidence-v1` formula, when author authority is known, is:
 
-Promoting normalized content does not publish the user's exact PDF.
+```text
+A = author_subject_authority       (0..100)
+M = publication_method_score       (0..100)
+P = provenance_precision_score     (0..100)
+score = round(0.55*A + 0.25*M + 0.20*P)
+```
 
-## Author authority and book verification scores
+This is evidence strength, not truth probability or an admission gate. Versioned provenance examples are exact page+region 100, exact page/approximate passage 90, chapter 70, book 50. Publication-method inputs follow the explicit policy, not marketing language. Unknown inputs remain explicit; do not fabricate a score to populate the field.
 
-Do not turn “author reputation” into an opaque model opinion.
+Street Story may combine the strongest score with the existing bounded corroboration policy (+5 per additional independent family, at most +10), but copied upstream accounts/same lineage are not independent sources. Preserve `source_family_id`; unresolved lineage stays conservatively unknown. Counts and scores never choose the winner of a contradiction. Different dates can mean different phases or scopes.
 
-Knowledge Base maintains versioned author profiles:
+## POI-linked historical media and proof access
 
-~~~text
-author_id
-canonical_name
-aliases
-roles/affiliations
-expertise:
-  geography[]
-  subject[]
-  period[]
-authority_components
-evidence_refs[]
-authority_policy_version
-verified_by
-verified_at
-~~~
+Reuse separate `poi.media_evidence.v1`: `knowledge://illustrations/<id>`, `poi_locator`, explicit `depicts|illustrates|map_of|detail_of`, page/figure/caption provenance, exact rendition hash, caption/time scope and current policy/rights metadata. A figure can be useful without a new atomic fact. The model must explicitly identify its POI relationship; mere page co-location is insufficient.
 
-Authority is **context-specific**. A recognized specialist in East Prussian
-fortifications may have a high score for fortification architecture and no score
-for unrelated subjects.
+Accepted illustration renditions are public for everyone under the owner's policy. Street Story stores their relationships/provenance and requests bytes from RKB; it does not become a second canonical image store. Publication/read paths recheck source withdrawal and current rendition policy. Unknown legal-status metadata is not converted into verified public domain and is not a new per-figure editorial gate.
 
-Unknown author authority is null, not 50.
+Quote/page/crop scans and locator previews are a distinct class for owner/demo/expert/local_historian via current `scan_proof_read`; originals retain independent private access. Verified category assignment atomically materializes the audited grant under [rights.md](rights.md); claimed status gives none, and rendering cannot bypass expiry/removal/manual revocation through a category label or recreate grants on read. A public POI or public illustration does not grant either. Validate actual figure geometry so the public image contains no surrounding restricted source page. See [rights](rights.md) and [illustration pipeline](operations/illustration-pipeline.md).
 
-### Contributor attribution
+## Durable delivery and same-host integration
 
-Prefer the most specific contributor:
-1. chapter/article author;
-2. named primary author of the monograph;
-3. co-author group;
-4. scientific editor/translator only for material explicitly attributable to them.
+Source finalization cannot depend on Street Story availability. After atomic activation/outbox insertion, the existing delivery path sends one stable event; Street Story accepts idempotently by event ID/key and returns its durable receipt. Lost response reuses that key. RKB records the exact accepted receipt/readback, never infers delivery from a request log.
 
-Do not automatically treat an editor or translator as the author of every claim.
+The owner intake/bridge is on DevCoveer loopback, with the existing dedicated service identity. Kaggle localhost is not that host; route through the existing controller/delivery bridge. Do not forward user bearer/OAuth tokens or introduce another uploader/gateway. The service identity is limited to the agreed integration and never impersonates a person.
 
-### Evidence score v1
+Public accepted-text events use the public projection. Genuinely private resource delivery requires its existing scoped delegation. Missing delegation yields `pending_authorization`; missing owner/dependency yields bounded pending/retry. Neither invalidates source activation or permits copying private evidence. Recheck source/revision, withdrawal, authorization and audience before delayed dispatch/readback. Persist retry-after and current attempt; permanent/ambiguous errors remain visible and reviewable instead of creating fresh effects.
 
-For book evidence with known author authority:
+Street Story preserves the producer evidence snapshot, resolves the exact owner POI, normalizes its atomic claim, keeps conflicting evidence separately and returns resolved/unresolved identity and case state. A receipt that accepted an unresolved name is not proof of a verified POI or populated fact graph. Missing identities can be completed later through model-selected owner operations without reimporting the source.
 
-~~~text
-A = author_subject_authority        0..100
-M = publication_method_score        0..100
-P = provenance_precision_score      0..100
+## Disagreement and expert work
 
-evidence_verification_score =
-  round(0.55*A + 0.25*M + 0.20*P)
-~~~
+Preserve relations `contradiction`, `scope_difference`, `temporal_sequence`, `source_disagreement`, `uncertain` and review choices `prefer_left`, `prefer_right`, `both_valid_scope`, `both_valid_temporal`, `unresolved`, `needs_more_sources`, `wrong_poi_link`. Decisions are append-only with provenance; resolved history is not deleted and new evidence may reopen a question. Contested status is independent of whether a useful story/factual projection is ready.
 
-This is an **evidence-strength score**, not a probability that the claim is true.
+Projects Hub/Mira receives an authorized projection: owner case ID, POI/context, claims and evidence, score components, contributor provenance, detector suggestion and applicable expertise. Identity is the shared issuer+sub with existing participant capabilities, not a model-invented role. Keep the existing expert profile dimensions: geography, historical period, subject/domain, languages and optional institutional role; routing uses current authorization and the case requirements. Route decisions to the actual case owner. Ordinary work does not acquire a universal two-expert approval gate.
 
-Suggested provenance precision:
-- exact page + exact source regions: 100;
-- exact page, approximate passage: 90;
-- chapter-level attribution: 70;
-- book-level attribution only: 50.
+Extend Mira's existing RKB typed adapter for request/pending/result/ACK, evidence/proof, Stories and cases; the prior search/evidence-only bridge is not complete coverage. The one Kaliningrad Base Slack bot is another client of the same lifecycle. Shared-channel output stays `public_only`; a user's private grant cannot authorize the group. Announce a resolution only after owner durable receipt/readback. Preserve personal drafts and their version history separately from shared Story variants/case arguments for newly created target work.
 
-Publication-method score is a deterministic policy input: academic/source edition,
-scholarly monograph, institutional catalogue, general history, memoir etc. It is
-not inferred from marketing language.
+## Required acceptance
 
-### Claim-level corroboration
+Verify unchanged owner keys (both supported formats); ambiguous/homonymous and lost-building sites; exact source/entity reuse across fresh books; no coordinates invented; source-bound facts/calendar/observations without Story; null author authority and lineage-dependent corroboration; contested high-score evidence; idempotent duplicate/lost-response delivery; owner outage without activation failure; current grant/withdrawal after queuing; public illustration versus restricted proof/full-file bytes; and a real expert decision readback through Mira/Slack without a competing case store.
 
-Street Story may derive a claim verification score from independent evidence
-families:
+The optional [geo queue](geo-resolution-queue.md) is distinct from BGE/FTS source-mention discovery. One discovers possible source mentions; the other tracks geographic owner/dependency enrichment. Neither automatically selects a physical identity, proves historical geometry or gates ordinary source import.
 
-~~~text
-base = strongest evidence_verification_score
-+ bounded corroboration bonus for independent source families
-~~~
+## Historical implementation evidence
 
-Recommended initial bonus: +5 for each additional independent family, max +10.
+The [immutable 19 October integration document](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/poi-integration.md) retains the 2/4/9/19 October producer/queue/delivery checkpoints, exact releases, endpoint/config descriptions and measured counts. These were observations of the prior runtime; they are not target migration instructions or proof of present deployment. In particular, the 19 October snapshot had 19 finalized private books, 409 `poi_ref` entities and one delivered outbox event, answered as `unresolved_identity` for a name-only locator. Delivery wiring did not certify extraction coverage or resolved identities.
 
-Several books/articles repeating the same upstream source or the same author are
-not independent corroboration and share source_family_id.
-
-An unresolved contradiction overrides any score: no “92 beats 88” automatic truth
-decision.
-
-## Extraction during book ingestion
-
-While ChatGPT parses pages it may identify:
-- POI mentions;
-- historical/alternative names;
-- external identifiers explicitly present or confidently resolved;
-- atomic POI facts;
-- exact supporting page/region refs;
-- contributor attribution.
-
-This material should be staged in the same immutable document graph as the book.
-It is not delivered to Street Story until the book revision successfully finalizes.
-
-## POI-linked historical media
-
-Book ingestion may also detect that an illustration itself depicts or documents a
-POI. This relationship is independent from atomic fact extraction.
-
-Use a separate versioned event:
-
-~~~text
-poi.media_evidence.v1
-~~~
-
-A media event carries:
-
-- the same `poi_locator` rules as fact evidence;
-- `knowledge://illustrations/<id>` instead of object-storage locators;
-- relation: `depicts | illustrates | map_of | detail_of`;
-- source page/figure/caption provenance;
-- exact crop SHA-256;
-- caption and time scope when present;
-- illustration visibility and rights status.
-
-The link is created only when the model explicitly identifies the image as being
-about that POI. Mere co-location on the same page is not enough.
-
-Object Storage remains the binary source of truth. Street Story stores the POI ↔
-illustration relationship and provenance reference, not the image bytes.
-
-This makes future Street Story workflows possible:
-
-~~~text
-POI
-  -> historical media search
-  -> filter by date / media kind / rights / visibility
-  -> fetch permitted Knowledge illustration
-  -> optionally use VibePublish media mirror
-  -> publication/editorial workflow
-~~~
-
-A private or rights-restricted illustration stays non-publishable even if the POI
-itself is public. Street Story must therefore treat media visibility/rights as a
-hard retrieval/publication filter, not as descriptive metadata.
-
-Fact evidence and media evidence remain separate so an old photograph can be
-useful for a POI even when it introduces no new factual claim.
-
-## Delivery topology
-
-Book finalization must not depend on Street Story availability.
-
-~~~text
-book finalize
-  -> activate Knowledge revision
-  -> append POI evidence event to durable outbox
-  -> asynchronous delivery
-  -> Street Story idempotent ingest
-~~~
-
-For public/system corpus maintenance a narrowly scoped service identity is
-acceptable.
-
-For private user corpus delivery requires a user-approved Street Story resource
-grant/delegation under the shared platform identity. A global service credential
-must not impersonate a user.
-
-If no grant exists:
-- Knowledge finalize succeeds;
-- outbox item becomes pending_authorization;
-- nothing private is copied to Street Story.
-
-## Street Story ingest behavior
-
-Street Story must:
-1. idempotently accept the evidence event;
-2. resolve poi_locator to a canonical poi_id;
-3. preserve the producer evidence snapshot;
-4. normalize the atomic claim into its semantic event key;
-5. merge evidence without majority voting;
-6. run deterministic conflict candidate selection;
-7. keep conflicting claims separately;
-8. create/update a contradiction review case where needed.
-
-No source count alone increases certainty.
-
-## Contradiction lifecycle
-
-Existing Street Story relations remain:
-
-~~~text
-contradiction
-scope_difference
-temporal_sequence
-source_disagreement
-uncertain
-~~~
-
-A contradiction record is never deleted when resolved. Resolution is append-only
-history.
-
-Canonical review choices:
-- prefer_left;
-- prefer_right;
-- both_valid_scope;
-- both_valid_temporal;
-- unresolved;
-- needs_more_sources;
-- wrong_poi_link.
-
-## Expert review through Projects Hub
-
-Street Story owns the review case and final POI state.
-
-Projects Hub receives an authorized projection:
-
-~~~text
-review_case_id
-poi identity/name
-claim A + evidence
-claim B + evidence
-verification-score components
-source/author provenance
-model/detector suggestion
-required expertise
-priority/deadline
-~~~
-
-The expert sees exact evidence links, including Knowledge page/region evidence
-when authorized.
-
-Projects Hub submits a typed resolution back to Street Story. It does not create
-its own truth copy.
-
-Expert identity uses the shared platform issuer + sub.
-
-Expert profile contains scoped expertise:
-- geography;
-- historical period;
-- subject/domain;
-- languages;
-- optional institutional role.
-
-Routing is deterministic from case requirements to authorized expert profiles;
-the Live agent may explain and help, but does not invent expert permissions.
-
-High-impact or low-confidence cases may require two independent expert decisions.
-Ordinary cases may accept one authorized expert decision.
-
-## Review UI principles for Projects Hub
-
-This fits Projects Hub's existing voice-first model:
-- a compact “needs review” work card;
-- voice explanation from the central Live agent;
-- button choices for common resolutions;
-- voice rationale;
-- “need more sources” as a first-class action;
-- no hidden automatic canonicalization.
-
-Resolution is announced only after Street Story returns a durable receipt/readback.
-
-## Implemented producer checkpoint — 2026-10-02
-
-Regional Knowledge now has a local implementation slice for the producer side:
-
-- `book_ingest(stage)` accepts typed POI fact candidates tied to exact staged
-  page/region refs;
-- candidate/event identities are deterministic per document revision;
-- contributor names prefer chapter/article attribution over generic book authors
-  when the model can identify it;
-- verified author authority is stored in curated, versioned profiles and looked up
-  by geography + subject; ambiguous same-name profiles fail closed;
-- unknown author authority remains `null`;
-- publication method and exact-region provenance feed the versioned
-  `book-evidence-v1` evidence-strength score;
-- finalize builds `poi.fact_evidence.v1` envelopes only from the validated staged
-  graph;
-- DB activation validates document/revision/scope/page/region provenance before
-  writing events;
-- unresolved source lineage is normalized to the conservative family `unknown`;
-- public events enter `pending_delivery`; private/workspace events enter
-  `pending_authorization`;
-- outbox insertion and `active_revision` activation share one DB transaction.
-
-This checkpoint deliberately stops **before** network delivery; delivery is the
-separate worker below. Its absence or a Street Story outage cannot make book
-finalization fail after the DB transaction succeeds.
-
-## Delivery to Street Story — 2026-10-19
-
-Owner decision (2026-10-19): when RKB imports a book, its POI facts must reach
-Street Story's POI registry, creating a POI there when the place is new. Until this
-date no event had ever been delivered: the outbox was written, but there was no
-sender and Street Story exposed no intake.
-
-- Worker: `python -m regional_knowledge.street_story_delivery`
-  (`src/regional_knowledge/street_story_delivery.py`), a user systemd service on the
-  same host as Street Story.
-- Target: Street Story loopback intake `POST http://127.0.0.1:8188/v1/internal/rkb-poi-evidence`
-  (`RKB_STREET_STORY_POI_URL`, set in the unit's ExecStart because the shared bridge
-  file uses the same name for the identity-command endpoint), one event per request,
-  with the existing RKB↔Street Story bridge key `RKB_STREET_STORY_POI_TOKEN` from
-  `~/.local/state/rkb-street-story-poi/bridge.env` (0600; Street Story holds the same
-  key as `STREET_STORY_RKB_POI_SERVICE_TOKEN`). No user bearer or OAuth token is sent.
-- Unit: `regional-knowledge-street-story-delivery.service` (user systemd), release
-  source under `~/.local/share/regional-knowledge-base/releases/<sha>/source`.
-- First delivery 2026-10-19: the single outbox event (pending since 2026-10-03) was
-  delivered; Street Story answered `unresolved_identity` because the locator had only a
-  name. A POI is created only from external ids (OSM/Wikidata/Wikipedia); name-only
-  locators wait for identity resolution.
-- States: `pending_authorization` → `pending_delivery` → `delivering` → `delivered`
-  (Street Story receipt in `remote_receipt`); failures go to `retry_wait` with
-  exponential backoff (30 s … 1 h); `409/413/422` and 12 exhausted attempts go to
-  `dead_letter` with `last_error_code`. Street Story is idempotent by `event_id` and
-  `idempotency_key`, so a retry after a lost reply returns the stored receipt.
-- Private evidence: an event leaves `pending_authorization` only when its owner is in
-  `RKB_STREET_STORY_GRANTED_OWNERS`. The owner of the corpus granted delivery of their
-  private book evidence to their own Street Story on 2026-10-19; nothing private of
-  other users is sent. Street Story keeps the event's visibility and owner scope.
-- Readback: `GET /v1/internal/rkb-poi-evidence/{event_id}` on Street Story returns
-  delivered / POI resolved / claim and review state / superseded by a newer revision.
-- Street Story side contract: `docs/rkb-poi-link.md` in onedayonemasterpiece/street-story.
-
-Observed on 2026-10-19: 19 finalized private books, 409 `poi_ref` entities, but a single
-outbox event — book finalization rarely produces POI fact candidates. Delivery is now
-wired end to end; the volume of POI facts depends on extraction at staging.
-
-## Acceptance gates
-
-Before enabling automatic book→POI delivery:
-
-1. same POI from Wikipedia, OSM and a book resolves to one poi_id;
-2. ambiguous names fail to an unresolved link, not a silent merge;
-3. private book evidence stays private end to end;
-4. unknown author authority remains null;
-5. contextual author score changes by domain without changing author identity;
-6. same upstream source repeated in several publications is one source family;
-7. high-score conflicting evidence remains contested;
-8. duplicate outbox delivery is idempotent;
-9. Street Story outage does not fail Knowledge finalize;
-10. expert resolution is visible in Street Story and Projects Hub readback;
-11. revoking an expert/user grant immediately prevents further private evidence reads.
-
-## Entity graph and reverse discovery checkpoint — 2026-10-04
-
-Regional Knowledge now stores only `streetstory://poi/<uuid>` canonical links.
-Typed POI locators resolve through a read-only native Street Story identity/alias
-projection; zero/multiple matches stay unresolved/reviewable, and outages defer
-resolution without failing valid book finalization. Historical objects remain
-valid references even when their building no longer exists; lifecycle truth
-remains Street Story-owned. POI status `candidate` is not a verified identity claim.
-
-A bounded round-robin worker checks 16 existing POI references per synchronization
-pass. Meaningful alias-set changes enqueue actor-scoped, version/boundary-keyed
-discovery. Person/event aliases and new document revision activation likewise
-enqueue durable jobs; new documents page 32 owned entities per pass. Public/system
-reads cannot enumerate private graph evidence. No private evidence is forwarded
-without a separate delegated grant.
-
-Discovery returns candidate mentions with exact source locators and independent
-ranking diagnostics. Vector-only hits have no asserted source-name spelling;
-matching and grouping are review aids, not automatic merges or atomic facts.
-Owner-scoped identity reuse across books requires an explicit entity ID.
-
-## Real Street Story canonical POI key compatibility (2026-10-09)
-
-The live Street Story registry contains **two** accepted POI ID encodings:
-canonical UUIDs created by the external-fact ingestion route and stable,
-owner-generated `poi_ss_<24 lowercase hex>` IDs from its photo/identity
-registry. A separate UUID minted by RKB for an existing `poi_ss_` POI
-would duplicate its physical identity and break exact alias links.
-
-The read-only `StreetStoryPoiResolver` accepts either exact canonical form
-under `streetstory://poi/<existing-key>`. It fetches names, candidate/verified
-status, and any representative point from **Street Story's live SQLite**
-without copying canonical POIs into RKB. A representative point is not a
-surveyed polygon, a visitable gate, or historical georeference; the adapter
-returns `historical_geometry=not_verified`. `GraphService.discover_poi`
-accepts both keys and returns `identity_state` rather than claiming a
-candidate is independently verified. A missing or conflicted external ID
-fails closed instead of quietly reverting to a same-name guess.
-
-This fixes the consumer contract only. Registration of an absent place
-remains a Street Story owner operation. RKB graph stage with a sourced
-`poi_locator` cannot create a canonical POI on its own, and should return
-`unresolved_pois>0` until one exists. The source book's original/private
-citation must not be copied to Street Story without a scoped resource
-grant. Stage E's historical geometry, temporal revisions, geographic
-address/coordinate predicates and source licensed map layers still
-require separate owner-side acceptance.
-
-
-## 2026-10-09 product pilot: historical zoo opening → owned POI
-
-**Verified against real production state**, not only synthetic acceptance.
-RKB release `be677f573787c512c55d2a8e534096326fa017ba` and Street Story
-release `db0c0d08024441536a2e59f5c3c433b12c7f4189` support an
-existing source-grounded zoo opening story (21 May 1896) → historical event
-→ source-quoted `occurred_at` edge → its **unchanged** RKB place-ref →
-Street Story canonical `streetstory://poi/poi_ss_2d0ab75849ea3099ea17193a`.
-The owner-side POI is `candidate`, not `verified`. Wikidata Q1193386
-and the zoo's public historical documentation were the independent public
-identity lookup; no RKB private book text left its own ACL boundary.
-
-The same RKB graph node was upgraded from `unresolved` to a linked
-candidate when the **Street Story owner** registered its public identity.
-No auto-merge, no new book, no duplicate RKB story/edge, no invented
-historical polygon. Connected MCP readback verified the original story,
-both graph directions and the exact canonical owner reference. The
-representative modern coordinate is NOT a 1896 visitor entrance or
-surveyed polygon. Full source and limitation audit:
-[geo pilot acceptance report](reports/rkb-street-story-zoo-geo-acceptance-20261009.md).
-
-
-## Geo-resolution intent and late Cartography producer
-
-The in-source-transaction SQLite geographic queue is documented in
-[geo resolution queue](geo-resolution-queue.md). It is **not**
-`rkb_graph_discovery_jobs`, which discovers source mentions in BGE/FTS and
-cannot serve as a canonical POI binding decision/outbox. A source-backed
-`poi_ref` creates a stable evidence+revision+policy intent, each relevant
-Street Story owner alias or accepted Cartography dependency revision creates
-a separately fenced attempt. Street Story remains the ONLY canonical
-identity writer; owner-local read-only matches yield at most
-`linked_candidate` with `historical_geometry=not_verified`.
-
-The future Cartography PostGIS project produces bounded vector-feature
-observations with separate IDs. It cannot write into RKB's SQLite or
-replace `streetstory://poi/...` IDs. No accepted Kneiphof layer is
-available on this documented checkpoint; map/vector feature acceptance
-remains pending without a real immutable layer+geometry revision.
+The [zoo pilot acceptance](reports/rkb-street-story-zoo-geo-acceptance-20261009.md) preserves the 9 October real source-event-place-owner-ID readback and its `candidate`, not verified-geography, limitation. Do not reinterpret those results as a new all-book/PG/Kaggle acceptance.

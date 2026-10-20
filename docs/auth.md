@@ -1,134 +1,35 @@
-# MCP authentication and database identity
+# MCP authentication and delegated identity
 
-## Target identity, delegation and route scope (2026-10-19)
+Target contract2026-10-20; implementation and live client checks remain required. See [handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md) and [rights](rights.md).
 
-**Implementation target, not multi-user acceptance.** Follow the [single handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md). Existing application-owned OAuth/MCP stays on DevCoveer; PostgreSQL/pgvector are not identity providers. No second IAM or expert MCP.
+## Application authority
 
-Resolve actions to the existing canonical RKB UUID. PH actor and Slack provider/tenant/subject require verified bindings. Email, display name, mention, model JSON or expertise cannot select the actor. Qualifications/weights do not grant capabilities.
+Existing application-owned OAuth stays on DevCoveer. PostgreSQL/pgvector in Kaggle is a data plane, never the user OAuth provider. Do not derive issuer/JWKS/resource from Supabase configuration and do not restore Supabase Auth users/auth.uid() as the identity source.
 
-Keep exact resource/audience binding and transaction-scoped authorization. Never forward PH/ChatGPT/owner bearer to another resource as delegation. Same-host integrations use scoped technical identities and loopback; Kaggle is another host and uses authenticated TLS with constrained operations. Executor and human author remain separate.
+Preserve authorization code + PKCE S256, exact resource/audience and registered redirect binding, consent, short access lifetime, refresh rotation/replay revocation, discovery and stable UUID subject. `RKB_AUTH_ISSUER`, `RKB_AUTH_JWKS_URL`, `RKB_RESOURCE_URL` remain explicit. No secrets in URL/log/repository. Existing grants/credentials are infrastructure, not excluded non-GEO content; do not reset them during content cutover.
 
-Import/participant administration remain owner-personal-route operations. An expert bot cannot perform them just because its Slack initiator is the owner. Owner/case-manager does not read another actor's private draft or rewrite another contribution's original text. Preserve versions, selective publication and current dependency checks on history/receipt replay.
+Resolve verified provider+tenant/workspace+subject to the canonical RKB person. Email, display name, Slack mention, client-supplied actor/dialog ID and claimed expertise do not choose an actor. Categories/credentials/subject weight are versioned separately from capability grants. A mistaken binding puts affected attribution/support into review rather than erasing history.
 
-Fencing rejects stale new submissions while preserving commands already durably accepted in an earlier generation; replay retains their IDs and attribution. Current revocation governs cached/delayed private results and audiences, including after restore.
+## Data and route enforcement
 
-Mira needs a real target-resource provider/progressive grants; its search-only adapter is not OAuth, transport or research E2E. Test non-owner onboarding, isolation, revocation and personal/Slack continuation. Owner login/bot transport alone is insufficient.
+Server-side permission is current person capabilities ∩ case/artifact scope ∩ delivery audience ∩ executor service grant/request fence where delegated. Use transaction-local verified actor context and non-bypass SQL roles for domain access; reset at transaction end and test pooled-connection actor leakage. No user bearer forwarding to PostgreSQL or another MCP.
 
-The owner supplies genuine independent Telegram authorization sessions at implementation. Do not clone a StringSession/auth key, borrow owner bearer or rotate identities to evade provider limits. No credentials/sessions are provisioned by this docs change.
+Accepted active book text and bibliography have no owner filter. Public illustrations are a separate artifact class. Stripe quote/page scans require owner or verified demo/expert/local_historian with `scan_proof_read`; original PDF/DjVu rights remain independent. Private drafts, history/receipt replay and derived snippets recheck their dependencies. Shared channels do not union participants' private grants. Cache hits and delayed callbacks recheck withdrawal/revocation.
 
-## Retained authentication baseline
+Import/reprocess, participant administration and credential binding remain owner personal-route operations. A bot invoked by owner cannot bypass the expert-route ceiling. A case manager/owner does not automatically read another person's private draft. Exact selected-fragment publication requires its own capability and does not publish the rest.
 
-Following sections preserve existing client/OAuth and secret contracts. Supabase/beta-owner setup describes earlier architecture, not target storage or complete expert/Slack/Mira acceptance.
+## Delegated clients and services
 
+Personal MCP clients use resource-bound user grants. Slack resolves the verified sender, persists request/dialog/route and invokes the same resource through a dedicated executor identity; Dot's credentials/author name are not substituted. Mira in Projects Hub uses a real target-resource provider, verified mapping, progressive capabilities and durable pending/result/hash ACK through existing live-interaction. Search-only adapter success is not multi-user acceptance.
 
-## Decision
+Same-host Street Story/VibePublish calls use scoped technical identities on loopback/Unix socket, as required by the host integration policy. Kaggle uses authenticated TLS and constrained run credentials, not loopback to a different host or a full owner token. Existing credentials are never written into Dataset/control journal.
 
-Regional Knowledge Base must not use Supabase OAuth as its MCP authorization
-server.
+Fencing blocks stale new effects/results while preserving exact commands durably accepted in prior generations. Remote control recovery includes revocation versions and UNKNOWN; uncertain authority leaves writes/delivery closed until reconciliation.
 
-The two planes are independent:
+## Client setup and acceptance
 
-```text
-ChatGPT / Codex
-      |
-      | OAuth 2.1
-      v
-application/platform auth
-      |
-      | verified actor: platform subject UUID
-      v
-Regional Knowledge MCP
-      |
-      | transaction-local DB actor context
-      v
-Supabase Postgres / pgvector / RLS
-```
+The intended public MCP resource remains `https://knowledge.kenigevents.ru/mcp`. Preserve existing confidential clients and public PKCE dynamic registration, exact allowlisted callback origin/URI validation and explicit foreign-resource rejection. A missing resource may bind only to the server's one configured resource under its existing compatibility contract; never infer another resource. Do not publish owner login credentials or ask experts to use owner consent secrets.
 
-Supabase is the managed **data plane**: Postgres, pgvector and database
-operations. It is not the end-user OAuth provider for the MCP.
+Verify each named client individually: actual non-owner sign-in, correct displayed identity, allowed research, denied administration/private cross-actor read, revocation, reconnect and saved result ACK. Naming ChatGPT/Grok/Slack/Mira does not establish compatibility. Real Telegram sessions are provided independently for implementation; never clone StringSession or evade provider account limits.
 
-No Supabase Dashboard OAuth switch is required for this project.
-
-## MCP authorization server
-
-Authenticated ChatGPT MCPs still require OAuth 2.1. The authorization server is
-application-owned and separate from Supabase.
-
-For the beta, implement the smallest safe flow needed for one owner while keeping
-the contracts multi-user capable:
-
-- authorization code + PKCE S256;
-- exact `resource` binding to the Knowledge MCP URL;
-- explicit consent;
-- short-lived access tokens;
-- refresh rotation and replay revocation;
-- discovery/protected-resource metadata;
-- stable UUID subject;
-- no secrets in URLs/logs/repository.
-
-Use the already deployed/tested Wonderful Lections OAuth implementation as a
-behavioral donor. Do not couple the new implementation to Wonderful Lections
-business state.
-
-The resource server verifies application tokens with generic
-`RKB_AUTH_ISSUER`, `RKB_AUTH_JWKS_URL` and `RKB_RESOURCE_URL`. It must never
-derive these values from `KB_SUPABASE_URL`.
-
-## Database actor identity
-
-The MCP bearer must **not** be forwarded to Supabase PostgREST.
-
-Target production data path:
-
-1. verify the application OAuth token;
-2. resolve its stable UUID subject;
-3. open a transaction through `KB_SUPABASE_SESSION_CONNECTION`;
-4. switch to a non-bypass RLS role;
-5. set a transaction-local application actor UUID;
-6. execute SQL/RPC under RLS;
-7. reset automatically at transaction end.
-
-The database must use an application-owned helper such as
-`rkb_current_actor_id()`, not `auth.uid()`, as the source of user identity.
-
-The existing `SupabaseRestBackend` is transitional and explicitly disabled by
-default because it forwards the caller bearer to PostgREST. It may only be
-enabled by `RKB_ALLOW_LEGACY_SUPABASE_USER_JWT=1` for bounded legacy tests and
-must not be used by the finished beta.
-
-## Identity registry
-
-Do not require Supabase Auth users for application identity.
-
-Use an application-owned UUID user/identity table in the RKB schema. The beta has
-one owner UUID. Future shared platform auth can issue the same stable platform
-UUID without changing document ownership or corpus rows.
-
-Email/display name are profile attributes, not identity keys.
-
-## Cross-service access
-
-A bearer minted for one MCP resource is not forwarded to another service.
-
-For future private cross-service operations, the calling service obtains a
-resource-specific grant/delegation. Public/system corpus maintenance may use a
-narrow service identity.
-
-This design keeps the user identity layer replaceable without moving the
-Supabase database or corpus objects.
-
-## Grok connector
-
-Public MCP URL: `https://knowledge.kenigevents.ru/mcp`.
-Add a custom Grok connector with that URL; no manually supplied client secret is
-needed. Dynamic registration accepts public (`none`) PKCE clients as well as
-existing confidential ChatGPT clients. Grok HTTPS callbacks on `grok.com` are
-admitted, then bound to the exact URI registered by that client. Other callback
-origins remain rejected unless explicitly configured by the operator.
-
-Sign in on the Regional Knowledge consent page with the existing private
-`/home/dev/.local/state/regional-knowledge-base/owner-login-secret`, then approve
-access to your knowledge workspace. This is separate from DevCoveer's owner key.
-An omitted OAuth `resource` is bound to this server's sole knowledge resource;
-explicit foreign resources remain rejected. Existing clients, credentials,
-grants, corpus and worker configuration are preserved.
+Verified demo/expert/local_historian assignment materializes the existing scan_proof_read policy grant with audit and category revision; demo expiry is inherited. Claimed categories grant nothing. Current capability/scope is checked at render time; explicit revocation is not recreated on read, and removing a category withdraws its policy-derived grant. No new IAM or per-image approval.

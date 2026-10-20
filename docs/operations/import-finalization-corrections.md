@@ -1,50 +1,13 @@
-# Accepted-source correction and service passages
+# Catalog correction and service-only retrieval
 
-## Target adapter and retained correction contract — 2026-10-19
+Active target2026-10-20. Source pages/chunks/evidence/hash/revision are immutable after acceptance; [handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md) governs storage/recovery.
 
-The [implementation handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md) governs the PostgreSQL/pgvector+BGE target. Preserve the typed catalog correction allowlist, expected revision, verified write identity and immutable accepted source/page/chunk provenance described below. Public accepted-text search is a read-policy decision and never authorizes catalog mutation.
+Use catalog.update with typed descriptive whitelist, expected_revision and source-owner personal authority. Cached-schema clients may use existing book_ingest(stage, metadata.catalog_update) on finalized owned checkpoint; same implementation/validation applies. Do not combine catalog correction with file/source/story/entity payloads. Explicit null publication_year clears an unverified year; it does not invent a date. Article registration uses verified parent/region boundaries without changing original bytes.
 
-Target activation commits the accepted revision and resumable research enqueue together. Source facts, dates/observations, entities, optional story episodes and disagreements share that research pass. Accepted-source correction/repair must use the same facts-first model without compulsory Story creation, silently replacing human edits or replaying an accepted model call.
+Header/footer/page-number-only passages remain preserved and explicitly fetchable but are excluded from ordinary serving projection and continuation neighbors. Mixed passages, semantic headings, footnotes/captions/tables/marginalia and genuine illustration-bearing material stay searchable. Incomplete provenance fails to a visible review state, not silent deletion. PG query eligibility is before the branch limit; ANN filtering still needs bounded refill/iterative or exact narrow-scope handling. No lexical prefilter of dense and no remote Supabase path.
 
-Service-only retrieval exclusions remain scoped to layout-only content; semantic headings, footnotes, tables, marginalia, illustrations and explicitly uncertain legacy provenance retain the safeguards below. Port filters and article scopes to PG and measure their interaction with bounded ANN candidates; remove E5 from the target while preserving independent complete-input BGE token validation. Provider diagnostics continue to redact credentials and arbitrary response bodies. The original implementation checks below are baseline evidence, not target deployment acceptance.
+Source activation commits the compact active pointer and research frontier together after source/vector gates. Facts/metadata do not depend on fake Story; saved narrative availability is separate from source/index/research/publication state. Old active revision is retained until replacement is actually ready.
 
-## Preserved implementation and historical record
+Provider diagnostics contain HTTP status and allowlisted error code, never arbitrary body/description/tokens. Invalid credentials require supported credential repair, not blind retry or impersonation; use existing dedicated same-host integration identities. Direct Kaggle source reads use genuine independent sessions configured for implementation.
 
-
-After acceptance, source pages, chunks, source hash and revision remain immutable.
-Use catalog.update for descriptive corrections, with expected_revision and source-owner authorization.
-
-For clients with a cached catalog schema, the same typed correction is available
-through existing book_ingest(command="stage", ingestion_id=..., metadata={
-"catalog_update": {"expected_revision": 1, ...}}). Only a finalized owned checkpoint
-is eligible. Do not combine this operation with file, source, story or entity payloads.
-The adapter invokes the same catalog update implementation, whitelist, revision guard
-and owner authorization; it is not a direct database or access-control workaround.
-Explicit null publication_year clears an unverified year. Article components continue
-to use book_ingest(start) with exact parent/region boundaries and no new source file.
-
-## Service-only retrieval
-
-Header, footer and page-number-only chunks remain preserved and explicitly fetchable,
-but are excluded from FTS, validated dense results and continuation neighbors.
-Mixed passages, semantic headings, footnotes (including footnote_region_ids), captions,
-tables, marginalia, illustration-bearing and incomplete legacy provenance remain visible.
-The FTS/neighbor filter precedes LIMIT. Dense filtering follows the remote bounded
-candidate window: this does not guarantee remote service vectors cannot occupy slots
-inside that window. No source or embedding is deleted, and vector space is unchanged.
-
-## Archive OAuth diagnostics
-
-Refresh failures log only HTTP status and an allowlisted OAuth error code.
-Unknown error values and arbitrary response bodies/descriptions are never logged.
-This diagnoses the existing grant; it does not create/rotate credentials or prove
-the cause of an earlier HTTP400. An invalid grant still requires the supported
-owner-consent flow; normal retries cannot repair revoked/expired authorization.
-
-## Cold Kaggle queries
-
-Cold BGE worker startup is distinct from MCP response latency. Existing search
-returns a pending actor-bound job and degraded evidence rather than holding the tool
-for notebook startup. Reuse the same job after readiness. Do not restore local BGE
-or advertise a cold-start measurement as warm p95. Mass-ingestion readiness remains
-subject to docs/mass-ingestion-readiness.md; these corrections alone do not pass it.
+Cold Kaggle BGE returns explicit actor-bound pending/main_job_id and optional bounded lexical evidence. Reuse same ID/query after readiness; no local BGE/E5 fallback or long synchronous search. Corpus current revision and min_data_seq remain enforced; warm latency and mass quality are separate gates.

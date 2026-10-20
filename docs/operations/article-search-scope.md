@@ -1,44 +1,25 @@
-# Article-scoped search (2026-10-17)
+# Article-scoped search
 
-## Target scope and historical measurements — 2026-10-19
+Updated 2026-10-20. Normative target: [implementation handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md), one PostgreSQL/pgvector corpus on Kaggle with BGE-only retrieval. This documentation update is not rollout evidence.
 
-Use the [implementation handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md) for the PostgreSQL/pgvector+BGE target. Article scope remains a semantic projection of one exact accepted parent revision; it does not duplicate the source, vectors or evidence identities.
+## Scope identity and retrieval
 
-Accepted book text and bibliography are searchable without book-owner filtering. This change does not reactivate hidden/withdrawn material, remove article/revision validation or authorize originals, proof pixels, private drafts or writes. Apply current eligibility and explicit scope before results and again after delayed delivery or a stale reader. Preserve parent/article union semantics and exact source/page references.
+Article IDs returned by `book_find` may be passed to `search` and `knowledge_search.document_ids`. Resolve an article to one exact accepted active parent revision and its registered semantic chunks. Article scope is a projection of the source; it creates no second binary import, vector copy or evidence identity.
 
-The implementation limitations and 2026-10-17 measurements below are historical evidence. New scoped dense retrieval must measure real recall and distinguish BGE, lexical and fusion results; a parent-level ANN shortlist filtered afterwards does not establish exhaustive article coverage. Re-run only the applicable protected retrieval gates for the actual target implementation; these old figures do not certify it.
+Reject unknown, stale, hidden or withdrawn source/article scopes. Accepted active book bibliography and text are searchable without a per-book owner filter. Revision/current-policy checks and genuine private resource authorization still apply. Multiple selected scopes form a union; selecting the parent also includes its other articles. The article boundary applies to chunks, footnotes and continuation expansion; a distant continuation needs its explicit link, while a neighboring article is not a continuation.
 
-## Preserved implementation and historical record
+Apply eligible article/chunk scope before lexical and exact-alias LIMIT. For dense retrieval, use a scoped PG plan or a measured bounded candidate/refill strategy; filtering a small article from a parent/global ANN shortlist can crowd out relevant hits. Report retrieval mode and degraded/partial outcomes, and measure real scoped recall. ANN and bounded refill are not proofs of exhaustive semantic coverage.
 
+Citations retain article title/contributors, containing issue/edition, exact physical page/printed label and source revision. A catalog article record is not the old book author's ownership ACL and does not grant proof pixels or the full PDF. Public illustration renditions are available to everyone; quote/page/crop scans use the existing `scan_proof_read` policy for owner/demo/expert/local_historian, with actual geometry constrained to scope. The current materialized grant, not a category label, authorizes rendering; apply verified-category creation, expiry/removal and manual-revocation rules in [rights.md](../rights.md). Recheck withdrawal, active revision and audience after a delayed query or stale reader.
 
-Catalog article IDs returned by book_find can be supplied to search and
-knowledge_search document_ids. The local corpus resolves an article to its
-readable, searchable parent and selected revision, then restricts retrieval to
-the article's registered semantic chunks. This does not create a second source,
-copy vectors, or widen ACL access.
+## Fresh import and acceptance
 
-A stale article revision, unreadable parent, hidden source/article, or unknown
-ID is rejected. Multiple scopes are a union; explicitly selecting the entire
-parent also includes its other articles. Lexical and exact-alias filtering runs
-before LIMIT. Dense candidates remain bounded at the parent vector plane, then
-are filtered before local fusion. Therefore very small article scopes can still
-lose dense recall through parent-level candidate crowding; this change does not
-claim an article-native remote top-k index. Continuations retain existing
-component boundaries.
+Old article/chunk/vector projections do not migrate. Fresh MCP book/issue/article import rebuilds them from the verified original and newly accepted semantic graph. The sole data carryover is GEO under the [GEO cutover contract](../migrations/rkb-layers-only-cutover-20261019.md); its legacy source refs do not become searchable article text.
 
-Validation: six new regressions cover before-LIMIT lexical filtering, dense
-candidate hydration, mixed parent/article union, stale/private/hidden/missing
-scope rejection, all three local RPC retrieval branches, public search and
-continuation boundaries. Focused tests: 21 passed. Full suite: exit 0,
-29 pre-existing isolated PostgreSQL/pgvector tests skipped. Uses existing
-isolated PyMuPDF test dependency cache.
+Target acceptance covers two articles on one page, remote continuation, stale revision, parent/article union, a narrow article among many parent chunks, hidden/withdrawn scopes, public text retrieval without a book grant and denied proof/full-original access. Preserve one usable search during import and the protected latency/quality gates from the handoff. Record BGE, lexical and fusion behavior separately.
 
-Relevant accepted-source snapshot gate: disposable copy of the 2026-10-17
-19:43:32 UTC backup; original opened read-only. Re-registering the same article
-in that disposable DB yields 18 chunks. All 18 query lexical rankings equal the
-parent ranking projected onto that article; no outside chunk is returned.
-54 measured scoped calls: median 4.03 ms, p95 16.40 ms, maximum 19.06 ms.
-Every saved top-two query result has an in-article hit; one saved top-two
-candidate outside the article is intentionally excluded. This is not a fresh
-dense-quality or mass-import acceptance claim. Live article-scoped verification
-must follow rollout.
+## Historical evidence — 2026-10-17
+
+The prior local-corpus implementation applied lexical/exact-alias filters before LIMIT, but selected dense candidates at the parent vector plane before article filtering. That was a known small-scope recall limitation, not an article-native top-k acceptance.
+
+Its recorded focused suite had 21 passing tests; the full suite exited 0 with 29 pre-existing isolated PostgreSQL/pgvector tests skipped. A disposable copy of the 2026-10-17 19:43:32 UTC backup yielded 18 article chunks; all 18 lexical rankings equaled parent rankings projected into the article. Across 54 scoped calls, median was 4.03 ms, p95 16.40 ms and maximum 19.06 ms. These figures are unchanged historical measurements, not fresh dense-quality, mass-import or Kaggle acceptance. Full context: [immutable source document](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/operations/article-search-scope.md).

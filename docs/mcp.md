@@ -1,427 +1,64 @@
-# MCP surface and model optimization
+# MCP surface, read models and compatibility
 
-## Target MCP and consumer compatibility (2026-10-19)
+Active target2026-10-20. [Single handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md), [ingestion](ingestion.md), [rights](rights.md) and [stories](story-registry.md) define behavior. Existing external tool names are retained; changed envelopes are versioned. Old non-GEO IDs do not migrate, but clients are not broken for convenience.
 
-**Target requirements, not deployed functionality.** Follow the [single handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md). Keep the existing DevCoveer MCP resource; Kaggle PostgreSQL owns domain state, pgvector and BGE-M3. Port every corpus consumer, including source_proof, catalog, graph, Story Registry, cases and history. Changing a connection string or launching SQLite-dependent code on Kaggle is not that port.
+## Goal-oriented surfaces
 
-| Capability | Preservation requirement |
+| Group | Contract |
 |---|---|
-| Import/search | Resumable book tools, search/fetch/catalog, compact knowledge_search, bibliography and exact revision/page/region evidence. |
-| Source facts | Facts, event_dates and observations remain queryable without a Story; shared references do not duplicate identity/calendar/numeric results. |
-| Stories | Search/get/history, source registration, extract/reconcile, edits, assessments/variants, merge/archive/restore, exact-version approval, export and publication record. |
-| Dates/numbers | Calendar/precision/date-role predicates, competing/superseded dates; exact decimal, metric/unit/subject/period/method and comparability diagnostics. |
-| Graph/POI | People, organizations, events, threads, aliases/toponyms, source-place relations, owner-selected POI links and async evidence/readback. |
-| Research | Independent cases/contributions/conclusions/support, participants/grants, private draft versions/selective publication, source needs and discussions. |
-| Continuation | Personal/Slack saved requests, stable operation/result IDs, bounded pending/status/readback and current authorization at delivery. |
-| Images | source_proof/illustration_fetch, real MIME/ImageContent, pixel scope, exact provenance and item-level partial outcomes. |
-
-Accepted active book text/bibliography is searchable without per-book reader ACL. Originals, pixels, private history and restricted research retain separate permissions. Empty preliminary hits are not completed negative search. Continue the same saved work within the applicable remaining budget and return explicit degraded/pending; the hard evidence-search deadline remains2000ms. E5 is not fallback.
-
-Reuse Mira in Projects Hub and shared live-interaction. Its verified adapter currently exposes only search_evidence, contains no OAuth/network transport and normalizes only {evidence, mode}, with hybrid|lexical_degraded. Extend the existing typed adapter for real resource-bound grants, compatible result envelopes, remaining deadlines, pending/readback/result ACK and authorized progressive capabilities. A new endpoint alone does not connect stories/cases/proof. Keep default Live capabilities small; tool visibility never grants permissions and import remains an owner personal operation.
-
-Spoken answers may select relevant detail but preserve material values, attribution and qualifications; exact bibliography/evidence remains visible. Test the actual PH/RKB candidate, separate users, Stop/reconnect and late results. Old emulator/WSS checks are separate evidence.
-
-## Retained implementation baseline
-
-Following sections describe earlier tool/runtime contracts. Their SQLite/Supabase/E5 choices and narrower profile limitations are baseline, not target completion. Preserve compatible APIs and explicitly version changes.
-
-
-## SQLite / Supabase v2 implementation boundary (2026-10-05)
-
-The canonical task is [SQLite corpus + Supabase vectors + on-demand proof](prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md).
-The old v1 page archive and capacity prompt are superseded. No local PostgreSQL,
-page archive/topic/spool, whole-book readiness gate or new IAM is introduced.
-
-The v2 release selects persistent SQLite with `RKB_SQLITE_CORPUS_PATH`.
-SQLite owns corpus text, catalog, rights/ACL, page/region mapping, ingestion,
-graph/POI and publication state. Supabase owns only E5/BGE vectors and minimal
-ID/revision/hash/scope anchors. The existing application actor bridge authorizes
-local reads and writes; MCP bearers never enter the vector plane. Fetch/catalog
-and FTS lexical-only search remain available without Supabase. See the
-[deployment and recovery runbook](operations/sqlite-v2.md).
-
-## Tool surface
-
-Keep the public model-facing API small and goal-oriented:
-
-1. `search(query)` — standard read-only search compatible with ChatGPT company knowledge/deep research.
-2. `fetch(id)` — standard read-only fetch with full evidence, provenance and illustration descriptors.
-3. `book_find(query, limit<=8)` — bounded deterministic title/author lookup over books the caller may read.
-4. `book_ingest(...)` — resumable ingestion workflow for a new attachment or a new revision of an archived source.
-5. `book_pages(...)` — read-only staged page batches returned as model-visible MCP image content.
-6. `document_access(...)` — inspect/change visibility and sharing, subject to rights and role checks.
-7. `profile()` — tiny identity/profile read for clients that display connected account identity.
-8. `illustration_fetch(id)` — authorized canonical crop as ImageContent, with
-   printed caption and explicitly labelled model observation metadata. Available
-   in the full profile; Live retains its existing bounded evidence surface.
-
-The normal user does not supply `duplicate_policy`, document UUIDs, cursors or lifecycle commands.
-For an attached new source the model uses `start`; for a named existing book it resolves
-the book with `book_find` and uses `reprocess(document_id)`. Internal attached-source
-metadata still supports `duplicate_policy=reuse|new_revision` for compatibility and tests.
-See [ingestion](ingestion.md) for source identity and visual review requirements.
-Chunk `fetch` includes illustration URI, source page/bbox, caption, observation,
-crop provenance, visibility/rights and a verified private mirror reference when
-present. An observation never replaces the returned printed `text`.
-
-Internal vector, FTS, object-store, crop and embedding operations are not model tools.
-
-## Search/fetch compatibility
-
-`search` returns:
-```json
-{"results":[{"id":"chunk-or-document-id","title":"...","url":"https://..."}]}
-```
-
-`fetch` returns:
-```json
-{
-  "id":"...",
-  "title":"...",
-  "text":"...",
-  "url":"https://...",
-  "metadata":{
-    "document_id":"...",
-    "pages":[12,13],
-    "provenance":[],
-    "footnotes":[],
-    "illustrations":[]
-  }
-}
-```
-
-URLs must be stable, user-openable evidence pages, not expiring object-store URLs.
-
-## Ingestion
-
-### User-level contract
-
-The expected user requests are intentionally simple:
-
-```text
-"Добавь эту книгу в базу знаний региона" + attached PDF/DjVu
-"Переимпортируй Гаузе, прошлый импорт был неполный"
-```
-
-The model owns orchestration. For a new attachment it starts ingestion and carries it
-through page review, staging, validation and finalization. For an existing source it
-first calls `book_find`; if one plausible match remains it calls
-`book_ingest(command="reprocess", document_id=...)`. The server requires the exact
-source to be present in the verified Telegram source archive and creates/resumes the
-next staged revision on the same logical document. When an already verified archive cannot be retrieved, the model may pass the
-owner's attached original as `book_ingest(command="reprocess", document_id=..., file=...)`.
-The server compares its SHA-256, format and physical page count with the registered
-verified source *before* opening a new revision. A different edition is rejected;
-the same document ID, accepted active revision, private rights and editorial history
-are preserved. The verified bytes restore only the original private source object
-for subsequent `book_pages` reads, including after the original object was
-retired by bounded archive GC. Existing source identity is retained and
-staging capacity is reserved before rehydration; the same archive GC policy
-can retire those temporary bytes after the pending revision completes.
-This is an optional recovery path, not a
-replacement for archived-source reprocessing or a new logical import.
-A re-upload is requested only when
-that verified archive is genuinely unavailable. Multiple plausible catalog matches are
-a user-facing disambiguation case: show title, author and year; hidden IDs are never
-a user requirement. A pending archive is a recovery/wait blocker, not an immediate
-request to upload the book again.
-An explicitly selected owned logical document remains usable when historical roots
-share the same source SHA; the roots stay separate. An attached-source start without
-that selection continues to fail closed on ambiguous historical identities.
-
-### Internal resumable workflow
-
-`book_ingest` remains command-oriented because ingestion is one resumable state machine:
-
-```text
-new source: start(file) -> ingestion_id
-existing source: book_find(query) -> reprocess(document_id) -> ingestion_id
-book_pages(ingestion_id) -> mixed text metadata + MCP ImageContent blocks
-stage(ingestion_id, pages, semantic chunks)
-validate(ingestion_id)
-finalize(ingestion_id)
-status(ingestion_id)
-```
-
-Every ingestion result includes a compact `next_action` so the model can distinguish
-continue-pages/staging, validate, finalize, wait for server work, resume interrupted
-finalization, completion and a real blocker. Complete staged page coverage persists
-the validate action for later status/restart; it does not replace semantic validation.
-The model performs semantic
-reading/recognition; the MCP does not run OCR, VLM, LLM parsing or semantic extraction.
-
-The OpenAI tool descriptor marks only the top-level new-source `file` parameter with
-`_meta["openai/fileParams"]`.
-
-`book_pages` returns page renders through MCP image content blocks, not JSON URLs that
-the model would need to fetch separately. Each batch is deliberately small (default
-4, maximum 8 pages) so vision context is bounded.
-
-Current implementation checkpoint:
-- `book_find`: bounded RLS-filtered title/author lookup with deterministic ranking;
-- `start(file)`: bounded HTTPS file-parameter download, exact SHA-256, PDF/DjVu
-  inspection, private source staging and private document/job creation;
-- `reprocess(document_id)`: owner-authorized verified Telegram-source-archive read,
-  exact SHA verification and an idempotent `new_revision` start on the same
-  `document_id`, without asking the user to upload the book again. Normal replay
-  resumes a still-running archived reprocess. When the user explicitly wants to
-  replace a still-pending reprocess, call the same tool with
-  `metadata.duplicate_policy="new_revision"`; this deliberately allocates one
-  newer staged revision while replay of that explicit restart remains idempotent;
-- `book_pages`: small deterministic JPEG page renders plus bounded native/embedded source
-  text blocks/bboxes, maximum 8 pages per call;
-- `stage`: the model submits page-local short keys (`region_key`,
-  `illustration_key`) and semantic chunk references; the server creates stable
-  UUIDv5 identities and derives chunk text from referenced regions. Chunks are
-  coherent retrieval passages rather than native PDF blocks or page-sized units:
-  target about 256 encoder tokens (typically 800–1,000 characters, broadly
-  700–1,100 on the measured books), join genuine continuations across pages, and
-  attach fragmentary body text to context. Validation counts the **final augmented
-  search material** with both pinned tokenizers; exceeding either deployed
-  512-token hard limit blocks finalization instead of silently truncating.
-  Figures may also carry an explicit
-  clockwise `display_rotation_degrees` of 0/90/180/270; source geometry remains
-  unchanged;
-- canonical searchable text and graph material are persisted in SQLite; transient
-  staged graph/source objects remain replaceable implementation artifacts rather than
-  the user-facing source of truth;
-- `validate`: requires complete page coverage, valid relations/illustrations,
-  retrieval coverage and no unresolved `needs_review` regions. A new revision of
-  the **same archived source SHA-256** may reuse page-level visual-review status
-  from an older revision only when that older revision already reached the
-  publication gate and the stored page itself was `visual_reviewed` with a note;
-  this reuses source review, not old chunking or semantic structure;
-- `finalize`: builds the SQLite text/FTS projection and pending vector publication, exact
-  source crops, pages/regions/relations/illustrations/chunks and then asks the database
-  to revalidate the materialized revision before atomically switching
-  `active_revision`;
-- retries of the same ChatGPT `file_id` are idempotent at the SQL boundary,
-  including concurrent starts; archived reprocess uses a stable per-active-revision
-  source identity so lost responses resume the same staged revision.
-
-Staged books remain invisible to retrieval until the final activation RPC.
-
-## Live profile
-
-Interactive Live consumers use a separate optimized server profile
-(`RKB_MCP_PROFILE=live`) that exposes **one tool only**:
-
-```text
-knowledge_search(query, max_evidence=3, document_ids?, main_job_id?)
-```
-
-Fast path:
-
-```text
-Live
-  -> knowledge_search
-      -> BGE-first semantic retrieval in a compact authorized document scope
-      -> optional bounded lexical/alias branch when explicitly selected
-      -> authorized exact evidence hydration from the SQLite corpus
-  -> compact evidence pack
-  -> Live answer
-```
-
-This intentionally avoids the two model round-trips of generic `search -> fetch`.
-The full ChatGPT/deep-research profile keeps standard `search` and `fetch`
-semantics plus ingestion/access tools.
-
-Rules:
-- default evidence count is 3, hard maximum 5;
-- no illustration bytes in the first response;
-- illustrations are descriptors/IDs until explicitly requested;
-- ingestion, sharing and rights tools never appear in the Live profile;
-- deep enrichment remains optional/non-blocking;
-- Live transport/capture/session lifecycle is provided by the shared
-  `live-interaction` framework.
-
-This minimizes declaration bytes, tool-choice ambiguity and conversational latency
-for weak/fast Live models.
-
-## Public and private search
-
-Anonymous/public-only search may be exposed separately later. Authenticated search
-always computes an authorized document/revision scope locally before vector
-ranking. The remote vector plane receives only that compact document scope, not a
-full list of active chunk IDs. Returned candidate IDs/revisions/hashes are then
-validated against local SQLite authority before hydration. Never retrieve private
-rows and filter them only after vector search.
-### Native previews and source completeness
-
-Native extraction is a transport aid, never a certificate of page completeness.
-Each `native_blocks` entry reports `original_length`, `offset`, `end`,
-`truncated`, and an optional `continuation` cursor. Read that cursor with the
-same authorized `book_pages(ingestion_id, cursor)` call: it returns at most
-1000 characters of one block and the source page image. Repeating a cursor
-returns the same portion; concatenate by offset, without duplicating retries.
-A page's `native_text_info.blocks_continuation` exposes blocks beyond the
-80-block preview cap, and then subsequent blocks during a continuation read.
-Finish a block's own continuation before advancing to the next block. The
-ordinary numeric page cursor remains the next *page*, not a completeness claim.
-Page text remains capped at 24000 characters; use block portions for complete
-native material. Empty native text can still accompany a meaningful scanned
-image or caption and always requires model visual review.
-
-`StagePageInput.source_material` defaults to `unreviewed`; `preview` and
-`full_native` alone cannot pass validation. Every page, including an image-only
-page, needs `visual_reviewed` plus a concise `source_review_note` describing the
-model's source review. The server validates this explicit attestation and graph
-coverage; it cannot certify the truth of a semantic review. Old staged graphs
-lack the attestation and must be reviewed/restaged before finalization. This
-contract does not alter already active revisions or reimport their source.
-Split long source material into bounded regions (maximum 8000 characters each)
-with correct reading order; continuation portions are not automatically new
-semantic regions. Parsing/recognizing scans remains ChatGPT's work.
-
-## Minimal entity graph tools
-
-`book_ingest(stage)` accepts one `entity_candidates` bundle (up to 32 typed nodes
-and 64 evidenced relations). Each quote must match its exact staged chunk and
-region. Node kinds: person/organization/event/historical_thread/poi_ref. Relations
-include participated_in, occurred_at, member_of, affiliated_with, operated_at,
-predecessor_of, founded_by and located_in (place → containing place).
-
-Source-side locations use `poi_ref` without mandatory coordinates, maps or an
-external owner ID. The importing model first searches `entity_list` (labels,
-authorized aliases and literal mentions), inspects `graph_fetch`, and supplies
-an existing `entity_id` or a distinct new source key. Optional `place_kind` and
-`place_context` explain the type and geographical context. `entity_refs` supplies
-existing relation endpoints without fabricated mentions. Web clarification is
-separately attributed in `research_sources`; later `map_refs` or an explicitly
-selected `canonical_poi_ref` enrich the same ID. No name match selects identity.
-See [location registry](location-registry.md) for the normal workflow.
-
-`graph_stage(document_id, revision, candidates)` adds model-authored bounded
-candidates to an owned active revision; it does not reimport or declare the full
-source complete. `graph_stage(entity_id, alias)` adds one sourced alias and queues
-reverse discovery. Explicit entity IDs reuse only same-owner/kind identities.
-Unknown/ambiguous POI resolution remains unresolved; there is no name-based merge.
-
-`graph_fetch(entity_id, limit<=20)` returns one authorized entity, bounded
-aliases/mentions, and one-hop neighbors. Every relation includes exact
-chunk/page/region/quote evidence; fetch the referenced chunk before asserting a
-fact. Aliases and discovered mentions are candidates, not automatically accepted
-identity truth. `graph_related` uses the existing multilingual retrieval and can
-return a pending main job in its retrieval envelope.
-
-Live exposes no graph-write or traversal tools. Private source existence and
-relations stay evidence-RLS scoped even when a referenced canonical POI is public.
-
-`graph_stage(poi_discovery_ref="streetstory://poi/<uuid>")` schedules a canonical
-POI/version discovery request even before that POI has a graph evidence seed.
-Names/version are verified through Street Story's identity projection; callers
-cannot inject a new canonical alias. `graph_fetch(discovery_job_id=...)` returns
-at most 20 still-authorized source candidates for the requesting actor. No
-entity/fact is automatically materialized from these hits. A later ChatGPT
-review may stage their exact evidence through the normal contract.
-
-## Source and story search profiles
-
-The full profile exposes source search as `search` followed by `fetch`;
-`knowledge_search` is the Live profile equivalent. Reconciliation clients use
-the source-evidence surface available in their profile, separately from
-`story_search`. Story semantic/hybrid requests currently report lexical fallback
-and `local_fts_ready_vector_awaiting_worker`; source BGE readiness does not
-certify a separate story-vector index.
-
-## Automatic indexing readiness
-
-Finalization persists a pending publication; the indexing owner reconciles exact
-source/revision/hash coverage in the configured required vector spaces before
-activation. `RKB_REQUIRED_VECTOR_SPACES` defaults to BGE; optional diagnostic E5
-does not block activation. A previous active revision remains available while its
-replacement waits. Normal imports require no manual vector backfill command.
-`book_ingest(status)` on a finalized ingestion and search/Live evidence outputs
-include actor-scoped `indexing` counts/state. Regular MCP `indexing_status` accepts
-an optional authorized document ID and returns active/ready/missing counts,
-worker state and effective mode; it exposes no titles, text or foreign inventory.
-During incomplete BGE coverage search uses complete E5, otherwise lexical, with
-main pending. When BGE is ready it is the default main semantic branch; E5+BGE
-equal-weight fusion remains an explicit diagnostic/compatibility mode rather than
-the default because the measured multilingual fixture showed lower recall than
-BGE alone. Interactive BGE query waiting is bounded by
-`RKB_BGE_QUERY_WAIT_SECONDS` (0.8 s by default); a missed deadline returns the
-fast fallback with a truthful pending state and resumable main job. General FTS
-is optional and separately bounded by `RKB_LEXICAL_BUDGET_MS`; exact caller
-aliases remain independent signals. Repeat status in a later turn; do not hold an
-interactive turn open waiting for remote indexing. See
-[operations](operations/automatic-indexing.md).
-
-
-## v2 corpus and proof tools
-
-- `catalog(command=list|find|get, query='', kind?, cursor?, limit<=100)` lists
-  accessible sources with SQLite details. Empty query lists sources. Pagination
-  excludes unauthorized roots before calculating cursors; old revisions do not
-  create duplicate catalog entries. `book_find` remains compatible.
-- `source_proof(id, quote, physical_page_index?)` authorizes the evidence and
-  private original owner, resolves one exact fragment, verifies source hash and
-  renders only the requested page. It returns JSON plus a real WebP image when
-  localization is validated. Native PDF quads come first. Scan proof additionally
-  requires `RKB_SCAN_PROOF_ENABLED=1` and dedicated `RKB_GEMINI_API_KEY`.
-
-`RKB_PROOF_MODEL` accepts only the configured Flash-Lite reader family, including
-`gemini-3.1-flash-lite` and `gemini-2.5-flash-lite`. Pro/image-generation models are
-rejected. Calls use 25-second timeouts, <=4M pixels, 4096 output tokens and <=2
-calls/page. The second call reads proposed strips without the expected quote.
-The server checks text equivalence, convex in-page bounds, order and stripe area,
-then paints transparent yellow polygons. Ambiguity, mismatches and provider
-failures return explicit unavailability; confidence/echo never authorizes exact.
-
-The Live profile retains its single read-only `knowledge_search` tool;
-`search`/`fetch` belong to the full profile.
-No ingestion, catalog or proof tools are added to the default Live bundle.
-
-Catalog list/find/get preserve unknown fields and contributor roles. `catalog_cover`
-returns only a registered real source cover/title page. `source_proof` supports
-same-page multi-region quotes and page-by-page multi-page quotes; an explicit
-page requires a quote scoped to that page. Native PDF quads are checked first.
-Native matching may retain up to three immediately adjacent trailing punctuation
-characters from the source word box when the requested quote omits them; internal
-text still must match exactly. Scans and DjVu use bounded Flash-Lite localization plus an independent crop read
-without the expected quote. Code applies yellow stripes; ambiguous or mismatched
-results fail closed. Warm model proofs recheck `RKB_SCAN_PROOF_ENABLED` and
-source ownership, so capability revocation also rejects a warm cache hit.
-
-## Organizations and sourced graph relationships (2026-10-09)
-
-`GraphBundle.entities` now accepts `organization` in the **existing**
-graph stage/ingest surface. Typed directed organization edges are
-`affiliated_with`, `founded_by`, `participated_in`, `operated_at`,
-`predecessor_of` and `member_of` with exact original quote evidence and
-bounded one-hop `graph_fetch`. The existing `graph_stage`,
-`graph_fetch`, `graph_related` and `entity_list` methods are reused.
-No new graph backend or POI identity is introduced. Validation is repeated
-in SQLite writes. [Full organization contract](organization-graph.md).
-
-
-## Source-attributed calendar query (2026-10-09)
-
-The bounded read-only `story_calendar(month,day,calendar,limit,cursor)`
-returns current exact day-level event datings with original source evidence,
-author/source attribution, precision and explicit calendar. It uses SQLite
-exact predicates and source ACL, **not** semantic ranking. A year-only,
-approximate, source-publication or recorded-at date is not eligible.
-`story_get(view=event_dates_page|event_date_history_page)` pages the
-dossier's date claims, including competing/explicitly superseded datings.
-Editors/researchers can add an event date with
-`story_edit(operations=[{"op":"record_event_date", ...}])`
-only when the date text literally occurs in a current assertion's
-registered source evidence. Old Live default remains read-only
-`knowledge_search`; adding `story_calendar` to reader profiles does not
-grant mutations or install a new ASR/router.
-See [Story Registry's calendar contract](story-registry.md).
-
-## Evidence-backed numbers and units
-
-`RecordObservation` in typed `story_edit` records the original numeral,
-exact normalized decimal, `metric_key`, `unit_code`, source-bounded period,
-method, precision, proposition and proof. Each claimed value must occur in a
-current authorized excerpt. Queries:
-`story_get(view="observations_page"|"observations_history_page")`,
-`story_observation_search(metric_key, unit_code?, limit, cursor)`, and
-`story_observation_compare(story_id, left_id, right_id)`. The latter
-**never performs unreviewed arithmetic**: identical display names do not
-establish matching entity identity or methodology. All tools remain bounded,
-read-scoped and omit source-inaccessible records. No new spatial or relational
-identity authority. See [numerical observations](story-registry.md).
+| `search` / `fetch` | Standard full-profile source evidence search and fetch; stable user-openable evidence references, exact provenance and illustration descriptors. Internal vectors/FTS/storage are not tools. |
+| `knowledge_search` | Live-only compact evidence pack in one call: query, max_evidence default3/max5, optional document_ids/main_job_id. No import/admin/graph/proof tool dump in default Live profile. |
+| `book_find`, `catalog` | Deterministic bounded title/author lookup (book_find limit≤8); catalog list/find/get and allowed metadata update, keyset cursor/limit≤100. No full-catalog Python sort. |
+| `book_ingest`, `book_pages` | One resumable command workflow with start/reprocess/rechunk/stage/validate/finalize/status and small real page ImageContent batches. Source semantic interpretation belongs to calling model. |
+| `document_access`, `profile` | Inspect/change permitted grants and small verified identity readback. No client-supplied actor or role as authority. |
+| `illustration_fetch`, `catalog_cover`, `source_proof` | Real images with class-specific rights, exact revision/geometry/hash/MIME, per-item continuation. Cover must be a registered real asset, not fabricated. A mostly textual title page is not made public by naming it a cover. |
+| Story operations | Existing search/get/history/extract/reconcile/edit/merge/archive/restore, source registration, assertions/evidence/assessment, variants/reviews and publication records. Actual saved body shown by default. |
+| Graph/GEO | entity_list, graph_fetch/related/stage, poi_registry search/get/select/create, poi_context and geo queue; bounded source evidence and actual owner receipt. |
+| Calendar/measurements | Existing story_calendar, dated claims/history, observation_search/compare and typed edit ops; facts can exist without mandatory Story. |
+| Cases/participants/research | Existing compact search/get/history/changes, evidence/contribute/conclusion/support, participants/grants, discussion/export/source needs/drafts/operation status groups. No tool per UI button or second expert MCP. |
+
+Full search retains the compatible `results[{id,title,url}]` projection; fetch retains id/title/text/url/metadata (source/page/provenance/footnotes/illustrations). Rich status and revision fields extend the versioned envelope, not silently replace its type. Stable URL is not an expiring object-store credential or an unbuilt public page. Old strict PH evidence/mode normalizer gets an explicit versioned adapter for new pending/result/artifact modes.
+
+## Search and read contracts
+
+Query all active accepted book text/bibliography without per-book owner ACL. Request document/article scope, current revision/withdrawal and private derived content still apply. PostgreSQL does scope/indexed ranking/batched hydration; no list of all document IDs sent to another vector service. BGE only on Kaggle, bounded lexical/alias complement, common2s evidence deadline. E5 fallback is not a target mode.
+
+Warm backend p95≤1000ms, MCP p95≤1500ms. A cold worker yields honest lexical_degraded/pending and actor-bound main_job_id; repeat that same job/query to continue. Empty preliminary hits are not a definitive absence. Index vector counts do not prove loaded worker readiness. Projection lag/current snapshot/min_data_seq are explicit; after save route to eligible fresh data or return truthful pending, never false not-found.
+
+Live returns small evidence and image descriptors initially; request image explicitly through allowed progressive client capability. Source quote/attribution/calendars/uncertainty survive voice. Ordinary stories read the saved basic body or saved adaptation and put bibliography on screen. No LLM generation during `get` to conceal missing narrative.
+
+`story_get` default returns exact Variant.body/ref/revision/hash with bibliography separately. A candidate without body returns body=null plus availability/reason. Search distinguishes ready narrative from dossier and gives a full short body or clearly marked excerpt + exact reference/cursor. Read-export follows Story read scope; publish-export additionally requires approval/capability. Compact mode cannot silently fall back to summary. Private author drafts remain private even though imported shared body may be an editorial draft.
+
+## Ingestion boundaries
+
+New-source top-level `file` keeps `_meta["openai/fileParams"]`. PDF/DjVu belongs to start/reprocess; bounded stage JSON is a separate transport of the same typed data. New source default4/max8 page ImageContent, exact source/revision, region/span hashes, visual review, semantic completeness and BGE tokenizer gates remain. Full [ingestion contract](ingestion.md) records block/page continuations and limits; do not equate preview with full source reading.
+
+Every ingestion response exposes next_action and real source/index/knowledge progress. Facts/dates/entities must survive zero stories. Sufficient episode saves a default basic narrative and verifies normal readback. Source activation and persisted research/compose frontier are atomic; new shared source does not auto-publish or confer human endorsement.
+
+Accepted-source extraction uses existing story_extract/corpus_read checkpoints and the same facts/body contract without reimport. Rechunk only changes derived passages of verified unchanged accepted source; catalog updates do not change source/evidence. Owner personal-route restrictions apply even if a Slack bot was invoked by owner.
+
+## Graph and structured knowledge
+
+Stage bounded graph bundle≤32 nodes/64 evidenced directed relations. Node kinds person/organization/event/historical_thread/poi_ref; alias/mention/type/temporal context determine candidate identity, not an automatic name merge. graph_fetch returns one entity with at most20 one-hop relations and paged aliases/mentions. graph_related uses same retrieval and pending envelope. graph_stage accepts source-grounded new facts/alias and optional discovery request, never a full graph dump.
+
+Source-place can exist without coordinates/Street Story ID. Verify selected/created physical POI through its owner; graph discovery hits are not automatically facts/identity. Existing external canonical aliases come from owner projection, not caller injection. Public POI does not expose private drafts/attachments linked to it.
+
+`story_calendar(month,day,calendar,limit,cursor)` selects current exact day-level event datings, not publication dates/approximate years. Preserve original_date_text, calendar/precision/date_role, competing datings and explicit supersession. Do not silently convert Julian/Gregorian/unspecified. Existing event_dates_page/history and record_event_date retain exact source evidence.
+
+RecordObservation keeps original numeral, exact decimal, metric_key/unit_code, subject/period/method/precision and evidence. Existing observations_page/history, story_observation_search and story_observation_compare stay bounded; compare refuses unverified arithmetic across mismatched subjects/periods/methods. The new storage path permits these facts outside a Story without deleting the old compatible operations.
+
+## Proof and artifacts
+
+Illustration returns a genuine canonical accepted figure crop publicly, printed caption separate from labelled model observation. Stripe/page quote proof requires owner/demo/expert/local_historian capability, current scope and authorized audience. Full original download is separate. Trusted artifact class/geometry and separate cache identities prevent full-page-as-illustration bypass.
+
+Keep native PDF quads first, same-page multi-region and page-by-page multi-page quotes; explicit page requires quote scoped there. Native matching may tolerate existing bounded adjacent punctuation without altering internal text. Scans/DjVu use the existing configured Flash-Lite localization/independent strip-read adapter where enabled, not image generation or another general ingestion LLM. Preserve current bounded policy:25s provider call timeout,≤4M pixels,4096 output tokens,≤2 calls/page; async proof must not hold the2s evidence search. Second visual read does not receive expected quote. Verify convex in-page bounds, order/stripe area and text equivalence; confidence/echo alone cannot authorize exact proof.
+
+Source SHA/revision/physical page/render hash/dimensions/transform/task generation bind locator. Pin preview until terminal callback; changed pixels require new locator. Authorize both quote_proof and internal source_archive purpose access without owner impersonation. On cache hits/delayed output recheck grants and withdrawal. Ready/pending/denied/unavailable/failed per item; retain operation ID through ArchiveReadPending. Return actual ImageContent and actual MIME, with distinct source/display/provider/delivery hashes.
+
+## Durable request envelopes and acceptance
+
+Transport received/pending, remote durable accepted, domain saved and delivered/result-hash ACK are different. Shared person/dialog sequence, fair admission, current request generation and service scope cannot be bypassed by an explicit ID. Ordinary read-only search avoids remote journal writes; durable question/mutation preserves exact payload/outcome under [storage](storage.md).
+
+Test real clients with a non-owner, direct forbidden calls, revoked link/grant, cross-route stale callback, private draft history, actual body/image readback and reconnect result ACK. Endpoint existence, cached catalog visibility or green unit tests alone do not establish client support.
+
+Verified demo/expert/local_historian assignment materializes the existing scan_proof_read policy grant with audit and category revision; demo expiry is inherited. Claimed categories grant nothing. Current capability/scope is checked at render time; explicit revocation is not recreated on read, and removing a category withdraws its policy-derived grant. No new IAM or per-image approval.

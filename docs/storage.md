@@ -1,310 +1,92 @@
-# Storage, privacy and lifecycle
+# Хранение, восстановление и ограничение объёма
 
-## Approved target storage — 2026-10-19
+Обновлено 20.10.2026. Целевой контракт для [единого handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md); новая реализация не развёрнута этой документационной работой. [Исходная SQLite/Supabase схема](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/storage.md) сохранена как immutable historical record.
 
-The [canonical Kaggle architecture](designs/rkb-scalable-kaggle-architecture-20261019.md) and [handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md) supersede conflicting placement/E5 instructions below. Existing SQLite/Supabase, cache values and old provider quotas remain baseline/recovery documentation, not claims that the target is deployed.
+## Один рабочий corpus
 
-Kaggle PostgreSQL+pgvector owns accepted corpus, catalog, provenance, stories, cases and BGE/lexical projections. DevCoveer control SQLite holds durable request/typed-command/result/delivery metadata and verified references, not a second permanent corpus or PDF/vector BLOB store. Exact accepted model/human payloads must survive notebook loss; the original PDF plus another model call cannot reproduce them.
+PostgreSQL 17 с pinned pgvector на Kaggle хранит exact accepted text, bibliography, source/page/region graph, факты, entities/relations, stories/variants, dates/observations, cases, drafts и BGE/FTS serving projections. E5 и Supabase в target отсутствуют. Короткая DevCoveer control БД не содержит постоянной второй копии corpus, vectors, PDF или BGE weights.
 
-One persistent outbound WSS connection carries bounded commands/results/progress and artifact references. Socket buffers are transient, not a second durable journal. Application ACK follows durable commit. Reconnect reconciles existing IDs/hashes; no acknowledged payload is deleted merely because send/Pong succeeded. Full originals/images/snapshots use existing bounded byte transport.
+Originals и illustrations сохраняются существующим VibePublish/Telegram archive owner. Private Dataset хранит согласованные PG snapshots; существующий Yandex recovery storage — immutable command/control/receipt tail, accepted payloads и проверенную daily base. Source binary archive, recovery storage, working DB и temporary caches имеют разные lifecycle и budgets.
 
-Private Kaggle Dataset snapshots and one latest verified independent Yandex backup have explicit internal applied watermarks, immutable versions and hashes. Verify restore before selecting a new canonical version or deleting the last good backup. Retain journal/payload tail through the older retained Dataset/Yandex watermark and all unresolved consumers. Budget overlap, WAL/temp, downloads and deliveries. Pressure triggers checkpoint/backpressure, never deletion of accepted uncovered changes. A daily database copy alone does not establish zero loss if the control journal itself is lost.
+Exact source_text и детерминированный search_material имеют собственные hashes и material version. Passages ссылаются на точные source spans; не размножать полную страницу ради каждого embedding. Model/human accepted decisions сохраняются точно: PDF SHA и повторная модель не воспроизводят прежний accepted result. Старые derived vectors можно убрать после безопасной смены revision; provenance и принятые значения нельзя подменить пересчётом.
 
-The [layers-only cutover](migrations/rkb-layers-only-cutover-20261019.md) preserves stable historical/cartographic IDs, geometry/CRS, temporal intervals, aliases, human corrections and provenance. Old searchable book text/chunks/vectors are excluded. Minimal legacy bibliography/SHA/page/locator anchors remain until exact re-anchoring; do not fabricate new evidence or silently match another edition.
+## ACK и короткий raw spool
 
-Target text search covers all active accepted books without owner filtering. Original files and scan/illustration pixels retain separate permissions, including both localization preview and final proof after caches/queues. Direct Kaggle download uses independent Telegram authorizations supplied at implementation; account FLOOD_WAIT still applies. VibePublish remains the single archive uploader unless that separate change is approved.
+| Граница | Значение |
+|---|---|
+| Local intake receipt | pending: известны request/idempotency key и временно сохранён input; финальное accepted ещё не обещано. |
+| Remotely sealed intent | Точный immutable payload и resolved intent доступны в Yandex recovery storage, hashes/size/version подтверждены readback; команда может получить accepted. |
+| Applied / Saved | PG transaction сохранила domain effects, applied_ops и непрерывный cursor; exact outcome/receipt также remotely verified. Cloud intake сам по себе не applied. |
+| Delivered | Единственный sender подтвердил native receipt/readback конкретного result hash. Unknown outcome остаётся UNKNOWN до reconciliation. |
 
-Source-format, exact-byte integrity and provenance safeguards below remain applicable while their storage adapters move.
+Accepted mutations и реальные user turns группируются в bounded group commit: готовая группа ждёт flush не более 1 секунды. Это предел batching delay, а не обещание provider latency. Ошибка remote commit оставляет pending и не превращается в Saved. Обычный read-only поиск не ставится в очередь remote journal и не требует S3 round trip.
 
-## Preserved implementation and historical record
+Existing S3ObjectStore — transport put/get/delete. Immutable create/seal, exact verification и conditional manifest CAS ещё реализуются поверх него. [Yandex PutObject](https://yandex.cloud/en/docs/storage/s3/api-ref/object/upload) документирует If-Match/If-None-Match; runtime probe проверяет конкретный SDK/bucket и competing-writer race, а не существование headers в спецификации. Segment содержит sequence range/count, payload hashes и previous hash. Manifest принимает только verified continuous chain; orphan upload не accepted.
 
+Стартовые implementation defaults для DevCoveer raw spool — **4 часа и hard cap 512 MiB**; до cutover измерить их достаточность под accepted payload sizes и write bursts. Числа не относятся к сроку жизни диалога, UNKNOWN send, private draft или unresolved case. Компактные request/receipt/UNKNOWN metadata сохраняются до reconciliation и переносятся в control checkpoint. Terminal receipt horizon 30 days допустим только для verifiable server-issued request IDs: expired ID не становится новой execution. Arbitrary legacy keys не GC вслепую. Pending callbacks используют durable artifact refs, а не удерживают месяцы raw body на DevCoveer.
 
-## SQLite / Supabase v2 implementation boundary (2026-10-05)
+Local GC удаляет raw bytes после remotely sealed payload + verified metadata. Он **не ждёт самой старой daily base**. Нельзя объявлять неподтверждённые bytes защищёнными по успешному socket send или upload request. Age/byte pressure заранее ограничивает новые admissions; при неисправном recovery backend нет финального accepted ACK. Ни возраст, ни заполненный диск не разрешают удалить единственную копию уже подтверждённого результата.
 
-The canonical task is [SQLite corpus + Supabase vectors + on-demand proof](prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md).
-The old v1 page archive and capacity prompt are superseded. No local PostgreSQL,
-page archive/topic/spool, whole-book readiness gate or new IAM is introduced.
+## Base, tail и checkpoint
 
-The v2 release selects persistent SQLite with `RKB_SQLITE_CORPUS_PATH`.
-SQLite owns corpus text, catalog, rights/ACL, page/region mapping, ingestion,
-graph/POI and publication state. Supabase owns only E5/BGE vectors and minimal
-ID/revision/hash/scope anchors. The existing application actor bridge authorizes
-local reads and writes; MCP bearers never enter the vector plane. Fetch/catalog
-and FTS lexical-only search remain available without Supabase. See the
-[deployment and recovery runbook](operations/sqlite-v2.md).
+1. PostgreSQL base — consistent physical backup с нужным WAL и indexes. Обычный cp работающего data directory запрещён. Logical dump применяется для обоснованного version/schema upgrade с отдельным измерением restore/index rebuild.
+2. Exact command/control/receipt tail хранится immutable в существующем Yandex recovery storage. Resolved payload включает выбранные IDs, logical timestamps, preconditions и codec/schema version. Результаты модели не генерируются заново при replay.
+3. Control checkpoint создаётся каждые **15 минут**. Accepted turns, grants/revocations и effects не ждут этого интервала: их изменения защищает remote tail до финального ACK.
+4. Changed PG base создаётся каждые **4 часа**, а также раньше при превышении replay-time/byte budget или перед planned handover. Без изменений полную копию не создавать. Index rebuild и reembedding не являются частью каждого checkpoint.
+5. Примерно раз в сутки сохранить одну проверенную независимую от Kaggle PG base в Yandex. Временно нужны old + candidate; удалить old можно после проверки новой копии. Yandex base и Yandex tail находятся в одном failure domain и не считаются независимыми резервами друг друга.
+6. Remote-tail GC сохраняет все интервалы, нужные **designated retained verified baselines** и unfinished consumers. Отставшая копия либо остаётся с полным recovery chain, либо явно выводится из набора recoverable baselines после годной замены. Нельзя удалить её tail и продолжать показывать её как восстановимую.
+7. Readers pin exact snapshot version, не Dataset latest; их leases и восстановительные зависимости учитываются до version GC.
 
-## Storage boundary — SQLite corpus, Supabase vectors, Telegram originals
+Manifest связывает snapshot ID, exact Dataset version, PG major/minor, extension/library builds, platform и collation provider/version, schema/codec, восстановленный внутренний applied cursor, hashes/sizes, WAL range, model/space и verification receipt. Cursor не вычисляется произвольным MAX(seq) в другой БД. Для deterministic keyed normalized text используется C collation; несовместимость collation/version требует корректного rebuild затронутых indexes до READY. Не предполагать непроверенный pin окружения через Kaggle UI.
 
-The current S3-compatible bucket is capacity-constrained (about 1 GiB) and must
-**not** be treated as the permanent corpus archive.
+Большие base bytes передаются напрямую Kaggle→Dataset/recovery object, не через 512 MiB Dev spool. Notebook не получает long-lived delete/global-bucket credentials: только scoped upload authorization на конкретный key+epoch с expiry. Presigned URL не отзывается автоматически при epoch change; expired writer может оставить orphan upload, но внешний promotion fence не разрешит его выбрать. DevCoveer владеет manifest/CAS/GC authority.
 
-Long-lived storage is split deliberately:
+Для Dataset source-backed primitive есть в [Kaggle CLI 6894864](https://github.com/Kaggle/kaggle-cli/blob/6894864ff4095cf98e9e36d3a694ff5fc9ba3818/src/kaggle/api/kaggle_api_extended.py): `_upload_blob` вызывает `start_blob_upload(ApiBlobType.DATASET)`, получает `create_url` и token; `upload_complete` передаёт bytes напрямую, а `dataset_create_version` использует `UploadFile.token` в `body.files`. Узкий target adapter разделяет это: Dev controller хранит account key/blob token, создаёт upload и затем version, делает readback/promotion; notebook получает только ограниченный signed URL/session и отправляет bytes. Это подтверждённая кодом возможность адаптации, не готовый adapter: runtime probe проверяет expiry, direct upload, finalize и восстановление exact version.
 
-```text
-VibePublish / Telegram, TELEGRAM_KNOWLEDGE_BASE connection
-  topic /2 = exact original source files (PDF, DjVu, ...)
-  topic /4 = extracted illustration documents
+Sealed-tail compaction ограничивает object count/bytes/replay time. Один existing controller собирает verified sealed segments в более крупные immutable bundles, сохраняет logical IDs/hashes/sequence proofs и переключает refs через CAS. Старые objects удаляются лишь после проверки replacement и учёта readers/consumers; не строить новый compaction service.
 
-SQLite (persistent service state, WAL)
-  = catalog / ACL / rights / revisions / graph / POI outbox
-  = exact chunk/region text, search material and FTS5
-  = source SHA/archive ref, page/region/illustration mapping
-  = staged vector publication metadata (no embedding values)
+Проверка candidate: provider status → скачать exact version → hashes/size → restore с нужными extensions/WAL → SQL invariants/cursor → replay непрерывного tail → actual SQL+dense probes. Canonical pointer переключается внешним fenced CAS только после этих проверок. Crash между apply и ACK возвращает тот же результат через applied_ops, не повторяет внешнюю отправку.
 
-Supabase Postgres
-  = minimal chunk/document/revision/source/text hashes + owner scope anchors
-  = unchanged pgvector E5/BGE embeddings and HNSW indexes
+## Failure domains и быстрые reads
 
-S3-compatible object storage
-  = bounded ingestion/cache workspace only
-  = temporary source copy while Telegram archival is pending
-  = at most the current staged graph / temporary derived files
-  != permanent corpus archive
+Потеря Kaggle session: восстановить verified base, replay exact remotely accepted tail, подтвердить новые readiness probes. Canonical outcome hash фиксирует exact domain IDs/body/evidence, исключая заново вычисленные BGE floats, derived FTS и crops. Derived projections могут стать dirty и rebuild асинхронно, accepted BGE artifacts reuse; dense lag не задерживает canonical replay. Уже delivered artifact bytes/hash/receipt остаются exact и не подменяются regenerated изображением. Потеря DevCoveer disk: восстановить compact control checkpoint и remote command/control/receipt tail; не воскресить старую writer authority или отозванный grant. Потеря Yandex требует отдельного анализа остаточного Dataset recovery point: две копии в одном Yandex не доказывают RPO=0.
 
-local disk
-  = bounded disposable work/cache
-```
+Read-only evidence search использует прогретый serving PG/BGE, не создаёт durable user-turn запись автоматически. Уже managed request передаёт request/generation context без второго lifecycle. min_data_seq обеспечивает read-after-write; ordinary reader сообщает data_as_of. Current withdrawal/capability barriers проверяются gateway перед output/cache reuse/delivery, даже если reader snapshot отстаёт.
 
-The exact original file is archived through VibePublish as a Telegram DOCUMENT
-using the dedicated Knowledge Base Telegram session/connection
-`TELEGRAM_KNOWLEDGE_BASE`. Regional Knowledge stores the verified media-store
-reference and SHA-256; Telegram object identity never replaces application ACL.
+## Ёмкость и экономичность
 
-The source topic is `https://t.me/c/4368830579/2`.
-The illustration topic is `https://t.me/c/4368830579/4`.
+Измерять отдельно:
+- Kaggle writable mount: PG heap/TOAST/indexes, WAL, temp, staging, restored data, candidate backup и download/render cache;
+- private Dataset quota: retained base versions и upload overlap;
+- Yandex: designated bases, immutable tail/payloads, pending artifacts и overlap;
+- DevCoveer: raw spool, compact metadata/checkpoints и bounded network buffers.
 
-Object storage may be used as a temporary safety buffer until exact Telegram
-provider readback succeeds. Once the Telegram source archive is verified and the
-active/staged state no longer requires the temporary object, the S3 copy must be
-eligible for deletion/GC rather than accumulating indefinitely.
+Gates: steady usage **≤80%**, крупнейший import/restore/snapshot/cutover peak **≤90%** каждого applicable budget. Minimum benchmark — **100 book-equivalent sources и 100000 active chunks**; это не product limit. Raw-vector arithmetic не заменяет measured index/volume usage.
 
-## Why not global content-addressed public keys
+По текущей [Kaggle Dataset документации](https://www.kaggle.com/docs/datasets): 200 GB на Dataset, 200 GB суммарно private datasets, максимум 50 top-level files. Archives распаковываются; zip не обходит лимит. [Notebook docs](https://www.kaggle.com/docs/notebooks) отдельно указывают 20 GB autosaved working space и конечную session lifetime. Реальный аккаунт, mounts и свободные quotas проверяются перед cutover; Dataset capacity не равна рабочему диску PG.
 
-Global hash paths create an existence oracle: a caller can infer that another
-user uploaded the same private file. The database stores SHA-256 for integrity and
-internal deduplication, but external object identities are opaque and
-user/document scoped.
+[CLI](https://github.com/Kaggle/kaggle-cli/blob/main/docs/datasets.md) создаёт versions асинхронно и предоставляет status/delete-old-versions. Не предполагать транзакционный append, дешёвую incremental upload или selective version GC. Current + candidate и reader pins входят в budget; при необходимости использовать ограниченную ротацию целых generation datasets после verified replacement, не Dataset на каждую книгу. Сжатие проверяется по фактическому stored/uncompressed accounting.
 
-Internal deduplication may be introduced later only if it never exposes object
-existence or changes ACL semantics.
+## RAM и обслуживание индексов
 
-## Separate source privacy from content visibility
+Один loaded BGE process обслуживает queries/documents. Budget включает model/activations, PG shared buffers, все одновременные query workspaces, maintenance и OS reserve. work_mem умножается по операциям, sessions и parallel workers; отдельно ограничить maintenance/autovacuum memory и temp files. См. [PostgreSQL resource consumption](https://www.postgresql.org/docs/current/runtime-config-resource.html).
 
-A crucial distinction:
+Bulk imports используют bounded batches и готовое staging. GIN/HNSW initial build идёт после начальной bulk load; activation поддерживает active revision, затем targeted ANALYZE. Autovacuum включён. Один controller выдаёт permit тяжёлой maintenance работе и учитывает serving reserve; нельзя выполнять hourly/daily full REINDEX, VACUUM FULL или reembedding по таймеру.
 
-- `source_visibility`: the raw PDF/scan uploaded by a person; default and
-  normally permanent value is private.
-- `content_visibility`: normalized text/metadata/search projection; private,
-  workspace or public.
-- `media_visibility`: derived illustration crop; may differ from both.
+REINDEX допустим при доказанном bloat/повреждении/upgrade и наличии места для replacement index. VACUUM FULL требует exclusive lock и дополнительную копию; это отдельный ремонт, не обычный GC. Старые derived revisions удаляются по retention/provenance contracts с последующим обычным vacuum. [PostgreSQL vacuum](https://www.postgresql.org/docs/current/routine-vacuuming.html), [pgvector maintenance](https://github.com/pgvector/pgvector).
 
-A public or statutory-access work uploaded from a private scan does **not** make
-the user's exact PDF, annotations, ex libris, marginalia or scan metadata public
-automatically.
+## Originals, caches и безопасный доступ
 
-## VibePublish / Telegram
+Принятый текст и библиография доступны всем; иллюстрации также доступны всем через соответствующий artifact. Stripe quote scans разрешены owner/demo/expert/local_historian. Full PDF/DjVu, full-page previews и private draft history остаются private. Region/figure grant не разрешает страницу целиком или чужие annotations. До preview, render, callback и delivery проверяются текущая роль, audience, source revision и artifact scope.
 
-VibePublish is the provider boundary for the Knowledge Base binary archive.
+Exact hashes используются для integrity/dedup, не как угадываемый публичный object key. В MCP возвращаются opaque source/artifact IDs и authorized retrieval; raw storage keys, credentials и signed URLs не попадают в public logs. Recovery snapshots закрыты: public text projection не делает всю БД public.
 
-Use the dedicated Telegram session/connection `TELEGRAM_KNOWLEDGE_BASE` so
-Knowledge Base source/media transfers do not occupy the ordinary VibePublish
-Telegram connection lane. This isolates our own queue/rate budget; Telegram may
-still impose account-wide/provider-wide limits independently.
+Сохраняются bounded streaming, incremental hash, MIME/signature/container validation и SSRF guard загрузки: HTTPS/443, без credentials/redirects/IP-literal/localhost/private DNS targets; approved DNS pins, без proxy/cookie inheritance и неожиданной content decompression. Существующий source size default 128 MiB и operator ceiling 512 MiB проверяются до и во время download. Это размер входного файла, не spool budget.
 
-Two private topics are reserved:
+Original cache и proof cache имеют свои отдельные byte/idle caps и cross-process leases. Exact preview/hash/rotation/transform сохраняется до terminal locator callback; утрата preview требует новой generation и повторной локализации. Подтверждённый callback/artifact ref позволяет освободить временные bytes. Сессии Telegram независимы и имеют exclusive lease; account FLOOD_WAIT остаётся общим пределом.
 
-- `https://t.me/c/4368830579/2` — exact original book/source files as DOCUMENT;
-- `https://t.me/c/4368830579/4` — extracted illustrations as DOCUMENT.
+Source deletion/withdrawal сначала отзывает видимость и delivery grants, затем отменяет разрешённые downstream projections и выполняет checked lifecycle. Незавершённый consumer, legal retention и историческое evidence не стираются случайным cache GC. Не менять исходный чужой archive/POI/map owner.
 
-Regional Knowledge remains the semantic/ACL authority. VibePublish owns Telegram
-transport identity, durable send/replay/readback and provider pacing.
+## Cutover
 
-A verified source entry stores immutable origin such as:
-
-```text
-origin.system = regional_knowledge
-origin.ref = knowledge://documents/<document_id>/source
-origin.sha256 = <exact original bytes sha256>
-```
-
-A verified illustration entry continues to use
-`knowledge://illustrations/<id>`.
-
-Search uses SQLite FTS and Supabase vectors, independently of a live Telegram
-request. Reprocessing a source may require the archived original; if that archive
-is unavailable, the existing parsed revision remains searchable but source
-reconstruction must report unavailable rather than fabricate bytes.
-
-## Deletion
-
-Deleting a private document removes:
-
-1. active retrieval rows;
-2. derived object-storage objects;
-3. original object after retention/recovery policy;
-4. service-owned media mirrors where deletion is supported.
-
-If a separately curated public corpus item exists, it has its own provenance and
-lifecycle; deleting one user's private source cannot silently delete a public
-canonical record.
-
-## Chunk text and retrieval material
-
-Canonical accepted text lives only in persistent SQLite. Supabase has no permanent corpus text, catalog, geometry, graph or POI copy.
-
-Keep two separate values:
-
-- `source_text` — exact text/transcription accepted by ChatGPT as source evidence;
-- `search_material` — deterministic retrieval augmentation containing source text,
-  printed captions and explicitly labelled model observations.
-
-Each keeps its own SHA-256 identity. FTS and E5/BGE indexing are derived from
-these fields. A model observation must never be returned as if it were a printed
-quotation.
-
-The legacy text-projection/range-read path may remain temporarily during migration,
-but new imports must not require a permanent text blob in S3.
-
-## Attached source ingestion — PDF and DjVu
-
-ChatGPT file parameters provide a temporary `download_url` and stable
-`file_id`. The start call downloads the source immediately; the temporary URL is
-never persisted.
-
-Real corpus sources include at least PDF and DjVu. Source type is detected from
-bytes/container signature, not trusted filename extension.
-
-The source path is deliberately **file-backed**, not whole-file-in-memory:
-
-```text
-temporary ChatGPT HTTPS URL
-  -> DNS/public-address preflight
-  -> DNS-pinned streaming download
-  -> bounded local temporary source
-  -> SHA-256 + deterministic format/container inspection
-  -> VibePublish archive to Telegram /2
-  -> optional temporary S3 safety copy until verified archive/readback
-  -> local temporary file removed
-```
-
-Format adapters may deterministically report page count, render a requested page
-to an image and expose an embedded/native text layer when the container already
-has one. They must not perform OCR, semantic recognition, captioning or layout AI.
-
-The downloader:
-
-- accepts HTTPS only and port 443;
-- rejects credentials, fragments, redirects, localhost and IP-literal URLs;
-- resolves the hostname before download and rejects any non-global address;
-- pins the approved DNS answers into the HTTP connector for the request;
-- ignores proxy environment variables and cookies;
-- disables automatic content decompression and requests identity encoding;
-- streams in bounded chunks instead of loading the whole PDF into Python heap;
-- defaults to **128 MiB** maximum source size;
-- allows an operator-configured `RKB_MAX_PDF_BYTES`, hard-capped at **512 MiB**;
-- requires a supported source signature/container before admission; initially PDF
-  and DjVu are mandatory production formats.
-
-Production should additionally use restrictive egress/network policy. The model
-never receives object-store credentials or raw object keys.
-
-SQLite keeps only an opaque `source_object_id`, never the raw S3 key in the
-user-readable ingestion row.
-
-A failed start remains private. Retrying the same attached `file_id` and exact
-source hash reuses the existing ingestion/document and reconciles the
-deterministic source object instead of creating a second document or object row.
-
-## Page reads
-
-`book_pages` first authorizes the ingestion job. It then resolves the exact
-temporary/archive source, verifies full SHA-256 and asks the deterministic source
-adapter to render only the requested small page batch.
-
-For PDF this may use PyMuPDF. DjVu uses a deterministic DjVu decoder/renderer.
-That decoder is transport, not recognition.
-
-The returned page image is what ChatGPT reads. Optional native/embedded text is a
-hint only and never proves visual completeness.
-
-Ingestion still performs no automatic OCR. On-demand scan quote proof may use a bounded Flash-Lite reader (at most two calls/page), independently validate visible text/crop reading, and draw stripes in code. This helper never changes accepted corpus text.
-
-## Staged graph and finalization
-
-Semantic parsing does not write half-complete page graphs into active database
-tables. Each `stage` call merges into the canonical staged graph and replaces its current
-immutable, content-hashed pointer. Superseded snapshots become GC-eligible after
-the recovery grace; only the latest active-ingestion graph is required. The ingestion row exposes
-only its opaque object ID.
-
-Model-facing keys are deliberately short and local. The server deterministically
-derives region, illustration and chunk UUIDs from the document/revision/page and
-those keys. Semantic chunk text is assembled server-side from referenced source
-regions, so the model does not need to duplicate long text inside a second tool
-argument.
-
-Only `finalize` materializes a staged revision into SQLite. It creates:
-
-- exact SQLite chunk/region source text with SHA-256 per chunk;
-- page and region provenance rows without permanent page-render objects;
-- region relations;
-- temporary exact illustration crops derived from source-page bbox coordinates,
-  eligible for deletion after verified archive;
-- illustration provenance rows;
-- local FTS and pending vector-publication metadata.
-
-The current default publication gate requires BGE; E5 is optional diagnostic support, not a mandatory second space. The target removes E5. Exact source/revision/ID/text hashes remain required, the previous active revision stays searchable during replacement, and target activation atomically records pending research.
-
-The activation RPC independently checks complete page indexes, unresolved review
-flags, textual-region coverage and cross-document provenance before changing
-`active_revision`. Ordinary authenticated tokens cannot directly patch the
-active revision or mutate an already active materialized revision.
-
-## Implemented migration and lifecycle
-
-Migration 017 is historical. The v2 exact snapshot and verified SQLite backup
-replace remote corpus details; no OCR or embedding regeneration is performed. New imports omit permanent page renders/text projections.
-Verified source/illustration archives replace temporary source/crop objects;
-registered-object GC preserves active-ingestion and unverified-source recovery.
-The [operator procedure](operations/telegram-archive.md) defines capacity bounds,
-one-hour cache grace, exact source readback and opt-in bounded maintenance GC.
-
-
-## Private originals and proof cache
-
-`RKB_ORIGINAL_CACHE_DIR` defaults to the persistent service state directory's
-`originals` subdirectory, outside the checkout. Originals are keyed internally by
-exact source SHA, bounded by `RKB_ORIGINAL_CACHE_MAX_BYTES` (default 512 MiB).
-`RKB_ORIGINAL_CACHE_IDLE_HOURS` defaults to **4 hours**. Each authorized original-byte access
-renews the idle time. An authorized warm proof also renews an already cached original without
-downloading an absent one. Private source ownership is rechecked before warm reads;
-parsed text grants do not imply access to the original.
-
-Cross-process file leases protect installs/read copies and prevent cleanup of
-in-use files. Existing indexing maintenance checks idle originals and proof
-cache every minute, even without MCP requests. Interrupted download partials are
-removed only when no lease is held. Eligible least-recently-used originals are evicted to reserve incoming size,
-even at capacity. A full cache with only leased entries fails closed
-instead of exceeding its installed-original budget. Download working copies and
-SQLite/WAL/backup bytes are separate measured disk consumers.
-
-Proof cache is limited to 64 MiB and requested evidence only. It is keyed by
-source SHA, exact fragment/revision/quote, region, locator/model version. Repeated
-proof reads reauthorize access and return cached WebP without new inference.
-No page images or proof results are automatically published or archived.
-
-
-## Measured BGE capacity gate (2026-10-09)
-
-Live pgvector 0.8.2 size inventory and session-local compact-index trial:
-[compact storage measurements](reports/rkb-vector-storage-compact-capacity-20261009.md).
-The deployed BGE uses vector(1024)+HNSW and currently occupies 67.71 decimal
-MB for 5,813 stored rows (active and inactive). Bounded temp experiments
-measured 28.02 MB for halfvec+HNSW and 18.68 MB for halfvec payload with binary
-HNSW on the same rows. None is a quality-tested production migration.
-
-No 100k-chunk capacity or semantic-recall gate has passed from those measurements.
-The SQLite authority and current BGE-required/E5-optional vector policy remain
-unchanged. At a planning quota of 500 decimal MB, 80% steady and 90% peak
-requirements still apply to the **entire** database, including baseline,
-story vectors, index rebuild and largest-source reimport—not only BGE payload.
+Переносятся только geo layers/places/geometry/CRS/temporal aliases/provenance и минимальные source reference stubs, необходимые геоданным. Остальные старые данные, включая негеографические facts/stories/cases/drafts и corpus, не импортируются как accepted target state. Fresh import создаёт новые проверенные source-bound records. Legacy geo anchor остаётся явно unanchored до exact original/edition/locator verification; название и номер страницы недостаточны. См. [план переноса](migrations/rkb-layers-only-cutover-20261019.md).

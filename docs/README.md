@@ -1,30 +1,29 @@
 # Documentation map
 
-Updated 2026-10-19. The target is approved for implementation; documentation alone does not establish deployment, migration or production acceptance.
+Updated2026-10-20. Active contracts below describe one target; historical reports record what happened on their stated versions. A documentation merge is not deployment or new live acceptance.
 
 ## Start here
 
-| Document | Purpose |
+1. **[Single implementation/debugging handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md)** — the complete file to give a coding agent.
+2. [Architecture](architecture.md), [storage/recovery](storage.md), [configuration](configuration.md), [operations](operations.md).
+3. [Protected readiness](mass-ingestion-readiness.md), [target acceptance](testing/rkb-scalable-kaggle-acceptance-20261019.md), [testing method](testing.md).
+4. [Opus5.5 repeated audit and decisions20.10](reports/rkb-opus55-story-storage-speed-20261020.md).
+
+## Active domain contracts
+
+| Domain | Documents |
 |---|---|
-| [Single implementation/debugging handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md) | Executable scope, phases, existing-code reuse, open dependencies and required outcome |
-| [Canonical Kaggle architecture](designs/rkb-scalable-kaggle-architecture-20261019.md) | PostgreSQL+BGE, direct persistent WSS, durable exact changes, writer/readers, cases and delivery |
-| [Acceptance plan](testing/rkb-scalable-kaggle-acceptance-20261019.md) | Recovery, warm reconnect, fresh sources, proof, cases, delivery and joint load |
-| [Layers-only cutover](migrations/rkb-layers-only-cutover-20261019.md) | Preserve historical/cartographic and human work; exclude old searchable book corpus |
-| [Critical audit](reports/rkb-comprehensive-critical-audit-20261019.md) | Evidence, independent audit findings and material tradeoffs |
-| [Story quality audit](reports/rkb-story-quality-critical-audit-20261019.md) | Source-grounded diagnosis, Opus 5.5 competition and new extraction/compose criteria |
-| [Protected requirements](../.devcoveer/requirements.json) | Capacity, quality, source-fidelity, latency and change gates |
-| [Mass-ingestion readiness](mass-ingestion-readiness.md) | Meaning and scope of the protected readiness thresholds |
+| Import/source fidelity | [ingestion](ingestion.md), [semantic passages](operations/source-backed-semantic-passages.md), [repair](operations/accepted-import-repair.md), [catalog corrections](operations/import-finalization-corrections.md), [article scope](operations/article-search-scope.md) |
+| Story and entities | [stories and stored narrative](story-registry.md), [organization graph](organization-graph.md), [participants/fact bridge](design/rkb-participants-poi-fact-bridge-20261018.md) |
+| GEO | [location registry](location-registry.md), [geo queue](geo-resolution-queue.md), [POI bridge](poi-integration.md), [model-selected POI](poi-model-link.md), [GEO-only cutover](migrations/rkb-layers-only-cutover-20261019.md) |
+| Disagreements/research | [case contract](design/rkb-disagreement-journal-design-20261018.md), [collaboration](design/rkb-kaliningrad-base-collaboration-20261018.md), [case page](requirements/disagreement-case-static-pages-20261019.md), [case PMI](testing/rkb-disagreement-pmi-20261018.md) |
+| Access/clients | [MCP](mcp.md), [auth](auth.md), [platform identity](platform-identity.md), [rights](rights.md), [integrations](integrations.md) |
+| Queue/latency | [load management](user-request-load-management.md), [load design](designs/user-request-load-management-20261019.md), [CPU scheduling](operations/retrieval-cpu-scheduling.md) |
+| BGE/indexes | [Kaggle contract](bge-kaggle.md), [runbook](operations/bge-kaggle.md), [hard boundary](operations/bge-kaggle-only.md), [automatic indexing](operations/automatic-indexing.md) |
+| Media | [illustration pipeline](operations/illustration-pipeline.md), [source archive](operations/telegram-archive.md), [archive continuation](operations/archive-read-continuation.md) |
 
-Direct owner instructions take precedence. Stable requirement IDs do not require a retired provider: CORE-SUPABASE-CAPACITY remains an identifier, not an order to retain Supabase.
+## History and superseded entry points
 
-## Supporting contracts
+[Prompt index](prompts/README.md) has one current implementation handoff. Older E5/SQLite/Supabase/capacity/seed-only prompts and old beta handoffs are short retired entry points with immutable Git history links; their old executable instructions are not left underneath a new override banner.
 
-- [Architecture overview](architecture.md), [storage](storage.md), [configuration](configuration.md), [operations](operations.md).
-- [Ingestion](ingestion.md), [MCP](mcp.md), [location registry](location-registry.md), [POI integration](poi-integration.md), [integrations](integrations.md).
-- [Story registry](story-registry.md), [disagreement design](design/rkb-disagreement-journal-design-20261018.md), [case acceptance](testing/rkb-disagreement-pmi-20261018.md), [request/load design](designs/user-request-load-management-20261019.md).
-- [BGE boundary](operations/bge-kaggle-only.md), [indexing](operations/automatic-indexing.md), [archive](operations/telegram-archive.md), [illustrations](operations/illustration-pipeline.md), [SQLite baseline recovery](operations/sqlite-v2.md).
-- [Auth](auth.md), [rights](rights.md), [testing](testing.md), [recorded runs](testing-journal.md).
-
-Preserve provenance, identity and source-format safeguards. Where old documents describe SQLite/Supabase/E5 placement or HTTP polling, the canonical design controls the replacement. Public accepted-text search does not grant scans, originals, private drafts or automatic publication of stored derivatives.
-
-The 2026-10-05 SQLite/Supabase migration prompt, v1 page archive/capacity plans and preliminary Kaggle assessment are historical. Do not restart those migrations, restore E5 or rebuild authentication from their old instructions. Dated reports certify only their stated revision and scope.
+`reports/` and [testing-journal](testing-journal.md) retain dated evidence and exact source heads, including prior failures. They do not impose old storage, migration or access policies on this target, and their PASS is not transferred to PostgreSQL/WSS/new stories. Reports containing quotations or previous consultant opinions retain the original content with its date. New audit decisions explicitly identify accepted and rejected suggestions.
