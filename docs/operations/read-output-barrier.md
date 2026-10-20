@@ -320,3 +320,31 @@ These are source/code and disposable-fixture contracts, not a production switch
 or evidence that a current Kaggle run has loaded this handler. Live provider
 reads, model inference, deployment and performance acceptance require their
 separate receipts.
+
+The production source-history boundary now has a concrete WSS adapter:
+`WssNativeHistoryProofAdapter` binds the existing startup protocol to the existing
+ControlSpool, actual route objects and writer. It never opens a private Kaggle PG
+connection from Dev. `NativeSourceHistoryObserver` is installed by TargetRuntime
+beside PG and exposed through `PreparedRuntime.source_history_handler` on the same
+maintenance job/resource/result-ACK path. Its implementation fingerprint covers
+its native source, the shared safe ACL observer and native catalog probe.
+
+Fixed `source_history` open/page/close phases bind the request nonce, actual
+run/incarnation/attachment, database/writer, registry and role/catalog pins.
+A native SHARE-lock transaction expires within ten seconds, including cancellation
+or lost controller progress. It emits at most sixteen receipt metadata rows per
+page, with native-computed command/outcome SHA-256 and bounded lengths, and no
+command/corpus bytes. Dev verifies contiguous exact journal ancestry, handler and
+manifest membership plus remote outcome bytes. Full proof requires every native
+source to have an accepted successful canonical import origin. Only a successful
+native close/readback and unchanged controller journal/binding issue coverage.
+
+Native prefix references select retained observations, never JSON permission.
+Delta checks traverse only a canonical suffix and pending receipt set; unchanged
+renewal reads the exact retained journal head token and current native closure.
+A fresh native process requires the bounded full genesis proof. The current WSS
+adapter does not yet adopt a large physical snapshot's compact checkpoint; that
+remains an explicit acceptance gap, and histories exceeding the configured full
+proof budget fail closed. Native observation errors keep the warmed worker alive
+and leave source reads unavailable. No model/provider/live PG effects were used
+in the synthetic verifier and transport tests.

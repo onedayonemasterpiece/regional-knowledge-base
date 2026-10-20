@@ -80,6 +80,8 @@ class BgeWssTransport:
         self.bootstrap_only=bool(config.get('target_runtime',{}).get('bootstrap_only'))
         self.bootstrap_finalized=False
         self.source_handler = None
+        self.source_history_handler=None
+        self._connection_generation=None
         if recovery_handler is not None and (not shared or not (inspect.iscoroutinefunction(recovery_handler)
                 or inspect.iscoroutinefunction(getattr(recovery_handler,'__call__',None)))):
             raise ValueError('shared async recovery handler required')
@@ -251,11 +253,14 @@ class BgeWssTransport:
             prepared.readiness.to_wire()
             self.query_handler, self.prepared_runtime = prepared.query_handler, prepared
             self.source_handler = prepared.source_handler
+            self.source_history_handler=prepared.source_history_handler
+            if self.source_history_handler is not None:
+                self.source_history_handler.attached(self._connection_generation)
         self.changed.set()
 
     async def _encode(self, job):
         if job['kind'] in ('source_command','recovery_phase'):
-            handler=self.recovery_handler if job['kind']=='recovery_phase' else self.source_handler
+            handler=(self.source_history_handler if job.get('phase')=='source_history' else self.recovery_handler) if job['kind']=='recovery_phase' else self.source_handler
             if handler is None:raise ValueError('fixed native executor unavailable')
             if job['kind']=='recovery_phase' and self.snapshot_channel is not None:
                 with self.snapshot_channel.assignment(job):receipt=await handler(job)
@@ -309,6 +314,8 @@ class BgeWssTransport:
         generation = welcome.get('connection_generation')
         if welcome.get('type') != 'WELCOME' or type(generation) is not int or generation < 1:
             raise ValueError('server attachment generation required')
+        self._connection_generation=generation
+        if self.source_history_handler is not None:self.source_history_handler.attached(generation)
         attachment_release = attachment_state = None
         if self.shared_reads:
             self._maybe_release()
@@ -437,7 +444,8 @@ class BgeWssTransport:
                     source=frame.get('kind')=='source_command'
                     recovery=frame.get('kind')=='recovery_phase'
                     if source or recovery:
-                        if (not self.shared_reads or (self.recovery_handler if recovery else self.source_handler) is None
+                        native_handler=(self.source_history_handler if frame.get('phase')=='source_history' else self.recovery_handler) if recovery else self.source_handler
+                        if (not self.shared_reads or native_handler is None
                                 or tuple(frame.get(key) for key in ('run_id','launch_nonce','runtime_incarnation'))
                                     !=(self.config['run_id'],self.config['launch_nonce'],self.incarnation)
                                 or any(not self._identifier(frame.get(key)) for key in ('id','claim'))):
@@ -516,6 +524,8 @@ class BgeWssTransport:
             for task in completed:
                 task.result()
         finally:
+            if self._connection_generation==generation:self._connection_generation=None
+            if self.source_history_handler is not None:self.source_history_handler.detached(generation)
             if self.shared_reads:
                 self._cancel_read()
             for task in tasks:

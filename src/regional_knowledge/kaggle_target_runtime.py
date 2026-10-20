@@ -147,6 +147,7 @@ class TargetRuntime:
         self.pool = None
         self.writer_pool = None
         self.prepared = None
+        self.source_history_observer=None
         self.identity = None
         self.closed = False
         if restored_database is not None:
@@ -261,7 +262,7 @@ class TargetRuntime:
             from .query_telemetry import ReadRuntime, bind_read_runtime
             with bind_read_runtime(ReadRuntime(run_id,runtime_incarnation)):
                 return await handler(frame,encode=encode)
-        source_handler=None
+        source_handler=None;history_handler=None
         if self.target.get('command_handlers'):
             from .kaggle_source_commands import fixed_registry,WorkerSourceExecutor
             self.writer_pool=self.pool_factory(kwargs={**self.database.connection(),'user':'rkb_writer'},
@@ -270,6 +271,17 @@ class TargetRuntime:
             source_handler=WorkerSourceExecutor(acquire=self.writer_pool.connection,
                 registry=fixed_registry(self.database,self.target['command_handlers']),database=self.database,
                 run_id=run_id,launch_nonce=launch_nonce,runtime_incarnation=runtime_incarnation)
+            from contextlib import asynccontextmanager
+            from .kaggle_source_history_native import NativeSourceHistoryObserver
+            @asynccontextmanager
+            async def acquire_history():
+                import psycopg
+                async with await psycopg.AsyncConnection.connect(**self.database.connection(reader=False)) as connection:
+                    yield connection
+            history_handler=NativeSourceHistoryObserver(acquire=acquire_history,database=self.database,identity=identity,
+                registry=fixed_registry(self.database,self.target['command_handlers']),current=lambda binding:
+                    not self.closed and binding[:2]==(run_id,runtime_incarnation))
+            self.source_history_observer=history_handler
         observation=None
         if self.target.get('bootstrap_only'):
             import base64
@@ -277,7 +289,7 @@ class TargetRuntime:
             dependencies=await asyncio.to_thread(observe_dependencies,self.target['dependency_packages'])
             observation=dict(runtime_readiness=readiness.to_wire(),dependencies=dependencies,
                 catalog_b64=base64.b64encode(self._bootstrap_catalog).decode())
-        self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation)
+        self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler)
         return self.prepared
 
     async def aclose(self):
@@ -286,11 +298,12 @@ class TargetRuntime:
         self.closed = True
         try:
             try:
-                if self.writer_pool is not None:
-                    await self.writer_pool.close(timeout=10)
+                if self.source_history_observer is not None:await self.source_history_observer.aclose()
             finally:
-                if self.pool is not None:
-                    await self.pool.close(timeout=10)
+                try:
+                    if self.writer_pool is not None:await self.writer_pool.close(timeout=10)
+                finally:
+                    if self.pool is not None:await self.pool.close(timeout=10)
         finally:
             try:
                 if self.restored_database is not None:

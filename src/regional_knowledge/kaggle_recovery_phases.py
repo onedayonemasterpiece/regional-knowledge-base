@@ -14,7 +14,7 @@ from .kaggle_pg_snapshot_native import SnapshotError, encode, sha
 
 MAX_PHASE_FRAME_BYTES = 4 * 1024 * 1024
 MAX_PHASE_RESULT_BYTES = 120 * 1024  # Reserve result envelope/claim identity bytes.
-PHASES = frozenset({'capture','prepare','apply','finish','verify'})
+PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history'})
 
 
 async def build_recovery_worker(*,native_bundle,database,identity,tools,native_uid,native_gid,
@@ -132,7 +132,7 @@ class WorkerRecoveryPhases:
         if (not isinstance(frame,dict) or set(frame)-{'download_ticket'}!=fields
                 or 'download_ticket' in frame and frame.get('phase')!='prepare' or frame['type']!='DISPATCH'
                 or frame['protocol_version']!=2 or frame['kind']!='recovery_phase'
-                or frame['phase'] not in PHASES or type(frame['connection_generation']) is not int
+                or frame['phase'] not in PHASES-{'source_history'} or type(frame['connection_generation']) is not int
                 or frame['connection_generation']<1 or frame['dispatch_generation']!=frame['connection_generation']
                 or any(not isinstance(frame[k],str) or not 1<=len(frame[k].encode())<=256
                        for k in ('id','claim','compute_claim','operation_key'))
