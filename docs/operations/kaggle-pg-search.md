@@ -131,3 +131,23 @@ statement/HNSW settings, allowed a subsequent `SELECT 42`, and successfully
 searched again after releasing the lock. The combined SQL/unit/driver run had
 11 passing tests. Structured local evidence is in the managed task directory's
 `pg/driver-tests.txt`. No remote GitHub Actions result is implied.
+
+## Server/client deadline race
+
+CI run `39415796227` at source `58792b1` exposed the server's integer-millisecond
+`statement_timeout` expiring before the asyncio absolute timer on Python 3.13.
+The search boundary now translates that exact PostgreSQL statement-timeout
+diagnostic into the promised `TimeoutError` after transaction rollback, only
+when the error arrived within the one-millisecond rounding window of this
+request's deadline. It records the receipt time before rollback and matches the
+same exception afterward. Early statement cancellations, PostgreSQL's explicit
+user-request cancellation diagnostic and other SQL errors retain their types;
+caller task cancellation remains `CancelledError`.
+
+A deterministic focused regression makes the synthetic server response win
+before the event loop can run its timer callback, and checks both early and
+near-deadline unrelated cancellations remain unchanged. The subsequent local
+SQL/unit/real-driver run passed 15 tests, including the real locked-query
+rollback/settings/reuse checks. Evidence: `pg/timeout-race-tests.txt` in the
+managed task directory. This local Python 3.14 check does not imply a new remote
+Python 3.12/3.13 CI result.

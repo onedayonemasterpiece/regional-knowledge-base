@@ -297,3 +297,47 @@ async def test_fused_dense_only_evidence_and_single_batch_hydration():
     timeouts = [int(params[0]) for sql, params in statements if "set_config" in sql]
     assert timeouts == sorted(timeouts, reverse=True)
     assert timeouts[-1] < timeouts[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("server_message,at_budget,expected_timeout", [
+    ("canceling statement due to statement timeout", True, True),
+    ("canceling statement due to statement timeout", False, False),
+    ("canceling statement due to user request", False, False),
+    ("canceling statement due to user request", True, False),
+])
+async def test_server_timeout_race_classifies_only_own_expired_budget(
+        server_message, at_budget, expected_timeout):
+    import time
+    from psycopg.errors import QueryCanceled
+    from psycopg.pq import DiagnosticField
+
+    server_error = QueryCanceled("synthetic server cancellation", info={
+        DiagnosticField.MESSAGE_PRIMARY: server_message.encode()})
+
+    class ServerFirst(FixtureConnection):
+        async def execute(self, statement, params=()):
+            if "set_config" in statement:
+                self.server_budget_ms = int(params[0])
+            if "lexical_candidates" in statement:
+                if at_budget:
+                    # Deterministically model a server response arriving before
+                    # the event loop can run its absolute-deadline callback.
+                    time.sleep(self.server_budget_ms / 1000)
+                raise server_error
+            await super().execute(statement, params)
+
+    async def encode(query):
+        return [1] + [0] * 1023
+
+    connection = ServerFirst()
+    with pytest.raises(TimeoutError if expected_timeout else QueryCanceled) as caught:
+        await fused_search(connection, "fixture", encode=encode, timeout_seconds=.02)
+    assert connection.cleaned
+    if expected_timeout:
+        assert caught.value.__cause__ is server_error
+    else:
+        assert caught.value is server_error
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert not _PENDING_ENCODERS

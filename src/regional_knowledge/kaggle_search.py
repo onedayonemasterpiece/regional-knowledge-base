@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
+from psycopg.errors import QueryCanceled
 from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 
@@ -79,11 +80,13 @@ async def fused_search(connection, query: str, *,
     encoding = asyncio.create_task(encode(query))
     _PENDING_ENCODERS.add(encoding)
     encoding.add_done_callback(_observe_encoder)
+    deadline_query_cancel = None
     try:
         async with asyncio.timeout_at(deadline):
             async with connection.transaction():
                 async with connection.cursor() as cursor:
                     async def execute(statement, params=()):
+                        nonlocal deadline_query_cancel
                         remaining = deadline - loop.time()
                         if remaining <= 0:
                             raise TimeoutError("search deadline exhausted")
@@ -91,7 +94,17 @@ async def fused_search(connection, query: str, *,
                         # deadline also bounds this setting query and fetches.
                         await cursor.execute("SELECT set_config('statement_timeout', %s, true)",
                                              (str(max(1, int(remaining * 1000))),))
-                        await cursor.execute(statement, params)
+                        try:
+                            await cursor.execute(statement, params)
+                        except QueryCanceled as exc:
+                            # Integer statement_timeout can expire <1ms before
+                            # asyncio's absolute deadline. Capture the receipt
+                            # time before rollback, which may itself take time.
+                            if (loop.time() + .001 >= deadline
+                                    and exc.diag.message_primary ==
+                                    "canceling statement due to statement timeout"):
+                                deadline_query_cancel = exc
+                            raise
 
                     # This is the first SQL after BEGIN; read-only must precede SELECT.
                     await cursor.execute("SET TRANSACTION READ ONLY")
@@ -114,6 +127,12 @@ async def fused_search(connection, query: str, *,
                     rows = await cursor.fetchall()
                     return SearchResult(tuple(SearchEvidence(str(r[0]), str(r[1]), *r[2:])
                                               for r in rows))
+    except QueryCanceled as exc:
+        # The transaction context has rolled back before exposing this stable
+        # public timeout. Other cancellations and SQL errors retain their type.
+        if exc is deadline_query_cancel:
+            raise TimeoutError("search deadline exhausted") from exc
+        raise
     finally:
         if not encoding.done():
             encoding.cancel()
