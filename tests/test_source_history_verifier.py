@@ -73,7 +73,7 @@ async def test_genesis_requires_empty_native_and_remote_and_immutable_exact_chec
     assert env.spool.facts_current(await env.spool.read_facts(None))
     assert any('LOCK TABLE' in sql for sql in pg.sql)
     checkpoint=env.store.objects[v._checkpoint_key('db-source')]
-    assert b'rkb.source-genesis.v1' in checkpoint.data
+    assert b'rkb.source-genesis.v2' in checkpoint.data
     restored=await v.restore(b)
     assert restored is not proof and not proof.current() and restored.current()
 
@@ -168,3 +168,69 @@ async def test_locally_appended_accepted_head_requires_native_prefix_extension(e
     await accept(env)
     with pytest.raises(SpoolConflict,match='retained source prefix unavailable'):await v.renew(b)
     assert env.spool._source_anchor is None
+
+
+@pytest.mark.asyncio
+async def test_incremental_extension_retains_pending_without_replaying_verified_prefix(env,monkeypatch):
+    from dataclasses import replace
+    from test_control_spool import withdraw,OTHER
+    pg=Pg();b=binding();v=verifier(env,pg,b,monkeypatch)
+    await v.establish_genesis(b)
+    await accept(env)
+    first=await v.extend(b)
+    assert first.accepted_sequence==1 and len(first.pending)==1
+    second_command=replace(withdraw(env.p.owner.subject,2),ids={'source_id':OTHER})
+    await accept(env,second_command,predecessor=await env.journal.head())
+    real=env.journal.read_segment;seen=[]
+    async def bounded(ref):
+        seen.append(ref)
+        assert ref!=first.head.reference,'extension revisited the verified prefix segment'
+        return await real(ref)
+    monkeypatch.setattr(env.journal,'read_segment',bounded)
+    second=await v.extend(b)
+    assert second.accepted_sequence==2 and len(second.pending)==2
+    assert all(ref.last_sequence==2 for ref in seen)
+    facts=await env.spool.read_facts(None,(SOURCE,OTHER))
+    assert facts.history_complete and {c.source_id for c in facts.changes}=={SOURCE,OTHER}
+
+
+@pytest.mark.asyncio
+async def test_incremental_native_exact_prefix_and_remote_outcomes_settle_retained_pending(env,monkeypatch):
+    pg=Pg();b=binding();v=verifier(env,pg,b,monkeypatch)
+    await v.establish_genesis(b)
+    seal=await accept(env)
+    proof=await v.extend(b)
+    c=env.cmd;h=env.registry.resolve(c);outcome=b'exact native outcome'
+    pg.applied_seq=1
+    pg.receipts=[(1,c.operation_key,module._hash(c.encode()),h.fingerprint,seal.manifest.sha256,
+        'rejected_precondition',module._hash(outcome),outcome,'db-source',c.encode())]
+    await env.journal.record_outcome(seal,command=c,database_generation='db-source',outcome=outcome,
+        writer_generation='writer-1')
+    settled=await v.extend(b)
+    assert settled.applied_sequence==1 and settled.pending==()
+    with env.spool._db() as db:
+        row=db.execute('SELECT restriction,pending FROM rkb_control_source_heads WHERE source_id=?',(SOURCE,)).fetchone()
+    assert tuple(row)==(1,0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy',[True,False])
+async def test_compatible_verifier_fix_preserves_genesis_but_original_closure_is_not_waived(env,monkeypatch,legacy):
+    pg=Pg();b=binding();v=verifier(env,pg,b,monkeypatch)
+    await v.establish_genesis(b)
+    checkpoint_key=v._checkpoint_key('db-source')
+    if legacy:
+        value={'codec':'rkb.source-genesis.v1','stream':env.journal.stream,'database_generation':'db-source',
+            'sequence':0,'catalog_sha256':v.catalog_hash,'acl_sha256':v.acl_hash,'registry_sha256':v.registry_hash,
+            'routes':sorted(v.routes),'verifier_sha256':v.verifier_hash}
+        env.store.write(checkpoint_key,module._json(value))
+    await accept(env)
+    original=env.store.objects[checkpoint_key].data
+    v.verifier_hash='a'*64
+    restored=await v.restore(b)
+    assert restored.accepted_sequence==1 and env.store.objects[checkpoint_key].data==original
+    changed=json.loads(original)
+    if legacy:changed['registry_sha256']='f'*64
+    else:changed['origin_closure']['registry_sha256']='f'*64
+    env.store.write(checkpoint_key,module._json(changed))
+    with pytest.raises(SpoolConflict,match='explicit migration'):await v.restore(b)

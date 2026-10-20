@@ -193,8 +193,13 @@ locks on source/recovery/applied tables. It proves the native source/projection
 tables and applied history empty, the native applied cursor zero, local intake
 empty, and the exact remote journal head absent. Only then does the existing
 RecoveryJournal writer-fenced CAS publish/read back an immutable generation
-genesis checkpoint. The checkpoint binds stream, DB generation, sequence zero,
-catalog, ACLs, handler fingerprints, route names and loaded verifier hash. A
+genesis checkpoint. The v2 checkpoint separates immutable stream/DB/sequence-zero
+facts and original deployment closure (catalog, ACLs, registry, route names)
+from producer verifier-hash provenance. The verifier understands fixed v1/v2
+codecs and independently verifies current native closure and accepted history.
+A compatible verifier-only correction can read an older checkpoint without
+rewriting it. Original registry/catalog/ACL/route changes still require an
+explicit ordered migration-bound closure transition. A
 request nonce and exact current run/incarnation/connection/provider binding
 belong to the retained verifier capability. PG transaction/lease exit must
 succeed before that capability is installed.
@@ -218,11 +223,15 @@ catalog, ACLs, registry, actual routes and binding remain unchanged. It reads
 the bounded head pointer and native metadata, without traversing old segments
 or reading corpus rows. It never treats maximum sequence as a prefix proof.
 Run this through existing maintenance outside search serving. A changed
-accepted/applied prefix requires explicit full verification in this version.
-Full genesis replay has finite command/byte limits; a permanent verified remote
-checkpoint and incremental native-prefix extension remain an explicit scaling
-acceptance gap. Full replay must never be introduced on the read path or as
-blocking query maintenance merely to hide that gap.
+accepted/applied prefix uses `extend(binding)`: the identical retained prefix
+anchors traversal of only new contiguous segments, with exact pending envelopes
+retained under the same byte budget. It checks new or previously pending native
+receipts/outcomes, then updates only affected compact heads. A missing ancestor,
+cursor rollback, changed registry, or exhausted bounded suffix remains closed.
+Full genesis startup replay still has finite command/byte limits; a permanent
+verified remote snapshot/control checkpoint remains a scaling acceptance gap.
+Full replay must never be introduced on the read path or as blocking query
+maintenance merely to hide that gap.
 
 Coverage expires within a bounded lifetime and is revoked by runtime generation,
 route object or registry changes. The controller must call
@@ -231,9 +240,10 @@ writer or generation changes, and before effects outside this source-only path.
 Exclusive trusted writer/bootstrap connections and the closed root route
 inventory remain necessary: a broad writer SQL privilege is not itself proof
 that arbitrary SQL is routed through canonical intake. Legacy writers must be
-disabled or integrated before serving. Verifier/catalog/ACL changes require an
-explicit recovery-format migration; an old checkpoint is never accepted under
-new bytes implicitly.
+disabled or integrated before serving. Catalog/ACL/semantic registry changes
+require an explicit recovery-format migration. Compatible verifier-only fixes
+preserve known genesis facts and original semantic closure; an arbitrary new
+registry or native pin is never accepted implicitly.
 
 ## Storage and verification limits
 

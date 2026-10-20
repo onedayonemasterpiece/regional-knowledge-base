@@ -96,6 +96,7 @@ class _Coverage:
     head: object
     accepted_sequence: int
     applied_sequence: int
+    pending: tuple = ()
 
     def current(self):
         v = self.verifier
@@ -141,10 +142,42 @@ class NativeSourceHistoryVerifier:
             self.routes[k] is v for k,v in self.route_objects.items())
 
     def _checkpoint(self, generation):
-        return _json({'codec':'rkb.source-genesis.v1', 'stream':self.spool.journal.stream,
-            'database_generation':generation, 'sequence':0, 'catalog_sha256':self.catalog_hash,
-            'acl_sha256':self.acl_hash, 'registry_sha256':self.registry_hash,
-            'routes':sorted(self.routes), 'verifier_sha256':self.verifier_hash})
+        return _json({'codec':'rkb.source-genesis.v2', 'stream':self.spool.journal.stream,
+            'database_generation':generation, 'sequence':0,
+            'origin_closure':{'catalog_sha256':self.catalog_hash,'acl_sha256':self.acl_hash,
+                'registry_sha256':self.registry_hash,'routes':sorted(self.routes)},
+            'producer':{'verifier_sha256':self.verifier_hash}})
+
+    def _verify_genesis(self,data,generation):
+        """Known genesis facts are immutable; producer code is provenance.
+
+        A stateless verifier correction may read the fixed v1/v2 codecs. It
+        does not authorize changing original handlers, native catalog or ACLs.
+        Those require an explicit ordered closure transition, not a hash waiver.
+        """
+        try:
+            value=json.loads(data)
+            if _json(value)!=data:raise ValueError
+            common={'codec','stream','database_generation','sequence'}
+            if value.get('codec')=='rkb.source-genesis.v1':
+                closure_keys={'catalog_sha256','acl_sha256','registry_sha256','routes'}
+                if set(value)!=common|closure_keys|{'verifier_sha256'}:raise ValueError
+                closure={k:value[k] for k in closure_keys};producer=value['verifier_sha256']
+            elif value.get('codec')=='rkb.source-genesis.v2':
+                if set(value)!=common|{'origin_closure','producer'}:raise ValueError
+                closure=value['origin_closure']
+                if not isinstance(value['producer'],dict) or set(value['producer'])!={'verifier_sha256'}:raise ValueError
+                producer=value['producer']['verifier_sha256']
+            else:raise ValueError
+            expected={'catalog_sha256':self.catalog_hash,'acl_sha256':self.acl_hash,
+                'registry_sha256':self.registry_hash,'routes':sorted(self.routes)}
+            if (value['stream']!=self.spool.journal.stream or value['database_generation']!=generation
+                    or type(value['sequence']) is not int or value['sequence']!=0
+                    or closure!=expected or not isinstance(producer,str)
+                    or len(producer)!=64 or set(producer)-set('0123456789abcdef')):raise ValueError
+        except (ValueError,TypeError,KeyError):
+            raise SpoolConflict('genesis facts or original closure differ; explicit migration required') from None
+        return value
 
     def _checkpoint_key(self, generation):
         return self.spool.journal.prefix + '/source-genesis/' + _hash(generation.encode())
@@ -154,6 +187,163 @@ class NativeSourceHistoryVerifier:
 
     async def restore(self, binding):
         return await self._verify(binding, genesis=False)
+
+    async def extend(self,binding):
+        """Verify only the contiguous suffix of an identical retained prefix."""
+        s,j=self.spool,self.spool.journal; key=binding_key(binding)
+        async with s._lock:
+            proof=self._coverage
+            if (proof is None or s._source_anchor is not proof or proof.binding is not binding
+                    or proof.key!=key or not self.binding_current(binding)
+                    or not self._routes_current() or self._registry_hash()!=self.registry_hash):
+                s.invalidate_source_history();self._coverage=None
+                raise SpoolConflict('verified source prefix unavailable for extension')
+            s.invalidate_source_history();self._coverage=None
+            version=s._source_version
+            async with asyncio.timeout(self.timeout_seconds):
+                head=await j.head(); ref=head.reference if head else None
+                base=proof.head.reference if proof.head else None
+                suffix=[];used=sum(len(p[0]) for p in proof.pending)
+                for _ in range(j.max_reconcile_hops):
+                    if ref==base:break
+                    if ref is None:raise SpoolConflict('retained source prefix is not an ancestor')
+                    previous,raws=await j.read_segment(ref)
+                    for raw in raws:
+                        used+=len(raw)
+                        if used>self.max_history_bytes or len(suffix)+len(proof.pending)>=self.max_commands:
+                            raise SpoolConflict('incremental source history budget exceeded')
+                        c=_command(raw);h=s.registry.resolve(c);dep=h.dependency
+                        if (dep is None or dep.scope_class!='public_source' or dep.scope_owner!='shared'
+                                or dep.resource_keys!=frozenset({'source_id'}) or h.transition is not None
+                                or set(c.ids)!={'source_id'} or c.route not in ('source.withdraw.v1','source.import.v1')
+                                or c.route=='source.import.v1' and 'source.import' not in self.routes):
+                            raise SpoolConflict('unclassified incremental source dependency')
+                        suffix.append((c,h,ref))
+                    ref=previous
+                if ref!=base:raise SpoolConflict('incremental source ancestry budget exceeded')
+                suffix.sort(key=lambda p:p[0].sequence)
+                if [c.sequence for c,_,_ in suffix]!=list(range(proof.accepted_sequence+1,
+                        proof.accepted_sequence+len(suffix)+1)):
+                    raise SpoolConflict('incremental source sequence is not contiguous')
+                known={}
+                for raw,handler_hash,manifest in proof.pending:
+                    c=_command(raw);h=s.registry.resolve(c)
+                    if h.fingerprint!=handler_hash:raise SpoolConflict('retained pending handler changed')
+                    known[c.sequence]=(c,h,manifest)
+                known.update({c.sequence:(c,h,m) for c,h,m in suffix})
+                if len({c.operation_key for c,_,_ in known.values()})!=len(known):
+                    raise SpoolConflict('duplicate incremental source operation')
+                catalog,fields=await NativeDatabaseProbe(timeout_seconds=min(2,self.timeout_seconds))(acquire=self.acquire)
+                accepted=proof.accepted_sequence+len(suffix)
+                if (_hash(catalog)!=self.catalog_hash or fields['database_generation']!=key[3]
+                        or not proof.applied_sequence<=fields['applied_seq']<=accepted):
+                    raise SpoolConflict('incremental native prefix differs')
+                async with self.acquire() as connection:
+                    if (connection.closed or connection.row_factory is not tuple_row
+                            or connection.info.transaction_status!=TransactionStatus.IDLE):
+                        raise SpoolConflict('native verifier connection unavailable')
+                    async with connection.transaction():
+                        async with connection.cursor() as cursor:
+                            await cursor.execute("SET LOCAL statement_timeout='2000ms'")
+                            await cursor.execute("SET LOCAL lock_timeout='1000ms'")
+                            await cursor.execute('SET LOCAL search_path=pg_catalog')
+                            await cursor.execute('LOCK TABLE rkb_v4.sources,rkb_v4.revisions,rkb_v4.active_revision,'
+                                'rkb_v4.passage_search,rkb_v4.applied_ops,rkb_v4.recovery_state,'
+                                'rkb_v4.writer_generations IN SHARE MODE')
+                            if _hash(await inspect_acl(connection))!=self.acl_hash:
+                                raise SpoolConflict('incremental native ACL closure differs')
+                            await cursor.execute('SELECT s.database_generation,s.writer_generation,s.applied_seq '
+                                'FROM rkb_v4.recovery_state s JOIN rkb_v4.writer_generations w '
+                                'ON w.generation=s.writer_generation WHERE s.singleton AND NOT w.retired LIMIT 2')
+                            applied_seq=fields['applied_seq']
+                            if await cursor.fetchall()!=[(key[3],self.writer_generation,applied_seq)]:
+                                raise SpoolConflict('incremental native writer cursor changed')
+                            earlier=[seq for seq in known if seq<=proof.applied_sequence]
+                            expected=set(range(proof.applied_sequence+1,applied_seq+1))|set(earlier)
+                            applied={}
+                            async with connection.cursor(name='rkb_source_incremental_receipts') as receipts:
+                                await receipts.execute('SELECT sequence,operation_key,command_sha256,handler_sha256,'
+                                    'accepted_manifest_sha256,status,outcome_sha256,CASE WHEN octet_length(outcome_bytes)<=%s '
+                                    'THEN outcome_bytes END,database_generation,CASE WHEN octet_length(command_bytes)<=%s '
+                                    'THEN command_bytes END FROM rkb_v4.applied_ops WHERE sequence>%s OR sequence=ANY(%s::bigint[]) '
+                                    'ORDER BY sequence LIMIT %s',(min(self.max_history_bytes,j.max_outcome_bytes),
+                                    j.max_segment_bytes,proof.applied_sequence,earlier,self.max_commands+1))
+                                while (row:=await receipts.fetchone()) is not None:
+                                    seq,op,ch,hh,mh,status,oh,outcome,generation,raw=row
+                                    if seq not in expected or seq in applied or seq not in known:
+                                        raise SpoolConflict('incremental native receipt prefix is not exact')
+                                    c,h,m=known[seq]
+                                    if (op!=c.operation_key or ch!=_hash(c.encode()) or hh!=h.fingerprint
+                                            or mh!=m.sha256 or generation!=key[3] or raw is None or bytes(raw)!=c.encode()
+                                            or status not in ('applied','rejected_precondition') or outcome is None
+                                            or _hash(bytes(outcome))!=oh):
+                                        raise SpoolConflict('incremental native receipt bytes differ')
+                                    used+=len(outcome)
+                                    if used>self.max_history_bytes:raise SpoolConflict('incremental outcome budget exceeded')
+                                    applied[seq]=(oh,bytes(outcome))
+                            if applied.keys()!=expected:raise SpoolConflict('incremental native prefix has a gap')
+                            pending=[];by_source={}
+                            for c,h,m in known.values():
+                                outcome=applied.get(c.sequence);durable=False
+                                if outcome is not None:
+                                    remote=await j._read(j.prefix+'/outcomes/'+_hash(c.operation_key.encode()),j.max_outcome_bytes)
+                                    if remote is not None:
+                                        expected_outcome={'codec':'rkb.outcome.v1','stream':j.stream,
+                                            'command_sha256':_hash(c.encode()),'sequence':c.sequence,'operation_key':c.operation_key,
+                                            'database_generation':key[3],'outcome_b64':base64.b64encode(outcome[1]).decode(),
+                                            'outcome_sha256':outcome[0],'outcome_length':len(outcome[1])}
+                                        if remote.data!=_json(expected_outcome):
+                                            raise SpoolConflict('incremental remote outcome differs')
+                                        durable=True
+                                if not durable:pending.append((c.encode(),h.fingerprint,m))
+                                source=c.ids['source_id'];previous=by_source.get(source)
+                                by_source[source]=SourceChange(source,max(c.sequence,previous.sequence if previous else 0),
+                                    _hash(c.encode()) if previous is None or c.sequence>=previous.sequence else previous.command_sha256,
+                                    bool(h.dependency.restriction or previous and previous.restriction),
+                                    bool(not durable or previous and previous.pending),False)
+                            if await j.head()!=head or s._writing or s._source_version is not version:
+                                raise SpoolConflict('source prefix changed during extension')
+                            await s._write(self._merge_source_heads,tuple(by_source.values()))
+                            version=s._source_version
+                            nonce=secrets.token_hex(24)
+                            await cursor.execute('SELECT %s::text',(nonce,))
+                            if await cursor.fetchone()!=(nonce,):raise SpoolConflict('native extension nonce differs')
+                if (await j.head()!=head or not self.binding_current(binding)
+                        or s._writing or s._source_version is not version):
+                    raise SpoolConflict('source prefix changed at extension completion')
+                coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,
+                    head,accepted,applied_seq,tuple(pending))
+                self._coverage=coverage;s._source_anchor=coverage;s._source_head=head.reference if head else None
+                s._source_covered_sequence=accepted;s._source_version=object()
+                _LOG.info('source_history_extended generation_hash=%s accepted_seq=%s applied_seq=%s suffix_count=%s',
+                    _hash(key[3].encode()),accepted,applied_seq,len(suffix))
+                return coverage
+
+    def _merge_source_heads(self,changes):
+        """Bounded affected-head update in the existing spool, not a second view."""
+        s=self.spool
+        with s._db(write=True) as db:
+            used=db.execute('SELECT used_bytes FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]
+            pending_delta=unknown_delta=0;maximum=0
+            for c in changes:
+                old=db.execute('SELECT sequence,command_sha256,restriction,pending,unknown,reserved_bytes '
+                    'FROM rkb_control_source_heads WHERE source_id=?',(c.source_id,)).fetchone()
+                size=old[5] if old else 256+len(c.source_id.encode())
+                if old is None:
+                    used+=size
+                    if used>s.max_bytes:raise SpoolConflict('incremental compact source heads exceed spool budget')
+                seq,ch=(old[0],old[1]) if old and old[0]>c.sequence else (c.sequence,c.command_sha256)
+                restriction=bool(c.restriction or old and old[2]);maximum=max(maximum,seq)
+                pending_delta+=int(c.pending)-(old[3] if old else 0)
+                unknown_delta+=int(c.unknown)-(old[4] if old else 0)
+                db.execute('INSERT INTO rkb_control_source_heads VALUES(?,?,?,?,?,?,?) '
+                    'ON CONFLICT(source_id) DO UPDATE SET sequence=excluded.sequence,command_sha256=excluded.command_sha256,'
+                    'restriction=excluded.restriction,pending=excluded.pending,unknown=excluded.unknown',
+                    (c.source_id,seq,ch,int(restriction),int(c.pending),int(c.unknown),size))
+            db.execute('UPDATE rkb_control_spool_meta SET used_bytes=? WHERE id=1',(used,))
+            db.execute('UPDATE rkb_control_source_head_meta SET sequence=max(sequence,?),'
+                'pending_count=pending_count+?,unknown_count=unknown_count+? WHERE id=1',
+                (maximum,pending_delta,unknown_delta))
 
     async def _head_unchanged(self,head):
         # The retained verified token names these exact previously checked
@@ -219,7 +409,7 @@ class NativeSourceHistoryVerifier:
                         or s._writing or s._source_version is not renewal_version):
                     raise SpoolConflict('source prefix changed at renewal completion')
                 coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,
-                    nonce,proof.head,proof.accepted_sequence,proof.applied_sequence)
+                    nonce,proof.head,proof.accepted_sequence,proof.applied_sequence,proof.pending)
                 self._coverage=coverage;s._source_anchor=coverage;s._source_version=object()
                 _LOG.info('source_history_renewed generation_hash=%s accepted_seq=%s applied_seq=%s',
                     _hash(key[3].encode()),proof.accepted_sequence,proof.applied_sequence)
@@ -273,12 +463,17 @@ class NativeSourceHistoryVerifier:
                                 local=await _database(s._scope_state,None)
                                 if local['operation_count']:
                                     raise SpoolConflict('genesis contains unclassified local intake')
-                                await j._fenced_exact(checkpoint_key,checkpoint,expected_token=None,
-                                    writer_generation=self.writer_generation)
+                                existing=await j._read(checkpoint_key,8192)
+                                if existing is None:
+                                    await j._fenced_exact(checkpoint_key,checkpoint,expected_token=None,
+                                        writer_generation=self.writer_generation)
+                                else:
+                                    self._verify_genesis(existing.data,key[3])
                             else:
                                 remote=await j._read(checkpoint_key,8192)
-                                if remote is None or remote.data!=checkpoint:
+                                if remote is None:
                                     raise SpoolConflict('exact immutable generation genesis missing')
+                                self._verify_genesis(remote.data,key[3])
                             commands=[]; ref=head.reference if head else None; used=0
                             for _ in range(j.max_reconcile_hops):
                                 if ref is None:break
@@ -294,7 +489,7 @@ class NativeSourceHistoryVerifier:
                                             or command.route not in ('source.withdraw.v1','source.import.v1')
                                             or command.route=='source.import.v1' and 'source.import' not in self.routes):
                                         raise SpoolConflict('unclassified accepted source dependency')
-                                    commands.append((command,handler,ref.sha256))
+                                    commands.append((command,handler,ref))
                                 ref=previous
                             if ref is not None:raise SpoolConflict('full source genesis traversal incomplete')
                             commands.sort(key=lambda item:item[0].sequence)
@@ -316,10 +511,10 @@ class NativeSourceHistoryVerifier:
                                     row=await receipts.fetchone()
                                     if row is None:break
                                     if count>=applied_seq:raise SpoolConflict('native applied prefix exceeds cursor')
-                                    command,handler,manifest_hash=commands[count]; count+=1
+                                    command,handler,manifest=commands[count]; count+=1
                                     seq,op,ch,hh,mh,status,oh,outcome,generation,command_bytes=row
                                     if (seq!=command.sequence or op!=command.operation_key or ch!=_hash(command.encode())
-                                            or hh!=handler.fingerprint or mh!=manifest_hash or generation!=key[3]
+                                            or hh!=handler.fingerprint or mh!=manifest.sha256 or generation!=key[3]
                                             or status not in ('applied','rejected_precondition') or outcome is None
                                             or command_bytes is None or bytes(command_bytes)!=command.encode()
                                             or _hash(bytes(outcome))!=oh):
@@ -332,7 +527,8 @@ class NativeSourceHistoryVerifier:
                                 if count!=applied_seq:raise SpoolConflict('native applied prefix incomplete')
                             changes={}
                             imported=[]
-                            for command,handler,_ in commands:
+                            pending=[]
+                            for command,handler,manifest in commands:
                                 outcome=applied.get(command.sequence); durable=False
                                 if outcome is not None:
                                     remote=await j._read(j.prefix+'/outcomes/'+_hash(command.operation_key.encode()),j.max_outcome_bytes)
@@ -344,6 +540,7 @@ class NativeSourceHistoryVerifier:
                                             'outcome_sha256':outcome[0],'outcome_length':len(outcome[1])}
                                         if remote.data!=_json(expected):raise SpoolConflict('remote outcome differs from native prefix')
                                         durable=True
+                                if not durable:pending.append((command.encode(),handler.fingerprint,manifest))
                                 if command.route=='source.import.v1' and outcome is not None:
                                     # Native success status is checked independently
                                     # from exact remote outcome durability below.
@@ -370,7 +567,7 @@ class NativeSourceHistoryVerifier:
                         or s._writing or s._source_version is not version):
                     raise SpoolConflict('source binding changed at native completion')
                 coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,
-                    head,len(commands),applied_seq)
+                    head,len(commands),applied_seq,tuple(pending))
                 self._coverage=coverage
                 s._source_anchor=coverage; s._source_head=head.reference if head else None
                 s._source_covered_sequence=len(commands); s._source_version=object()
