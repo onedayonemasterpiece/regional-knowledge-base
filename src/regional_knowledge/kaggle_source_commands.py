@@ -268,6 +268,10 @@ class AcceptedSourceDispatch:
         if job['id'] in self._publications:return None
         entry,_=await self._entry(job,verify=False)
         if entry.apply_receipt is None or self._retry.get(job['id'],(0,0))[0]>self.clock():return None
+        # The receiver and dispatcher can both pass the earlier check before
+        # _entry yields. Reserve once after the last await; never overwrite the
+        # task whose exact accepted settlement must reach the worker.
+        if job['id'] in self._publications:return None
         if len(self._publications)>=4:raise RuntimeError('bounded source publication task capacity')
         task=asyncio.create_task(self.reconcile(run_id=run_id,token=token,generation=generation,job_id=job['id']))
         self._publications[job['id']]=(run_id,task)

@@ -161,6 +161,46 @@ async def test_local_apply_is_pending_until_remote_outcome_then_exact_ack(accept
 
 
 @pytest.mark.asyncio
+async def test_concurrent_channel_pollers_reserve_one_remote_publication(accepted):
+    e=accepted;s=e.s;job,work,frame=await dispatch(e)
+    await release(e,work)
+    await e.spool.record_apply(e.command.operation_key,native_receipt(e.command,e.handler))
+    original_entry=e.bridge._entry;original_reconcile=e.bridge.reconcile
+    both_entered=asyncio.Event();finish_entry=asyncio.Event();finish_publication=asyncio.Event()
+    entered=[];started=[]
+    async def entry(job,*,verify=True):
+        value=await original_entry(job,verify=verify)
+        if not verify:
+            entered.append(job['id'])
+            if len(entered)==2:both_entered.set()
+            await finish_entry.wait()
+        return value
+    async def reconcile(**kwargs):
+        started.append(kwargs['job_id'])
+        await finish_publication.wait()
+        return await original_reconcile(**kwargs)
+    e.bridge._entry=entry;e.bridge.reconcile=reconcile
+    polls=[asyncio.create_task(e.bridge.poll_settlement(run_id=s.run,token=s.token,
+        generation=s.generation)) for _ in range(2)]
+    try:
+        await asyncio.wait_for(both_entered.wait(),1)
+        finish_entry.set()
+        assert await asyncio.gather(*polls)==[None,None]
+        await asyncio.sleep(0)
+        assert started==[job], 'one job must retain exactly one publication task'
+        assert len(e.bridge._publications)==1
+        finish_publication.set()
+        await asyncio.gather(*(task for _,task in e.bridge._publications.values()))
+        settled=await e.bridge.poll_settlement(run_id=s.run,token=s.token,generation=s.generation)
+        assert settled==dict(job_id=job,claim=frame['claim'],status='accepted')
+        assert (await e.spool.get(e.command.operation_key)).outcome_state=='DURABLE'
+        assert s.q.result(s.auth.p.owner.subject,job)['result']['remote_outcome_durable']
+    finally:
+        finish_entry.set();finish_publication.set()
+        await asyncio.gather(*polls,return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_source_receipt_rejects_forged_resource_and_exact_outcome(accepted):
     e=accepted;s=e.s;_,work,frame=await dispatch(e)
     wrong=response(e,work,frame);wrong['compute_claim']='forged'
