@@ -157,3 +157,17 @@ def test_public_search_rejects_partial_or_unavailable_hybrid(mode, retrieval, st
         _require_hybrid_read(output)
     status = json.loads(str(caught.value))
     assert status["status"] == "unavailable" and status["main_job_id"] == "fixture-pending-job"
+
+
+@pytest.mark.asyncio
+async def test_controller_boundary_timings_are_bounded_numeric_whitelist_only():
+    records=[];telemetry=ReadTelemetry(sink=lambda raw:records.append(json.loads(raw)))
+    attempt=telemetry.begin_attempt()
+    telemetry.finish_attempt(attempt,status='ok',controller_stages_ms={
+        'auth_ms':1.25,'admission_ms':2.,'dispatch_to_result_ms':40.,
+        'finish_gate_ms':float('nan'),'result_to_terminal_ms':-1,
+        'query':'PRIVATE_PAYLOAD_MUST_NOT_APPEAR','person_id':'PRIVATE_ACTOR'})
+    await asyncio.to_thread(telemetry._queue.join)
+    terminal=next(r for r in records if r.get('terminal'))
+    assert terminal['controller_stages_ms']=={'auth_ms':1.25,'admission_ms':2.,'dispatch_to_result_ms':40.}
+    assert 'PRIVATE_' not in json.dumps(records)

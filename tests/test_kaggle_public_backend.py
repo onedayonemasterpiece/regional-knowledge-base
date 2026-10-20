@@ -172,6 +172,10 @@ async def test_missing_output_capture_fails_closed_and_releases_authority(target
     terminal = next(record for record in s.records if record.get('terminal'))
     assert terminal['status'] == 'unavailable' and terminal['reason'] == 'not_ready'
     assert terminal['executed_branches'] == ['lexical', 'dense']
+    stages=terminal['controller_stages_ms']
+    assert set(stages)=={'auth_ms','binding_ms','dispatch_gate_ms','admission_ms',
+        'dispatch_to_result_ms','finish_gate_ms','result_to_terminal_ms'}
+    assert all(type(value) in (int,float) and value>=0 for value in stages.values())
     await release(s, dispatched)
 
 

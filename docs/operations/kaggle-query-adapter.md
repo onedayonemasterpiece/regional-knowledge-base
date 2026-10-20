@@ -75,3 +75,18 @@ permit remains held. They do not establish native PG rollback behavior, artifact
 identity, BGE residency, provider operations, public delivery or latency/quality
 acceptance. Real isolated PG integration and explicit factory injection remain
 root/controller work; no production DSN or runtime initialization is introduced.
+
+
+Controller profiling records `controller_stages_ms` only as fixed numeric
+fields: backend OAuth/Participants recheck (`auth_ms`), current binding lookup,
+initial dispatch gate, begin-admission to selected dispatch, selected dispatch
+to accepted result, initial finish gate, and accepted result to final terminal
+issuance. Dispatch-to-result includes both WSS directions, native execution and
+result validation; it is not pure network latency. Result-to-terminal includes
+render/refresh/serialization and the final ASGI send, rather than isolating the
+synchronous permission fence. HTTP authentication before backend entry and
+caller MCP wall time need separate caller/server-boundary observations. Native
+tokenize/acquire/encode/lexical/dense/hydrate/search/serialize/total/adapter
+timings keep their original overlapping semantics. Do not sum stages or subtract
+wall timestamps across hosts. Logs contain only request hashes and existing
+run/generation correlation, never query/body/vector/actor/credential values.

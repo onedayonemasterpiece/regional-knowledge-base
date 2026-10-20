@@ -14,6 +14,8 @@ from uuid import uuid4
 from .query_telemetry import ReadAttempt
 
 current_trace_id: ContextVar[str | None] = ContextVar("rkb_read_trace", default=None)
+_CONTROLLER_STAGES=frozenset({'auth_ms','binding_ms','dispatch_gate_ms','admission_ms',
+    'dispatch_to_result_ms','finish_gate_ms','result_to_terminal_ms'})
 _STAGES = frozenset({"database_seconds", "queue_seconds", "encoder_seconds",
                      "hydration_seconds", "search_seconds", "total_seconds",
                      "bge_queue_seconds", "bge_encoder_seconds", "fusion_metadata_seconds"})
@@ -93,13 +95,17 @@ class ReadTelemetry:
             'turn_generation': turn_generation, 'diagnostic_state': 'observed'})
         return True
 
-    def finish_attempt(self, attempt, *, status, reason=None, executed_branches=(), stages_ms=None):
+    def finish_attempt(self, attempt, *, status, reason=None, executed_branches=(), stages_ms=None, controller_stages_ms=None):
         """Emit one terminal observation, including refusal/cancel before dispatch."""
         if type(attempt) is not ReadAttempt:
             raise TypeError('server-minted ReadAttempt required')
         record = attempt.terminal(status, reason, executed_branches, stages_ms or {})
         if record is None:
             return False
+        if isinstance(controller_stages_ms,dict):
+            record['controller_stages_ms']={key:value for key,value in controller_stages_ms.items()
+                if key in _CONTROLLER_STAGES and type(value) in (int,float)
+                and math.isfinite(value) and 0<=value<=86400000}
         self._attempt_record(record)
         return True
 

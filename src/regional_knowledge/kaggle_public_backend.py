@@ -231,6 +231,17 @@ class KaggleSourceBackend:
         retained = False
         status, reason = 'unavailable', 'not_ready'
         branches = ()
+        controller_stages={};dispatched_at=None;received_at=None
+        async def measured(name,awaitable):
+            began=time.monotonic()
+            try:return await awaitable
+            finally:controller_stages[name]=(time.monotonic()-began)*1000
+        def terminal(final_status,final_reason):
+            values=dict(controller_stages)
+            if received_at is not None:
+                values['result_to_terminal_ms']=(time.monotonic()-received_at)*1000
+            telemetry.finish_attempt(attempt,status=final_status,reason=final_reason,
+                executed_branches=branches,controller_stages_ms=values)
         try:
             async with asyncio.timeout_at(deadline):
                 try:
@@ -241,12 +252,12 @@ class KaggleSourceBackend:
                 except (ValueError, TypeError, AttributeError):
                     raise PublicQueryInvalid from None
                 if trusted is None:
-                    authority = await self.read_authority.resolve_oauth(principal.access_token,destination=destination)
+                    authority = await measured('auth_ms',self.read_authority.resolve_oauth(principal.access_token,destination=destination))
                 else:
                     if type(authority) is not VerifiedReadAuthority or authority.destination!=destination:
                         raise PermissionError('adapter destination differs')
-                    await self.read_authority.require(authority,'public_search')
-                binding = await asyncio.to_thread(current_binding, self.worker_queue)
+                    await measured('auth_ms',self.read_authority.require(authority,'public_search'))
+                binding = await measured('binding_ms',asyncio.to_thread(current_binding, self.worker_queue))
                 if story_cursor_generation is not None and story_cursor_generation!=binding.database_generation:
                     raise PublicQueryInvalid
                 try:
@@ -266,8 +277,12 @@ class KaggleSourceBackend:
                 except (ValueError, TypeError):
                     raise PublicQueryInvalid from None
 
-                permit = await self.source_gate.dispatch(authority, request, binding)
+                permit = await measured('dispatch_gate_ms',self.source_gate.dispatch(authority, request, binding))
+                admission_started=time.monotonic()
                 def dispatched(resource):
+                    nonlocal dispatched_at
+                    dispatched_at=time.monotonic()
+                    controller_stages['admission_ms']=(dispatched_at-admission_started)*1000
                     telemetry.bind_dispatch(attempt,
                         runtime=ReadRuntime(resource.run_id, resource.runtime_incarnation),
                         connection_generation=resource.dispatch_generation,
@@ -275,8 +290,11 @@ class KaggleSourceBackend:
                 ticket = await self.worker_queue.shared_reads.begin_read(authority, permit.query,
                     dialog_ref=destination.key, deadline=deadline, on_dispatch=dispatched)
                 result = await asyncio.shield(ticket.result)
+                received_at=time.monotonic()
+                if dispatched_at is not None:
+                    controller_stages['dispatch_to_result_ms']=(received_at-dispatched_at)*1000
                 branches = ('lexical', 'dense') if getattr(result, 'mode', None) == 'hybrid' else ()
-                gated = await self.source_gate.finish(permit, result)
+                gated = await measured('finish_gate_ms',self.source_gate.finish(permit, result))
                 permit = None
                 status, reason = gated.result.status, gated.result.reason
                 if (gated.result.status != 'ok' if exact else gated.result.mode != 'hybrid'):
@@ -287,8 +305,7 @@ class KaggleSourceBackend:
                 output = render(gated.result)
                 if not retain_read_output(self.source_gate, gated, render,
                         on_release=lambda: self.read_authority.release(authority),
-                        on_terminal=lambda final_status, final_reason: telemetry.finish_attempt(attempt,
-                            status=final_status, reason=final_reason, executed_branches=branches)):
+                        on_terminal=terminal):
                     raise TargetUnavailable('public read output boundary required')
                 retained = True
                 # Authority must live until the final output check, not merely
@@ -326,7 +343,7 @@ class KaggleSourceBackend:
                 if authority is not None:
                     self.read_authority.release(authority)
             if not retained:
-                telemetry.finish_attempt(attempt, status=status, reason=reason, executed_branches=branches)
+                terminal(status,reason)
 
     async def search(self, query, principal, *, document_ids=None, main_job_id=None, aliases=None):
         if main_job_id or aliases:
