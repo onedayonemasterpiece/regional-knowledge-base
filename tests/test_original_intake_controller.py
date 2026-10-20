@@ -13,7 +13,7 @@ from regional_knowledge.kaggle_apply import HandlerRegistry
 from regional_knowledge.kaggle_public_backend import current_binding
 from regional_knowledge.kaggle_recovery_dispatch import RecoveryPhaseDispatch
 from regional_knowledge.original_intake_controller import OriginalIntakeController
-from regional_knowledge.original_intake import digest
+from regional_knowledge.original_intake import digest,canonical
 from regional_knowledge.original_intake import OriginalIntakeError
 from test_queue_writer import owner
 from test_read_authority import auth
@@ -24,8 +24,30 @@ from test_recovery_s3 import BotoFailure
 
 
 @pytest.mark.asyncio
-async def test_existing_queue_receipts_url_privacy_and_native_original_readback(owner,native):
+@pytest.mark.parametrize('continued',[False,True])
+async def test_existing_queue_receipts_url_privacy_and_native_original_readback(owner,native,continued):
     e,n=owner,native
+    if continued:
+        import base64
+        first='actual fixture span';tail=' plus complete later block';full=first+tail
+        boxes=[dict(left=0,top=0,right=500,bottom=100),dict(left=0,top=100,right=500,bottom=200)]
+        blocks=[dict(block_index=i,bbox=boxes[i],text=t) for i,t in enumerate((first,tail))]
+        async def continued_parser(path,action,index=0,*,cursor=None):
+            if action=='inspect':return dict(format='pdf',page_count=1)
+            position=0 if cursor is None else cursor['block'];body=(first,tail)[position]
+            offset=0 if position==0 else len(first)
+            value=dict(format='pdf',page_count=1,physical_page_index=0,width=100,height=200,
+                native_cursor=dict(block=position,offset=0,text=offset),
+                next_native=dict(block=1,offset=0,text=len(first)) if position==0 else None,
+                native_text=body,native_text_info=dict(original_length=len(full),offset=offset,end=offset+len(body),
+                    truncated=position==0,requires_visual_review=True,encoding_notice=None,block_count=2,
+                    blocks_truncated=position==0,complete=position==1,native_text_sha256=digest(full.encode()),
+                    native_blocks_sha256=digest(canonical(blocks))),native_blocks=[dict(blocks[position],
+                        original_length=len(body),offset=0,end=len(body),truncated=False,text_sha256=digest(body.encode()))])
+            if action=='page':value.update(image_b64=base64.b64encode(IMAGE).decode(),image_sha256=digest(IMAGE),
+                preview_render=dict(width=100,height=200,scale=1,jpeg_quality=82,preview_only=True))
+            return value
+        n.handler.parser=continued_parser
     spool=ControlSpool(e.q,e.auth.p.registry,e.j,HandlerRegistry([handler()]))
     binding=current_binding(e.q)
     current=lambda b:b==binding and e.w.current(database_generation='synthetic-db',writer_generation='writer-1')
@@ -97,14 +119,18 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
         assert n.download.calls==1
         batch=await controller.pages(e.auth.p.admin,INGEST)
         assert batch.pages[0].data==IMAGE and batch.pages[0].native_text=='actual fixture span'
+        assert batch.next_cursor.startswith('pc1.') if continued else batch.next_cursor is None
         proof=await controller.native_pages(e.auth.p.admin,INGEST)
         assert proof.original_receipt_sha256==status.receipt.receipt_sha256
         assert proof.pages[0]['original_sha256']==digest(PDF)
+        if continued:
+            assert proof.pages[0]['native_text']==full and len(proof.pages[0]['native_blocks'])==2
+            assert proof.pages[0]['native_text_info']['complete'] and not proof.pages[0]['native_text_info']['truncated']
         first_proof=proof.sha256;first_original=status.receipt.receipt_sha256
         old_handle=controller._row(e.auth.p.owner.subject,INGEST)['acquisition_json']
         # Drop only ephemeral native capabilities. The verified object and exact
         # logical source receipt remain durable; recovery must GET, never PUT.
-        n.handler._records.clear();controller._page_proofs.clear()
+        n.handler._records.clear();controller._page_proofs.clear();controller._page_chunks.clear()
         upload_count=len(uploads);download_count=n.download.calls
         await controller._restore_handle(e.auth.p.admin,e.auth.p.owner.subject,binding,status.receipt,json.loads(old_handle))
         recovered=await controller.pages(e.auth.p.admin,INGEST)

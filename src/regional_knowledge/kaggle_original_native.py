@@ -65,16 +65,18 @@ class NativeOriginalIntake:
         from .file_ingress import ChatFileDownloader
         self.downloader=downloader or ChatFileDownloader()
         self.parser=parser or self._parse
-        self.transfer=transfer or NativeSnapshotTransfer(allowed_origins=frozenset(config.allowed_origins),max_bytes=max(config.max_bytes,8*1024*1024),timeout_seconds=config.seconds)
+        self.transfer=transfer or NativeSnapshotTransfer(allowed_origins=frozenset(config.allowed_origins),max_bytes=max(config.max_bytes,256*1024),timeout_seconds=config.seconds)
         self.generation=None;self.closed=False;self._records={};self._requests={};self._results={};self._lock=asyncio.Lock()
 
     def attached(self,generation):self.generation=generation
     def detached(self,generation):
         if self.generation==generation:self.generation=None
 
-    async def _parse(self,path,action,index=0):
+    async def _parse(self,path,action,index=0,*,cursor=None):
+        cursor=cursor or dict(block=0,offset=0,text=0)
         child=await asyncio.create_subprocess_exec(sys.executable,'-I',str(Path(__file__).with_name('kaggle_original_parser.py')),
-            action,str(path),str(index),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,
+            action,str(path),str(index),*(str(cursor[k]) for k in ('block','offset','text')),
+            stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,
             env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
         try:
             async with asyncio.timeout(60):
@@ -158,7 +160,7 @@ class NativeOriginalIntake:
             folder=self.root/secrets.token_hex(24);folder.mkdir(mode=0o700)
             acquired=False
             try:
-                if shutil.disk_usage(folder).free<2*spec.max_bytes+32*8*1024*1024+16*1024*1024:
+                if shutil.disk_usage(folder).free<2*spec.max_bytes+32*256*1024+16*1024*1024:
                     raise OriginalIntakeError('original_private_disk_reservation_unavailable')
                 prior=None
                 if restore:
@@ -226,14 +228,19 @@ class NativeOriginalIntake:
             value['native_verification_sha256']=digest(canonical(value));artifact['verified']=value
             return value
         if phase=='original_pages':
-            if set(args)!={'handle','original_sha256','index'} or type(args['index']) is not int or not 0<=args['index']<record['page_count']:
+            if (set(args) not in ({'handle','original_sha256','index'},{'handle','original_sha256','index','cursor'})
+                    or type(args['index']) is not int or not 0<=args['index']<record['page_count']):
                 raise OriginalIntakeError('original_page_contract')
+            cursor=args.get('cursor') or dict(block=0,offset=0,text=0)
+            if (type(cursor) is not dict or set(cursor)!={'block','offset','text'}
+                    or any(type(v) is not int or not 0<=v<2**31 for v in cursor.values())):
+                raise OriginalIntakeError('original_page_cursor_invalid')
             if record['verified'] is None:raise OriginalIntakeError('original_archive_verification_required')
             index=args['index']
             if index not in record['pages']:
                 result=await self.parser(record['path'],'page',index)
                 image=base64.b64decode(result.pop('image_b64'),validate=True)
-                if not 1<=len(image)<=8*1024*1024 or digest(image)!=result['image_sha256']:
+                if not 1<=len(image)<=256*1024 or digest(image)!=result['image_sha256']:
                     raise OriginalIntakeError('original_page_render_invalid')
                 page_path=record['path'].parent/f'page-{index}.jpg'
                 with page_path.open('xb') as stream:stream.write(image)
@@ -241,8 +248,16 @@ class NativeOriginalIntake:
                     original_sha256=record['sha256'],parser_sha256=self.parser_sha256,image_size=len(image),
                     mime_type='image/jpeg')
                 result['page_receipt_sha256']=digest(canonical(result))
-                record['pages'][index]=dict(result=result,path=page_path,sha256=digest(image),size=len(image),verified=None)
-            return record['pages'][index]['result']
+                record['pages'][index]=dict(result=result,path=page_path,sha256=digest(image),size=len(image),verified=None,
+                    chunks={canonical(dict(block=0,offset=0,text=0)).decode():result})
+            artifact=record['pages'][index];key=canonical(cursor).decode()
+            if key not in artifact['chunks']:
+                result=await self.parser(record['path'],'text',index,cursor=cursor)
+                for name in ('page_id','original_sha256','parser_sha256','image_size','image_sha256','mime_type','preview_render'):
+                    result[name]=artifact['result'][name]
+                result['native_text_info']['preview_render']=artifact['result']['preview_render']
+                result['page_receipt_sha256']=digest(canonical(result));artifact['chunks'][key]=result
+            return artifact['chunks'][key]
         raise OriginalIntakeError('original_phase_unsupported')
 
     async def aclose(self):

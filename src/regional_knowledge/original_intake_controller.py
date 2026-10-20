@@ -13,7 +13,8 @@ from .contracts import ChatFile
 from .kaggle_recovery_dispatch import RecoveryPhaseDispatch
 from .native_snapshot_transfer import SnapshotTicket,origin
 from .original_intake import (OriginalIntakeSpec,OriginalIntakeStatus,VerifiedOriginalReceipt,
-    OriginalIntakeError,OriginalIntakeRejected,TERMINAL_REJECTIONS,NativePagesProof,PHASES,canonical,digest,text,uuid_value)
+    OriginalIntakeError,OriginalIntakeRejected,TERMINAL_REJECTIONS,NativePagesProof,PHASES,canonical,digest,text,uuid_value,
+    decode_page_cursor,encode_page_cursor,assemble_native_page)
 from .recovery_s3 import _blocking,_missing
 
 _LOG=logging.getLogger(__name__)
@@ -32,7 +33,7 @@ class OriginalIntakeController:
         self.queue,self.spool,self.participants=queue,spool,participants
         self.store,self.binding_current,self.current_binding=object_store,binding_current,current_binding
         self.allowed_origins,self.max_bytes=allowed_origins,max_bytes
-        self._private={};self._lock=asyncio.Lock();self._page_proofs={}
+        self._private={};self._lock=asyncio.Lock();self._page_proofs={};self._page_chunks={}
         self._storage=digest(canonical([self.store.client.meta.endpoint_url,self.store.bucket]))
         with queue.connect() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS rkb_original_intakes(
@@ -121,6 +122,7 @@ class OriginalIntakeController:
         key='originals/v1/'+digest(self.spool.journal.stream.encode())+'/'+record['spec']['source_id']+'/'+sha256
         if page is not None:
             args['page_index']=page['physical_page_index'];sha256,size=page['image_sha256'],page['image_size']
+            if type(size) is not int or not 1<=size<=256*1024:raise OriginalIntakeRejected('original_render_byte_bound')
             key+='/pages/'+str(args['page_index'])+'/'+sha256
         # HEAD resolves a lost PUT ACK before issuing another conditional PUT.
         version=await self._head(key,size)
@@ -237,21 +239,21 @@ class OriginalIntakeController:
         receipt=await self.verified(context,ingestion_id)
         if receipt is None:raise OriginalIntakeError('original_verified_receipt_required')
         if batch_size!=1:raise OriginalIntakeError('original_one_page_batch_required')
-        try:index=0 if cursor is None else int(cursor)
-        except ValueError:raise OriginalIntakeError('original_page_cursor_invalid') from None
+        index,native_cursor=decode_page_cursor(cursor)
         if index<0 or index>=receipt.page_count:raise OriginalIntakeError('original_page_cursor_invalid')
         record=json.loads(row['acquisition_json'])
-        try:page=await self._phase(binding,'original_pages',dict(handle=record['handle'],original_sha256=record['sha256'],index=index))
+        args=dict(handle=record['handle'],original_sha256=record['sha256'],index=index,cursor=native_cursor)
+        try:page=await self._phase(binding,'original_pages',args)
         except OriginalIntakeError as exc:
             if str(exc)!='original_retained_bytes_unavailable':raise
             record=await self._restore_handle(context,actor,binding,receipt,record)
-            page=await self._phase(binding,'original_pages',dict(handle=record['handle'],original_sha256=record['sha256'],index=index))
+            page=await self._phase(binding,'original_pages',dict(args,handle=record['handle']))
         native=await self._archive(binding,record,page=page)
         def derivative():
             result=self.store.client.get_object(Bucket=self.store.bucket,Key=native['key'],IfMatch=native['native_version'])
             body=result['Body']
             try:
-                if result.get('ContentLength')!=page['image_size'] or page['image_size']>8*1024*1024:
+                if result.get('ContentLength')!=page['image_size'] or page['image_size']>256*1024:
                     raise OriginalIntakeError('original_render_storage_invalid')
                 data=body.read(page['image_size']+1)
                 if len(data)!=page['image_size'] or digest(data)!=page['image_sha256']:
@@ -262,12 +264,34 @@ class OriginalIntakeController:
         await self._authorize(context)
         expected_page=str(uuid5(UUID(receipt.source_id),f'page:1:{index}'))
         if (page.get('page_id')!=expected_page or page.get('original_sha256')!=receipt.sha256
-                or page.get('parser_sha256')!=receipt.parser_sha256):raise OriginalIntakeError('original_page_provenance_changed')
-        self._page_proofs.setdefault(ingestion_id,{})[index]=canonical(page)
+                or page.get('parser_sha256')!=receipt.parser_sha256 or page.get('native_cursor')!=native_cursor
+                or page.get('page_receipt_sha256')!=digest(canonical({k:v for k,v in page.items() if k!='page_receipt_sha256'}))):
+            raise OriginalIntakeError('original_page_provenance_changed')
+        chunks=self._page_chunks.setdefault(ingestion_id,{}).setdefault(index,{})
+        part_key=canonical(native_cursor).decode();raw=canonical(page)
+        if part_key in chunks and chunks[part_key]!=raw:
+            self._page_proofs.get(ingestion_id,{}).pop(index,None)
+            raise OriginalIntakeError('original_page_fragment_changed')
+        chunks[part_key]=raw
+        self._assemble_available(ingestion_id,index,chunks)
+        next_cursor=(encode_page_cursor(index,page['next_native']) if page['next_native'] is not None
+            else str(index+1) if index+1<receipt.page_count else None)
         return RenderedPageBatch((RenderedPage(page['page_id'],index,None,'image/jpeg',data,
             page['native_text'],tuple(page['native_blocks']),dict(page['native_text_info'],
                 original_sha256=record['sha256'],page_receipt_sha256=page['page_receipt_sha256'])),),
-            str(index+1) if index+1<receipt.page_count else None)
+            next_cursor)
+
+    def _assemble_available(self,ingestion_id,index,chunks):
+        cursor=dict(block=0,offset=0,text=0);parts=[];seen=set()
+        for _ in range(4096):
+            key=canonical(cursor).decode()
+            if key not in chunks:return
+            if key in seen:raise OriginalIntakeError('original_page_cursor_did_not_advance')
+            seen.add(key);part=json.loads(chunks[key]);parts.append(part);cursor=part['next_native']
+            if cursor is None:
+                self._page_proofs.setdefault(ingestion_id,{})[index]=canonical(assemble_native_page(parts))
+                return
+        raise OriginalIntakeError('original_page_continuation_bound')
 
     async def _restore_handle(self,context,actor,binding,receipt,old_record):
         async with self._lock:
@@ -279,7 +303,9 @@ class OriginalIntakeController:
             if await self._head(receipt.key,receipt.size,receipt.native_version) is None:
                 raise OriginalIntakeError('original_verified_object_missing')
             pending=json.loads(row['restore_json']) if row['restore_json'] else None
-            identity=[binding.run_id,binding.runtime_incarnation,binding.connection_generation]
+            # Reconnect may bind a fresh socket generation while the same
+            # retained native transfer/result still owns its original claim.
+            identity=[binding.run_id,binding.runtime_incarnation]
             if pending is None:
                 pending=dict(identity=identity,args=dict(spec=json.loads(row['spec_json']),restore_receipt=receipt.wire(),
                     restore_nonce=secrets.token_hex(24)))
@@ -304,6 +330,14 @@ class OriginalIntakeController:
         if receipt is None or receipt.page_count>32:raise OriginalIntakeError('original_bounded_page_proof_required')
         for index in range(receipt.page_count):
             if index not in self._page_proofs.get(ingestion_id,{}):
-                await self.pages(context,ingestion_id,cursor=str(index),batch_size=1)
+                cursor=str(index);seen=set()
+                for _ in range(4096):
+                    if cursor in seen:raise OriginalIntakeError('original_page_cursor_did_not_advance')
+                    seen.add(cursor);batch=await self.pages(context,ingestion_id,cursor=cursor,batch_size=1)
+                    cursor=batch.next_cursor
+                    if index in self._page_proofs.get(ingestion_id,{}):break
+                    if cursor is None or decode_page_cursor(cursor)[0]!=index:
+                        raise OriginalIntakeError('original_page_continuation_required')
+                else:raise OriginalIntakeError('original_page_continuation_bound')
         await self._authorize(context)
         return NativePagesProof(receipt.receipt_sha256,tuple(self._page_proofs[ingestion_id][i] for i in range(receipt.page_count)))

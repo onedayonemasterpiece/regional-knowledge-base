@@ -52,7 +52,10 @@ The fixed phases are:
    PDF parser. Each call returns one physical page's bounded metadata. Its real
    JPEG derivative follows the same archive/readback phases, after which Dev may
    retrieve that bounded derivative for MCP ImageContent. Originals never follow
-   this Dev download path.
+   this Dev download path. `next_cursor` may continue text and blocks on that
+   same physical page before advancing to the next page. The opaque cursor binds
+   physical page, block position, block character offset and plain-text offset;
+   it is consumed by the existing `book_pages`, with no extra public tool.
 
 `verified(context, ingestion_id)` returns only a locally retained workflow
 receipt after fresh current-authority and native storage-version checks. Its
@@ -82,14 +85,26 @@ returned as reasons.
 `uuid5(source_id, "page:1:<physical index>")`. `native_pages(...)` returns an
 immutable bounded `NativePagesProof`: exact original receipt hash and canonical
 page metadata including original SHA, parser pin, actual block indices, normalized
-geometry, observed text and derivative hash. Preview truncation and missing
-CID Unicode mappings remain explicit. Staging must use only observed spans and
-must not infer complete native text or semantic research from these previews.
+geometry, observed text and derivative hash. `native_pages` walks every required
+continuation and verifies complete text/block lengths and whole-text hashes
+before assembling a deterministic complete page proof. Block 13 and long blocks
+remain reachable; missing, reordered or truncated segments cannot yield a proof.
+Continuation requests reuse the exact rendered image and do not rasterize again.
+Each complete page proof is bounded to 2 MiB and the book proof to 8 MiB; exceeding
+those processing limits refuses acceptance rather than discarding source text.
+Preview truncation and missing CID Unicode mappings remain explicit. Staging
+uses only complete observed spans and cannot infer semantic research from them.
 Model-authored accepted passages still use the existing DOCUMENT jobs and exact
 materialized tokenizer counts; there is no second encoding phase or local BGE.
 
 The initial PDF path admits up to 32 pages (including the independently found
-10-page acceptance candidate), with one page rendered per call. The parser child
+10-page acceptance candidate), with one page rendered per call. A finite JPEG
+preview policy tries edge/quality settings (1600/82, 1600/70, 1600/55, 1280/70,
+1280/55), and refuses previews that still exceed 256 KiB before archive admission.
+Actual pixel dimensions, scale and JPEG quality appear in `preview_render`, also
+forwarded through `native_text_info`. Original physical page dimensions remain
+separate. Original PDF bytes and complete native text are not reduced by this
+preview policy. The parser child
 has fixed code, a 30-second CPU budget, 60-second wall budget, 2-GiB address-space
 limit and bounded output. Scratch lives only under the verified `/kaggle/temp`
 root; cleanup removes the exact owned intake leaf. Original/derivative byte and

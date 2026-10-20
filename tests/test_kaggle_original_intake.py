@@ -48,12 +48,16 @@ def native(tmp_path,monkeypatch):
     monkeypatch.setattr(module,'PRIVATE_ROOT',tmp_path)
     monkeypatch.setattr(module.importlib.metadata,'version',lambda name:'pinned-version')
     download=Downloader();transfer=Transfer();parser_calls=[]
-    async def parser(path,action,index=0):
+    async def parser(path,action,index=0,*,cursor=None):
         assert path.read_bytes()==PDF;parser_calls.append(action)
         if action=='inspect':return dict(format='pdf',page_count=1)
         return dict(format='pdf',page_count=1,physical_page_index=index,width=100,height=200,
+            preview_render=dict(width=100,height=200,scale=1,jpeg_quality=82,preview_only=True),
             image_b64=base64.b64encode(IMAGE).decode(),image_sha256=digest(IMAGE),native_text='actual fixture span',
-            native_text_info={'truncated':False,'requires_visual_review':True},native_blocks=[])
+            native_cursor=dict(block=0,offset=0,text=0),next_native=None,
+            native_text_info=dict(original_length=len('actual fixture span'),offset=0,end=len('actual fixture span'),
+                truncated=False,requires_visual_review=True,encoding_notice=None,block_count=0,blocks_truncated=False,
+                complete=True,native_text_sha256=digest(b'actual fixture span'),native_blocks_sha256=digest(canonical([]))),native_blocks=[])
     handler=NativeOriginalIntake(config=OriginalIntakeConfig(('https://archive.invalid',),(('PyMuPDF','pinned-version'),)),
         database=SimpleNamespace(database_generation='db',writer_generation='writer'),identity=('run','nonce','inc'),
         workspace=root,current=lambda b:b==('run','inc',1),downloader=download,parser=parser,transfer=transfer)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass,asdict
+import base64
 import hashlib
 import json
 from uuid import UUID
@@ -125,10 +126,77 @@ class NativePagesProof:
     def __post_init__(self):
         hash_value(self.original_receipt_sha256)
         if (type(self.page_bytes) is not tuple or not 1<=len(self.page_bytes)<=32
-                or any(type(raw) is not bytes or not 1<=len(raw)<=120*1024 for raw in self.page_bytes)):
+                or any(type(raw) is not bytes or not 1<=len(raw)<=2*1024*1024 for raw in self.page_bytes)
+                or sum(map(len,self.page_bytes))>8*1024*1024):
             raise OriginalIntakeError('original_page_proof_bound')
     @property
     def pages(self):return tuple(json.loads(raw) for raw in self.page_bytes)
     @property
     def sha256(self):return digest(canonical(dict(original_receipt_sha256=self.original_receipt_sha256,
         pages=list(self.pages))))
+
+
+def encode_page_cursor(page,cursor):
+    data=canonical(dict(page=page,**cursor))
+    return 'pc1.'+base64.urlsafe_b64encode(data).decode().rstrip('=')
+
+
+def decode_page_cursor(value):
+    if value is None:return 0,dict(block=0,offset=0,text=0)
+    if type(value) is not str or not 1<=len(value)<=512:raise OriginalIntakeError('original_page_cursor_invalid')
+    if value.isascii() and value.isdecimal():return int(value),dict(block=0,offset=0,text=0)
+    try:
+        if not value.startswith('pc1.'):raise ValueError
+        encoded=value[4:];raw=base64.urlsafe_b64decode(encoded+'='*((-len(encoded))%4));data=json.loads(raw)
+        if (type(data) is not dict or set(data)!={'page','block','offset','text'} or canonical(data)!=raw
+                or any(type(v) is not int or not 0<=v<2**31 for v in data.values())
+                or encode_page_cursor(data['page'],{k:data[k] for k in ('block','offset','text')})!=value):raise ValueError
+        return data['page'],{k:data[k] for k in ('block','offset','text')}
+    except (ValueError,KeyError,TypeError):raise OriginalIntakeError('original_page_cursor_invalid') from None
+
+
+def assemble_native_page(chunks):
+    """Join a complete exact cursor chain; gaps, clipping and drift refuse proof."""
+    if not chunks or len(chunks)>4096:raise OriginalIntakeError('original_page_proof_bound')
+    first=chunks[0];info=first['native_text_info'];native=[];blocks={};cursor=dict(block=0,offset=0,text=0)
+    fixed=('format','page_count','physical_page_index','width','height','page_id','original_sha256',
+        'parser_sha256','image_size','image_sha256','mime_type','preview_render')
+    text_size=0
+    for part in chunks:
+        if (part.get('native_cursor')!=cursor or any(part.get(k)!=first[k] for k in fixed)
+                or part.get('page_receipt_sha256')!=digest(canonical({k:v for k,v in part.items() if k!='page_receipt_sha256'}))):
+            raise OriginalIntakeError('original_page_fragment_changed')
+        status=part['native_text_info']
+        if any(status.get(k)!=info.get(k) for k in ('original_length','block_count','native_text_sha256','native_blocks_sha256','encoding_notice')):
+            raise OriginalIntakeError('original_page_fragment_changed')
+        if status['offset']!=text_size or status['end']!=text_size+len(part['native_text']):
+            raise OriginalIntakeError('original_page_text_gap')
+        native.append(part['native_text']);text_size=status['end']
+        for segment in part['native_blocks']:
+            index=segment['block_index'];old=blocks.get(index)
+            if old is None:
+                if blocks and index<=max(blocks):raise OriginalIntakeError('original_page_block_order')
+                old=blocks[index]=dict(block_index=index,bbox=segment['bbox'],text='',original_length=segment['original_length'],
+                    text_sha256=segment['text_sha256'])
+            if (old['bbox']!=segment['bbox'] or old['original_length']!=segment['original_length']
+                    or old['text_sha256']!=segment['text_sha256'] or segment['offset']!=len(old['text'])
+                    or segment['end']!=segment['offset']+len(segment['text'])):
+                raise OriginalIntakeError('original_page_block_gap')
+            old['text']+=segment['text']
+        cursor=part['next_native']
+    if cursor is not None or not chunks[-1]['native_text_info']['complete']:
+        raise OriginalIntakeError('original_page_continuation_required')
+    native=''.join(native)
+    if len(native)!=info['original_length'] or digest(native.encode())!=info['native_text_sha256'] or len(blocks)!=info['block_count']:
+        raise OriginalIntakeError('original_page_text_gap')
+    for block in blocks.values():
+        if len(block['text'])!=block['original_length'] or digest(block['text'].encode())!=block['text_sha256']:
+            raise OriginalIntakeError('original_page_block_gap')
+    raw_blocks=[{k:b[k] for k in ('block_index','bbox','text')} for b in blocks.values()]
+    if digest(canonical(raw_blocks))!=info['native_blocks_sha256']:raise OriginalIntakeError('original_page_block_gap')
+    value={k:first[k] for k in fixed}
+    value.update(native_text=native,native_blocks=[dict(b,truncated=False,offset=0,end=b['original_length']) for b in blocks.values()],
+        native_text_info=dict(info,offset=0,end=len(native),truncated=False,blocks_truncated=False,complete=True))
+    value['page_receipt_sha256']=digest(canonical(value))
+    if len(canonical(value))>2*1024*1024:raise OriginalIntakeError('original_page_proof_bound')
+    return value

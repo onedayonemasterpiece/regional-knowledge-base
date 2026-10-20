@@ -9,23 +9,21 @@ from pathlib import Path
 import sys
 
 
-def parse(path,action,index=0):
+def _json(value):return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
+def _hash(value):return hashlib.sha256(value).hexdigest()
+
+
+def parse(path,action,index=0,*,cursor=None):
     import pymupdf as fitz
     with fitz.open(path) as document:
         total=int(document.page_count)
         if not 1<=total<=2500 or document.needs_pass:raise ValueError('original_pdf_invalid')
         if action=='inspect':return dict(format='pdf',page_count=total)
-        if action!='page' or not 0<=index<total:raise ValueError('original_page_invalid')
+        if action not in ('page','text') or not 0<=index<total:raise ValueError('original_page_invalid')
         page=document.load_page(index);rect=page.rect
         width,height=float(rect.width),float(rect.height)
         if not 0<width<100000 or not 0<height<100000:raise ValueError('original_page_geometry_invalid')
-        scale=min(2.,1600/max(width,height))
-        image=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False).tobytes('jpeg',jpg_quality=82)
-        if len(image)>8*1024*1024:raise ValueError('original_render_byte_bound')
         native=page.get_text('text',sort=False)
-        # This preview is never an automatic accepted passage. Its complete
-        # length and truncation are explicit; model-authored staging is separate.
-        preview=native[:12000]
         missing=sorted({font[0] for font in page.get_fonts(full=True)
             if font[2]=='Type0' and document.xref_get_key(font[0],'ToUnicode')[0]=='null'})
         blocks=[]
@@ -37,13 +35,43 @@ def parse(path,action,index=0):
             bbox={key:max(0,min(1000,round(value/extent*1000))) for key,value,extent in
                 (('left',x0,width),('top',y0,height),('right',x1,width),('bottom',y1,height))}
             if bbox['left']>=bbox['right'] or bbox['top']>=bbox['bottom']:continue
-            value=str(raw[4]);blocks.append(dict(block_index=ordinal,bbox=bbox,text=value[:1000],
-                original_length=len(value),truncated=len(value)>1000))
-        return dict(format='pdf',page_count=total,physical_page_index=index,width=width,height=height,
-            image_b64=base64.b64encode(image).decode(),image_sha256=hashlib.sha256(image).hexdigest(),
-            native_text=preview,native_text_info=dict(original_length=len(native),truncated=len(preview)<len(native),
+            blocks.append(dict(block_index=ordinal,bbox=bbox,text=str(raw[4])))
+        cursor=cursor or dict(block=0,offset=0,text=0)
+        if (type(cursor) is not dict or set(cursor)!={'block','offset','text'}
+                or any(type(v) is not int or v<0 for v in cursor.values())
+                or cursor['block']>len(blocks) or cursor['text']>len(native)
+                or (cursor['block']==len(blocks) and cursor['offset']!=0)
+                or (cursor['block']<len(blocks) and cursor['offset']>=len(blocks[cursor['block']]['text']))):
+            raise ValueError('original_page_cursor_invalid')
+        position,offset=cursor['block'],cursor['offset'];segments=[]
+        for _ in range(12):
+            if position==len(blocks):break
+            block=blocks[position];text=block['text'];end=min(offset+1000,len(text))
+            segments.append(dict(block_index=block['block_index'],bbox=block['bbox'],text=text[offset:end],
+                original_length=len(text),offset=offset,end=end,truncated=end<len(text),text_sha256=_hash(text.encode())))
+            if end==len(text):position+=1;offset=0
+            else:offset=end
+        text_end=min(cursor['text']+12000,len(native));complete=position==len(blocks) and text_end==len(native)
+        value=dict(format='pdf',page_count=total,physical_page_index=index,width=width,height=height,
+            native_cursor=cursor,next_native=None if complete else dict(block=position,offset=offset,text=text_end),
+            native_text=native[cursor['text']:text_end],native_text_info=dict(original_length=len(native),
+                offset=cursor['text'],end=text_end,truncated=text_end<len(native),complete=complete,
+                native_text_sha256=_hash(native.encode()),native_blocks_sha256=_hash(_json(blocks)),
                 requires_visual_review=True,encoding_notice='cid_font_without_unicode_map' if missing else None,
-                block_count=len(blocks),blocks_truncated=len(blocks)>12),native_blocks=blocks[:12])
+                block_count=len(blocks),blocks_truncated=position<len(blocks)),native_blocks=segments)
+        if action=='page':
+            pixmap=None;last_edge=None
+            for edge,quality in ((1600,82),(1600,70),(1600,55),(1280,70),(1280,55)):
+                scale=min(2.,edge/max(width,height))
+                if last_edge!=edge:pixmap=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False);last_edge=edge
+                image=pixmap.tobytes('jpeg',jpg_quality=quality)
+                if len(image)<=256*1024:break
+            else:raise ValueError('original_render_byte_bound')
+            render=dict(policy='rkb.pdf-preview.v1',width=pixmap.width,height=pixmap.height,scale=scale,
+                max_edge=edge,jpeg_quality=quality,byte_limit=256*1024,preview_only=True)
+            value['preview_render']=render;value['native_text_info']['preview_render']=render
+            value.update(image_b64=base64.b64encode(image).decode(),image_sha256=_hash(image))
+        return value
 
 
 def main():
@@ -54,10 +82,10 @@ def main():
     resource.setrlimit(resource.RLIMIT_NOFILE,(64,64))
     resource.setrlimit(resource.RLIMIT_CORE,(0,0))
     try:
-        if len(sys.argv)!=4:raise ValueError
+        if len(sys.argv)!=7:raise ValueError
         path=Path(sys.argv[2])
         if not path.is_absolute() or not path.is_relative_to('/kaggle/temp') or path.resolve(strict=True)!=path:raise ValueError
-        result=parse(path,sys.argv[1],int(sys.argv[3]))
+        result=parse(path,sys.argv[1],int(sys.argv[3]),cursor=dict(zip(('block','offset','text'),map(int,sys.argv[4:]))))
         data=json.dumps(result,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
         if len(data)>12*1024*1024:raise ValueError
         sys.stdout.buffer.write(data);sys.stdout.buffer.flush()
