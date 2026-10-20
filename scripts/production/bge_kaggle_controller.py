@@ -98,8 +98,14 @@ def worker_source(template, queue, run_id, token, broker, *, transport='http', t
         return compose_target(template,config,target,queue=queue,repository=Path(__file__).resolve().parents[2])
     return template.replace('RUN_CONFIG = {}','RUN_CONFIG = '+repr(config),1)
 
-def main(*, target_spec=None, recovery_journal=None):
+def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
     logging.basicConfig(level=logging.INFO)
+    target_config_path=target_config_path or os.getenv('RKB_BGE_TARGET_CONFIG','').strip()
+    if target_config_path:
+        if target_spec is not None:
+            raise ValueError('one explicit target launch configuration required')
+        from regional_knowledge.kaggle_launch_config import load_target_launch
+        target_spec=load_target_launch(target_config_path)
     if target_spec is not None:
         from regional_knowledge.kaggle_target_runtime import TargetLaunchSpec
         from regional_knowledge.recovery_journal import RecoveryJournal

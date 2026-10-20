@@ -6,6 +6,17 @@ an existing Stage0 prepared inventory rooted in `/kaggle/working`, independently
 observed dependency and native catalog hashes, and an explicit owned database binding.
 No environment variable silently creates this authority or supplies a new journal.
 
+For the real controller invocation, serialize exactly `TargetLaunchSpec.wire()`
+to a bounded regular JSON configuration file. `load_target_launch(path)` reconstructs
+the typed database, Stage0 and native bundle descriptors and rejects unknown or
+duplicate fields, symlinks, oversized files and changing bytes. The existing controller
+accepts `main(target_config_path=path, recovery_journal=existing_journal)`; equivalently
+`RKB_BGE_TARGET_CONFIG` supplies that metadata path. This selects the same controller
+loop, queue and stable notebook slug. It does not create a journal, writer guard,
+credentials or artifact-hosting service. A fresh target file without the injected
+real journal is refused before provider authentication. The plain script without
+target metadata remains the existing legacy controller.
+
 `worker_source(..., target=spec)` assembles the fixed native-safe Python modules and exact
 001–006 SQL bytes into one bounded immutable source package. The generated entrypoint
 extracts and verifies its content-addressed files, then actually calls
