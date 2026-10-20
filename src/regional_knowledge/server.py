@@ -445,7 +445,7 @@ def build_server(
                 result = await story_call(
                     registry.search, query, filters, mode, order, limit, cursor, vector)
                 if isinstance(result, dict) and "error" not in result:
-                    if result.get("retrieval_mode") not in {"story_bge", "story_bge_partial"}:
+                    if result.get("retrieval_mode") not in {"story_bge_lexical", "story_bge_lexical_partial"}:
                         return {"status": "unavailable", "reason": "hybrid_search_required",
                                 "kaggle_query_state": kaggle_state or "projection_unavailable"}
                     result["kaggle_query_state"] = kaggle_state

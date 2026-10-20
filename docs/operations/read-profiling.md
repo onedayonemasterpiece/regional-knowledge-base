@@ -45,3 +45,12 @@ The existing public `story_search` likewise defaults to hybrid and refuses
 lexical-only or unavailable/stale-vector discovery; direct saved-story readback
 retains its separate contract. Internal branch probes and exact source/catalog
 reads do not claim to be completed hybrid search.
+
+Independent review found that the legacy story registry's `hybrid` parameter
+previously skipped FTS whenever a dense result existed. Compatibility serving
+now actually runs FTS and dense candidate retrieval independently and fuses at
+most 200 candidates per branch. Its existing Python vector scan remains legacy
+code, explicitly outside the Kaggle indexed target and scale acceptance. The
+response marks bounded fusion incomplete. Tests include an unembedded lexical
+hit and a differently worded dense hit together, excluding another person's
+private story from both branches.
