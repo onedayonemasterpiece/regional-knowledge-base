@@ -28,11 +28,13 @@ recovery_store = S3ConditionalRecoveryStore(
 ```
 
 Every `compare_and_swap` acquires that guard across the complete native
-`PutObject` request, for both mutable manifest heads and create-only canonical
-outcome objects. `expected_token=None` sends `IfNoneMatch="*"`; an expected native
+`PutObject` client call, for manifest heads, canonical outcomes, acceptance proofs,
+bootstrap checkpoints and operation bindings. `expected_token=None` sends
+`IfNoneMatch="*"`; an expected native
 ETag sends `IfMatch=expected_token` unchanged, including quotes and multipart
 format. `put_if_absent` sends `IfNoneMatch="*"`; it is intended for immutable
-orphan-safe bytes, not canonical unfenced outcome publication.
+orphan-safe segment/manifest bytes. Canonical outcomes and binding/index updates
+use generation-guarded CAS.
 
 Native calls run in a thread. Cancelling the async waiter does not stop a running
 SDK request, so the adapter shields and drains it before releasing the generation
@@ -41,6 +43,10 @@ after the request finishes. A cancelled/timeout caller must reconcile exact
 remote publication; it must not assume that publication failed. Existing client
 connect/read timeouts and retry limits must be finite, because the authority
 cannot safely release while a native publication is still running.
+An SDK timeout does not prove the remote server stopped processing a request.
+The local guard serializes client calls and authority transitions; unresolved
+remote requests still require exact native-condition reconciliation. No server
+cancellation or remote generation-fence capability is inferred from that guard.
 
 The installed SDK's `PutObject` input shape must expose both `IfMatch` and
 `IfNoneMatch`; otherwise construction raises `ConditionalApiUnavailable` without
@@ -61,11 +67,13 @@ The recovery journal separately verifies immutable SHA-256 and exact lengths.
 Only `NoSuchKey`/a compatible native object 404 means verified absence. Missing
 bucket, authorization errors, inconsistent error code/status, timeouts and other
 failures become `StoreUnavailable`, never `None`. Only native
-`PreconditionFailed`/412 or `ConditionalRequestConflict`/409 means a failed write
-condition and returns `False`. A generic 409 conflict, unsupported operation or
-authentication failure remains unavailable/uncertain. A conditional 409 does not
-authorize an unconditional retry: the journal must reconcile/refetch the exact
-operation and head. The adapter does not retry uncertain writes itself.
+`PreconditionFailed`/412 means a failed write condition and returns `False`.
+Every 409, including `ConditionalRequestConflict`, remains
+`StoreUnavailable`: an earlier request or SDK retry could still commit after a
+client timeout. The journal must preserve UNKNOWN until exact publication or a
+permanently advanced head proves the outcome. Unsupported operations and
+authentication failures also remain unavailable/uncertain. No 409 authorizes
+an unconditional retry. The adapter does not retry uncertain writes itself.
 
 Provider error messages, bucket/key details and request payloads are excluded
 from raised transport messages, and provider exception chaining is suppressed.
@@ -79,7 +87,10 @@ Tests use a boto-style fake client and synthetic bytes only. They inspect actual
 request keyword arguments, conditional failures, native ETag preservation,
 bounded/chunked GET and body closure, auth/absence distinction, lost ACK readback,
 SDK shape rejection, namespace rejection and ordering of native publication,
-generation transitions and cancellation. No provider, bucket, credentials,
+generation transitions and cancellation. A journal-plus-adapter regression
+delays the first native head commit, times it out, returns conditional 409 on the
+second request, then proves both attempts remain UNKNOWN until the first exact
+commit is reconciled. No provider, bucket, credentials,
 network, dependency installation, notebook or accepted product input is used.
 
 Before real routing, verify the installed SDK and selected bucket's native

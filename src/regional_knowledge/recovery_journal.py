@@ -1,7 +1,7 @@
 """Bounded immutable seals and a fenced CAS head, not a domain queue.
 
-No production transport implements ConditionalRecoveryStore yet. In particular,
-ObjectStore.put_bytes cannot implement its conditional operations safely.
+The native S3 adapter is separate; provider semantics and product wiring remain
+unverified. ObjectStore.put_bytes cannot implement conditional operations safely.
 """
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ def _decode(data: bytes) -> dict[str, Any]:
         if not isinstance(value, dict) or _encode(value) != data:
             raise ValueError("noncanonical object")
         return value
-    except (ValueError, TypeError, UnicodeError) as exc:
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
         raise JournalCorrupt("invalid canonical journal object") from exc
 
 
@@ -292,23 +292,27 @@ class RecoveryJournal:
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise JournalCorrupt("invalid exact command") from exc
 
-    async def read_segment(self, ref: ObjectRef) -> tuple[ObjectRef | None, tuple[bytes, ...]]:
-        """Verify one immutable seal and return predecessor plus exact envelopes.
-
-        A standalone orphan can pass this check. Establish publication/chain
-        membership before replay; return bytes unchanged to the pinned decoder.
-        """
+    async def _manifest(self, ref: ObjectRef) -> tuple[ObjectRef | None, ObjectRef]:
         node = _decode(await self._verified(ref, 8192))
         try:
             if node["codec"] != "rkb.manifest.v1" or node["stream"] != self.stream:
                 raise JournalCorrupt("manifest stream/codec mismatch")
             previous = self._parse_ref(node["previous"]) if node["previous"] is not None else None
             segment_ref = self._parse_ref(node["segment"])
-            if segment_ref.last_sequence != ref.last_sequence:
+            if (segment_ref.last_sequence != ref.last_sequence
+                    or (previous is not None and previous.last_sequence >= ref.last_sequence)):
                 raise JournalCorrupt("manifest cursor mismatch")
+            return previous, segment_ref
+        except (KeyError, TypeError, ValueError) as exc:
+            raise JournalCorrupt("invalid manifest schema") from exc
+
+    async def read_segment(self, ref: ObjectRef) -> tuple[ObjectRef | None, tuple[bytes, ...]]:
+        """Verify bytes; an orphan is not thereby proven accepted."""
+        previous, segment_ref = await self._manifest(ref)
+        try:
             segment = _decode(await self._verified(segment_ref, self.max_segment_bytes))
             if (segment["codec"] != "rkb.segment.v1" or segment["stream"] != self.stream
-                    or segment["previous"] != node["previous"]):
+                    or segment["previous"] != (previous.wire() if previous else None)):
                 raise JournalCorrupt("segment predecessor/codec/stream mismatch")
             commands = tuple(self._validate_command(item) for item in segment["commands"])
             if not 1 <= len(commands) <= self.max_commands or segment["count"] != len(commands):
@@ -360,19 +364,181 @@ class RecoveryJournal:
             ref = previous
         raise JournalUnknown("recovery traversal budget exhausted")
 
+    def _accepted_key(self, ref: ObjectRef) -> str:
+        return self.prefix + "/accepted/manifests/" + ref.sha256
+
+    def _accepted_data(self, ref: ObjectRef) -> bytes:
+        return _encode({"codec": "rkb.accepted-manifest.v1", "stream": self.stream,
+                        "manifest": ref.wire()})
+
+    async def _indexed(self, ref: ObjectRef) -> bool:
+        value = await self._read(self._accepted_key(ref), 8192)
+        if value is None:
+            return False
+        if value.data != self._accepted_data(ref):
+            raise JournalCorrupt("accepted manifest proof differs from exact reference")
+        return True
+
+    async def _fenced_exact(self, key: str, data: bytes, *, expected_token: str | None,
+                            writer_generation: str, limit: int = 8192) -> None:
+        if len(data) > limit:
+            raise JournalLimit("conditional binding exceeds configured read byte budget")
+        try:
+            await self.store.compare_and_swap(
+                key, data, expected_token=expected_token, writer_generation=writer_generation,
+            )
+        except StoreUnavailable:
+            pass
+        value = await self._read(key, limit)
+        if value is None:
+            raise JournalUnknown("fenced publication is unproved")
+        if value.data != data:
+            if expected_token is not None and value.token == expected_token:
+                raise JournalUnknown("conditional publication may still commit against the original token")
+            raise JournalConflict("conditional binding has different exact bytes")
+
+    async def _index_published(self, ref: ObjectRef, commands: tuple[bytes, ...], *,
+                                writer_generation: str) -> None:
+        """Internal: caller proved membership from head, index or bootstrap chain.
+
+        Complete sequence proofs before the manifest proof. Never index a caller
+        AcceptedSeal or an uploaded orphan without independent membership proof.
+        """
+        for data in commands:
+            command = _decode(data)
+            entry = _encode({"codec": "rkb.accepted-sequence.v1", "stream": self.stream,
+                             "manifest": ref.wire(), "sequence": command["sequence"],
+                             "command_sha256": _hash(data),
+                             "operation_key_sha256": _hash(command["operation_key"].encode())})
+            await self._fenced_exact(
+                self.prefix + "/accepted/sequences/" + str(command["sequence"]), entry,
+                expected_token=None, writer_generation=writer_generation,
+            )
+        await self._fenced_exact(self._accepted_key(ref), self._accepted_data(ref),
+                                 expected_token=None, writer_generation=writer_generation)
+
+    async def _accepted_commands(self, ref: ObjectRef) -> AcceptedSeal:
+        _, commands = await self.read_segment(ref)
+        return AcceptedSeal(ref, tuple(_hash(command) for command in commands))
+
     async def _published(self, target: ObjectRef) -> AcceptedSeal:
+        if await self._indexed(target):
+            return await self._accepted_commands(target)
         head = await self.head()
         ref = head.reference if head else None
         for _ in range(self.max_reconcile_hops):
             if ref is None or ref.last_sequence < target.last_sequence:
                 raise JournalConflict("candidate is not in the published chain")
-            previous, commands = await self.read_segment(ref)
             if ref == target:
-                return AcceptedSeal(ref, tuple(_hash(command) for command in commands))
+                return await self._accepted_commands(ref)
             if ref.last_sequence == target.last_sequence:
                 raise JournalConflict("another segment owns the candidate sequence")
+            previous, _ = await self._manifest(ref)
             ref = previous
-        raise JournalUnknown("publication reconciliation budget exhausted")
+        raise JournalUnknown("acceptance index absent; bounded bootstrap_indexes is required")
+
+    async def _finish_seal(self, target: ObjectRef, writer_generation: str) -> AcceptedSeal:
+        accepted = await self._published(target)
+        _, commands = await self.read_segment(target)
+        await self._index_published(target, commands, writer_generation=writer_generation)
+        return accepted
+
+    async def _occupied_command(self, sequence: int) -> dict[str, Any]:
+        value = await self._read(self.prefix + "/accepted/sequences/" + str(sequence), 8192)
+        if value is None:
+            raise JournalUnknown("sequence proof absent; repair current head or bootstrap_indexes")
+        entry = _decode(value.data)
+        try:
+            if (entry["codec"] != "rkb.accepted-sequence.v1" or entry["stream"] != self.stream
+                    or entry["sequence"] != sequence):
+                raise JournalCorrupt("invalid accepted sequence proof")
+            ref = self._parse_ref(entry["manifest"])
+            if not await self._indexed(ref):
+                raise JournalUnknown("accepted sequence manifest proof is incomplete")
+            previous, commands = await self.read_segment(ref)
+            first = previous.last_sequence + 1 if previous else 1
+            if not first <= sequence <= ref.last_sequence:
+                raise JournalCorrupt("accepted sequence is outside its sealed range")
+            data = commands[sequence - first]
+            command = _decode(data)
+            if (entry["command_sha256"] != _hash(data)
+                    or entry["operation_key_sha256"] != _hash(command["operation_key"].encode())):
+                raise JournalCorrupt("accepted sequence command identity differs")
+            return command
+        except (KeyError, TypeError, ValueError) as exc:
+            raise JournalCorrupt("invalid accepted sequence proof schema") from exc
+
+    async def _bind_command(self, data: bytes, writer_generation: str) -> None:
+        command = _decode(data)
+        key = self.prefix + "/commands/" + _hash(command["operation_key"].encode())
+        old = await self._read(key, self.max_segment_bytes)
+        if old is not None and old.data == data:
+            return
+        if old is not None:
+            original = _decode(self._validate_command(_decode(old.data)))
+            old_identity = {k: v for k, v in original.items() if k != "sequence"}
+            new_identity = {k: v for k, v in command.items() if k != "sequence"}
+            if old_identity != new_identity or original["sequence"] == command["sequence"]:
+                raise JournalConflict("operation identity differs from its exact original command")
+            occupied = await self._occupied_command(original["sequence"])
+            if occupied["operation_key"] == original["operation_key"]:
+                raise JournalConflict("an accepted operation cannot be resequenced")
+            # Another accepted command permanently occupies the old sequence:
+            # the orphan's old head precondition can never succeed now.
+        await self._fenced_exact(key, data, expected_token=old.token if old else None,
+                                 writer_generation=writer_generation, limit=self.max_segment_bytes)
+
+    async def bootstrap_indexes(self, *, writer_generation: str) -> bool:
+        """Repair legacy history in bounded, durably checkpointed pages.
+
+        Return True only after reaching genesis. There are no caller-provided
+        ancestry references: the initial anchor is the actual published head;
+        later cursors are fenced checkpoints of its verified predecessor chain.
+        Appends with the new implementation repair their own predecessor first.
+        """
+        if not isinstance(writer_generation, str) or not writer_generation:
+            raise ValueError("writer generation is required")
+        _reserve_text(4096, writer_generation)
+        key = self.prefix + "/acceptance-index-bootstrap"
+        state = await self._read(key, 8192)
+        if state is None:
+            head = await self.head()
+            if head is None:
+                return True
+            initial = _encode({"codec": "rkb.acceptance-bootstrap.v1", "stream": self.stream,
+                               "anchor": head.reference.wire(), "next": head.reference.wire()})
+            await self._fenced_exact(key, initial, expected_token=None,
+                                     writer_generation=writer_generation)
+            state = await self._read(key, 8192)
+            if state is None:
+                raise JournalUnknown("bootstrap checkpoint is unavailable")
+        progress = _decode(state.data)
+        if (progress.get("codec") != "rkb.acceptance-bootstrap.v1"
+                or progress.get("stream") != self.stream or "next" not in progress):
+            raise JournalCorrupt("invalid acceptance bootstrap checkpoint")
+        anchor = self._parse_ref(progress.get("anchor"))
+        if not await self._indexed(anchor):
+            head = await self.head()
+            if head is None or head.reference != anchor:
+                raise JournalUnknown("bootstrap anchor has no verified publication proof")
+        ref = self._parse_ref(progress["next"]) if progress.get("next") is not None else None
+        if ref is not None and (ref.last_sequence > anchor.last_sequence
+                                or (ref.last_sequence == anchor.last_sequence and ref != anchor)):
+            raise JournalCorrupt("bootstrap cursor is ahead of its anchor")
+        for _ in range(self.max_reconcile_hops):
+            if ref is None:
+                break
+            previous, commands = await self.read_segment(ref)
+            await self._index_published(ref, commands, writer_generation=writer_generation)
+            ref = previous
+        updated = _encode({"codec": "rkb.acceptance-bootstrap.v1", "stream": self.stream,
+                           "anchor": anchor.wire(), "next": ref.wire() if ref else None})
+        try:
+            await self._fenced_exact(key, updated, expected_token=state.token,
+                                     writer_generation=writer_generation)
+        except (JournalConflict, JournalUnknown) as exc:
+            raise JournalUnknown("bootstrap checkpoint not advanced; resume durable progress") from exc
+        return ref is None
 
     async def seal(self, commands: Sequence[ExactCommand], *,
                    predecessor: VerifiedHead | None, writer_generation: str) -> AcceptedSeal:
@@ -421,17 +587,21 @@ class RecoveryJournal:
         node_ref = self._ref(self.prefix + "/manifests/" + _hash(node), node,
                              commands[-1].sequence)
         pointer = _encode({"codec": "rkb.head.v1", "stream": self.stream,
+                           "acceptance_index": "predecessor-first-v1",
                            "writer_generation": writer_generation, "manifest": node_ref.wire()})
         if len(pointer) > 4096:
             raise JournalLimit("head exceeds configured read byte budget")
         current = await self.head()
         if current != predecessor:
-            return await self._published(node_ref)  # Exact duplicate or a fork; never overwrite.
-        # Immutable key bindings retain exact identity even when a crash leaves
-        # an unaccepted orphan. Retrying must keep IDs, sequence and bytes.
-        for command, data in zip(commands, encoded, strict=True):
-            key = self.prefix + "/commands/" + _hash(command.operation_key.encode())
-            await self._immutable(key, data, self.max_segment_bytes)
+            return await self._finish_seal(node_ref, writer_generation)
+        if current is not None:
+            # Crash gap is at most the current head: never advance it until all
+            # of its accepted manifest/sequence proofs have been read back.
+            _, current_commands = await self.read_segment(current.reference)
+            await self._index_published(current.reference, current_commands,
+                                        writer_generation=writer_generation)
+        for data in encoded:
+            await self._bind_command(data, writer_generation)
         await self._immutable(segment_ref.key, segment, self.max_segment_bytes)
         await self._immutable(node_ref.key, node, 8192)
         try:
@@ -442,13 +612,13 @@ class RecoveryJournal:
         except StoreUnavailable:
             # Readback may prove success after a lost CAS ACK. Otherwise preserve UNKNOWN.
             try:
-                return await self._published(node_ref)
+                return await self._finish_seal(node_ref, writer_generation)
             except JournalConflict as exc:
                 raise JournalUnknown("CAS result unproved; retain exact candidate") from exc
         try:
-            return await self._published(node_ref)
+            return await self._finish_seal(node_ref, writer_generation)
         except JournalConflict as exc:
-            if swapped:
+            if swapped or await self.head() == predecessor:
                 raise JournalUnknown("acknowledged publication lacks verified continuity") from exc
             raise
 

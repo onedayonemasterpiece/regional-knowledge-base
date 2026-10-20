@@ -41,8 +41,7 @@ def _missing(exc: Exception) -> bool:
 def _condition_failed(exc: Exception) -> bool:
     code, status = _provider_error(exc)
     return ((status == 412 and code in ("", "412", "PreconditionFailed"))
-            or (code == "PreconditionFailed" and status is None)
-            or (status == 409 and code == "ConditionalRequestConflict"))
+            or (code == "PreconditionFailed" and status is None))
 
 
 async def _blocking(call: Callable[[], _T]) -> _T:

@@ -8,7 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from regional_knowledge.recovery_journal import JournalLimit, StaleWriter, StoreUnavailable
+from regional_knowledge.recovery_journal import (
+    JournalLimit, JournalUnknown, RecoveryJournal, StaleWriter, StoreUnavailable,
+)
 from regional_knowledge.recovery_s3 import ConditionalApiUnavailable, S3ConditionalRecoveryStore
 
 
@@ -161,7 +163,7 @@ async def test_auth_and_other_read_failures_are_unavailable_not_absent(code, sta
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code,status", [("PreconditionFailed", 412), ("412", 412), ("ConditionalRequestConflict", 409)])
+@pytest.mark.parametrize("code,status", [("PreconditionFailed", 412), ("412", 412)])
 async def test_only_native_condition_failure_returns_false(code, status):
     client, _, store = fixture()
     client.put_failure = BotoFailure(code, status)
@@ -172,7 +174,8 @@ async def test_only_native_condition_failure_returns_false(code, status):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("code,status", [
     ("AccessDenied", 403), ("Conflict", 409), ("OperationAborted", 409),
-    ("AccessDenied", 412), ("ConditionalRequestConflict", 500), ("NotImplemented", 501),
+    ("AccessDenied", 412), ("ConditionalRequestConflict", 409),
+    ("ConditionalRequestConflict", 500), ("NotImplemented", 501),
 ])
 async def test_other_write_failures_remain_unknown_and_do_not_fallback(code, status):
     client, _, store = fixture()
@@ -193,6 +196,39 @@ async def test_lost_ack_is_unknown_while_native_bytes_are_reconcilable():
     assert SECRET_MARKER not in str(error.value)
     assert (await store.read(PREFIX + "outcomes/op", max_bytes=5)).data == b"exact"
     assert authority.events == ["guard-enter", "guard-exit"]
+
+
+@pytest.mark.asyncio
+async def test_journal_409_retry_cannot_reject_an_earlier_late_head_commit():
+    from test_recovery_journal import command
+
+    class LateClient(Client):
+        pending = None
+        head_attempts = 0
+
+        def put_object(self, **kwargs):
+            if kwargs["Key"].endswith("/head"):
+                self.head_attempts += 1
+                if self.head_attempts == 1:
+                    self.pending = kwargs
+                    raise TimeoutError("late first native request")
+                if self.head_attempts == 2:
+                    raise BotoFailure("ConditionalRequestConflict", 409)
+            return super().put_object(**kwargs)
+
+    client = LateClient()
+    authority = Authority()
+    journal = RecoveryJournal(None, stream="late-cas-synthetic")
+    journal.store = S3ConditionalRecoveryStore(
+        client=client, bucket="existing-private-bucket", prefix=journal.prefix + "/",
+        writer_guard=authority.guard,
+    )
+    for _ in range(2):
+        with pytest.raises(JournalUnknown):
+            await journal.seal([command()], predecessor=None, writer_generation="writer-1")
+    Client.put_object(client, **client.pending)
+    accepted = await journal.seal([command()], predecessor=None, writer_generation="writer-1")
+    assert accepted.manifest == (await journal.head()).reference
 
 
 @pytest.mark.asyncio

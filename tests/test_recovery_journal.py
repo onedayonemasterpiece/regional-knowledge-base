@@ -69,7 +69,7 @@ class ConditionalMemoryStore:
         if (item.token if item else None) != expected_token:
             return False
         self.write(key, data)
-        if self.fail_head_read_after_cas:
+        if self.fail_head_read_after_cas and key.endswith("/head"):
             self.read_failures.add("/head")
         self.fault("cas-after", key)
         return True
@@ -97,6 +97,234 @@ async def seal(journal, commands, predecessor=None, writer="writer-1"):
 
 
 @pytest.mark.asyncio
+async def test_old_accepted_outcome_does_not_age_out_of_reconciliation_budget():
+    store, journal = fixture(max_reconcile_hops=4)
+    first = await seal(journal, [command()])
+    for sequence in range(2, 8):
+        await seal(journal, [command(sequence)], await journal.head())
+    store.reads.clear()
+    await journal.record_outcome(first, command=command(), database_generation="db-1",
+                                 outcome=b"committed", writer_generation="writer-1")
+    assert len(store.reads) <= 8
+    assert sum("/segments/" in key for key in store.reads) == 1
+
+
+@pytest.mark.asyncio
+async def test_dead_unaccepted_binding_can_move_after_other_operation_occupies_sequence():
+    store, journal = fixture()
+    original = command(operation_key="X")
+    store.faults.append(("cas-before", "/head"))
+    with pytest.raises(JournalUnknown):
+        await seal(journal, [original])
+    store.writer = "writer-2"
+    await seal(journal, [command(operation_key="Y")], writer="writer-2")
+    accepted = await seal(journal, [replace(original, sequence=2)], await journal.head(), writer="writer-2")
+    assert accepted.manifest.last_sequence == 2
+    with pytest.raises(JournalConflict):
+        await seal(journal, [replace(original, sequence=3)], await journal.head(), writer="writer-2")
+
+
+@pytest.mark.asyncio
+async def test_deep_json_segment_is_typed_corruption():
+    store, journal = fixture()
+    accepted = await seal(journal, [command()])
+    node = json.loads(store.objects[accepted.manifest.key].data)
+    deep = b'{"deep":' + b"[" * 100000 + b"0" + b"]" * 100000 + b"}"
+    node["segment"]["length"] = len(deep)
+    node["segment"]["sha256"] = hashlib.sha256(deep).hexdigest()
+    store.write(node["segment"]["key"], deep)
+    data = journal_module._encode(node)
+    store.write(accepted.manifest.key, data)
+    ref = replace(accepted.manifest, sha256=hashlib.sha256(data).hexdigest(), length=len(data))
+    with pytest.raises(JournalCorrupt):
+        await journal.read_segment(ref)
+
+
+@pytest.mark.asyncio
+async def test_head_index_crash_gap_is_repaired_before_another_append_advances():
+    store, journal = fixture(max_reconcile_hops=4)
+    store.faults.append(("cas-after", "/head"))
+    store.fail_head_read_after_cas = True
+    with pytest.raises(JournalUnknown):
+        await seal(journal, [command()])
+    store.read_failures.clear()
+    store.fail_head_read_after_cas = False
+    first_head = await journal.head()
+    assert await journal._read(journal._accepted_key(first_head.reference), 8192) is None
+    _, encoded = await journal.read_segment(first_head.reference)
+    first = AcceptedSeal(first_head.reference, tuple(hashlib.sha256(data).hexdigest() for data in encoded))
+    restarted = RecoveryJournal(store, stream="synthetic-only", max_reconcile_hops=4)
+    for sequence in range(2, 9):
+        await seal(restarted, [command(sequence)], await restarted.head())
+    assert await restarted._indexed(first.manifest)
+    store.reads.clear()
+    assert first == await seal(restarted, [command()])
+    assert len(store.reads) < 20  # Independent of the seven later groups.
+    store.reads.clear()
+    await restarted.record_outcome(first, command=command(), database_generation="db-1",
+                                   outcome=b"recorded", writer_generation="writer-1")
+    assert len(store.reads) <= 8
+
+
+@pytest.mark.asyncio
+async def test_failed_predecessor_index_repair_cannot_advance_head():
+    store, journal = fixture()
+    store.faults.append(("cas-before", "/accepted/sequences/"))
+    with pytest.raises(JournalUnknown):
+        await seal(journal, [command()])
+    head = await journal.head()
+    store.faults.append(("cas-before", "/accepted/sequences/"))
+    with pytest.raises(JournalUnknown):
+        await seal(journal, [command(2)], head)
+    assert await journal.head() == head
+    await seal(journal, [command(2)], head)
+
+
+@pytest.mark.asyncio
+async def test_unpublished_orphan_and_forged_seal_cannot_poison_acceptance_index():
+    store, journal = fixture()
+    store.faults.append(("cas-before", "/head"))
+    with pytest.raises(JournalUnknown):
+        await seal(journal, [command()])
+    key = next(key for key in store.objects if "/manifests/" in key)
+    data = store.objects[key].data
+    orphan = AcceptedSeal(journal_module.ObjectRef(key, hashlib.sha256(data).hexdigest(), len(data), 1),
+                          (hashlib.sha256(command().encode()).hexdigest(),))
+    with pytest.raises(JournalConflict):
+        await journal.record_outcome(orphan, command=command(), database_generation="db-1",
+                                     outcome=b"not accepted", writer_generation="writer-1")
+    assert not any("/accepted/" in key or "/outcomes/" in key for key in store.objects)
+    accepted = await seal(journal, [command()])
+    forged = replace(accepted, command_hashes=("0" * 64,))
+    with pytest.raises(JournalConflict):
+        await journal.record_outcome(forged, command=command(), database_generation="db-1",
+                                     outcome=b"forged", writer_generation="writer-1")
+
+
+@pytest.mark.asyncio
+async def test_legacy_index_bootstrap_has_durable_bounded_progress_after_restart():
+    store, journal = fixture(max_reconcile_hops=2)
+    first = await seal(journal, [command()])
+    for sequence in range(2, 8):
+        await seal(journal, [command(sequence)], await journal.head())
+    # Synthetic pre-index history: preserve the actual head, manifests and bytes.
+    for key in tuple(store.objects):
+        if "/accepted/" in key:
+            del store.objects[key]
+    store.reads.clear()
+    with pytest.raises(JournalUnknown, match="bootstrap_indexes"):
+        await journal.record_outcome(first, command=command(), database_generation="db-1",
+                                     outcome=b"recorded", writer_generation="writer-1")
+    # The fallback checks manifest links, not every intermediate segment.
+    assert sum("/segments/" in key for key in store.reads) == 1
+    for expected_complete in (False, False, False, True):
+        restarted = RecoveryJournal(store, stream="synthetic-only", max_reconcile_hops=2)
+        assert await restarted.bootstrap_indexes(writer_generation="writer-1") is expected_complete
+    assert await restarted.bootstrap_indexes(writer_generation="writer-1") is True
+    store.reads.clear()
+    await restarted.record_outcome(first, command=command(), database_generation="db-1",
+                                   outcome=b"recorded", writer_generation="writer-1")
+    assert len(store.reads) <= 8
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_lost_progress_ack_retries_verified_page_and_fences_old_writer():
+    class BootstrapStore(ConditionalMemoryStore):
+        fail_progress = True
+
+        async def compare_and_swap(self, key, data, **kwargs):
+            if key.endswith("/acceptance-index-bootstrap") and kwargs["expected_token"] is not None and self.fail_progress:
+                self.fail_progress = False
+                raise StoreUnavailable("checkpoint upload not completed")
+            return await super().compare_and_swap(key, data, **kwargs)
+
+    store = BootstrapStore()
+    journal = RecoveryJournal(store, stream="synthetic-only", max_reconcile_hops=1)
+    await seal(journal, [command()])
+    await seal(journal, [command(2)], await journal.head())
+    for key in tuple(store.objects):
+        if "/accepted/" in key:
+            del store.objects[key]
+    with pytest.raises(JournalUnknown, match="resume durable progress"):
+        await journal.bootstrap_indexes(writer_generation="writer-1")
+    store.writer = "writer-2"
+    with pytest.raises(StaleWriter):
+        await journal.bootstrap_indexes(writer_generation="writer-1")
+    # Repeats the already indexed page safely, then continues from persisted cursor.
+    assert await journal.bootstrap_indexes(writer_generation="writer-2") is False
+    restarted = RecoveryJournal(store, stream="synthetic-only", max_reconcile_hops=1)
+    assert await restarted.bootstrap_indexes(writer_generation="writer-2") is True
+
+
+@pytest.mark.asyncio
+async def test_rebind_preserves_exact_payload_and_preconditions_and_needs_occupied_proof():
+    store, journal = fixture()
+    original = command(operation_key="X")
+    store.faults.append(("cas-before", "/head"))
+    with pytest.raises(JournalUnknown):
+        await seal(journal, [original])
+    # No head/occupant proof: private binding alone does not authorize moving X.
+    with pytest.raises(JournalUnknown, match="sequence proof"):
+        await journal._bind_command(replace(original, sequence=2).encode(), "writer-1")
+    await seal(journal, [command(operation_key="Y")])
+    for changes in ({"payload": b"new model choice"}, {"expected_revisions": {"story": "8"}},
+                    {"ids": {"variant_id": "new ID"}}, {"executor_revision": "executor-v2"}):
+        with pytest.raises(JournalConflict):
+            await seal(journal, [replace(original, sequence=2, **changes)], await journal.head())
+    store.writer = "writer-2"
+    with pytest.raises(StaleWriter):
+        await journal._bind_command(replace(original, sequence=2).encode(), "writer-1")
+    await seal(journal, [replace(original, sequence=2)], await journal.head(), writer="writer-2")
+
+
+@pytest.mark.asyncio
+async def test_delayed_orphan_rebind_with_old_token_visible_is_unknown_until_native_commit():
+    class LateBindingStore(ConditionalMemoryStore):
+        delay_rebind = True
+        pending = None
+
+        async def compare_and_swap(self, key, data, **kwargs):
+            if "/commands/" in key and kwargs["expected_token"] is not None and self.delay_rebind:
+                self.pending = key, data
+                raise StoreUnavailable("old-token rebind still pending")
+            return await super().compare_and_swap(key, data, **kwargs)
+
+    store = LateBindingStore()
+    journal = RecoveryJournal(store, stream="synthetic-only")
+    original = command(operation_key="X")
+    store.faults.append(("cas-before", "/head"))
+    with pytest.raises(JournalUnknown):
+        await seal(journal, [original])
+    await seal(journal, [command(operation_key="Y")])
+    predecessor = await journal.head()
+    with pytest.raises(JournalUnknown):
+        await seal(journal, [replace(original, sequence=2)], predecessor)
+    store.write(*store.pending)
+    store.delay_rebind = False
+    accepted = await seal(journal, [replace(original, sequence=2)], predecessor)
+    assert accepted.manifest.last_sequence == 2
+
+
+@pytest.mark.asyncio
+async def test_generic_false_cas_with_unchanged_head_is_unknown_not_definitive_conflict():
+    class FalseHeadStore(ConditionalMemoryStore):
+        pending = None
+
+        async def compare_and_swap(self, key, data, **kwargs):
+            if key.endswith("/head"):
+                self.pending = (key, data)
+                return False
+            return await super().compare_and_swap(key, data, **kwargs)
+
+    store = FalseHeadStore()
+    journal = RecoveryJournal(store, stream="synthetic-only")
+    with pytest.raises(JournalUnknown):
+        await seal(journal, [command()])
+    store.write(*store.pending)
+    assert (await seal(journal, [command()])).manifest == (await journal.head()).reference
+
+
+@pytest.mark.asyncio
 async def test_exact_group_roundtrip_duplicate_and_continuity():
     store, journal = fixture()
     commands = [command(), command(2, kind="schema_transition", payload=b"exact migration-v2 SQL")]
@@ -119,7 +347,7 @@ async def test_exact_group_roundtrip_duplicate_and_continuity():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stage,target", [
-    ("put-after", "/commands/"), ("put-after", "/segments/"),
+    ("cas-after", "/commands/"), ("put-after", "/segments/"),
     ("put-after", "/manifests/"), ("cas-after", "/head"),
 ])
 async def test_lost_write_ack_returns_only_after_exact_remote_readback(stage, target):
@@ -134,7 +362,7 @@ async def test_lost_write_ack_returns_only_after_exact_remote_readback(stage, ta
 @pytest.mark.parametrize("target", ["/commands/", "/segments/", "/manifests/"])
 async def test_crash_before_upload_keeps_pending_and_exact_retry_completes(target):
     store, journal = fixture()
-    store.faults.append(("put-before", target))
+    store.faults.append(("cas-before" if target == "/commands/" else "put-before", target))
     with pytest.raises(JournalUnknown):
         await seal(journal, [command()])
     assert await journal.head() is None

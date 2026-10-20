@@ -2,8 +2,8 @@
 
 `regional_knowledge.recovery_journal` implements bounded immutable command seals,
 verified readback and a conditional manifest head. It is a library boundary for
-the existing controller, not another dispatcher or domain queue. It has no
-production storage adapter and is not wired into product ACKs. Local fixture
+the existing controller, not another dispatcher or domain queue. The native S3
+adapter has no real-provider verification and is not wired into product ACKs. Local fixture
 tests do not establish provider durability, accepted/Saved behavior or deployment.
 
 The contract follows implementation handoff §§6.1–6.6. The installed skill,
@@ -96,27 +96,59 @@ claimed for S3/Yandex/Kaggle by the deterministic memory fixture.
 
 Keys are scoped under a hash of the authorized stream. This naming is not an ACL;
 the caller and storage adapter must enforce tenant/resource ownership. Every
-command operation key gets an immutable exact-envelope binding, preventing
-changed IDs/payloads/sequence under the same key without scanning old history.
+command operation key gets a fenced exact-envelope binding, preventing
+changed IDs/payloads or reuse of an accepted operation without scanning old history.
 Segments contain the exact envelopes, contiguous first/last sequence and count,
 and a reference to the preceding manifest. An immutable manifest binds the
 segment's SHA-256/length and predecessor; the small mutable head points to it.
 Both levels are read back before publication and again when proving acceptance.
 
-A normal successful append reads the current node and segment, writes only its
-new immutable objects and CASes the head. It does not list the bucket or scan the
-whole history. A raced/uncertain/repeated append walks published predecessor
-references up to `max_reconcile_hops`; an exact ancestor is success, a competing
-seal at that sequence is a conflict. It never overwrites a fork. Retry using the
-same batch, predecessor and exact bytes; arbitrary regrouping cannot be treated
-as an identical group receipt.
+Each accepted manifest has a create-only proof at
+`accepted/manifests/<manifest-sha256>`, containing its exact reference. Each
+accepted sequence has an occupant proof containing that reference and exact
+command/operation hashes. Only independently proven published membership can
+create these indexes: a current head, an existing accepted-manifest proof, or a
+verified predecessor reached by the durable bootstrap cursor. Uploaded orphan
+bytes and caller-supplied `AcceptedSeal` dataclasses cannot create proof. Index
+creation uses fenced native create-only CAS and exact readback. Sequence proofs
+are completed before the manifest proof.
+
+Every append repairs **all indexes of the current predecessor before advancing
+the head**, then indexes its newly published head before returning a receipt.
+A crash or lost ACK between head CAS and indexing therefore leaves a gap only
+at the current head. The next appender repairs that gap before moving it into
+history, so old acceptance never depends on finding it within a moving hop
+window. Accepted-manifest lookup plus verification of the target segment is
+constant in history length; `record_outcome` does not read intermediate segments.
+A successful append has bounded work in the current/new group sizes, and never
+lists the bucket or scans the whole history.
+
+If a proof is missing, bounded fallback walks predecessor manifests only; the
+target segment is validated separately. Competing accepted ranges are conflicts,
+but a false CAS result with an unchanged predecessor head remains UNKNOWN:
+an earlier request could still commit. It never overwrites a fork. Retry using
+the same batch, predecessor and exact bytes; arbitrary regrouping cannot be
+treated as an identical group receipt.
 
 Lost upload ACK is reconciled by exact key byte readback. Lost CAS ACK is
 reconciled by exact published ancestry, including when later groups have already
 advanced the head. Absent/unreadable evidence leaves `JournalUnknown` and the
-pending operation intact. Retrying UNKNOWN never means inventing another key,
-changing sequence or assuming the previous attempt was not delivered. Same key
-with different bytes, revisions or original database generation conflicts.
+pending operation intact. Retrying UNKNOWN never means inventing another key
+or assuming the previous attempt was not delivered. The only permitted
+resequencing is an evidence-based repair of a **never accepted** binding: old and
+new exact envelopes must match in every field except `sequence`, and the old
+sequence's accepted occupant must be a different operation. The occupant's
+manifest proof, exact segment and command hashes are checked in bounded reads.
+Only then may the current authority replace the orphan binding with fenced
+IfMatch on its native token. The old head precondition cannot succeed after
+another accepted operation has permanently occupied its sequence. An already
+accepted operation cannot move to another sequence. Missing occupant proof is
+UNKNOWN pending repair/bootstrap; changed chosen IDs, model bytes, preconditions,
+logical time or revisions remain conflicts. Database identity cannot change in
+an outcome retry.
+If a rebind times out and readback still shows the original token, its condition
+is still viable: that remains UNKNOWN until exact replacement or a changed token
+settles it. Seeing the old bytes alone never proves that a delayed rebind failed.
 Outcome publication has no unfenced compatibility path: a retired writer cannot
 reserve the canonical outcome key and thereby block the active writer. Already
 accepted commands remain replayable by the current authority with their original
@@ -138,13 +170,18 @@ encoding allocations to a finite multiple of the configured caps; the final
 canonical segment/outcome byte checks still apply and their bytes are unchanged.
 The writer generation and final encoded head must fit the existing 4 KiB head
 read budget before remote publication, preventing creation of an unreadable head.
-Operation bindings add immutable objects per command and duplicate envelope
-bytes in segments: measure and budget that cost before production use.
+Operation bindings, accepted-sequence proofs and accepted-manifest proofs add
+objects/requests and duplicate envelope bytes in segments: measure and budget
+that cost before production use. They reuse the same authority and recovery
+store; they are not a second scheduler or writer registry.
 
 There is no deletion/compaction/retention implementation. Interrupted uploads
-can leave immutable orphan bindings/segments/manifests; their existence does not
-mean accepted. Orphan bindings deliberately reserve their exact identity until
-controller reconciliation; do not rewrite or expire them to make a retry pass.
+can leave orphan bindings/segments/manifests; their existence does not mean
+accepted. Do not expire or manually overwrite a binding to make a retry pass;
+use only the verified resequencing rule above. Acceptance/sequence proofs and
+bootstrap checkpoints are controller-owned state; worker upload tickets must
+not grant access to those namespaces. Their retention is reference-aware and
+must cover retained tails, pending outcomes and idempotency consumers.
 Real deployment must connect reference-aware remote GC, retained base cursors,
 30-day verified idempotency horizons, permanent UNKNOWN references, remote
 request/byte budgets and the 4-hour/512-MiB local spool admission policy. These
@@ -152,10 +189,23 @@ are prerequisites for product routing, not solved by this library's byte caps.
 
 ## Restore and verification
 
+Existing pre-index history is not silently declared indexed. Under the existing
+ordered writer upgrade, stop older append semantics, then call
+`bootstrap_indexes(writer_generation=...)` until it returns `True`. Each call
+processes at most `max_reconcile_hops` groups. Its initial anchor comes from the
+actual head; its fenced `acceptance-index-bootstrap` checkpoint retains the exact
+next predecessor across restarts, so retrying does not restart at a moving head.
+Lost progress ACKs re-read the same checkpoint and repeat a bounded page safely.
+The checkpoint is indexing bookkeeping, not another authority or recovery base.
+While a legacy proof is absent beyond fallback bounds, the explicit error calls
+for bootstrap and preserves UNKNOWN; it does not fabricate acceptance or consume
+unlimited reads. New appends continue to repair their own predecessor first.
+
 `head()` verifies the current node and segment only. After loss/restart, run
 `verify_chain(head, stop=independently_verified_base_manifest)` or verify to
 genesis before replay. Holes, overlaps, missing predecessor bytes, unsupported
-codec, hash/length mismatch and malformed exact command stop recovery. A base
+codec, hash/length mismatch, excessive JSON nesting and malformed exact command
+stop recovery with `JournalCorrupt`. A base
 reference supplied to `stop` must already have an independent restore proof;
 it is not inferred from a timestamp or an uploaded pointer.
 
@@ -170,6 +220,8 @@ querying a replacement generation cannot settle the original SQL UNKNOWN.
 Focused tests use synthetic exact bytes and a deterministic conditional store:
 upload/CAS lost ACKs; pre-publication crashes; CAS races and forks; writer fencing;
 key/hash/revision/sequence conflicts; hole/count/byte limits; missing/corrupt
-history; recovery hop caps; and remote-outcome readback distinct from acceptance.
+history; recovery hop caps; old outcomes beyond the hop window; crash-gap index
+repair; resumable legacy bootstrap; dead-orphan binding repair; late-CAS/409
+reconciliation; and remote-outcome readback distinct from acceptance.
 No credentials, remote provider, actual accepted input, inference model, notebook,
 database or product route participates in those checks.
