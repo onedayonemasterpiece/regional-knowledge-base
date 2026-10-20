@@ -1,7 +1,8 @@
 """Single run-authenticated WSS attachment for existing BGE work.
 
-This is an encoding transport, not public search or accepted/Saved recovery.
-The queue owns authentication, attachment generations and durable claims.
+This carries internal QUERY and encoding assignments, not public identity or
+source-output authority. The queue owns run authentication, attachment
+generations and durable claims; accepted/Saved recovery remains separate.
 """
 from __future__ import annotations
 

@@ -164,8 +164,14 @@ does not create a durable authority registry or reinterpret token expiry as
 loss of an accepted command. Unprojected legacy QUERY rows are also retained;
 they are not target ephemeral requests and are not dispatched by this unit.
 
-Root integration still owns server admission/output gates, actual QUERY and
-resource-control WSS codecs, the single worker's actual-completion reporting,
-and restoration of durable accepted-intake authority. This unit has synthetic
-SQLite/OAuth/stub-resource tests only; no provider, model, production database,
-grant, or runtime changes were performed.
+The existing `bge_channel` route now uses this helper when explicitly configured,
+including typed QUERY results, exact resource controls and fresh reconnect
+probes. Legacy durable encoding remains the default. A native loopback
+ASGI/aiohttp test connects the real route/admission/resident transport/query
+adapter to disposable PostgreSQL with stub inference. It verifies bounded
+hybrid evidence, exact source revisions and release independent of result.
+This is local synthetic integration, not a Kaggle/model or public MCP acceptance.
+
+Server public admission/output gates and restoration of durable accepted-intake
+authority remain pending. No provider, model, production database, grant, or
+runtime changes were performed.
