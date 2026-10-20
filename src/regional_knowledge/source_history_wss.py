@@ -201,8 +201,12 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     raise SpoolConflict('native source completion changed')
                 if mode=='full':await s._write(s._replace_source_heads,tuple(changes.values()))
                 elif changes:await s._write(self._merge_source_heads,tuple(changes.values()))
+                from .case_history import project_cases
+                case_state=(project_cases([v for v in known.values() if mode=='full' or v[0].sequence>previous.applied_sequence],
+                    {seq:value[0] for seq,value in observations.items()},None if mode=='full' else previous.case_state)
+                    if mode=='full' or previous.case_state is not None else None)
                 self._native_prefix=closed['prefix']
-                coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,head,accepted,applied,tuple(pending))
+                coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,head,accepted,applied,tuple(pending),case_state)
                 self._coverage=coverage;s._source_anchor=coverage;s._source_head=head.reference if head else None
                 s._source_covered_sequence=accepted;s._source_version=object()
                 return coverage

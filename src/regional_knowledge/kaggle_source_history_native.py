@@ -122,7 +122,8 @@ class NativeSourceHistoryObserver:
                 or not {'source.fetch','source.search','source.withdraw'}<=set(args['routes'])
                 or set(args['routes'])-{'source.fetch','source.search','source.withdraw','source.import',
                     'story.get','story.history','story.search','story.variants','story.edit','story.access',
-                    'source.calendar','source.fact_read','source.observations','source.catalog'}
+                    'source.calendar','source.fact_read','source.observations','source.catalog',
+                    'case.read','case.edit','case.access','case.contribute','case.conclusion','geo.identity_read','geo.members_read'}
                 or type(args['pending_sequences']) is not list or len(args['pending_sequences'])>self.max_commands
                 or len(set(args['pending_sequences']))!=len(args['pending_sequences'])
                 or any(type(i) is not int or i<1 for i in args['pending_sequences'])):
@@ -150,13 +151,13 @@ class NativeSourceHistoryObserver:
             await connection.execute('SET LOCAL search_path=pg_catalog')
             await connection.execute('LOCK TABLE rkb_v4.sources,rkb_v4.revisions,rkb_v4.active_revision,'
                 'rkb_v4.passage_search,rkb_v4.applied_ops,rkb_v4.recovery_state,rkb_v4.writer_generations IN SHARE MODE')
-            if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1'):
+            if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
                 await connection.execute('LOCK TABLE rkb_v4.source_regions,rkb_v4.story_assertion_versions,'
                     'rkb_v4.stories,rkb_v4.story_versions,rkb_v4.story_variant_versions,rkb_v4.story_search,'
                     'rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
-            if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1'):
+            if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
                 await connection.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
-            if getattr(self.database,'schema_revision',None)=='rkb-v4-sql001-009-v1':
+            if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
                 await connection.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
                     'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
                     'rkb_v4.editorial_story_receipts,rkb_v4.story_editor_grants,rkb_v4.editorial_story_search IN SHARE MODE')
@@ -226,9 +227,9 @@ class NativeSourceHistoryObserver:
             cursor=await session.connection.execute('SELECT EXISTS(SELECT 1 FROM rkb_v4.sources '
                 'WHERE NOT (source_id=ANY(%s::uuid[])))',(args['origin_ids'],))
             if await cursor.fetchone()!=(False,):raise NativeHistoryError('native_history_source_origin_uncovered')
-        if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1'):
+        if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
             statement=('SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])'
-                if self.database.schema_revision=='rkb-v4-sql001-009-v1' else
+                if self.database.schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1') else
                 'SELECT rkb_v4.verify_source_story_origins_v2(%s::uuid[])'
                 if self.database.schema_revision=='rkb-v4-sql001-008-v1' else
                 'SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])')
