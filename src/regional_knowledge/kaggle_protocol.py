@@ -77,6 +77,8 @@ class Query(ReadIdentity):
     # Remaining total tool-call budget, never a new per-hop timeout.
     deadline_ms: Annotated[int, Field(gt=0)]
     evidence_limit: Annotated[int, Field(ge=1, le=5)] = 3
+    # Assigned only by the existing authenticated controller at dispatch.
+    compute_claim: Identifier | None = None
 
     @model_validator(mode="after")
     def query_bounds(self) -> Self:
@@ -100,6 +102,7 @@ class SourceDependency(Contract):
 
 
 class PassageContinuation(Contract):
+    database_generation: Identifier
     source: SourceDependency
     passage_id: Identifier
     visibility_epoch: Nonnegative

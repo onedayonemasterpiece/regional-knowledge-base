@@ -103,7 +103,7 @@ async def _frontier(cursor, execute, query, observed):
 
 
 def _item(hit: SearchEvidence, source: SourceDependency, epoch: int, *,
-          text_offset=0, bibliography_offset=0, text_budget=8000):
+          database_generation: str, text_offset=0, bibliography_offset=0, text_budget=8000):
     # Characters are Unicode offsets into the exact immutable passage/bibliography.
     text = hit.body[text_offset:text_offset + min(8000, text_budget)]
     # Worst-case JSON escaping is6bytes/character. Together with the1000-char
@@ -113,7 +113,8 @@ def _item(hit: SearchEvidence, source: SourceDependency, epoch: int, *,
     next_bib = bibliography_offset + len(citation)
     partial = next_text < len(hit.body) or next_bib < len(hit.bibliography)
     excerpt = partial or text_offset > 0 or bibliography_offset > 0
-    locator = PassageContinuation(source=source, passage_id=hit.passage_id, visibility_epoch=epoch,
+    locator = PassageContinuation(database_generation=database_generation,
+                                  source=source, passage_id=hit.passage_id, visibility_epoch=epoch,
                                   text_offset=next_text, bibliography_offset=next_bib) if excerpt else None
     # This is a typed immutable-row locator, never an opaque capability or URL.
     continuation = f"passage:{hit.passage_id}:r{hit.revision}:t{next_text}:b{next_bib}" if excerpt else None
@@ -145,7 +146,12 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
     try:
         async with asyncio.timeout_at(deadline):
             _scope(query)  # Unsupported kinds/source IDs do not acquire SQL or inference.
-            count = await tokenizer.count(query.query)
+            try:
+                count = await tokenizer.count(query.query)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise TokenizerUnavailable("loaded tokenizer unavailable") from None
             stages["tokenize_ms"] = (loop.time() - mark) * 1000
             if type(count) is not int or count < 1:
                 raise TokenizerUnavailable("token count contract failed")
@@ -194,7 +200,8 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
                     for hit in searched.evidence:
                         # Share finite text budget across remaining items; preserve all<=5.
                         per_item = min(8000, budget // (len(searched.evidence) - len(evidence)))
-                        entry = _item(hit, dependencies[hit.source_id], observed["visibility"], text_budget=per_item)
+                        entry = _item(hit, dependencies[hit.source_id], observed["visibility"],
+                                      database_generation=observed["database"], text_budget=per_item)
                         budget -= len(entry.text)
                         evidence.append(entry)
                     result = QueryResult(**_identity(query), status="degraded", mode="hybrid",
@@ -278,6 +285,7 @@ async def read_continuation(query: Query, locator: PassageContinuation, *, acqui
                             (locator.passage_id, locator.source.source_id, locator.source.content_revision))
                         row = await cursor.fetchone()
                         if (row is None or row[6] != locator.source.eligibility_revision
+                                or observed["database"] != locator.database_generation
                                 or observed["visibility"] != locator.visibility_epoch):
                             raise ReadUnavailable("evidence_withdrawn")
                         hit = SearchEvidence(str(row[0]), str(row[1]), *row[2:6])
@@ -289,6 +297,7 @@ async def read_continuation(query: Query, locator: PassageContinuation, *, acqui
                         # an explicit one-character overlapping passage anchor.
                         text_start = min(locator.text_offset, len(hit.body) - 1)
                         entry = _item(hit, locator.source, observed["visibility"],
+                                      database_generation=observed["database"],
                                       text_offset=text_start, bibliography_offset=locator.bibliography_offset)
                         result = PassageRead(**_identity(query), status="ok",
                             evidence=(entry,), observed_data_seq=observed["data"],

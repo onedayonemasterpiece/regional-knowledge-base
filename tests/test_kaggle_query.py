@@ -11,7 +11,10 @@ import pytest
 import pytest_asyncio
 
 from regional_knowledge.bge_contract import REVISION, SPACE, TOKENIZER_SHA256
-from regional_knowledge.kaggle_apply import Revisions, initialize_database
+from regional_knowledge.kaggle_apply import (
+    Revisions, initialize_database, apply_accepted, HandlerRegistry, HandlerSpec, ApplyExecutionError,
+    MigrationTransition,
+)
 from regional_knowledge.kaggle_protocol import (
     ItemDependencies, Query, QueryFilters, SourceDependency, encode_envelope, decode_envelope,
 )
@@ -19,6 +22,9 @@ from regional_knowledge.kaggle_query import PinnedTokenizer, execute_query, read
 from regional_knowledge.kaggle_query import _item
 from regional_knowledge.kaggle_search import SearchEvidence
 from test_kaggle_pg_driver import database, connect
+from test_kaggle_apply import pinned
+from test_recovery_journal import ConditionalMemoryStore, command
+from regional_knowledge.recovery_journal import RecoveryJournal
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = "00000000-0000-0000-0000-000000000001"
@@ -103,6 +109,21 @@ async def test_total_deadline_covers_tokenizer_and_pool_acquisition():
     assert result.reason == "deadline_exceeded" and telemetry.qsize() == 1
 
 
+@pytest.mark.asyncio
+async def test_tokenizer_runtime_failure_is_unavailable_and_cancellation_propagates():
+    async def failed(_):
+        raise RuntimeError("synthetic tokenizer runtime failure")
+
+    result = await execute_query(query(), acquire=forbidden_acquire, tokenizer=tokenizer(failed), encode=encode)
+    assert result.status == "unavailable" and result.reason == "not_ready"
+
+    async def cancelled(_):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await execute_query(query(), acquire=forbidden_acquire, tokenizer=tokenizer(cancelled), encode=encode)
+
+
 def test_exact_source_dependency_coverage_is_strict_when_present():
     source = SourceDependency(source_id=SOURCE, content_revision=1, eligibility_revision=1)
     with pytest.raises(ValueError):
@@ -116,10 +137,10 @@ def test_exact_source_dependency_coverage_is_strict_when_present():
 def test_json_escaped_metadata_and_terminal_excerpt_remain_explicit():
     source = SourceDependency(source_id=SOURCE, content_revision=1, eligibility_revision=1)
     hit = SearchEvidence(PASSAGE, SOURCE, 1, "\u0001" * 1000, "\u0001" * 16000, "\u0001" * 8000)
-    first = _item(hit, source, 0)
+    first = _item(hit, source, 0, database_generation="fixture")
     assert len(first.metadata.model_dump_json().encode()) <= 12 * 1024
     assert first.source_continuation.bibliography_offset == 1024
-    final = _item(hit, source, 0, text_offset=15999, bibliography_offset=7999)
+    final = _item(hit, source, 0, database_generation="fixture", text_offset=15999, bibliography_offset=7999)
     assert final.text_form == "excerpt" and final.continuation_complete
     assert final.source_continuation.text_offset == 16000
     assert final.source_continuation.bibliography_offset == 8000
@@ -151,6 +172,156 @@ async def publish(env, seq=5):
     async with admin.transaction():
         epoch = (await (await admin.execute("SELECT visibility_epoch FROM rkb_v4.read_frontier")).fetchone())[0]
         await admin.execute("SELECT rkb_v4.publish_read_frontier('query-fixture','writer-1',%s,%s,true,true)", (epoch, seq))
+
+
+async def actual_apply(env, *, activate=False, reject=False, preparation="next", semantic_transition=False):
+    """Real accepted journal + pinned PG handler, not manual ledger/cursor writes."""
+    admin = env["admin"]
+    async with admin.transaction():
+        seq = (await (await admin.execute("SELECT applied_seq+1 FROM rkb_v4.recovery_state")).fetchone())[0]
+    body = ""
+    if activate:
+        vector = "[" + ",".join(map(str, VECTOR)) + "]"
+        body = f"""
+            INSERT INTO rkb_v4.revisions VALUES ('{SOURCE}',2);
+            INSERT INTO rkb_v4.passage_search
+                (passage_id,source_id,revision,ordinal,locator,body,language,config,embedding)
+            VALUES ('10000000-0000-0000-0000-000000000002','{SOURCE}',2,0,'page 2',
+                convert_from(p,'UTF8'),'simple','pg_catalog.simple','{vector}');
+            UPDATE rkb_v4.active_revision SET revision=2 WHERE source_id='{SOURCE}';
+        """
+        if preparation == "next":
+            body += """PERFORM rkb_v4.prepare_read_frontier('query-fixture','writer-1',
+                (SELECT visibility_epoch FROM rkb_v4.read_frontier),
+                (SELECT applied_seq+1 FROM rkb_v4.recovery_state),true,true);"""
+        elif preparation == "old":
+            body += """PERFORM rkb_v4.publish_read_frontier('query-fixture','writer-1',
+                (SELECT visibility_epoch FROM rkb_v4.read_frontier),
+                (SELECT applied_seq FROM rkb_v4.recovery_state),true,true);"""
+        elif preparation == "mutate_after":
+            body += f"""PERFORM rkb_v4.prepare_read_frontier('query-fixture','writer-1',
+                (SELECT visibility_epoch FROM rkb_v4.read_frontier),
+                (SELECT applied_seq+1 FROM rkb_v4.recovery_state),true,true);
+                UPDATE rkb_v4.sources SET bibliography=bibliography||' late change' WHERE source_id='{SOURCE}';"""
+    async with admin.transaction():
+        await admin.execute(f"""CREATE FUNCTION rkb_v4.frontier_check_{seq}
+            (p bytea, ids jsonb, expected jsonb, logical_time text) RETURNS boolean
+            LANGUAGE sql STABLE SECURITY INVOKER AS $$ SELECT expected->>'allow'='yes' $$;
+            CREATE FUNCTION rkb_v4.frontier_apply_{seq}
+            (p bytea, ids jsonb, expected jsonb, logical_time text) RETURNS bytea
+            LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
+            BEGIN {body} RETURN 'exact outcome'::bytea; END $$;""", prepare=False)
+    transition = None
+    payload = b"accepted atomic activation body"
+    kind = "domain_command"
+    if semantic_transition:
+        kind = "schema_transition"
+        digest = "1" * 64
+        transition = MigrationTransition("semantic-v2", digest, None, Revisions("s2", "f2", "e2"))
+        payload = json.dumps(dict(migration_id="semantic-v2", artifact_sha256=digest, predecessor=None),
+                             sort_keys=True, separators=(",", ":")).encode()
+    registry = HandlerRegistry([HandlerSpec(kind, "fixture.frontier", Revisions("s1", "f1", "e1"),
+        await pinned(admin, f"frontier_check_{seq}"), await pinned(admin, f"frontier_apply_{seq}"),
+        frozenset({"allow"}), transition)])
+    cmd = command(seq, kind=kind, route="fixture.frontier", schema_revision="s1", function_revision="f1",
+                  executor_revision="e1", ids={}, expected_revisions={"allow": "no" if reject else "yes"}, payload=payload)
+    journal = RecoveryJournal(ConditionalMemoryStore(), stream=f"atomic-frontier-{seq}")
+    seal = await journal.seal([*(command(i) for i in range(1, seq)), cmd], predecessor=None, writer_generation="writer-1")
+    return await apply_accepted(env["connection"], journal=journal, seal=seal, command=cmd,
+        database_generation="query-fixture", writer_generation="writer-1", registry=registry)
+
+
+async def frontier_facts(env):
+    async with env["admin"].transaction():
+        return await (await env["admin"].execute("""SELECT s.applied_seq,f.projection_seq,f.text_ready,f.dense_ready,
+            f.visibility_epoch,f.pending_seq,(SELECT count(*) FROM rkb_v4.applied_ops),
+            (SELECT revision FROM rkb_v4.active_revision WHERE source_id=%s)
+            FROM rkb_v4.recovery_state s CROSS JOIN rkb_v4.read_frontier f""", (SOURCE,))).fetchone()
+
+
+@PG
+@pytest.mark.asyncio
+async def test_actual_atomic_apply_promotes_prepared_frontier_with_cursor_and_ledger(env):
+    await publish(env)
+    receipt = await actual_apply(env, activate=True)
+    assert receipt.status == "applied"
+    assert await frontier_facts(env) == (6, 6, True, True, 1, None, 1, 2)
+    result = await execute_query(query(min_data_seq=6), acquire=env["acquire"], tokenizer=tokenizer(), encode=encode)
+    assert result.evidence[0].text == "accepted atomic activation body"
+    assert result.observed_data_seq == result.observed_projection_seq == 6
+    assert result.evidence[0].dependencies.source_revisions[0].content_revision == 2
+
+
+@PG
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_visibility", [False, True])
+async def test_atomic_frontier_promotion_rolls_back_on_late_commit_or_visibility_failure(env, late_visibility):
+    await publish(env)
+    if not late_visibility:
+        async with env["admin"].transaction():
+            await env["admin"].execute("""CREATE FUNCTION rkb_v4.fail_after_promotion() RETURNS trigger
+                LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic late commit failure'; END $$;
+                CREATE CONSTRAINT TRIGGER fail_after_promotion AFTER INSERT ON rkb_v4.applied_ops
+                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION rkb_v4.fail_after_promotion()""", prepare=False)
+    with pytest.raises(ApplyExecutionError):
+        await actual_apply(env, activate=True, preparation="mutate_after" if late_visibility else "next")
+    assert await frontier_facts(env) == (5, 5, True, True, 0, None, 0, 1)
+    assert (await execute_query(query(), acquire=env["acquire"], tokenizer=tokenizer(), encode=encode)).evidence
+
+
+@PG
+@pytest.mark.asyncio
+async def test_orphan_preparation_cannot_commit_or_bless_a_later_command(env):
+    await publish(env)
+    with pytest.raises(psycopg.Error):
+        async with env["admin"].transaction():
+            await env["admin"].execute("SELECT rkb_v4.prepare_read_frontier('query-fixture','writer-1',0,6,true,true)")
+    assert await frontier_facts(env) == (5, 5, True, True, 0, None, 0, 1)
+    await actual_apply(env)
+    assert await frontier_facts(env) == (6, 6, True, True, 0, None, 1, 1)
+
+
+@PG
+@pytest.mark.asyncio
+async def test_nonsearch_and_rejected_commands_carry_only_an_unchanged_ready_frontier(env):
+    await publish(env)
+    await actual_apply(env)
+    rejected = await actual_apply(env, reject=True)
+    assert rejected.status == "rejected_precondition"
+    assert await frontier_facts(env) == (7, 7, True, True, 0, None, 2, 1)
+    assert (await execute_query(query(min_data_seq=7), acquire=env["acquire"], tokenizer=tokenizer(), encode=encode)).evidence
+
+
+@PG
+@pytest.mark.asyncio
+async def test_dirty_early_old_cursor_publish_cannot_enable_automatic_carry(env):
+    await publish(env)
+    await actual_apply(env, activate=True, preparation="old")
+    assert await frontier_facts(env) == (6, 5, False, False, 1, None, 1, 2)
+    result = await execute_query(query(), acquire=env["acquire"], tokenizer=tokenizer(), encode=encode)
+    assert result.reason == "not_ready" and not result.evidence
+
+
+@PG
+@pytest.mark.asyncio
+async def test_semantic_transition_does_not_automatically_claim_projection_readiness(env):
+    await publish(env)
+    await actual_apply(env, semantic_transition=True)
+    assert await frontier_facts(env) == (6, 5, False, False, 0, None, 1, 1)
+
+
+@PG
+@pytest.mark.asyncio
+async def test_continuation_database_generation_cannot_be_reused_on_a_restored_fork(env):
+    await publish(env)
+    first = await execute_query(query(), acquire=env["acquire"], tokenizer=tokenizer(), encode=encode)
+    locator = first.evidence[0].source_continuation
+    async with env["admin"].transaction():
+        await env["admin"].execute("UPDATE rkb_v4.recovery_state SET database_generation='different-synthetic-fork'")
+        await env["admin"].execute("SELECT rkb_v4.publish_read_frontier('different-synthetic-fork','writer-1',0,5,true,true)")
+    result = await read_continuation(query(), locator, acquire=env["acquire"])
+    assert result.reason == "evidence_withdrawn" and not result.evidence
+    assert result.observed_database_generation == "different-synthetic-fork"
 
 
 @PG

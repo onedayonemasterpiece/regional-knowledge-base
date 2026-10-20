@@ -14,6 +14,8 @@ remains NOT RUN; PostgreSQL checks use only the guarded synthetic fixture.
 accepts a validated controller `Query`. Shape, actor fields and pinned adapter
 metadata are not authorization. The caller supplies the existing authenticated
 person/audience/admission/turn context and resident Kaggle encoder adapter.
+The optional `compute_claim` belongs to authenticated controller dispatch; it is
+not client-supplied authority or a second admission queue.
 
 `PinnedTokenizer` requires the exact BGE revision, tokenizer SHA-256 and inference
 space from `bge_contract`. Its async count adapter must count the complete exact
@@ -23,6 +25,8 @@ More than512tokens returns `invalid_query/token_limit_exceeded` before acquiring
 SQL or inference. Unsupported kinds and malformed/duplicate UUID scope return
 `invalid_query/invalid_filters` before tokenizer, SQL or encoder. This executor
 supports source passages only; it does not invent facts, Story bodies or proofs.
+Tokenizer runtime failures return `unavailable/not_ready`; cancellation still
+propagates instead of terminating the worker with an unclassified callback error.
 
 The total remaining deadline is `min(query.deadline_ms,2000)` milliseconds,
 starting before tokenization and including pool acquisition, snapshot/readiness,
@@ -79,12 +83,24 @@ trusted DDL, bulk restore/reset and grants remain exclusive controller operation
 
 Activation/withdrawal handlers must run through the existing atomic apply path,
 so domain change, eligibility invalidation, applied cursor and ledger agree.
-Projection completion is explicitly published only after all required lexical,
-dense and hydration projections are verified for the declared cursor. Since the
-apply wrapper advances its cursor after the domain handler, that handler cannot
-predeclare `applied_seq+1` as ready. The existing projection completion step can
-publish under the writer lock after commit; the intervening state is unavailable.
-No scheduler or automatic `projection_seq=applied_seq` assumption is added.
+After verifying all required lexical, dense and hydration effects, a trusted
+handler can call `prepare_read_frontier(database,writer,visibility,next_seq,text,dense)`.
+This records a proof bound to the current SQL transaction, exact next sequence,
+writer and local visibility epoch. It does not yet change the serving cursor.
+An AFTER trigger on the apply cursor update promotes that proof only with the
+matching applied ledger row, unchanged semantic revisions and unchanged visibility.
+Thus effect, ledger, applied cursor and verified frontier commit atomically.
+Any later visibility change or mismatched proof aborts the transaction. A deferred
+constraint reads the current pending row at commit and rejects orphan preparations;
+a proof cannot survive to bless a later command.
+
+An already fully ready frontier advances with an unrelated or typed-rejected
+command only when semantic revisions stay unchanged and no serving mutation dirtied
+the frontier in that transaction. Publishing the old cursor after invalidation
+cannot bypass this condition. Dirty, lagged or semantically changed frontiers stay
+unready until explicit verified completion. `publish_read_frontier` remains the
+writer-locked completion path for delayed projections at an already applied cursor.
+No scheduler or blanket `projection_seq=applied_seq` assumption is added.
 
 Guarded fused search uses one REPEATABLE READ, READ ONLY transaction. Its snapshot
 guard reads actual applied/projection cursors, readiness and local visibility
@@ -120,11 +136,14 @@ below12KiB even with worst-case six-byte JSON escaping. Encoding validates the
 full256KiB result bound. Neither text nor bibliography is silently shortened:
 partial output is an explicit excerpt with a typed `PassageContinuation` carrying
 exact source/content/eligibility, passage ID, local visibility and Unicode text/
-bibliography offsets. The short continuation string is a locator, not a capability.
+bibliography offsets, plus the originating database generation. The short
+continuation string is a locator, not a capability.
 
 `read_continuation` is an internal exact-row resolver **after renewed upstream
 authorization**. It checks current readiness, scope, active revision, eligibility,
-withdrawal and local epoch in another bounded read snapshot. It returns a distinct
+withdrawal and local epoch in another bounded read snapshot.
+The originating database generation must also match, including after a restore
+whose integer epochs happen to repeat. It returns a distinct
 `PassageRead`, with no retrieval mode or hybrid-search claim; it does not run search
 or inference and is not a new public tool/wire operation. The caller must still
 apply the current Dev authority/output gate. Expired/withdrawn locators fail
@@ -141,5 +160,8 @@ revision change with coherent older retrieval/dependencies; inactive/unaccepted/
 withdrawn staging; active projection invalidation; mandatory encoder and dense
 SQL; Unicode/control-character wire limits; continuation withdrawal and SQL
 deadline; inference permit retention; cancellation/rollback; and strict protocol
-dependency and mode validation. Stub vectors/token counts do not establish live
+dependency and mode validation. Actual atomic apply tests cover frontier promotion,
+late failure rollback, orphan proof rejection, visibility changes after preparation,
+unchanged-corpus cursor carry and semantic transitions remaining unready.
+Stub vectors/token counts do not establish live
 tokenizer/BGE residency, latency, recall or quality acceptance.
