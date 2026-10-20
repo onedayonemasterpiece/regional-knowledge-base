@@ -110,11 +110,21 @@ async def test_generated_bootstrap_freezes_partial_pins_before_attach_with_none_
 
 
 @pytest.mark.asyncio
-async def test_worker_emits_bootstrap_observation_without_ready_or_reload():
+@pytest.mark.parametrize('catalog_padding',(0,230000))
+async def test_worker_emits_bootstrap_observation_without_ready_or_reload(catalog_padding):
     transport=module('bge_wss_transport');stop=asyncio.Event();sent=[]
     plan=BootstrapRuntimeExpectation({key:'a'*64 for key in ('code','model','launch_config','executed_source')},
         'bootstrap-db','s1','f1','e1',{'torch':'2.11.0+cpu'},'b'*64,{'001_search.sql':'c'*64})
     value=observation(plan);loads=[]
+    if catalog_padding:
+        native=json.loads(base64.b64decode(value['catalog_b64']))
+        definition=next(row[2] for row in native['records'] if row[0]=='functions')
+        definition['definition']+='\n-- '+('x'*catalog_padding)
+        raw=canonical(native)
+        value['catalog_b64']=base64.b64encode(raw).decode()
+        value['runtime_readiness']['hashes']['schema']=digest(raw)
+        assert 262144<len(canonical(value))<1536*1024
+    verify_observation(plan,value)
     async def prepare(encoder,**kwargs):
         async def query(frame,*,encode):raise AssertionError('never ready')
         return PreparedRuntime(query,CandidateReadiness(**value['runtime_readiness']),bootstrap_observation=value)
