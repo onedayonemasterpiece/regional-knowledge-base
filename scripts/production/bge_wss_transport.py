@@ -177,14 +177,14 @@ class BgeWssTransport:
 
     @staticmethod
     def _unavailable(frame, reason):
-        exact=frame.get('type') in ('PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ')
-        return {'type': 'SOURCE_GRAPH_READ_RESULT' if frame.get('type')=='SOURCE_GRAPH_READ' else 'EDITORIAL_READ_RESULT' if frame.get('type')=='EDITORIAL_READ' else 'CASE_READ_RESULT' if frame.get('type')=='CASE_READ' else 'GEO_READ_RESULT' if frame.get('type')=='GEO_READ' else 'SOURCE_READ_RESULT' if frame.get('type')=='SOURCE_READ' else 'FACT_READ_RESULT' if frame.get('type')=='FACT_READ' else 'STORY_READ_RESULT' if frame.get('type')=='STORY_READ' else 'PASSAGE_READ_RESULT' if exact else 'QUERY_RESULT', 'protocol_version': 2,
+        exact=frame.get('type') in ('PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ','ACCEPTANCE_READ')
+        return {'type': 'ACCEPTANCE_READ_RESULT' if frame.get('type')=='ACCEPTANCE_READ' else 'SOURCE_GRAPH_READ_RESULT' if frame.get('type')=='SOURCE_GRAPH_READ' else 'EDITORIAL_READ_RESULT' if frame.get('type')=='EDITORIAL_READ' else 'CASE_READ_RESULT' if frame.get('type')=='CASE_READ' else 'GEO_READ_RESULT' if frame.get('type')=='GEO_READ' else 'SOURCE_READ_RESULT' if frame.get('type')=='SOURCE_READ' else 'FACT_READ_RESULT' if frame.get('type')=='FACT_READ' else 'STORY_READ_RESULT' if frame.get('type')=='STORY_READ' else 'PASSAGE_READ_RESULT' if exact else 'QUERY_RESULT', 'protocol_version': 2,
             **{key: frame[key] for key in ('request_id', 'connection_generation', 'turn_generation')},
-            'status': 'unavailable', **({} if exact else {'mode':None}), 'evidence': [],
+            'status': 'unavailable', **({} if exact and frame.get('type')!='ACCEPTANCE_READ' else {'mode':None}), 'evidence': [],
             'observed_data_seq': None, 'observed_projection_seq': None, 'reason': reason}
 
     def _validate_query(self, frame):
-        exact=frame.get('type') in ('PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ')
+        exact=frame.get('type') in ('PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ','ACCEPTANCE_READ')
         if exact:
             from regional_knowledge.kaggle_protocol import decode_envelope,PassageReadRequest,StoryReadRequest
             from regional_knowledge.kaggle_fact_contracts import FactReadRequest
@@ -192,8 +192,9 @@ class BgeWssTransport:
             from regional_knowledge.kaggle_case_contracts import CaseReadRequest
             from regional_knowledge.kaggle_editorial_contracts import EditorialReadRequest
             from regional_knowledge.kaggle_source_graph_read import SourceGraphReadRequest
+            from regional_knowledge.kaggle_acceptance_contracts import AcceptanceReadRequest
             from regional_knowledge.kaggle_geo_contracts import GeoReadRequest
-            if not isinstance(decode_envelope(json.dumps(frame,allow_nan=False).encode()),SourceGraphReadRequest if frame.get('type')=='SOURCE_GRAPH_READ' else EditorialReadRequest if frame.get('type')=='EDITORIAL_READ' else CaseReadRequest if frame.get('type')=='CASE_READ' else GeoReadRequest if frame.get('type')=='GEO_READ' else SourceReadRequest if frame.get('type')=='SOURCE_READ' else FactReadRequest if frame.get('type')=='FACT_READ' else StoryReadRequest if frame.get('type')=='STORY_READ' else PassageReadRequest):
+            if not isinstance(decode_envelope(json.dumps(frame,allow_nan=False).encode()),AcceptanceReadRequest if frame.get('type')=='ACCEPTANCE_READ' else SourceGraphReadRequest if frame.get('type')=='SOURCE_GRAPH_READ' else EditorialReadRequest if frame.get('type')=='EDITORIAL_READ' else CaseReadRequest if frame.get('type')=='CASE_READ' else GeoReadRequest if frame.get('type')=='GEO_READ' else SourceReadRequest if frame.get('type')=='SOURCE_READ' else FactReadRequest if frame.get('type')=='FACT_READ' else StoryReadRequest if frame.get('type')=='STORY_READ' else PassageReadRequest):
                 raise ValueError('shared exact read contract')
         if (len(json.dumps(frame, allow_nan=False).encode()) > 16384
                 or not all(self._identifier(frame.get(key)) for key in ('request_id', 'compute_claim'))
@@ -206,16 +207,17 @@ class BgeWssTransport:
             raise ValueError('shared QUERY contract')
 
     def _validate_query_result(self, frame, result):
-        if frame.get('type') in ('PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ'):
+        if frame.get('type') in ('PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ','ACCEPTANCE_READ'):
             from regional_knowledge.kaggle_protocol import decode_envelope,PassageReadResult,StoryReadResult
             from regional_knowledge.kaggle_fact_contracts import FactReadResult
             from regional_knowledge.kaggle_source_read import SourceReadResult
             from regional_knowledge.kaggle_case_contracts import CaseReadResult
             from regional_knowledge.kaggle_editorial_contracts import EditorialReadResult
             from regional_knowledge.kaggle_source_graph_read import SourceGraphReadResult
+            from regional_knowledge.kaggle_acceptance_contracts import AcceptanceReadResult
             from regional_knowledge.kaggle_geo_contracts import GeoReadResult
             typed=decode_envelope(json.dumps(result,allow_nan=False).encode())
-            if type(typed) is not (SourceGraphReadResult if frame.get('type')=='SOURCE_GRAPH_READ' else EditorialReadResult if frame.get('type')=='EDITORIAL_READ' else CaseReadResult if frame.get('type')=='CASE_READ' else GeoReadResult if frame.get('type')=='GEO_READ' else SourceReadResult if frame.get('type')=='SOURCE_READ' else FactReadResult if frame.get('type')=='FACT_READ' else StoryReadResult if frame.get('type')=='STORY_READ' else PassageReadResult) or self._read_identity(result)!=self._read_identity(frame):
+            if type(typed) is not (AcceptanceReadResult if frame.get('type')=='ACCEPTANCE_READ' else SourceGraphReadResult if frame.get('type')=='SOURCE_GRAPH_READ' else EditorialReadResult if frame.get('type')=='EDITORIAL_READ' else CaseReadResult if frame.get('type')=='CASE_READ' else GeoReadResult if frame.get('type')=='GEO_READ' else SourceReadResult if frame.get('type')=='SOURCE_READ' else FactReadResult if frame.get('type')=='FACT_READ' else StoryReadResult if frame.get('type')=='STORY_READ' else PassageReadResult) or self._read_identity(result)!=self._read_identity(frame):
                 raise ValueError('exact read result identity/type mismatch')
             return result
         if (not isinstance(result, dict) or result.get('type') != 'QUERY_RESULT'
@@ -467,7 +469,7 @@ class BgeWssTransport:
                     if (self.read_frame is not None
                             and self._read_identity(frame) == self._read_identity(self.read_frame)):
                         self._cancel_read()
-                elif self.shared_reads and kind in ('QUERY','PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ'):
+                elif self.shared_reads and kind in ('QUERY','PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ','ACCEPTANCE_READ'):
                     self._validate_query(frame)
                     if (self.read_frame is not None
                             and frame['compute_claim'] == self.read_frame['compute_claim']

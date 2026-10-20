@@ -23,6 +23,7 @@ from .kaggle_case_contracts import CaseReadRequest, CaseReadResult
 from .kaggle_geo_contracts import GeoReadRequest, GeoReadResult
 from .kaggle_editorial_contracts import EditorialReadRequest, EditorialReadResult
 from .kaggle_source_graph_read import SourceGraphReadRequest, SourceGraphReadResult
+from .kaggle_acceptance_contracts import AcceptanceReadRequest,AcceptanceReadResult
 from .read_authority import ReadAuthority, VerifiedReadAuthority
 from .participants import RequestAuthority
 
@@ -201,6 +202,7 @@ class SharedReadAdmission:
         if getattr(query,'compute_claim',None) is not None:
             raise PermissionError('caller cannot choose a compute claim')
         await self.authority.require(authority,'case_read' if type(query) is CaseReadRequest else 'public_search')
+        self._require_acceptance(authority,query)
         self._active()
         if self.clock()>=deadline:raise AdmissionUnavailable('read deadline elapsed')
         if self._attachment is None or query.connection_generation!=self._attachment[1]:
@@ -220,6 +222,17 @@ class SharedReadAdmission:
         future.add_done_callback(lambda _:self._cancel_ticket(ticket))
         self._event.set()
         return ticket
+
+    def _require_acceptance(self,authority,query):
+        if type(query) is not AcceptanceReadRequest:return
+        from .acceptance_observer import FrozenAcceptanceFixture
+        fixture=getattr(self,'_acceptance_fixture',None)
+        if type(fixture) is not FrozenAcceptanceFixture:
+            raise PermissionError('acceptance observer inactive')
+        fixture.require(self.authority,authority,query)
+        b=fixture.binding
+        if self._attachment!=(b.run_id,b.connection_generation,b.runtime_incarnation):
+            raise PermissionError('acceptance runtime changed')
 
     async def register_document_actor(self, context: RequestAuthority):
         """Trusted intake hook; UUID rows alone never authorize document work.
@@ -470,7 +483,9 @@ class SharedReadAdmission:
                 selected_doc=person_docs[0] if person_docs and not person_reads else None
                 read=min(person_reads,key=lambda r:(self._dialog_turn.get((person,r.dialog),0),r.deadline,r.ticket.request_id)) if selected_doc is None and person_reads else None
             if read is not None:
-                try:await self.authority.require(read.authority,'case_read' if type(read.query) is CaseReadRequest else 'public_search')
+                try:
+                    await self.authority.require(read.authority,'case_read' if type(read.query) is CaseReadRequest else 'public_search')
+                    self._require_acceptance(read.authority,read.query)
                 except PermissionError:
                     self._cancel((read.ticket.connection_generation,read.ticket.request_id));return None
                 if read.deadline<=self.clock() or (read.ticket.connection_generation,read.ticket.request_id) not in self._reads:return None
@@ -565,9 +580,11 @@ class SharedReadAdmission:
                 or read.ticket.turn_generation!=result.turn_generation
                 or read.dispatched is None
                 or read.deadline<=self.clock()):return False
-        if type(result) is not {Query:QueryResult,PassageReadRequest:PassageReadResult,StoryReadRequest:StoryReadResult,FactReadRequest:FactReadResult,SourceReadRequest:SourceReadResult,CaseReadRequest:CaseReadResult,GeoReadRequest:GeoReadResult,EditorialReadRequest:EditorialReadResult,SourceGraphReadRequest:SourceGraphReadResult}.get(type(read.query)):
+        if type(result) is not {Query:QueryResult,AcceptanceReadRequest:AcceptanceReadResult,PassageReadRequest:PassageReadResult,StoryReadRequest:StoryReadResult,FactReadRequest:FactReadResult,SourceReadRequest:SourceReadResult,CaseReadRequest:CaseReadResult,GeoReadRequest:GeoReadResult,EditorialReadRequest:EditorialReadResult,SourceGraphReadRequest:SourceGraphReadResult}.get(type(read.query)):
             raise ValueError('read response operation type differs from admitted request')
-        try:await self.authority.require(read.authority,'case_read' if type(read.query) is CaseReadRequest else 'public_search')
+        try:
+            await self.authority.require(read.authority,'case_read' if type(read.query) is CaseReadRequest else 'public_search')
+            self._require_acceptance(read.authority,read.query)
         except PermissionError:
             if self._reads.get(key) is read:self._cancel(key)
             return False

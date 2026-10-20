@@ -16,6 +16,7 @@ from .kaggle_source_read import SourceReadRequest, SourceReadResult
 from .kaggle_editorial_contracts import EditorialReadRequest,EditorialReadResult
 from .kaggle_source_graph_read import SourceGraphReadRequest, SourceGraphReadResult
 from .read_authority import ReadAuthority
+from .kaggle_acceptance_contracts import AcceptanceReadRequest,AcceptanceReadResult,BranchRanks
 
 
 class SourceGateDenied(PermissionError):
@@ -159,9 +160,11 @@ class SourceReadGate:
 
     async def dispatch(self, authority, query: Query | PassageReadRequest | StoryReadRequest, binding):
         self._expire()
-        if type(query) not in (Query, PassageReadRequest, StoryReadRequest, FactReadRequest, SourceReadRequest,EditorialReadRequest,SourceGraphReadRequest) or len(self._permits) + len(self._tickets) >= self.max_retained:
+        if type(query) not in (Query, AcceptanceReadRequest, PassageReadRequest, StoryReadRequest, FactReadRequest, SourceReadRequest,EditorialReadRequest,SourceGraphReadRequest) or len(self._permits) + len(self._tickets) >= self.max_retained:
             raise SourceGateDenied('read capacity or contract unavailable')
         await self.authority.require(authority, 'public_search')
+        if type(query) is AcceptanceReadRequest:
+            self._require_acceptance(authority,query,binding)
         key = binding_key(binding)
         if not self.binding_current(binding) or query.connection_generation != key[2]:
             raise SourceGateDenied('runtime binding changed')
@@ -198,13 +201,15 @@ class SourceReadGate:
         if not self._binding(read):
             raise SourceGateDenied('runtime binding changed')
         q = read.query
+        acceptance=type(q) is AcceptanceReadRequest
+        if acceptance:self._require_acceptance(read.authority,q,read.binding)
         graph = type(q) is SourceGraphReadRequest
         catalog = type(q) is SourceReadRequest
         fact = type(q) is FactReadRequest
         editorial=type(q) is EditorialReadRequest
         story = type(q) in (StoryReadRequest,EditorialReadRequest)
-        exact = graph or catalog or fact or type(q) in (PassageReadRequest,StoryReadRequest,EditorialReadRequest)
-        if (type(result) is not (SourceGraphReadResult if graph else SourceReadResult if catalog else FactReadResult if fact else EditorialReadResult if editorial else StoryReadResult if story else PassageReadResult if exact else QueryResult)
+        exact = acceptance or graph or catalog or fact or type(q) in (PassageReadRequest,StoryReadRequest,EditorialReadRequest)
+        if (type(result) is not (AcceptanceReadResult if acceptance else SourceGraphReadResult if graph else SourceReadResult if catalog else FactReadResult if fact else EditorialReadResult if editorial else StoryReadResult if story else PassageReadResult if exact else QueryResult)
                 or (result.request_id, result.connection_generation, result.turn_generation)
                     != (q.request_id, q.connection_generation, q.turn_generation)):
             raise SourceGateDenied('result request binding differs')
@@ -230,6 +235,8 @@ class SourceReadGate:
                 if (len(refs) != len(ids) or {ref.source_id for ref in refs} != set(ids)
                         or len({ref.source_id for ref in refs}) != len(refs)):
                     raise ValueError('exact revisions must cover every dependency')
+                if acceptance and any(ref not in q.fixture_sources for ref in refs):
+                    raise ValueError('observed source revision differs from frozen fixture')
         except (ValueError, TypeError, AttributeError):
             closed = self._closed(result, 'internal_error')
             read.facts, read.result = None, closed
@@ -237,7 +244,7 @@ class SourceReadGate:
         sources = tuple(sorted({s for item in result.evidence for s in item.dependencies.source_ids}))
         if len(sources) > 160:
             raise SourceGateDenied('dependency bound exceeded')
-        scope = ((q.source_id,) if q.source_id is not None else None) if graph else None if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
+        scope = q.filters.source_ids if acceptance else ((q.source_id,) if q.source_id is not None else None) if graph else None if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
         if fact and q.action=='observation_compare':scope=sources
         if graph and (not self.graph_supported() or len(result.records)>q.limit or any(
                 record['action']!=q.action or q.source_id is not None and record['source_id']!=q.source_id
@@ -269,7 +276,7 @@ class SourceReadGate:
                 or editorial and q.view=='variants' and q.after_variant_id is not None and
                     any(e['variant_id']<=q.after_variant_id for e in result.record['entries'])):
             raise SourceGateDenied('exact story provenance differs')
-        if exact and not graph and not story and not fact and not catalog and (len(result.evidence) != 1 or result.evidence[0].id != q.locator.passage_id
+        if exact and not acceptance and not graph and not story and not fact and not catalog and (len(result.evidence) != 1 or result.evidence[0].id != q.locator.passage_id
                 or result.evidence[0].dependencies.source_revisions != (q.locator.source,)
                 or result.observed_visibility_epoch != q.locator.visibility_epoch):
             raise SourceGateDenied('exact source provenance differs')
@@ -332,12 +339,20 @@ class SourceReadGate:
     @staticmethod
     def _closed(result, reason):
         return result.model_copy(update={'status': 'unavailable' if reason != 'access_denied' else 'denied',
-            **({'mode': None, 'continuation': None} if type(result) is QueryResult else
+            **({'mode': None, 'continuation': None, 'ranks':BranchRanks()} if type(result) is AcceptanceReadResult else
+                {'mode': None, 'continuation': None} if type(result) is QueryResult else
                 {'record':None} if type(result) in (StoryReadResult,EditorialReadResult) else
                 {'records':(),'next_cursor':None} if type(result) in (FactReadResult,SourceGraphReadResult) else
                 {'records':()} if type(result) is SourceReadResult else {}),
             'reason': reason, 'evidence': (),
             'prior_write_pending': reason == 'prior_write_pending'})
+
+    def _require_acceptance(self,authority,request,binding):
+        from .acceptance_observer import FrozenAcceptanceFixture
+        fixture=getattr(self,'_acceptance_fixture',None)
+        if type(fixture) is not FrozenAcceptanceFixture:
+            raise SourceGateDenied('acceptance observer inactive')
+        fixture.require(self.authority,authority,request,binding)
 
     async def finish(self, permit, result):
         self._expire()
@@ -367,6 +382,8 @@ class SourceReadGate:
     def issuance_current(self, ticket):
         read = self._tickets.get(ticket)
         try:
+            if read is not None and type(read.query) is AcceptanceReadRequest:
+                self._require_acceptance(read.authority,read.query,read.binding)
             return bool(read is not None and self._binding(read)
                 and (read.facts is None or self.spool.facts_current(read.facts)))
         except Exception:
