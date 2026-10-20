@@ -310,7 +310,9 @@ class BgeWssTransport:
 
         async def send(frame):
             raw = json.dumps({'protocol_version': 2, **frame}, allow_nan=False, separators=(',', ':'))
-            if len(raw.encode()) > 262144:
+            # Match the existing API bound for metadata-only native catalogs.
+            limit=1536*1024 if frame.get('type')=='BOOTSTRAP_OBSERVATION' else 262144
+            if len(raw.encode()) > limit:
                 raise ValueError('channel send bound')
             await socket.send(raw)
 
