@@ -1,5 +1,7 @@
 # Архитектура базы знаний региона
 
+Дополнение v4: обязательный pinned skill до runtime работы; direct bulk client hosting/storage↔Kaggle без Dev byte proxy; отдельные client refs/controller tickets, exact object verification, временный Dataset GC по refs/leases и truthful MCP effects. Полный контракт — единый handoff §0/5.5–5.6, приёмка DBG-11–13.
+
 Обновлено 20.10.2026. Это целевой контракт, а не отчёт о внедрении. Исходная реализация проверена на [main b1c0689](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/b1c0689b1a09373a900a317a3bac9cf4f86fdaf4): corpus/FTS/graph/stories ещё используют SQLite, книжные vectors — Supabase, story vectors — отдельный SQLite/Python путь.
 
 Единое самодостаточное [задание кодовому агенту](prompts/rkb-scalable-kaggle-implementation-20261019.md) задаёт внедрение и отладку. Здесь описаны компоненты и пути данных; [storage](storage.md), [configuration](configuration.md), [управление нагрузкой](designs/user-request-load-management-20261019.md) и [приёмка](testing/rkb-scalable-kaggle-acceptance-20261019.md) раскрывают соответствующие контракты.
@@ -28,6 +30,8 @@ E5 и Supabase отсутствуют в target. Один BGE space: сущес�
 Каждая domain запись проверяет current writer epoch, run, claim и connection generation. QUERY проверяет request/turn/connection generation, общий deadline, текущие grant/scope и min_data_seq; late/cancelled result не переходит в новую реплику и не replay после reconnect. Reconnect заменяет attachment и fencing старого socket; stale claim — ошибка конкретного задания, revocation run — отдельное событие. Пока Kaggle-сессия жива, временная потеря WSS сохраняет загруженные PG/BGE. Завершение самой сессии требует нового run, restore и warmup.
 
 Ping/Pong, полезный спрос, task progress, короткая writer lease и 30-минутный useful-idle — разные таймеры. Сокет без полезной работы не удерживает notebook бесконечно. Frames, bytes, inflight credits, reconnect backoff и task deadlines ограничены. Большие payloads передаются существующим bounded byte transport по проверенным refs, а не огромным WSS JSON.
+
+Отладка переиспользует healthy owned run со **стабильным slug**. Минимальный HELLO/control приходит до install/restore/BGE, READY после probes. SQL и совместимый stateless read handler меняются без повторного model load; mutation executor — через ordered migration/reconciliation, context/deps — через controlled restart. Snapshot replacement по умолчанию требует finite PG maintenance окно, не двух clusters. UNKNOWN push/stop не запускает replacement; provider terminal относится к exact execution, cancel ACK/delete/TTL недостаточны. Expected outputs определены до работы. Полный контракт и новые cases — [handoff §5.4/6.6/14.5](prompts/rkb-scalable-kaggle-implementation-20261019.md).
 
 ## Долговечность и ACK
 

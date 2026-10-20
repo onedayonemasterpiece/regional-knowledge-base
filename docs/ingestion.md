@@ -12,6 +12,12 @@ Original archive pending означает wait/resume. Если verified archive
 
 Ожидание относится к конкретной операции с ещё недоступными bytes. Готовый текстовый поиск по уже принятому корпусу не ждёт Telegram preflight, оригинала или proof. Text/archive/proof readiness различаются; source-fidelity и обязательные archive/recovery gates самого импорта этим не обходятся.
 
+## Передача исходника без Dev bulk proxy
+
+Полный контракт — [handoff§5.5](prompts/rkb-scalable-kaggle-implementation-20261019.md). Существующие book_ingest и top-level file/openai/fileParams сохраняются. Разрешённый client download URL читает непосредственно Kaggle; sandbox/opaque ID требует настоящего supported adapter. Это внешний reference, который controller не умеет перевыпускать: source_ref_expired возвращает reattach той же pending operation. Reprocess работает с verified durable original. Direct client PUT включается только по поддержанной capability/readback; при её отсутствии baseline fileParams не исчезает.
+
+Upload attempts имеют разные immutable keys и один transfer ID; exact provider readback/size/full hash precede atomic first-verified binding. Lost ACK не создаёт второй import. Private visibility, URL/redirect/archive/byte bounds и защита notebook outputs обязательны. Temporary staging не удаляется до durable archive/recovery refs; новый Kaggle Dataset не нужен каждой книге/порции. Page ImageContent и source fidelity остаются прежними.
+
 ## Чтение и ограниченный stage
 
 `book_pages` возвращает реальные MCP ImageContent и native block previews: default4, maximum8 страниц. Native extraction — помощь чтению, не OCR/semantic authority. Calling model визуально читает source, backend не вводит скрытый OCR/VLM/LLM extraction service.

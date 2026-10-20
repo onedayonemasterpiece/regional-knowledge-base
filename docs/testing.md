@@ -23,3 +23,11 @@ The qualitative story pilot uses the pinned previous prompt/contract on the same
 Follow handoff §14.4: real PH provider wiring precedes Mira/Dot comparison. Record independent smart routes, equal source-grounded tasks/corpus/rights and common tool budgets, then actual voice/Slack experience separately. Include tool-lock/capability/admission wait, end of speech to first useful grounded audio/full answer, errors, cancelled/late work, current revocation and missing evidence checkpoint after restart. Do not count a progress announcement as a useful answer.
 
 Verify QUERY without fsync/cloud seal and with a failed telemetry sink, bounded response and generation-safe cancellation; keep PH input utterance recovery and durable mutation receipts. Same-host monotonic stages do not require synchronized host clocks. Native optimization compares one justified candidate, including IPC/ABI/lifecycle/CPU contention; no three-language rewrite or automatic change of BGE numerical runtime. These are NOT RUN design gates, not achieved latency.
+
+## Warm debug and lifecycle
+
+Follow handoff §14.5 DBG-1–13. Before a live run, use small local/CI fixtures for read-handler import/probe rollback, migration C-v1/lost-ACK/v2 semantics and immutable test-fixture reset guards. Synthetic test applied_ops must remain distinct from real product Saved. No BGE/E5 is installed on DevCoveer.
+
+Use one bounded authorized owned run with a stable notebook slug to verify actual SDK capabilities, early HELLO/stage diagnostics, exact loaded versions, SQL patch without model reload, artifact completeness and scoped stop/provider readback. UNKNOWN launch/stop and multi-page failure cases begin with deterministic adapter fixtures; repeat a real run only for an unresolved provider boundary. Version-specific status must identify the execution, not merely a saved notebook version. Cancel ACK, resource deletion or lease expiry is not terminal proof.
+
+Measure edit→apply→first useful result, starts/restarts/model loads, install/restore time and repeated bytes; distinguish cold/warm/incompatible changes. Full protected scale/quality/channel gates are not rerun on each small patch. Exact schema/function/executor transitions and replay are ready before the first real accepted/Saved. All newly designed runtime checks remain NOT RUN until actual execution evidence exists.

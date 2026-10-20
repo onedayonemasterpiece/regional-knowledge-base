@@ -6,9 +6,17 @@
 
 PostgreSQL 17 с pinned pgvector на Kaggle хранит exact accepted text, bibliography, source/page/region graph, факты, entities/relations, stories/variants, dates/observations, cases, drafts и BGE/FTS serving projections. E5 и Supabase в target отсутствуют. Короткая DevCoveer control БД не содержит постоянной второй копии corpus, vectors, PDF или BGE weights.
 
+Небольшой временный PG17/pgvector/PostGIS fixture на DevCoveer допустим для SQL/schema/permissions/migration checks при измеренном CPU/RAM/disk headroom, конечном deadline и cleanup owner; предпочтительно существующее CI/окружение. Только малые разрешённые/synthetic данные и готовые test vectors, без полного corpus и BGE/E5 weights/inference. Изолированный fixture не публикуется в общий поиск и не становится target БД; подробный контракт — [handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md), §6.6.
+
 Originals и illustrations сохраняются существующим VibePublish/Telegram archive owner. Private Dataset хранит согласованные PG snapshots; существующий Yandex recovery storage — immutable command/control/receipt tail, accepted payloads и проверенную daily base. Source binary archive, recovery storage, working DB и temporary caches имеют разные lifecycle и budgets.
 
 Exact source_text и детерминированный search_material имеют собственные hashes и material version. Passages ссылаются на точные source spans; не размножать полную страницу ради каждого embedding. Model/human accepted decisions сохраняются точно: PDF SHA и повторная модель не воспроизводят прежний accepted result. Старые derived vectors можно убрать после безопасной смены revision; provenance и принятые значения нельзя подменить пересчётом.
+
+## Прямой bulk и временные datasets
+
+[Handoff§5.5](prompts/rkb-scalable-kaggle-implementation-20261019.md) — полный transfer/GC contract. Existing storage принимает private attempt-specific objects; Dev хранит control/refs, не проксирует большие bytes. Client fileParams reference отличается от controller ticket; expiry чужой ссылки требует reattach, reprocess читает archived original. Exact provider version/size и full-hash verification предшествуют first-verified binding; незавершённый upload не accepted/Saved. Native ImageContent остаётся в bounded MCP responses.
+
+Temporary Dataset создаётся лишь для необходимого provider input и регистрируется с owner/consumers/budget. GC и выдача leases используют общий guard: запрет новых refs, reconciliation активных mounts/transfers/UNKNOWN, отсутствие accepted/recovery dependencies, затем exact delete/readback. Expiry не доказывает consumer completion. Confirmed native absence закрывает ownership; quota проверяется если доступна, отсутствие delete API — видимый blocked cleanup. Private DB base/pinned recovery versions не являются disposable staging. Signed URLs/private originals/PGDATA не попадают в notebook source, logs или automatically committed outputs; actual private visibility проверяется до передачи private bytes.
 
 ## ACK и короткий raw spool
 
@@ -31,7 +39,7 @@ Local GC удаляет raw bytes после remotely sealed payload + verified 
 
 ## Base, tail и checkpoint
 
-1. PostgreSQL base — consistent physical backup с нужным WAL и indexes. Обычный cp работающего data directory запрещён. Logical dump применяется для обоснованного version/schema upgrade с отдельным измерением restore/index rebuild.
+1. PostgreSQL base — consistent physical backup с нужным WAL и indexes. Обычный cp работающего data directory запрещён. Logical dump применяется для малого fixture либо обоснованного version/schema upgrade с отдельным измерением restore/index rebuild.
 2. Exact command/control/receipt tail хранится immutable в существующем Yandex recovery storage. Resolved payload включает выбранные IDs, logical timestamps, preconditions и codec/schema version. Результаты модели не генерируются заново при replay.
 3. Control checkpoint создаётся каждые **15 минут**. Accepted turns, grants/revocations и effects не ждут этого интервала: их изменения защищает remote tail до финального ACK.
 4. Changed PG base создаётся каждые **4 часа**, а также раньше при превышении replay-time/byte budget или перед planned handover. Без изменений полную копию не создавать. Index rebuild и reembedding не являются частью каждого checkpoint.
@@ -50,6 +58,14 @@ Sealed-tail compaction ограничивает object count/bytes/replay time. 
 Проверка candidate: provider status → скачать exact version → hashes/size → restore с нужными extensions/WAL → SQL invariants/cursor → replay непрерывного tail → actual SQL+dense probes. Canonical pointer переключается внешним fenced CAS только после этих проверок. Crash между apply и ACK возвращает тот же результат через applied_ops, не повторяет внешнюю отправку.
 
 Один consistent base artifact можно отправить в Kaggle и Yandex с независимым transport readback, без второго pg_basebackup и одинакового restore тех же bytes/runtime. Если уже разрешённый reader/planned successor доступен, проверять candidate на нём и сохранять восстановленный instance для serving после replay/readiness/fencing. Не выбрасывать его ради повторного скачивания и restore. Weekly recovery drill можно совместить с candidate verification только при выполнении всех его SQL/dense/control-receipt/recovery checks. Если свободного разрешённого run нет, verification использует ограниченный maintenance CPU/I/O/memory budget с search reserve; дополнительный Kaggle run в обход Telegram-session cap не создаётся. Hash-only verification не заменяет restore proof, а откладывание maintenance не нарушает replay/tail budgets.
+
+## SQL-изменения и редкая смена базы
+
+Обычная SQL/code итерация не требует новой Dataset version или notebook restart. Exact migration ID/hash/predecessor и schema/function/executor transitions входят в тот же ordered tail, что commands, пока retained bases/tails требуют их artifacts/decoders. Incompatible v2 закрывает новую v1 фиксацию и ждёт outcomes всех прежних accepted/sealed v1 commands, включая undispatched queue; UNKNOWN сверяется по applied_ops исходной DB generation. Replay воспроизводит исходный порядок, не устанавливает все latest migrations до старых команд; SQL patch переживает потерю session без нового snapshot. Эти гарантии требуются до первого реального accepted/Saved. Только immutable test fixture без product routing/реальных refs можно пересобрать из малого seed; synthetic test applied_ops не выдаёт product ACK. GEO, accepted input, Saved и вклад пользователя не становятся disposable от слова «отладка».
+
+Default для редкой DB replacement — конечное maintenance окно в той же notebook session: проверить candidate → прекратить новые applies и сверить in-flight → подтвердить recovery boundary → остановить нужный PG instance → restore/replay до фиксированного cursor → SQL/ACL/ANN readback → открыть routing нового generation. Accepted mutations ждут в прежней bounded queue и не получают ложный applied. Файлы, каталог или symlink живого PGDATA не подменяются; смена БД сама по себе не перезагружает BGE. Exact Dataset version можно загрузить в живую session через проверенный SDK path, но старый mounted input не обновляется автоматически.
+
+Old verified remote base и её нужный tail сохраняются до подтверждения замены. Два одновременных PG clusters/catch-up нужны лишь при измеренно неприемлемом maintenance окне и достаточном peak budget; они не обязательны для первой отладки и не создают второго writer. Recovery pointer и active routing различаются. После первой новой записи возврат к старой БД требует совместимого tail catch-up либо roll-forward, а не простого возврата каталога. Полный порядок, compatibility/drain и memory/storage gates — [handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md), §5.4 и §6.6.
 
 ## Failure domains и быстрые reads
 
@@ -85,6 +101,8 @@ Gates: steady usage **≤80%**, крупнейший import/restore/snapshot/cut
 Один loaded BGE process обслуживает queries/documents. Budget включает model/activations, PG shared buffers, все одновременные query workspaces, maintenance и OS reserve. work_mem умножается по операциям, sessions и parallel workers; отдельно ограничить maintenance/autovacuum memory и temp files. См. [PostgreSQL resource consumption](https://www.postgresql.org/docs/current/runtime-config-resource.html).
 
 Bulk imports используют bounded batches и готовое staging. GIN/HNSW initial build идёт после начальной bulk load; activation поддерживает active revision, затем targeted ANALYZE. Autovacuum включён. Один controller выдаёт permit тяжёлой maintenance работе и учитывает serving reserve; нельзя выполнять hourly/daily full REINDEX, VACUUM FULL или reembedding по таймеру.
+
+CREATE INDEX CONCURRENTLY применять к serving table только при необходимости сохранить конкурентные writes; на неактивном staging обычный build проще и дешевле. Concurrent build — отдельный нетранзакционный шаг с конечным budget и проверкой native catalog после ошибки/lost ACK: invalid index и несовпадающее определение не считаются готовым результатом, IF NOT EXISTS этого не проверяет. Короткий lock_timeout ограничивает ожидание DDL; никакой полной переиндексации после каждого SQL patch. Подробности миграций — [handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md), §6.6.
 
 REINDEX допустим при доказанном bloat/повреждении/upgrade и наличии места для replacement index. VACUUM FULL требует exclusive lock и дополнительную копию; это отдельный ремонт, не обычный GC. Старые derived revisions удаляются по retention/provenance contracts с последующим обычным vacuum. [PostgreSQL vacuum](https://www.postgresql.org/docs/current/routine-vacuuming.html), [pgvector maintenance](https://github.com/pgvector/pgvector).
 

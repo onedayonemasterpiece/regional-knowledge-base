@@ -1,6 +1,8 @@
 # Целевая архитектура RKB: Kaggle PG 17/BGE и короткий DevCoveer control
 
-Обновлено 20.10.2026; канонический путь документа сохранён. Статус: решение для реализации, не выполненный deploy. Проверенный source baseline — [main b1c0689](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/b1c0689b1a09373a900a317a3bac9cf4f86fdaf4).
+Дополнение v4: обязательный pinned skill до runtime работы; direct bulk client hosting/storage↔Kaggle без Dev byte proxy; отдельные client refs/controller tickets, exact object verification, временный Dataset GC по refs/leases и truthful MCP effects. Полный контракт — единый handoff §0/5.5–5.6, приёмка DBG-11–13.
+
+Обновлено 20.10.2026; канонический путь документа сохранён. Статус: решение для реализации, не выполненный deploy. Lifecycle/code baseline v4 — [main 3e39046](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/3e39046fe32aaf14cfa088d65d15ff0082425309); предыдущие source audits сохраняют собственные точные heads.
 
 **Один самодостаточный [handoff кодовому агенту](../prompts/rkb-scalable-kaggle-implementation-20261019.md)** содержит функциональный контракт, порядок внедрения и отладки. Этот документ объясняет принятое размещение; подробные query/index paths — в [architecture](../architecture.md), durability/GC — в [storage](../storage.md).
 
@@ -65,6 +67,10 @@ Reuse existing BgeQueue, controller, request/outbox и domain registries. Existi
 Canonical outcome содержит exact domain values/evidence; BGE floats/FTS/crops — derived dirty/rebuild, не блокируют canonical replay. Delivered artifact bytes/hash/receipt остаются exact. UNKNOWN ограничивается per provider/route с evidence-based operation resolve; не тормозит весь import.
 
 Нет нового брокера, отдельной фабрики Story, распределённого write-кластера, собственного IAM или второй копии POI/map authority.
+
+Стоимость итераций — часть этого решения. Один стабильный notebook slug версионируется; здоровый owned run переиспользуется. Минимальный WSS/HELLO приходит до install/restore/BGE, READY — после полезных probes. Совместимые SQL и stateless read-handler updates сохраняют PG/model; остальные process/context changes честно перезапускают нужный worker. Dataset не передаёт каждую правку. Редкая замена БД использует finite maintenance окно, второй cluster — лишь измеренная оптимизация. Migration transitions и accepted commands сохраняют исходный порядок/семантику; UNKNOWN до несовместимой миграции сверяется в исходной generation.
+
+Stop request/ACK, resource deletion, TTL и исчезнувший socket не доказывают compute terminal. Exact provider execution evidence и TG authorization revocation различаются. Expected output inventory задаётся до работы; manifest/provider COMPLETE не заменяют проверки всех обязательных bytes. Подробности и дешёвая последовательность проверки: [handoff §5.4/6.6/14.5](../prompts/rkb-scalable-kaggle-implementation-20261019.md), [критический lifecycle audit](../reports/rkb-kaggle-debug-lifecycle-audit-20261020.md).
 
 Один maintenance permit координирует heavy build/snapshot/import; autovacuum и targeted ANALYZE сохраняются. Нельзя по таймеру делать полный REINDEX/VACUUM FULL/reembedding. В общей памяти учитываются BGE, PG query/maintenance workspaces и render. Ускорение проверяется на больших book counts и реальных source families, не выводится из факта установки PostgreSQL.
 

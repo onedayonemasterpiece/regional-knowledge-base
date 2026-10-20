@@ -10,6 +10,14 @@ DevCoveer raw spool имеет стартовые 4 часа/512 MiB; это н�
 
 Оба выбранных владельцем smart routes сохраняются: Dot→tools и Mira→tools. Дополнительный агент между ними и RKB не нужен. Mira/PH обращается через typed provider к существующему gateway/WSS relay; один исходящий notebook WSS не требует публичного inbound endpoint Kaggle. Одна операция search внутри Kaggle выполняет encode, SQL branches, fusion и batch hydration; в Dev возвращается компактный evidence pack, а не vector/candidates для следующего roundtrip. Обычный Live search не выполняет цепочку дополнительных fetch и не загружает proof pixels без запроса.
 
+## Перед реализацией
+
+Установить/прочитать [kaggle-warm-debugging](../.agents/skills/kaggle-warm-debugging/SKILL.md) целиком по pin и receipt из handoff§0. Skill обязателен для дешёвых Kaggle итераций, не является разрешением на runtime effects. В нём обновлять подтверждённые общие уроки; не создавать второй runbook/controller.
+
+Большие файлы идут по handoff§5.5 напрямую клиентское hosting/storage↔Kaggle; control/auth через Dev, bytes без Dev proxy. Client fileParams URL не перевыпускается сервером; истечение означает reattach той же operation. Controller tickets имеют отдельные attempts, exact object verification, private visibility/output и current grant checks. Жизнь signed URL и уже начатого consumer различается. Временный Dataset — исключение, не транспорт каждой итерации.
+
+GC exact temporary resource использует общий guard с выдачей consumer leases; новые refs закрываются до удаления, существующие consumers/UNKNOWN/recovery защищены. Readback native absence закрывает удаление; quota сверяется только если API наблюдаем, unsupported delete остаётся cleanup_blocked_by_provider. Не удалять permanent DB Dataset и не считать cleanup остановкой compute. Полные сценарии DBG-11–13, без повторного прогона всего корпуса на каждую правку.
+
 ## Перед cutover
 
 1. Зафиксировать actual executing SHA, PG 17/pgvector/model/tokenizer/schema pins, resource mount/quota и применимые differences от main. Не объявлять draft PR151 или историческую canary production implementation.
@@ -45,7 +53,7 @@ Local raw GC требует remotely sealed payloads/verified metadata, не old
 
 Большой base загружается напрямую Kaggle→Dataset/recovery object, не через Dev 512 MiB spool. Notebook получает scoped key+epoch+expiry upload grant без long-lived delete/global-bucket credentials. Presigned URL не отзывается магически при смене epoch; old-writer upload остаётся orphan без promotion authority. Bounded sealed-tail compaction под тем же controller/CAS сохраняет logical hashes и recovery dependencies.
 
-Dataset version: controller создаёт upload и сохраняет account key/blob token; notebook получает только signed upload URL/session, отправляет large bytes напрямую; controller создаёт version → provider completion → exact-version download/hash → restore/replay/probe → fenced pointer switch. [Kaggle primitive и probe](storage.md) не требуют выдавать notebook account-wide API credentials. Old good + candidate остаются до verification. Delete-old-versions не применять к pinned recovery/reader dependencies. Source bytes и credentials не попадают в публичные artifacts.
+Dataset version: controller создаёт upload и сохраняет account key/blob token; notebook получает только signed upload URL/session, отправляет large bytes напрямую; controller создаёт version → provider completion → exact-version download/hash → restore/replay/probe → fenced **recovery pointer** switch. Active routing рабочей БД переключается отдельно по [handoff §6.6](prompts/rkb-scalable-kaggle-implementation-20261019.md), default — конечное PG maintenance окно в текущем notebook, без обязательных двух clusters. [Kaggle primitive и probe](storage.md) не требуют выдавать notebook account-wide API credentials. Old good + candidate остаются до verification. Delete-old-versions не применять к pinned recovery/reader dependencies. Source bytes и credentials не попадают в публичные artifacts.
 
 Один base artifact используется для обеих provider copies с независимым transport readback. При наличии уже разрешённого planned reader/successor candidate verification выполняется на нём; после replay/readiness/fencing использовать этот же restored instance. Не повторять идентичные backup/download/restore ради отдельного названия проверки. Weekly drill может совместиться с такой verification только с полным набором recovery/control-receipt/SQL/dense checks. Если разрешённого run нет, использовать bounded maintenance budget без дополнительного Kaggle run; search reserve и tail/replay budgets сохраняются. Warm serving не требует повторного hashing/repacking всей проверенной base.
 
@@ -64,6 +72,10 @@ Dataset version: controller создаёт upload и сохраняет account 
 ## Maintenance без отдельного оркестратора
 
 Один existing controller выдаёт короткие stage permits на imports, render, snapshot и index maintenance. Поиск имеет измеренный резерв; proof/import получают положительное продвижение через aging. Если минимальный совместный footprint не помещается, это capacity failure, а не выполненная гарантия.
+
+Warm debug использует тот же owned run и **стабильный notebook slug**: небольшой exact SQL/artifact patch → apply → loaded hash + useful result readback. Минимальный control/HELLO предшествует тяжёлым bootstrap stages. Новый push/install/model load/Dataset version не являются обычной итерацией. Read-handler candidate имеет rollback; mutation/function semantics меняются через ordered barrier с readback UNKNOWN в исходной generation. Малый disposable PG fixture разрешён отдельно от реальных GEO/accepted/Saved; полный порядок, stop proof и output completeness — [Kaggle runbook](operations/bge-kaggle.md), [DBG приёмка](testing/rkb-scalable-kaggle-acceptance-20261019.md).
+
+Provider status, service phase, loaded versions и completeness — отдельные наблюдения с timestamp. Один poller controller, WSS live progress, bounded retry/stage budgets. Неполученный status/push/stop не считается failure/not-started/terminal по умолчанию. STOP ACK/delete/TTL не разрешают reuse exclusive Telegram session; unknown compute capacity остаётся учтённой. Required inventory определяется до работы, partial output сохраняет пригодные результаты. Cleanup не удаляет accepted/UNKNOWN refs и не трогает чужие runs.
 
 Ready query при доступном permit dispatches сразу; batching объединяет уже ожидающие запросы и не добавляет паузу ради заполнения. Скорость важнее экономии ресурсов самой по себе: полезные bounded caches, FP32/index projections допустимы в 80/90% capacity gates. Измерять E2E и search latency также во время snapshot/restore, учитывать CPU/I/O contention; выигрыш даже 0.5 s имеет смысл, но не объявляется без сопоставимого замера.
 
