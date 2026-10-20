@@ -1,0 +1,555 @@
+"""Canonical source-control intake in the existing BgeQueue SQLite spool.
+
+Internal controller API only. No dispatcher, new identity authority, read-path
+write, provider adapter, or product closed/Saved acknowledgement is owned here.
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+from contextlib import contextmanager
+from dataclasses import dataclass
+import fcntl
+import hashlib
+import json
+import logging
+import math
+import os
+import sqlite3
+import time
+from uuid import UUID
+
+from .kaggle_apply import (
+    ApplyReceipt, DependencySpec, HandlerRegistry, _snapshot, apply_accepted,
+)
+from .participants import ParticipantError, Participants, RequestAuthority
+from .recovery_journal import (
+    AcceptedSeal, ExactCommand, ObjectRef, RecoveryJournal, RemoteOutcomeReceipt,
+    VerifiedHead,
+)
+
+SOURCE_WITHDRAW = 'source.withdraw.v1'
+WITHDRAW_PAYLOAD = b'{"withdrawn":true}'
+WITHDRAW_DEPENDENCY = DependencySpec(SOURCE_WITHDRAW,'public_source',
+    frozenset({'source_id'}),'shared',True)
+_UNSET=object()
+_LOG=logging.getLogger(__name__)
+
+
+class SpoolError(RuntimeError):pass
+class SpoolConflict(SpoolError):pass
+class SpoolFull(SpoolError):pass
+class SpoolUnknown(SpoolError):pass
+class SpoolDenied(PermissionError):pass
+
+
+def _json(value):
+    return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
+
+
+def _hash(data):return hashlib.sha256(data).hexdigest()
+
+
+def _uuid(value):
+    if not isinstance(value,str) or str(UUID(value))!=value:
+        raise ValueError('canonical source/person UUID required')
+    return value
+
+
+def _bounded(value,limit=256):
+    if not isinstance(value,str) or not 1<=len(value)<=limit or len(value.encode())>limit:
+        raise ValueError('bounded explicit controller identity required')
+
+
+def _command(data):
+    try:
+        value=json.loads(data)
+        command=ExactCommand(**{k:value[k] for k in ('sequence','operation_key','request_id','person_id',
+            'route','logical_time','schema_revision','function_revision','executor_revision','ids',
+            'expected_revisions','kind')},payload=base64.b64decode(value['payload_b64'],validate=True))
+        if command.encode()!=data:raise ValueError('changed command')
+        return command
+    except (ValueError,TypeError,KeyError):
+        raise SpoolConflict('stored exact command integrity differs') from None
+
+
+def _seal_wire(seal):
+    return {'manifest':seal.manifest.wire(),'command_hashes':list(seal.command_hashes)}
+
+
+def _seal(data):
+    value=json.loads(data)
+    return AcceptedSeal(ObjectRef(**value['manifest']),tuple(value['command_hashes']))
+
+
+def _head_wire(head):
+    return None if head is None else {'reference':head.reference.wire(),'token':head.token}
+
+
+def _head(data):
+    value=json.loads(data)
+    return None if value is None else VerifiedHead(ObjectRef(**value['reference']),value['token'])
+
+
+async def _database(call,*args):
+    """Drain a committed local write before cancellation releases its owner."""
+    task=asyncio.create_task(asyncio.to_thread(call,*args));cancelled=False
+    while not task.done():
+        try:await asyncio.shield(task)
+        except asyncio.CancelledError:cancelled=True
+        except Exception:break
+    if cancelled:
+        if not task.cancelled():task.exception()
+        raise asyncio.CancelledError
+    return task.result()
+
+
+@dataclass(frozen=True)
+class ControlOperation:
+    command_bytes: bytes
+    command_sha256: str
+    database_generation: str
+    handler_sha256: str
+    seal_state: str
+    apply_state: str
+    outcome_state: str
+    accepted: AcceptedSeal | None
+    apply_receipt: ApplyReceipt | None
+    remote_outcome: RemoteOutcomeReceipt | None
+
+    @property
+    def command(self):return _command(self.command_bytes)
+
+
+@dataclass(frozen=True)
+class AcceptedRestriction:
+    operation_key: str
+    sequence: int
+    command_sha256: str
+    apply_state: str
+    outcome_state: str
+
+
+@dataclass(frozen=True)
+class SourceBarrier:
+    operation_key: str
+    source_id: str
+    sequence: int
+    command_sha256: str
+    database_generation: str
+    intent_remote_accepted: bool
+    apply_state: str
+    outcome_state: str
+    accepted_restriction: AcceptedRestriction | None = None
+    pending_sequence: int = 0
+    unknown_sequence: int = 0
+    restriction_active: bool = True
+
+
+@dataclass(frozen=True)
+class BarrierSnapshot:
+    barriers: tuple[SourceBarrier,...]
+    sequence: int
+    accepted_sequence: int
+    # Source-only intake cannot attest legacy writers or an un-restored remote
+    # history. Empty local results must never be relabelled complete authority.
+    history_complete: bool = False
+    scope_complete: bool = False
+
+
+class ControlSpool:
+    def __init__(self,queue,participants: Participants,journal: RecoveryJournal,registry: HandlerRegistry,
+                 *,max_bytes=512*1024*1024,raw_retention_seconds=4*3600,clock=time.time):
+        if not isinstance(participants,Participants) or not isinstance(journal,RecoveryJournal) or not isinstance(registry,HandlerRegistry):
+            raise TypeError('existing canonical participants/journal/registry required')
+        if type(max_bytes) is not int or max_bytes<1:
+            raise ValueError('positive bounded spool budget required')
+        if not isinstance(raw_retention_seconds,(int,float)) or isinstance(raw_retention_seconds,bool) or not math.isfinite(raw_retention_seconds) or raw_retention_seconds<=0:
+            raise ValueError('finite raw retention boundary required')
+        self.queue,self.participants,self.journal,self.registry=queue,participants,journal,registry
+        self.max_bytes,self.raw_retention_seconds,self.clock=max_bytes,float(raw_retention_seconds),clock
+        self.max_command_bytes=min(1048576,journal.max_segment_bytes)
+        self.max_outcome_bytes=min(1048576,journal.max_outcome_bytes)
+        self._lock=asyncio.Lock();self._loop=None;self._writing=0
+        self._fd=os.open(queue.path.resolve().with_suffix(queue.path.suffix+'.control-spool.lock'),os.O_RDWR|os.O_CREAT,0o600)
+        try:
+            fcntl.flock(self._fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            with self._db(write=True) as db:
+                db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_spool_meta(
+                    id INTEGER PRIMARY KEY CHECK(id=1),stream TEXT NOT NULL,used_bytes INTEGER NOT NULL,
+                    sequence INTEGER NOT NULL,accepted_sequence INTEGER NOT NULL,
+                    operation_count INTEGER NOT NULL,pending_count INTEGER NOT NULL CHECK(pending_count>=0),
+                    unknown_count INTEGER NOT NULL CHECK(unknown_count>=0))''')
+                db.execute('INSERT OR IGNORE INTO rkb_control_spool_meta VALUES(1,?,0,0,0,0,0,0)',(journal.stream,))
+                if db.execute('SELECT stream FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]!=journal.stream:
+                    raise SpoolConflict('control database belongs to another ordered stream')
+                db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_operations(
+                    operation_key TEXT PRIMARY KEY,command_bytes BLOB NOT NULL CHECK(length(command_bytes) BETWEEN 1 AND 1048576),command_sha256 TEXT NOT NULL,
+                    sequence INTEGER NOT NULL UNIQUE,source_id TEXT NOT NULL,person_id TEXT NOT NULL,
+                    database_generation TEXT NOT NULL,dependency_bytes BLOB NOT NULL,handler_sha256 TEXT NOT NULL,
+                    reserved_bytes INTEGER NOT NULL,created REAL NOT NULL,updated REAL NOT NULL,
+                    seal_state TEXT NOT NULL CHECK(seal_state IN ('NOT_SENT','SENT_UNKNOWN','ACCEPTED')),
+                    predecessor_bytes BLOB,seal_bytes BLOB,
+                    apply_state TEXT NOT NULL CHECK(apply_state IN ('NOT_SENT','SENT_UNKNOWN','APPLIED','REJECTED_PRECONDITION')),
+                    apply_bytes BLOB,outcome_bytes BLOB,outcome_sha256 TEXT,
+                    outcome_state TEXT NOT NULL CHECK(outcome_state IN ('NOT_SENT','SENT_UNKNOWN','DURABLE')),
+                    remote_receipt_bytes BLOB)''')
+                db.execute('CREATE INDEX IF NOT EXISTS rkb_control_source ON rkb_control_operations(source_id,sequence DESC,operation_key)')
+                db.execute('CREATE INDEX IF NOT EXISTS rkb_control_source_state ON rkb_control_operations(source_id,sequence,seal_state,apply_state,outcome_state)')
+                db.execute('CREATE INDEX IF NOT EXISTS rkb_control_accepted ON rkb_control_operations(source_id,seal_state,sequence DESC,operation_key)')
+                db.execute("CREATE INDEX IF NOT EXISTS rkb_control_pending ON rkb_control_operations(source_id,sequence DESC) WHERE outcome_state<>'DURABLE'")
+                db.execute("CREATE INDEX IF NOT EXISTS rkb_control_unknown ON rkb_control_operations(source_id,sequence DESC) WHERE seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN'")
+                db.execute('''CREATE TRIGGER IF NOT EXISTS rkb_control_intent_immutable BEFORE UPDATE OF
+                    operation_key,command_bytes,command_sha256,sequence,source_id,person_id,database_generation,
+                    dependency_bytes,handler_sha256,reserved_bytes,created ON rkb_control_operations
+                    BEGIN SELECT RAISE(ABORT,'immutable canonical control intent'); END''')
+                db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_receipts(
+                    operation_key TEXT PRIMARY KEY,command_sha256 TEXT NOT NULL,receipt_bytes BLOB NOT NULL)''')
+        except BaseException:
+            os.close(self._fd);self._fd=None;raise
+
+    def _active(self):
+        if self._fd is None:raise SpoolError('control spool owner closed')
+        loop=asyncio.get_running_loop()
+        if self._loop is None:self._loop=loop
+        elif self._loop is not loop:raise SpoolError('one controller event loop required')
+
+    @contextmanager
+    def _db(self,*,write=False):
+        # Same existing queue database, with FULL configured BEFORE beginning a
+        # mutation transaction. No provider/model operation runs under this lock.
+        db=sqlite3.connect(self.queue.path,timeout=5,isolation_level=None)
+        db.row_factory=sqlite3.Row
+        try:
+            db.execute('PRAGMA synchronous=FULL' if write else 'PRAGMA query_only=ON')
+            db.execute('BEGIN IMMEDIATE' if write else 'BEGIN')
+            yield db
+            if db.in_transaction:db.commit()
+        except BaseException:
+            if db.in_transaction:db.rollback()
+            raise
+        finally:db.close()
+
+    async def _authorize(self,context):
+        if not isinstance(context,RequestAuthority) or context.route!='owner' or context.public_only:
+            raise SpoolDenied('current owner personal route required')
+        try:return await _database(self.participants.require,context,'import')
+        except ParticipantError:raise SpoolDenied('current owner import authority required') from None
+
+    async def _write(self,call,*args):
+        self._active();self._writing+=1
+        try:return await _database(call,*args)
+        finally:self._writing-=1
+
+    def _validate(self,command,database_generation):
+        _bounded(database_generation)
+        if not isinstance(command,ExactCommand):raise TypeError('resolved exact command required')
+        _bounded(command.operation_key,4096)
+        frozen,data=_snapshot(command,self.max_command_bytes)
+        handler=self.registry.resolve(frozen)
+        if (frozen.kind!='domain_command' or frozen.route!=SOURCE_WITHDRAW
+                or handler.dependency!=WITHDRAW_DEPENDENCY or handler.transition is not None
+                or handler.precondition_keys!=frozenset({'eligibility_revision'})
+                or set(frozen.ids)!={'source_id'} or set(frozen.expected_revisions)!={'eligibility_revision'}
+                or frozen.payload!=WITHDRAW_PAYLOAD):
+            raise SpoolDenied('only static source.withdraw.v1 control intent is supported')
+        _uuid(frozen.person_id);_uuid(frozen.ids['source_id'])
+        revision=frozen.expected_revisions['eligibility_revision']
+        if (not revision.isascii() or not revision.isdecimal() or not 1<=len(revision)<=19
+                or str(int(revision))!=revision or not 1<=int(revision)<2**63):
+            raise ValueError('exact positive source eligibility revision required')
+        return frozen,data,handler
+
+    def _stage(self,command,data,handler,database_generation):
+        dependency=_json(handler.dependency.wire())
+        # Reserve post-acceptance outcome and bounded native receipt/head/seal
+        # metadata now, so budget exhaustion cannot strand a newly accepted op.
+        reserved=len(data)+len(dependency)+self.max_outcome_bytes+32768
+        with self._db(write=True) as db:
+            prior=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(command.operation_key,)).fetchone()
+            if prior is not None:
+                if (bytes(prior['command_bytes'])!=data or prior['database_generation']!=database_generation
+                        or bytes(prior['dependency_bytes'])!=dependency or prior['handler_sha256']!=handler.fingerprint):
+                    raise SpoolConflict('operation key has different exact command/scope/database bytes')
+                return self._entry(prior)
+            used=db.execute('SELECT used_bytes FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]
+            if used+reserved>self.max_bytes:raise SpoolFull('control spool budget exhausted before remote acceptance')
+            if db.execute('SELECT 1 FROM rkb_control_operations WHERE sequence=?',(command.sequence,)).fetchone():
+                raise SpoolConflict('another canonical local operation occupies this sequence')
+            now=self.clock()
+            db.execute('''INSERT INTO rkb_control_operations(operation_key,command_bytes,command_sha256,sequence,
+                source_id,person_id,database_generation,dependency_bytes,handler_sha256,reserved_bytes,created,updated,
+                seal_state,apply_state,outcome_state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'NOT_SENT','NOT_SENT','NOT_SENT')''',
+                (command.operation_key,data,_hash(data),command.sequence,command.ids['source_id'],command.person_id,
+                 database_generation,dependency,handler.fingerprint,reserved,now,now))
+            db.execute('''UPDATE rkb_control_spool_meta SET used_bytes=used_bytes+?,sequence=max(sequence,?),
+                operation_count=operation_count+1,pending_count=pending_count+1 WHERE id=1''',(reserved,command.sequence))
+            return self._entry(db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(command.operation_key,)).fetchone())
+
+    async def stage_source_withdraw(self,context,command,*,database_generation):
+        self._active()
+        actor=await self._authorize(context)
+        frozen,data,handler=self._validate(command,database_generation)
+        if frozen.person_id!=actor:raise SpoolDenied('command person does not authenticate its actor')
+        return await self._write(self._stage,frozen,data,handler,database_generation)
+
+    def _row(self,key):
+        _bounded(key,4096)
+        with self._db() as db:
+            row=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
+            if row is None:raise SpoolError('control operation not found')
+            return dict(row)
+
+    def _entry(self,row):
+        data=bytes(row['command_bytes'])
+        if _hash(data)!=row['command_sha256']:raise SpoolConflict('stored command hash differs')
+        command=_command(data)
+        if command.operation_key!=row['operation_key'] or command.sequence!=row['sequence'] or command.person_id!=row['person_id'] or command.ids.get('source_id')!=row['source_id']:
+            raise SpoolConflict('stored operation identity differs')
+        _,_,handler=self._validate(command,row['database_generation'])
+        if bytes(row['dependency_bytes'])!=_json(handler.dependency.wire()) or row['handler_sha256']!=handler.fingerprint:
+            raise SpoolConflict('stored original dependency/handler identity differs')
+        apply=None;remote=None;accepted=None
+        if row['seal_bytes'] is not None:accepted=_seal(row['seal_bytes'])
+        if row['apply_bytes'] is not None:
+            value=json.loads(row['apply_bytes'])
+            outcome=bytes(row['outcome_bytes'])
+            if _hash(outcome)!=row['outcome_sha256']:raise SpoolConflict('stored apply outcome differs')
+            apply=ApplyReceipt(**value,outcome=outcome,duplicate=True)
+        if row['remote_receipt_bytes'] is not None:remote=RemoteOutcomeReceipt(**json.loads(row['remote_receipt_bytes']))
+        if ((row['seal_state']=='ACCEPTED')!=(accepted is not None)
+                or accepted is not None and (accepted.command_hashes!=(row['command_sha256'],)
+                    or accepted.manifest.last_sequence!=command.sequence)):
+            raise SpoolConflict('stored acceptance phase/identity differs')
+        if ((row['apply_state'] in {'APPLIED','REJECTED_PRECONDITION'})!=(apply is not None)
+                or apply is not None and ((apply.operation_key,apply.sequence,apply.command_sha256,apply.database_generation)
+                    !=(command.operation_key,command.sequence,row['command_sha256'],row['database_generation'])
+                    or apply.status!=('applied' if row['apply_state']=='APPLIED' else 'rejected_precondition'))):
+            raise SpoolConflict('stored apply phase/identity differs')
+        if ((row['outcome_state']=='DURABLE')!=(remote is not None)
+                or remote is not None and ((remote.operation_key,remote.command_sha256,remote.database_generation,remote.outcome_sha256)
+                    !=(command.operation_key,row['command_sha256'],row['database_generation'],row['outcome_sha256'])
+                    or remote.key!=self.journal.prefix+'/outcomes/'+_hash(command.operation_key.encode()))):
+            raise SpoolConflict('stored remote outcome phase/identity differs')
+        return ControlOperation(data,row['command_sha256'],row['database_generation'],row['handler_sha256'],
+            row['seal_state'],row['apply_state'],row['outcome_state'],accepted,apply,remote)
+
+    async def get(self,key):
+        self._active()
+        return self._entry(await _database(self._row,key))
+
+    def _before_seal(self,key,predecessor):
+        with self._db(write=True) as db:
+            row=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
+            if row is None:raise SpoolError('control operation not found')
+            prior=row['predecessor_bytes']
+            if predecessor is _UNSET:
+                if prior is None:raise ValueError('first seal requires an explicit verified predecessor')
+                data=bytes(prior)
+            else:
+                if predecessor is not None and not isinstance(predecessor,VerifiedHead):raise TypeError('verified predecessor required')
+                data=_json(_head_wire(predecessor))
+                if len(data)>8192:raise SpoolFull('predecessor exceeds reserved metadata budget')
+                if prior is not None and bytes(prior)!=data:raise SpoolConflict('seal predecessor is immutable across retry')
+            if row['seal_state']!='ACCEPTED':
+                db.execute("UPDATE rkb_control_operations SET seal_state='SENT_UNKNOWN',predecessor_bytes=?,updated=? WHERE operation_key=?",(data,self.clock(),key))
+                if row['seal_state']=='NOT_SENT':db.execute('UPDATE rkb_control_spool_meta SET unknown_count=unknown_count+1 WHERE id=1')
+            return self._entry(row),_head(data)
+
+    def _accepted(self,key,seal):
+        data=_json(_seal_wire(seal))
+        if len(data)>8192:raise SpoolFull('seal exceeds reserved metadata budget')
+        with self._db(write=True) as db:
+            row=db.execute('SELECT command_sha256,sequence,seal_bytes,seal_state FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
+            if seal.command_hashes!=(row['command_sha256'],) or seal.manifest.last_sequence!=row['sequence']:
+                raise SpoolConflict('seal does not bind the exact singleton command')
+            if row['seal_bytes'] is not None and bytes(row['seal_bytes'])!=data:raise SpoolConflict('accepted seal identity differs')
+            db.execute("UPDATE rkb_control_operations SET seal_state='ACCEPTED',seal_bytes=?,updated=? WHERE operation_key=?",(data,self.clock(),key))
+            db.execute('UPDATE rkb_control_spool_meta SET accepted_sequence=max(accepted_sequence,?) WHERE id=1',(row['sequence'],))
+            if row['seal_state']=='SENT_UNKNOWN':db.execute('UPDATE rkb_control_spool_meta SET unknown_count=unknown_count-1 WHERE id=1')
+
+    async def seal(self,context,key,*,writer_generation,predecessor=_UNSET):
+        self._active();_bounded(writer_generation,4096)
+        async with self._lock:
+            existing=await self.get(key)
+            # Re-resolve original semantics; no latest registry fallback.
+            _,_,handler=self._validate(existing.command,existing.database_generation)
+            if handler.fingerprint!=existing.handler_sha256:raise SpoolConflict('staged static handler changed')
+            if existing.accepted is None and existing.seal_state=='SENT_UNKNOWN':
+                reconciled=await self.journal.locate_accepted(existing.command)
+                if reconciled is not None:
+                    await self._write(self._accepted,key,reconciled)
+                    return reconciled
+            if existing.accepted is None:
+                # Waiting for another remote operation must not carry stale
+                # pre-lock permission into a new acceptance boundary.
+                actor=await self._authorize(context)
+                if existing.command.person_id!=actor:raise SpoolDenied('control intent belongs to another actor')
+            # Accepted commands retain original author/semantics. Outer current
+            # receipt/output authorization is independent of internal replay.
+            entry,head=await self._write(self._before_seal,key,predecessor)
+            if entry.accepted is not None:return entry.accepted
+            accepted=await self.journal.seal([entry.command],predecessor=head,writer_generation=writer_generation)
+            await self._write(self._accepted,key,accepted)
+            _LOG.info('control_intent_remote_accepted operation_hash=%s sequence=%s',_hash(key.encode()),entry.command.sequence)
+            return accepted
+
+    def _apply_sent(self,key):
+        with self._db(write=True) as db:
+            row=db.execute('SELECT seal_state,apply_state FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
+            if not row or row['seal_state']!='ACCEPTED':raise SpoolDenied('remote accepted intent required before apply')
+            if row['apply_state'] in {'NOT_SENT','SENT_UNKNOWN'}:
+                db.execute("UPDATE rkb_control_operations SET apply_state='SENT_UNKNOWN',updated=? WHERE operation_key=?",(self.clock(),key))
+                if row['apply_state']=='NOT_SENT':db.execute('UPDATE rkb_control_spool_meta SET unknown_count=unknown_count+1 WHERE id=1')
+
+    async def mark_apply_sent(self,key):
+        self._active();await self._write(self._apply_sent,key)
+
+    def _record_apply(self,key,receipt):
+        if not isinstance(receipt,ApplyReceipt) or receipt.status not in {'applied','rejected_precondition'}:
+            raise TypeError('exact native apply receipt required')
+        if not isinstance(receipt.outcome,bytes) or len(receipt.outcome)>self.max_outcome_bytes or _hash(receipt.outcome)!=receipt.outcome_sha256:
+            raise SpoolConflict('apply outcome integrity/budget differs')
+        values={k:getattr(receipt,k) for k in ('database_generation','operation_key','sequence','command_sha256','status','outcome_sha256')}
+        data=_json(values)
+        with self._db(write=True) as db:
+            row=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
+            if not row or row['seal_state']!='ACCEPTED' or (receipt.operation_key,receipt.sequence,receipt.command_sha256,receipt.database_generation)!=(key,row['sequence'],row['command_sha256'],row['database_generation']):
+                raise SpoolConflict('apply receipt does not bind the original accepted operation/database')
+            if row['apply_bytes'] is not None and (bytes(row['apply_bytes'])!=data or bytes(row['outcome_bytes'])!=receipt.outcome):
+                raise SpoolConflict('exact committed outcome differs')
+            db.execute('''UPDATE rkb_control_operations SET apply_state=?,apply_bytes=?,outcome_bytes=?,outcome_sha256=?,updated=?
+                WHERE operation_key=?''',('APPLIED' if receipt.status=='applied' else 'REJECTED_PRECONDITION',data,receipt.outcome,receipt.outcome_sha256,self.clock(),key))
+            if row['apply_state']=='SENT_UNKNOWN':db.execute('UPDATE rkb_control_spool_meta SET unknown_count=unknown_count-1 WHERE id=1')
+
+    async def record_apply(self,key,receipt):
+        self._active();await self._write(self._record_apply,key,receipt)
+
+    async def apply(self,key,connection,*,writer_generation):
+        self._active()
+        async with self._lock:
+            entry=await self.get(key)
+            if entry.apply_receipt is not None:return entry.apply_receipt
+            await self.mark_apply_sent(key)
+            receipt=await apply_accepted(connection,self.journal,entry.accepted,entry.command,self.registry,
+                database_generation=entry.database_generation,writer_generation=writer_generation,
+                max_command_bytes=self.max_command_bytes,max_outcome_bytes=self.max_outcome_bytes)
+            await self.record_apply(key,receipt)
+            return receipt
+
+    def _outcome_sent(self,key):
+        with self._db(write=True) as db:
+            row=db.execute('SELECT apply_state,outcome_state FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
+            if not row or row['apply_state'] not in {'APPLIED','REJECTED_PRECONDITION'}:raise SpoolDenied('known committed/rejected PG outcome required')
+            if row['outcome_state']!='DURABLE':
+                db.execute("UPDATE rkb_control_operations SET outcome_state='SENT_UNKNOWN',updated=? WHERE operation_key=?",(self.clock(),key))
+                if row['outcome_state']=='NOT_SENT':db.execute('UPDATE rkb_control_spool_meta SET unknown_count=unknown_count+1 WHERE id=1')
+
+    def _durable(self,key,receipt):
+        data=_json(receipt.__dict__)
+        if len(data)>8192:raise SpoolFull('remote receipt exceeds reserved metadata budget')
+        with self._db(write=True) as db:
+            row=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
+            if (receipt.operation_key,receipt.command_sha256,receipt.outcome_sha256,receipt.database_generation)!=(key,row['command_sha256'],row['outcome_sha256'],row['database_generation']):
+                raise SpoolConflict('remote outcome receipt differs')
+            prior=db.execute('SELECT receipt_bytes FROM rkb_control_receipts WHERE operation_key=?',(key,)).fetchone()
+            if prior is not None and bytes(prior[0])!=data:raise SpoolConflict('compact terminal receipt differs')
+            db.execute('INSERT OR IGNORE INTO rkb_control_receipts VALUES(?,?,?)',(key,row['command_sha256'],data))
+            db.execute("UPDATE rkb_control_operations SET outcome_state='DURABLE',remote_receipt_bytes=?,updated=? WHERE operation_key=?",(data,self.clock(),key))
+            if row['outcome_state']!='DURABLE':
+                db.execute('UPDATE rkb_control_spool_meta SET pending_count=pending_count-1,unknown_count=unknown_count-? WHERE id=1',(int(row['outcome_state']=='SENT_UNKNOWN'),))
+
+    async def publish_outcome(self,key,*,writer_generation):
+        self._active()
+        async with self._lock:
+            entry=await self.get(key)
+            if entry.remote_outcome is not None:return entry.remote_outcome
+            await self._write(self._outcome_sent,key)
+            receipt=await self.journal.record_outcome(entry.accepted,command=entry.command,
+                database_generation=entry.database_generation,outcome=entry.apply_receipt.outcome,
+                writer_generation=writer_generation)
+            await self._write(self._durable,key,receipt)
+            return receipt
+
+    @staticmethod
+    def _barrier(row,accepted_row=None,pending_sequence=None,unknown_sequence=None):
+        if accepted_row is None and row['seal_state']=='ACCEPTED':accepted_row=row
+        accepted=(AcceptedRestriction(accepted_row['operation_key'],accepted_row['sequence'],accepted_row['command_sha256'],
+            accepted_row['apply_state'],accepted_row['outcome_state']) if accepted_row is not None else None)
+        return SourceBarrier(row['operation_key'],row['source_id'],row['sequence'],row['command_sha256'],
+            row['database_generation'],row['seal_state']=='ACCEPTED',row['apply_state'],row['outcome_state'],accepted,
+            (row['sequence'] if row['outcome_state']!='DURABLE' else 0) if pending_sequence is None else pending_sequence,
+            (row['sequence'] if 'SENT_UNKNOWN' in (row['seal_state'],row['apply_state'],row['outcome_state']) else 0) if unknown_sequence is None else unknown_sequence)
+
+    def _barriers_for(self,sources):
+        with self._db() as db:
+            facts=[]
+            for source in sources:
+                row=db.execute('''SELECT operation_key,source_id,sequence,command_sha256,database_generation,
+                    seal_state,apply_state,outcome_state FROM rkb_control_operations
+                    WHERE source_id=? ORDER BY sequence DESC,operation_key LIMIT 1''',(source,)).fetchone()
+                if row is not None:
+                    accepted=db.execute('''SELECT operation_key,sequence,command_sha256,apply_state,outcome_state
+                        FROM rkb_control_operations WHERE source_id=? AND seal_state='ACCEPTED'
+                        ORDER BY sequence DESC,operation_key LIMIT 1''',(source,)).fetchone()
+                    pending=db.execute("SELECT sequence FROM rkb_control_operations WHERE source_id=? AND outcome_state<>'DURABLE' ORDER BY sequence DESC LIMIT 1",(source,)).fetchone()
+                    unknown=db.execute("SELECT sequence FROM rkb_control_operations WHERE source_id=? AND (seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN') ORDER BY sequence DESC LIMIT 1",(source,)).fetchone()
+                    facts.append(self._barrier(row,accepted,pending[0] if pending else 0,unknown[0] if unknown else 0))
+            meta=db.execute('SELECT sequence,accepted_sequence FROM rkb_control_spool_meta WHERE id=1').fetchone()
+            return BarrierSnapshot(tuple(facts),meta['sequence'],meta['accepted_sequence'])
+
+    async def barriers_for(self,source_ids):
+        self._active()
+        if not isinstance(source_ids,(tuple,list)) or len(source_ids)>160 or len(set(source_ids))!=len(source_ids):
+            raise ValueError('bounded exhaustive top-K source union required')
+        sources=tuple(_uuid(source) for source in source_ids)
+        return await _database(self._barriers_for,sources)
+
+    def _scope_state(self,sources):
+        with self._db() as db:
+            if sources is None:
+                row=db.execute('SELECT sequence,accepted_sequence,operation_count,pending_count,unknown_count FROM rkb_control_spool_meta WHERE id=1').fetchone()
+            elif not sources:
+                row={'sequence':0,'accepted_sequence':0,'operation_count':0,'pending_count':0,'unknown_count':0}
+            else:
+                slots=','.join('?' for _ in sources)
+                row=db.execute(f'''SELECT coalesce(max(sequence),0) AS sequence,
+                    coalesce(max(CASE WHEN seal_state='ACCEPTED' THEN sequence ELSE 0 END),0) AS accepted_sequence,
+                    count(*) AS operation_count,
+                    coalesce(sum(outcome_state<>'DURABLE'),0) AS pending_count,
+                    coalesce(sum(seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN'),0) AS unknown_count
+                    FROM rkb_control_operations INDEXED BY rkb_control_source_state WHERE source_id IN ({slots})''',sources).fetchone()
+            return {**dict(row),'pending':bool(row['pending_count']),'unknown':bool(row['unknown_count']),
+                    'history_complete':False,'scope_complete':False,'scope_class':'public_source'}
+
+    async def scope_state(self,source_ids=None):
+        """Query scope, including no-hit/zero-item results; never infer absence
+        from the top-K barrier list. Whole-scope counts use atomic metadata;
+        finite scope aggregates use the covering source/state index.
+        """
+        self._active()
+        if source_ids is not None:
+            if not isinstance(source_ids,(tuple,list)) or len(source_ids)>32 or len(set(source_ids))!=len(source_ids):
+                raise ValueError('bounded finite query source scope required')
+            source_ids=tuple(_uuid(source) for source in source_ids)
+        return await _database(self._scope_state,source_ids)
+
+    def _pending_page(self,after_key,limit):
+        with self._db() as db:
+            rows=db.execute('''SELECT operation_key,source_id,sequence,command_sha256,database_generation,
+                seal_state,apply_state,outcome_state FROM rkb_control_operations WHERE operation_key>?
+                AND (seal_state<>'ACCEPTED' OR apply_state NOT IN ('APPLIED','REJECTED_PRECONDITION') OR outcome_state<>'DURABLE')
+                ORDER BY operation_key LIMIT ?''',(after_key,limit+1)).fetchall()
+            return {'items':tuple(self._barrier(row) for row in rows[:limit]),'has_more':len(rows)>limit,
+                    'next_after_key':rows[limit-1]['operation_key'] if len(rows)>limit else None,
+                    'history_complete':False,'scope_complete':False}
+
+    async def pending_page(self,*,after_key='',limit=100):
+        self._active()
+        if not isinstance(after_key,str) or len(after_key)>4096 or type(limit) is not int or not 1<=limit<=160:
+            raise ValueError('bounded pending page required')
+        return await _database(self._pending_page,after_key,limit)
+
+    def close(self):
+        if self._writing or self._lock.locked():raise SpoolError('drain active control operations before shutdown')
+        if self._fd is not None:os.close(self._fd);self._fd=None

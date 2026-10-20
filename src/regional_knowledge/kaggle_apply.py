@@ -105,6 +105,40 @@ class MigrationTransition:
 
 
 @dataclass(frozen=True)
+class DependencySpec:
+    """Static operation write scope; read dependencies are a separate concern.
+
+    This metadata confers no identity or permission. The trusted intake derives
+    resources from these exact ID keys after existing current authorization.
+    An absent/unknown specification cannot prove a read independent.
+    """
+    operation: str
+    scope_class: str
+    resource_keys: frozenset[str]
+    scope_owner: str
+    restriction: bool = False
+
+    def __post_init__(self):
+        _text(self.operation)
+        if self.scope_class not in {'public_source','private_draft','case','unknown'}:
+            raise ValueError('unsupported static dependency class')
+        if self.scope_owner not in {'actor','shared'} or type(self.restriction) is not bool:
+            raise ValueError('explicit dependency scope ownership required')
+        if (not isinstance(self.resource_keys,frozenset) or not 1<=len(self.resource_keys)<=32
+                or any(not isinstance(k,str) for k in self.resource_keys)):
+            raise ValueError('bounded immutable resource ID keys required')
+        for key in self.resource_keys:_text(key)
+        if (self.scope_class=='private_draft' and self.scope_owner!='actor'
+                or self.scope_class=='public_source' and self.scope_owner!='shared'):
+            raise ValueError('dependency class ownership mismatch')
+
+    def wire(self):
+        return {'operation':self.operation,'scope_class':self.scope_class,
+                'resource_keys':sorted(self.resource_keys),'scope_owner':self.scope_owner,
+                'restriction':self.restriction}
+
+
+@dataclass(frozen=True)
 class HandlerSpec:
     kind: str
     route: str
@@ -113,6 +147,7 @@ class HandlerSpec:
     apply: PgFunction
     precondition_keys: frozenset[str]
     transition: MigrationTransition | None = None
+    dependency: DependencySpec | None = None
 
     def __post_init__(self):
         _text(self.kind)
@@ -123,6 +158,9 @@ class HandlerSpec:
             _text(key)
         if (self.kind == "schema_transition") != (self.transition is not None):
             raise ValueError("schema transitions require an exact trusted transition artifact")
+        if self.dependency is not None and (not isinstance(self.dependency,DependencySpec)
+                or self.dependency.operation!=self.route):
+            raise ValueError('dependency metadata must bind the exact handler operation')
 
     @property
     def key(self):
@@ -131,12 +169,16 @@ class HandlerSpec:
     @property
     def fingerprint(self) -> str:
         transition = self.transition
-        return _hash(_json({"key": self.key, "check": (self.check.name, self.check.definition_sha256),
+        data={"key": self.key, "check": (self.check.name, self.check.definition_sha256),
                             "apply": (self.apply.name, self.apply.definition_sha256),
                             "preconditions": sorted(self.precondition_keys),
                             "transition": None if transition is None else (
                                 transition.migration_id, transition.artifact_sha256,
-                                transition.predecessor, transition.target.wire())}))
+                                transition.predecessor, transition.target.wire())}
+        # Preserve historical fingerprints exactly when this new metadata is
+        # absent. New scope semantics require their own versioned handler key.
+        if self.dependency is not None:data['dependency']=self.dependency.wire()
+        return _hash(_json(data))
 
 
 @dataclass(frozen=True, init=False)

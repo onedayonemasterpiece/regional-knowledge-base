@@ -463,6 +463,52 @@ class RecoveryJournal:
             raise JournalConflict("command does not match an accepted publication")
         return command_hash
 
+    async def locate_accepted(self, command: ExactCommand) -> AcceptedSeal | None:
+        """Read-only reconciliation of one exact uncertain publication.
+
+        None proves only that the observed authoritative head is below this
+        sequence (including an empty stream), not that an in-flight CAS cannot
+        later commit. Missing historical proof/transport remains UNKNOWN. This
+        never seals, repairs indexes, rebinds commands or authorizes new work.
+        """
+        if not isinstance(command,ExactCommand):raise ValueError('exact command required')
+        _preflight_command(command,self.max_segment_bytes)
+        encoded=command.encode()
+        if len(encoded)>self.max_segment_bytes:raise JournalLimit('command exceeds segment byte budget')
+        value=await self._read(self.prefix+'/accepted/sequences/'+str(command.sequence),8192)
+        if value is not None:
+            entry=_decode(value.data)
+            try:
+                if (entry['codec']!='rkb.accepted-sequence.v1' or entry['stream']!=self.stream
+                        or type(entry['sequence']) is not int or entry['sequence']!=command.sequence):
+                    raise JournalCorrupt('invalid accepted sequence locator')
+                ref=self._parse_ref(entry['manifest'])
+                accepted=await self._published(ref)
+                previous,commands=await self.read_segment(ref)
+                first=previous.last_sequence+1 if previous else 1
+                if not first<=command.sequence<=ref.last_sequence:
+                    raise JournalCorrupt('accepted locator is outside its segment')
+                actual=commands[command.sequence-first]
+                actual_command=_decode(actual)
+                if (entry['command_sha256']!=_hash(actual)
+                        or entry['operation_key_sha256']!=_hash(actual_command['operation_key'].encode())):
+                    raise JournalCorrupt('accepted locator hash/key differs from sealed command')
+                if actual!=encoded:raise JournalConflict('another exact accepted command occupies this sequence')
+                return accepted
+            except (KeyError,TypeError,ValueError) as exc:
+                raise JournalCorrupt('invalid accepted sequence locator schema') from exc
+        head=await self.head()
+        if head is None or head.reference.last_sequence<command.sequence:return None
+        previous,commands=await self.read_segment(head.reference)
+        first=previous.last_sequence+1 if previous else 1
+        if command.sequence<first:
+            raise JournalUnknown('historical sequence locator absent; bounded index bootstrap required')
+        # Modern predecessor-first publication leaves at most the current head
+        # unindexed after a crash. Its native head CAS is acceptance evidence.
+        if commands[command.sequence-first]!=encoded:
+            raise JournalConflict('another exact accepted command occupies this sequence')
+        return AcceptedSeal(head.reference,tuple(_hash(data) for data in commands))
+
     async def _finish_seal(self, target: ObjectRef, writer_generation: str) -> AcceptedSeal:
         accepted = await self._published(target)
         _, commands = await self.read_segment(target)

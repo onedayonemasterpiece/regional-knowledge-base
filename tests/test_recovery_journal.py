@@ -114,6 +114,63 @@ async def test_executor_acceptance_proof_verifies_exact_published_command():
 
 
 @pytest.mark.asyncio
+async def test_locate_exact_acceptance_is_read_only_and_distinguishes_observed_absence():
+    store,journal=fixture()
+    original=command()
+    assert await journal.locate_accepted(original) is None
+    assert not store.objects
+    accepted=await seal(journal,[original])
+    version=store.version
+    assert await journal.locate_accepted(original)==accepted
+    assert store.version==version
+    with pytest.raises(JournalConflict):await journal.locate_accepted(replace(original,payload=b'different'))
+    assert await journal.locate_accepted(command(2)) is None
+    assert store.version==version
+
+
+@pytest.mark.asyncio
+async def test_locate_current_head_crash_gap_proves_acceptance_without_index_repair():
+    store,journal=fixture()
+    original=command()
+    store.fail_head_read_after_cas=True
+    with pytest.raises(JournalUnknown):await seal(journal,[original])
+    store.fail_head_read_after_cas=False;store.read_failures.clear()
+    assert not any('/accepted/' in key for key in store.objects)
+    version=store.version
+    located=await journal.locate_accepted(original)
+    assert located is not None and await journal.verify_accepted(located,original)==hashlib.sha256(original.encode()).hexdigest()
+    assert store.version==version and not any('/accepted/' in key for key in store.objects)
+
+
+@pytest.mark.asyncio
+async def test_locate_unpublished_orphan_never_creates_accepted_proof_and_history_gap_is_unknown():
+    store,journal=fixture()
+    store.faults.append(('cas-before','/head'))
+    with pytest.raises(JournalUnknown):await seal(journal,[command()])
+    version=store.version
+    assert await journal.locate_accepted(command()) is None
+    assert store.version==version
+    await seal(journal,[command()])
+    await seal(journal,[command(2)],await journal.head())
+    del store.objects[journal.prefix+'/accepted/sequences/1']
+    version=store.version
+    with pytest.raises(JournalUnknown):await journal.locate_accepted(command())
+    assert store.version==version
+
+
+@pytest.mark.asyncio
+async def test_locate_accepted_locator_poison_or_unavailable_is_not_absence():
+    store,journal=fixture()
+    await seal(journal,[command()])
+    key=journal.prefix+'/accepted/sequences/1'
+    raw=json.loads(store.objects[key].data);raw['operation_key_sha256']='0'*64
+    store.write(key,json.dumps(raw,sort_keys=True,separators=(',',':')).encode())
+    with pytest.raises(JournalCorrupt):await journal.locate_accepted(command())
+    store.read_failures.add('/accepted/sequences/')
+    with pytest.raises(JournalUnknown):await journal.locate_accepted(command())
+
+
+@pytest.mark.asyncio
 async def test_executor_rejects_receipt_for_uploaded_unpublished_orphan():
     store, journal = fixture()
     original = command()
