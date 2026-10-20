@@ -185,6 +185,8 @@ class KnowledgeMCPServer(MCPServer):
             allowed.update({'book_ingest','book_pages'})
         if getattr(self,'_target_cases_available',False):
             allowed.update({'disagreement_get','disagreement_edit','disagreement_contribute','disagreement_conclusion'})
+        if getattr(self,'_target_graph_available',False):
+            allowed.update({'graph_fetch','entity_list'})
         if getattr(self,'_target_geo_available',False):
             allowed.update({'geo_lookup','graph_fetch','poi_context'})
         if getattr(self,'_target_catalog_available',False):
@@ -438,6 +440,7 @@ def build_server(
     mcp._target_catalog_available = (selected=='kaggle_source' and target_startup.gate.catalog_supported())
     mcp._target_cases_available = (selected=='kaggle_source' and getattr(target_startup,'cases_backend',None) is not None)
     mcp._target_editorial_available = (selected=='kaggle_source' and getattr(target_startup,'editorial',None) is not None)
+    mcp._target_graph_available = (selected=='kaggle_source' and target_startup.gate.graph_supported())
     mcp._target_geo_available = (selected=='kaggle_source' and getattr(target_startup,'geo_backend',None) is not None)
     mcp._target_startup=target_startup
     mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
@@ -505,6 +508,10 @@ def build_server(
         from .kaggle_case_tools import register_case_tools
         register_case_tools(mcp,target_startup.cases_backend,_principal)
 
+    if profile in story_profiles and mcp._target_graph_available:
+        from .kaggle_source_graph_tools import register_source_graph_tools
+        register_source_graph_tools(mcp,backend,getattr(target_startup,'geo_backend',None),_principal)
+
     if profile in story_profiles and mcp._target_geo_available:
         @mcp.tool(name='geo_lookup',title='Find retained private geographic identities',
             description='Exact normalized name and optional declared source year. Minimal legacy-unanchored provenance; '
@@ -515,15 +522,16 @@ def build_server(
                 limit:Annotated[int,Field(ge=1,le=3)]=3,cursor:str|None=None)->dict[str,Any]:
             return await target_startup.geo_backend.geo_lookup(name,_principal(),year=year,limit=limit,cursor=cursor)
 
-        @mcp.tool(name='graph_fetch',title='Read a retained geographic identity or metadata page',
-            description='Exact private GEO entity UUID, with separately paginated minimal provenance, aliases, relations '
-                'and owner references. Old source text and graph discovery are unavailable.',
-            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
-        async def native_geo_graph_fetch(entity_id:str,limit:Annotated[int,Field(ge=1,le=3)]=3,
-                cursor:str|None=None,category:Literal['owner_reference','provenance','alias','relation','source_geo_observation']|None=None,
-                discovery_job_id:str|None=None)->dict[str,Any]:
-            return await target_startup.geo_backend.graph_fetch(entity_id,_principal(),limit=limit,cursor=cursor,
-                category=category,discovery_job_id=discovery_job_id)
+        if not mcp._target_graph_available:
+            @mcp.tool(name='graph_fetch',title='Read a retained geographic identity or metadata page',
+                description='Exact private GEO entity UUID, with separately paginated minimal provenance, aliases, relations '
+                    'and owner references. Old source text and graph discovery are unavailable.',
+                annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+            async def native_geo_graph_fetch(entity_id:str,limit:Annotated[int,Field(ge=1,le=3)]=3,
+                    cursor:str|None=None,category:Literal['owner_reference','provenance','alias','relation','source_geo_observation']|None=None,
+                    discovery_job_id:str|None=None)->dict[str,Any]:
+                return await target_startup.geo_backend.graph_fetch(entity_id,_principal(),limit=limit,cursor=cursor,
+                    category=category,discovery_job_id=discovery_job_id)
 
         @mcp.tool(name='poi_context',title='Read retained links to a physical POI',
             description='Private RKB geographic identities linked to the exact existing Street Story POI key. '
@@ -1263,7 +1271,7 @@ def build_server(
             if not row or row['active_revision']!=revision:raise ValueError("active document revision required")
         return await service.stage(principal,document_id,revision,candidates)
 
-    if not mcp._target_geo_available:
+    if not mcp._target_geo_available and not mcp._target_graph_available:
         @mcp.tool(title="Read one evidence-backed graph entity",description="One entity, authorized aliases/mentions and at most 20 one-hop relations with exact source evidence. No recursive traversal or graph dump.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
         async def graph_fetch(entity_id:str|None=None,limit:int=20,discovery_job_id:str|None=None)->dict[str,Any]:
             if discovery_job_id is not None:return await GraphService(backend).job_read(_principal(),discovery_job_id,limit)

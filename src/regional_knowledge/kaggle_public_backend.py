@@ -19,6 +19,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from .contracts import EvidenceSearchOutput, FetchOutput, ReadTrace, SearchOutput, SearchResult, BookFindOutput
 from .kaggle_protocol import Query, QueryFilters, TrustedActorContext, PassageContinuation, PassageReadRequest, StoryReadRequest
 from .kaggle_fact_contracts import FactReadRequest
+from .kaggle_source_graph_read import SourceGraphReadRequest
 from .kaggle_source_read import SourceReadRequest
 from .query_telemetry import ReadRuntime
 from .read_authority import TrustedReadDestination, VerifiedReadAuthority
@@ -196,12 +197,32 @@ class KaggleSourceBackend:
             read_trace=ReadTrace(**attempt.correlation(),
                 backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json'))
 
+    @staticmethod
+    def _render_graph(result,*,attempt):
+        return dict(status=result.status,reason=result.reason,items=list(result.records),
+            next_cursor=result.next_cursor,has_more=result.next_cursor is not None,
+            coverage='accepted_source_graph',geometry_acceptance='source_claims_not_owner_geometry',
+            observed_data_seq=result.observed_data_seq,observed_projection_seq=result.observed_projection_seq,
+            read_trace=ReadTrace(**attempt.correlation(),backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json'))
+
+    async def source_graph_fetch(self,entity_id,principal,*,limit=3,cursor=None,category=None,discovery_job_id=None):
+        if discovery_job_id is not None:
+            raise ToolError('{"status":"unavailable","reason":"target_graph_discovery_unavailable"}')
+        action={'alias':'aliases','relation':'relations'}.get(category,category) or 'entity'
+        return await self._search('',principal,evidence=True,graph_request=dict(entity_id=entity_id,
+            action=action,limit=limit,cursor=cursor))
+
+    async def entity_list(self,principal,*,document_ids=None,kinds=None,query='',limit=3,cursor=None):
+        if (not isinstance(document_ids,(list,tuple)) or len(document_ids)!=1 or kinds or query):
+            raise ToolError('{"status":"unavailable","reason":"target_graph_exact_source_scope_required"}')
+        return await self._search('',principal,evidence=True,graph_request=dict(source_id=document_ids[0],action='list',limit=limit,cursor=cursor))
+
     async def _search(self, query, principal, *, evidence, source_ids=None, limit=3, exact_locator=None,
-                      story_request=None,fact_request=None,catalog_request=None,kinds=('source',),trusted=None,story_cursor_generation=None):
+                      story_request=None,fact_request=None,catalog_request=None,graph_request=None,kinds=('source',),trusted=None,story_cursor_generation=None):
         # One budget includes auth, admission, network, native execution and gate.
         deadline = min(time.monotonic()+2,trusted['deadline']) if trusted is not None else time.monotonic()+2
         telemetry = self.read_telemetry
-        exact=exact_locator is not None or story_request is not None or fact_request is not None or catalog_request is not None
+        exact=exact_locator is not None or story_request is not None or fact_request is not None or catalog_request is not None or graph_request is not None
         operation='fetch' if exact else 'knowledge_search' if evidence else 'search'
         attempt = telemetry.begin_attempt(operation,**({'request_id':trusted['request_id']} if trusted else {}))
         authority = trusted['authority'] if trusted is not None else None
@@ -236,7 +257,8 @@ class KaggleSourceBackend:
                         actor=TrustedActorContext(person_id=authority.person_id, audience=authority.destination.key,
                             auth_epoch=authority.auth_revision, visibility_epoch=0, context_ref=authority.context_ref),
                         deadline_ms=max(1, int((deadline-time.monotonic())*1000)))
-                    request = (SourceReadRequest(**catalog_request,**identity) if catalog_request is not None else
+                    request = (SourceGraphReadRequest(**graph_request,**identity) if graph_request is not None else
+                        SourceReadRequest(**catalog_request,**identity) if catalog_request is not None else
                         FactReadRequest(**fact_request,**identity) if fact_request is not None else
                         (EditorialReadRequest if self.source_gate.catalog_supported() else StoryReadRequest)(**story_request,**identity) if story_request is not None else
                         PassageReadRequest(locator=exact_locator, **identity) if exact_locator is not None else
@@ -259,7 +281,7 @@ class KaggleSourceBackend:
                 status, reason = gated.result.status, gated.result.reason
                 if (gated.result.status != 'ok' if exact else gated.result.mode != 'hybrid'):
                     raise ToolError(json.dumps({'status': status, 'reason': reason}))
-                render = (lambda value:BookFindOutput(
+                render = (lambda value:self._render_graph(value,attempt=attempt)) if graph_request is not None else (lambda value:BookFindOutput(
                     query=catalog_request['query'],results=list(value.records))) if catalog_request is not None else (lambda value:self._render_fact(value,attempt=attempt)) if fact_request is not None else (lambda value:self._render_story(value,attempt=attempt)) if story_request is not None else (lambda value: self._render_fetch(value, locator=exact_locator, attempt=attempt)) if exact_locator is not None else (
                     lambda value: self._render(value, evidence=evidence, attempt=attempt))
                 output = render(gated.result)

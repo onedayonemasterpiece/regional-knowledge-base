@@ -196,6 +196,9 @@ class TargetServiceStartup:
         self.editorial=None
         editorial_available=self.gate.editorial_supported() and config.import_tokenizer is not None
         if editorial_available:self.routes.update({'story.edit':self.backend.story_edit,'story.access':self.backend.story_access})
+        if self.gate.graph_supported():
+            self.routes.update({'source.entity_read':self.backend.source_graph_fetch,
+                'source.entity_list':self.backend.entity_list})
         self.geo_gate=self.geo_backend=None
         if config.geo_manifest_operation_keys:
             from .geo_read_gate import GeoReadGate

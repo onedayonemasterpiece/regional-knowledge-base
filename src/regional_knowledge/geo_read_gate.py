@@ -146,6 +146,13 @@ class GeoReadGate:
                 self._manifest=proof
                 return plan.manifest_id
 
+    def knows_entity(self,entity_id):
+        # Route selection only. This confers no read permission and never
+        # substitutes for dispatch/finish/final issuance authority checks.
+        from .geo_migration import exact_uuid
+        exact_uuid(entity_id)
+        return self._manifest is not None and ('place:'+entity_id) in self._manifest.hashes
+
     def _expire(self):
         for values in (self._permits,self._tickets):
             for token,read in tuple(values.items()):
