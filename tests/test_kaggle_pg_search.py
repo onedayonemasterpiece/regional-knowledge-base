@@ -3,6 +3,13 @@ import asyncio
 import os
 from pathlib import Path
 import subprocess
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
+from psycopg.pq import TransactionStatus
+from psycopg.rows import tuple_row
+
+from regional_knowledge.kaggle_search import _PENDING_ENCODERS
 
 import pytest
 
@@ -14,37 +21,130 @@ CONTAINER = "rkb-v4-fixture-20261020"
 
 def test_vector_contract():
     assert vector_literal([1] + [0] * 1023).startswith("[1.0,0.0")
-    for vector in ([0] * 1024, [1] * 1023, [float("nan")] * 1024):
+    for vector in ([0] * 1024, [1] * 1023, [float("nan")] * 1024, [1] * 1024,
+                   [True] + [0] * 1023, ["1"] + [0] * 1023):
         with pytest.raises(ValueError):
             vector_literal(vector)
 
 
+class FixtureConnection:
+    def __init__(self):
+        self.closed = False
+        self.info = SimpleNamespace(transaction_status=TransactionStatus.IDLE)
+        self.row_factory = tuple_row
+        self.cleaned = False
+        self.statements = []
+
+    @asynccontextmanager
+    async def transaction(self):
+        try:
+            yield
+        finally:
+            self.cleaned = True
+
+    @asynccontextmanager
+    async def cursor(self):
+        yield self
+
+    async def execute(self, statement, params=()):
+        self.statements.append((statement, params))
+        self.statement = statement
+
+    async def fetchall(self):
+        return []
+
+
 @pytest.mark.asyncio
-async def test_deadline_cancels_encoder_and_exits_transaction():
+@pytest.mark.parametrize("caller_cancel", [False, True])
+async def test_deadline_or_caller_cancel_cleans_transaction(caller_cancel):
+    connection = FixtureConnection()
     entered = asyncio.Event()
-    cleaned = asyncio.Event()
+    cancelled = asyncio.Event()
 
     async def encode(query):
         entered.set()
-        await asyncio.sleep(10)
-
-    class Connection:
-        def transaction(self):
-            return self
-
-        async def __aenter__(self):
-            await entered.wait()
+        try:
             await asyncio.sleep(10)
+        finally:
+            cancelled.set()
 
-        async def __aexit__(self, *args):
-            cleaned.set()
+    task = asyncio.create_task(fused_search(connection, "fixture", encode=encode,
+                                           timeout_seconds=.02 if not caller_cancel else 1))
+    await entered.wait()
+    if caller_cancel:
+        task.cancel()
+    with pytest.raises(asyncio.CancelledError if caller_cancel else TimeoutError):
+        await task
+    await asyncio.wait_for(cancelled.wait(), .1)
+    await asyncio.sleep(0)
+    assert connection.cleaned
+    assert not _PENDING_ENCODERS
 
+
+@pytest.mark.asyncio
+async def test_resistant_encoder_returns_on_deadline_and_observes_late_failure():
+    connection = FixtureConnection()
+    finish = asyncio.Event()
+    cancellation = asyncio.Event()
+
+    async def encode(query):
+        try:
+            await finish.wait()
+        except asyncio.CancelledError:
+            cancellation.set()
+            await finish.wait()  # Actual shared forward still owns its permit.
+        raise RuntimeError("late inference failure")
+
+    task = asyncio.create_task(fused_search(connection, "fixture", encode=encode,
+                                           timeout_seconds=.02))
     with pytest.raises(TimeoutError):
-        await fused_search(Connection(), "fixture", encode=encode, timeout_seconds=.02)
-    # Cancellation during transaction entry does not enter its body.
-    assert not cleaned.is_set()
-    assert not [task for task in asyncio.all_tasks()
-                if task is not asyncio.current_task() and not task.done()]
+        await asyncio.wait_for(task, .2)
+    await cancellation.wait()
+    assert connection.cleaned and len(_PENDING_ENCODERS) == 1
+    finish.set()
+    await asyncio.sleep(.01)
+    assert not _PENDING_ENCODERS
+
+
+@pytest.mark.asyncio
+async def test_sql_cancel_rolls_back_before_return():
+    class BlockedSQL(FixtureConnection):
+        async def execute(self, statement, params=()):
+            if "lexical_candidates" in statement:
+                await asyncio.sleep(10)
+            await super().execute(statement, params)
+
+    async def encode(query):
+        await asyncio.sleep(.01)
+        return [1] + [0] * 1023
+
+    connection = BlockedSQL()
+    with pytest.raises(TimeoutError):
+        await fused_search(connection, "fixture", encode=encode, timeout_seconds=.02)
+    assert connection.cleaned
+
+
+@pytest.mark.asyncio
+async def test_input_and_connection_bounds():
+    async def encode(query):
+        raise AssertionError("invalid input reached encoder")
+
+    for arguments in ({"top_k": True}, {"top_k": 1.5}, {"candidate_budget": True},
+                      {"candidate_budget": 10.0}, {"top_k": 6}):
+        with pytest.raises(ValueError):
+            await fused_search(FixtureConnection(), "fixture", encode=encode, **arguments)
+    for query in ("x" * 1001, "", None):
+        with pytest.raises(ValueError):
+            await fused_search(FixtureConnection(), query, encode=encode)
+    for field, value in (("closed", True), ("row_factory", None)):
+        connection = FixtureConnection()
+        setattr(connection, field, value)
+        with pytest.raises(ValueError):
+            await fused_search(connection, "fixture", encode=encode)
+    connection = FixtureConnection()
+    connection.info.transaction_status = TransactionStatus.INTRANS
+    with pytest.raises(ValueError):
+        await fused_search(connection, "fixture", encode=encode)
 
 
 def fixture_sql():
@@ -71,12 +171,12 @@ INSERT INTO rkb_v4.passage_search
  (passage_id,source_id,revision,ordinal,locator,body,language,config,embedding)
  SELECT ('10000000-0000-0000-0000-' || lpad(n::text,12,'0'))::uuid,
  source_id,revision,n,'page ' || n,
- CASE WHEN n = 2 THEN 'semantic harbour without keyword' ELSE 'needle forbidden' END,
+ CASE WHEN n = 2 THEN 'semantic harbour without keyword ' || repeat('x',5000) ELSE 'needle forbidden' END,
  'simple','pg_catalog.simple','{vector}'::public.vector
  FROM (SELECT row_number() OVER (ORDER BY source_id,revision)::int n, *
        FROM rkb_v4.revisions) x;
 DO $$
-DECLARE ids uuid[]; total integer;
+DECLARE ids uuid[]; total integer; old_projection jsonb; new_projection jsonb;
 BEGIN
  SELECT count(*) INTO total FROM rkb_v4.lexical_candidates('needle',200);
  IF total <> 0 THEN RAISE EXCEPTION 'inactive/private leakage lexical %',total; END IF;
@@ -84,6 +184,18 @@ BEGIN
  IF cardinality(ids) <> 1 THEN RAISE EXCEPTION 'dense eligibility failed'; END IF;
  SELECT count(*) INTO total FROM rkb_v4.hydrate(ids);
  IF total <> 1 THEN RAISE EXCEPTION 'dense independent recall failed'; END IF;
+ SELECT length(body) INTO total FROM rkb_v4.hydrate(ids);
+ IF total <= 4000 THEN RAISE EXCEPTION 'body silently truncated'; END IF;
+ SELECT to_jsonb(p) INTO old_projection FROM rkb_v4.passage_search p WHERE passage_id=ids[1];
+ UPDATE rkb_v4.sources SET bibliography=repeat('b',5000)
+ WHERE source_id='00000000-0000-0000-0000-000000000001';
+ SELECT length(bibliography) INTO total FROM rkb_v4.hydrate(ids);
+ IF total <> 5000 THEN RAISE EXCEPTION 'bibliography silently truncated'; END IF;
+ SELECT to_jsonb(p) INTO new_projection FROM rkb_v4.passage_search p WHERE passage_id=ids[1];
+ IF old_projection IS DISTINCT FROM new_projection THEN RAISE EXCEPTION 'metadata reembedded projection'; END IF;
+ UPDATE rkb_v4.sources SET bibliography='accepted shared book'
+ WHERE source_id='00000000-0000-0000-0000-000000000001';
+
  UPDATE rkb_v4.sources SET withdrawn=true WHERE bibliography='accepted shared book';
  SELECT count(*) INTO total FROM rkb_v4.hydrate(ids);
  IF total <> 0 THEN RAISE EXCEPTION 'hydrate did not recheck withdrawal'; END IF;
@@ -147,7 +259,7 @@ async def test_fused_dense_only_evidence_and_single_batch_hydration():
     source = UUID("00000000-0000-0000-0000-000000000001")
     statements = []
 
-    class Connection:
+    class Connection(FixtureConnection):
         def transaction(self):
             return self
 
@@ -172,6 +284,7 @@ async def test_fused_dense_only_evidence_and_single_batch_hydration():
             return [(passage, source, 2, "page 1", "harbour", "book")]
 
     async def encode(query):
+        await asyncio.sleep(.01)
         return [1] + [0] * 1023
 
     result = await fused_search(Connection(), "no lexical match", encode=encode)
@@ -181,3 +294,6 @@ async def test_fused_dense_only_evidence_and_single_batch_hydration():
     assert len(hydration) == 1 and hydration[0][1] == ([passage],)
     dense = next(item for item in statements if "dense_candidates" in item[0])
     assert len(dense[1]) == 2  # query vector + budget, no lexical IDs
+    timeouts = [int(params[0]) for sql, params in statements if "set_config" in sql]
+    assert timeouts == sorted(timeouts, reverse=True)
+    assert timeouts[-1] < timeouts[0]

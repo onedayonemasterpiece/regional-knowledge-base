@@ -40,17 +40,16 @@ CREATE INDEX passage_lexical ON rkb_v4.passage_search USING gin (lexemes);
 CREATE FUNCTION rkb_v4.reject_revision_update() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN RAISE EXCEPTION 'immutable revision/projection: create a new revision'; END
 $$;
-CREATE FUNCTION rkb_v4.reject_source_payload_update() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION rkb_v4.reject_source_id_update() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    IF NEW.source_id IS DISTINCT FROM OLD.source_id
-       OR NEW.bibliography IS DISTINCT FROM OLD.bibliography THEN
-        RAISE EXCEPTION 'immutable source payload';
+    IF NEW.source_id IS DISTINCT FROM OLD.source_id THEN
+        RAISE EXCEPTION 'immutable source identity';
     END IF;
     RETURN NEW;
 END
 $$;
-CREATE TRIGGER immutable_source_payload BEFORE UPDATE ON rkb_v4.sources
-    FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_source_payload_update();
+CREATE TRIGGER immutable_source_id BEFORE UPDATE ON rkb_v4.sources
+    FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_source_id_update();
 CREATE TRIGGER immutable_revision BEFORE UPDATE ON rkb_v4.revisions
     FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_revision_update();
 CREATE TRIGGER immutable_passage BEFORE UPDATE ON rkb_v4.passage_search
@@ -89,9 +88,8 @@ $$;
 CREATE FUNCTION rkb_v4.hydrate(candidate_ids uuid[])
 RETURNS TABLE (passage_id uuid, source_id uuid, revision bigint, locator text,
                body text, bibliography text) LANGUAGE sql STABLE AS $$
-    SELECT p.passage_id, p.source_id, p.revision, p.locator,
-           left(p.body, 4000), left(s.bibliography, 1000)
-    FROM unnest(candidate_ids[1:50]) WITH ORDINALITY ids(id, rank)
+    SELECT p.passage_id, p.source_id, p.revision, p.locator, p.body, s.bibliography
+    FROM unnest(candidate_ids[1:5]) WITH ORDINALITY ids(id, rank)
     JOIN rkb_v4.passage_search p ON p.passage_id = ids.id
     JOIN rkb_v4.active_revision a USING (source_id, revision)
     JOIN rkb_v4.sources s USING (source_id)
