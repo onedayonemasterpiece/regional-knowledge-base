@@ -38,7 +38,7 @@ class NativePg(Pg):
     async def execute(self,sql,args=None):return await self.cursor().execute(sql,args)
 
 
-def pair(e,*,lease_seconds=10,schema_revision=None):
+def pair(e,*,lease_seconds=10,schema_revision=None,geo_bootstrap_operation_keys=()):
     b=binding();pg=NativePg();database=SimpleNamespace(database_generation='db-source',writer_generation='writer-1')
     if schema_revision is not None:database.schema_revision=schema_revision
     routes=('source.search','source.fetch','source.withdraw')
@@ -53,7 +53,8 @@ def pair(e,*,lease_seconds=10,schema_revision=None):
     native.attached(1)
     verifier=WssSourceHistoryVerifier(e.spool,acquire=None,database=database,observer_sha256=native.code_hash,
         binding_current=lambda current:current is b,routes={k:lambda:None for k in routes},
-        expected_catalog_sha256=digest(b'catalog'),expected_acl_sha256=digest(canonical(pg.acl)),writer_generation='writer-1')
+        expected_catalog_sha256=digest(b'catalog'),expected_acl_sha256=digest(canonical(pg.acl)),writer_generation='writer-1',
+        geo_bootstrap_operation_keys=geo_bootstrap_operation_keys)
     calls=[]
     async def phase(binding,args):
         calls.append(args)
@@ -220,3 +221,66 @@ async def test_fresh11_requires_both_story_and_graph_origin_proofs(env):
             await p.v.renew(p.b)
         assert p.v._coverage is None
     finally:await p.n.aclose()
+
+
+def large_geo_commands(owner):
+    import copy
+    from test_geo_migration import snapshot,uid
+    from regional_knowledge.geo_migration import InventoryCounts,sha
+    from regional_knowledge.geo_whitelist import build_geo_whitelist
+    from regional_knowledge.geo_manifest_commands import plan_geo_manifest
+    data=snapshot();template=copy.deepcopy(data['entities'][0]);mention=data['mentions'][0];intent=data['geo_intents'][0]
+    template['external_ref']=None;template['metadata']={'poi_locator':template['metadata']['poi_locator']}
+    nodes=[dict(template,id=uid(1000+n)) for n in range(409)];mentions=[];intents=[]
+    for n in range(1008):
+        item=dict(mention,id=uid(10000+n),entity_id=nodes[n%409]['id']);mentions.append(item)
+        if n<540:
+            value=copy.deepcopy(intent)
+            value.update(request_id='geor_'+f'{n:032x}',mention_id=item['id'],entity_id=item['entity_id'])
+            value['mention_sha256']=sha(dict(doc=item['document_id'],revision=item['revision'],mention_id=item['id'],
+                evidence=item['evidence'],name=item['exact_source_spelling']))
+            intents.append(value)
+    data.update(entities=nodes,mentions=mentions,aliases=[],relations=[],geo_intents=intents,
+        expected_counts=InventoryCounts(entities=409,geo_places=409,mentions=1008,aliases=0,relations=0,geo_intents=540,accepted_geo_metadata=0))
+    return plan_geo_manifest(build_geo_whitelist(**data)).commands(first_sequence=1,
+        operation_key='geo-bootstrap-synthetic',request_id='geo-bootstrap-synthetic',person_id=owner,
+        logical_time='2026-10-20T20:00:00Z')
+
+
+@pytest.mark.asyncio
+async def test_measured_geo_bootstrap_has_separate_bounded_history_window(env):
+    from regional_knowledge.kaggle_apply import HandlerRegistry
+    from regional_knowledge.geo_manifest_commands import geo_manifest_handler,GEO_REVISIONS
+    from regional_knowledge.source_history_wss import GEO_BOOTSTRAP_HISTORY_BYTES
+    commands=large_geo_commands(env.p.owner.subject)
+    size=sum(len(c.encode()) for c in commands)
+    assert 4*1024*1024<size<GEO_BOOTSTRAP_HISTORY_BYTES
+    env.registry=HandlerRegistry([geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256='a'*64,apply_sha256='b'*64)])
+    env.spool.registry=env.registry
+    p=pair(env,schema_revision=GEO_REVISIONS.schema,geo_bootstrap_operation_keys=tuple(c.operation_key for c in commands))
+    try:
+        await p.v.establish_genesis(p.b)
+        for c in commands:
+            await env.spool.stage_domain_command(env.p.admin,c,database_generation='db-source')
+            await env.spool.seal(env.p.admin,c.operation_key,writer_generation='writer-1',predecessor=await env.journal.head())
+        proof=await p.v.restore(p.b)
+        assert proof.current() and proof.accepted_sequence==len(commands) and len(proof.pending)==len(commands)
+        # Byte headroom is limited to explicitly configured GEO keys. Neither
+        # unknown GEO operations nor public source commands inherit it.
+        p.v.geo_bootstrap_operations=frozenset()
+        with pytest.raises(SpoolConflict,match='budget exceeded'):await p.v.restore(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()
+
+
+def test_geo_window_cannot_expand_ordinary_source_or_unlisted_operation_budget(env):
+    from regional_knowledge.source_history_wss import GEO_BOOTSTRAP_HISTORY_BYTES
+    p=pair(env,geo_bootstrap_operation_keys=('geo-open',))
+    geo=SimpleNamespace(route='geo.manifest.install.v1',schema_revision='rkb-v4-sql001-011-v1',operation_key='geo-open')
+    usage=[0,0]
+    p.v._charge_history(usage,geo,GEO_BOOTSTRAP_HISTORY_BYTES)
+    p.v._charge_history(usage,env.cmd,p.v.max_history_bytes)
+    assert usage==[4*1024*1024,6*1024*1024]
+    for command in (env.cmd,SimpleNamespace(**dict(vars(geo),operation_key='not-configured'))):
+        with pytest.raises(SpoolConflict):p.v._charge_history([p.v.max_history_bytes,0],command,1)
+    with pytest.raises(SpoolConflict):p.v._charge_history([0,GEO_BOOTSTRAP_HISTORY_BYTES],geo,1)

@@ -111,7 +111,8 @@ def configured_source_service():
     database=OwnedDatabase(**value['database'])
     registry=fixed_registry(database,value['command_handlers'])
     history=WssNativeHistoryProofAdapter(database=database,expected_catalog_sha256=value['catalog_sha256'],
-        expected_acl_sha256=value['acl_sha256'],expected_observer_sha256=value['observer_sha256'])
+        expected_acl_sha256=value['acl_sha256'],expected_observer_sha256=value['observer_sha256'],
+        geo_bootstrap_operation_keys=tuple(value.get('geo_manifest_operation_keys',())))
     import_owners=None
     if 'source_import' in value:
         from .kaggle_import_composition import SourceImportOwners

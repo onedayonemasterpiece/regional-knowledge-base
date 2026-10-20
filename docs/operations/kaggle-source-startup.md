@@ -158,3 +158,29 @@ still waits for full WSS native history coverage after that activation.
 The configured snapshot must already exist. This restore composition does not
 create an initial backup for a deployment whose native snapshot owner was never
 enabled, and it does not silently choose or replace a published snapshot.
+
+
+Fresh11 source intake also requires the exact configured GEO installation. Set
+all `geo_manifest_operation_keys` before constructing startup and establishing
+its initial route/genesis closure. `imports_current()` opens new source acceptance
+only after the retained GEO gate has verified every accepted phase, native apply,
+remote durable outcome and exact contiguous activation prefix. Configuring the
+keys, READY, a manifest file or an activation ACK alone is insufficient. Ordinary
+reads and GEO installation stay available while installation is pending. Already
+accepted imports continue exact reconciliation after this proof invalidates.
+
+The measured operational GEO manifest has20 commands/5,680,160 encoded command
+bytes; its largest complete SOURCE_COMMAND envelope is752,274bytes. Both source
+WSS boundaries already permit2MiB. The configured20 operation keys receive a
+separate6MiB WSS history window for their exact fresh11 GEO command and outcome
+bytes. Ordinary source/Story/Case history retains its4MiB budget; unrelated GEO
+operations cannot use the window. Per-command, per-frame and command-count bounds
+remain unchanged. These byte measurements used synthetic in-memory seals with
+actual codecs, not remote acceptance or native application.
+
+Cold WSS history currently verifies from immutable genesis; incremental renewal
+uses an already verified prefix. This GEO bootstrap allowance does not make
+unbounded cold history or post-GC GEO proof reconstruction supported. A verified
+snapshot/prefix capability and compact durable GEO proof must cover those cases
+before claiming restart/retention acceptance. The current GEO gate still needs
+its accepted raw install rows; do not GC them while that restore gap remains.

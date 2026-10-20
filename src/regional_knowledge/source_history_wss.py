@@ -12,15 +12,20 @@ from .source_read_gate import binding_key
 from .kaggle_recovery_dispatch import RecoveryPhaseDispatch
 
 
+GEO_BOOTSTRAP_HISTORY_BYTES=6*1024*1024
+
+
 class WssNativeHistoryProofAdapter:
     """Concrete startup adapter; existing queue and private native observations."""
     def __init__(self,*,database,expected_catalog_sha256,expected_acl_sha256,expected_observer_sha256,
-                 coverage_seconds=30,timeout_seconds=10,max_commands=2048,max_history_bytes=4*1024*1024):
+                 coverage_seconds=30,timeout_seconds=10,max_commands=2048,max_history_bytes=4*1024*1024,
+                 geo_bootstrap_operation_keys=()):
         self.database=database;self.catalog=expected_catalog_sha256;self.acl=expected_acl_sha256
         self.observer=expected_observer_sha256;self.coverage_seconds=coverage_seconds
         self.timeout=timeout_seconds;self.max_commands=max_commands;self.max_bytes=max_history_bytes
         if type(self.observer) is not str or len(self.observer)!=64 or set(self.observer)-set('0123456789abcdef'):
             raise ValueError('independent native observer source pin required')
+        self.geo_bootstrap_operation_keys=geo_bootstrap_operation_keys
         self._bound=None
 
     def bind(self,*,spool,routes,binding_current,writer_generation):
@@ -29,15 +34,32 @@ class WssNativeHistoryProofAdapter:
         self._bound=WssSourceHistoryVerifier(spool,acquire=None,binding_current=binding_current,routes=dict(routes),
             expected_catalog_sha256=self.catalog,expected_acl_sha256=self.acl,writer_generation=writer_generation,
             timeout_seconds=self.timeout,coverage_seconds=self.coverage_seconds,max_commands=self.max_commands,
-            max_history_bytes=self.max_bytes,database=self.database,observer_sha256=self.observer)
+            max_history_bytes=self.max_bytes,database=self.database,observer_sha256=self.observer,
+            geo_bootstrap_operation_keys=self.geo_bootstrap_operation_keys)
         return self._bound
 
 
 class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
-    def __init__(self,*args,database,observer_sha256,**kwargs):
+    def __init__(self,*args,database,observer_sha256,geo_bootstrap_operation_keys=(),**kwargs):
         super().__init__(*args,**kwargs)
         self.database,self.observer_hash=database,observer_sha256
+        if (type(geo_bootstrap_operation_keys) is not tuple or len(geo_bootstrap_operation_keys)>256
+                or len(set(geo_bootstrap_operation_keys))!=len(geo_bootstrap_operation_keys)
+                or any(type(key) is not str or not 1<=len(key.encode())<=256 for key in geo_bootstrap_operation_keys)):
+            raise ValueError('bounded exact GEO bootstrap operation keys required')
+        self.geo_bootstrap_operations=frozenset(geo_bootstrap_operation_keys)
         self._native_prefix=None
+
+    def _charge_history(self,usage,command,size):
+        # A measured, exact-key GEO bootstrap is a separate bounded window.
+        # Ordinary source/Story/Case commands never borrow this allowance.
+        geo=(command.route=='geo.manifest.install.v1' and
+            command.schema_revision=='rkb-v4-sql001-011-v1' and
+            command.operation_key in self.geo_bootstrap_operations)
+        index=1 if geo else 0
+        usage[index]+=size
+        if usage[index]>(GEO_BOOTSTRAP_HISTORY_BYTES if geo else self.max_history_bytes):
+            raise SpoolConflict('native source history budget exceeded')
 
     def _dispatch(self,binding):
         q=self.spool.queue
@@ -83,17 +105,18 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                 if mode!='full' and await self._head_unchanged(previous.head):head=previous.head
                 else:head=await j.head()
                 base=previous.head.reference if previous and previous.head else None
-                commands=[];ref=head.reference if head else None;used=0
+                commands=[];ref=head.reference if head else None;usage=[0,0]
                 stop=None if mode=='full' else base
                 for _ in range(j.max_reconcile_hops):
                     if ref==stop:break
                     if ref is None:raise SpoolConflict('verified source prefix is not an exact ancestor')
                     older,raws=await j.read_segment(ref)
                     for raw in raws:
-                        used+=len(raw)
-                        if used>self.max_history_bytes or len(commands)>=self.max_commands:
+                        value=self._classify(raw,ref)
+                        self._charge_history(usage,value[0],len(raw))
+                        if len(commands)>=self.max_commands:
                             raise SpoolConflict('native source history budget exceeded')
-                        commands.append(self._classify(raw,ref))
+                        commands.append(value)
                     ref=older
                 if ref!=stop:raise SpoolConflict('source genesis ancestry incomplete')
                 commands.sort(key=lambda x:x[0].sequence)
@@ -107,8 +130,8 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     for raw,hh,m in previous.pending:
                         c,h,m=self._classify(raw,m)
                         if h.fingerprint!=hh:raise SpoolConflict('pending source handler differs')
-                        known[c.sequence]=(c,h,m);used+=len(raw)
-                if len(known)>self.max_commands or used>self.max_history_bytes or len({c.operation_key for c,_,_ in known.values()})!=len(known):
+                        known[c.sequence]=(c,h,m);self._charge_history(usage,c,len(raw))
+                if len(known)>self.max_commands or len({c.operation_key for c,_,_ in known.values()})!=len(known):
                     raise SpoolConflict('source pending history bound or identity differs')
                 pending_earlier=sorted(seq for seq in known if mode!='full' and seq<=previous.applied_sequence)
                 nonce=secrets.token_hex(24)
@@ -175,12 +198,11 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                             value=json.loads(remote.data)
                             try:body=base64.b64decode(value['outcome_b64'],validate=True)
                             except (KeyError,ValueError):raise SpoolConflict('remote source outcome bytes differ') from None
-                            used+=len(body)
+                            self._charge_history(usage,c,len(body))
                             expected_outcome={'codec':'rkb.outcome.v1','stream':j.stream,'command_sha256':_hash(c.encode()),
                                 'sequence':c.sequence,'operation_key':c.operation_key,'database_generation':key[3],
                                 'outcome_b64':base64.b64encode(body).decode(),'outcome_sha256':outcome[1],'outcome_length':outcome[2]}
-                            if (remote.data!=_json(expected_outcome) or len(body)!=outcome[2] or _hash(body)!=outcome[1]
-                                    or used>self.max_history_bytes):raise SpoolConflict('remote outcome differs from native exact prefix')
+                            if (remote.data!=_json(expected_outcome) or len(body)!=outcome[2] or _hash(body)!=outcome[1]):raise SpoolConflict('remote outcome differs from native exact prefix')
                             durable=True
                         if h.dependency.scope_class=='public_source' and outcome[0]=='applied':origins.append(c.ids['source_id'])
                     if not durable:pending.append((c.encode(),h.fingerprint,m))
