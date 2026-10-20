@@ -159,3 +159,24 @@ async def test_native_editorial_failure_rolls_back_and_original_order_replay_is_
     await initialize(native['connection'],'editorial-fixture-two');native['generation']='editorial-fixture-two'
     for c,r in zip(commands,receipts):assert (await apply(native,c)).outcome==r.outcome
     assert await read(native,view='history')==actual
+
+
+@pytest.mark.asyncio
+async def test_native_catalogue_and_page_provenance_survive_without_local_spool(native):
+    assert (await apply(native,imported())).status=='applied'
+    doc=manifest_payload();conn=native['connection']
+    async with conn.transaction():
+        rows=await(await conn.execute('SELECT * FROM rkb_v4.find_source_catalog_v1(%s,8)',('Exact title',))).fetchall()
+        assert len(rows)==1 and rows[0][3]==doc['source_manifest']['metadata']
+        proof=(await(await conn.execute('SELECT metadata FROM rkb_v4.source_passage_metadata_v1(%s::uuid[])',
+            ([doc['passages'][0]['passage_id']],))).fetchone())[0]
+        assert proof['original_sha256']==doc['original']['sha256']
+        assert proof['pages'][0]['physical_page_index']==1 and proof['pages'][0]['printed_page_number']=='105'
+        assert proof['regions'][0]['bbox']==doc['source_manifest']['regions'][0]['bbox']
+        assert not {'original_receipt_b64','native_version','key','original_receipt'} & proof.keys()
+        whitespace='\u3000\t\n\u00a0'
+        assert (await(await conn.execute('SELECT rkb_v4.source_text_trim_v1(%s)',(whitespace+'А🙂'+whitespace,))).fetchone())[0]=='А🙂'
+        await conn.execute('UPDATE rkb_v4.sources SET withdrawn=true WHERE source_id=%s',(SOURCE,))
+        assert not await(await conn.execute('SELECT * FROM rkb_v4.find_source_catalog_v1(%s,8)',('Exact title',))).fetchall()
+        assert not await(await conn.execute('SELECT * FROM rkb_v4.source_passage_metadata_v1(%s::uuid[])',
+            ([doc['passages'][0]['passage_id']],))).fetchall()
