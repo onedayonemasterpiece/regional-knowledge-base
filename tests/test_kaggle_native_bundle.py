@@ -48,7 +48,11 @@ def ar_bytes(members):
 
 def deb_bytes(entries,compression='xz'):
     data=tar_bytes(entries)
-    compressed={'xz':lzma.compress,'gz':gzip.compress,'bz2':bz2.compress,'none':lambda value:value}[compression](data)
+    if compression=='zst':
+        zstd=pytest.importorskip('compression.zstd')
+        compressed=zstd.compress(data)
+    else:
+        compressed={'xz':lzma.compress,'gz':gzip.compress,'bz2':bz2.compress,'none':lambda value:value}[compression](data)
     suffix='' if compression=='none' else '.'+compression
     # This control payload must never be interpreted or executed.
     archive=ar_bytes([('debian-binary',b'2.0\n'),('control.tar.xz',b'forbidden maintainer script'),
@@ -101,7 +105,7 @@ def test_small_descriptor_roundtrip_rejects_unbounded_unknown_fields():
     with pytest.raises(ValueError):NativeBundleSpec.from_wire(dict(value.wire(),files=[]))
 
 
-@pytest.mark.parametrize('compression',['xz','gz','bz2','none'])
+@pytest.mark.parametrize('compression',['xz','gz','bz2','none','zst'])
 def test_verified_extraction_materializes_link_as_regular_file_and_retains_capability(fixture,compression):
     value=fixture(compression=compression)
     root,spec,inventory,manifest=value
@@ -309,3 +313,44 @@ def test_outer_collection_never_expands_unpinned_unsafe_or_duplicate_members(fix
     with pytest.raises(NativeBundleError):prepare(wrapped)
     assert not wrapped[1].prefix(root).exists()
     assert not list(root.glob('.rkb-native-archives-part-*'))
+
+
+def test_builder_materializes_internal_directory_alias_as_only_pinned_regular_leaves(fixture):
+    root,_,inventory,manifest=fixture(entries=[('lib/runtime/real/data','file',b'pinned'),
+        ('lib/runtime/alias','symlink','real')],files=[
+        dict(path='lib/runtime/real/data',size=6,sha256=sha(b'pinned'),package='fixture',member='lib/runtime/real/data',executable=False)])
+    packages=[{key:value for key,value in item.items() if key!='unpacked_bytes'} for item in manifest['packages']]
+    built=native.build_native_manifest(root,packages,identity=PLATFORM,include_prefixes=('lib/runtime',))
+    aliases=[item for item in built['files'] if item['path']=='lib/runtime/alias/data']
+    assert len(aliases)==1 and aliases[0]['member']=='lib/runtime/real/data'
+    raw=json.dumps(built,sort_keys=True,separators=(',',':')).encode();(root/'built.json').write_bytes(raw)
+    top=(*inventory,dict(name='built.json',size=len(raw),sha256=sha(raw),role='code'))
+    cap=prepare_native_bundle(root,'built.json',sha(raw),inventory=top)
+    assert cap.current() and (cap.prefix/'lib/runtime/alias/data').read_bytes()==b'pinned'
+    assert not (cap.prefix/'lib/runtime/alias').is_symlink()
+
+
+def test_assembly_produces_two_deterministic_pinned_launch_files(fixture):
+    root,_,_,manifest=fixture()
+    packages=[{key:value for key,value in item.items() if key!='unpacked_bytes'} for item in manifest['packages']]
+    receipt=native.assemble_native_collection(root,packages,identity=PLATFORM,
+        include_prefixes=('usr/bin','usr/lib','usr/share/postgresql'),manifest_name='assembled.json')
+    assert receipt['package_count']==1 and receipt['file_count']==4 and len(receipt['artifacts'])==2
+    assert not receipt['native_execution_verified'] and not receipt['target_abi_observed']
+    for pin in receipt['artifacts']:
+        assert (root/pin['name']).stat().st_size==pin['size']
+        assert sha((root/pin['name']).read_bytes())==pin['sha256']
+    duplicate=native.assemble_native_collection(root,packages,identity=PLATFORM,
+        include_prefixes=('usr/bin','usr/lib','usr/share/postgresql'),manifest_name='assembled.json')
+    assert duplicate==receipt
+    spec=NativeBundleSpec.from_wire(receipt['spec'])
+    cap=prepare_native_bundle(root,spec.manifest_name,spec.manifest_sha256,inventory=receipt['artifacts'])
+    assert cap.current() and not list(root.glob('.rkb-native-build-*'))
+
+
+def test_python312_zstd_path_requires_exact_preinstalled_decoder_pin(monkeypatch):
+    import importlib.metadata
+    monkeypatch.setattr(native.sys,'version_info',(3,12))
+    monkeypatch.setattr(importlib.metadata,'version',lambda name:'unverified')
+    with pytest.raises(NativeBundleError,match='zstd_decoder_unverified'):
+        native._zstd_reader(None)

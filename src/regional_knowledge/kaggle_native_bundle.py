@@ -18,6 +18,7 @@ import platform
 import posixpath
 import shutil
 import stat
+import sys
 import tarfile
 import tempfile
 import time
@@ -191,11 +192,26 @@ def _deb_data(fd,size,deadline):
         members[name]=(start,length)
         offset=start+length+(length%2)
     data=[(name,position) for name,position in members.items()
-          if name in ('data.tar','data.tar.xz','data.tar.gz','data.tar.bz2')]
+          if name in ('data.tar','data.tar.xz','data.tar.gz','data.tar.bz2','data.tar.zst')]
     if (offset!=size or members.get('debian-binary') is None or members['debian-binary'][1]!=4 or len(data)!=1
             or os.pread(fd,members['debian-binary'][1],members['debian-binary'][0])!=b'2.0\n'):
         raise NativeBundleError('native_bundle_deb_invalid')
     return data[0]
+
+
+def _zstd_reader(raw):
+    # Dev/CI may derive manifests with Python 3.14's bounded standard decoder.
+    # Kaggle Python 3.12 requires the explicitly pinned Stage0 wheel; no ambient
+    # command/libzstd probing or package installation fallback exists here.
+    if sys.version_info>=(3,14):
+        from compression import zstd
+        return zstd.ZstdFile(raw,'rb',options={zstd.DecompressionParameter.window_log_max:27})
+    import importlib.metadata
+    if importlib.metadata.version('zstandard')!='0.25.0':
+        raise NativeBundleError('native_bundle_zstd_decoder_unverified')
+    import zstandard
+    return zstandard.ZstdDecompressor(max_window_size=128*1024).stream_reader(
+        raw,read_size=65536,read_across_frames=True,closefd=False)
 
 
 class _Decoded:
@@ -203,6 +219,7 @@ class _Decoded:
     def __init__(self,raw,kind,expected):
         self.raw,self.kind,self.expected=raw,kind,MAX_TOTAL_BYTES if expected is None else expected
         self.exact=expected is not None
+        self.zstd_stream=_zstd_reader(raw) if kind=='data.tar.zst' else None
         self.total=0;self.buffer=b'';self.tail=b'';self.done=False
         if kind=='data.tar.xz':self.decoder=lzma.LZMADecompressor(memlimit=128*1024*1024)
         elif kind=='data.tar.gz':self.decoder=zlib.decompressobj(16+zlib.MAX_WBITS)
@@ -214,7 +231,12 @@ class _Decoded:
             raise NativeBundleError('native_bundle_stream_bound')
         while len(self.buffer)<size and not self.done:
             _remaining(self.raw.deadline)
-            if self.decoder is None:
+            if self.zstd_stream is not None:
+                output=self.zstd_stream.read(min(65536,self.expected-self.total+1))
+                self.done=not output
+                if self.done and self.raw.position!=self.raw.size:
+                    raise NativeBundleError('native_bundle_archive_trailing_data')
+            elif self.decoder is None:
                 output=self.raw.read(min(65536,self.expected-self.total+1))
                 self.done=not output
             else:
@@ -241,7 +263,10 @@ class _Decoded:
         return data
 
     def finish(self):
-        while self.read(65536):pass
+        try:
+            while self.read(65536):pass
+        finally:
+            if self.zstd_stream is not None:self.zstd_stream.close()
 
 
 def _tar_info(counts):
@@ -329,10 +354,10 @@ def _extract_package(root_fd,stage_fd,package,files,deadline,counts):
                 seen.add(name)
                 target=None
                 if kind=='link' and name in selected:
-                    if member.linkname.startswith('/') or '\\' in member.linkname or not member.linkname:
+                    if '\\' in member.linkname or not member.linkname:
                         raise NativeBundleError('native_bundle_link_escape')
-                    target=posixpath.normpath(posixpath.join(posixpath.dirname(name),member.linkname)
-                        if member.issym() else member.linkname)
+                    target=posixpath.normpath(member.linkname.lstrip('/') if member.linkname.startswith('/') else
+                        posixpath.join(posixpath.dirname(name),member.linkname) if member.issym() else member.linkname)
                     target=_name(target)
                 if name not in selected:continue
                 members[name]=(kind,target)
@@ -658,17 +683,17 @@ def build_native_manifest(root,packages,*,identity,include_prefixes,total_second
                             regular[key]=(count,digest.hexdigest())
                             records[key]=('file',None)
                         else:
-                            if member.linkname.startswith('/') or '\\' in member.linkname or not member.linkname:
+                            if '\\' in member.linkname or not member.linkname:
                                 raise NativeBundleError('native_bundle_link_escape')
-                            target=posixpath.normpath(posixpath.join(posixpath.dirname(member_name),member.linkname)
-                                if member.issym() else member.linkname)
+                            target=posixpath.normpath(member.linkname.lstrip('/') if member.linkname.startswith('/') else
+                                posixpath.join(posixpath.dirname(member_name),member.linkname) if member.issym() else member.linkname)
                             records[key]=('link',_name(target))
                 stream.finish()
                 total_unpacked+=stream.total
                 if total_unpacked>MAX_TOTAL_BYTES:raise NativeBundleError('native_bundle_byte_budget')
                 result_packages.append(dict(package,unpacked_bytes=stream.total))
             finally:os.close(fd)
-        output={}
+        output={};directory_aliases=[]
         for key,item in selected.items():
             target=key;visited=set()
             while target in records and records[target][0]=='link':
@@ -676,15 +701,50 @@ def build_native_manifest(root,packages,*,identity,include_prefixes,total_second
                 visited.add(target);path=records[target][1]
                 same=(target[0],path)
                 candidates=[same] if same in records else [candidate for candidate in records if candidate[1]==path]
-                if len(candidates)!=1:raise NativeBundleError('native_bundle_link_target_unpinned')
+                if not candidates:
+                    directory_aliases.append((key,item,path))
+                    target=None
+                    break
+                if len(candidates)!=1:
+                    error=NativeBundleError('native_bundle_link_target_unpinned')
+                    error.context=(key,path,tuple(candidates))
+                    raise error
                 target=candidates[0]
-            if target not in regular:raise NativeBundleError('native_bundle_link_target_unpinned')
+            if target is None:continue
+            if target not in regular:
+                error=NativeBundleError('native_bundle_link_target_unpinned')
+                error.context=(key,target)
+                raise error
             size,digest=regular[target]
             complete=dict(item,size=size,sha256=digest)
             existing=output.get(item['path'])
             if existing and (existing['size'],existing['sha256'],existing['executable'])!=(size,digest,item['executable']):
                 raise NativeBundleError('native_bundle_package_path_conflict')
             output.setdefault(item['path'],complete)
+        # A directory alias is expanded only into copies of already pinned
+        # regular leaves. It never creates a filesystem symlink or reads a host
+        # path; the resulting ordinary file records bind every copied byte.
+        base=dict(output)
+        aliases={item['path']:(key,item,path) for key,item,path in directory_aliases}
+        for key,item,path in directory_aliases:
+            target=path;visited={item['path']}
+            while target in aliases:
+                if target in visited or len(visited)>=16:
+                    raise NativeBundleError('native_bundle_link_cycle')
+                visited.add(target);target=aliases[target][2]
+            children=[(name,value) for name,value in base.items() if name.startswith(target+'/')]
+            if not children:
+                error=NativeBundleError('native_bundle_link_target_unpinned');error.context=(key,target)
+                raise error
+            for name,value in children:
+                destination=item['path']+name[len(target):]
+                _name(destination)
+                copy=dict(value,path=destination)
+                previous=output.get(destination)
+                if previous and (previous['size'],previous['sha256'])!=(copy['size'],copy['sha256']):
+                    raise NativeBundleError('native_bundle_package_path_conflict')
+                output.setdefault(destination,copy)
+                if len(output)>MAX_FILES:raise NativeBundleError('native_bundle_file_bound')
         manifest=dict(codec='rkb.native_bundle.v1',platform=dict(identity),packages=result_packages,
                       files=[output[path] for path in sorted(output)],total_seconds=total_seconds)
         return _validate_manifest(manifest)
@@ -693,3 +753,75 @@ def build_native_manifest(root,packages,*,identity,include_prefixes,total_second
         raise NativeBundleError('native_bundle_builder_failed') from None
     finally:
         if root_fd is not None:os.close(root_fd)
+
+
+def assemble_native_collection(root,packages,*,identity,include_prefixes,
+                               archive_name='native-packages.tar',manifest_name='native-manifest.json',total_seconds=300):
+    """Build deterministic public launch artifacts from already pinned local .debs.
+
+    No package/network/native execution occurs. Outputs are two ordinary files:
+    one exact outer tar and its nested manifest, suitable as top code artifacts.
+    Existing mismatched outputs are preserved and rejected.
+    """
+    root=Path(root);root_fd=None;temporary=None
+    try:
+        _name(archive_name);_name(manifest_name)
+        if not root.is_absolute() or root.resolve(strict=True)!=root:
+            raise ValueError('native_bundle_builder_root_invalid')
+        deadline=time.monotonic()+total_seconds
+        manifest=build_native_manifest(root,packages,identity=identity,include_prefixes=include_prefixes,
+                                       total_seconds=total_seconds)
+        _remaining(deadline)
+        # tar padding + headers and a bounded manifest are included in headroom.
+        estimate=sum(item['size']+1024 for item in packages)+10240+MAX_MANIFEST_BYTES
+        if shutil.disk_usage(root).free<estimate:
+            raise NativeBundleError('native_bundle_insufficient_disk')
+        root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        temporary=Path(tempfile.mkdtemp(prefix='.rkb-native-build-',dir=root))
+        output=temporary/'collection.tar'
+        with output.open('xb') as stream:
+            with tarfile.open(fileobj=stream,mode='w|',format=tarfile.USTAR_FORMAT) as archive:
+                for package in sorted(packages,key=lambda item:item['archive']):
+                    _remaining(deadline)
+                    parent=_parent(root_fd,package['archive'],create=False)
+                    try:
+                        if not _verify(parent,package['archive'].split('/')[-1],package['size'],package['sha256'],deadline):
+                            raise NativeBundleError('native_bundle_package_missing')
+                        fd=os.open(package['archive'].split('/')[-1],os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent)
+                    finally:os.close(parent)
+                    info=tarfile.TarInfo(package['archive']);info.size=package['size'];info.mode=0o400
+                    with os.fdopen(fd,'rb') as content:archive.addfile(info,content)
+            stream.flush();os.fsync(stream.fileno())
+        digest=hashlib.sha256()
+        with output.open('rb') as stream:
+            while data:=stream.read(CHUNK_BYTES):_remaining(deadline);digest.update(data)
+        collection=dict(archive=archive_name,size=output.stat().st_size,sha256=digest.hexdigest())
+        manifest.update(codec='rkb.native_bundle.v2',collection=collection)
+        _validate_manifest(manifest)
+        data=json.dumps(manifest,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()
+        if len(data)>MAX_MANIFEST_BYTES:raise NativeBundleError('native_bundle_manifest_byte_bound')
+        manifest_output=temporary/'manifest.json';manifest_output.write_bytes(data)
+        for source,name,size,sha in [(output,archive_name,collection['size'],collection['sha256']),
+                                    (manifest_output,manifest_name,len(data),hashlib.sha256(data).hexdigest())]:
+            parent=_parent(root_fd,name,create=True)
+            try:
+                if not _verify(parent,name.split('/')[-1],size,sha,deadline):
+                    source.chmod(0o400)
+                    try:os.link(source,name.split('/')[-1],dst_dir_fd=parent,follow_symlinks=False)
+                    except FileExistsError:
+                        if not _verify(parent,name.split('/')[-1],size,sha,deadline):raise
+                    os.fsync(parent)
+            finally:os.close(parent)
+        return dict(codec='rkb.native_collection_artifacts.v1',
+            spec=NativeBundleSpec(manifest_name,hashlib.sha256(data).hexdigest()).wire(),
+            artifacts=[dict(name=archive_name,size=collection['size'],sha256=collection['sha256'],role='code'),
+                       dict(name=manifest_name,size=len(data),sha256=hashlib.sha256(data).hexdigest(),role='code')],
+            package_count=len(packages),file_count=len(manifest['files']),
+            extracted_bytes=sum(item['size'] for item in manifest['files']),platform=dict(identity),
+            target_abi_observed=False,native_execution_verified=False)
+    except NativeBundleError:raise
+    except Exception:
+        raise NativeBundleError('native_bundle_assembly_failed') from None
+    finally:
+        if root_fd is not None:os.close(root_fd)
+        if temporary is not None:shutil.rmtree(temporary)
