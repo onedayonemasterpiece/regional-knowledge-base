@@ -30,7 +30,9 @@ the handoff/source baseline was `85676094cf1a019fd34a29daa930d4ebb16eedb7`.
    cursor. That integration is outside this module. Use the recorded typed
    rejection or exact committed outcome after an uncertain SQL ACK.
 5. Call `record_outcome` with the original database generation and exact recorded
-   outcome bytes. It verifies acceptance and immutable remote byte readback,
+   outcome bytes plus the current writer generation. It verifies acceptance and
+   publishes the create-only outcome binding through an atomic generation-fenced
+   CAS, then verifies exact remote byte readback,
    returning `RemoteOutcomeReceipt`. The caller must independently prove the PG
    commit, original-generation reconciliation, authorization and delivery fence
    before a product Saved/result ACK. Neither receipt emits an ACK or verifies a
@@ -48,6 +50,7 @@ remote_outcome = await journal.record_outcome(
     accepted, command=exact_commands[0],
     database_generation=original_database_generation,
     outcome=exact_applied_ops_outcome_bytes,
+    writer_generation=current_writer_generation,
 )
 ```
 
@@ -73,6 +76,9 @@ An adapter must provide:
   completion, and a locally computed checksum is not a provider version token.
 - Native conditional head replacement against the exact prior token (or verified
   absence), with writer-generation authority enforced at the publication boundary.
+  Canonical outcome creation uses the same fenced CAS with `expected_token=None`;
+  it must never overwrite an existing outcome. Generation checks apply even when
+  a create condition fails because an identical outcome already exists.
   A separate earlier fence check is insufficient. A retired writer may leave
   orphan bytes but must not publish a head. Authority restoration/epoch change
   needs its own verified control checkpoint and fencing integration.
@@ -111,6 +117,12 @@ advanced the head. Absent/unreadable evidence leaves `JournalUnknown` and the
 pending operation intact. Retrying UNKNOWN never means inventing another key,
 changing sequence or assuming the previous attempt was not delivered. Same key
 with different bytes, revisions or original database generation conflicts.
+Outcome publication has no unfenced compatibility path: a retired writer cannot
+reserve the canonical outcome key and thereby block the active writer. Already
+accepted commands remain replayable by the current authority with their original
+database generation. Lost outcome CAS ACKs require exact bounded readback; absent
+or unreadable bytes leave UNKNOWN. An existing identical outcome can be reused
+after a writer handover without changing its canonical bytes or database identity.
 
 Defaults are 1 MiB encoded segment bytes, 128 commands, 1 MiB encoded outcome
 bytes and 128 reconciliation hops. Head/manifest reads are bounded at 4/8 KiB;

@@ -390,14 +390,16 @@ class RecoveryJournal:
             raise
 
     async def record_outcome(self, seal: AcceptedSeal, *, command: ExactCommand,
-                             database_generation: str, outcome: bytes) -> RemoteOutcomeReceipt:
+                             database_generation: str, outcome: bytes,
+                             writer_generation: str) -> RemoteOutcomeReceipt:
         """Persist a caller-verified committed outcome; does not verify a PG commit.
 
         The caller supplies canonical domain outcome bytes (IDs/revisions/body,
         status and applied cursor), never a freshly rerun model result.
         """
-        if not database_generation or not isinstance(outcome, bytes):
-            raise ValueError("original database generation and exact bytes are required")
+        if (not database_generation or not isinstance(outcome, bytes)
+                or not isinstance(writer_generation, str) or not writer_generation):
+            raise ValueError("original database generation, exact bytes and writer generation are required")
         command_hash = _hash(command.encode())
         accepted = await self._published(seal.manifest)
         if accepted != seal or command_hash not in accepted.command_hashes:
@@ -409,6 +411,21 @@ class RecoveryJournal:
                         "outcome_b64": base64.b64encode(outcome).decode("ascii"),
                         "outcome_sha256": _hash(outcome), "outcome_length": len(outcome)})
         key = self.prefix + "/outcomes/" + _hash(command.operation_key.encode())
-        await self._immutable(key, data, self.max_outcome_bytes)
+        if len(data) > self.max_outcome_bytes:
+            raise JournalLimit("outcome exceeds configured byte budget")
+        try:
+            # A canonical outcome binding is publication, even before product
+            # delivery. A retired writer may upload orphan seal bytes, but must
+            # not reserve this operation's outcome against the active writer.
+            await self.store.compare_and_swap(
+                key, data, expected_token=None, writer_generation=writer_generation,
+            )
+        except StoreUnavailable:
+            pass  # Exact readback can reconcile an already committed create.
+        value = await self._read(key, self.max_outcome_bytes)
+        if value is None:
+            raise JournalUnknown("outcome publication is unproved")
+        if value.data != data:
+            raise JournalConflict("outcome key already has different exact bytes")
         return RemoteOutcomeReceipt(command.operation_key, command_hash, _hash(outcome),
                                     key, len(data), database_generation)

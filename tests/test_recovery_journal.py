@@ -329,8 +329,9 @@ async def test_outcome_readback_is_distinct_from_acceptance_and_idempotent():
     cmd = command()
     accepted = await seal(journal, [cmd])
     assert not any("/outcomes/" in key for key in store.objects)
-    store.faults.append(("put-after", "/outcomes/"))
-    fields = dict(command=cmd, database_generation="original-db-generation", outcome=b"exact committed body/status/cursor")
+    store.faults.append(("cas-after", "/outcomes/"))
+    fields = dict(command=cmd, database_generation="original-db-generation",
+                  outcome=b"exact committed body/status/cursor", writer_generation="writer-1")
     receipt = await journal.record_outcome(accepted, **fields)
     assert receipt == await journal.record_outcome(accepted, **fields)
     assert receipt.command_sha256 == accepted.command_hashes[0]
@@ -348,7 +349,8 @@ async def test_unverified_remote_outcome_cannot_produce_receipt():
     accepted = await seal(journal, [command()])
     store.read_failures.add("/outcomes/")
     with pytest.raises(JournalUnknown):
-        await journal.record_outcome(accepted, command=command(), database_generation="db-1", outcome=b"committed")
+        await journal.record_outcome(accepted, command=command(), database_generation="db-1",
+                                     outcome=b"committed", writer_generation="writer-1")
 
 
 @pytest.mark.asyncio
@@ -356,5 +358,49 @@ async def test_outcome_budget_rejects_before_upload():
     store, journal = fixture(max_outcome_bytes=32)
     accepted = await seal(journal, [command()])
     with pytest.raises(JournalLimit):
-        await journal.record_outcome(accepted, command=command(), database_generation="db-1", outcome=b"x")
+        await journal.record_outcome(accepted, command=command(), database_generation="db-1",
+                                     outcome=b"x", writer_generation="writer-1")
     assert not any("/outcomes/" in key for key in store.objects)
+
+
+@pytest.mark.asyncio
+async def test_retired_writer_cannot_reserve_an_accepted_commands_outcome():
+    store, journal = fixture()
+    cmd = command()
+    accepted = await seal(journal, [cmd])
+    store.writer = "writer-2"
+    fields = dict(command=cmd, database_generation="original-db-generation")
+    with pytest.raises(StaleWriter):
+        await journal.record_outcome(accepted, **fields, outcome=b"retired isolated outcome",
+                                     writer_generation="writer-1")
+    assert not any("/outcomes/" in key for key in store.objects)
+    # Accepted old commands remain replayable under the current authority.
+    receipt = await journal.record_outcome(accepted, **fields, outcome=b"reconciled committed outcome",
+                                           writer_generation="writer-2")
+    assert receipt.database_generation == "original-db-generation"
+    store.writer = "writer-3"
+    assert receipt == await journal.record_outcome(
+        accepted, **fields, outcome=b"reconciled committed outcome", writer_generation="writer-3")
+    with pytest.raises(StaleWriter):
+        await journal.record_outcome(accepted, **fields, outcome=b"reconciled committed outcome",
+                                     writer_generation="writer-2")
+
+
+@pytest.mark.asyncio
+async def test_outcome_cas_unknown_reconciles_exact_publication_only():
+    store, journal = fixture()
+    accepted = await seal(journal, [command()])
+    fields = dict(command=command(), database_generation="db-1", outcome=b"committed",
+                  writer_generation="writer-1")
+    store.faults.append(("cas-before", "/outcomes/"))
+    with pytest.raises(JournalUnknown):
+        await journal.record_outcome(accepted, **fields)
+    assert not any("/outcomes/" in key for key in store.objects)
+    store.faults.append(("cas-after", "/outcomes/"))
+    store.read_failures.add("/outcomes/")
+    with pytest.raises(JournalUnknown):
+        await journal.record_outcome(accepted, **fields)
+    assert any("/outcomes/" in key for key in store.objects)
+    store.read_failures.clear()
+    receipt = await journal.record_outcome(accepted, **fields)
+    assert receipt.outcome_sha256 == hashlib.sha256(fields["outcome"]).hexdigest()
