@@ -101,6 +101,10 @@ def compose_target(template,config,target,*,queue,repository):
             raise ValueError('persist actual empty-journal initialization intent first')
     runtime_wire=target.wire()
     runtime_wire.pop('stage0',None)  # One copy, consumed only by load_encoder.
+    # The complete external+source inventory is verified once in prepared_model.
+    # Runtime consumes that retained VerifiedArtifacts object, never this second
+    # copy. Keep the complete launch under64KiB as the domain closure grows.
+    runtime_wire.pop('artifacts',None)
     config.update(shared_reads=True,prepared_model=dict(root=str(root),entries=entries,
         max_total_bytes=sum(e['size'] for e in entries)),target_runtime=dict(
         **runtime_wire,sql_root=str(root/relative/'sql'),initialization_intent=intent))

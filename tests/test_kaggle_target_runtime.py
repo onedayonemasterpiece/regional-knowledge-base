@@ -69,6 +69,12 @@ def test_generated_target_persists_final_hash_outside_source_and_is_stable(tmp_p
     assert 'main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)' in source
     assert 'pip install' not in source
     compile(source,'fixture-generated','exec')
+    assignments=[node for node in ast.parse(source).body if isinstance(node,ast.Assign)
+        and any(isinstance(t,ast.Name) and t.id=='RUN_CONFIG' for t in node.targets)]
+    config=ast.literal_eval(assignments[0].value)
+    assert 'artifacts' not in config['target_runtime']
+    assert len(config['prepared_model']['entries'])>len(spec().artifacts)
+    assert {entry['name'] for entry in spec().artifacts}<={entry['name'] for entry in config['prepared_model']['entries']}
     with queue.connect() as db:
         expected=json.loads(db.execute('SELECT expected_json FROM bge_runtime_expectations WHERE run_id=?',(run,)).fetchone()[0])
     assert expected['hashes']['executed_source']==hashlib.sha256(source.encode()).hexdigest()
