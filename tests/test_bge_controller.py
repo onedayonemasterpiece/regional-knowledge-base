@@ -54,3 +54,30 @@ def test_run_identity_read_does_not_execute_notebook_source():
     module=controller()
     assert module.source_run_id("RUN_CONFIG = {'run_id':'exact','token':'private'}\nraise RuntimeError('not executed')")=='exact'
     assert module.source_run_id("RUN_CONFIG = __import__('os').environ") is None
+
+
+def test_status_uses_native_frozen_version_not_old_cli_latest():
+    from types import SimpleNamespace
+    import pytest
+    module=controller()
+    calls=[]
+    class Request:
+        version_label=None
+    class Client:
+        def __enter__(self):
+            self.kernels=SimpleNamespace(kernels_api_client=self)
+            return self
+        def __exit__(self,*args):pass
+        def get_kernel_session_status(self,request):
+            calls.append((request.user_name,request.kernel_slug,request.version_label))
+            return {'status':'COMPLETE'}
+    class Api:
+        def build_kaggle_client(self):return Client()
+        def kernels_status(self,*args):raise AssertionError('latest-by-slug is not exact')
+    assert module.version_status(Api(),'owner/stable-slug',85,request_factory=Request)=={'status':'COMPLETE'}
+    assert calls==[('owner','stable-slug','v85')]
+    for bad in (None,True,0,'85'):
+        with pytest.raises(ValueError):
+            module.version_status(Api(),'owner/stable-slug',bad,request_factory=Request)
+    with pytest.raises(RuntimeError,match='unsupported'):
+        module.version_status(Api(),'owner/stable-slug',85,request_factory=lambda:object())

@@ -17,6 +17,24 @@ def provider_phase(status):
     phase=status.get('status') if isinstance(status,dict) else getattr(status,'status',None)
     return str(getattr(phase,'name',phase)).rsplit('.',1)[-1].upper()
 
+def version_status(api, ref, version, *, request_factory=None):
+    """Read a frozen version; this alone does not prove exact execution Stop."""
+    if type(version) is not int or version < 1 or ref.count('/') != 1:
+        raise ValueError('exact provider version required')
+    owner,slug=ref.split('/')
+    if not owner or not slug:raise ValueError('exact notebook ref required')
+    if request_factory is None:
+        from kagglesdk.kernels.types.kernels_api_service import ApiGetKernelSessionStatusRequest
+        request_factory=ApiGetKernelSessionStatusRequest
+    request=request_factory()
+    if not hasattr(request,'version_label'):
+        raise RuntimeError('version_qualified_status_unsupported')
+    request.user_name=owner;request.kernel_slug=slug
+    # Native API expects v<N>; bare integers give HTTP 404.
+    request.version_label='v'+str(version)
+    with api.build_kaggle_client() as client:
+        return client.kernels.kernels_api_client.get_kernel_session_status(request)
+
 def notebook_ref(run, state):
     if run.get('provider_ref'):return run['provider_ref']
     if run['launch_state']=='dispatching':
@@ -98,8 +116,9 @@ def main():
                 elif run['status']=='starting' and run['launch_state']=='dispatched' and time.monotonic()-probed.get(run_id,0)>30:
                     probed[run_id]=time.monotonic()
                     if run.get('provider_version') and not reconcile_launch(api,queue,run,ref):continue
-                    status=api.kernels_status(ref)
+                    status=version_status(api,ref,run.get('provider_version'))
                     phase=provider_phase(status)
+                    logging.info(json.dumps({'event':'bge_version_status_observed','run_id':run_id,'provider_version':run['provider_version'],'phase':phase}))
                     if phase in ('ERROR','FAILED','CANCELED','CANCELLED','COMPLETE'):
                         queue.launch_record(run_id,ref,failed=True)
                         logging.warning(json.dumps({'event':'bge_startup_failed','run_id':run_id,'provider_status':str(phase)}))

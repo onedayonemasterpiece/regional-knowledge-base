@@ -93,8 +93,9 @@ Kaggle runtime action was performed.
 ## Actual asynchronous driver verification
 
 `tests/test_kaggle_pg_driver.py` adds three actual psycopg asynchronous driver
-checks. Local execution requires `RKB_PG_DRIVER_FIXTURE_SOCKET` to equal exactly
-`/home/dev/artifacts/regional-knowledge-base/20261020T110555Z-kaggle-implementation-20261020/pg/socket`.
+checks. Local execution requires `RKB_PG_DRIVER_FIXTURE_SOCKET` to name
+`<managed RKB task>/pg/socket` below `/home/dev/artifacts/regional-knowledge-base`.
+The task's bounded `.artifact.json` must match the project and actual task path.
 Before DDL, the fixture checks the named Docker container's `rkb.data_class`
 label is `test_fixture`, its network is `none`, it is running and its socket
 mount matches that exact directory. It independently checks the connected

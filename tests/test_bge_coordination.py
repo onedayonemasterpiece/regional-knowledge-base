@@ -148,3 +148,12 @@ async def test_wait_denial_and_cancellation_remove_subscriptions(tmp_path):
     waiter.cancel()
     with pytest.raises(asyncio.CancelledError): await waiter
     assert (str(queue.path.resolve()), job_id) not in _WAITERS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('seconds', [float('inf'), float('nan')])
+async def test_nonfinite_wait_never_registers_a_waiter(tmp_path, seconds):
+    queue, _, _, job_id, _ = prepared(tmp_path)
+    with pytest.raises(ValueError, match='finite'):
+        await queue.wait_result('actor', job_id, seconds)
+    assert (str(queue.path.resolve()), job_id) not in _WAITERS

@@ -7,6 +7,7 @@ import contextlib
 import asyncio
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -46,6 +47,7 @@ class BgeQueue:
         # Serving readers must not rerun schema initialization behind every
         # writer. A missing/older schema still takes the serialized migration.
         if self.path.exists() and self._schema_current():
+            self.path.chmod(0o600)
             return
         with self.connect() as db:
             db.executescript('''
@@ -270,6 +272,8 @@ class BgeQueue:
 
     async def wait_result(self, actor, job_id, seconds):
         """Wake after local commit; reconcile other processes within a bounded wait."""
+        if not math.isfinite(seconds):
+            raise ValueError('finite result wait required')
         loop=asyncio.get_running_loop()
         deadline=loop.time()+max(0.0,seconds)
         event=asyncio.Event()

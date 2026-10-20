@@ -16,10 +16,10 @@ from regional_knowledge.kaggle_search import fused_search
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = "rkb-v4-fixture-20261020"
-SOCKET = Path("/home/dev/artifacts/regional-knowledge-base/"
-              "20261020T110555Z-kaggle-implementation-20261020/pg/socket")
+ARTIFACT_ROOT = Path('/home/dev/artifacts/regional-knowledge-base')
+SOCKET = Path(os.environ.get('RKB_PG_DRIVER_FIXTURE_SOCKET', '/nonexistent'))
 pytestmark = pytest.mark.skipif(
-    os.environ.get("RKB_PG_DRIVER_FIXTURE_SOCKET") != str(SOCKET)
+    not os.environ.get("RKB_PG_DRIVER_FIXTURE_SOCKET")
     and not os.environ.get("RKB_KAGGLE_TEST_DSN"),
     reason="explicit exact disposable socket opt-in required")
 VECTOR = [1.] + [0.] * 1023
@@ -57,7 +57,13 @@ async def database():
         _CI_PARAMS = expected
         expected_database = "rkb_graph_test"
     else:
-        assert os.environ.get("RKB_PG_DRIVER_FIXTURE_SOCKET") == str(SOCKET)
+        assert SOCKET.is_absolute() and SOCKET.resolve().is_relative_to(ARTIFACT_ROOT)
+        assert SOCKET.name == 'socket' and SOCKET.parent.name == 'pg'
+        metadata_path = SOCKET.parent.parent / '.artifact.json'
+        assert metadata_path.stat().st_size < 16384
+        metadata = json.loads(metadata_path.read_text())
+        assert metadata['project'] == 'regional-knowledge-base'
+        assert metadata['relative_path'] == str(SOCKET.parent.parent.relative_to(Path('/home/dev/artifacts')))
         inspected = subprocess.run(["docker", "inspect", CONTAINER], check=True,
                                    capture_output=True, text=True, timeout=3)
         info = json.loads(inspected.stdout)[0]
