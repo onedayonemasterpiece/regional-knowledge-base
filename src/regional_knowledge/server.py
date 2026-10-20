@@ -1230,6 +1230,9 @@ def main(*,target_startup=None) -> None:
     profile = os.getenv("RKB_MCP_PROFILE", "full").strip().lower()
     if profile not in {"full", "live", "story_reader", "story_contributor", "story_editor"}:
         raise RuntimeError("RKB_MCP_PROFILE must be full, live or an enabled story capability bundle")
+    if target_startup is None and os.getenv('RKB_BACKEND_PROFILE','').strip()=='kaggle_source':
+        from .kaggle_source_owners import configured_source_service
+        target_startup=configured_source_service()
     build_server(profile=profile,target_startup=target_startup).run(
         transport="streamable-http",
         stateless_http=True,

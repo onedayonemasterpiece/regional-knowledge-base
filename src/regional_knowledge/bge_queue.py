@@ -156,6 +156,8 @@ class BgeQueue:
             # A cold start gets at most 15 minutes to become ready. Heartbeats
             # cannot perpetually preserve an idle run or a failed warm-up.
             if self._run_expired(run, now):
+                from .queue_writer import pending
+                if pending(db,run['id']):continue  # UNKNOWN publication is not released ownership.
                 db.execute("update runs set status='expired' where id=?",(run['id'],))
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
                 db.execute('update control set current_run=null where current_run=?',(run['id'],))
@@ -518,6 +520,9 @@ class BgeQueue:
                 control=db.execute('select * from control where id=1').fetchone()
                 db.execute("update runs set status='ready',ready_at=? where id=?",(now,run_id))
                 if control['successor']==run_id:
+                    from .queue_writer import pending
+                    if pending(db,control['current_run']):
+                        raise StaleAttachment('writer publication must reconcile before handover')
                     db.execute("update runs set status='draining' where id=?",(control['current_run'],))
                     db.execute('update control set current_run=?,successor=null where id=1',(run_id,))
             return self._status(db,now)
@@ -764,7 +769,10 @@ class BgeQueue:
             if current and current['status']=='ready' and now-current['started']>=ROTATE_SECONDS and not control['successor']:
                 db.execute('update control set successor=? where id=1',(self._new_run(db,now),))
             # Old workers drain only their already claimed job; no more claims.
-            db.execute("update runs set status='expired' where status='draining' and not exists(select 1 from jobs where jobs.run_id=runs.id and state='claimed')")
+            draining=db.execute("select id from runs where status='draining' and not exists(select 1 from jobs where jobs.run_id=runs.id and state='claimed')").fetchall()
+            from .queue_writer import pending
+            for row in draining:
+                if not pending(db,row['id']):db.execute("update runs set status='expired' where id=?",(row['id'],))
             db.execute(
                 "delete from jobs where kind='query' and state='done' and updated<?",
                 (now-DONE_QUERY_RETENTION_SECONDS,),

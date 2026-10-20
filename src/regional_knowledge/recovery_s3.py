@@ -6,6 +6,7 @@ support is checked locally; real bucket conditional semantics still need proof.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Any, TypeVar
@@ -91,6 +92,8 @@ class S3ConditionalRecoveryStore:
         self.bucket = bucket
         self.prefix = prefix
         self.writer_guard = writer_guard
+        bind=getattr(writer_guard,'bind_store',None)
+        if bind is not None:bind(self)
 
     def _key(self, key: str) -> None:
         if (not isinstance(key, str) or not key.startswith(self.prefix)
@@ -174,5 +177,12 @@ class S3ConditionalRecoveryStore:
                 or any(ord(c) < 32 for c in expected_token)):
             raise ValueError("expected version must be an opaque native ETag")
         condition = {"IfNoneMatch": "*"} if expected_token is None else {"IfMatch": expected_token}
+        publication=getattr(self.writer_guard,'publication_guard',None)
+        if publication is not None:
+            async with publication(writer_generation,key=key,data_sha256=hashlib.sha256(data).hexdigest(),
+                    data_length=len(data),expected_token=expected_token,store=self) as receipt:
+                result=await _blocking(lambda:self._put(key,data,condition))
+                receipt.resolved(result)
+                return result
         async with self.writer_guard(writer_generation):
             return await _blocking(lambda: self._put(key, data, condition))
