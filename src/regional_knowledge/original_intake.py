@@ -13,6 +13,15 @@ def digest(value):return hashlib.sha256(value).hexdigest()
 
 class OriginalIntakeError(ValueError):pass
 
+TERMINAL_REJECTIONS=frozenset({'original_djvu_pinned_parser_required','original_format_unsupported',
+    'original_expected_bytes_mismatch','original_page_count_limit','original_pdf_invalid',
+    'original_page_geometry_invalid','original_render_byte_bound'})
+
+class OriginalIntakeRejected(OriginalIntakeError):
+    def __init__(self,code):
+        if code not in TERMINAL_REJECTIONS:raise ValueError('fixed original rejection required')
+        self.code=code;super().__init__(code)
+
 def text(value,maximum=256):
     if type(value) is not str or not 1<=len(value.encode())<=maximum or any(ord(c)<32 for c in value):
         raise OriginalIntakeError('original_metadata_invalid')

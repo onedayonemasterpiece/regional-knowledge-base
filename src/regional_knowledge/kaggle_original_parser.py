@@ -61,7 +61,10 @@ def main():
         data=json.dumps(result,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
         if len(data)>12*1024*1024:raise ValueError
         sys.stdout.buffer.write(data);sys.stdout.buffer.flush()
-    except Exception:
-        os.write(1,b'{"error":"original_pdf_parser_unavailable"}');raise SystemExit(1)
+    except Exception as exc:
+        code=str(exc) if isinstance(exc,ValueError) and str(exc) in {
+            'original_pdf_invalid','original_page_geometry_invalid','original_render_byte_bound'} else 'original_pdf_parser_unavailable'
+        os.write(1,json.dumps(dict(error=code,terminal=code!='original_pdf_parser_unavailable')).encode())
+        raise SystemExit(1)
 
 if __name__=='__main__':main()

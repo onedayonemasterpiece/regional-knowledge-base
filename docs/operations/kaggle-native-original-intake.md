@@ -28,7 +28,9 @@ The fixed phases are:
 2. `original_archive`: the retained native file is uploaded directly with an
    exact conditional PUT ticket from the existing S3 client. Dev receives no
    original bytes. A lost PUT acknowledgment is reconciled by native provider
-   HEAD before another effect is attempted.
+   HEAD before another effect is attempted. Only provider-proven 404/NoSuchKey
+   permits a PUT; timeout, authorization failure or size/version conflict leaves
+   UNKNOWN pending state and never authorizes another PUT.
 3. `original_verify`: a scoped conditional GET ticket binds the exact provider
    version. Kaggle streams the object into fresh private scratch and verifies
    its complete size/hash. Dev independently checks HEAD size/version before
@@ -46,6 +48,23 @@ receipt after fresh current-authority and native storage-version checks. Its
 receipt includes source/ingestion/request identities, actual size/hash,
 content-addressed stable archive key, native version, page count, parser pin,
 acquisition hash and native readback hash. Signed URLs are not receipt locators.
+
+When an unrendered page needs a lost ephemeral native handle, the controller
+restores only from that retained verified receipt. `original_acquire` receives a
+scoped conditional GET ticket for the same archived version; Kaggle verifies the
+entire size/hash and reparses with the exact same parser pin before retaining a
+new handle. Source/ingestion identity and original receipt are immutable. The
+restore sub-operation is persisted before dispatch and reused after cancellation
+or lost acknowledgment. It creates no original PUT, external attachment download
+or source import. Pending intake without a verified receipt cannot take this
+path. Ordinary metadata/result replay needs no restoration when the exact
+archived page derivative is already available.
+
+Unsupported format/DjVu, verified-byte mismatch and page-count limits return
+`state=rejected` with a fixed safe reason. These known validation outcomes are
+persisted and remain actionable through `status`; they cannot become an endless
+UNKNOWN retry. Raw parser errors, URLs and provider error bodies are never
+returned as reasons.
 
 `pages(...)` returns the existing `RenderedPageBatch`. Page IDs are
 `uuid5(source_id, "page:1:<physical index>")`. `native_pages(...)` returns an
@@ -68,8 +87,8 @@ rendering, not OCR, rights clearance or semantic extraction.
 DjVu is recognized and returns `original_djvu_pinned_parser_required` before
 archive admission. A verified DjVuLibre executable/library closure is not yet
 configured for this target extension. Existing legacy DjVu behavior is not a
-claim of target support. Large multipart originals, restoring lost ephemeral
-native handles, and a complete import of a large research graph remain separate
+claim of target support. Large multipart originals and a complete import of a
+large research graph remain separate
 workflows. Unknown/cancelled native phases remain durable pending operations;
 they are never reported as saved or accepted source imports.
 

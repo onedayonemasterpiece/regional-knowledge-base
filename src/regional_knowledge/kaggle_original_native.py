@@ -18,7 +18,8 @@ import shutil
 import sys
 from uuid import UUID,uuid5
 
-from .original_intake import OriginalIntakeSpec,OriginalIntakeError,PHASES,canonical,digest,hash_value
+from .original_intake import (OriginalIntakeSpec,OriginalIntakeError,OriginalIntakeRejected,
+    VerifiedOriginalReceipt,PHASES,canonical,digest,hash_value)
 from .native_snapshot_transfer import NativeSnapshotTransfer,SnapshotTicket,_blocking
 
 PRIVATE_ROOT=Path('/kaggle/temp')
@@ -82,8 +83,14 @@ class NativeOriginalIntake:
                     used+=len(chunk)
                     if used>12*1024*1024:raise OriginalIntakeError('original_parser_output_bound')
                     chunks.append(chunk)
-                if await child.wait()!=0:raise OriginalIntakeError('original_parser_unavailable')
-            return json.loads(b''.join(chunks))
+                status=await child.wait()
+            value=json.loads(b''.join(chunks))
+            if status!=0:
+                from .original_intake import TERMINAL_REJECTIONS
+                if value.get('terminal') is True and value.get('error') in TERMINAL_REJECTIONS:
+                    raise OriginalIntakeRejected(value['error'])
+                raise OriginalIntakeError('original_parser_unavailable')
+            return value
         finally:
             if child.returncode is None:
                 try:child.kill()
@@ -123,6 +130,7 @@ class NativeOriginalIntake:
             _LOG.info('native_original_phase state=start run_id=%s phase=%s operation_sha256=%s',self.identity[0],frame['phase'],digest(key.encode()))
             try:
                 async with asyncio.timeout(self.config.seconds):value=await self._execute(frame)
+            except OriginalIntakeRejected as exc:value={'error':exc.code,'terminal':True}
             except OriginalIntakeError as exc:value={'error':str(exc)}
             except Exception:value={'error':'original_intake_unavailable'}
             result=dict(phase=frame['phase'],request_sha256=request,value=value)
@@ -141,7 +149,9 @@ class NativeOriginalIntake:
     async def _execute(self,frame):
         phase,args,private=frame['phase'],frame['arguments'],frame.get('original_transfer')
         if phase=='original_acquire':
-            if type(args) is not dict or set(args)!={'spec'} or type(private) is not dict or set(private)!={'download_url'}:
+            restore=type(args) is dict and set(args)=={'spec','restore_receipt','restore_nonce'}
+            if (type(args) is not dict or set(args) not in ({'spec'},{'spec','restore_receipt','restore_nonce'})
+                    or type(private) is not dict or set(private)!=({'ticket'} if restore else {'download_url'})):
                 raise OriginalIntakeError('original_acquire_contract')
             spec=OriginalIntakeSpec.from_wire(args['spec'])
             if spec.max_bytes>self.config.max_bytes or len(self._records)>=32:raise OriginalIntakeError('original_capacity_bound')
@@ -150,21 +160,45 @@ class NativeOriginalIntake:
             try:
                 if shutil.disk_usage(folder).free<2*spec.max_bytes+32*8*1024*1024+16*1024*1024:
                     raise OriginalIntakeError('original_private_disk_reservation_unavailable')
-                downloaded=await self.downloader.download(private['download_url'],folder,max_bytes=spec.max_bytes)
+                prior=None
+                if restore:
+                    prior=VerifiedOriginalReceipt.from_wire(args['restore_receipt'])
+                    ticket=SnapshotTicket.from_wire(private['ticket'])
+                    if ((prior.source_id,prior.ingestion_id,prior.request_id,prior.revision)!=(
+                            spec.source_id,spec.ingestion_id,spec.request_id,spec.revision)
+                            or prior.parser_sha256!=self.parser_sha256 or prior.size>spec.max_bytes
+                            or type(args['restore_nonce']) is not str or len(args['restore_nonce'])!=48
+                            or (ticket.key,ticket.size,ticket.sha256)!=(prior.key,prior.size,prior.sha256)
+                            or {k.lower():v for k,v in ticket.headers}.get('if-match')!=prior.native_version):
+                        raise OriginalIntakeError('original_restore_receipt_mismatch')
+                    restored=await self.transfer.download(ticket,folder/'restored.source',operation_key=frame['operation_key'])
+                    from .file_ingress import sha256_file,DownloadedFile
+                    actual_hash,actual_size=await _blocking(sha256_file,restored)
+                    if (actual_hash,actual_size)!=(prior.sha256,prior.size):raise OriginalIntakeError('original_restore_bytes_mismatch')
+                    downloaded=DownloadedFile(restored,actual_hash,actual_size)
+                else:downloaded=await self.downloader.download(private['download_url'],folder,max_bytes=spec.max_bytes)
                 with downloaded.path.open('rb') as stream:header=stream.read(16)
                 if not header.startswith(b'%PDF-'):
-                    raise OriginalIntakeError('original_djvu_pinned_parser_required' if header.startswith(b'AT&TFORM') else 'original_format_unsupported')
+                    raise OriginalIntakeRejected('original_djvu_pinned_parser_required' if header.startswith(b'AT&TFORM') else 'original_format_unsupported')
                 if ((spec.expected_sha256 is not None and spec.expected_sha256!=downloaded.sha256)
                         or (spec.expected_size is not None and spec.expected_size!=downloaded.size_bytes)):
-                    raise OriginalIntakeError('original_expected_bytes_mismatch')
+                    raise OriginalIntakeRejected('original_expected_bytes_mismatch')
                 info=await self.parser(downloaded.path,'inspect')
-                if info.get('format')!='pdf' or type(info.get('page_count')) is not int or not 1<=info['page_count']<=spec.max_pages:
+                if info.get('format')!='pdf' or type(info.get('page_count')) is not int or info['page_count']<1:
                     raise OriginalIntakeError('original_parser_invalid')
+                if info['page_count']>spec.max_pages:raise OriginalIntakeRejected('original_page_count_limit')
+                if prior is not None and (info['format'],info['page_count'])!=(prior.format,prior.page_count):
+                    raise OriginalIntakeError('original_restore_parser_mismatch')
                 handle=secrets.token_hex(24)
                 value=dict(handle=handle,spec=spec.wire(),sha256=downloaded.sha256,size=downloaded.size_bytes,
                     format='pdf',page_count=info['page_count'],parser_sha256=self.parser_sha256)
                 value['acquisition_sha256']=digest(canonical(value))
-                self._records[handle]=dict(value,path=downloaded.path,pages={},verified=None)
+                if prior is not None:
+                    value['acquisition_sha256']=prior.acquisition_sha256
+                    value['restored_from_receipt_sha256']=prior.receipt_sha256
+                    value['native_restore_sha256']=digest(canonical(dict(original=prior.receipt_sha256,
+                        sha256=downloaded.sha256,size=downloaded.size_bytes,parser_sha256=self.parser_sha256)))
+                self._records[handle]=dict(value,path=downloaded.path,pages={},verified=prior.wire() if prior is not None else None)
                 acquired=True
                 return value
             finally:

@@ -118,7 +118,7 @@ async def test_expected_hash_and_page_bound_fail_before_archive(native):
     async def too_many(*a):return dict(format='pdf',page_count=33)
     native.handler.parser=too_many
     f=frame('original_acquire',{'spec':spec().wire()},key='over-page-bound',private={'download_url':'https://attachment.invalid/private'})
-    assert (await native.handler(f))['value']['error']=='original_parser_invalid'
+    assert (await native.handler(f))['value']=={'error':'original_page_count_limit','terminal':True}
     assert not native.transfer.calls
 
 

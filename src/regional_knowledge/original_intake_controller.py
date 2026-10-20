@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 import time
 from uuid import UUID,uuid5
 
@@ -12,8 +13,8 @@ from .contracts import ChatFile
 from .kaggle_recovery_dispatch import RecoveryPhaseDispatch
 from .native_snapshot_transfer import SnapshotTicket,origin
 from .original_intake import (OriginalIntakeSpec,OriginalIntakeStatus,VerifiedOriginalReceipt,
-    OriginalIntakeError,NativePagesProof,PHASES,canonical,digest,text,uuid_value)
-from .recovery_s3 import _blocking
+    OriginalIntakeError,OriginalIntakeRejected,TERMINAL_REJECTIONS,NativePagesProof,PHASES,canonical,digest,text,uuid_value)
+from .recovery_s3 import _blocking,_missing
 
 _LOG=logging.getLogger(__name__)
 
@@ -38,6 +39,10 @@ class OriginalIntakeController:
                 ingestion_id TEXT PRIMARY KEY,actor TEXT NOT NULL,operation_id TEXT NOT NULL,
                 spec_json TEXT NOT NULL,storage_sha256 TEXT NOT NULL,acquisition_json TEXT,receipt_json TEXT,
                 UNIQUE(actor,operation_id))''')
+            if 'failure_code' not in {r['name'] for r in db.execute('PRAGMA table_info(rkb_original_intakes)')}:
+                db.execute('ALTER TABLE rkb_original_intakes ADD COLUMN failure_code TEXT')
+            if 'restore_json' not in {r['name'] for r in db.execute('PRAGMA table_info(rkb_original_intakes)')}:
+                db.execute('ALTER TABLE rkb_original_intakes ADD COLUMN restore_json TEXT')
 
     async def _authorize(self,context):
         actor=await self.spool._authorize(context)
@@ -78,12 +83,19 @@ class OriginalIntakeController:
         value=await self._bridge(binding).request(binding,phase,args,operation_key=key)
         self._private.pop(key,None)
         if type(value) is not dict:raise OriginalIntakeError('original_native_receipt_invalid')
-        if 'error' in value:raise OriginalIntakeError('original_native_receipt_unavailable')
+        if 'error' in value:
+            code=value.get('error')
+            if value.get('terminal') is True and code in TERMINAL_REJECTIONS:raise OriginalIntakeRejected(code)
+            if code=='original_retained_bytes_unavailable':raise OriginalIntakeError(code)
+            raise OriginalIntakeError('original_native_receipt_unavailable')
         return value
 
     async def _head(self,key,size,version=None):
         def read():
-            result=self.store.client.head_object(Bucket=self.store.bucket,Key=key)
+            try:result=self.store.client.head_object(Bucket=self.store.bucket,Key=key)
+            except Exception as exc:
+                if _missing(exc):return None
+                raise OriginalIntakeError('original_storage_head_unknown') from None
             etag=result.get('ETag')
             if result.get('ContentLength')!=size or type(etag) is not str or not 1<=len(etag)<=512:
                 raise OriginalIntakeError('original_storage_receipt_unverified')
@@ -111,8 +123,8 @@ class OriginalIntakeController:
             args['page_index']=page['physical_page_index'];sha256,size=page['image_sha256'],page['image_size']
             key+='/pages/'+str(args['page_index'])+'/'+sha256
         # HEAD resolves a lost PUT ACK before issuing another conditional PUT.
-        try:version=await self._head(key,size)
-        except Exception:
+        version=await self._head(key,size)
+        if version is None:
             operation=digest(canonical(dict(phase='original_archive',args=args)))
             ticket=await self._ticket(binding,operation,'PUT',key,size,sha256)
             receipt=await self._phase(binding,'original_archive',args,{'ticket':ticket})
@@ -125,7 +137,7 @@ class OriginalIntakeController:
         if ((receipt.get('key'),receipt.get('size'),receipt.get('sha256'),receipt.get('native_version'))!=(key,size,sha256,version)
                 or receipt.get('acquisition_sha256')!=record['acquisition_sha256']):
             raise OriginalIntakeError('original_verification_receipt_changed')
-        await self._head(key,size,version)
+        if await self._head(key,size,version) is None:raise OriginalIntakeError('original_verified_object_missing')
         return receipt
 
     async def begin(self,context,*,operation_id,source_id,ingestion_id,file,max_bytes=128*1024*1024):
@@ -142,9 +154,11 @@ class OriginalIntakeController:
                 if prior is not None:
                     if (prior['actor'],prior['operation_id'],prior['spec_json'],prior['storage_sha256'])!=(actor,operation_id,encoded,self._storage):
                         raise OriginalIntakeError('original_operation_changed')
-                else:db.execute('INSERT INTO rkb_original_intakes VALUES(?,?,?,?,?,NULL,NULL)',(ingestion_id,actor,operation_id,encoded,self._storage))
+                else:db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,operation_id,spec_json,storage_sha256) VALUES(?,?,?,?,?)',
+                    (ingestion_id,actor,operation_id,encoded,self._storage))
             row=self._row(actor,ingestion_id)
             try:
+                if row['failure_code'] is not None:return OriginalIntakeStatus(ingestion_id,'rejected',reason=row['failure_code'])
                 if row['receipt_json'] is not None:return await self.status(context,ingestion_id)
                 if row['acquisition_json'] is None:
                     record=await self._phase(binding,'original_acquire',{'spec':spec.wire()},{'download_url':str(file.download_url)})
@@ -155,9 +169,15 @@ class OriginalIntakeController:
                 receipt=await self._complete(context,binding,record)
                 return OriginalIntakeStatus(ingestion_id,'verified',receipt)
             except asyncio.CancelledError:raise
+            except OriginalIntakeRejected as exc:return self._reject(ingestion_id,exc.code)
             except Exception:
                 _LOG.warning('original_intake state=pending run_id=%s ingestion_id=%s reason=receipt_unresolved',binding.run_id,ingestion_id)
                 return OriginalIntakeStatus(ingestion_id,'pending',reason='original_intake_unknown_retry_same_operation')
+
+    def _reject(self,ingestion_id,code):
+        if code not in TERMINAL_REJECTIONS:raise OriginalIntakeError('original_rejection_invalid')
+        with self.queue.connect() as db:db.execute('UPDATE rkb_original_intakes SET failure_code=? WHERE ingestion_id=?',(code,ingestion_id))
+        return OriginalIntakeStatus(ingestion_id,'rejected',reason=code)
 
     async def _complete(self,context,binding,record):
         native=await self._archive(binding,record);spec=OriginalIntakeSpec.from_wire(record['spec'])
@@ -174,12 +194,14 @@ class OriginalIntakeController:
         actor,binding=await self._authorize(context);row=self._row(actor,ingestion_id)
         if row['receipt_json'] is None:return None
         receipt=VerifiedOriginalReceipt.from_wire(json.loads(row['receipt_json']))
-        await self._head(receipt.key,receipt.size,receipt.native_version)
+        if await self._head(receipt.key,receipt.size,receipt.native_version) is None:
+            raise OriginalIntakeError('original_verified_object_missing')
         if not self.binding_current(binding):raise OriginalIntakeError('original_current_binding_required')
         return receipt
 
     async def status(self,context,ingestion_id):
         actor,binding=await self._authorize(context);row=self._row(actor,ingestion_id)
+        if row['failure_code'] is not None:return OriginalIntakeStatus(ingestion_id,'rejected',reason=row['failure_code'])
         receipt=await self.verified(context,ingestion_id)
         if receipt is not None:return OriginalIntakeStatus(ingestion_id,'verified',receipt)
         try:
@@ -194,6 +216,9 @@ class OriginalIntakeController:
                     reason='original_acquisition_pending' if key in self._private else 'original_attachment_retry_same_file_required'
                     return OriginalIntakeStatus(ingestion_id,'pending',reason=reason)
                 identity=json.loads(job['identity']);result=json.loads(job['result'])
+                if (result.get('value',{}).get('terminal') is True
+                        and result['value'].get('error') in TERMINAL_REJECTIONS):
+                    return self._reject(ingestion_id,result['value']['error'])
                 if (identity['phase']!='original_acquire' or identity['arguments']!=args
                         or result['request_sha256']!=identity['request_sha256'] or result['phase']!='original_acquire'
                         or result['value'].get('spec')!=spec):
@@ -204,6 +229,7 @@ class OriginalIntakeController:
             receipt=await self._complete(context,binding,record)
             return OriginalIntakeStatus(ingestion_id,'verified',receipt)
         except asyncio.CancelledError:raise
+        except OriginalIntakeRejected as exc:return self._reject(ingestion_id,exc.code)
         except Exception:return OriginalIntakeStatus(ingestion_id,'pending',reason='original_intake_unknown_retry_same_operation')
 
     async def pages(self,context,ingestion_id,cursor=None,batch_size=1):
@@ -215,7 +241,11 @@ class OriginalIntakeController:
         except ValueError:raise OriginalIntakeError('original_page_cursor_invalid') from None
         if index<0 or index>=receipt.page_count:raise OriginalIntakeError('original_page_cursor_invalid')
         record=json.loads(row['acquisition_json'])
-        page=await self._phase(binding,'original_pages',dict(handle=record['handle'],original_sha256=record['sha256'],index=index))
+        try:page=await self._phase(binding,'original_pages',dict(handle=record['handle'],original_sha256=record['sha256'],index=index))
+        except OriginalIntakeError as exc:
+            if str(exc)!='original_retained_bytes_unavailable':raise
+            record=await self._restore_handle(context,actor,binding,receipt,record)
+            page=await self._phase(binding,'original_pages',dict(handle=record['handle'],original_sha256=record['sha256'],index=index))
         native=await self._archive(binding,record,page=page)
         def derivative():
             result=self.store.client.get_object(Bucket=self.store.bucket,Key=native['key'],IfMatch=native['native_version'])
@@ -238,6 +268,36 @@ class OriginalIntakeController:
             page['native_text'],tuple(page['native_blocks']),dict(page['native_text_info'],
                 original_sha256=record['sha256'],page_receipt_sha256=page['page_receipt_sha256'])),),
             str(index+1) if index+1<receipt.page_count else None)
+
+    async def _restore_handle(self,context,actor,binding,receipt,old_record):
+        async with self._lock:
+            row=self._row(actor,receipt.ingestion_id)
+            if row['receipt_json'] is None or VerifiedOriginalReceipt.from_wire(json.loads(row['receipt_json']))!=receipt:
+                raise OriginalIntakeError('original_verified_restore_receipt_required')
+            fresh=json.loads(row['acquisition_json'])
+            if fresh['handle']!=old_record['handle']:return fresh
+            if await self._head(receipt.key,receipt.size,receipt.native_version) is None:
+                raise OriginalIntakeError('original_verified_object_missing')
+            pending=json.loads(row['restore_json']) if row['restore_json'] else None
+            identity=[binding.run_id,binding.runtime_incarnation,binding.connection_generation]
+            if pending is None:
+                pending=dict(identity=identity,args=dict(spec=json.loads(row['spec_json']),restore_receipt=receipt.wire(),
+                    restore_nonce=secrets.token_hex(24)))
+                with self.queue.connect() as db:db.execute('UPDATE rkb_original_intakes SET restore_json=? WHERE ingestion_id=?',
+                    (canonical(pending).decode(),receipt.ingestion_id))
+            elif pending['identity']!=identity:
+                raise OriginalIntakeError('original_restore_unknown_requires_reconciliation')
+            args=pending['args'];operation=digest(canonical(dict(phase='original_acquire',args=args)))
+            ticket=await self._ticket(binding,operation,'GET',receipt.key,receipt.size,receipt.sha256,receipt.native_version)
+            restored=await self._phase(binding,'original_acquire',args,{'ticket':ticket})
+            if (restored.get('spec')!=args['spec'] or restored.get('restored_from_receipt_sha256')!=receipt.receipt_sha256
+                    or tuple(restored.get(k) for k in ('sha256','size','format','page_count','parser_sha256','acquisition_sha256'))!=(
+                        receipt.sha256,receipt.size,receipt.format,receipt.page_count,receipt.parser_sha256,receipt.acquisition_sha256)):
+                raise OriginalIntakeError('original_restore_receipt_changed')
+            await self._authorize(context)
+            with self.queue.connect() as db:db.execute('UPDATE rkb_original_intakes SET acquisition_json=?,restore_json=NULL WHERE ingestion_id=?',
+                (canonical(restored).decode(),receipt.ingestion_id))
+            return restored
 
     async def native_pages(self,context,ingestion_id):
         receipt=await self.verified(context,ingestion_id)
