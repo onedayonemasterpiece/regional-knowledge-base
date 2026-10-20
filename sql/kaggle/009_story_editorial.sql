@@ -269,6 +269,106 @@ CREATE TABLE rkb_v4.source_manifests (
 CREATE TRIGGER immutable_source_manifest BEFORE UPDATE OR DELETE ON rkb_v4.source_manifests
  FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_revision_update();
 
+CREATE TABLE rkb_v4.source_catalog (
+ source_id uuid NOT NULL,source_revision bigint NOT NULL,metadata jsonb NOT NULL,search_text text NOT NULL,
+ fts tsvector GENERATED ALWAYS AS(to_tsvector('pg_catalog.simple'::regconfig,search_text)) STORED,
+ PRIMARY KEY(source_id,source_revision),
+ FOREIGN KEY(source_id,source_revision) REFERENCES rkb_v4.source_manifests
+);
+CREATE INDEX source_catalog_fts ON rkb_v4.source_catalog USING gin(fts);
+CREATE TABLE rkb_v4.source_passage_provenance (
+ passage_id uuid PRIMARY KEY REFERENCES rkb_v4.passage_search,
+ source_id uuid NOT NULL,source_revision bigint NOT NULL,data jsonb NOT NULL,
+ FOREIGN KEY(source_id,source_revision) REFERENCES rkb_v4.source_manifests
+);
+CREATE INDEX source_passage_provenance_source ON rkb_v4.source_passage_provenance(source_id,source_revision);
+CREATE TRIGGER immutable_source_catalog BEFORE UPDATE OR DELETE ON rkb_v4.source_catalog
+ FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_revision_update();
+CREATE TRIGGER immutable_source_passage_provenance BEFORE UPDATE OR DELETE ON rkb_v4.source_passage_provenance
+ FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_revision_update();
+CREATE FUNCTION rkb_v4.project_source_manifest_v1() RETURNS trigger
+ LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE metadata jsonb:=NEW.manifest->'metadata';item jsonb;author_text text;
+BEGIN
+ SELECT string_agg(x,E'\n' ORDER BY ordinal) INTO author_text
+ FROM jsonb_array_elements_text(metadata->'authors') WITH ORDINALITY a(x,ordinal);
+ INSERT INTO rkb_v4.source_catalog(source_id,source_revision,metadata,search_text)
+ VALUES(NEW.source_id,NEW.source_revision,metadata,coalesce(metadata->>'title','')||E'\n'||coalesce(author_text,''));
+ FOR item IN SELECT value FROM jsonb_array_elements(NEW.manifest->'passages') LOOP
+  INSERT INTO rkb_v4.source_passage_provenance VALUES((item->>'passage_id')::uuid,NEW.source_id,NEW.source_revision,item);
+ END LOOP;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER source_manifest_projected AFTER INSERT ON rkb_v4.source_manifests
+ FOR EACH ROW EXECUTE FUNCTION rkb_v4.project_source_manifest_v1();
+
+-- Python str.strip whitespace, explicitly fixed rather than database locale.
+CREATE FUNCTION rkb_v4.source_text_trim_v1(value text) RETURNS text
+ LANGUAGE sql IMMUTABLE STRICT SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT btrim(value,U&'\0009\000a\000b\000c\000d\001c\001d\001e\001f\0020\0085\00a0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200a\2028\2029\202f\205f\3000')
+$$;
+CREATE FUNCTION rkb_v4.check_source_passage_manifest_v1(doc jsonb) RETURNS boolean
+ LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE m jsonb:=doc->'source_manifest';item jsonb;span jsonb;r jsonb;p jsonb;refs jsonb;
+ seen text[]:='{}';selected text[];page_ids text[];parts text[];key text;begin_offset integer;end_offset integer;last_offsets jsonb;
+BEGIN
+ IF jsonb_typeof(m->'passages') IS DISTINCT FROM 'array' OR jsonb_array_length(m->'passages') NOT BETWEEN 1 AND 100
+ OR jsonb_array_length(m->'passages')<>jsonb_array_length(doc->'passages') THEN RETURN false;END IF;
+ FOR item IN SELECT value FROM jsonb_array_elements(m->'passages') LOOP
+  IF jsonb_typeof(item) IS DISTINCT FROM 'object'
+   OR NOT item ?& ARRAY['passage_id','region_ids','footnote_region_ids','page_ids','source_spans']
+   OR item-ARRAY['passage_id','region_ids','footnote_region_ids','page_ids','source_spans']<>'{}'::jsonb
+   OR item->>'passage_id'=ANY(seen) THEN RETURN false;END IF;
+  SELECT x INTO STRICT p FROM jsonb_array_elements(doc->'passages') x WHERE x->>'passage_id'=item->>'passage_id';
+  seen:=array_append(seen,item->>'passage_id');selected:='{}';page_ids:='{}';parts:='{}';last_offsets:='{}';
+  FOREACH key IN ARRAY ARRAY['region_ids','footnote_region_ids','page_ids'] LOOP
+   refs:=item->key;
+   IF jsonb_typeof(refs) IS DISTINCT FROM 'array' OR jsonb_array_length(refs)>CASE key WHEN 'region_ids' THEN 100
+    WHEN 'footnote_region_ids' THEN 50 ELSE 20 END
+    OR (SELECT count(DISTINCT v) FROM jsonb_array_elements(refs) v)<>jsonb_array_length(refs) THEN RETURN false;END IF;
+  END LOOP;
+  IF jsonb_array_length(item->'region_ids')=0 OR jsonb_array_length(item->'page_ids')=0
+   OR EXISTS(SELECT 1 FROM jsonb_array_elements(item->'region_ids') x WHERE item->'footnote_region_ids' @> jsonb_build_array(x))
+   THEN RETURN false;END IF;
+  FOR refs IN SELECT value FROM jsonb_array_elements((item->'region_ids')||(item->'footnote_region_ids')) LOOP
+   SELECT x INTO STRICT r FROM jsonb_array_elements(doc->'semantic'->'regions') x WHERE x->'region_id'=refs;
+   IF NOT item->'page_ids' @> jsonb_build_array(r->'page_id') THEN RETURN false;END IF;
+   page_ids:=array_append(page_ids,r->>'page_id');
+  END LOOP;
+  IF EXISTS(SELECT 1 FROM jsonb_array_elements_text(item->'page_ids') x WHERE NOT x=ANY(page_ids)) THEN RETURN false;END IF;
+  IF jsonb_typeof(item->'source_spans') IS DISTINCT FROM 'array' OR jsonb_array_length(item->'source_spans')>100 THEN RETURN false;END IF;
+  FOR span IN SELECT value FROM jsonb_array_elements(item->'source_spans') LOOP
+   IF jsonb_typeof(span) IS DISTINCT FROM 'object' OR NOT span ?& ARRAY['region_id','start','end','source_text_sha256']
+    OR span-ARRAY['region_id','start','end','source_text_sha256']<>'{}'::jsonb
+    OR NOT item->'region_ids' @> jsonb_build_array(span->'region_id')
+    OR jsonb_typeof(span->'start') IS DISTINCT FROM 'number' OR span->>'start' !~ '^(0|[1-9][0-9]*)$'
+    OR jsonb_typeof(span->'end') IS DISTINCT FROM 'number' OR span->>'end' !~ '^[1-9][0-9]*$' THEN RETURN false;END IF;
+   SELECT x INTO STRICT r FROM jsonb_array_elements(doc->'semantic'->'regions') x WHERE x->'region_id'=span->'region_id';
+   begin_offset:=(span->>'start')::integer;end_offset:=(span->>'end')::integer;
+   IF span->>'source_text_sha256' IS DISTINCT FROM r->>'source_text_sha256' OR begin_offset>=end_offset
+    OR end_offset>length(r->>'source_text') OR begin_offset<coalesce((last_offsets->>(span->>'region_id'))::integer,0) THEN RETURN false;END IF;
+   last_offsets:=last_offsets||jsonb_build_object(span->>'region_id',end_offset);
+   selected:=array_append(selected,span->>'region_id');
+   parts:=array_append(parts,rkb_v4.source_text_trim_v1(substring(r->>'source_text' FROM begin_offset+1 FOR end_offset-begin_offset)));
+  END LOOP;
+  IF jsonb_array_length(item->'source_spans')>0 THEN
+   IF EXISTS(SELECT 1 FROM jsonb_array_elements_text(item->'region_ids') x WHERE NOT x=ANY(selected)) THEN RETURN false;END IF;
+  ELSE
+   FOR refs IN SELECT value FROM jsonb_array_elements(item->'region_ids') LOOP
+    SELECT x INTO STRICT r FROM jsonb_array_elements(doc->'semantic'->'regions') x WHERE x->'region_id'=refs;
+    IF length(rkb_v4.source_text_trim_v1(r->>'source_text'))>0 THEN parts:=array_append(parts,rkb_v4.source_text_trim_v1(r->>'source_text'));END IF;
+   END LOOP;
+  END IF;
+  FOR refs IN SELECT value FROM jsonb_array_elements(item->'footnote_region_ids') LOOP
+   SELECT x INTO STRICT r FROM jsonb_array_elements(doc->'semantic'->'regions') x WHERE x->'region_id'=refs;
+   IF length(rkb_v4.source_text_trim_v1(r->>'source_text'))>0 THEN parts:=array_append(parts,'[Footnote] '||rkb_v4.source_text_trim_v1(r->>'source_text'));END IF;
+  END LOOP;
+  IF rkb_v4.source_text_trim_v1(array_to_string(parts,E'\n')) IS DISTINCT FROM p->>'body' THEN RETURN false;END IF;
+ END LOOP;
+ RETURN true;
+EXCEPTION WHEN data_exception OR no_data_found OR too_many_rows THEN RETURN false;
+END $$;
+
 CREATE FUNCTION rkb_v4.check_source_manifest_v1(doc jsonb,source uuid)
 RETURNS boolean LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE m jsonb:=doc->'source_manifest';original jsonb:=doc->'original';receipt jsonb;raw bytea;
@@ -276,8 +376,8 @@ DECLARE m jsonb:=doc->'source_manifest';original jsonb:=doc->'original';receipt 
  pages uuid[]:='{}';regions uuid[]:='{}';page_index integer:=0;matching jsonb;
 BEGIN
  IF jsonb_typeof(m) IS DISTINCT FROM 'object'
- OR NOT m ?& ARRAY['codec','source_id','source_revision','original_receipt_b64','native_pages_proof_sha256','metadata','pages','regions']
- OR m-ARRAY['codec','source_id','source_revision','original_receipt_b64','native_pages_proof_sha256','metadata','pages','regions']<>'{}'::jsonb
+ OR NOT m ?& ARRAY['codec','source_id','source_revision','original_receipt_b64','native_pages_proof_sha256','metadata','pages','regions','passages']
+ OR m-ARRAY['codec','source_id','source_revision','original_receipt_b64','native_pages_proof_sha256','metadata','pages','regions','passages']<>'{}'::jsonb
  OR m->>'codec' IS DISTINCT FROM 'rkb.source-manifest.v1' OR m->>'source_id' IS DISTINCT FROM source::text
  OR m->'source_revision' IS DISTINCT FROM '1'::jsonb OR m->>'native_pages_proof_sha256' !~ '^[0-9a-f]{64}$'
  OR jsonb_typeof(m->'original_receipt_b64') IS DISTINCT FROM 'string'
@@ -392,9 +492,35 @@ BEGIN
   IF (region->>'end_offset')::bigint-(region->>'start_offset')::bigint<>length(matching->>'source_text')
    OR length(btrim(matching->>'source_text'))=0 THEN RETURN false;END IF;
  END LOOP;
- RETURN true;
+ RETURN rkb_v4.check_source_passage_manifest_v1(doc);
 EXCEPTION WHEN data_exception OR no_data_found OR too_many_rows THEN RETURN false;
 END $$;
+
+CREATE FUNCTION rkb_v4.find_source_catalog_v1(query_text text,budget integer)
+RETURNS TABLE(source_id uuid,source_revision bigint,eligibility_revision bigint,metadata jsonb)
+ LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT c.source_id,c.source_revision,v.eligibility_revision,c.metadata
+ FROM rkb_v4.source_catalog c JOIN rkb_v4.active_revision a ON a.source_id=c.source_id AND a.revision=c.source_revision
+ JOIN rkb_v4.sources s ON s.source_id=c.source_id JOIN rkb_v4.source_visibility v ON v.source_id=c.source_id
+ WHERE s.accepted AND NOT s.withdrawn AND c.metadata->>'title' IS NOT NULL
+ AND c.fts @@ plainto_tsquery('pg_catalog.simple'::regconfig,query_text)
+ ORDER BY c.source_id LIMIT greatest(0,least(budget,8))
+$$;
+CREATE FUNCTION rkb_v4.source_passage_metadata_v1(wanted uuid[])
+RETURNS TABLE(passage_id uuid,metadata jsonb)
+ LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT p.passage_id,jsonb_build_object('catalog',m.manifest->'metadata','original_sha256',o.original_sha256,
+  'source_revision',p.source_revision,'passage',p.data,
+  'pages',(SELECT jsonb_agg(x) FROM jsonb_array_elements(m.manifest->'pages') x WHERE p.data->'page_ids' @> jsonb_build_array(x->'page_id')),
+  'regions',(SELECT jsonb_agg(x) FROM jsonb_array_elements(m.manifest->'regions') x WHERE
+    ((p.data->'region_ids')||(p.data->'footnote_region_ids')) @> jsonb_build_array(x->'region_id')))
+ FROM rkb_v4.source_passage_provenance p
+ JOIN rkb_v4.source_manifests m USING(source_id,source_revision)
+ JOIN rkb_v4.source_import_origins o ON o.source_id=p.source_id AND o.revision=p.source_revision
+ JOIN rkb_v4.active_revision a ON a.source_id=p.source_id AND a.revision=p.source_revision
+ JOIN rkb_v4.sources s ON s.source_id=p.source_id
+ WHERE p.passage_id=ANY(wanted[1:5]) AND s.accepted AND NOT s.withdrawn
+$$;
 
 CREATE FUNCTION rkb_v4.check_source_import_v4(p bytea,ids jsonb,expected jsonb,logical_time text)
 RETURNS boolean LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$

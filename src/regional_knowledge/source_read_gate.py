@@ -12,6 +12,7 @@ from uuid import UUID
 
 from .kaggle_protocol import Query, QueryResult, PassageReadRequest, PassageReadResult, StoryReadRequest, StoryReadResult, TrustedActorContext
 from .kaggle_fact_contracts import FactReadRequest, FactReadResult
+from .kaggle_source_read import SourceReadRequest, SourceReadResult
 from .read_authority import ReadAuthority
 
 
@@ -116,9 +117,18 @@ class SourceReadGate:
                 if handler==expected:return True
         return False
 
+    def catalog_supported(self):
+        from .source_import_v4 import SOURCE_IMPORT_V4,source_import_v4_handler
+        from .story_editorial import EDITORIAL_REVISIONS
+        for handler in self.spool.registry.handlers.values():
+            if handler.route==SOURCE_IMPORT_V4 and handler.revisions==EDITORIAL_REVISIONS:
+                if handler==source_import_v4_handler(check_sha256=handler.check.definition_sha256,
+                        apply_sha256=handler.apply.definition_sha256):return True
+        return False
+
     async def dispatch(self, authority, query: Query | PassageReadRequest | StoryReadRequest, binding):
         self._expire()
-        if type(query) not in (Query, PassageReadRequest, StoryReadRequest, FactReadRequest) or len(self._permits) + len(self._tickets) >= self.max_retained:
+        if type(query) not in (Query, PassageReadRequest, StoryReadRequest, FactReadRequest, SourceReadRequest) or len(self._permits) + len(self._tickets) >= self.max_retained:
             raise SourceGateDenied('read capacity or contract unavailable')
         await self.authority.require(authority, 'public_search')
         key = binding_key(binding)
@@ -129,6 +139,8 @@ class SourceReadGate:
             raise SourceGateDenied('native story semantics unavailable')
         if type(query) is FactReadRequest and not self.facts_supported():
             raise SourceGateDenied('native fact semantics unavailable')
+        if type(query) is SourceReadRequest and not self.catalog_supported():
+            raise SourceGateDenied('native source catalogue unavailable')
         if type(query) is Query and query.filters.kinds is not None and query.filters.kinds not in (('source',),('story',)):
             raise SourceGateDenied('independent evidence authority unavailable')
         if type(query) is Query and query.filters.source_ids is not None:
@@ -153,10 +165,11 @@ class SourceReadGate:
         if not self._binding(read):
             raise SourceGateDenied('runtime binding changed')
         q = read.query
+        catalog = type(q) is SourceReadRequest
         fact = type(q) is FactReadRequest
         story = type(q) is StoryReadRequest
-        exact = fact or type(q) in (PassageReadRequest,StoryReadRequest)
-        if (type(result) is not (FactReadResult if fact else StoryReadResult if story else PassageReadResult if exact else QueryResult)
+        exact = catalog or fact or type(q) in (PassageReadRequest,StoryReadRequest)
+        if (type(result) is not (SourceReadResult if catalog else FactReadResult if fact else StoryReadResult if story else PassageReadResult if exact else QueryResult)
                 or (result.request_id, result.connection_generation, result.turn_generation)
                     != (q.request_id, q.connection_generation, q.turn_generation)):
             raise SourceGateDenied('result request binding differs')
@@ -189,7 +202,9 @@ class SourceReadGate:
         sources = tuple(sorted({s for item in result.evidence for s in item.dependencies.source_ids}))
         if len(sources) > 160:
             raise SourceGateDenied('dependency bound exceeded')
-        scope = ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
+        scope = None if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
+        if catalog and (not self.catalog_supported() or len(result.records)>q.limit):
+            raise SourceGateDenied('exact bounded source catalogue required')
         if fact and (not self.facts_supported() or len(result.records)>q.limit or
                 any(record.get('kind')!=q.action for record in result.records) or
                 q.source_id is not None and any(source!=q.source_id for source in sources)):
@@ -204,7 +219,7 @@ class SourceReadGate:
                 or len(result.record['entries'])>q.limit
                 or any(e['revision']<=q.after_revision for e in result.record['entries'])):
             raise SourceGateDenied('exact story provenance differs')
-        if exact and not story and not fact and (len(result.evidence) != 1 or result.evidence[0].id != q.locator.passage_id
+        if exact and not story and not fact and not catalog and (len(result.evidence) != 1 or result.evidence[0].id != q.locator.passage_id
                 or result.evidence[0].dependencies.source_revisions != (q.locator.source,)
                 or result.observed_visibility_epoch != q.locator.visibility_epoch):
             raise SourceGateDenied('exact source provenance differs')
@@ -267,7 +282,8 @@ class SourceReadGate:
         return result.model_copy(update={'status': 'unavailable' if reason != 'access_denied' else 'denied',
             **({'mode': None, 'continuation': None} if type(result) is QueryResult else
                 {'record':None} if type(result) is StoryReadResult else
-                {'records':(),'next_cursor':None} if type(result) is FactReadResult else {}),
+                {'records':(),'next_cursor':None} if type(result) is FactReadResult else
+                {'records':()} if type(result) is SourceReadResult else {}),
             'reason': reason, 'evidence': (),
             'prior_write_pending': reason == 'prior_write_pending'})
 

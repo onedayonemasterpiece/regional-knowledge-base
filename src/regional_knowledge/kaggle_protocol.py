@@ -176,6 +176,14 @@ class EvidenceMetadata(Contract):
     title: Annotated[str, Field(max_length=2048)] | None = None
     citation: Annotated[str, Field(max_length=8192)] | None = None
     locator: Annotated[str, Field(max_length=2048)] | None = None
+    source_provenance: dict | None = None
+
+    @model_validator(mode='after')
+    def bounded_provenance(self):
+        if self.source_provenance is not None and len(json.dumps(self.source_provenance,
+                ensure_ascii=False,allow_nan=False).encode())>128*1024:
+            raise ValueError('bounded safe source provenance required')
+        return self
 
 
 class EvidenceItem(Contract):
@@ -390,9 +398,12 @@ def decode_envelope(data: bytes) -> Query | QueryResult | PassageReadRequest | P
                      parse_constant=_reject_constant)
     if not isinstance(raw, dict):
         raise ValueError("envelope must be an object")
-    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT", "STORY_READ_RESULT", "FACT_READ_RESULT") else QUERY_MAX_BYTES
+    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT", "STORY_READ_RESULT", "FACT_READ_RESULT", "SOURCE_READ_RESULT") else QUERY_MAX_BYTES
     if len(data) > limit:
         raise ValueError("query_too_large" if raw.get("type") == "QUERY" else "control frame too large")
+    if raw.get('type') in ('SOURCE_READ','SOURCE_READ_RESULT'):
+        from .kaggle_source_read import SourceReadRequest,SourceReadResult
+        return (SourceReadRequest if raw['type']=='SOURCE_READ' else SourceReadResult).model_validate_json(data)
     if raw.get('type') in ('FACT_READ', 'FACT_READ_RESULT'):
         # The fixed optional domain contract imports the base wire models; load
         # it after this module is initialized rather than adding an import cycle.

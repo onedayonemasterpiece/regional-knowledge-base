@@ -182,6 +182,8 @@ class KnowledgeMCPServer(MCPServer):
             allowed.update({'story_calendar','story_observation_search'})
         if getattr(self,'_target_import_available',False):
             allowed.update({'book_ingest','book_pages'})
+        if getattr(self,'_target_catalog_available',False):
+            allowed.add('book_find')
         if getattr(self,'_target_source_profile',False) and name not in allowed:
             raise ToolError('{"status":"unavailable","reason":"target_domain_unavailable"}')
         from .read_issuance import capture_read_output, bind_request_output
@@ -428,6 +430,7 @@ def build_server(
     mcp._target_import_available = selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None
     mcp._target_story_available = (selected=='kaggle_source' and target_startup.gate.story_supported())
     mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
+    mcp._target_catalog_available = (selected=='kaggle_source' and target_startup.gate.catalog_supported())
     mcp._target_startup=target_startup
     mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
     worker_queue = getattr(backend, 'worker_queue', None)

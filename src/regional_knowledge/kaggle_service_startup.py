@@ -165,6 +165,8 @@ class TargetServiceStartup:
         self.backend.startup=self
         self.routes={'source.search':self.backend.search,'source.fetch':self.backend.fetch,
             'source.withdraw':config.spool.stage_source_withdraw,'source.import':config.spool.stage_source_import}
+        if self.gate.catalog_supported():
+            self.routes['source.catalog']=self.backend.book_find
         if self.gate.story_supported():
             self.routes.update({'story.search':self.backend.story_search,'story.get':self.backend.story_get,
                 'story.history':self.backend.story_history,'story.variants':self.backend.story_variants})

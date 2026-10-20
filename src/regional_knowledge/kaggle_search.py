@@ -33,6 +33,7 @@ class SearchEvidence:
     locator: str
     body: str
     bibliography: str
+    source_provenance: dict | None = None
 
 
 @dataclass(frozen=True)
