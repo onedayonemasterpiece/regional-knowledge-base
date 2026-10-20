@@ -196,7 +196,7 @@ BEGIN
    SELECT value x FROM jsonb_array_elements(refs) UNION SELECT jsonb_build_object('source_id',region.source_id,
     'content_revision',region.source_revision,'eligibility_revision',v.eligibility_revision) FROM rkb_v4.source_visibility v WHERE v.source_id=region.source_id) all_refs;
  ELSIF action IN ('revise','state','grant') THEN
-  IF case_revision<1 OR role<CASE WHEN action='grant' THEN 4 ELSE 3 END THEN RETURN false;END IF;
+  IF case_revision<1 OR role<(CASE WHEN action='grant' THEN 4 ELSE 3 END) THEN RETURN false;END IF;
   IF action='revise' AND (NOT rkb_v4.case_exact_keys_v1(op,ARRAY['question','context','classification','rationale','reason']) OR length(op->>'question') NOT BETWEEN 1 AND 3000 OR length(op->>'context') NOT BETWEEN 1 AND 8000) THEN RETURN false;END IF;
   IF action='state' AND (NOT rkb_v4.case_exact_keys_v1(op,ARRAY['state','reason']) OR op->>'state' NOT IN ('open','paused','archived')) THEN RETURN false;END IF;
   IF action='grant' AND (NOT rkb_v4.case_exact_keys_v1(op,ARRAY['grantee','capability','reason']) OR (op->>'grantee')::uuid::text<>op->>'grantee'
@@ -218,7 +218,7 @@ BEGIN
  ELSIF action IN ('conclude','draft_save') THEN
   IF action='conclude' THEN
    IF NOT rkb_v4.case_exact_keys_v1(op,ARRAY['kind','text','outcome','allowed_wording','limitations','open_questions','based_on_seq','evidence_ids','contribution_versions','weight_analysis','make_current'])
-    OR case_revision<1 OR role<CASE WHEN op->'make_current'='true'::jsonb THEN 3 ELSE 2 END
+    OR case_revision<1 OR role<(CASE WHEN op->'make_current'='true'::jsonb THEN 3 ELSE 2 END)
     OR op->>'kind' NOT IN ('model_synthesis','individual_opinion') OR op->>'kind'='individual_opinion' AND op->'make_current'='true'::jsonb
     OR op->>'outcome' NOT IN ('context_explains','insufficient_support','preferred_variant','multiple_interpretations','insufficient_material')
     OR EXISTS(SELECT 1 FROM rkb_v4.disagreement_conclusions WHERE conclusion_id=object_id)
@@ -258,7 +258,7 @@ RETURNS bytea LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE doc jsonb:=convert_from(p,'UTF8')::jsonb;op jsonb:=doc->'command';action text:=doc->>'action';
  wanted uuid:=(ids->>'case_id')::uuid;actor uuid:=(ids->>'actor_id')::uuid;object_id uuid:=(ids->>'object_id')::uuid;
  head rkb_v4.disagreement_cases;new_data jsonb;result jsonb;version bigint:=1;seq bigint;ordinal bigint;
- contribution uuid;payload_hash text:=encode(sha256(p),'hex');draft_data jsonb;
+ contribution uuid;payload_hash text:=encode(sha256(p),'hex');draft_data jsonb;page_proof jsonb;region_proof jsonb;
 BEGIN
  IF NOT rkb_v4.check_disagreement_v1(p,ids,expected,logical_time) THEN RAISE EXCEPTION 'native case precondition differs';END IF;
  IF action='create' THEN
@@ -291,8 +291,17 @@ BEGIN
   INSERT INTO rkb_v4.disagreement_case_versions SELECT wanted,h.revision,h.state,h.current_conclusion_id,h.data,actor,logical_time,payload_hash
    FROM rkb_v4.disagreement_cases h WHERE h.case_id=wanted;
  ELSIF action='add_evidence' THEN
+  SELECT page.value,region.value INTO STRICT page_proof,region_proof
+   FROM rkb_v4.source_manifests m
+   CROSS JOIN LATERAL jsonb_array_elements(m.manifest->'pages') page(value)
+   CROSS JOIN LATERAL jsonb_array_elements(m.manifest->'regions') region(value)
+   WHERE m.source_id=(op->>'document_id')::uuid AND m.source_revision=(op->>'source_revision')::bigint
+    AND page.value->>'page_id'=op->>'page_id' AND region.value->>'region_id'=op->>'region_id'
+    AND region.value->>'page_id'=page.value->>'page_id';
   new_data:=op||jsonb_build_object('text_end',(op->>'text_start')::integer+length(op->>'quote'),
-   'verification','accepted_text_match','visual_confirmation',NULL,'physical_page_index',NULL);
+   'verification','accepted_text_match','visual_confirmation',NULL,
+   'physical_page_index',(page_proof->>'physical_page_index')::integer,
+   'page_provenance',page_proof,'region_provenance',region_proof);
   INSERT INTO rkb_v4.disagreement_evidence VALUES(object_id,1,wanted,(op->>'document_id')::uuid,
    (op->>'source_revision')::bigint,(op->>'page_id')::uuid,(op->>'region_id')::uuid,new_data,actor,seq,logical_time,payload_hash);
  ELSIF action IN ('contribute','correct_contribution','draft_publish') THEN
@@ -386,7 +395,7 @@ DECLARE head rkb_v4.disagreement_cases;version rkb_v4.disagreement_case_versions
  current_conclusion jsonb;latest_material bigint;
 BEGIN
  IF section IS NULL OR section NOT IN ('case','evidence','contributions','conclusions','history','draft_get','draft_list')
- OR take NOT BETWEEN 1 AND 20 OR after_seq<0 OR wanted_revision IS NOT NULL AND wanted_revision<1
+ OR take IS NULL OR after_seq IS NULL OR take NOT BETWEEN 1 AND 20 OR after_seq<0 OR wanted_revision IS NOT NULL AND wanted_revision<1
  OR wanted_version IS NOT NULL AND wanted_version<1 THEN RAISE EXCEPTION 'bounded native case read required';END IF;
  SELECT * INTO head FROM rkb_v4.disagreement_cases WHERE case_id=wanted;
  IF head.case_id IS NULL OR coalesce(rkb_v4.case_role_v1(wanted,actor),0)<1 THEN RETURN NULL;END IF;

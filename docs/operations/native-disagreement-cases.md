@@ -39,13 +39,11 @@ receipts and search representations. All retained historical dependencies apply;
 removing a link cannot launder derived content. Exact-source text matching is
 `accepted_text_match`, not visual or human verification.
 
-Current source schema stores source region/page UUID and source text hash but
-not the physical page index/native page geometry receipt. Until an explicit
-retained page manifest is available, physical_page_index is `None`; it must never
-be inferred from UUIDs, record order or bibliography. Structured author/title
-metadata must likewise come from retained typed fields, not parsed concatenated
-bibliography. Source proof rendering/physical-page continuation remains an
-explicit gap on that baseline.
+Fresh9 source manifests retain physical page indices and exact native region
+geometry. Accepted evidence copies the matching page and region provenance from
+that immutable manifest, including printed page labels and native block offsets.
+These fields do not assert visual or human verification. Structured author/title
+metadata likewise comes from retained typed fields, never parsed bibliography.
 
 Case search/BGE projections, public exports/discussions, exact human support and
 research source requests are separate required product paths. No lexical-only

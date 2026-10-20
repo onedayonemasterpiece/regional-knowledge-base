@@ -16,7 +16,7 @@ from regional_knowledge.story_editorial import EDITORIAL_REVISIONS
 from regional_knowledge.source_import_v4 import source_import_v4_handler,resolved_import_v4_command
 from test_story_editorial_native import initialize
 from test_source_story_native import connect,apply
-from test_source_import_v2 import payload
+from test_source_manifest import manifest_payload as payload, BBOX
 from test_source_import import SOURCE
 from test_kaggle_apply import pinned
 from test_recovery_journal import fixture as journal_fixture
@@ -130,7 +130,10 @@ async def test_exact_native_source_quote_current_withdrawal_and_receipt(native):
     value=await read(n,section='evidence')
     item=value['items'][0]['payload']
     assert item['quote']==json.loads(c.payload)['command']['quote'] and item['verification']=='accepted_text_match'
-    assert item['physical_page_index'] is None and item['visual_confirmation'] is None
+    assert item['physical_page_index']==1 and item['visual_confirmation'] is None
+    assert item['page_provenance']['printed_page_number']=='105'
+    assert item['region_provenance']['bbox']==BBOX
+    assert item['region_provenance']['native_block_index']==7
     assert len(value['source_dependencies'])==1
     async with n['connection'].transaction():
         await n['connection'].execute('UPDATE rkb_v4.sources SET withdrawn=true WHERE source_id=%s',(SOURCE,))
