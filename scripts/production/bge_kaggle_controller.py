@@ -93,6 +93,14 @@ def reconcile_launch(api, queue, run, ref):
     queue.launch_record(run['id'],ref,provider_version=observed['version'])
     return True
 
+def reconcile_launch_due(api,queue,run,ref,probed,*,now):
+    """Bound exact source reads while preserving the original unknown launch."""
+    previous=probed.get(run['id'])
+    if previous is not None and now-previous<30:return None
+    probed[run['id']]=now  # Reserve before provider I/O, including failures.
+    return reconcile_launch(api,queue,run,ref)
+
+
 def target_sql_hashes(target, repository):
     """Pin exactly the migration prefix the native initializer will execute."""
     from regional_knowledge.kaggle_owned_pg import sql_artifacts, digest
@@ -199,7 +207,7 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                 elif run['launch_state']=='dispatching':
                     # Unknown side effect after crash/lost response. Do not
                     # issue another save/version: reconcile the stable slug.
-                    if not reconcile_launch(api,queue,run,ref):
+                    if reconcile_launch_due(api,queue,run,ref,probed,now=time.monotonic()) is False:
                         logging.warning(json.dumps({'event':'bge_launch_observation_mismatch','run_id':run_id,'provider_ref':ref}))
                 elif run['status']=='starting' and run['launch_state']=='dispatched' and time.monotonic()-probed.get(run_id,0)>30:
                     probed[run_id]=time.monotonic()
