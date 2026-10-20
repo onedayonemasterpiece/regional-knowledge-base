@@ -132,3 +132,11 @@ retry refusal. Stage0 installation and native bundle temporary directories are
 under the existing verified `/kaggle/working` root; they do not depend on
 `/kaggle/temp`. Native PG startup and useful reads after this patch still require
 an actual independently reviewed bootstrap receipt.
+
+Bootstrap profiling emits fixed `bootstrap_stage` start/complete/failed events
+for artifact download, offline installation, model/tokenizer loading and its
+provenance guard. Durations use the worker's monotonic clock and carry only
+the run ID, fixed stage/state and seconds; source content, signed URLs and
+exception messages are excluded. A complete model stage is distinct from PG
+readiness or a successful public query. These events instrument future runs;
+they do not retroactively measure v88/v89 or establish a latency improvement.
