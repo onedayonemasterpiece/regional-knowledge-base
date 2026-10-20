@@ -187,7 +187,8 @@ does not enable that factory or supply a provider/PG capability receipt. Tests
 use clearly marked synthetic tokenizer-pin/dependency overrides and artifact/PG probe stubs,
 and prove control-before-preparation, no premature READY, actual byte/hash/path
 checks, exact wire bounds, off-loop complete counting, context reuse and drain.
-Actual loaded artifacts/native PG probe and provider runtime remain NOT RUN.
+Actual loaded artifacts and provider runtime remain NOT RUN; disposable native
+PG verification is described below.
 The old monolithic runtime has no verified live installation hook; initial
 adoption without a model reload is explicitly unverified. No eval, reload,
 second dispatcher, model service or public listener is added.
@@ -222,3 +223,8 @@ install SQL 005 there; they include catalog mutation/hash, frontier lag, missing
 or invalid indexes and lock-timeout cleanup. These tests do not authorize probing
 or changing a product database. Runtime artifact/model/provider observations and
 public delivery remain separate acceptance work.
+The root serial native run now verifies these cases on PostgreSQL17/pgvector,
+including rollback and reuse after an actual held-lock timeout. Locale facts
+come from `pg_database.datcollate/datctype`, rather than unavailable locale GUCs.
+The timeout assertion requires the deadline/cancellation reason and an actual
+wait, so an unrelated early SQL error cannot satisfy it.

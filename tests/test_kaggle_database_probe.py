@@ -210,7 +210,12 @@ async def test_native_catalog_frontier_and_trigger_hash(env):
     before, fields = await probe(acquire=env['acquire'])
     assert fields['database_generation'] == 'query-fixture' and fields['applied_seq'] == 5
     assert not fields['text_search_ready'] and not fields['dense_search_ready']
-    await publish(env, seq=4)
+    # A lagged projection cannot truthfully publish ready=true. The production
+    # writer contract rejects that combination; observe a real unready lag.
+    async with env['admin'].transaction():
+        epoch = (await (await env['admin'].execute(
+            'SELECT visibility_epoch FROM rkb_v4.read_frontier')).fetchone())[0]
+        await env['admin'].execute("SELECT rkb_v4.publish_read_frontier('query-fixture','writer-1',%s,4,false,false)", (epoch,))
     lagged, fields = await probe(acquire=env['acquire'])
     assert fields['projection_seq'] == 4 and not fields['text_search_ready']
     await publish(env)
@@ -242,8 +247,10 @@ async def test_native_timeout_rolls_back_before_connection_reuse(env):
     await install_five(env)
     async with env['admin'].transaction():
         await env['admin'].execute('LOCK TABLE rkb_v4.recovery_state IN ACCESS EXCLUSIVE MODE')
-        with pytest.raises(DatabaseProbeUnavailable):
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(DatabaseProbeUnavailable, match='^database_probe_(deadline|cancelled)$'):
             await NativeDatabaseProbe(timeout_seconds=.05)(acquire=env['acquire'])
+        assert asyncio.get_running_loop().time() - started >= .02, 'must reach the native lock wait'
     assert env['connection'].info.transaction_status == TransactionStatus.IDLE
     async with env['connection'].transaction():
         assert await (await env['connection'].execute('SELECT 1')).fetchone() == (1,)

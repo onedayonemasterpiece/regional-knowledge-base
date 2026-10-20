@@ -12,6 +12,7 @@ import math
 
 from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
+from psycopg.errors import QueryCanceled
 
 
 class DatabaseProbeUnavailable(RuntimeError):
@@ -45,7 +46,7 @@ CATALOG_QUERIES = (
     ('environment', """SELECT 'runtime' AS identifier, jsonb_build_object(
         'server_version_num',current_setting('server_version_num')::integer,
         'server_encoding',current_setting('server_encoding'),
-        'lc_collate',current_setting('lc_collate'),'lc_ctype',current_setting('lc_ctype'),
+        'lc_collate',d.datcollate,'lc_ctype',d.datctype,
         'collation_provider',d.datlocprovider,'collation_version',d.datcollversion,
         'actual_collation_version',pg_database_collation_actual_version(d.oid),
         'vector_version',e.extversion,'vector_schema',n.nspname)::text AS payload
@@ -209,6 +210,8 @@ class NativeDatabaseProbe:
             raise
         except TimeoutError:
             raise DatabaseProbeUnavailable('database_probe_deadline') from None
+        except QueryCanceled:
+            raise DatabaseProbeUnavailable('database_probe_cancelled') from None
         except Exception:
             raise DatabaseProbeUnavailable('database_probe_failed') from None
 
