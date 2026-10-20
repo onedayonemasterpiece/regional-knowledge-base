@@ -29,7 +29,9 @@ def item(**updates):
     payload = {
         "id": "item-1", "kind": "fact", "text": "Evidence",
         "dependencies": {"source_ids": ("source-a", "source-b"),
-                         "variant_refs": (), "grant_refs": ("grant-1",)},
+                         "variant_refs": (), "grant_refs": ("grant-1",),
+                         "source_revisions": tuple({"source_id": source, "content_revision": 1,
+                             "eligibility_revision": 1} for source in ("source-a", "source-b"))},
     }
     payload.update(updates)
     return EvidenceItem.model_validate(payload)
@@ -117,11 +119,13 @@ def test_result_cannot_claim_success_for_missing_or_partial_search(update):
 
 
 def test_degradation_and_unknown_cursors_are_honest():
-    degraded = result(status="degraded", mode="lexical_degraded", reason="dense_unavailable")
+    degraded = result(status="degraded", mode="hybrid", reason="bounded_retrieval")
     assert decode_envelope(encode_envelope(degraded)) == degraded
     unavailable = result(status="unavailable", mode=None, reason="not_ready",
                          observed_data_seq=None, observed_projection_seq=None)
     assert unavailable.observed_data_seq is None
+    with pytest.raises(ValueError):
+        result(status="degraded", mode="hybrid", reason="dense_unavailable")
 
 
 @pytest.mark.parametrize('evidence', [(), (item(),)])
@@ -135,7 +139,9 @@ def test_exact_composite_dependencies_survive_roundtrip():
     evidence = item(kind="story", exact_variant_ref="variant-1", text_form="excerpt",
                     continuation="scoped-locator",
                     dependencies={"source_ids": ("a", "b"), "variant_refs": ("variant-1",),
-                                  "grant_refs": ("grant-1", "grant-2")})
+                                  "grant_refs": ("grant-1", "grant-2"),
+                                  "source_revisions": tuple({"source_id": source, "content_revision": 1,
+                                      "eligibility_revision": 1} for source in ("a", "b"))})
     parsed = decode_envelope(encode_envelope(result(evidence=(evidence,))))
     assert parsed.evidence[0] == evidence
 
@@ -157,8 +163,9 @@ def test_total_text_and_response_byte_caps_are_independent():
     with pytest.raises(ValueError, match="total evidence"):
         result(evidence=tuple(item(id=str(i), text="a" * 8000) for i in range(4)))
     huge_dependencies = tuple("s" * 250 + str(i) for i in range(1100))
-    large = result(evidence=(item(dependencies={"source_ids": huge_dependencies,
-                                               "variant_refs": (), "grant_refs": ()}),))
+    large = result(evidence=(item(dependencies={"source_ids": ("source-a",),
+        "source_revisions": ({"source_id": "source-a", "content_revision": 1, "eligibility_revision": 1},),
+        "variant_refs": (), "grant_refs": huge_dependencies}),))
     with pytest.raises(ValueError, match="response too large"):
         encode_envelope(large)
     with pytest.raises(ValueError):

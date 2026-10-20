@@ -54,7 +54,9 @@ async def fused_search(connection, query: str, *,
                        encode: Callable[[str], Awaitable[Sequence[float]]],
                        top_k: int = 3, candidate_budget: int = 100,
                        timeout_seconds: float = 2.0,
-                       filters: QueryFilters | None = None) -> SearchResult:
+                       filters: QueryFilters | None = None,
+                       snapshot_guard=None, snapshot_finish=None,
+                       stage_timings: dict[str, float] | None = None) -> SearchResult:
     """Execute on an exclusively checked-out idle async psycopg connection.
 
     Encoder adapter contract: cancellation discards this consumer; the adapter
@@ -94,9 +96,7 @@ async def fused_search(connection, query: str, *,
         raise ValueError("connection must be open, idle and use tuple_row")
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_seconds
-    encoding = asyncio.create_task(encode(query))
-    _PENDING_ENCODERS.add(encoding)
-    encoding.add_done_callback(_observe_encoder)
+    encoding = None
     deadline_query_cancel = None
     try:
         async with asyncio.timeout_at(deadline):
@@ -124,10 +124,24 @@ async def fused_search(connection, query: str, *,
                             raise
 
                     # This is the first SQL after BEGIN; read-only must precede SELECT.
-                    await cursor.execute("SET TRANSACTION READ ONLY")
+                    await cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                    if snapshot_guard is not None:
+                        await snapshot_guard(cursor, execute)
+                    async def timed_encode():
+                        began = loop.time()
+                        try:
+                            return await encode(query)
+                        finally:
+                            if stage_timings is not None:
+                                stage_timings["encode_ms"] = (loop.time() - began) * 1000
+
+                    encoding = asyncio.create_task(timed_encode())
+                    _PENDING_ENCODERS.add(encoding)
+                    encoding.add_done_callback(_observe_encoder)
                     await execute("SET LOCAL hnsw.iterative_scan = strict_order")
                     await execute("SET LOCAL hnsw.max_scan_tuples = 1000")
                     await execute("SET LOCAL hnsw.ef_search = 100")
+                    began = loop.time()
                     if source_ids is None:
                         await execute("SELECT * FROM rkb_v4.lexical_candidates(%s, %s)",
                                       (query, candidate_budget))
@@ -135,7 +149,10 @@ async def fused_search(connection, query: str, *,
                         await execute("SELECT * FROM rkb_v4.lexical_candidates_scoped(%s, %s, %s::uuid[])",
                                       (query, candidate_budget, source_ids))
                     lexical = await cursor.fetchall()
+                    if stage_timings is not None:
+                        stage_timings["lexical_ms"] = (loop.time() - began) * 1000
                     vector = vector_literal(await asyncio.shield(encoding))
+                    began = loop.time()
                     if source_ids is None:
                         await execute("SELECT * FROM rkb_v4.dense_candidates(%s::public.vector, %s)",
                                       (vector, candidate_budget))
@@ -143,21 +160,29 @@ async def fused_search(connection, query: str, *,
                         await execute("SELECT * FROM rkb_v4.dense_candidates_scoped(%s::public.vector, %s, %s::uuid[])",
                                       (vector, candidate_budget, source_ids))
                     dense = await cursor.fetchall()
+                    if stage_timings is not None:
+                        stage_timings["dense_ms"] = (loop.time() - began) * 1000
                     scores: dict[UUID, float] = defaultdict(float)
                     for branch in (lexical, dense):
                         for rank, (passage_id, _) in enumerate(branch, 1):
                             scores[passage_id] += 1 / (60 + rank)
                     ids = sorted(scores, key=lambda key: (-scores[key], str(key)))[:top_k]
+                    began = loop.time()
                     if source_ids is None:
                         await execute("SELECT * FROM rkb_v4.hydrate(%s::uuid[])", (ids,))
                     else:
                         await execute("SELECT * FROM rkb_v4.hydrate_scoped(%s::uuid[], %s::uuid[])",
                                       (ids, source_ids))
                     rows = await cursor.fetchall()
-                    return SearchResult(tuple(SearchEvidence(str(r[0]), str(r[1]), *r[2:])
+                    if stage_timings is not None:
+                        stage_timings["hydrate_ms"] = (loop.time() - began) * 1000
+                    result = SearchResult(tuple(SearchEvidence(str(r[0]), str(r[1]), *r[2:])
                                               for r in rows), limitation=(
                         "bounded_candidate_fusion_unverified" if source_ids is not None
                         else "bounded_ann_recall_unverified"))
+                    if snapshot_finish is not None:
+                        await snapshot_finish(cursor, execute, result)
+                    return result
     except QueryCanceled as exc:
         # The transaction context has rolled back before exposing this stable
         # public timeout. Other cancellations and SQL errors retain their type.
@@ -165,5 +190,5 @@ async def fused_search(connection, query: str, *,
             raise TimeoutError("search deadline exhausted") from exc
         raise
     finally:
-        if not encoding.done():
+        if encoding is not None and not encoding.done():
             encoding.cancel()

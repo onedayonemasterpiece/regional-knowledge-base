@@ -93,6 +93,20 @@ class CancelQuery(ReadIdentity):
     reason: Literal["caller_cancelled", "deadline_exceeded", "turn_replaced", "disconnected"]
 
 
+class SourceDependency(Contract):
+    source_id: Identifier
+    content_revision: Annotated[int, Field(ge=1)]
+    eligibility_revision: Annotated[int, Field(ge=1)]
+
+
+class PassageContinuation(Contract):
+    source: SourceDependency
+    passage_id: Identifier
+    visibility_epoch: Nonnegative
+    text_offset: Nonnegative
+    bibliography_offset: Nonnegative
+
+
 class ItemDependencies(Contract):
     """Exhaustive per-item dependencies, including cross-source compositions.
 
@@ -103,12 +117,18 @@ class ItemDependencies(Contract):
     source_ids: tuple[Identifier, ...] = Field(min_length=1)
     variant_refs: tuple[Identifier, ...]
     grant_refs: tuple[Identifier, ...]
+    source_revisions: tuple[SourceDependency, ...] = Field(min_length=1, max_length=32)
 
     @model_validator(mode="after")
     def unique_values(self) -> Self:
         for values in (self.source_ids, self.variant_refs, self.grant_refs):
             if len(set(values)) != len(values):
                 raise ValueError("duplicate item dependencies")
+        if (
+            len({ref.source_id for ref in self.source_revisions}) != len(self.source_revisions)
+            or set(self.source_ids) != {ref.source_id for ref in self.source_revisions}
+        ):
+            raise ValueError("exact source dependencies must cover every source")
         return self
 
 
@@ -128,6 +148,8 @@ class EvidenceItem(Contract):
     # A locator only: the next read must reauthorize against current scope.
     continuation: Identifier | None = None
     exact_variant_ref: Identifier | None = None
+    source_continuation: PassageContinuation | None = None
+    continuation_complete: bool = False
 
     @model_validator(mode="after")
     def item_bounds(self) -> Self:
@@ -135,6 +157,13 @@ class EvidenceItem(Contract):
             raise ValueError("evidence metadata too large")
         if self.text_form == "excerpt" and self.continuation is None:
             raise ValueError("excerpt requires explicit continuation")
+        if self.source_continuation is not None and (
+            self.source_continuation.source not in self.dependencies.source_revisions
+            or self.source_continuation.passage_id != self.id
+        ):
+            raise ValueError("passage continuation must match exact source dependencies")
+        if self.continuation_complete and (self.text_form != "excerpt" or self.source_continuation is None):
+            raise ValueError("terminal excerpt requires an exact source locator")
         if self.kind == "story" and self.exact_variant_ref is None:
             raise ValueError("story requires exact existing variant reference")
         if self.exact_variant_ref is not None and self.exact_variant_ref not in self.dependencies.variant_refs:
@@ -146,16 +175,19 @@ class QueryResult(ReadIdentity):
     type: Literal["QUERY_RESULT"] = "QUERY_RESULT"
     protocol_version: Literal[2] = PROTOCOL_VERSION
     status: Literal["ok", "degraded", "unavailable", "cancelled", "invalid_query", "denied"]
-    mode: Literal["hybrid", "lexical_degraded"] | None
+    mode: Literal["hybrid"] | None
     evidence: tuple[EvidenceItem, ...] = Field(default=(), max_length=5)
     # None means not observed, not zero / fresh / ready.
     observed_data_seq: Nonnegative | None
     observed_projection_seq: Nonnegative | None
+    observed_visibility_epoch: Nonnegative | None = None
+    observed_database_generation: Identifier | None = None
     reason: Literal[
         "dense_unavailable", "projection_lag", "deadline_exceeded", "not_ready",
         "disconnected", "caller_cancelled", "turn_replaced", "query_too_large",
         "invalid_filters", "invalid_input", "token_limit_exceeded", "access_denied",
         "prior_write_pending", "context_gap", "evidence_withdrawn", "internal_error",
+        "bounded_retrieval",
     ] | None = None
     prior_write_pending: bool = False
     context_gap: bool = False
@@ -168,6 +200,8 @@ class QueryResult(ReadIdentity):
             raise ValueError("retrieval mode required exactly when search completed")
         if not searched and self.evidence:
             raise ValueError("non-search result cannot carry evidence")
+        if searched and self.reason == "dense_unavailable":
+            raise ValueError("dense failure cannot claim completed hybrid search")
         if self.status != "ok" and self.reason is None:
             raise ValueError("non-ok result requires explicit reason")
         if self.status == "ok" and (
