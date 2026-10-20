@@ -10,7 +10,7 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 
 from .geo_manifest_commands import GEO_REVISIONS
-from .geo_migration import exact_uuid,normalized
+from .geo_migration import exact_uuid,normalized,canonical
 from .kaggle_geo_contracts import (GeoReadRequest,GeoReadResult,GeoReadRecord,
     cursor_scope,decode_cursor,encode_cursor,decode_item)
 from .kaggle_query import ReadUnavailable,_frontier,_identity
@@ -63,7 +63,7 @@ async def execute_geo_read(request:GeoReadRequest,*,acquire):
                                 (request.actor.person_id,request.entity_id,request.category,after,request.limit+1))
                         rows=await cursor.fetchall()
                         if len(rows)>request.limit+1:raise ReadUnavailable('internal_error')
-                        records=[];positions=[]
+                        records=[];positions=[];record_bytes=0
                         for row in rows[:request.limit]:
                             if request.action=='identity':
                                 entity,key,wire,matched,manifest,sequence,operation,command_hash=row
@@ -74,11 +74,14 @@ async def execute_geo_read(request:GeoReadRequest,*,acquire):
                                 matched_wire_b64=base64.b64encode(bytes(matched)).decode() if matched is not None else None,
                                 manifest_id=manifest,activation_sequence=sequence,activation_operation_key=operation,
                                 activation_command_sha256=command_hash)
+                            size=len(canonical(record.model_dump(mode='json')))
+                            if record_bytes+size>240*1024:break
+                            record_bytes+=size
                             item,_=decode_item(record.wire_b64)
                             if item.owner_person_id!=request.actor.person_id:raise ReadUnavailable('access_denied')
                             records.append(record);positions.append(position)
                         return GeoReadResult(**_identity(request),status='ok',records=tuple(records),
-                            next_cursor=encode_cursor(scope,positions[-1]) if len(rows)>request.limit else None,
+                            next_cursor=encode_cursor(scope,positions[-1]) if len(rows)>len(records) else None,
                             observed_data_seq=observed['data'],observed_projection_seq=observed['projection'],
                             observed_visibility_epoch=observed['visibility'],observed_database_generation=observed['database'])
     except ReadUnavailable as exc:return failed(exc.reason)

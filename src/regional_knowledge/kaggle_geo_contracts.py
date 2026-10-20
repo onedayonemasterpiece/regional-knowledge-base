@@ -91,7 +91,7 @@ class GeoReadResult(ReadIdentity):
                 (self.observed_data_seq,self.observed_projection_seq,self.observed_visibility_epoch,self.observed_database_generation))):
             raise ValueError('exact native GEO frontier required')
         if self.status!='ok' and (self.records or self.next_cursor):raise ValueError('failed GEO read cannot carry records')
-        if len(canonical(self.model_dump(mode='json')))>384*1024:raise ValueError('GEO result byte bound')
+        if len(canonical(self.model_dump(mode='json')))>256*1024:raise ValueError('GEO result byte bound')
         return self
 
 
