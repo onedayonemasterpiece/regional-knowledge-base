@@ -358,7 +358,7 @@ def _receipt(root_fd,manifest,deadline):
         os.close(fd);os.unlink(temporary,dir_fd=root_fd)
 
 
-def prepare_stage0(prepared_model:dict,plan:dict)->dict:
+def prepare_stage0(prepared_model:dict,plan:dict,*,run_id=None)->dict:
     """Verify/cache pinned bytes, optionally install one offline wheel closure.
 
     The controller supplies both manifests. No provider inference, PG startup,
@@ -394,10 +394,14 @@ def prepare_stage0(prepared_model:dict,plan:dict)->dict:
                 raise Stage0Error('stage0_insufficient_disk')
             opener=urllib.request.build_opener(_HTTPSRedirect(deadline),urllib.request.ProxyHandler({}))
             downloaded=0;downloaded_files=0
-            for item in spec.downloads:
-                if _download(root_fd,item,opener,deadline):
-                    downloaded+=item.size;downloaded_files+=1
-            installed=_install(root_fd,root,spec,inventory,deadline)
+            from contextlib import nullcontext
+            from .kaggle_environment import bootstrap_stage
+            with bootstrap_stage(run_id,'stage0_download') if run_id is not None else nullcontext():
+                for item in spec.downloads:
+                    if _download(root_fd,item,opener,deadline):
+                        downloaded+=item.size;downloaded_files+=1
+            with bootstrap_stage(run_id,'stage0_install') if run_id is not None else nullcontext():
+                installed=_install(root_fd,root,spec,inventory,deadline)
             _remaining(deadline)
             plan_hash=hashlib.sha256(json.dumps(spec.wire(),sort_keys=True,separators=(',',':')).encode()).hexdigest()
             manifest=dict(codec='rkb.stage0.v1',plan_sha256=plan_hash,packages=dict(spec.packages))

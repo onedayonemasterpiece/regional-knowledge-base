@@ -21,12 +21,11 @@ SPACE = 'bge-m3:5617a9f:t211-tr5161:cls-l2-512:q1-d1:v1'
 _MODEL_LOAD_COUNT = 0
 
 def load_encoder():
-    global _MODEL_LOAD_COUNT
     prepared = RUN_CONFIG.get('prepared_model')
     artifacts = None
     if RUN_CONFIG.get('stage0') is not None:
         from regional_knowledge.kaggle_stage0 import prepare_stage0
-        prepare_stage0(prepared,RUN_CONFIG['stage0'])
+        prepare_stage0(prepared,RUN_CONFIG['stage0'],run_id=RUN_CONFIG['run_id'])
     if prepared is not None:
         from regional_knowledge.kaggle_bootstrap import PreparedArtifact, verify_artifacts, ResidentEncoder
         from regional_knowledge.kaggle_readiness import ArtifactRequirement
@@ -35,6 +34,15 @@ def load_encoder():
         entries = tuple(PreparedArtifact(ArtifactRequirement(e['name'], e['size'], e['sha256']), e['role'])
                         for e in prepared['entries'])
         artifacts = verify_artifacts(prepared['root'], entries, max_total_bytes=prepared['max_total_bytes'])
+    if artifacts is not None:
+        from regional_knowledge.kaggle_environment import bootstrap_stage
+        with bootstrap_stage(RUN_CONFIG['run_id'],'model_tokenizer_load'):
+            return _load_model(artifacts)
+    return _load_model(artifacts)
+
+
+def _load_model(artifacts):
+    global _MODEL_LOAD_COUNT
     import torch
     import importlib.metadata
     versions={name:importlib.metadata.version(name) for name in ('torch','transformers','tokenizers','huggingface-hub')}
@@ -63,7 +71,10 @@ def load_encoder():
         return result
     encode('readiness')
     if artifacts is not None:
-        return ResidentEncoder(encode,tokenizer,artifacts,artifacts.model_directory,_MODEL_LOAD_COUNT)
+        from regional_knowledge.kaggle_bootstrap import ResidentEncoder
+        from regional_knowledge.kaggle_environment import bootstrap_stage
+        with bootstrap_stage(RUN_CONFIG['run_id'],'tokenizer_guard'):
+            return ResidentEncoder(encode,tokenizer,artifacts,artifacts.model_directory,_MODEL_LOAD_COUNT)
     return encode
 
 def main(*, prepare_runtime=None, close_runtime=None, recovery_handler=None, snapshot_channel=None):
