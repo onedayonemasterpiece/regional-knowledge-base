@@ -23,6 +23,8 @@ from regional_knowledge.kaggle_case_read import execute_case_read
 from regional_knowledge.kaggle_geo_contracts import GeoReadRequest
 from regional_knowledge.kaggle_geo_read import execute_geo_read
 from regional_knowledge.kaggle_source_graph_read import SourceGraphReadRequest,execute_source_graph_read
+from regional_knowledge.kaggle_fact_contracts import FactReadRequest
+from regional_knowledge.kaggle_fact_read import execute_fact_read
 from regional_knowledge.source_graph import resolve_source_graph
 from regional_knowledge.kaggle_protocol import Query,PassageReadRequest,PassageContinuation
 from regional_knowledge.kaggle_query import execute_query,execute_passage_read,PinnedTokenizer
@@ -81,6 +83,11 @@ async def test_current11_production_roles_source_case_editorial_geo_and_hybrid_r
         assert geo_read.status=='ok' and len(geo_read.records)==1
         graph_read=await execute_source_graph_read(SourceGraphReadRequest(action='list',source_id=SOURCE,**identity),acquire=acquire)
         assert graph_read.status=='ok' and len(graph_read.records)==3 and graph_read.next_cursor
+        assertions=await execute_fact_read(FactReadRequest(action='assertions',source_id=SOURCE,**identity),acquire=acquire)
+        assert assertions.status=='ok' and len(assertions.records)==1
+        calendar=await execute_fact_read(FactReadRequest(action='calendar',month=1,day=1,calendar='gregorian',**identity),acquire=acquire)
+        observations=await execute_fact_read(FactReadRequest(action='observations',metric_key='population',**identity),acquire=acquire)
+        assert calendar.status==observations.status=='ok'
         async with admin.transaction():
             assert await(await admin.execute('SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])',([SOURCE],))).fetchone()==(True,)
         async def count(text):return 8
