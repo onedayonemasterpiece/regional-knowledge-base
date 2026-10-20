@@ -273,3 +273,50 @@ Real PG tests are opt-in
 in `tests/test_source_withdraw.py`, reusing the strict root-owned fixture; they
 must run serially with other rkb_v4 suites. This agent did not execute PG,
 providers, live grants/schema changes or production effects.
+
+## Exact bounded source fetch
+
+The source backend implements full-profile `search` → `fetch(id)` beside the
+separate Live `knowledge_search` route. Search still executes actual lexical
+and dense retrieval together in Kaggle. For native source results its public ID
+is `rkb:passage:v1:<base64url-json>` containing a strict `PassageContinuation`:
+database generation, exact source content/eligibility revisions, passage ID,
+visibility epoch, and Unicode text/bibliography offsets. Search IDs start at
+both offsets zero. The locator carries no signature, credential, lease or read
+capability; changing its fields cannot grant permission. Every fetch resolves
+current OAuth identity, target binding and source eligibility again. No global
+RAM ID-to-passage map is needed across process restarts.
+
+The typed `PASSAGE_READ` / `PASSAGE_READ_RESULT` operation uses the existing
+shared read admission, deadline, compute ownership and ephemeral WSS path.
+`KaggleWorkerQuery` dispatches it to `execute_passage_read` using the existing
+PG pool. It performs no tokenizer, query embedding, lexical ranking or dense
+ranking, and its result has no search `mode`. Source read work has no durable
+query/job row, remote journal write or returned query vector. It cannot pass a
+hybrid result off as an exact read, or an exact result off as completed search.
+
+Fetch returns up to 8,000 Unicode passage characters and 1,024 bibliography
+characters per response. `metadata.text_offset` and `bibliography_offset`
+describe the returned portions; `next_id` is the exact next locator until
+`continuation_complete=true`. When only bibliography remains, a one-character
+passage anchor can overlap the preceding response; its actual text offset is
+reported. `bounded_passage=true` explicitly identifies this source-passage
+contract; it does not claim whole-book text, page scans, private drafts,
+footnotes or illustration descriptors that this native vertical did not read.
+The next locator is removed when the result is terminal. Clients concatenate
+portions using offsets and follow `next_id` to recover all text/bibliography.
+
+The same `SourceReadGate` and final HTTP JSON issuance guard check exact reads.
+The gate requires the one requested passage and exact source dependency, the
+current database/cursors/visibility and unchanged authority. A pending source
+write, withdrawal, missing verified history or changed final mutation fence
+withholds the whole exact result. Missing history and in-flight writes report
+`unavailable/prior_write_pending`, rather than inventing an access denial.
+Native dependencies are revalidated even for bypassed `model_copy` objects;
+empty, duplicate, noncanonical or unmatched source/revision sets fail closed as
+an evidence-free native internal error before querying local facts.
+
+These are source/code and disposable-fixture contracts, not a production switch
+or evidence that a current Kaggle run has loaded this handler. Live provider
+reads, model inference, deployment and performance acceptance require their
+separate receipts.

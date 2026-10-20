@@ -42,7 +42,9 @@ def parse_passage_fetch_id(value: str) -> PassageContinuation:
     try:
         raw = base64.b64decode(token + '=' * (-len(token) % 4), altchars=b'-_', validate=True)
         locator = PassageContinuation.model_validate_json(raw)
-        if passage_fetch_id(locator) != value:
+        if (passage_fetch_id(locator) != value
+                or str(UUID(locator.source.source_id)) != locator.source.source_id
+                or str(UUID(locator.passage_id)) != locator.passage_id):
             raise ValueError
         return locator
     except (ValueError, TypeError):
