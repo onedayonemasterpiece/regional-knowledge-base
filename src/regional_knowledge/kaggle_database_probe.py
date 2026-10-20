@@ -20,7 +20,8 @@ class DatabaseProbeUnavailable(RuntimeError):
 
 
 TABLES = frozenset({'sources', 'revisions', 'active_revision', 'passage_search',
-    'writer_generations', 'recovery_state', 'applied_ops', 'read_frontier', 'source_visibility'})
+    'writer_generations', 'recovery_state', 'applied_ops', 'read_frontier', 'source_visibility',
+    'source_import_origins', 'source_research_frontier'})
 FUNCTIONS = frozenset('rkb_v4.' + signature for signature in (
     'reject_revision_update()', 'reject_source_id_update()', 'lexical_candidates(text,integer)',
     'dense_candidates(public.vector,integer)', 'hydrate(uuid[])', 'reject_applied_op_change()',
@@ -30,7 +31,8 @@ FUNCTIONS = frozenset('rkb_v4.' + signature for signature in (
     'publish_read_frontier(text,text,bigint,bigint,boolean,boolean)',
     'prepare_read_frontier(text,text,bigint,bigint,boolean,boolean)',
     'promote_applied_read_frontier()', 'reject_orphan_frontier_proof()',
-    'check_source_withdraw_v1(bytea,jsonb,jsonb,text)', 'apply_source_withdraw_v1(bytea,jsonb,jsonb,text)'))
+    'check_source_withdraw_v1(bytea,jsonb,jsonb,text)', 'apply_source_withdraw_v1(bytea,jsonb,jsonb,text)',
+    'check_source_import_v1(bytea,jsonb,jsonb,text)', 'apply_source_import_v1(bytea,jsonb,jsonb,text)'))
 TRIGGERS = frozenset((table, name) for table, name in (
     ('sources', 'immutable_source_id'), ('revisions', 'immutable_revision'), ('passage_search', 'immutable_passage'),
     ('applied_ops', 'immutable_applied_ops'), ('sources', 'source_fence_lock'),
@@ -38,7 +40,8 @@ TRIGGERS = frozenset((table, name) for table, name in (
     ('read_frontier', 'frontier_fence_lock'), ('sources', 'source_visibility_change'),
     ('active_revision', 'active_visibility_change'), ('passage_search', 'projection_visibility_change'),
     ('read_frontier', 'validate_read_frontier'), ('recovery_state', 'promote_applied_read_frontier'),
-    ('read_frontier', 'reject_orphan_frontier_proof')))
+    ('read_frontier', 'reject_orphan_frontier_proof'),
+    ('source_import_origins', 'immutable_source_origin')))
 
 # Only native metadata in the target namespace; no source/document rows. Each
 # query is wrapped with C ordering, row LIMIT and payload octet-length guards.
@@ -232,8 +235,8 @@ class NativeDatabaseProbe:
             table_function = any(name.startswith('rkb_v4.' + stem) for stem in ('lexical_candidates(', 'dense_candidates(', 'hydrate(', 'lexical_candidates_scoped(', 'dense_candidates_scoped(', 'hydrate_scoped('))
             result = ('record' if table_function else 'uuid[]' if 'checked_source_scope(' in name else
                       'void' if any(stem in name for stem in ('publish_read_frontier(', 'prepare_read_frontier(')) else
-                      'boolean' if 'check_source_withdraw_v1(' in name else
-                      'bytea' if 'apply_source_withdraw_v1(' in name else 'trigger')
+                      'boolean' if any(stem in name for stem in ('check_source_withdraw_v1(', 'check_source_import_v1(')) else
+                      'bytea' if any(stem in name for stem in ('apply_source_withdraw_v1(', 'apply_source_import_v1(')) else 'trigger')
             if (function.get('kind') != 'f' or function.get('security_definer') is not False
                     or function.get('returns_set') is not table_function or function.get('result') != result
                     or not isinstance(function.get('definition'),str)):

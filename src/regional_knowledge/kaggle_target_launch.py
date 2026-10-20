@@ -13,7 +13,8 @@ from .recovery_journal import RecoveryJournal
 
 MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_search',
     'kaggle_readiness','kaggle_worker_query','kaggle_database_probe','kaggle_bootstrap',
-    'kaggle_owned_pg','kaggle_target_runtime','kaggle_apply','recovery_journal','query_telemetry')
+    'kaggle_owned_pg','kaggle_target_runtime','kaggle_apply','recovery_journal','query_telemetry',
+    'source_import')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 
 

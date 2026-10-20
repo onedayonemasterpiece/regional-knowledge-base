@@ -24,7 +24,7 @@ from .kaggle_apply import initialize_database, Revisions
 from .kaggle_bootstrap import BootstrapUnavailable, _file_hash
 
 SQL_ARTIFACTS = ('001_search.sql', '002_recovery.sql', '003_search_scope.sql',
-                 '004_read_fences.sql', '005_source_withdraw.sql')
+                 '004_read_fences.sql', '005_source_withdraw.sql', '006_source_import.sql')
 READER_FUNCTIONS = ('lexical_candidates(text,integer)', 'dense_candidates(public.vector,integer)',
     'hydrate(uuid[])', 'checked_source_scope(uuid[])', 'lexical_candidates_scoped(text,integer,uuid[])',
     'dense_candidates_scoped(public.vector,integer,uuid[])', 'hydrate_scoped(uuid[],uuid[])')

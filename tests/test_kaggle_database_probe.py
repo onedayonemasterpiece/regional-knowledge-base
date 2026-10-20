@@ -24,8 +24,8 @@ def catalog():
             'dense_candidates_scoped(', 'hydrate_scoped('))
         result = ('record' if table else 'uuid[]' if 'checked_source_scope(' in name else
                   'void' if any(s in name for s in ('publish_read_frontier(', 'prepare_read_frontier(')) else
-                  'boolean' if 'check_source_withdraw_v1(' in name else
-                  'bytea' if 'apply_source_withdraw_v1(' in name else 'trigger')
+                  'boolean' if any(stem in name for stem in ('check_source_withdraw_v1(', 'check_source_import_v1(')) else
+                  'bytea' if any(stem in name for stem in ('apply_source_withdraw_v1(', 'apply_source_import_v1(')) else 'trigger')
         functions[name] = dict(kind='f', returns_set=table, result=result,
                                security_definer=False, definition='CREATE FUNCTION synthetic')
     return dict(environment={'runtime': dict(server_version_num=170010, server_encoding='UTF8',
@@ -200,6 +200,7 @@ def test_configuration_is_finite(kwargs):
 async def install_five(env):
     async with env['admin'].transaction():
         await env['admin'].execute((Path(__file__).resolve().parents[1]/'sql/kaggle/005_source_withdraw.sql').read_text(), prepare=False)
+        await env['admin'].execute((Path(__file__).resolve().parents[1]/'sql/kaggle/006_source_import.sql').read_text(), prepare=False)
 
 
 @PG

@@ -6,8 +6,8 @@ an existing Stage0 prepared inventory rooted in `/kaggle/working`, independently
 observed dependency and native catalog hashes, and an explicit owned database binding.
 No environment variable silently creates this authority or supplies a new journal.
 
-`worker_source(..., target=spec)` assembles fourteen fixed Python modules and the exact
-001–005 SQL bytes into one bounded immutable source package. The generated entrypoint
+`worker_source(..., target=spec)` assembles fifteen fixed Python modules and the exact
+001–006 SQL bytes into one bounded immutable source package. The generated entrypoint
 extracts and verifies its content-addressed files, then actually calls
 `main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)`. The controller
 computes all final source bytes before persisting `SearchRuntimeExpectation`; the
@@ -25,13 +25,13 @@ Repeated cancellation also drains the asynchronous close task.
 
 Fresh mode is `OwnedDatabase(mode='NEW_EMPTY_GENERATION', ...)`. Before source generation,
 `persist_empty_intent` reads the injected existing `RecoveryJournal.head()` and refuses
-any history or UNKNOWN. It persists an immutable run/nonce/database/writer/001–005 hash
+any history or UNKNOWN. It persists an immutable run/nonce/database/writer/001–006 hash
 binding in the controller store before first attachment. The caller must retain writer
 and intake fencing throughout genesis. Fresh initialization creates an exclusive new
 leaf beneath `/kaggle/working`; existing, partial or symlinked clusters are refused. It
 rechecks exact native file hashes and pg_config-resolved vector 0.8.2 extension paths,
 uses Stage0's verified nonroot UID/GID, private Unix socket only, bounded processes and
-SQL waits, applies 001–005 in order and initializes cursor zero. No accepted data is
+SQL waits, applies 001–006 in order and initializes cursor zero. No accepted data is
 reset, deleted or silently restored. Failed partial initialization stays refused for
 explicit investigation.
 
