@@ -14,7 +14,7 @@ import re
 
 from .kaggle_owned_pg import OwnedDatabase, OwnedPostgres, canonical
 from .kaggle_bootstrap import BootstrapUnavailable, PreparedRuntime, prepare_resident_runtime
-from .kaggle_database_probe import NativeDatabaseProbe
+from .kaggle_database_probe import native_probe_for_schema
 
 
 def sha(data):
@@ -152,7 +152,7 @@ class TargetRuntime:
         self.executed_source = executed_source
         self.pool_factory = pool_factory or AsyncConnectionPool
         self.owner = owner_factory(self.database)
-        self.probe = probe or NativeDatabaseProbe()
+        self.probe = probe or native_probe_for_schema(self.database.schema_revision)
         self.prepare_resident = prepare
         self.pool = None
         self.writer_pool = None

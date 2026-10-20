@@ -142,6 +142,17 @@ def _json(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode()
 
 
+def native_probe_for_schema(schema_revision, *, timeout_seconds=2.0):
+    """Measured metadata budget only; selecting it grants no database readiness.
+
+    The exact PG17.11 fresh8 fixture measured545 records/218231 bytes.576 gives
+    31 records of fixed headroom. Existing schema6/7 and unrecognized revisions
+    retain512; byte and individual-definition limits are unchanged.
+    """
+    return NativeDatabaseProbe(timeout_seconds=timeout_seconds,
+        max_catalog_rows=576 if schema_revision=='rkb-v4-sql001-008-v1' else 512)
+
+
 @dataclass(frozen=True)
 class NativeDatabaseProbe:
     timeout_seconds: float = 2.0

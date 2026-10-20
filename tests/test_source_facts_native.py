@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 
 from regional_knowledge.kaggle_apply import HandlerRegistry,initialize_database,ApplyExecutionError
-from regional_knowledge.kaggle_database_probe import NativeDatabaseProbe
+from regional_knowledge.kaggle_database_probe import native_probe_for_schema
 from regional_knowledge.kaggle_fact_read import execute_fact_read
 from regional_knowledge.source_import_v3 import FACT_REVISIONS,source_import_v3_handler
 from test_source_story_native import connect,apply
@@ -111,8 +111,8 @@ async def test_native_pure_fact_preconditions_and_bounded_catalog_measurement(na
         assert await(await connection.execute('SELECT rkb_v4.check_source_facts_v1(%s::jsonb)',(json.dumps(finding),))).fetchone()==(False,)
     @asynccontextmanager
     async def acquire():yield connection
-    # Measurement only, using already supported explicit metadata row budget.
-    catalog,fields=await NativeDatabaseProbe(max_catalog_rows=768)(acquire=acquire)
+    # Root fixture measured545rows/218231B before selecting bounded576 budget.
+    catalog,fields=await native_probe_for_schema(FACT_REVISIONS.schema)(acquire=acquire)
     count=len(json.loads(catalog)['records'])
     print('fresh8_catalog_records='+str(count)+' bytes='+str(len(catalog)))
-    assert fields['schema_revision']==FACT_REVISIONS.schema and count<=768
+    assert fields['schema_revision']==FACT_REVISIONS.schema and count<=576

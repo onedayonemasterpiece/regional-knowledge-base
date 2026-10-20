@@ -196,3 +196,25 @@ def test_cursor_is_canonical_and_cannot_inject_extra_filter_fields():
         decode_cursor(cursor + '=', 'scope')
     with pytest.raises(ValueError):
         decode_cursor(cursor, 'another-scope')
+
+
+def test_measured_metadata_budget_is_shared_by_runtime_and_native_history_constructors():
+    from dataclasses import replace
+    from regional_knowledge.kaggle_database_probe import native_probe_for_schema
+    from regional_knowledge.kaggle_source_history_native import NativeSourceHistoryObserver
+    from regional_knowledge.kaggle_target_runtime import TargetRuntime
+    from regional_knowledge.kaggle_apply import HandlerRegistry
+    from regional_knowledge.source_import_v3 import FACT_REVISIONS,source_import_v3_handler
+    from test_kaggle_target_runtime import spec
+    for revision, rows in ((FACT_SCHEMA,576),('rkb-v4-sql001-007-v1',512),
+                           ('rkb-v4-sql001-006-v1',512),('unknown-later-schema',512)):
+        base=spec(fresh=True).wire()
+        base['database']=replace(spec(fresh=True).database,schema_revision=revision).wire()
+        runtime=TargetRuntime({'target_runtime':base},executed_source='fixture',owner_factory=lambda database:None)
+        observer=NativeSourceHistoryObserver(acquire=lambda:None,database=runtime.database,
+            identity=('run','nonce','inc'),registry=HandlerRegistry([source_import_v3_handler(
+                revisions=FACT_REVISIONS,check_sha256='a'*64,apply_sha256='b'*64)]),current=lambda binding:False)
+        assert runtime.probe==observer.probe==native_probe_for_schema(revision)
+        assert runtime.probe.max_catalog_rows==rows
+        assert runtime.probe.max_catalog_bytes==1024*1024
+        assert runtime.probe.max_definition_bytes==65536

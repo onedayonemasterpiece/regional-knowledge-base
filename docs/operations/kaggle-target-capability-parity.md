@@ -47,3 +47,10 @@ retains source revision/eligibility dependencies and selected exact evidence.
 
 Unit tests and authored SQL do not establish native fixture, live deployment,
 source fidelity, capacity, latency, dense quality or full cutover acceptance.
+
+Root's isolated exact Noble PG17.11 fixture passed7Story+3facts tests and measured
+fresh8 catalog545records/218231bytes. Fresh8 runtime/history/physical-restore
+observers therefore use576records; schema6/7 retain512. The1MiB byte cap and
+64KiB per-definition cap remain unchanged. Fixture evidence is retained at
+`/home/dev/artifacts/regional-knowledge-base/20261020T181101Z-native-facts-pg1711-fixture-20261020`.
+This is native fixture evidence, not a target deployment or scale gate.
