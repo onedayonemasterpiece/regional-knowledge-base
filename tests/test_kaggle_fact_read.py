@@ -206,7 +206,7 @@ def test_measured_metadata_budget_is_shared_by_runtime_and_native_history_constr
     from regional_knowledge.kaggle_apply import HandlerRegistry
     from regional_knowledge.source_import_v3 import FACT_REVISIONS,source_import_v3_handler
     from test_kaggle_target_runtime import spec
-    for revision, rows in ((FACT_SCHEMA,576),('rkb-v4-sql001-007-v1',512),
+    for revision, rows in (('rkb-v4-sql001-011-v1',1152),(FACT_SCHEMA,576),('rkb-v4-sql001-007-v1',512),
                            ('rkb-v4-sql001-006-v1',512),('unknown-later-schema',512)):
         base=spec(fresh=True).wire()
         base['database']=replace(spec(fresh=True).database,schema_revision=revision).wire()

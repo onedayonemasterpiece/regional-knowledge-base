@@ -18,7 +18,7 @@ from uuid import UUID
 from psycopg.rows import tuple_row
 from psycopg.pq import TransactionStatus
 
-from .kaggle_database_probe import NativeDatabaseProbe
+from .kaggle_database_probe import native_probe_for_schema
 from .kaggle_source_acl import inspect_acl,NativeHistoryError
 
 
@@ -59,7 +59,7 @@ class NativeSourceHistoryObserver:
             raise ValueError('bounded fixed native history owner required')
         self.acquire,self.database,self.identity,self.registry,self.current=acquire,database,identity,registry,current
         self.lease_seconds,self.max_commands=lease_seconds,max_commands
-        self.probe=probe or NativeDatabaseProbe()
+        self.probe=probe or native_probe_for_schema(database.schema_revision)
         self.code_hash=observer_fingerprint()
         self.registry_hash=digest(canonical(sorted(h.fingerprint for h in registry.handlers.values())))
         self._sessions={};self._prefixes={};self._lock=asyncio.Lock();self.generation=None

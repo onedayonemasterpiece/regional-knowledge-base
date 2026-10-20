@@ -20,7 +20,8 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
     'original_intake','kaggle_original_native','kaggle_original_parser','file_ingress','source_adapter','ingestion',
     'source_import_v2','story_contracts','kaggle_story_read','source_import_v3','kaggle_fact_contracts','kaggle_fact_read','kaggle_source_read','source_import_v4','source_manifest',
     'story_editorial','disagreement_contracts','disagreement_native','geo_migration','geo_manifest_commands',
-    'kaggle_domain_bindings','kaggle_domain_schema','kaggle_editorial_contracts','kaggle_editorial_read')
+    'kaggle_domain_bindings','kaggle_domain_schema','kaggle_editorial_contracts','kaggle_editorial_read',
+    'kaggle_case_contracts','kaggle_case_read','kaggle_geo_contracts','kaggle_geo_read')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 
 
