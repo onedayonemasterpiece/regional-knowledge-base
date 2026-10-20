@@ -58,6 +58,7 @@ class BgeQueue:
     def __init__(self, path, *, clock=time.time):
         self.path = Path(path)
         self.clock = clock
+        self._shared_reads = None
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Serving readers must not rerun schema initialization behind every
         # writer. A missing/older schema still takes the serialized migration.
@@ -181,6 +182,8 @@ class BgeQueue:
             raise ValueError('BGE job contract')
         identity=identity or {};now=self.clock()
         with self.connect() as db:
+            if kind=='query' and self._shared_enabled(db):
+                raise StaleAttachment('target reads must use ephemeral admission')
             previous=db.execute('select * from jobs where actor=? and idempotency=?',(actor,idempotency)).fetchone()
             if previous:
                 if json.loads(previous['texts'])!=texts or json.loads(previous['identity'])!=identity or previous['kind']!=kind:
@@ -256,6 +259,7 @@ class BgeQueue:
         """
         now=self.clock();conflict=False
         with self.connect() as db:
+            self._shared_owner(db)
             run=self._authorize(db,run_id,token,now)
             if self._run_expired(run,now):
                 raise RevokedRun('invalid or stale BGE worker')
@@ -306,6 +310,7 @@ class BgeQueue:
     def detach_channel(self, run_id, token, connection_generation):
         """Drop only this active socket; never grant HTTP ownership on loss."""
         with self.connect() as db:
+            self._shared_owner(db)
             run=self._authorize(db,run_id,token,self.clock())
             if (type(connection_generation) is not int or connection_generation<1
                     or run['connection_generation']!=connection_generation
@@ -322,6 +327,8 @@ class BgeQueue:
         """
         now=self.clock()
         with self.connect(write=False) as db:
+            if self._shared_enabled(db):
+                raise StaleAttachment('target assignments require shared admission')
             run=self._authorize(db,run_id,token,now)
             self._dispatch_authorize(run,connection_generation)
             if connection_generation is None:
@@ -342,6 +349,9 @@ class BgeQueue:
     def heartbeat(self, run_id, token, *, ready=False, diagnostics=None, connection_generation=None):
         now=self.clock()
         with self.connect() as db:
+            self._shared_owner(db)
+            if self._shared_enabled(db) and connection_generation is None:
+                raise StaleAttachment('target heartbeat requires the current channel')
             self._expire(db,now);run=self._authorize(db,run_id,token,now)
             if connection_generation is not None:
                 self._dispatch_authorize(run,connection_generation)
@@ -367,6 +377,8 @@ class BgeQueue:
     def claim(self, run_id, token, *, connection_generation=None):
         now=self.clock()
         with self.connect() as db:
+            if self._shared_enabled(db):
+                raise StaleAttachment('target assignments require shared admission')
             self._expire(db,now);run=self._authorize(db,run_id,token,now)
             self._dispatch_authorize(run,connection_generation)
             if connection_generation is not None and run['provider_version'] is None:
@@ -379,6 +391,121 @@ class BgeQueue:
             db.execute("update jobs set state='claimed',run_id=?,claim=?,lease_until=?,attempt=attempt+1,updated=? where id=?",(run_id,claim,now+JOB_SECONDS,now,job['id']))
             db.execute('update runs set useful=? where id=?',(now,run_id))
             return self._claim_payload({**dict(job),'claim':claim})
+
+    @staticmethod
+    def _shared_enabled(db):
+        if not db.execute("select 1 from sqlite_master where type='table' and name='bge_shared_admission'").fetchone():
+            return False
+        return bool(db.execute('select enabled from bge_shared_admission where id=1').fetchone()[0])
+
+    def _shared_owner(self, db):
+        if self._shared_enabled(db) and (self._shared_reads is None or self._shared_reads._fd is None):
+            raise StaleAttachment('shared admission requires the owning controller process')
+
+    def configure_shared_reads(self, read_authority, **options):
+        """Explicit startup opt-in; leaves a persistent fence on legacy claimers."""
+        from .bge_admission import SharedReadAdmission
+        if self._shared_reads is not None:
+            raise RuntimeError('shared admission already configured')
+        helper=SharedReadAdmission(self,read_authority,**options)
+        self._shared_reads=helper
+        return helper
+
+    @property
+    def shared_reads(self):
+        if self._shared_reads is None:
+            raise StaleAttachment('shared admission is not configured')
+        return self._shared_reads
+
+    async def next_channel_work(self, run_id, token, connection_generation):
+        return await self.shared_reads.next_channel_work(run_id,token,connection_generation)
+
+    async def wait_channel_work(self, seconds=RECONCILE_SECONDS):
+        await self.shared_reads.wait_channel_work(seconds)
+
+    def _admission_snapshot(self, run_id, token, generation, *, document_actors=()):
+        """Bounded indexed heads and current attachment, without a writer lock."""
+        if len(document_actors)>256:raise ValueError('bounded trusted document actors required')
+        with self.connect(write=False) as db:
+            self._shared_owner(db)
+            run=self._authorize(db,run_id,token,self.clock())
+            self._dispatch_authorize(run,generation)
+            if generation is None:raise StaleAttachment('channel generation required')
+            if self._run_expired(run,self.clock()):raise RevokedRun('stale BGE worker')
+            owner=db.execute('select run_id,incarnation from bge_shared_admission where id=1').fetchone()
+            # One index seek per registered canonical actor. A legacy actor's
+            # arbitrarily long pending tail cannot hide another actor's head.
+            # No done journal or untrusted actor enumeration is necessary.
+            rows=[]
+            for actor in document_actors:
+                row=db.execute("select * from jobs where state='pending' and kind='document' and actor=? order by created,id limit 1",(actor,)).fetchone()
+                if row is not None:rows.append(dict(row))
+            rows.sort(key=lambda row:(row['created'],row['id']))
+            resumed=db.execute("select * from jobs where state='claimed' and kind='document' and run_id=? and lease_until>? limit 1",(run_id,self.clock())).fetchone()
+            return dict(run),dict(owner),rows,dict(resumed) if resumed else None
+
+    def _admission_bind(self, run_id, token, generation, incarnation):
+        """Startup/reconciliation write, never performed for ready read intake."""
+        with self.connect() as db:
+            self._shared_owner(db)
+            run=self._authorize(db,run_id,token,self.clock())
+            self._dispatch_authorize(run,generation)
+            if run['runtime_incarnation']!=incarnation:raise StaleAttachment('resource incarnation mismatch')
+            owner=db.execute('select run_id,incarnation from bge_shared_admission where id=1').fetchone()
+            if owner['run_id'] is not None:
+                if (owner['run_id'],owner['incarnation'])!=(run_id,incarnation):
+                    raise StaleAttachment('prior compute resource remains unknown')
+                return
+            current=db.execute('select current_run from control where id=1').fetchone()[0]
+            if current!=run_id:raise StaleAttachment('resource baseline requires the owned current run')
+            db.execute('update bge_shared_admission set run_id=?,incarnation=? where id=1',(run_id,incarnation))
+
+    def _claim_specific(self, run_id, token, generation, job_id):
+        """Internal admission reservation only; does not choose or authorize an actor."""
+        now=self.clock()
+        with self.connect() as db:
+            self._shared_owner(db)
+            run=self._authorize(db,run_id,token,now)
+            self._dispatch_authorize(run,generation)
+            if self._run_expired(run,now) or run['status']!='ready' or run['provider_version'] is None:return None
+            job=db.execute('select * from jobs where id=?',(job_id,)).fetchone()
+            if not job or job['kind']!='document':return None
+            if job['state']=='claimed' and job['run_id']==run_id and job['lease_until']>now:
+                return self._claim_payload(job)
+            if job['state']!='pending' or db.execute("select 1 from jobs where run_id=? and state='claimed' and lease_until>?",(run_id,now)).fetchone():return None
+            claim=secrets.token_urlsafe(24)
+            db.execute("update jobs set state='claimed',run_id=?,claim=?,lease_until=?,attempt=attempt+1,updated=? where id=?",(run_id,claim,now+JOB_SECONDS,now,job_id))
+            db.execute('update runs set useful=? where id=?',(now,run_id))
+            return self._claim_payload({**dict(job),'claim':claim})
+
+    def _document_claim_waiting(self, job_id, claim):
+        with self.connect(write=False) as db:
+            row=db.execute('select state,claim,lease_until from jobs where id=?',(job_id,)).fetchone()
+            return bool(row and row['state']=='claimed' and row['claim']==claim
+                        and row['lease_until'] is not None and row['lease_until']>self.clock())
+
+    def _admission_terminal(self, expected, capabilities, observed, *, max_age_seconds):
+        from .kaggle_readiness import validate_terminal
+        with self.connect() as db:
+            self._shared_owner(db)
+            owner=db.execute('select run_id,incarnation from bge_shared_admission where id=1').fetchone()
+            run=db.execute('select * from runs where id=?',(owner['run_id'],)).fetchone()
+            if (not run or (expected.run_id,expected.runtime_instance_id)!=(owner['run_id'],owner['incarnation'])
+                    or expected.owner_slug!=run['provider_ref']
+                    or expected.provider_version!=str(run['provider_version'])
+                    or expected.launch_nonce!=run['launch_nonce']):
+                raise StaleAttachment('terminal proof does not own this resource')
+            result=validate_terminal(expected,capabilities,observed,last_heartbeat_at=run['heartbeat'],
+                                     now=self.clock(),max_age_seconds=max_age_seconds)
+            if not result.ok:return result
+            # A native exact terminal gates the old run before the next owned
+            # baseline; an old still-authenticated socket cannot revive it.
+            db.execute("update runs set status='expired',channel_active=0 where id=?",(run['id'],))
+            db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
+            db.execute('update control set current_run=null where current_run=?',(run['id'],))
+            db.execute('update control set successor=null where successor=?',(run['id'],))
+            db.execute('update bge_shared_admission set run_id=null,incarnation=null where id=1')
+            return result
 
     def complete(self, run_id, token, job_id, claim, space, vectors, timings, *, connection_generation=None):
         if space!=SPACE or len(vectors)!=1:raise ValueError('BGE result space/batch mismatch')
