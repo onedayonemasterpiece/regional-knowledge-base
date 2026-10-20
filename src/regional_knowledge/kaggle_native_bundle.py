@@ -30,7 +30,7 @@ TRUSTED_ROOT=Path('/kaggle/working')
 OS_RELEASE=Path('/etc/os-release')
 MAX_MANIFEST_BYTES=4*1024*1024
 MAX_FILES=8192
-MAX_PACKAGES=64
+MAX_PACKAGES=96
 MAX_ARCHIVE_BYTES=512*1024*1024
 MAX_TOTAL_BYTES=4*1024**3
 MAX_FILE_BYTES=256*1024*1024
@@ -107,8 +107,11 @@ def _platform_identity():
 
 
 def _validate_manifest(value):
-    if (type(value) is not dict or set(value)!={'codec','platform','packages','files','total_seconds'}
-            or value['codec']!='rkb.native_bundle.v1' or type(value['platform']) is not dict
+    if type(value) is not dict:raise ValueError('native_bundle_manifest_invalid')
+    expected={'codec','platform','packages','files','total_seconds'}
+    if value.get('codec')=='rkb.native_bundle.v2':expected.add('collection')
+    if (set(value)!=expected or value['codec'] not in ('rkb.native_bundle.v1','rkb.native_bundle.v2')
+            or type(value['platform']) is not dict
             or set(value['platform'])!=PLATFORM_FIELDS):
         raise ValueError('native_bundle_manifest_invalid')
     if any(type(part) is not str or not 1<=len(part)<=128
@@ -118,6 +121,11 @@ def _validate_manifest(value):
             or type(value['files']) is not list or not 1<=len(value['files'])<=MAX_FILES):
         raise ValueError('native_bundle_inventory_invalid')
     _integer(value['total_seconds'],1,900)
+    if 'collection' in value:
+        collection=value['collection']
+        if type(collection) is not dict or set(collection)!={'archive','size','sha256'}:
+            raise ValueError('native_bundle_collection_invalid')
+        _name(collection['archive']);_integer(collection['size'],1,MAX_ARCHIVE_BYTES);_hash(collection['sha256'])
     packages={};archives=set()
     for package in value['packages']:
         if type(package) is not dict or set(package)!={'name','archive','size','sha256','unpacked_bytes'}:
@@ -193,7 +201,8 @@ def _deb_data(fd,size,deadline):
 class _Decoded:
     """Bound decompression allocation, total bytes and time before tar parsing."""
     def __init__(self,raw,kind,expected):
-        self.raw,self.kind,self.expected=raw,kind,expected
+        self.raw,self.kind,self.expected=raw,kind,MAX_TOTAL_BYTES if expected is None else expected
+        self.exact=expected is not None
         self.total=0;self.buffer=b'';self.tail=b'';self.done=False
         if kind=='data.tar.xz':self.decoder=lzma.LZMADecompressor(memlimit=128*1024*1024)
         elif kind=='data.tar.gz':self.decoder=zlib.decompressobj(16+zlib.MAX_WBITS)
@@ -227,7 +236,7 @@ class _Decoded:
                 raise NativeBundleError('native_bundle_unpacked_byte_bound')
             self.buffer+=output
         data,self.buffer=self.buffer[:size],self.buffer[size:]
-        if self.done and self.total!=self.expected:
+        if self.done and self.exact and self.total!=self.expected:
             raise NativeBundleError('native_bundle_unpacked_size_mismatch')
         return data
 
@@ -379,7 +388,8 @@ def _inventory_records(inventory):
 def _bind_inventory(root_fd,manifest,spec,inventory,deadline):
     records={item[0]:item for item in inventory}
     expected=[(spec.manifest_name,None,spec.manifest_sha256)]
-    expected.extend((item['archive'],item['size'],item['sha256']) for item in manifest['packages'])
+    sources=[manifest['collection']] if 'collection' in manifest else manifest['packages']
+    expected.extend((item['archive'],item['size'],item['sha256']) for item in sources)
     for name,size,sha in expected:
         item=records.get(name)
         if item is None or item[3]!='code' or item[2]!=sha or size is not None and item[1]!=size:
@@ -439,6 +449,52 @@ def _publish(root_fd,temporary,prefix):
     return True
 
 
+def _prepare_collection(root_fd,root,manifest,deadline):
+    collection=manifest['collection']
+    prefix='rkb-native-archives-'+collection['sha256']
+    files=[dict(path=package['archive'],size=package['size'],sha256=package['sha256'],executable=False)
+           for package in manifest['packages']]
+    expected={item['path']:item for item in files}
+    tree=dict(files=files)
+    try:os.stat(prefix,dir_fd=root_fd,follow_symlinks=False)
+    except FileNotFoundError:exists=False
+    else:exists=True
+    if exists:
+        _verify_prefix(root_fd,prefix,tree,deadline)
+        return os.open(prefix,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=root_fd)
+    needed=sum(item['size'] for item in files)+sum(item['size'] for item in manifest['files'])+CHUNK_BYTES
+    if shutil.disk_usage(root).free<needed:
+        raise NativeBundleError('native_bundle_insufficient_disk')
+    temporary=Path(tempfile.mkdtemp(prefix='.rkb-native-archives-part-',dir=root))
+    stage_fd=os.open(temporary,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        parent=_parent(root_fd,collection['archive'],create=False)
+        try:fd=os.open(collection['archive'].split('/')[-1],os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent)
+        finally:os.close(parent)
+        seen=set();directories={str(p) for name in expected for p in PurePosixPath(name).parents if str(p)!='.'}
+        with os.fdopen(fd,'rb') as source:
+            with tarfile.open(fileobj=source,mode='r|',tarinfo=_tar_info({'headers':0,'metadata':0}),
+                              encoding='utf-8',errors='strict') as archive:
+                for member in archive:
+                    _remaining(deadline)
+                    name=_member_name(member.name)
+                    if name is None:continue
+                    if member.isdir() and name in directories:continue
+                    if (name in seen or name not in expected or not member.isfile() or member.sparse is not None
+                            or member.size!=expected[name]['size']):
+                        raise NativeBundleError('native_bundle_collection_member_invalid')
+                    seen.add(name)
+                    with archive.extractfile(member) as content:_write_member(stage_fd,expected[name],content,deadline)
+        if seen!=set(expected):raise NativeBundleError('native_bundle_collection_member_missing')
+        _verify_prefix(root_fd,temporary.name,tree,deadline)
+        if _publish(root_fd,temporary.name,prefix):temporary=None
+        _verify_prefix(root_fd,prefix,tree,deadline)
+        return os.open(prefix,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=root_fd)
+    finally:
+        os.close(stage_fd)
+        if temporary is not None:shutil.rmtree(temporary)
+
+
 @dataclass(frozen=True,eq=False)
 class VerifiedNativeBundle:
     root:Path
@@ -488,7 +544,7 @@ def prepare_native_bundle(root,spec_manifest_path,expected_sha,identity=None,*,i
     identity, when supplied, is an expected exact OS/ABI dictionary, never a
     replacement for observing this process's actual platform independently.
     """
-    temporary=None;root_fd=None
+    temporary=None;root_fd=None;package_fd=None
     try:
         spec=NativeBundleSpec(spec_manifest_path,expected_sha)
         root=Path(root);root_fd=_open_root(root)
@@ -500,6 +556,7 @@ def prepare_native_bundle(root,spec_manifest_path,expected_sha,identity=None,*,i
         deadline=time.monotonic()+manifest['total_seconds']
         prefix=spec.prefix(root)
         _bind_inventory(root_fd,manifest,spec,inventory,deadline)
+        package_fd=_prepare_collection(root_fd,root,manifest,deadline) if 'collection' in manifest else os.dup(root_fd)
         try:os.stat(prefix.name,dir_fd=root_fd,follow_symlinks=False)
         except FileNotFoundError:exists=False
         else:exists=True
@@ -512,7 +569,7 @@ def prepare_native_bundle(root,spec_manifest_path,expected_sha,identity=None,*,i
             try:
                 records={};materialized={};counts={'headers':0,'metadata':0}
                 for package in manifest['packages']:
-                    members,ready=_extract_package(root_fd,stage_fd,package,manifest['files'],deadline,counts)
+                    members,ready=_extract_package(package_fd,stage_fd,package,manifest['files'],deadline,counts)
                     records.update({(package['name'],name):value for name,value in members.items()})
                     materialized.update({(package['name'],name):value for name,value in ready.items()})
                 _materialize_links(stage_fd,manifest,records,materialized,deadline)
@@ -525,5 +582,114 @@ def prepare_native_bundle(root,spec_manifest_path,expected_sha,identity=None,*,i
     except Exception:
         raise NativeBundleError('native_bundle_preparation_failed') from None
     finally:
+        if package_fd is not None:os.close(package_fd)
         if root_fd is not None:os.close(root_fd)
         if temporary is not None:shutil.rmtree(temporary)
+
+
+def build_native_manifest(root,packages,*,identity,include_prefixes,total_seconds=120):
+    """Inspect local pinned .debs into exact nested pins, without installing them.
+
+    Intended for managed public-artifact preparation on Dev or CI. The caller
+    supplies a complete same-release package closure and explicit path prefixes.
+    This function neither resolves missing packages nor executes native binaries;
+    its output is a byte manifest, not a claim of ELF/PG/ABI readiness.
+    """
+    root_fd=None
+    try:
+        root=Path(root)
+        if not root.is_absolute() or root.resolve(strict=True)!=root or not root.is_dir():
+            raise ValueError('native_bundle_builder_root_invalid')
+        if (type(packages) not in (tuple,list) or not 1<=len(packages)<=MAX_PACKAGES
+                or type(identity) is not dict or set(identity)!=PLATFORM_FIELDS
+                or type(include_prefixes) is not tuple or not 1<=len(include_prefixes)<=64):
+            raise ValueError('native_bundle_builder_plan_invalid')
+        _integer(total_seconds,1,900)
+        prefixes=tuple(_name(prefix) for prefix in include_prefixes)
+        deadline=time.monotonic()+total_seconds
+        root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        names=set();archives=set();records={};regular={};selected={};result_packages=[]
+        counts={'headers':0,'metadata':0};total_unpacked=0
+        for package in packages:
+            if type(package) is not dict or set(package)!={'name','archive','size','sha256'}:
+                raise ValueError('native_bundle_builder_package_invalid')
+            name=_name(package['name']);path=_name(package['archive'])
+            _integer(package['size'],1,MAX_ARCHIVE_BYTES);_hash(package['sha256'])
+            if name in names or path in archives:
+                raise ValueError('native_bundle_builder_duplicate_package')
+            names.add(name);archives.add(path)
+            parent=_parent(root_fd,path,create=False)
+            try:
+                if not _verify(parent,path.split('/')[-1],package['size'],package['sha256'],deadline):
+                    raise NativeBundleError('native_bundle_package_missing')
+                fd=os.open(path.split('/')[-1],os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent)
+            finally:os.close(parent)
+            try:
+                kind,(offset,size)=_deb_data(fd,package['size'],deadline)
+                stream=_Decoded(_Range(fd,offset,size,deadline),kind,None)
+                seen=set()
+                with tarfile.open(fileobj=stream,mode='r|',tarinfo=_tar_info(counts),encoding='utf-8',errors='strict') as archive:
+                    for member in archive:
+                        _remaining(deadline)
+                        member_name=_member_name(member.name)
+                        if member_name is None:continue
+                        if member_name in seen or member.size>MAX_FILE_BYTES or member.size<0 or member.sparse is not None:
+                            raise NativeBundleError('native_bundle_tar_member_invalid')
+                        seen.add(member_name)
+                        if member.isdir():continue
+                        if not (member.isfile() or member.issym() or member.islnk()):
+                            raise NativeBundleError('native_bundle_special_file_forbidden')
+                        if not any(member_name==prefix or member_name.startswith(prefix+'/') for prefix in prefixes):
+                            continue
+                        key=(name,member_name)
+                        selected[key]=dict(path=member_name,package=name,member=member_name,
+                                           executable=bool(member.mode&0o111))
+                        if len(selected)>MAX_FILES:raise NativeBundleError('native_bundle_file_bound')
+                        if member.isfile():
+                            digest=hashlib.sha256();count=0
+                            with archive.extractfile(member) as source:
+                                while True:
+                                    _remaining(deadline)
+                                    data=source.read(65536)
+                                    if not data:break
+                                    count+=len(data);digest.update(data)
+                                    if count>MAX_FILE_BYTES:raise NativeBundleError('native_bundle_file_bound')
+                            if count!=member.size:raise NativeBundleError('native_bundle_file_size_mismatch')
+                            regular[key]=(count,digest.hexdigest())
+                            records[key]=('file',None)
+                        else:
+                            if member.linkname.startswith('/') or '\\' in member.linkname or not member.linkname:
+                                raise NativeBundleError('native_bundle_link_escape')
+                            target=posixpath.normpath(posixpath.join(posixpath.dirname(member_name),member.linkname)
+                                if member.issym() else member.linkname)
+                            records[key]=('link',_name(target))
+                stream.finish()
+                total_unpacked+=stream.total
+                if total_unpacked>MAX_TOTAL_BYTES:raise NativeBundleError('native_bundle_byte_budget')
+                result_packages.append(dict(package,unpacked_bytes=stream.total))
+            finally:os.close(fd)
+        output={}
+        for key,item in selected.items():
+            target=key;visited=set()
+            while target in records and records[target][0]=='link':
+                if target in visited or len(visited)>=16:raise NativeBundleError('native_bundle_link_cycle')
+                visited.add(target);path=records[target][1]
+                same=(target[0],path)
+                candidates=[same] if same in records else [candidate for candidate in records if candidate[1]==path]
+                if len(candidates)!=1:raise NativeBundleError('native_bundle_link_target_unpinned')
+                target=candidates[0]
+            if target not in regular:raise NativeBundleError('native_bundle_link_target_unpinned')
+            size,digest=regular[target]
+            complete=dict(item,size=size,sha256=digest)
+            existing=output.get(item['path'])
+            if existing and (existing['size'],existing['sha256'],existing['executable'])!=(size,digest,item['executable']):
+                raise NativeBundleError('native_bundle_package_path_conflict')
+            output.setdefault(item['path'],complete)
+        manifest=dict(codec='rkb.native_bundle.v1',platform=dict(identity),packages=result_packages,
+                      files=[output[path] for path in sorted(output)],total_seconds=total_seconds)
+        return _validate_manifest(manifest)
+    except NativeBundleError:raise
+    except Exception:
+        raise NativeBundleError('native_bundle_builder_failed') from None
+    finally:
+        if root_fd is not None:os.close(root_fd)

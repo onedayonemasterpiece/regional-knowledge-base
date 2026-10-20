@@ -227,3 +227,85 @@ def test_atomic_publish_never_overwrites_preexisting_directory(fixture,monkeypat
     with pytest.raises(NativeBundleError):prepare(value)
     assert (spec.prefix(root)/'unknown').read_text()=='preserve'
     assert not list(root.glob('.rkb-native-part-*'))
+
+
+def test_offline_builder_derives_all_hashes_and_roundtrips_runtime_extraction(fixture):
+    root,_,inventory,manifest=fixture()
+    packages=[{key:value for key,value in item.items() if key!='unpacked_bytes'} for item in manifest['packages']]
+    built=native.build_native_manifest(root,packages,identity=PLATFORM,
+        include_prefixes=('usr/bin','usr/lib','usr/share/postgresql'))
+    assert len(built['files'])==4 and built['packages'][0]['unpacked_bytes']==manifest['packages'][0]['unpacked_bytes']
+    assert {item['path']:item['sha256'] for item in built['files']}=={item['path']:item['sha256'] for item in manifest['files']}
+    raw=json.dumps(built,sort_keys=True,separators=(',',':')).encode()
+    (root/'built.json').write_bytes(raw)
+    top=(*inventory,dict(name='built.json',size=len(raw),sha256=sha(raw),role='code'))
+    cap=prepare_native_bundle(root,'built.json',sha(raw),inventory=top)
+    assert cap.current() and len(cap.pins)==4
+
+
+def test_builder_cross_package_library_alias_and_runtime_regularization(fixture):
+    root,_,inventory,manifest=fixture(entries=[('usr/lib/libbase.so','symlink','libbase.so.1')],files=[
+        dict(path='usr/lib/libbase.so',size=7,sha256=sha(b'library'),package='fixture',member='usr/lib/libbase.so',executable=False)])
+    body,unpacked=deb_bytes([('usr/lib/libbase.so.1','file',b'library')])
+    (root/'downloads/base.deb').write_bytes(body)
+    packages=[{key:value for key,value in item.items() if key!='unpacked_bytes'} for item in manifest['packages']]
+    packages.append(dict(name='base',archive='downloads/base.deb',size=len(body),sha256=sha(body)))
+    built=native.build_native_manifest(root,packages,identity=PLATFORM,include_prefixes=('usr/lib',))
+    assert len(built['files'])==2
+    raw=json.dumps(built,sort_keys=True,separators=(',',':')).encode();(root/'built.json').write_bytes(raw)
+    top=(*inventory,dict(name='built.json',size=len(raw),sha256=sha(raw),role='code'),
+         dict(name='downloads/base.deb',size=len(body),sha256=sha(body),role='code'))
+    cap=prepare_native_bundle(root,'built.json',sha(raw),inventory=top)
+    assert (cap.prefix/'usr/lib/libbase.so').read_bytes()==b'library'
+
+
+def test_builder_cannot_assume_alias_target_outside_selected_closure(fixture):
+    root,_,_,manifest=fixture()
+    packages=[{key:value for key,value in item.items() if key!='unpacked_bytes'} for item in manifest['packages']]
+    with pytest.raises(NativeBundleError,match='link_target_unpinned'):
+        native.build_native_manifest(root,packages,identity=PLATFORM,include_prefixes=('usr/lib/libfixture.so',))
+
+
+def collection_fixture(value,*,extra=None,collection_entries=None):
+    root,oldspec,inventory,manifest=value
+    manifest=json.loads(json.dumps(manifest))
+    entries=[]
+    for package in manifest['packages']:
+        entries.append((package['archive'],'file',(root/package['archive']).read_bytes()))
+    if extra:entries.extend(extra)
+    body=tar_bytes(collection_entries if collection_entries is not None else entries)
+    (root/'native-packages.tar').write_bytes(body)
+    manifest.update(codec='rkb.native_bundle.v2',collection=dict(archive='native-packages.tar',size=len(body),sha256=sha(body)))
+    raw=json.dumps(manifest,sort_keys=True,separators=(',',':')).encode();(root/'collection-manifest.json').write_bytes(raw)
+    spec=NativeBundleSpec('collection-manifest.json',sha(raw))
+    top=(dict(name=spec.manifest_name,size=len(raw),sha256=spec.manifest_sha256,role='code'),
+         dict(name='native-packages.tar',size=len(body),sha256=sha(body),role='code'))
+    return root,spec,top,manifest
+
+
+def test_one_top_collection_transitively_verifies_nested_debs_and_all_native_files(fixture):
+    value=collection_fixture(fixture())
+    root,spec,inventory,manifest=value
+    # Prove source .debs are taken from the pinned outer archive, not ambient files.
+    (root/'downloads/package.deb').unlink()
+    cap=prepare(value)
+    assert len(inventory)==2 and len(cap.pins)==4 and cap.current()
+    assert prepare(value).current()
+    cache=root/('rkb-native-archives-'+manifest['collection']['sha256'])
+    assert (cache/'downloads/package.deb').is_file()
+    (cache/'downloads/package.deb').chmod(0o600);(cache/'downloads/package.deb').write_bytes(b'tampered')
+    with pytest.raises(NativeBundleError):prepare(value)
+
+
+@pytest.mark.parametrize('kind',['unknown','symlink','traversal','duplicate'])
+def test_outer_collection_never_expands_unpinned_unsafe_or_duplicate_members(fixture,kind):
+    value=fixture();root,spec,inventory,manifest=value
+    path=manifest['packages'][0]['archive'];body=(root/path).read_bytes()
+    if kind=='unknown':entries=[(path,'file',body),('unknown.deb','file',body)]
+    elif kind=='symlink':entries=[(path,'symlink','../../outside')]
+    elif kind=='traversal':entries=[('../outside','file',body)]
+    else:entries=[(path,'file',body),(path,'file',body)]
+    wrapped=collection_fixture(value,collection_entries=entries)
+    with pytest.raises(NativeBundleError):prepare(wrapped)
+    assert not wrapped[1].prefix(root).exists()
+    assert not list(root.glob('.rkb-native-archives-part-*'))
