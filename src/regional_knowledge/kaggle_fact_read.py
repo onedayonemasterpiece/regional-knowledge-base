@@ -16,6 +16,15 @@ from .story_contracts import StageEventDateInput, StageObservationInput
 
 FACT_SCHEMA = 'rkb-v4-sql001-008-v1'
 FACT_FUNCTION = 'rkb-v4-source-story-facts-v3'
+# These exact reviewed deployments preserve the immutable SQL008 reader
+# signatures and projection semantics. No numeric range or future revision
+# automatically gains compatibility.
+FACT_READ_REVISIONS = frozenset({
+    (FACT_SCHEMA,FACT_FUNCTION),
+    ('rkb-v4-sql001-009-v1','rkb-v4-source-story-editorial-v4'),
+    ('rkb-v4-sql001-010-v1','rkb-v4-source-story-cases-v5'),
+    ('rkb-v4-sql001-011-v1','rkb-v4-source-story-cases-geo-v6'),
+})
 FACT_READER_FUNCTIONS = (
     'read_source_calendar_v1(text,integer,integer,uuid,integer,uuid,integer,integer)',
     'read_source_observations_v1(text,text,uuid,uuid,integer,integer)',
@@ -101,7 +110,7 @@ async def execute_fact_read(request: FactReadRequest, *, acquire):
 
                         await _frontier(cursor, execute, request, observed, require_dense=False)
                         await execute('SELECT schema_revision,function_revision FROM rkb_v4.recovery_state WHERE singleton')
-                        if await cursor.fetchone() != (FACT_SCHEMA, FACT_FUNCTION):
+                        if tuple(await cursor.fetchone() or ()) not in FACT_READ_REVISIONS:
                             raise ReadUnavailable('not_ready')
                         scope = cursor_scope(request, observed)
                         after = ('00000000-0000-0000-0000-000000000000', -1, 0)

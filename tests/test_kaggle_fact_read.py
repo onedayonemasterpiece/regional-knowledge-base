@@ -218,3 +218,30 @@ def test_measured_metadata_budget_is_shared_by_runtime_and_native_history_constr
         assert runtime.probe.max_catalog_rows==rows
         assert runtime.probe.max_catalog_bytes==1024*1024
         assert runtime.probe.max_definition_bytes==65536
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('revision',[
+    ('rkb-v4-sql001-008-v1','rkb-v4-source-story-facts-v3'),
+    ('rkb-v4-sql001-009-v1','rkb-v4-source-story-editorial-v4'),
+    ('rkb-v4-sql001-010-v1','rkb-v4-source-story-cases-v5'),
+    ('rkb-v4-sql001-011-v1','rkb-v4-source-story-cases-geo-v6'),
+])
+async def test_reviewed_fact_projection_deployments_execute_exact_native_reader(revision):
+    native=Native([row()],revision=revision)
+    result=await execute_fact_read(request(),acquire=native.acquire)
+    assert result.status=='ok' and result.records[0]['fact']['calendar']=='julian'
+    assert any('read_source_calendar_v1' in sql for sql,_ in native.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('revision',[
+    ('rkb-v4-sql001-011-v1','rkb-v4-source-story-facts-v3'),
+    ('rkb-v4-sql001-012-v1','rkb-v4-source-story-cases-geo-v6'),
+    ('rkb-v4-sql001-007-v1','rkb-v4-source-story-cases-geo-v6'),
+])
+async def test_unknown_or_mixed_fact_deployment_cannot_invoke_read_function(revision):
+    native=Native([row()],revision=revision)
+    result=await execute_fact_read(request(),acquire=native.acquire)
+    assert result.status=='unavailable' and result.reason=='not_ready'
+    assert not any('read_source_calendar_v1' in sql for sql,_ in native.calls)
