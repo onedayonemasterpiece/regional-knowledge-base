@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from .bge_contract import REVISION, SPACE
-from .kaggle_owned_pg import SQL_ARTIFACTS, STORY_SQL_ARTIFACTS, FACT_SQL_ARTIFACTS, sql_artifacts, canonical, digest
+from .kaggle_owned_pg import SQL_ARTIFACTS, STORY_SQL_ARTIFACTS, FACT_SQL_ARTIFACTS, DOMAIN_SQL_ARTIFACTS, sql_artifacts, canonical, digest
 from .kaggle_readiness import SearchRuntimeExpectation
 from .kaggle_target_runtime import TargetLaunchSpec
 from .recovery_journal import RecoveryJournal
@@ -18,7 +18,9 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
     'kaggle_environment','kaggle_pg_snapshot_native','kaggle_recovery_phases','kaggle_snapshot_channel',
     'native_snapshot_transfer','kaggle_bootstrap_pins','kaggle_native_env','kaggle_source_acl','kaggle_source_history_native',
     'original_intake','kaggle_original_native','kaggle_original_parser','file_ingress','source_adapter','ingestion',
-    'source_import_v2','story_contracts','kaggle_story_read','source_import_v3','kaggle_fact_contracts','kaggle_fact_read')
+    'source_import_v2','story_contracts','kaggle_story_read','source_import_v3','kaggle_fact_contracts','kaggle_fact_read','kaggle_source_read','source_import_v4','source_manifest',
+    'story_editorial','disagreement_contracts','disagreement_native','geo_migration','geo_manifest_commands',
+    'kaggle_domain_bindings','kaggle_domain_schema')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 
 
@@ -26,7 +28,7 @@ def source_bundle(repository):
     repository = Path(repository)
     files = {f'regional_knowledge/{name}.py':(repository/'src/regional_knowledge'/f'{name}.py').read_bytes()
              for name in MODULES}
-    files.update({f'sql/{name}':(repository/'sql/kaggle'/name).read_bytes() for name in FACT_SQL_ARTIFACTS})
+    files.update({f'sql/{name}':(repository/'sql/kaggle'/name).read_bytes() for name in DOMAIN_SQL_ARTIFACTS})
     if sum(map(len,files.values())) > MAX_SOURCE_BYTES:
         raise ValueError('immutable target source byte budget exceeded')
     manifest = {name:digest(data) for name,data in sorted(files.items())}

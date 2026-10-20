@@ -13,6 +13,8 @@ import math
 from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 from psycopg.errors import QueryCanceled
+from .kaggle_domain_schema import (TABLES_9,FUNCTIONS_9,TRIGGERS_9,TABLES_10,FUNCTIONS_10,TRIGGERS_10,
+    TABLES_11,FUNCTIONS_11,TRIGGERS_11)
 
 
 class DatabaseProbeUnavailable(RuntimeError):
@@ -147,10 +149,12 @@ def native_probe_for_schema(schema_revision, *, timeout_seconds=2.0):
 
     The exact PG17.11 fresh8 fixture measured545 records/218231 bytes.576 gives
     31 records of fixed headroom. Existing schema6/7 and unrecognized revisions
-    retain512; byte and individual-definition limits are unchanged.
+    retain512. The complete001..011 PG17.11 fixture measured1122 records /
+    502765 bytes; explicit11 uses1152. Byte/definition limits are unchanged.
     """
     return NativeDatabaseProbe(timeout_seconds=timeout_seconds,
-        max_catalog_rows=576 if schema_revision=='rkb-v4-sql001-008-v1' else 512)
+        max_catalog_rows=(1152 if schema_revision=='rkb-v4-sql001-011-v1' else
+            576 if schema_revision=='rkb-v4-sql001-008-v1' else 512))
 
 
 @dataclass(frozen=True)
@@ -241,11 +245,15 @@ class NativeDatabaseProbe:
                             state = json.loads(row[0])
                             fields = self._state(state)
                             if (bool(STORY_TABLES.intersection(observed['tables'])) !=
-                                    (state['schema_revision'] in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1'))):
+                                    (state['schema_revision'] in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'))):
                                 raise DatabaseProbeUnavailable('database_story_revision_mismatch')
                             if (bool(FACT_TABLES.intersection(observed['tables'])) !=
-                                    (state['schema_revision']=='rkb-v4-sql001-008-v1')):
+                                    (state['schema_revision'] in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'))):
                                 raise DatabaseProbeUnavailable('database_fact_revision_mismatch')
+                            for layer,known in ((9,TABLES_9),(10,TABLES_10),(11,TABLES_11)):
+                                required=state['schema_revision'] in {f'rkb-v4-sql001-{n:03d}-v1' for n in range(layer,12)}
+                                if bool(known.intersection(observed['tables']))!=required:
+                                    raise DatabaseProbeUnavailable('database_domain_revision_mismatch')
                             add('semantics','current',{key:state[key] for key in (
                                 'schema_revision','function_revision','executor_revision','last_migration_id','last_migration_hash')})
             return prefix + b','.join(records) + suffix, fields
@@ -270,6 +278,13 @@ class NativeDatabaseProbe:
         if facts:
             tables=tables|FACT_TABLES;functions=functions|FACT_FUNCTIONS
             required_triggers=required_triggers|FACT_TRIGGERS
+        extra_functions={}
+        for known_tables,known_functions,known_triggers in ((TABLES_9,FUNCTIONS_9,TRIGGERS_9),
+                (TABLES_10,FUNCTIONS_10,TRIGGERS_10),(TABLES_11,FUNCTIONS_11,TRIGGERS_11)):
+            if known_tables.intersection(observed['tables']):
+                tables=tables|known_tables;functions=functions|known_functions.keys()
+                required_triggers=required_triggers|known_triggers
+                extra_functions.update(known_functions)
         env = observed['environment'].get('runtime',{})
         if (type(env.get('server_version_num')) is not int or env['server_version_num']//10000 != 17
                 or env.get('vector_version') != '0.8.2' or env.get('vector_schema') != 'public'
@@ -288,6 +303,7 @@ class NativeDatabaseProbe:
                       'void' if any(stem in name for stem in ('publish_read_frontier(', 'prepare_read_frontier(')) else
                       'boolean' if any(stem in name for stem in ('check_source_withdraw_v1(', 'check_source_import_v1(', 'check_source_import_v2(', 'verify_source_story_origins_v1(', 'check_source_facts_v1(', 'check_source_import_v3(', 'verify_source_story_origins_v2(')) else
                       'bytea' if any(stem in name for stem in ('apply_source_withdraw_v1(', 'apply_source_import_v1(', 'apply_source_import_v2(', 'apply_source_import_v3(')) else 'trigger')
+            if name in extra_functions:result,table_function=extra_functions[name]
             if (function.get('kind') != 'f' or function.get('security_definer') is not False
                     or function.get('returns_set') is not table_function or function.get('result') != result
                     or not isinstance(function.get('definition'),str)):

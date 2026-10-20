@@ -30,7 +30,7 @@ def observer_fingerprint():
     """Exact fixed observation/ACL/catalog implementation, not a supplied pin."""
     root=Path(__file__).parent
     return digest(canonical({name:digest((root/name).read_bytes()) for name in (
-        'kaggle_source_history_native.py','kaggle_source_acl.py','kaggle_database_probe.py')}))
+        'kaggle_source_history_native.py','kaggle_source_acl.py','kaggle_database_probe.py','kaggle_domain_schema.py')}))
 
 
 @dataclass(eq=False)
