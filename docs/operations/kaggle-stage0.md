@@ -106,3 +106,29 @@ materialization. Loading only the raw JSON can produce different counts for
 whitespace and special tokens. A tokenizer-only reproduction uses no Torch,
 model weights or embedding inference. These checks do not establish native PG
 readiness, public hybrid search, accepted imports or product acceptance.
+
+## Cold private runtime parent
+
+Actual target v89 failed with `FileNotFoundError('/kaggle/temp')` on 2026-10-20,
+after resident encoder preparation and before any native PG readiness receipt.
+`OwnedPostgres.start_empty` resolved the configured cluster parent strictly;
+the provider image had not created that parent. This failure does not establish
+a running PostgreSQL server or target readiness.
+
+`ensure_private_runtime_root` now creates only the fixed session-only
+`/kaggle/temp` beneath the already existing trusted `/kaggle`. It rejects
+symlinks, unexpected ownership and group/world-write permissions, probes actual
+supervisor writability, and checks traversal for the configured PG identity.
+When a root supervisor owns a nonroot PG child, a newly created parent is
+`0711`; the child can traverse it and cannot create entries there. Cluster and
+socket directories remain exclusive `0700` leaves with the exact native UID/GID.
+Snapshot workspaces use the same check. Existing clusters are never adopted or
+overwritten, and missing caller-supplied nested parents remain an error.
+
+The cold-root regression reaches the exact initdb invocation boundary using
+synthetic files and a stopped fake command, with no PG, model or provider call.
+It also checks restrictive umask, native traversal, unsafe parents and exclusive
+retry refusal. Stage0 installation and native bundle temporary directories are
+under the existing verified `/kaggle/working` root; they do not depend on
+`/kaggle/temp`. Native PG startup and useful reads after this patch still require
+an actual independently reviewed bootstrap receipt.

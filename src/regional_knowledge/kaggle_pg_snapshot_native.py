@@ -22,7 +22,7 @@ import psycopg
 from .kaggle_database_probe import NativeDatabaseProbe
 from .kaggle_apply import handover_writer
 from .kaggle_restored_database import VerifiedInitializedDatabase
-from .kaggle_owned_pg import PRIVATE_RUNTIME_ROOT
+from .kaggle_owned_pg import PRIVATE_RUNTIME_ROOT, ensure_private_runtime_root
 
 
 class SnapshotError(RuntimeError):
@@ -141,12 +141,21 @@ class BlobRef:
             raise ValueError('exact private artifact native version required')
 
 
-def private_workspace(path,required_bytes):
+def private_workspace(path,required_bytes,*,native_uid=None,native_gid=None):
     root=Path(path)
     if (not root.is_absolute() or not root.is_relative_to(PRIVATE_RUNTIME_ROOT)
-            or root==PRIVATE_RUNTIME_ROOT or '..' in root.parts
-            or root.parent.resolve(strict=True)!=root.parent):
+            or root==PRIVATE_RUNTIME_ROOT or '..' in root.parts):
         raise SnapshotError('snapshot_private_workspace_required')
+    try:
+        ensure_private_runtime_root(native_uid=native_uid,native_gid=native_gid)
+        if root.parent.resolve(strict=True)!=root.parent:raise OSError('private parent symlink')
+        for parent in (root.parent,*root.parent.parents):
+            if not parent.is_relative_to(PRIVATE_RUNTIME_ROOT):break
+            info=parent.stat()
+            if info.st_uid not in (0,os.geteuid()) or stat.S_IMODE(info.st_mode)&0o022:
+                raise OSError('untrusted private parent')
+    except (OSError,RuntimeError):
+        raise SnapshotError('snapshot_private_workspace_required') from None
     if shutil.disk_usage(root.parent).free<required_bytes:raise SnapshotError('snapshot_disk_budget')
     root.mkdir(mode=0o700) # exclusive; existing/partial/live directories are refused
     return root
@@ -555,7 +564,7 @@ class NativeSnapshotFactory:
     def _workspace(self,path,required):
         if not self.workspace_private_current(path):
             raise SnapshotError('snapshot_stage0_private_output_exclusion_required')
-        root=private_workspace(path,required);self._own_workspace(root)
+        root=private_workspace(path,required,native_uid=self.native_uid,native_gid=self.native_gid);self._own_workspace(root)
         return root
     async def _run(self,*args,timeout=30):
         process=await self.spawn(*args,stdin=asyncio.subprocess.DEVNULL,

@@ -16,6 +16,7 @@ import signal
 import stat
 import pwd
 import logging
+import secrets
 from collections.abc import Mapping
 from types import MappingProxyType
 
@@ -48,6 +49,56 @@ def digest(value):
 def _can_access(info,uid,gid,bits):
     shift=6 if info.st_uid==uid else 3 if info.st_gid==gid else 0
     return ((stat.S_IMODE(info.st_mode)>>shift)&bits)==bits
+
+
+def ensure_private_runtime_root(*, native_uid=None, native_gid=None):
+    """Create only the fixed session-only parent, never caller directories.
+
+    Kaggle images need not precreate /kaggle/temp. The trusted provider parent
+    must already exist. A root supervisor leaves the new parent traversable by
+    its nonroot PG child, without giving other identities write permission;
+    each actual cluster/workspace is still an exclusive private directory.
+    """
+    root=PRIVATE_RUNTIME_ROOT
+    parent_fd=root_fd=None;created=False
+    try:
+        if root.parent.resolve(strict=True)!=root.parent:
+            raise OSError('untrusted provider parent')
+        parent_fd=os.open(root.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        parent=os.fstat(parent_fd)
+        if parent.st_uid not in (0,os.geteuid()) or stat.S_IMODE(parent.st_mode)&0o022:
+            raise OSError('untrusted provider parent')
+        if native_uid is not None and (native_gid is None or not _can_access(parent,native_uid,native_gid,1)):
+            raise OSError('native identity cannot traverse provider parent')
+        mode=0o711 if native_uid is not None and native_uid!=os.geteuid() else 0o700
+        try:
+            os.mkdir(root.name,mode=mode,dir_fd=parent_fd)
+            created=True
+        except FileExistsError:pass
+        root_fd=os.open(root.name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent_fd)
+        info=os.fstat(root_fd)
+        if info.st_uid not in (0,os.geteuid()) or stat.S_IMODE(info.st_mode)&0o022:
+            raise OSError('untrusted private root')
+        if created:
+            os.fchmod(root_fd,mode)  # Explicit traversal survives a restrictive umask.
+            info=os.fstat(root_fd)
+        if native_uid is not None and (native_gid is None or not _can_access(info,native_uid,native_gid,1)):
+            raise OSError('native identity cannot traverse private root')
+        # Probe the actual supervisor write permission before native children.
+        probe='.rkb-private-root-probe-'+secrets.token_hex(16)
+        fd=os.open(probe,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=root_fd)
+        os.close(fd);os.unlink(probe,dir_fd=root_fd)
+        observed=os.stat(root.name,dir_fd=parent_fd,follow_symlinks=False)
+        if (observed.st_dev,observed.st_ino)!=(info.st_dev,info.st_ino):
+            raise OSError('private root changed')
+    except OSError:
+        _LOG.warning('native_private_root state=unavailable')
+        raise BootstrapUnavailable('native_pg_private_root_unavailable') from None
+    finally:
+        if root_fd is not None:os.close(root_fd)
+        if parent_fd is not None:os.close(parent_fd)
+    _LOG.info('native_private_root state=ready created=%s native_uid=%s',created,native_uid)
+    return root
 
 
 def grant_native_code_access(root,pins,*,uid,gid):
@@ -301,6 +352,7 @@ class OwnedPostgres:
         files = {name:(Path(sql_root)/name).read_bytes() for name in SQL_ARTIFACTS}
         if intent.get('sql_hashes') != {name:digest(data) for name,data in files.items()}:
             raise BootstrapUnavailable('native_pg_sql_binding_mismatch')
+        await asyncio.to_thread(ensure_private_runtime_root,native_uid=spec.uid,native_gid=spec.gid)
         paths = spec.native_paths
         library = await self._command(paths['pg_config'],'--pkglibdir',timeout=5)
         shared = await self._command(paths['pg_config'],'--sharedir',timeout=5)
@@ -309,8 +361,16 @@ class OwnedPostgres:
                 or Path(paths['vector_sql']) != Path(shared)/'extension/vector--0.8.2.sql'):
             raise BootstrapUnavailable('native_pg_extension_binding_mismatch')
         cluster = Path(spec.cluster)
-        if cluster.parent.resolve(strict=True) != cluster.parent:
-            raise BootstrapUnavailable('native_pg_parent_unverified')
+        try:
+            if cluster.parent.resolve(strict=True) != cluster.parent:
+                raise OSError('private parent symlink')
+            for parent in (cluster.parent,*cluster.parent.parents):
+                if not parent.is_relative_to(PRIVATE_RUNTIME_ROOT):break
+                info=parent.stat()
+                if info.st_uid not in (0,os.geteuid()) or stat.S_IMODE(info.st_mode)&0o022:
+                    raise OSError('untrusted private parent')
+        except OSError:
+            raise BootstrapUnavailable('native_pg_parent_unverified') from None
         try:
             cluster.mkdir(mode=0o700)  # O_EXCL directory creation; never adopt partial state.
         except FileExistsError:
