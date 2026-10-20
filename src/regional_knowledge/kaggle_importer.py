@@ -378,9 +378,10 @@ class KaggleSourceImporter:
         if not 1 <= len(graph.chunks) <= MAX_PASSAGES:
             raise failure('small_source_passage_bound', status='invalid_query')
         metadata = json.loads(row['metadata_json'])
-        language = metadata.get('language') or 'simple'
-        if language not in ('ru', 'de', 'simple'):
-            raise failure('target_source_language_unavailable', status='invalid_query')
+        # Passage language selects the installed FTS configuration; the exact
+        # bibliographic language remains unchanged in the durable manifest.
+        source_language = (metadata.get('language') or '').lower().replace('_','-').split('-',1)[0]
+        language = source_language if source_language in ('ru','de') else 'simple'
         pages = {str(page.page_id): page for page in graph.pages}
         passages = []
         token_counts = await self._counts([chunk.text for chunk in graph.chunks])
