@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import json
 import time
 from urllib.parse import quote
+from uuid import UUID
 
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -22,6 +23,10 @@ from .read_telemetry import ReadTelemetry
 
 
 class TargetUnavailable(RuntimeError):
+    pass
+
+
+class PublicQueryInvalid(ValueError):
     pass
 
 
@@ -117,16 +122,25 @@ class KaggleSourceBackend:
         branches = ()
         try:
             async with asyncio.timeout_at(deadline):
+                try:
+                    filters = QueryFilters(source_ids=tuple(source_ids) if source_ids is not None else None,
+                        kinds=('source',))
+                    if filters.source_ids is not None and any(str(UUID(value)) != value for value in filters.source_ids):
+                        raise ValueError('canonical source ids required')
+                except (ValueError, TypeError, AttributeError):
+                    raise PublicQueryInvalid from None
                 authority = await self.read_authority.resolve_oauth(principal.access_token,
                     destination=self.destination)
                 binding = await asyncio.to_thread(current_binding, self.worker_queue)
-                request = Query(request_id=attempt.request_id,
-                    connection_generation=binding.connection_generation, turn_generation=0,
-                    query=query, filters=QueryFilters(source_ids=tuple(source_ids) if source_ids is not None else None,
-                        kinds=('source',)), min_data_seq=binding.min_data_seq,
-                    actor=TrustedActorContext(person_id=authority.person_id, audience=authority.destination.key,
-                        auth_epoch=authority.auth_revision, visibility_epoch=0, context_ref=authority.context_ref),
-                    deadline_ms=max(1, int((deadline-time.monotonic())*1000)), evidence_limit=limit)
+                try:
+                    request = Query(request_id=attempt.request_id,
+                        connection_generation=binding.connection_generation, turn_generation=0,
+                        query=query, filters=filters, min_data_seq=binding.min_data_seq,
+                        actor=TrustedActorContext(person_id=authority.person_id, audience=authority.destination.key,
+                            auth_epoch=authority.auth_revision, visibility_epoch=0, context_ref=authority.context_ref),
+                        deadline_ms=max(1, int((deadline-time.monotonic())*1000)), evidence_limit=limit)
+                except (ValueError, TypeError):
+                    raise PublicQueryInvalid from None
                 permit = await self.source_gate.dispatch(authority, request, binding)
                 def dispatched(resource):
                     telemetry.bind_dispatch(attempt,
@@ -168,10 +182,11 @@ class KaggleSourceBackend:
         except PermissionError:
             status, reason = 'denied', 'access_denied'
             raise ToolError('{"status":"denied","reason":"access_denied"}') from None
-        except (ValueError, TypeError):
+        except PublicQueryInvalid:
             status, reason = 'invalid_query', 'invalid_input'
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
         except Exception:
+            status, reason = 'unavailable', 'not_ready'
             raise ToolError('{"status":"unavailable","reason":"not_ready"}') from None
         finally:
             if ticket is not None:

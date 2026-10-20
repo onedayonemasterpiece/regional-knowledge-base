@@ -140,7 +140,8 @@ async def vertical(database, auth, tmp_path):
                 request_id=f'fixture-import-request-{sequence}', person_id=auth.p.owner.subject,
                 logical_time='2026-10-20T15:00:00Z', revisions=VERSIONS, source_id=source, payload=material)
             await spool.stage_source_import(auth.p.admin, command, database_generation=GENERATION)
-            await spool.seal(auth.p.admin, command.operation_key, writer_generation='writer-1')
+            await spool.seal(auth.p.admin, command.operation_key, writer_generation='writer-1',
+                             predecessor=await journal.head())
             applied = await spool.apply(command.operation_key, admin, writer_generation='writer-1')
             assert applied.status == 'applied'
             remote = await spool.publish_outcome(command.operation_key, writer_generation='writer-1')
@@ -166,10 +167,14 @@ async def vertical(database, auth, tmp_path):
 
 
 async def pending_withdrawal(s):
+    async with s.admin.transaction():
+        revision = (await (await s.admin.execute(
+            'SELECT eligibility_revision FROM rkb_v4.source_visibility WHERE source_id=%s', (A,))).fetchone())[0]
     command = replace(withdraw(s.auth.p.owner.subject, 3), schema_revision=VERSIONS.schema,
         function_revision=VERSIONS.function, executor_revision=VERSIONS.executor,
-        operation_key='fixture-withdraw-after-worker')
+        operation_key='fixture-withdraw-after-worker', expected_revisions={'eligibility_revision': str(revision)})
     await s.spool.stage_source_withdraw(s.auth.p.admin, command, database_generation=GENERATION)
+    return command
 
 
 async def request(s, *, source_ids=None, limit=3, after_result=None, composite=False):
@@ -205,7 +210,7 @@ async def request(s, *, source_ids=None, limit=3, after_result=None, composite=F
         async def encode(_):
             return VECTOR
         wire = await s.worker(work.query.model_dump(mode='json'), encode=encode)
-        result = QueryResult.model_validate(wire)
+        result = QueryResult.model_validate_json(json.dumps(wire))
         assert result.status in ('ok', 'degraded') and result.observed_data_seq == 2
         if limit == 1:
             assert len(result.evidence) == 1
@@ -217,9 +222,12 @@ async def request(s, *, source_ids=None, limit=3, after_result=None, composite=F
             dependencies = tuple(dep for item in result.evidence for dep in item.dependencies.source_revisions)
             assert {dep.source_id for dep in dependencies} == {A, B}
             joined = result.evidence[0].model_copy(update={'id': 'composite-native-fixture',
-                'text': 'private cross-source A and B', 'dependencies': ItemDependencies(
+                'text': 'private cross-source A and B', 'text_form': 'complete',
+                'source_continuation': None, 'continuation': None, 'continuation_complete': False,
+                'dependencies': ItemDependencies(
                     source_ids=(A, B), source_revisions=dependencies, variant_refs=(), grant_refs=())})
             result = result.model_copy(update={'evidence': (*result.evidence, joined)})
+        result = QueryResult.model_validate_json(result.model_dump_json())
         assert await s.admission.finish_read(s.run, s.token, s.generation, result)
         resource = work.resource
         await s.admission.resource_released(s.run, s.token, s.generation,
@@ -246,11 +254,21 @@ async def request(s, *, source_ids=None, limit=3, after_result=None, composite=F
 
 
 @pytest.mark.parametrize('scenario', ['cross-source', 'broad-top1-without-A', 'explicit-B'])
-async def test_pending_withdrawal_between_native_result_and_http_issuance(vertical, scenario):
+@pytest.mark.parametrize('phase', ['staged', 'accepted', 'durable'])
+async def test_pending_withdrawal_between_native_result_and_http_issuance(vertical, scenario, phase):
     s = vertical
+    async def change(s):
+        command = await pending_withdrawal(s)
+        if phase in ('accepted', 'durable'):
+            await s.spool.seal(s.auth.p.admin, command.operation_key, writer_generation='writer-1',
+                               predecessor=await s.spool.journal.head())
+        if phase == 'durable':
+            receipt = await s.spool.apply(command.operation_key, s.admin, writer_generation='writer-1')
+            assert receipt.status == 'applied'
+            await s.spool.publish_outcome(command.operation_key, writer_generation='writer-1')
     result = await request(s, source_ids=[B] if scenario == 'explicit-B' else None,
         limit=1 if scenario == 'broad-top1-without-A' else 3,
-        composite=scenario == 'cross-source', after_result=pending_withdrawal)
+        composite=scenario == 'cross-source', after_result=change)
     assert not result['isError']
     payload = result['structuredContent']
     assert payload['observed_data_seq'] == 2 and payload['mode'] == 'hybrid'
@@ -262,8 +280,9 @@ async def test_pending_withdrawal_between_native_result_and_http_issuance(vertic
         assert not payload['prior_write_pending']
         assert payload['reason'] != 'prior_write_pending'
     else:
-        assert payload['status'] == 'degraded' and payload['prior_write_pending']
-        assert payload['reason'] == 'prior_write_pending'
+        assert payload['status'] == 'degraded'
+        assert payload['prior_write_pending'] is (phase != 'durable')
+        assert payload['reason'] == ('projection_lag' if phase == 'durable' else 'prior_write_pending')
     await asyncio.to_thread(s.telemetry._queue.join)
     terminal = next(record for record in s.records if record.get('terminal'))
     assert terminal['status'] == payload['status']
@@ -282,3 +301,15 @@ async def test_oauth_revocation_after_native_result_withholds_both_mcp_represent
     await asyncio.to_thread(s.telemetry._queue.join)
     terminal = next(record for record in s.records if record.get('terminal'))
     assert terminal['status'] in ('denied', 'unavailable')
+
+
+async def test_native_acl_pin_is_independent_of_search_path_and_timezone(vertical):
+    s = vertical
+    async with s.admin.transaction():
+        await s.admin.execute("ALTER ROLE rkb_reader VALID UNTIL '2030-01-01 00:00:00+00'")
+        await s.admin.execute("SET LOCAL search_path=public,rkb_v4,pg_catalog")
+        await s.admin.execute("SET LOCAL timezone='UTC'")
+        expected = await inspect_acl(s.admin)
+        await s.admin.execute("SET LOCAL search_path=pg_catalog")
+        await s.admin.execute("SET LOCAL timezone='Europe/Kaliningrad'")
+        assert await inspect_acl(s.admin) == expected

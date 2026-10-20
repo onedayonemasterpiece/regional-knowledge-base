@@ -36,7 +36,7 @@ def _hash(data):
 
 ACL_SQL = """SELECT kind, name, payload FROM (
  SELECT 'role' kind, rolname name, jsonb_build_array(rolsuper,rolinherit,rolcreaterole,
-    rolcreatedb,rolcanlogin,rolreplication,rolbypassrls,rolconnlimit,rolvaliduntil)::text payload
+    rolcreatedb,rolcanlogin,rolreplication,rolbypassrls,rolconnlimit,rolvaliduntil AT TIME ZONE 'UTC')::text payload
  FROM pg_roles
  UNION ALL SELECT 'membership',r.rolname||':'||m.rolname,
     jsonb_build_array(a.admin_option,a.inherit_option,a.set_option)::text
@@ -49,14 +49,14 @@ ACL_SQL = """SELECT kind, name, payload FROM (
  UNION ALL SELECT 'column',c.relname||'.'||a.attname,a.attacl::text
  FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
  JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='rkb_v4' AND a.attacl IS NOT NULL
- UNION ALL SELECT 'function',p.oid::regprocedure::text,
+ UNION ALL SELECT 'function',n.nspname||'.'||p.proname||':'||p.proargtypes::text,
     jsonb_build_array(pg_get_userbyid(p.proowner),p.proacl)::text
  FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='rkb_v4'
- UNION ALL SELECT 'default',d.defaclrole||':'||d.defaclnamespace||':'||d.defaclobjtype,d.defaclacl::text
+ UNION ALL SELECT 'default',d.defaclrole::text||':'||d.defaclnamespace::text||':'||d.defaclobjtype::text,d.defaclacl::text
  FROM pg_default_acl d
  UNION ALL SELECT 'database',datname,jsonb_build_array(pg_get_userbyid(datdba),datacl)::text
  FROM pg_database WHERE datname=current_database()
- UNION ALL SELECT 'setting',setdatabase||':'||setrole,setconfig::text FROM pg_db_role_setting
+ UNION ALL SELECT 'setting',setdatabase::text||':'||setrole::text,setconfig::text FROM pg_db_role_setting
  ) q ORDER BY kind COLLATE "C",name COLLATE "C" LIMIT 513"""
 
 

@@ -111,12 +111,14 @@ async def test_actual_queue_roundtrip_preserves_authority_until_guard_release_an
     s = target
     async def read():
         with capture_read_output() as calls:
-            result = await (s.backend.search_evidence('synthetic query', s.principal, document_ids=['source-a'])
-                if evidence else s.backend.search('synthetic query', s.principal, document_ids=['source-a']))
+            result = await (s.backend.search_evidence('synthetic query', s.principal,
+                document_ids=['00000000-0000-0000-0000-000000000001'])
+                if evidence else s.backend.search('synthetic query', s.principal,
+                    document_ids=['00000000-0000-0000-0000-000000000001']))
         return result, calls
     task = asyncio.create_task(read())
     dispatched = await work(s)
-    assert dispatched.query.filters.source_ids == ('source-a',)
+    assert dispatched.query.filters.source_ids == ('00000000-0000-0000-0000-000000000001',)
     assert dispatched.query.filters.kinds == ('source',)
     assert dispatched.query.min_data_seq == 5
     assert dispatched.query.actor.person_id == s.auth.p.other.subject
@@ -161,6 +163,32 @@ async def test_missing_output_capture_fails_closed_and_releases_authority(target
     with pytest.raises(ReadAuthorityError):
         await s.auth.resolver.recheck(s.gate.permits[0].authority)
     assert s.admission.status()['state'] == 'busy'
+    await asyncio.to_thread(s.telemetry._queue.join)
+    terminal = next(record for record in s.records if record.get('terminal'))
+    assert terminal['status'] == 'unavailable' and terminal['reason'] == 'not_ready'
+    assert terminal['executed_branches'] == ['lexical', 'dense']
+    await release(s, dispatched)
+
+
+@pytest.mark.asyncio
+async def test_native_render_failure_is_not_mislabeled_as_bad_caller_query(target, monkeypatch):
+    from regional_knowledge.contracts import SearchOutput
+    s = target
+    def invalid_render(*args, **kwargs):
+        return SearchOutput.model_validate({'results': 'invalid native shape'})
+    monkeypatch.setattr(s.backend, '_render', invalid_render)
+    async def read():
+        with capture_read_output():
+            return await s.backend.search('synthetic query', s.principal)
+    task = asyncio.create_task(read())
+    dispatched = await work(s)
+    await settle(s, dispatched)
+    with pytest.raises(ToolError, match='not_ready'):
+        await task
+    await asyncio.to_thread(s.telemetry._queue.join)
+    terminal = next(record for record in s.records if record.get('terminal'))
+    assert terminal['status'] == 'unavailable' and terminal['reason'] == 'not_ready'
+    assert terminal['executed_branches'] == ['lexical', 'dense']
     await release(s, dispatched)
 
 
@@ -298,9 +326,12 @@ async def test_gate_denial_keeps_actual_executed_branches_and_final_status(targe
 
 
 @pytest.mark.asyncio
-async def test_invalid_explicit_empty_source_scope_never_widens_to_all_sources(target):
+@pytest.mark.parametrize('scope', [[], ['not-a-uuid'], ['AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA'],
+    ['00000000-0000-0000-0000-000000000001'] * 2,
+    ['00000000-0000-0000-0000-000000000001'] * 33])
+async def test_invalid_explicit_empty_source_scope_never_widens_to_all_sources(target, scope):
     s = target
     with pytest.raises(ToolError, match='invalid_input'):
-        await s.backend.search('synthetic query', s.principal, document_ids=[])
+        await s.backend.search('synthetic query', s.principal, document_ids=scope)
     assert not s.gate.permits and s.admission.status()['pending_reads'] == 0
     assert s.admission.status()['state'] == 'idle'
