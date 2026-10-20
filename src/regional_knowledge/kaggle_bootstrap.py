@@ -178,6 +178,68 @@ def _loaded_code_paths():
         kaggle_search, kaggle_readiness, kaggle_worker_query, kaggle_database_probe))
 
 
+def _load_tokenizer_reference(artifacts, model_directory):
+    """Materialize HF defaults from the independently verified local inventory.
+
+    Old tokenizer JSON is not the backend's current serialization. Both the
+    parser and HF configuration participate in the protected loaded behavior.
+    This creates a tokenizer only, never a model or a network download.
+    """
+    protected = {'transformers': '5.16.1', 'tokenizers': '0.23.1', 'huggingface-hub': '1.29.0'}
+    if any(importlib.metadata.version(name) != version for name, version in protected.items()):
+        raise ValueError('tokenizer dependency mismatch')
+    for entry in artifacts.entries:
+        if entry.role in {'tokenizer', 'model_config'}:
+            requirement = entry.requirement
+            path = artifacts.root / requirement.name
+            if (path.resolve(strict=True) != path or requirement.size > 64 * 1024 * 1024
+                    or _file_hash(path, requirement.size) != requirement.sha256
+                    or entry.role == 'tokenizer' and requirement.sha256 != TOKENIZER_SHA256):
+                raise ValueError('tokenizer input mismatch')
+    from transformers import AutoTokenizer
+    return AutoTokenizer.from_pretrained(str(model_directory), use_fast=True,
+        tokenizer_file=str(model_directory / 'tokenizer.json'), local_files_only=True,
+        trust_remote_code=False)
+
+
+def _verify_tokenizer_reference(actual, reference):
+    """Compare complete materialized state and real single-input encodings."""
+    if (type(actual) is not type(reference)
+            or any(tokenizer.backend_tokenizer.truncation is not None for tokenizer in (actual, reference))):
+        raise ValueError('tokenizer implementation mismatch')
+    names = ('special_tokens_map', 'all_special_ids', 'all_special_tokens', 'model_input_names',
+        'padding_side', 'truncation_side', 'model_max_length', 'clean_up_tokenization_spaces',
+        'split_special_tokens')
+    metadata = {name: getattr(reference, name, None) for name in names}
+    if {name: getattr(actual, name, None) for name in names} != metadata:
+        raise ValueError('tokenizer configuration mismatch')
+    # Exercise the worker's batch1 input and the exact counter's special tokens.
+    # Explicit per-call options normalize padding on BOTH handles; no backend
+    # fields, normalizers, pre-tokenizers, decoders or added tokens are ignored.
+    for text in ('readiness', 'Кёнигсберг — история\n1945.', 'Straße\t  Königsberg',
+                 'e\u0301 é\u00a0中🙂', '<s> текст </s> <mask>', '  a\n\n b\t '):
+        expected = reference([text], padding=True, truncation=False)
+        observed = actual([text], padding=True, truncation=False)
+        if dict(observed) != dict(expected):
+            raise ValueError('tokenizer batch encoding mismatch')
+        ids = reference.encode(text, add_special_tokens=True, truncation=False, padding=False)
+        loaded_ids = actual.encode(text, add_special_tokens=True, truncation=False, padding=False)
+        if loaded_ids != ids or expected['input_ids'] != [ids]:
+            raise ValueError('tokenizer exact encoding mismatch')
+    states = []
+    for tokenizer in (actual, reference):
+        rendered = tokenizer.backend_tokenizer.to_str()
+        if not isinstance(rendered, str) or len(rendered.encode()) > 64 * 1024 * 1024:
+            raise ValueError('tokenizer state bound')
+        state = json.loads(rendered)
+        if state.get('padding') is not None or state.get('truncation') is not None:
+            raise ValueError('tokenizer count settings mismatch')
+        states.append(state)
+    if states[0] != states[1]:
+        raise ValueError('tokenizer materialized state mismatch')
+    return _sha(_json({'backend': states[1], 'configuration': metadata}))
+
+
 @dataclass(frozen=True)
 class ResidentEncoder:
     """Callable existing encoder plus its actual locally loaded tokenizer handle."""
@@ -186,6 +248,7 @@ class ResidentEncoder:
     artifacts: VerifiedArtifacts
     model_directory: Path
     model_load_count: int
+    tokenizer_fingerprint: str = field(init=False)
     _tokenizer_lock: object = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
 
     def __post_init__(self):
@@ -200,18 +263,9 @@ class ResidentEncoder:
                 or type(self.model_load_count) is not int or self.model_load_count < 1):
             raise BootstrapUnavailable('loaded_tokenizer_binding_invalid')
         try:
-            entry = next(e.requirement for e in self.artifacts.entries if e.role == 'tokenizer')
-            if entry.size > 64 * 1024 * 1024:
-                raise ValueError
-            rendered = self.tokenizer.backend_tokenizer.to_str()
-            if not isinstance(rendered, str) or len(rendered.encode()) > 64 * 1024 * 1024:
-                raise ValueError
-            actual = json.loads(rendered)
-            pinned = json.loads((self.artifacts.root / entry.name).read_bytes())
-            # Padding is a per-call batch setting, explicitly disabled by count.
-            actual.pop('padding', None); pinned.pop('padding', None)
-            if actual != pinned:
-                raise ValueError
+            reference = _load_tokenizer_reference(self.artifacts, model_directory)
+            fingerprint = _verify_tokenizer_reference(self.tokenizer, reference)
+            object.__setattr__(self, 'tokenizer_fingerprint', fingerprint)
         except Exception:
             raise BootstrapUnavailable('loaded_tokenizer_settings_mismatch') from None
 
