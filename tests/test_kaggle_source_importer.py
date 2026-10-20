@@ -300,7 +300,7 @@ async def finish_document(s):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('intake',[7,8],indirect=True)
+@pytest.mark.parametrize('intake',[7,8,9,11],indirect=True)
 async def test_source_and_authored_story_activate_only_after_exact_remote_outcome(intake):
     import base64
     import hashlib
