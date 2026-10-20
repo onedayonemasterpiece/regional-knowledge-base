@@ -122,8 +122,20 @@ if __name__ == '__main__':
                 or _hashlib.sha256(_file.read_bytes()).digest() != _hashlib.sha256(_data).digest()):
             raise RuntimeError('target_bundle_bytes_mismatch')
     _sys.path.insert(0, str(_root))
-    from regional_knowledge.kaggle_target_runtime import TargetRuntime
-    runtime = TargetRuntime(RUN_CONFIG, executed_source=str(_Path(__file__).resolve()))
+    class _DeferredTargetRuntime:
+        def __init__(self):
+            self.instance = None
+        async def prepare(self, encoder, **identity):
+            # load_encoder has completed Stage0 only AFTER ATTACH/WELCOME.
+            # PostgreSQL/pydantic/pool imports cannot precede that preparation.
+            from regional_knowledge.kaggle_target_runtime import TargetRuntime
+            if self.instance is None:
+                self.instance = TargetRuntime(RUN_CONFIG, executed_source=str(_Path(__file__).resolve()))
+            return await self.instance.prepare(encoder, **identity)
+        async def aclose(self):
+            if self.instance is not None:
+                await self.instance.aclose()
+    runtime = _DeferredTargetRuntime()
     main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)
 '''.replace('BUNDLE_FILES',repr(files)).replace('BUNDLE_ROOT',repr(str(root/relative)))
     if template.count("if __name__=='__main__':main()") != 1:

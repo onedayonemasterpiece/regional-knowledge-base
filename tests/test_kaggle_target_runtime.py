@@ -87,8 +87,13 @@ def test_generated_entrypoint_executes_lifecycle_with_stubs(tmp_path,monkeypatch
             self.prepare,self.aclose=prepare,close
     monkeypatch.setattr('regional_knowledge.kaggle_target_runtime.TargetRuntime',Runtime)
     def main(**kwargs):
-        assert kwargs==dict(prepare_runtime=prepare,close_runtime=close)
+        assert set(kwargs)=={'prepare_runtime','close_runtime'}
+        assert calls==[]  # No dependency-bearing runtime import/construction yet.
         calls.append(('main',))
+        async def lifecycle():
+            await kwargs['prepare_runtime'](None,run_id=run,launch_nonce='nonce',runtime_incarnation='inc')
+            await kwargs['close_runtime']()
+        asyncio.run(lifecycle())
     namespace.update(main=main,__name__='__main__')
     # Redirect the pure source extraction for this local fixture only. The source
     # whose final hash is persisted above retains its actual Kaggle paths.
@@ -99,7 +104,7 @@ def test_generated_entrypoint_executes_lifecycle_with_stubs(tmp_path,monkeypatch
             return node
     exec(compile(ast.fix_missing_locations(Redirect().visit(ast.Module(body=[entry],type_ignores=[]))),
                  'fixture-entry','exec'),namespace)
-    assert calls==[('runtime',run),('main',)]
+    assert calls==[('main',),('runtime',run)]
 
 
 @pytest.mark.asyncio
