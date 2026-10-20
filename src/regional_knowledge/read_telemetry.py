@@ -115,8 +115,11 @@ class ReadTelemetry:
             elapsed_ms = round((time.monotonic() - started) * 1000, 3)
             # Both existing public DTOs declare this optional diagnostic field.
             from .contracts import ReadTrace
+            previous = getattr(result, 'read_trace', None)
             return result.model_copy(update={"read_trace": ReadTrace(
-                trace_id=trace_id, backend_elapsed_ms=elapsed_ms)})
+                trace_id=trace_id, backend_elapsed_ms=elapsed_ms,
+                attempt_id=previous.attempt_id if previous and previous.trace_id == trace_id else None,
+                request_ref=previous.request_ref if previous and previous.trace_id == trace_id else None)})
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise

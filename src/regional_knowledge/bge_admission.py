@@ -76,6 +76,7 @@ class _Read:
     deadline: float
     timer: object
     dispatched: ResourceClaim | None = None
+    on_dispatch: object = None
 
 
 def _identity(value):
@@ -170,7 +171,7 @@ class SharedReadAdmission:
         read=self._reads.get(key)
         if read is not None and read.ticket is ticket:self._cancel(key)
 
-    async def begin_read(self, authority, query, *, dialog_ref, deadline):
+    async def begin_read(self, authority, query, *, dialog_ref, deadline, on_dispatch=None):
         self._active();_identity(dialog_ref)
         now=self.clock()
         if (not isinstance(deadline,(float,int)) or isinstance(deadline,bool)
@@ -178,6 +179,8 @@ class SharedReadAdmission:
             raise ValueError('absolute remaining deadline must be at most two seconds')
         if not isinstance(query,Query) or not isinstance(authority,VerifiedReadAuthority):
             raise TypeError('typed query and verified authority required')
+        if on_dispatch is not None and not callable(on_dispatch):
+            raise TypeError('internal dispatch observer must be callable')
         encode_envelope(query)
         deadline=min(deadline,now+query.deadline_ms/1000)
         # Parsing a TrustedActorContext never authenticates it. Bind every
@@ -204,7 +207,8 @@ class SharedReadAdmission:
         future=asyncio.get_running_loop().create_future()
         ticket=ReadTicket(query.request_id,query.connection_generation,query.turn_generation,future)
         timer=asyncio.get_running_loop().call_later(max(0,deadline-self.clock()),self._cancel,key)
-        self._reads[key]=_Read(ticket,authority,query,dialog_ref,float(deadline),timer)
+        self._reads[key]=_Read(ticket,authority,query,dialog_ref,float(deadline),timer,
+                              on_dispatch=on_dispatch)
         future.add_done_callback(lambda _:self._cancel_ticket(ticket))
         self._event.set()
         return ticket
@@ -446,6 +450,12 @@ class SharedReadAdmission:
             read.dispatched=work.resource
         self._sent=True;self._state='busy'
         self._changed_slot()
+        if work.query is not None and read.on_dispatch is not None:
+            try:
+                read.on_dispatch(work.resource)
+            except Exception:
+                # Optional lossy diagnostics never change compute ownership.
+                _LOG.warning('bge_read_dispatch_diagnostic_failed')
         _LOG.info('bge_compute_sent run_id=%s dispatch_generation=%s kind=%s',work.resource.run_id,work.dispatch_generation,work.kind)
 
     def discard_unsent(self, work):

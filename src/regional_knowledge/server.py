@@ -161,8 +161,24 @@ def _transport_security(resource_url: str | None = None) -> TransportSecuritySet
 class KnowledgeMCPServer(MCPServer):
     """Advertise the public PKCE clients supported by our embedded provider."""
 
+    async def call_tool(self, name, arguments, context=None):
+        from .read_issuance import capture_read_output, bind_request_output
+        with capture_read_output() as calls:
+            result = await super().call_tool(name, arguments, context)
+            if calls:
+                bind_request_output(context, calls)
+            return result
+
     def streamable_http_app(self, **kwargs):
+        guarded = getattr(self, '_current_read_output_required', False)
+        if guarded:
+            if kwargs.get('stateless_http', False) is not True or kwargs.get(
+                    'json_response', False) is not True:
+                raise RuntimeError('current evidence requires stateless JSON HTTP')
         app = super().streamable_http_app(**kwargs)
+        if guarded:
+            from .read_issuance import ReadIssuanceMiddleware
+            app.add_middleware(ReadIssuanceMiddleware)
         if isinstance(self._auth_server_provider, RegionalOAuthProvider):
             auth = self.settings.auth
             metadata = build_metadata(
@@ -202,7 +218,7 @@ def build_server(
 ) -> MCPServer:
     backend = backend or backend_from_env()
     from .read_telemetry import ReadTelemetry
-    read_telemetry = ReadTelemetry()
+    read_telemetry = getattr(backend, 'read_telemetry', None) or ReadTelemetry()
     issuer = (
         issuer
         or os.getenv("RKB_AUTH_ISSUER", "").strip()
@@ -350,11 +366,18 @@ def build_server(
     if embedded_provider is not None:
         embedded_provider.register_routes(mcp)
 
-    if os.getenv('RKB_BGE_QUEUE_PATH'):
+    mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
+    worker_queue = getattr(backend, 'worker_queue', None)
+    if worker_queue is not None or os.getenv('RKB_BGE_QUEUE_PATH'):
         from .bge_queue import BgeQueue
         from .bge_broker import register_routes
         from .bge_channel import channel_route
-        worker_queue = BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
+        if worker_queue is None:
+            worker_queue = BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
+        elif os.getenv('RKB_BGE_QUEUE_PATH'):
+            from pathlib import Path
+            if worker_queue.path.resolve() != Path(os.environ['RKB_BGE_QUEUE_PATH']).resolve():
+                raise RuntimeError('backend and channel must share the same owned queue')
         register_routes(mcp,worker_queue)
         mcp._bge_channel_route = channel_route(worker_queue)
 

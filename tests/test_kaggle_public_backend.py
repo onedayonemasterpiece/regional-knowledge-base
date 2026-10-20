@@ -288,10 +288,8 @@ async def test_gate_denial_keeps_actual_executed_branches_and_final_status(targe
     task = asyncio.create_task(read())
     dispatched = await work(s)
     await settle(s, dispatched)
-    output, calls = await task
-    assert output.status == 'denied' and not output.evidence
-    calls[0].complete(output.status, output.reason)
-    calls[0].release()
+    with pytest.raises(ToolError, match='access_denied'):
+        await task
     await asyncio.to_thread(s.telemetry._queue.join)
     terminal = next(record for record in s.records if record.get('terminal'))
     assert terminal['status'] == 'denied' and terminal['reason'] == 'access_denied'

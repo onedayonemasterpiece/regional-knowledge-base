@@ -435,10 +435,17 @@ class ReadTrace(BaseModel):
     """Backend-only monotonic duration; client transport time is measured separately."""
     trace_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     backend_elapsed_ms: float = Field(ge=0, allow_inf_nan=False)
+    attempt_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    request_ref: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class SearchOutput(BaseModel):
     results: list[SearchResult]
+    status: Literal['ok','degraded','unavailable','cancelled','invalid_query','denied'] | None = None
+    reason: str | None = None
+    observed_data_seq: int | None = Field(default=None, ge=0)
+    observed_projection_seq: int | None = Field(default=None, ge=0)
+    prior_write_pending: bool = False
     mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
     retrieval_mode: Literal["fast_e5", "lexical_only", "bge_lexical", "e5_bge_lexical", "bge", "e5_bge"] = "lexical_only"
     retrieval_policy: Literal['semantic','exact_identifier'] = 'semantic'
@@ -460,6 +467,11 @@ class FetchOutput(BaseModel):
 
 class EvidenceSearchOutput(BaseModel):
     evidence: list[FetchOutput]
+    status: Literal['ok','degraded','unavailable','cancelled','invalid_query','denied'] | None = None
+    reason: str | None = None
+    observed_data_seq: int | None = Field(default=None, ge=0)
+    observed_projection_seq: int | None = Field(default=None, ge=0)
+    prior_write_pending: bool = False
     mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
     retrieval_mode: Literal["fast_e5", "lexical_only", "bge_lexical", "e5_bge_lexical", "bge", "e5_bge"] = "lexical_only"
     retrieval_policy: Literal['semantic','exact_identifier'] = 'semantic'
