@@ -8,6 +8,7 @@ import pytest
 from regional_knowledge.source_import_v2 import (STORY_REVISIONS,resolved_import_v2_command,validate_import_v2_command)
 from regional_knowledge.story_contracts import StageStoryCandidateInput
 from test_source_import import payload as source_payload,SOURCE,PASSAGE
+from test_participants import people
 
 REGION='71000000-0000-0000-0000-000000000001'
 FINDING='72000000-0000-0000-0000-000000000001'
@@ -85,3 +86,30 @@ def test_stage_explicit_narrative_requires_complete_evidence_map():
     assert StageStoryCandidateInput.model_validate(raw).basic_variant.body=='The gate remained.'
     raw['basic_variant']['blocks'][0]['evidence_indexes']=[1]
     with pytest.raises(ValueError):StageStoryCandidateInput.model_validate(raw)
+
+
+@pytest.mark.asyncio
+async def test_v2_uses_same_authorized_spool_remote_seal_and_captured_dispatch_proof(people,tmp_path):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from regional_knowledge.bge_queue import BgeQueue
+    from regional_knowledge.control_spool import ControlSpool,SpoolDenied
+    from regional_knowledge.kaggle_source_commands import fixed_registry,decode_command,ControllerAcceptedProof,digest
+    from test_recovery_journal import fixture as journal_fixture
+    queue=BgeQueue(tmp_path/'queue.sqlite');_,journal=journal_fixture()
+    database=SimpleNamespace(schema_revision=STORY_REVISIONS.schema,function_revision=STORY_REVISIONS.function,
+        executor_revision=STORY_REVISIONS.executor)
+    registry=fixed_registry(database,[{'route':'source.import.v2','check_sha256':'1'*64,'apply_sha256':'2'*64}])
+    spool=ControlSpool(queue,people.registry,journal,registry)
+    c=replace(command(),person_id=people.owner.subject)
+    try:
+        assert decode_command(c.encode())==c
+        with pytest.raises(SpoolDenied):await spool.stage_source_import(people.personal,c,database_generation='db-story')
+        entry=await spool.stage_source_import(people.admin,c,database_generation='db-story')
+        assert entry.command_bytes==c.encode()
+        accepted=await spool.seal(people.admin,c.operation_key,predecessor=None,writer_generation='writer-1')
+        assert await journal.verify_accepted(accepted,c)==digest(c.encode())
+        proof=ControllerAcceptedProof(c.encode(),accepted,digest(c.encode()))
+        assert await proof.verify_accepted(accepted,c)==digest(c.encode())
+        with pytest.raises(SpoolDenied):await spool.stage_source_withdraw(people.admin,c,database_generation='db-story')
+    finally:spool.close()

@@ -41,6 +41,9 @@ def decode_command(data):
             payload=base64.b64decode(value['payload_b64'],validate=True))
         if command.encode()!=data:raise ValueError
         if command.route==SOURCE_IMPORT:validate_import_command(command)
+        elif command.route=='source.import.v2':
+            from .source_import_v2 import validate_import_v2_command
+            validate_import_v2_command(command)
         elif (command.route!=SOURCE_WITHDRAW or command.kind!='domain_command'
               or set(command.ids)!={'source_id'} or set(command.expected_revisions)!={'eligibility_revision'}
               or command.payload!=b'{"withdrawn":true}'):
@@ -109,11 +112,14 @@ def fixed_registry(database,entries):
     from .kaggle_apply import DependencySpec
     handlers=[]
     revisions=Revisions(database.schema_revision,database.function_revision,database.executor_revision)
-    if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=2:raise ValueError('fixed source registry required')
+    if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=3:raise ValueError('fixed source registry required')
     for entry in entries:
         if not isinstance(entry,dict) or set(entry)!={'route','check_sha256','apply_sha256'}:raise ValueError('fixed source registry pins required')
         if entry['route']==SOURCE_IMPORT:
             handler=source_import_handler(revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
+        elif entry['route']=='source.import.v2':
+            from .source_import_v2 import source_import_v2_handler
+            handler=source_import_v2_handler(revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
         elif entry['route']==SOURCE_WITHDRAW:
             handler=HandlerSpec('domain_command',SOURCE_WITHDRAW,revisions,
                 PgFunction('check_source_withdraw_v1',entry['check_sha256']),PgFunction('apply_source_withdraw_v1',entry['apply_sha256']),

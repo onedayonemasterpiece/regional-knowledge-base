@@ -312,8 +312,13 @@ class ControlSpool:
         _bounded(command.operation_key,4096)
         frozen,data=_snapshot(command,self.max_command_bytes)
         handler=self.registry.resolve(frozen)
-        if frozen.route=='source.import.v1':
-            from .source_import import SOURCE_IMPORT,IMPORT_DEPENDENCY,IMPORT_PRECONDITIONS,validate_import_command
+        if frozen.route in ('source.import.v1','source.import.v2'):
+            if frozen.route=='source.import.v1':
+                from .source_import import SOURCE_IMPORT,IMPORT_DEPENDENCY,IMPORT_PRECONDITIONS,validate_import_command
+            else:
+                from .source_import import IMPORT_PRECONDITIONS
+                from .source_import_v2 import (SOURCE_IMPORT_V2 as SOURCE_IMPORT,
+                    IMPORT_V2_DEPENDENCY as IMPORT_DEPENDENCY,validate_import_v2_command as validate_import_command)
             if (frozen.kind!='domain_command' or frozen.route!=SOURCE_IMPORT
                     or handler.dependency!=IMPORT_DEPENDENCY or handler.transition is not None
                     or handler.precondition_keys!=IMPORT_PRECONDITIONS):
@@ -377,7 +382,7 @@ class ControlSpool:
         async with self._lock:
             actor=await self._authorize(context)
             frozen,data,handler=self._validate(command,database_generation)
-            if frozen.route!='source.import.v1':raise SpoolDenied('import intake requires import route')
+            if frozen.route not in ('source.import.v1','source.import.v2'):raise SpoolDenied('import intake requires import route')
             if frozen.person_id!=actor:raise SpoolDenied('command person does not authenticate its actor')
             return await self._write(self._stage,frozen,data,handler,database_generation)
 

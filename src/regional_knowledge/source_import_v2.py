@@ -136,7 +136,8 @@ def validate_import_v2_payload(payload):
 
 def validate_import_v2_command(command):
     if (not isinstance(command,ExactCommand) or command.kind!='domain_command' or command.route!=SOURCE_IMPORT_V2
-            or set(command.ids)!={'source_id'} or command.expected_revisions!={'absent_source':'true'}):
+            or set(command.ids)!={'source_id'} or command.expected_revisions!={'absent_source':'true'}
+            or (command.schema_revision,command.function_revision,command.executor_revision)!=STORY_REVISIONS.wire()):
         raise ValueError('exact new-source v2 command required')
     _uuid(command.ids['source_id'])
     return validate_import_v2_payload(command.payload)
