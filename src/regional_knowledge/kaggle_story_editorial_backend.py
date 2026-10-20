@@ -123,10 +123,13 @@ class KaggleStoryEditorial:
         if not self.gate.issuance_current(proof['gated'].ticket):raise PermissionError('Story proof changed during authorization')
         return proof['authority'].person_id
 
-    async def _vector(self,proof,operation,key,input_hash):
-        tokens=await self.tokenizer.counts([operation.body])
+    async def _tokens(self,body):
+        tokens=await self.tokenizer.counts([body])
         if len(tokens)!=1 or type(tokens[0]) is not int or not 1<=tokens[0]<=512:
             raise failure('complete_narrative_exceeds_512_tokens','invalid_query')
+        return tokens[0]
+
+    async def _vector(self,proof,operation,key,input_hash,tokens):
         identity=dict(codec='rkb.story-editorial-document.v1',person_id=proof['authority'].person_id,
             story_id=proof['record']['story_id'],story_revision=proof['record']['revision'],
             database_generation=proof['binding'].database_generation,body_sha256=digest(operation.body.encode()),
@@ -145,14 +148,14 @@ class KaggleStoryEditorial:
             try:await self.queue.shared_reads.register_editorial_document(self,job['id'])
             except BaseException:self._release_document(job['id']);raise
             _LOG.info('story_editorial_document operation_hash=%s state=pending',digest(key.encode()))
-            return None,tokens[0],True
+            return None,tokens,True
         self._release_document(job['id'])
         value=job['result'];vectors=value.get('vectors')
         if value.get('space')!=SPACE or type(vectors) is not list or len(vectors)!=1:raise failure('document_vector_contract')
         raw=vectors[0]
         if type(raw) is not list or any(type(v) not in (int,float) or struct.unpack('<f',struct.pack('<f',float(v)))[0]!=v for v in raw):
             raise failure('exact_fp32_vector_required')
-        return validate_vector(raw),tokens[0],False
+        return validate_vector(raw),tokens,False
 
     async def _entry(self,key):
         with self.spool._db() as db:
@@ -228,7 +231,20 @@ class KaggleStoryEditorial:
                             refs={x['variant_id']:x['revision'] for x in r['variant_refs']}
                             if operation.variant_id is not None and refs.get(operation.variant_id)!=operation.expected_variant_revision:
                                 raise failure('variant_revision_conflict','invalid_query')
-                            vector,tokens,kept=await self._vector(proof,operation,key,digest(canonical(request)))
+                            # Tokenizer-only process startup may take up to45s.
+                            # Never extend or reuse the initial two-second read
+                            # ticket across that work. Re-observe current native
+                            # role/source/CAS before authorizing the exact job.
+                            source=dict(r['source']);self._release_proof(proof);proof=None
+                            tokens=await self._tokens(operation.body)
+                            proof=await self._preflight(principal,access);r=proof['record']
+                            if r['role'] not in needed:raise PermissionError('current per-Story editor required')
+                            if r['revision']!=expected_revision:raise failure('revision_conflict','invalid_query')
+                            if r['source']!=source:raise failure('source_context_changed')
+                            refs={x['variant_id']:x['revision'] for x in r['variant_refs']}
+                            if operation.variant_id is not None and refs.get(operation.variant_id)!=operation.expected_variant_revision:
+                                raise failure('variant_revision_conflict','invalid_query')
+                            vector,tokens,kept=await self._vector(proof,operation,key,digest(canonical(request)),tokens)
                             if vector is None:
                                 output=dict(status='processing',reason='exact_narrative_vector_pending',story_id=story_id,operation_id=key,remote_outcome_durable=False)
                                 access['retained']=await self.output_gate.retain(output,access['authority'],access['context'],access['binding'])
@@ -254,7 +270,7 @@ class KaggleStoryEditorial:
                                 entry=await self.spool._write(self.spool._stage,frozen,data,handler,access['binding'].database_generation)
                             self._same_input(entry,request)
                     finally:
-                        if not kept:self._release_proof(proof)
+                        if not kept and proof is not None:self._release_proof(proof)
                 output=await self._continue(access,entry)
                 access['retained']=await self.output_gate.retain(output,access['authority'],access['context'],access['binding'])
                 return output

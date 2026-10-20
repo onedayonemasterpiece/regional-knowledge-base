@@ -53,15 +53,24 @@ async def editorial(target,tmp_path):
     await owner.aclose();await startup.source_dispatch.aclose();spool.close()
 
 
-async def context(s,task,role='editor'):
-    w=await work(s.t)
-    assert type(w.query) is EditorialReadRequest and w.query.view=='edit_context'
-    r=record();r.update(view='edit_context',role=role,variant_refs=[r['default_variant_ref']])
-    result=EditorialReadResult(request_id=w.query.request_id,connection_generation=s.t.generation,turn_generation=0,status='ok',
-        record=r,evidence=(story_item(r),),observed_data_seq=5,observed_projection_seq=5,observed_visibility_epoch=1,observed_database_generation='synthetic-db')
-    assert await s.t.admission.finish_read(s.t.run,s.t.token,s.t.generation,result)
-    await release(s.t,w)
-    return await task
+async def context(s,task,role='editor',*,second_role=None,second_revision=None):
+    async def respond(role,revision=None):
+        w=await work(s.t)
+        assert type(w.query) is EditorialReadRequest and w.query.view=='edit_context'
+        r=record();r.update(view='edit_context',role=role,variant_refs=[r['default_variant_ref']])
+        if revision is not None:r.update(revision=revision,current_revision=revision)
+        result=EditorialReadResult(request_id=w.query.request_id,connection_generation=s.t.generation,turn_generation=0,status='ok',
+            record=r,evidence=(story_item(r),),observed_data_seq=5,observed_projection_seq=5,observed_visibility_epoch=1,observed_database_generation='synthetic-db')
+        assert await s.t.admission.finish_read(s.t.run,s.t.token,s.t.generation,result)
+        await release(s.t,w)
+    await respond(role)
+    for _ in range(300):
+        if task.done():return await task
+        if s.t.admission._reads:
+            await respond(second_role or role,second_revision)
+            return await task
+        await asyncio.sleep(.001)
+    pytest.fail('editorial task neither completed nor acquired fresh preflight')
 
 
 @pytest.mark.asyncio
@@ -206,3 +215,38 @@ async def test_existing_mcp_story_edit_routes_through_native_context_and_same_do
     work_item=await t.queue.next_channel_work(t.run,t.token,t.generation)
     assert work_item.kind=='document' and tuple(work_item.document_payload['texts'])==(operation().body,)
     t.admission.mark_work_sent(work_item);await release(t,work_item)
+
+
+@pytest.mark.asyncio
+async def test_slow_exact_counter_uses_new_proof_without_extending_original_deadline(editorial):
+    import time
+    s=editorial;now=[time.monotonic()];s.gate.clock=lambda:now[0]
+    proofs=[];preflight=s.workflow._preflight
+    async def observe(*args):
+        proof=await preflight(*args);proofs.append(proof);return proof
+    s.workflow._preflight=observe
+    async def slow_counter(texts):
+        assert len(proofs)==1
+        original=proofs[0]['gated'].ticket
+        now[0]+=45
+        assert not s.gate.issuance_current(original)
+        s.counts.append(tuple(texts));return [10]
+    s.workflow.tokenizer.counts=slow_counter
+    result=await context(s,asyncio.create_task(s.workflow.mutate(s.t.principal,story_id=STORY,expected_revision=1,
+        idempotency_key='slow-protected-counter',operation=operation())))
+    assert result['reason']=='exact_narrative_vector_pending' and len(proofs)==2
+    assert not s.gate.issuance_current(proofs[0]['gated'].ticket)
+    assert s.gate.issuance_current(proofs[1]['gated'].ticket)
+    document=await s.t.queue.next_channel_work(s.t.run,s.t.token,s.t.generation)
+    assert document.kind=='document' and tuple(document.document_payload['texts'])==(operation().body,)
+
+
+@pytest.mark.asyncio
+async def test_fresh_post_count_preflight_detects_concurrent_story_revision_before_document(editorial):
+    s=editorial
+    task=asyncio.create_task(s.workflow.mutate(s.t.principal,story_id=STORY,expected_revision=1,
+        idempotency_key='changed-after-count',operation=operation()))
+    with pytest.raises(ToolError,match='revision_conflict'):
+        await context(s,task,second_revision=2)
+    assert s.counts==[(operation().body,)] and not s.workflow._documents
+    with s.t.queue.connect(write=False) as db:assert db.execute('SELECT count(*) FROM jobs').fetchone()[0]==0

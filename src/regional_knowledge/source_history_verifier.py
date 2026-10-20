@@ -81,7 +81,7 @@ class NativeSourceHistoryVerifier:
                 or acquire is not None and not callable(acquire) or not callable(binding_current) or not isinstance(routes, dict)
                 or not {'source.search', 'source.fetch', 'source.withdraw'} <= routes.keys()
                 or set(routes) - {'source.search', 'source.fetch', 'source.withdraw', 'source.import', 'story.search', 'story.get', 'story.history', 'story.variants',
-                    'source.fact_read','source.calendar','source.observations','story.edit','story.access','source.catalog','case.read','case.edit','case.access','case.contribute','case.conclusion','geo.identity_read','geo.members_read'}
+                    'source.fact_read','source.calendar','source.observations','story.edit','story.access','source.catalog','case.read','case.edit','case.access','case.contribute','case.conclusion','geo.identity_read','geo.members_read','source.entity_read','source.entity_list'}
                 or any(not callable(v) for v in routes.values())):
             raise ValueError('closed actual source route inventory required')
         if (type(timeout_seconds) not in (int,float) or not 0 < timeout_seconds <= 10

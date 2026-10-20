@@ -16,7 +16,9 @@ role. This path does not create private drafts or Case authority.
 
 The protected tokenizer counts the entire caller-authored body. A body above
 512 tokens is explicitly rejected; it is never truncated or replaced with a
-summary. A retained authorization object admits only that exact document job
+summary. After counting, a fresh native context rechecks role/source/revisions without
+extending the original read ticket. A retained authorization object admits
+only that exact document job
 to the existing DOCUMENT queue and shared compute resource, for at most the
 original two-second source proof. An unrelated document queued by the same
 caller gains no authorization. Polling can obtain a fresh proof for the same

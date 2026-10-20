@@ -46,6 +46,7 @@ def pair(e,*,lease_seconds=10,schema_revision=None):
         routes=routes+('source.import','story.get','story.history','story.search','story.variants',
             'source.fact_read','source.calendar','source.observations')
     if schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):routes=routes+('story.edit','story.access','source.catalog')
+    if schema_revision=='rkb-v4-sql001-011-v1':routes=routes+('source.entity_read','source.entity_list')
     async def probe(**kwargs):return b'catalog',dict(database_generation='db-source',applied_seq=pg.applied_seq)
     native=NativeSourceHistoryObserver(acquire=pg.acquire,database=database,identity=('run','nonce','inc'),registry=e.registry,
         current=lambda key:key==('run','inc',1),probe=probe,lease_seconds=lease_seconds)
