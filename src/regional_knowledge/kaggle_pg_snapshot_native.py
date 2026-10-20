@@ -29,6 +29,19 @@ class SnapshotError(RuntimeError):
     pass
 
 
+async def _blocking(call,*args,**kwargs):
+    """Cancellation is not completion of archive I/O or ownership changes."""
+    task=asyncio.create_task(asyncio.to_thread(call,*args,**kwargs));cancelled=False
+    while not task.done():
+        try:await asyncio.shield(task)
+        except asyncio.CancelledError:cancelled=True
+        except Exception:break
+    if cancelled:
+        if not task.cancelled():task.exception()
+        raise asyncio.CancelledError
+    return task.result()
+
+
 def encode(value):
     return json.dumps(value,sort_keys=True,separators=(',', ':'),ensure_ascii=False,allow_nan=False).encode()
 
@@ -106,7 +119,7 @@ class PhysicalPgTools:
     async def verify(self,run):
         for name in ('pg_basebackup','pg_verifybackup','postgres'):
             binary=getattr(self,name)
-            if await asyncio.to_thread(digest_file,binary.path,binary.size)!=(binary.size,binary.sha256):
+            if await _blocking(digest_file,binary.path,binary.size)!=(binary.size,binary.sha256):
                 raise SnapshotError('native_snapshot_binary_hash')
             output=await run(binary.path,'--version',timeout=5)
             if output.strip()!=binary.version_output or 'PostgreSQL) 17.' not in output:
@@ -180,7 +193,23 @@ def pack_tree(root,path,limits):
 def unpack_tree(path,destination,manifest,limits):
     destination.mkdir(mode=0o700)
     names=set();used=0
-    with tarfile.open(path,mode='r|') as archive:
+    counts={'headers':0,'metadata':0}
+    class BoundedTarInfo(tarfile.TarInfo):
+        def _proc_member(self,archive):
+            value=self;counts['headers']+=1
+            if (counts['headers']>limits.max_files*3+1024 or value.size<0
+                    or value.size>limits.max_unpacked_bytes):
+                raise SnapshotError('snapshot_tar_header_budget')
+            if value.type in (tarfile.XHDTYPE,tarfile.XGLTYPE,tarfile.GNUTYPE_LONGNAME,tarfile.GNUTYPE_LONGLINK,tarfile.SOLARIS_XHDTYPE):
+                counts['metadata']+=value.size
+                if value.size>65536 or counts['metadata']>8*1024*1024:
+                    raise SnapshotError('snapshot_tar_metadata_budget')
+            if value.type==tarfile.GNUTYPE_SPARSE:raise SnapshotError('snapshot_sparse_archive_forbidden')
+            return super()._proc_member(archive)
+        def _proc_gnusparse_00(self,*args):raise SnapshotError('snapshot_sparse_archive_forbidden')
+        def _proc_gnusparse_01(self,*args):raise SnapshotError('snapshot_sparse_archive_forbidden')
+        def _proc_gnusparse_10(self,*args):raise SnapshotError('snapshot_sparse_archive_forbidden')
+    with tarfile.open(path,mode='r|',tarinfo=BoundedTarInfo) as archive:
         for member in archive:
             name=member.name;parts=PurePosixPath(name).parts
             if (not parts or PurePosixPath(name).is_absolute() or any(p in ('..','.') for p in parts)
@@ -286,7 +315,7 @@ class NativeSnapshotFactory:
                     or fields['applied_seq']!=expected_sequence
                     or any(fields[k]!=versions[k] for k in ('schema_revision','function_revision','executor_revision'))):
                 raise SnapshotError('native_backup_current_prefix')
-            root=await asyncio.to_thread(self._workspace,workspace,self.limits.max_unpacked_bytes*2)
+            root=await _blocking(self._workspace,workspace,self.limits.max_unpacked_bytes*2)
             async with self.acquire() as connection:
                 async with connection.transaction():
                     await connection.execute("SET LOCAL statement_timeout='2000ms'")
@@ -306,7 +335,7 @@ class NativeSnapshotFactory:
                 '--host',self.database.socket,'--port',str(self.database.port),'--username','rkb_bootstrap',
                 timeout=self.limits.timeout_seconds)
             await self._run(self.tools.pg_verifybackup.path,str(root/'base'),timeout=self.limits.timeout_seconds)
-            records,unpacked,inventory,size,digest=await asyncio.to_thread(pack_tree,root/'base',root/'base.tar',self.limits)
+            records,unpacked,inventory,size,digest=await _blocking(pack_tree,root/'base',root/'base.tar',self.limits)
             _,after=await self.probe(acquire=self.acquire)
             self._current(binding)
             if after['applied_seq']!=expected_sequence:raise SnapshotError('native_backup_source_advanced')
@@ -368,12 +397,12 @@ class NativeSnapshotFactory:
                 or m['file_count']>self.limits.max_files):raise SnapshotError('native_restore_artifact_budget')
         if len(self._owned_candidates)>=2:raise SnapshotError('native_restore_candidate_capacity')
         await self.tools.verify(self._run)
-        root=await asyncio.to_thread(self._workspace,workspace,m['unpacked_bytes'])
+        root=await _blocking(self._workspace,workspace,m['unpacked_bytes'])
         if self.database.socket!=str(root/'socket'):raise SnapshotError('native_restore_socket_binding')
-        if await asyncio.to_thread(digest_file,archive_path,self.limits.max_archive_bytes)!=(blob.size,blob.sha256):
+        if await _blocking(digest_file,archive_path,self.limits.max_archive_bytes)!=(blob.size,blob.sha256):
             raise SnapshotError('native_restore_archive_hash')
-        await asyncio.to_thread(unpack_tree,archive_path,root/'data',m,self.limits)
-        await asyncio.to_thread(self._own_workspace,root/'data',recursive=True)
+        await _blocking(unpack_tree,archive_path,root/'data',m,self.limits)
+        await _blocking(self._own_workspace,root/'data',recursive=True)
         await self._run(self.tools.pg_verifybackup.path,str(root/'data'),timeout=self.limits.timeout_seconds)
         (root/'socket').mkdir(mode=0o700);self._own_workspace(root/'socket')
         process=await self.spawn(self.tools.postgres.path,'-D',str(root/'data'),'-k',self.database.socket,

@@ -50,6 +50,28 @@ def test_archive_extraction_refuses_unsafe_members(tmp_path,kind):
     assert not (tmp_path/'outside').exists()
 
 
+def test_archive_metadata_budget_checked_before_extended_header_read(tmp_path):
+    path=tmp_path/'metadata.tar';info=tarfile.TarInfo('extended')
+    info.type=tarfile.XHDTYPE;info.size=1024**3
+    path.write_bytes(info.tobuf())  # No giant metadata body is created/read.
+    with pytest.raises(SnapshotError,match='tar_metadata_budget'):
+        unpack_tree(path,tmp_path/'candidate',{},SnapshotLimits())
+
+
+@pytest.mark.asyncio
+async def test_archive_thread_retains_capacity_until_actual_io_completion():
+    import asyncio
+    import threading
+    started=threading.Event();finish=threading.Event()
+    def io():started.set();finish.wait(2)
+    task=asyncio.create_task(native._blocking(io))
+    await asyncio.to_thread(started.wait,1)
+    task.cancel();await asyncio.sleep(.01)
+    assert not task.done()
+    finish.set()
+    with pytest.raises(asyncio.CancelledError):await task
+
+
 def test_inventory_refuses_live_state_links_and_budget(tmp_path):
     root=backup(tmp_path);limits=SnapshotLimits()
     (root/'postmaster.pid').write_text('synthetic')
