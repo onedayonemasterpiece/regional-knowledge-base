@@ -323,8 +323,8 @@ BEGIN
   seen:=array_append(seen,item->>'passage_id');selected:='{}';page_ids:='{}';parts:='{}';last_offsets:='{}';
   FOREACH key IN ARRAY ARRAY['region_ids','footnote_region_ids','page_ids'] LOOP
    refs:=item->key;
-   IF jsonb_typeof(refs) IS DISTINCT FROM 'array' OR jsonb_array_length(refs)>CASE key WHEN 'region_ids' THEN 100
-    WHEN 'footnote_region_ids' THEN 50 ELSE 20 END
+   IF jsonb_typeof(refs) IS DISTINCT FROM 'array' OR jsonb_array_length(refs)>(CASE key WHEN 'region_ids' THEN 100
+    WHEN 'footnote_region_ids' THEN 50 ELSE 20 END)
     OR (SELECT count(DISTINCT v) FROM jsonb_array_elements(refs) v)<>jsonb_array_length(refs) THEN RETURN false;END IF;
   END LOOP;
   IF jsonb_array_length(item->'region_ids')=0 OR jsonb_array_length(item->'page_ids')=0
