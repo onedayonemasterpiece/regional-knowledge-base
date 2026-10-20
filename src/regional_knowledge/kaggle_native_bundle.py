@@ -273,19 +273,20 @@ class _Decoded:
 
 def _tar_info(counts):
     class BoundedTarInfo(tarfile.TarInfo):
-        @classmethod
-        def frombuf(cls,buf,encoding,errors):
-            value=super().frombuf(buf,encoding,errors)
+        def _proc_member(self,archive):
+            # Both Python 3.12 and 3.14 enter here before consuming extended
+            # metadata. 3.14's _fromtarfile bypasses an overridden frombuf().
             counts['headers']+=1
-            if counts['headers']>32768 or value.size>MAX_FILE_BYTES or value.size<0:
+            if counts['headers']>32768 or self.size>MAX_FILE_BYTES or self.size<0:
                 raise NativeBundleError('native_bundle_tar_bound')
-            if value.type in (tarfile.XHDTYPE,tarfile.XGLTYPE,tarfile.GNUTYPE_LONGNAME,tarfile.GNUTYPE_LONGLINK):
-                counts['metadata']+=value.size
-                if value.size>65536 or counts['metadata']>8*1024*1024:
+            if self.type in (tarfile.XHDTYPE,tarfile.XGLTYPE,tarfile.SOLARIS_XHDTYPE,
+                             tarfile.GNUTYPE_LONGNAME,tarfile.GNUTYPE_LONGLINK):
+                counts['metadata']+=self.size
+                if self.size>65536 or counts['metadata']>8*1024*1024:
                     raise NativeBundleError('native_bundle_tar_metadata_bound')
-            if value.type==tarfile.GNUTYPE_SPARSE:
+            if self.type==tarfile.GNUTYPE_SPARSE:
                 raise NativeBundleError('native_bundle_sparse_forbidden')
-            return value
+            return super()._proc_member(archive)
         def _proc_gnusparse_00(self,*args):raise NativeBundleError('native_bundle_sparse_forbidden')
         def _proc_gnusparse_01(self,*args):raise NativeBundleError('native_bundle_sparse_forbidden')
         def _proc_gnusparse_10(self,*args):raise NativeBundleError('native_bundle_sparse_forbidden')

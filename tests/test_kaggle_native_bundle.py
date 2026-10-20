@@ -370,3 +370,25 @@ def test_pinned_zstd_c_extension_window_uses_bytes_not_documented_kib(monkeypatc
     assert native._zstd_reader(None) is sentinel
     assert calls[0]['max_window_size']==128*1024*1024
     assert calls[1]['read_size']==65536 and calls[1]['read_across_frames'] and not calls[1]['closefd']
+
+
+@pytest.mark.parametrize('kind',[tarfile.XHDTYPE,tarfile.XGLTYPE,tarfile.SOLARIS_XHDTYPE,
+                                 tarfile.GNUTYPE_LONGNAME,tarfile.GNUTYPE_LONGLINK])
+def test_tar_metadata_bound_runs_before_payload_read_on_python312_and314(kind):
+    header=tarfile.TarInfo('metadata');header.type=kind;header.size=65537
+    body=header.tobuf(format=tarfile.USTAR_FORMAT)+bytes(10240)
+    class Guarded(io.BytesIO):
+        def read(self,size=-1):
+            assert 0<=size<=16384,'extended metadata read exceeded the streaming bound'
+            return super().read(size)
+    with pytest.raises(NativeBundleError,match='tar_metadata_bound'):
+        with tarfile.open(fileobj=Guarded(body),mode='r|',tarinfo=native._tar_info({'headers':0,'metadata':0})):
+            pass
+
+
+def test_sparse_tar_rejected_before_extended_sparse_processing():
+    header=tarfile.TarInfo('sparse');header.type=tarfile.GNUTYPE_SPARSE;header.size=1
+    body=header.tobuf(format=tarfile.GNU_FORMAT)+bytes(10240)
+    with pytest.raises(NativeBundleError,match='sparse_forbidden'):
+        with tarfile.open(fileobj=io.BytesIO(body),mode='r|',tarinfo=native._tar_info({'headers':0,'metadata':0})):
+            pass
