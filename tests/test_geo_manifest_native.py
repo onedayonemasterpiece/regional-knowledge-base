@@ -66,7 +66,8 @@ async def test_native_whole_manifest_atomic_activation_exact_retry_and_private_s
     for command in resolved[:-1]:assert (await apply(native,command)).status=='applied'
     # Staged immutable metadata never enters public/private output before receipt.
     sql='SELECT * FROM rkb_v4.read_geo_identity_v1(%s,%s,NULL,NULL,NULL,NULL,NULL,10)'
-    assert await(await connection.execute(sql,(uid(1),uid(10)))).fetchall()==[]
+    async with connection.transaction():
+        assert await(await connection.execute(sql,(uid(1),uid(10)))).fetchall()==[]
     final=await apply(native,resolved[-1]);assert final.status=='applied'
     duplicate=await apply(native,resolved[-1]);assert duplicate.duplicate and duplicate.outcome==final.outcome
     row=(await(await connection.execute(sql,(uid(1),uid(10)))).fetchall())[0]
