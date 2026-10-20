@@ -179,7 +179,7 @@ class KaggleCasesBackend:
             selector=selector.model_copy(update={'section':'case','draft_id':None})
         anchor,case,role=self.gate._policy(selector,authority)
         if anchor is None:raise failure('case_history_unavailable')
-        minimum=4 if doc['action']=='grant' else 3 if doc['action'] in ('revise','state') or doc['action']=='conclude' and doc['command']['make_current'] else 2
+        minimum=1 if doc['action']=='draft_save' else 4 if doc['action']=='grant' else 3 if doc['action'] in ('revise','state') or doc['action']=='conclude' and doc['command']['make_current'] else 2
         if role<minimum:raise PermissionError('current Case role required')
 
     async def _check(self,authority,context,binding,command):
@@ -188,6 +188,7 @@ class KaggleCasesBackend:
         await self.spool.authorize_command(context,command)
         self._scope(authority,command)
         anchor=self.spool._source_anchor
+        version=self.spool._source_version
         # A native/local grant change beyond this verified projection closes
         # operation receipts too. An old Case grant cannot survive until the
         # next periodic history refresh, including after its outcome is durable.
@@ -217,8 +218,9 @@ class KaggleCasesBackend:
             facts=await self.gate._facts(query,authority,anchor,case)
             if not self.gate._current(facts):raise failure('case_history_unavailable')
             if any(change.restriction for change in facts.sources.changes):raise failure('evidence_withdrawn')
-        if self.spool._writing:raise failure('prior_write_pending')
-        return self.spool._source_anchor,self.spool._source_version
+        if (self.spool._writing or self.spool._source_anchor is not anchor
+                or self.spool._source_version is not version):raise failure('prior_write_pending')
+        return anchor,version
 
     @staticmethod
     def _key(actor,operation_key):

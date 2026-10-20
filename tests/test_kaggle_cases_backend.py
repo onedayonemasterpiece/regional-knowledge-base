@@ -237,3 +237,72 @@ async def test_contribution_private_draft_and_selected_publication_preserve_exac
         final=await value.disagreement_edit('operation_status',output['operation_key'],principal)
         assert final['saved'] and final['status']=='saved' and final['outcome_durability']=='DURABLE'
         calls[0].release()
+
+
+def test_viewer_private_draft_scope_matches_native_and_verified_history():
+    from regional_knowledge.case_history import project_cases
+    from regional_knowledge.disagreement_contracts import CaseGrant,PersonalDraft
+    from regional_knowledge.case_read_gate import CaseReadGate
+    from test_case_read_gate import command
+    from test_disagreement_native import OBJECT
+    from uuid import UUID
+    owner='00000000-0000-0000-0000-000000000011'
+    viewer='00000000-0000-0000-0000-000000000012'
+    create_case=command(owner,'create',create())
+    grant=command(owner,'grant',CaseGrant(grantee=UUID(viewer),capability='viewer',reason='Synthetic Case viewer'),seq=2,case_revision=1)
+    draft=command(viewer,'draft_save',PersonalDraft(text='Own private analysis as an authorized viewer.',based_on_seq=2,
+        evidence_ids=[],position_ids=['phase-one']),seq=3)
+    projection=project_cases([(create_case,None,None),(grant,None,None)],{1:'applied',2:'applied'})
+    anchor=SimpleNamespace(case_state=projection,current=lambda:True)
+    spool=SimpleNamespace(_source_anchor=anchor)
+    gate=object.__new__(CaseReadGate);gate.spool=spool
+    backend=object.__new__(KaggleCasesBackend);backend.spool=spool;backend.gate=gate
+    backend.destination=SimpleNamespace(key='mcp:personal:synthetic')
+    authority=SimpleNamespace(person_id=viewer,auth_revision=1)
+    backend._scope(authority,draft) # native draft_save requires viewer, not contributor
+    after=project_cases([(draft,None,None)],{3:'applied'},projection)
+    assert after.cases[CASE]['drafts'][OBJECT]==dict(actor=viewer,version=1)
+    assert after.cases[CASE]['event_seq']==2 # private save cannot enter shared history
+    # The same viewer still cannot publish a shared contribution.
+    from regional_knowledge.disagreement_contracts import DraftPublication
+    publication=command(viewer,'draft_publish',DraftPublication(text_start=0,text_end=3,kind='opinion',
+        evidence_ids=[],position_ids=['phase-one']),seq=4,object_version=1)
+    spool._source_anchor=SimpleNamespace(case_state=after,current=lambda:True)
+    with pytest.raises(PermissionError):backend._scope(authority,publication)
+    with pytest.raises(ValueError,match='role history'):project_cases([(publication,None,None)],{4:'applied'},after)
+
+
+@pytest.mark.asyncio
+async def test_grant_revoke_between_restriction_lookup_and_source_facts_cannot_become_output_witness(env,auth,monkeypatch):
+    from regional_knowledge.case_history import project_cases
+    from regional_knowledge.disagreement_contracts import CaseGrant,ContributionAdd
+    from regional_knowledge.contracts import Principal
+    from regional_knowledge.participants import RequestAuthority
+    from test_case_read_gate import command
+    from uuid import UUID
+    value,principal,b=await backend(env,auth,monkeypatch)
+    actor=auth.p.other.subject;owner=auth.p.owner.subject
+    first=command(owner,'create',create())
+    manager=command(owner,'grant',CaseGrant(grantee=UUID(actor),capability='manager',reason='Synthetic manager'),seq=2,case_revision=1)
+    projection=project_cases([(first,None,None),(manager,None,None)],{1:'applied',2:'applied'})
+    env.spool._source_anchor=SimpleNamespace(database_generation='db-source',current=lambda:True,
+        case_state=projection,pending=(),applied_sequence=2)
+    authority=await auth.resolver.resolve_oauth(auth.tokens.access_token,destination=auth.destination)
+    context=RequestAuthority(Principal(subject=actor,client_id=authority.client_id,issuer=authority.issuer,access_token=''),
+        route=authority.route,link_id=authority.link_id,link_revision=authority.link_revision)
+    operation=command(actor,'contribute',ContributionAdd(kind='opinion',original_text='Synthetic own opinion.',
+        interpretation='',evidence_ids=[],position_ids=['phase-one'],reply_to=None),seq=3)
+    revoke=command(actor,'grant',CaseGrant(grantee=UUID(actor),capability=None,reason='Revoke own manager role'),seq=4,case_revision=2)
+    original=value.gate._facts;changed=False
+    async def facts_after_revoke(*args):
+        nonlocal changed
+        assert not changed
+        changed=True
+        await env.spool.stage_domain_command(context,revoke,database_generation='db-source')
+        return await original(*args)
+    monkeypatch.setattr(value.gate,'_facts',facts_after_revoke)
+    try:
+        with pytest.raises(Exception,match='prior_write_pending'):
+            await value._check(authority,context,b,operation)
+        assert changed
+    finally:auth.resolver.release(authority)

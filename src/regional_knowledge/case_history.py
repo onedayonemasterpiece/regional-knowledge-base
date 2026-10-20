@@ -34,7 +34,7 @@ def project_cases(commands,statuses,previous=None):
         state=cases.get(case_id)
         if state is None:raise ValueError('Case history has no exact creation')
         role=4 if state['owner']==actor else {'viewer':1,'contributor':2,'curator':3,'manager':4}.get(state['grants'].get(actor),0)
-        needed=4 if action=='grant' else 3 if action in ('revise','state') or action=='conclude' and op['make_current'] else 2
+        needed=1 if action=='draft_save' else 4 if action=='grant' else 3 if action in ('revise','state') or action=='conclude' and op['make_current'] else 2
         if action!='create' and role<needed:raise ValueError('accepted Case role history differs')
         if action in ('revise','state','grant','conclude') and int(command.expected_revisions['case_revision'])!=state['revision']:
             raise ValueError('accepted Case revision history differs')
