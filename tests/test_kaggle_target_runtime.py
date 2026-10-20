@@ -267,3 +267,14 @@ async def test_native_command_cancel_reaps_exact_owned_child(monkeypatch):
     await asyncio.sleep(0);running.cancel()
     with pytest.raises(asyncio.CancelledError): await running
     assert calls==['kill','wait']
+
+
+def test_verified_nonroot_native_identity_does_not_attempt_privileged_setgroups(monkeypatch):
+    import os
+    owner=OwnedPostgres(spec(fresh=True).database)
+    monkeypatch.setattr(os,'geteuid',lambda:1000)
+    monkeypatch.setattr(os,'getegid',lambda:1000)
+    monkeypatch.setattr(os,'getgroups',lambda:[1000])
+    assert owner._identity()=={}
+    monkeypatch.setattr(os,'getgroups',lambda:[1000,77])
+    with pytest.raises(Exception,match='identity_mismatch'): owner._identity()

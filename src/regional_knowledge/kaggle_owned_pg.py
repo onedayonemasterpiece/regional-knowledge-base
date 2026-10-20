@@ -100,13 +100,22 @@ class OwnedPostgres:
         self.spec, self.connect, self.spawn = spec, connect, spawn
         self.process = None
 
+    def _identity(self):
+        spec = self.spec
+        if os.geteuid() == 0:
+            return dict(user=spec.uid,group=spec.gid,extra_groups=[])
+        if (os.geteuid()!=spec.uid or os.getegid()!=spec.gid
+                or not set(os.getgroups()) <= {spec.gid}):
+            raise BootstrapUnavailable('native_pg_identity_mismatch')
+        # A Stage0-verified nonroot notebook already has the correct identity.
+        # setgroups(), even to [], would require root and fail with EPERM.
+        return {}
+
     async def _command(self, *args, timeout=30):
         spec = self.spec
-        if os.geteuid() not in (0,spec.uid) or os.geteuid()!=0 and os.getegid()!=spec.gid:
-            raise BootstrapUnavailable('native_pg_identity_mismatch')
         process = await self.spawn(*args, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            user=spec.uid, group=spec.gid, extra_groups=[])
+            **self._identity())
         try:
             async with asyncio.timeout(timeout):
                 # pg_config/initdb output is bounded; drain at most 64KiB.
@@ -171,7 +180,7 @@ class OwnedPostgres:
             '-c','work_mem=4MB','-c','maintenance_work_mem=16MB','-c','max_wal_size=64MB',
             '-c','min_wal_size=32MB',stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL,
-            user=spec.uid,group=spec.gid,extra_groups=[])
+            **self._identity())
         async with asyncio.timeout(20):
             while True:
                 if self.process.returncode is not None:
