@@ -19,24 +19,7 @@ RUN_CONFIG = {}  # Replaced in the private generated notebook, never committed.
 REVISION = '5617a9f61b028005a4858fdac845db406aefb181'
 SPACE = 'bge-m3:5617a9f:t211-tr5161:cls-l2-512:q1-d1:v1'
 
-def main():
-    config=RUN_CONFIG;started=time.monotonic();stop=threading.Event()
-    def diagnostics():
-        status=Path('/proc/self/status').read_text().splitlines()
-        values={line.split(':',1)[0]:int(line.split()[1]) for line in status if line.startswith(('VmRSS:','VmHWM:'))}
-        pss=sum(int(line.split()[1]) for line in Path('/proc/self/smaps_rollup').read_text().splitlines() if line.startswith('Pss:'))
-        cpu=os.times();return {'rss_kib':values['VmRSS'],'hwm_kib':values['VmHWM'],'pss_kib':pss,'cpu_seconds':cpu.user+cpu.system,'cpu_threads':4,'pid':os.getpid()}
-    def call(action,payload):
-        data=json.dumps({'run_id':config['run_id'],**payload}).encode()
-        request=urllib.request.Request(config['broker']+'/'+action,data=data,headers={'Authorization':'Bearer '+config['token'],'Content-Type':'application/json'},method='POST')
-        with urllib.request.urlopen(request,timeout=30) as response:return json.load(response)
-    def heartbeat():
-        while not stop.wait(20):
-            try:call('heartbeat',{'ready':False,'space':SPACE,'diagnostics':diagnostics()})
-            except urllib.error.HTTPError as error:
-                if error.code in (401,403):stop.set()
-            except (TimeoutError,OSError):pass
-    thread=threading.Thread(target=heartbeat,daemon=True);thread.start()
+def load_encoder():
     import torch
     import importlib.metadata
     versions={name:importlib.metadata.version(name) for name in ('torch','transformers','tokenizers','huggingface-hub')}
@@ -49,12 +32,43 @@ def main():
     if model.config.hidden_size!=1024:raise RuntimeError('BGE dimension mismatch')
     def encode(text):
         # Same no-prefix CLS/L2 FP32 batch1 contract for query and document.
-        tokens=tokenizer([text],padding=True,truncation=True,max_length=512,return_tensors='pt')
+        tokens=tokenizer([text],padding=True,truncation=False,return_tensors='pt')
+        if tokens['input_ids'].shape[1]>512:raise ValueError('BGE exact input exceeds 512 tokens')
         with torch.inference_mode():
             hidden=model(**tokens).last_hidden_state[:,0,:]
             result=torch.nn.functional.normalize(hidden,p=2,dim=1).float()[0].tolist()
         return result
     encode('readiness')
+    return encode
+
+def main():
+    config=RUN_CONFIG;started=time.monotonic();stop=threading.Event()
+    def diagnostics():
+        status=Path('/proc/self/status').read_text().splitlines()
+        values={line.split(':',1)[0]:int(line.split()[1]) for line in status if line.startswith(('VmRSS:','VmHWM:'))}
+        pss=sum(int(line.split()[1]) for line in Path('/proc/self/smaps_rollup').read_text().splitlines() if line.startswith('Pss:'))
+        cpu=os.times();return {'rss_kib':values['VmRSS'],'hwm_kib':values['VmHWM'],'pss_kib':pss,'cpu_seconds':cpu.user+cpu.system,'cpu_threads':4,'pid':os.getpid()}
+    if config.get('transport')=='wss':
+        try:
+            run_wss_worker(config,load_encoder,diagnostics)
+        finally:
+            Path('/kaggle/working/bge-run-summary.json').write_text(json.dumps({
+                'run_id':config['run_id'],'space':SPACE,'transport':'wss',
+                'worker_wall_seconds':time.monotonic()-started,
+                'cooperative_worker_exit':True,'provider_termination_verified':False}))
+        return
+    def call(action,payload):
+        data=json.dumps({'run_id':config['run_id'],**payload}).encode()
+        request=urllib.request.Request(config['broker']+'/'+action,data=data,headers={'Authorization':'Bearer '+config['token'],'Content-Type':'application/json'},method='POST')
+        with urllib.request.urlopen(request,timeout=30) as response:return json.load(response)
+    def heartbeat():
+        while not stop.wait(20):
+            try:call('heartbeat',{'ready':False,'space':SPACE,'diagnostics':diagnostics()})
+            except urllib.error.HTTPError as error:
+                if error.code in (401,403):stop.set()
+            except (TimeoutError,OSError):pass
+    thread=threading.Thread(target=heartbeat,daemon=True);thread.start()
+    encode=load_encoder()
     ready=time.monotonic()-started
     call('heartbeat',{'ready':True,'space':SPACE,'model_revision':REVISION,'diagnostics':{'startup_seconds':ready,**diagnostics()}})
     print(json.dumps({'event':'bge_ready','run_id':config['run_id'],'space':SPACE,'startup_seconds':ready,'cpu_threads':4}),flush=True)
@@ -77,5 +91,7 @@ def main():
     finally:
         stop.set()
         open('/kaggle/working/bge-run-summary.json','w').write(json.dumps({'run_id':config['run_id'],'space':SPACE,'startup_seconds':ready,'worker_wall_seconds':time.monotonic()-started,'cpu_only':True}))
+
+# WSS_TRANSPORT_HELPER
 
 if __name__=='__main__':main()

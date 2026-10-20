@@ -74,6 +74,27 @@ def reconcile_launch(api, queue, run, ref):
     queue.launch_record(run['id'],ref,provider_version=observed['version'])
     return True
 
+def worker_source(template, queue, run_id, token, broker, *, transport='http'):
+    """Build private launch bytes once; no provider call or inferred version."""
+    if transport not in ('http','wss'):
+        raise ValueError('unsupported BGE transport')
+    config={'run_id':run_id,'token':token,'broker':broker}
+    if transport=='wss':
+        from urllib.parse import urlsplit,urlunsplit
+        url=urlsplit(broker)
+        if (url.scheme!='https' or not url.hostname or url.port not in (None,443)
+                or url.username or url.password or url.query or url.fragment):
+            raise ValueError('HTTPS/443 worker authority required')
+        config.update(transport='wss',launch_nonce=queue.prepare_channel(run_id),
+                      channel=urlunsplit(('wss',url.netloc,url.path.rstrip('/')+'/channel','','')))
+        helper=Path(__file__).with_name('bge_wss_transport.py').read_text()
+        if template.count('# WSS_TRANSPORT_HELPER')!=1:
+            raise ValueError('WSS worker template slot missing')
+        template=template.replace('# WSS_TRANSPORT_HELPER',helper,1)
+    if template.count('RUN_CONFIG = {}')!=1:
+        raise ValueError('worker config slot missing')
+    return template.replace('RUN_CONFIG = {}','RUN_CONFIG = '+repr(config),1)
+
 def main():
     logging.basicConfig(level=logging.INFO)
     for line in Path('/home/dev/.env').read_text().splitlines():
@@ -96,8 +117,8 @@ def main():
                     token=queue.launch_claim(run_id,provider_ref=ref)
                     if token is None:continue
                     folder=state/run_id;folder.mkdir(mode=0o700,exist_ok=True)
-                    config={'run_id':run_id,'token':token,'broker':broker}
-                    source=template.replace('RUN_CONFIG = {}', 'RUN_CONFIG = '+repr(config),1)
+                    source=worker_source(template,queue,run_id,token,broker,
+                                         transport=os.getenv('RKB_BGE_TRANSPORT','http'))
                     (folder/'main.py').write_text(source);(folder/'main.py').chmod(0o600)
                     metadata={'id':ref,'title':slug,'code_file':'main.py','language':'python','kernel_type':'script','is_private':True,'enable_gpu':False,'enable_tpu':False,'enable_internet':True,'dataset_sources':[],'competition_sources':[],'kernel_sources':[]}
                     (folder/'kernel-metadata.json').write_text(json.dumps(metadata));(folder/'kernel-metadata.json').chmod(0o600)

@@ -174,6 +174,9 @@ class KnowledgeMCPServer(MCPServer):
                         endpoint=cors_middleware(self._auth_server_provider.revoke_endpoint, ["POST", "OPTIONS"]),
                         methods=["POST", "OPTIONS"],
                     )
+        channel = getattr(self, '_bge_channel_route', None)
+        if channel is not None:
+            app.routes.append(channel)
         return app
 
 
@@ -337,7 +340,10 @@ def build_server(
     if os.getenv('RKB_BGE_QUEUE_PATH'):
         from .bge_queue import BgeQueue
         from .bge_broker import register_routes
-        register_routes(mcp,BgeQueue(os.environ['RKB_BGE_QUEUE_PATH']))
+        from .bge_channel import channel_route
+        worker_queue = BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
+        register_routes(mcp,worker_queue)
+        mcp._bge_channel_route = channel_route(worker_queue)
 
     @mcp.custom_route("/fast-tier/health", methods=["GET"])
     async def fast_tier_health(request: Request):
