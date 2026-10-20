@@ -7,6 +7,7 @@ import contextlib
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -30,6 +31,7 @@ DONE_AUDIT_RETENTION_SECONDS = 24 * 3600
 _WAITERS = {}
 _WAITERS_LOCK = threading.Lock()
 RECONCILE_SECONDS = 0.25
+_LOG = logging.getLogger(__name__)
 
 
 class StaleClaim(PermissionError):
@@ -38,6 +40,19 @@ class StaleClaim(PermissionError):
 
 class RevokedRun(PermissionError):
     """The run has no current worker authority."""
+
+
+class StaleAttachment(PermissionError):
+    """The run is authenticated but this dispatch attachment has no authority."""
+
+
+class AttachmentConflict(StaleAttachment):
+    """Competing runtime incarnations permanently fenced this run's dispatch."""
+
+
+class AttachmentBusy(StaleAttachment):
+    """A legacy HTTP assignment must finish before the first WSS attachment."""
+
 
 class BgeQueue:
     def __init__(self, path, *, clock=time.time):
@@ -66,16 +81,29 @@ class BgeQueue:
               unique(actor,idempotency));
             create index if not exists bge_pending on jobs(state,kind,created);
             ''')
+            # executescript ends its caller's transaction. Serialize additive
+            # migrations explicitly, including concurrent first-time openers.
+            db.execute('begin immediate')
             if 'diagnostics' not in {row['name'] for row in db.execute('pragma table_info(runs)')}:
                 db.execute("alter table runs add column diagnostics text not null default '{}'")
             if 'provider_version' not in {row['name'] for row in db.execute('pragma table_info(runs)')}:
                 db.execute('alter table runs add column provider_version integer')
+            columns={row['name'] for row in db.execute('pragma table_info(runs)')}
+            for name,definition in (
+                ('launch_nonce','text'),
+                ('runtime_incarnation','text'),
+                ('connection_generation','integer not null default 0'),
+                ('channel_active','integer not null default 0'),
+                ('attachment_conflict','integer not null default 0'),
+            ):
+                if name not in columns:
+                    db.execute(f'alter table runs add column {name} {definition}')
         self.path.chmod(0o600)
 
     def _schema_current(self):
         try:
             with self.connect(write=False) as db:
-                db.execute('select id,status,token_hash,started,heartbeat,useful,ready_at,provider_ref,launch_state,diagnostics,provider_version from runs limit 0')
+                db.execute('select id,status,token_hash,started,heartbeat,useful,ready_at,provider_ref,launch_state,diagnostics,provider_version,launch_nonce,runtime_incarnation,connection_generation,channel_active,attachment_conflict from runs limit 0')
                 if db.execute('select current_run,successor from control where id=1').fetchone() is None:
                     return False
                 db.execute('select id,actor,idempotency,kind,texts,identity,state,created,updated,run_id,claim,lease_until,result,attempt from jobs limit 0')
@@ -195,10 +223,103 @@ class BgeQueue:
             raise RevokedRun('invalid or stale BGE worker')
         return run
 
-    def heartbeat(self, run_id, token, *, ready=False, diagnostics=None):
+    @staticmethod
+    def _dispatch_authorize(run, connection_generation):
+        if run['attachment_conflict']:
+            raise AttachmentConflict('conflicting BGE runtime incarnations')
+        if connection_generation is None:
+            if run['connection_generation']:
+                raise StaleAttachment('BGE run dispatch belongs to WSS')
+        elif (type(connection_generation) is not int
+              or connection_generation < 1
+              or run['connection_generation'] != connection_generation
+              or not run['channel_active']):
+            raise StaleAttachment('stale BGE connection generation')
+
+    def prepare_channel(self, run_id):
+        """Persist launch intent before provider push; trusted controller only."""
+        with self.connect() as db:
+            run=db.execute('select * from runs where id=?',(run_id,)).fetchone()
+            if (not run or run['status']!='starting'
+                    or run['launch_state'] not in ('pending','dispatching')
+                    or self._run_expired(run,self.clock())):
+                raise ValueError('BGE run is not eligible for channel preparation')
+            nonce=run['launch_nonce'] or secrets.token_urlsafe(32)
+            db.execute('update runs set launch_nonce=? where id=?',(nonce,run_id))
+            return nonce
+
+    def attach_channel(self, run_id, token, launch_nonce, runtime_incarnation):
+        """Bind an observed runtime identity and fence previous socket authority.
+
+        The worker's incarnation is an authenticated claim, not native provider
+        execution proof. A competing claim commits its fence before we raise.
+        """
+        now=self.clock();conflict=False
+        with self.connect() as db:
+            run=self._authorize(db,run_id,token,now)
+            if self._run_expired(run,now):
+                raise RevokedRun('invalid or stale BGE worker')
+            if (not isinstance(launch_nonce,str) or not run['launch_nonce']
+                    or not secrets.compare_digest(run['launch_nonce'].encode(),launch_nonce.encode())):
+                raise StaleAttachment('invalid BGE launch nonce')
+            if not isinstance(runtime_incarnation,str) or not 1<=len(runtime_incarnation)<=256:
+                raise ValueError('invalid BGE runtime incarnation')
+            if run['attachment_conflict']:
+                raise AttachmentConflict('conflicting BGE runtime incarnations')
+            if run['runtime_incarnation'] and run['runtime_incarnation']!=runtime_incarnation:
+                db.execute('update runs set attachment_conflict=1,channel_active=0 where id=?',(run_id,))
+                conflict=True
+            else:
+                if not run['connection_generation'] and db.execute(
+                    "select 1 from jobs where run_id=? and state='claimed' and lease_until>?",
+                    (run_id,now),
+                ).fetchone():
+                    raise AttachmentBusy('BGE HTTP assignment is still active')
+                generation=run['connection_generation']+1
+                db.execute('update runs set runtime_incarnation=?,connection_generation=?,channel_active=1 where id=?',
+                           (runtime_incarnation,generation,run_id))
+                result={'connection_generation':generation,
+                        'provider_version':str(run['provider_version']) if run['provider_version'] is not None else None}
+        if conflict:
+            _LOG.warning('bge_attachment_conflict run_id=%s dispatch_fenced=true',run_id)
+            raise AttachmentConflict('conflicting BGE runtime incarnations')
+        _LOG.info('bge_attachment_active run_id=%s connection_generation=%s',run_id,generation)
+        return result
+
+    def channel_status(self, run_id, token, connection_generation):
+        """Observe authoritative readiness without lease or expiry writes."""
+        now=self.clock()
+        with self.connect(write=False) as db:
+            run=self._authorize(db,run_id,token,now)
+            self._dispatch_authorize(run,connection_generation)
+            if connection_generation is None:
+                raise StaleAttachment('BGE channel generation required')
+            if self._run_expired(run,now):
+                raise RevokedRun('invalid or stale BGE worker')
+            provider_version=str(run['provider_version']) if run['provider_version'] is not None else None
+            return {'state':run['status'],
+                    'ready':run['status']=='ready' and provider_version is not None,
+                    'provider_version':provider_version,
+                    'connection_generation':run['connection_generation'],
+                    'active':bool(run['channel_active'])}
+
+    def detach_channel(self, run_id, token, connection_generation):
+        """Drop only this active socket; never grant HTTP ownership on loss."""
+        with self.connect() as db:
+            run=self._authorize(db,run_id,token,self.clock())
+            if (type(connection_generation) is not int or connection_generation<1
+                    or run['connection_generation']!=connection_generation
+                    or not run['channel_active']):
+                return False
+            db.execute('update runs set channel_active=0 where id=?',(run_id,))
+            return True
+
+    def heartbeat(self, run_id, token, *, ready=False, diagnostics=None, connection_generation=None):
         now=self.clock()
         with self.connect() as db:
             self._expire(db,now);run=self._authorize(db,run_id,token,now)
+            if connection_generation is not None:
+                self._dispatch_authorize(run,connection_generation)
             db.execute('update runs set heartbeat=? where id=?',(now,run_id))
             if diagnostics is not None:
                 if not isinstance(diagnostics,dict):raise ValueError('BGE diagnostics type')
@@ -218,10 +339,13 @@ class BgeQueue:
                     db.execute('update control set current_run=?,successor=null where id=1',(run_id,))
             return self._status(db,now)
 
-    def claim(self, run_id, token):
+    def claim(self, run_id, token, *, connection_generation=None):
         now=self.clock()
         with self.connect() as db:
             self._expire(db,now);run=self._authorize(db,run_id,token,now)
+            self._dispatch_authorize(run,connection_generation)
+            if connection_generation is not None and run['provider_version'] is None:
+                return None
             db.execute('update runs set heartbeat=? where id=?',(now,run_id))
             if run['status']!='ready' or db.execute("select 1 from jobs where run_id=? and state='claimed'",(run_id,)).fetchone():return None
             job=db.execute("select * from jobs where state='pending' order by case kind when 'query' then 0 else 1 end,created,id limit 1").fetchone()
@@ -231,15 +355,20 @@ class BgeQueue:
             db.execute('update runs set useful=? where id=?',(now,run_id))
             return {'id':job['id'],'claim':claim,'kind':job['kind'],'texts':json.loads(job['texts']),'space':SPACE}
 
-    def complete(self, run_id, token, job_id, claim, space, vectors, timings):
+    def complete(self, run_id, token, job_id, claim, space, vectors, timings, *, connection_generation=None):
         if space!=SPACE or len(vectors)!=1:raise ValueError('BGE result space/batch mismatch')
         vectors=[validate_vector(vector) for vector in vectors];now=self.clock()
         safe_times={key:float(timings[key]) for key in ('encoder_seconds',) if key in timings}
         with self.connect() as db:
-            self._expire(db,now);self._authorize(db,run_id,token,now)
+            self._expire(db,now);run=self._authorize(db,run_id,token,now)
+            self._dispatch_authorize(run,connection_generation)
             job=db.execute('select * from jobs where id=?',(job_id,)).fetchone()
             if not job or job['run_id']!=run_id or job['claim']!=claim:raise StaleClaim('late/stale BGE result')
-            if job['state']=='done':return 'duplicate'
+            if job['state']=='done':
+                previous=json.loads(job['result'])
+                if previous['space']!=space or previous['vectors']!=vectors:
+                    raise ValueError('BGE completion payload mismatch')
+                return 'duplicate'
             if job['state']!='claimed' or now>=job['lease_until']:raise StaleClaim('expired BGE job')
             result={'space':SPACE,'vectors':vectors,'queue_seconds':max(0,job['updated']-job['created']),**safe_times}
             db.execute("update jobs set state='done',result=?,updated=? where id=?",(json.dumps(result),now,job_id))
