@@ -3,12 +3,13 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime,timezone
 import json
+import hashlib
 import logging
 import os
 from pathlib import Path
 import stat
 
-from .control_spool import SpoolError,SpoolConflict
+from .control_spool import SpoolError,SpoolConflict,_database
 from .geo_inventory import GeoInventoryObservation,geo_watermark
 from .geo_migration import GeoMigrationManifest,canonical
 from .geo_manifest_commands import plan_geo_manifest
@@ -20,14 +21,16 @@ _LOG=logging.getLogger(__name__)
 class SourceGeoInstallConfig:
     manifest_path:str
     manifest_sha256:str
+    legacy_source_path:str
 
     def __post_init__(self):
         if (type(self.manifest_path) is not str or not Path(self.manifest_path).is_absolute()
+                or type(self.legacy_source_path) is not str or not Path(self.legacy_source_path).is_absolute()
                 or type(self.manifest_sha256) is not str or len(self.manifest_sha256)!=64
                 or set(self.manifest_sha256)-set('0123456789abcdef')):
             raise ValueError('private GEO manifest path and exact canonical SHA required')
 
-    def wire(self):return dict(manifest_path=self.manifest_path,manifest_sha256=self.manifest_sha256)
+    def wire(self):return dict(manifest_path=self.manifest_path,manifest_sha256=self.manifest_sha256,legacy_source_path=self.legacy_source_path)
 
     @classmethod
     def from_wire(cls,value):
@@ -67,7 +70,7 @@ class SourceGeoInstaller:
         if startup.config.geo_manifest_operation_keys!=self.keys:
             raise ValueError('exact ordered configured GEO bootstrap keys required')
         self.expected_watermark=geo_watermark(self.manifest)
-        self.inventory=GeoInventoryObservation(startup.config.participants.corpus.path)
+        self.inventory=GeoInventoryObservation(config.legacy_source_path)
         self.task=None;self.complete=False;self.closed=False;self.commands=None;self.command_identity=None
         self.plan_json=canonical(dict(config=config.wire(),operation_keys=self.keys,
             index_sha256=self.plan.index_sha256,source_watermark=self.expected_watermark)).decode()
@@ -76,11 +79,124 @@ class SourceGeoInstaller:
                 id INTEGER PRIMARY KEY CHECK(id=1),plan_json TEXT NOT NULL,database_generation TEXT NOT NULL,
                 person_id TEXT NOT NULL,first_sequence INTEGER NOT NULL,logical_time TEXT NOT NULL,
                 state TEXT NOT NULL CHECK(state IN ('prepared','complete')))''')
+            db.execute('''CREATE TABLE IF NOT EXISTS rkb_geo_legacy_retirement(
+                id INTEGER PRIMARY KEY CHECK(id=1),receipt_json TEXT NOT NULL)''')
+            db.execute('''CREATE TRIGGER IF NOT EXISTS rkb_geo_retirement_immutable
+                BEFORE UPDATE ON rkb_geo_legacy_retirement
+                BEGIN SELECT RAISE(ABORT,'immutable legacy GEO cutover receipt'); END''')
+            db.execute('''CREATE TRIGGER IF NOT EXISTS rkb_geo_retirement_nodelete
+                BEFORE DELETE ON rkb_geo_legacy_retirement
+                BEGIN SELECT RAISE(ABORT,'retained legacy GEO cutover receipt'); END''')
+            row=db.execute('SELECT receipt_json FROM rkb_geo_legacy_retirement WHERE id=1').fetchone()
+            self.retirement=json.loads(row[0]) if row else None
+        if self.retirement is not None:self._validate_retirement(self.retirement)
 
     def current(self):
         return bool(not self.closed and self.complete and self.startup.reads_current()
-            and self.inventory.current(self.expected_watermark)
+            and (self._retirement_current() if self.retirement is not None else self.inventory.current(self.expected_watermark))
             and self.startup.geo_gate.installation_current(self.startup.binding,self.keys))
+
+    def _validate_retirement(self,receipt):
+        expected=dict(codec='rkb.geo-legacy-retirement.v1',plan_sha256=hashlib.sha256(self.plan_json.encode()).hexdigest(),
+            legacy_source_path=self.config.legacy_source_path,source_watermark=self.expected_watermark,
+            manifest_sha256=self.manifest.sha256,operation_keys=list(self.keys),person_id=self.spool.participants.owner)
+        if (type(receipt) is not dict or any(receipt.get(k)!=v for k,v in expected.items())
+                or set(receipt)!=set(expected)|{'database_generation','writer_generation','run_id','logical_time',
+                    'activation_sequence','activation_operation_key','activation_command_sha256','verified_applied_sequence','journal_head'}
+                or type(receipt.get('activation_sequence')) is not int or receipt['activation_sequence']<1
+                or type(receipt.get('verified_applied_sequence')) is not int
+                or receipt['verified_applied_sequence']<receipt['activation_sequence']):
+            raise SpoolConflict('retained legacy GEO cutover receipt differs')
+
+    def _load_retirement(self):
+        with self.queue.connect(write=False) as db:
+            row=db.execute('SELECT receipt_json FROM rkb_geo_legacy_retirement WHERE id=1').fetchone()
+            value=json.loads(row[0]) if row else None
+        if value is not None:self._validate_retirement(value)
+        self.retirement=value
+        return value
+
+    def _retirement_current(self):
+        receipt=self.retirement;proof=self.startup.geo_gate._manifest
+        try:
+            self._validate_retirement(receipt)
+            return bool(proof is not None and receipt['database_generation']==self.startup.binding.database_generation
+                and (receipt['manifest_sha256'],receipt['activation_sequence'],receipt['activation_operation_key'],
+                    receipt['activation_command_sha256'])==(proof.manifest_id,proof.activation_sequence,proof.operation,proof.command_sha256)
+                and self.startup.geo_gate.installation_current(self.startup.binding,self.keys))
+        except Exception:return False
+
+    def _retire_legacy(self,context,binding,head):
+        # The operator first quiesces the actual old writer processes. SQLite
+        # exclusion proves the final logical point; no caller boolean is proof.
+        import sqlite3
+        path=Path(self.config.legacy_source_path)
+        if path.resolve(strict=True)!=path or not path.is_file():raise SpoolConflict('explicit legacy source required')
+        db=sqlite3.connect(path.as_uri()+'?mode=rw',uri=True,timeout=.25)
+        try:
+            db.execute('PRAGMA busy_timeout=250');db.execute('BEGIN IMMEDIATE')
+            self.inventory.refresh(self.expected_watermark)
+            if not self._source_ready(binding) or not self.startup.geo_gate.installation_current(binding,self.keys):
+                raise SpoolConflict('current native GEO activation required')
+            proof=self.startup.geo_gate._manifest
+            if self.spool.participants.require(context,'import')!=self.spool.participants.owner:
+                raise SpoolConflict('current canonical owner required')
+            if not self.startup.config.writer_current(database_generation=binding.database_generation,
+                    writer_generation=self.startup.config.writer_generation):raise SpoolConflict('current writer required')
+            receipt=dict(codec='rkb.geo-legacy-retirement.v1',
+                plan_sha256=hashlib.sha256(self.plan_json.encode()).hexdigest(),
+                legacy_source_path=self.config.legacy_source_path,source_watermark=self.expected_watermark,
+                manifest_sha256=self.manifest.sha256,operation_keys=list(self.keys),person_id=self.spool.participants.owner,
+                database_generation=binding.database_generation,writer_generation=self.startup.config.writer_generation,
+                run_id=binding.run_id,logical_time=datetime.now(timezone.utc).isoformat(),
+                activation_sequence=proof.activation_sequence,activation_operation_key=proof.operation,
+                activation_command_sha256=proof.command_sha256,
+                verified_applied_sequence=self.startup.coverage.applied_sequence,
+                journal_head=head.reference.wire())
+            self._validate_retirement(receipt)
+            with self.queue.connect() as queue_db:
+                # Queue write exclusion also prevents a concurrent run-pointer
+                # transition between the final writer check and receipt commit.
+                if not self._source_ready(binding) or not self.startup.config.writer_current(
+                        database_generation=binding.database_generation,writer_generation=self.startup.config.writer_generation):
+                    raise SpoolConflict('current writer changed before legacy cutover commit')
+                metadata=queue_db.execute('SELECT * FROM rkb_geo_bootstrap WHERE id=1').fetchone()
+                if (metadata is None or metadata['state']!='complete' or metadata['plan_json']!=self.plan_json
+                        or metadata['database_generation']!=binding.database_generation):raise SpoolConflict('completed exact GEO plan required')
+                rows=queue_db.execute('SELECT operation_key,seal_state,apply_state,outcome_state FROM rkb_control_operations '
+                    'WHERE operation_key IN ('+','.join('?' for _ in self.keys)+')',self.keys).fetchall()
+                if len(rows)!=len(self.keys) or any(tuple(row)[1:]!=('ACCEPTED','APPLIED','DURABLE') for row in rows):
+                    raise SpoolConflict('all exact GEO outcomes must be durable')
+                queue_db.execute('INSERT INTO rkb_geo_legacy_retirement VALUES(1,?)',(canonical(receipt).decode(),))
+            self.retirement=receipt
+            self.inventory.close()
+            return receipt
+        finally:
+            db.rollback();db.close()
+
+    async def finalize_legacy(self,context):
+        """LOCAL operator only, after quiescing actual legacy writer processes.
+
+        Not exposed over MCP/HTTP. A receipt retires only the old-source watch;
+        current native activation/history/owner/writer fences remain required.
+        """
+        binding=self.startup.binding
+        async with self.spool._lock:
+            await self.spool._authorize(context)
+            await _database(self._load_retirement)
+            if self.retirement is not None:
+                if not self._retirement_current():raise SpoolConflict('retained native activation changed')
+                return self.retirement
+            if not self.current():raise SpoolConflict('completed current GEO migration required')
+            async with self.startup.config.writer_owner(self.startup.config.writer_generation):
+                head=await self.spool.journal.head()
+                if head is None or head.reference.last_sequence<self.startup.geo_gate._manifest.activation_sequence:
+                    raise SpoolConflict('exact accepted GEO prefix required')
+                # Drain cancellation before releasing spool/writer/SQLite locks.
+                receipt=await _database(self._retire_legacy,context,binding,head)
+                self.retirement=receipt
+                await asyncio.to_thread(self.inventory.close)
+                return receipt
 
     def _context(self):
         policy=self.startup.config.oauth_provider.personal_policy
@@ -156,6 +272,10 @@ class SourceGeoInstaller:
         """One bounded continuation. Every effect uses its original durable key."""
         if self.closed or not self._source_ready(binding):return False
         if self.current():return True
+        await _database(self._load_retirement)
+        if self.retirement is not None:
+            self.complete=self._retirement_current()
+            return self.current()
         async with asyncio.timeout(10):
             source_current=True
             try:await asyncio.to_thread(self.inventory.refresh,self.expected_watermark)

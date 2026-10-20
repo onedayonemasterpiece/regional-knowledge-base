@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 from dataclasses import replace
+from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -66,7 +67,7 @@ async def installation(target,tmp_path):
     t=target;data,manifest=populate(t.auth.p.registry.corpus)
     directory=tmp_path/'private';directory.mkdir(mode=0o700)
     path=directory/'manifest.json';path.write_bytes(canonical(manifest.wire())+b'\n');path.chmod(0o600)
-    config=SourceGeoInstallConfig(str(path),manifest.sha256)
+    config=SourceGeoInstallConfig(str(path),manifest.sha256,str(t.auth.p.registry.corpus.path))
     keys=tuple('geo-bootstrap11:'+manifest.sha256+':'+str(n) for n in range(len(plan_geo_manifest(manifest).payloads)))
     registry=HandlerRegistry([geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256='a'*64,apply_sha256='b'*64)])
     spool=ControlSpool(t.queue,t.auth.p.registry,RecoveryJournal(ConditionalMemoryStore(),stream='geo-install-unit'),registry)
@@ -79,6 +80,17 @@ async def installation(target,tmp_path):
     startup.gate=SimpleNamespace(graph_supported=lambda:True)
     startup.geo_gate=GeoReadGate(t.auth.resolver,spool,binding_current=startup.binding_current)
     startup.source_dispatch=AcceptedSourceDispatch(spool,binding_current=lambda **v:startup.snapshot.verified)
+    class Writer:
+        held=False
+        @asynccontextmanager
+        async def __call__(self,generation):
+            assert generation=='writer-1'
+            self.held=True
+            try:yield
+            finally:self.held=False
+    startup.config.writer_owner=Writer()
+    startup.config.writer_current=lambda **values:startup.snapshot.verified and values==dict(
+        database_generation=startup.binding.database_generation,writer_generation='writer-1')
     coverage(startup)
     owner=SourceGeoInstaller(startup,config);startup.geo_installer=owner
     yield SimpleNamespace(t=t,data=data,manifest=manifest,owner=owner,startup=startup,spool=spool,config=config,keys=keys)
@@ -187,9 +199,9 @@ def test_private_manifest_config_rejects_unknown_fields_and_public_or_symlink_in
     directory=tmp_path/'private';directory.mkdir(mode=0o700)
     manifest=build_geo_whitelist(**snapshot()).require_ready();path=directory/'manifest.json'
     path.write_bytes(canonical(manifest.wire()));path.chmod(0o644)
-    with pytest.raises(ValueError):read_manifest(SourceGeoInstallConfig(str(path),manifest.sha256))
+    with pytest.raises(ValueError):read_manifest(SourceGeoInstallConfig(str(path),manifest.sha256,str(tmp_path/'legacy.sqlite')))
     path.chmod(0o600);link=directory/'linked.json';link.symlink_to(path)
-    with pytest.raises(ValueError):read_manifest(SourceGeoInstallConfig(str(link),manifest.sha256))
+    with pytest.raises(ValueError):read_manifest(SourceGeoInstallConfig(str(link),manifest.sha256,str(tmp_path/'legacy.sqlite')))
 
 
 def test_ro_geo_watermark_rechecks_unrelated_commits_but_rejects_required_geo_drift(people):
@@ -232,7 +244,7 @@ async def test_real_source_owner_composition_retains_fixed_installer_and_waits_s
         object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),stream=e.j.stream,registry=registry,
         history_adapter=history,run_id=e.run,database_generation='synthetic-db',writer_generation='writer-1',
         source_snapshot=snapshot_config,geo_manifest_operation_keys=keys,
-        geo_bootstrap=SourceGeoInstallConfig(str(path),manifest.sha256))
+        geo_bootstrap=SourceGeoInstallConfig(str(path),manifest.sha256,str(e.auth.p.registry.corpus.path)))
     try:
         assert startup.geo_installer.startup is startup
         assert startup.geo_installer.spool is startup.source_dispatch.spool is startup.config.spool
@@ -244,3 +256,102 @@ async def test_real_source_owner_composition_retains_fixed_installer_and_waits_s
     finally:
         await startup.geo_installer.aclose();await startup.snapshot.aclose()
         await startup.source_dispatch.aclose();startup.config.spool.close();startup.config.writer_owner.close()
+
+
+async def finish_migration(s):
+    s.startup.snapshot.verified=True
+    await s.owner.advance(s.startup.binding)
+    for index,key in enumerate(s.keys):
+        if index:await s.owner.advance(s.startup.binding)
+        entry=await s.spool.get(key)
+        await s.spool.record_apply(key,receipt(entry.command,database=s.startup.binding.database_generation))
+        await s.spool.publish_outcome(key,writer_generation='writer-1')
+    coverage(s.startup,len(s.keys),len(s.keys))
+    await s.startup.geo_gate.establish(s.keys,binding=s.startup.binding)
+    assert await s.owner.advance(s.startup.binding)
+
+
+@pytest.mark.asyncio
+async def test_owner_final_cutover_retires_explicit_legacy_watch_and_restart_without_old_file(installation,tmp_path):
+    s=installation
+    with pytest.raises(SpoolConflict,match='completed current'):await s.owner.finalize_legacy(s.owner._context())
+    await finish_migration(s)
+    result=await s.owner.finalize_legacy(s.owner._context())
+    assert result['legacy_source_path']==s.config.legacy_source_path
+    assert result['source_watermark']==geo_watermark(s.manifest)
+    assert result['operation_keys']==list(s.keys)
+    assert result['activation_sequence']==len(s.keys)
+    assert result['activation_command_sha256']==(await s.spool.get(s.keys[-1])).command_sha256
+    assert s.owner.inventory.db is None and s.owner.current()
+    assert await s.owner.finalize_legacy(s.owner._context())==result
+    await s.owner.aclose()
+    # Auth corpus is a separate retained authority; only the explicitly selected
+    # old source disappears. Constructor and resumed current proof never open it.
+    old=Path(s.config.legacy_source_path);old.rename(old.with_suffix('.retired'))
+    other=SourceGeoInstaller(s.startup,s.config);s.startup.geo_installer=other
+    try:
+        assert await other.advance(s.startup.binding)
+        assert other.inventory.db is None and TargetServiceStartup.imports_current(s.startup)
+        s.startup.geo_gate.invalidate()
+        assert not other.current() and not await other.advance(s.startup.binding)
+    finally:await other.aclose()
+
+
+@pytest.mark.asyncio
+async def test_final_cutover_rejects_busy_source_and_changed_geo_and_stale_writer(installation):
+    import sqlite3
+    s=installation;await finish_migration(s)
+    lock=sqlite3.connect(s.config.legacy_source_path);lock.execute('BEGIN IMMEDIATE')
+    try:
+        with pytest.raises(sqlite3.OperationalError,match='locked'):
+            await s.owner.finalize_legacy(s.owner._context())
+        assert s.owner._load_retirement() is None
+    finally:lock.rollback();lock.close()
+    s.startup.config.writer_current=lambda **values:False
+    with pytest.raises(SpoolConflict,match='current writer'):await s.owner.finalize_legacy(s.owner._context())
+    assert s.owner._load_retirement() is None
+    s.startup.config.writer_current=lambda **values:True
+    s.t.auth.p.registry.corpus.put('rkb_entities',[dict(s.data['entities'][0],canonical_label='Changed before cutover')])
+    with pytest.raises(SpoolConflict):await s.owner.finalize_legacy(s.owner._context())
+    assert s.owner._load_retirement() is None
+
+
+@pytest.mark.asyncio
+async def test_private_legacy_path_is_independent_of_participants_auth_database(installation,tmp_path):
+    s=installation
+    from regional_knowledge.sqlite_corpus import SQLiteCorpus
+    legacy=SQLiteCorpus(tmp_path/'old-source.sqlite');populate(legacy)
+    explicit=replace(s.config,legacy_source_path=str(legacy.path))
+    owner=SourceGeoInstaller(s.startup,explicit)
+    try:
+        assert owner.inventory.path==legacy.path!=s.startup.config.participants.corpus.path
+        assert owner.inventory.db is None
+        assert owner.inventory.refresh(owner.expected_watermark)==owner.expected_watermark
+    finally:await owner.aclose()
+
+
+@pytest.mark.asyncio
+async def test_final_cutover_cancellation_drains_committed_receipt_before_owner_unlock(installation,monkeypatch):
+    import threading
+    s=installation;await finish_migration(s)
+    with pytest.raises(Exception):await s.owner.finalize_legacy(replace(s.owner._context(),route='personal'))
+    assert s.owner._load_retirement() is None
+    committed=threading.Event();release=threading.Event();original=s.owner._retire_legacy
+    def slow_commit(*args):
+        result=original(*args);committed.set()
+        assert release.wait(3)
+        return result
+    monkeypatch.setattr(s.owner,'_retire_legacy',slow_commit)
+    task=asyncio.create_task(s.owner.finalize_legacy(s.owner._context()))
+    try:
+        for _ in range(200):
+            if committed.is_set():break
+            await asyncio.sleep(.01)
+        assert committed.is_set()
+        task.cancel();await asyncio.sleep(.02)
+        assert not task.done() and s.spool._lock.locked() and s.startup.config.writer_owner.held
+    finally:release.set()
+    with pytest.raises(asyncio.CancelledError):await task
+    assert not s.spool._lock.locked() and not s.startup.config.writer_owner.held
+    assert await s.owner.advance(s.startup.binding) and s.owner.retirement is not None
+    assert await s.owner.finalize_legacy(s.owner._context())==s.owner.retirement

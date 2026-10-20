@@ -236,7 +236,9 @@ capture, drill, provider readback and recovery remain separate acceptance.
 ## Fixed opt-in GEO bootstrap
 
 The same private source-service config can include `geo_bootstrap` with exactly
-`manifest_path` and the canonical `manifest_sha256`. Keep the manifest0600 below
+`manifest_path`, the canonical `manifest_sha256`, and `legacy_source_path`. The
+last is the explicit old full SQLite source path; it must never follow
+Participants/auth storage when that authority moves into a thin identity DB. Keep the manifest0600 below
 its0700 nonsymlink parent. The existing `geo_manifest_operation_keys` must equal
 `geo-bootstrap11:<manifest_sha256>:0`,`:1`,… in exact payload order. Select this
 before initial route/genesis closure, together with the first empty snapshot
@@ -254,7 +256,7 @@ Each phase waits for the previous applied durable outcome. An unknown seal
 retains its original predecessor; cancellation/API restart preserves staged bytes
 and original operation keys. A changed plan cannot overwrite that state.
 
-A fixed read-only collector observes the existing Participants corpus path. It
+A fixed read-only collector observes only that explicitly configured legacy source path. It
 selects bounded metadata and hashes selected evidence in RAM; it exports no
 chapter, vector, original or credential. Its watermark includes required GEO
 items/dependencies/counts and source provenance. It excludes the old full-input
@@ -271,6 +273,32 @@ fresh post-activation source watermark matches. Delayed outputs/authority still
 use the existing fences. This is prepared implementation; native installation,
 actual source cutover and post-GC compact GEO recovery need their separate
 runtime proofs.
+
+
+After quiescing the actual legacy GEO/graph writers and replacing/rejecting old
+API write routes, the local operator can call
+`await startup.geo_installer.finalize_legacy(owner_context)` on this SAME live
+startup owner. This method has no MCP/HTTP registration and accepts no paths or
+caller receipt. It requires current canonical owner import authority, holds the
+existing spool and writer locks, acquires SQLite `BEGIN IMMEDIATE` write
+exclusion on the explicit old file, freshly verifies the relevant subset, and
+checks all configured outcomes plus current native GEO activation again. In the
+same queue it retains an immutable compact receipt binding source path/watermark,
+manifest/20 keys, owner/writer, actual activation operation/hash/cursor, current
+verified applied cursor and exact accepted journal head. Cancellation drains that
+commit before owner locks release. The SQLite transaction rolls back without
+changing old source data. The operator's service quiescence remains an explicit
+cutover responsibility; a SQLite lock alone does not stop future old processes.
+
+That retained receipt retires only the legacy source watch. Constructor/restart
+checks it before opening the old file, so archive/removal and the thin-auth DB
+switch do not disable imports. Current native history, runtime, writer and exact
+GEO activation proof still gate access; receipt presence alone grants no proof.
+Keep the manifest/config/queue receipt, and retain the20 raw spool rows until
+compact post-GC GEO recovery exists. Do not delete the legacy file before actual
+finalization and independently verified archive/readback.
+
+
 ## Prepared residency before public activation
 
 Trusted bootstrap finalization now records `runs.bootstrap_finalized_at` in the

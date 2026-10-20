@@ -63,14 +63,19 @@ class GeoInventoryObservation:
     """Retains one RO connection/version; unrelated commits require only recheck."""
     def __init__(self,corpus_path):
         path=Path(corpus_path)
-        if not path.is_file():raise ValueError('existing canonical legacy inventory required')
-        self.path=path;self.lock=threading.RLock();self.db=None;self.version=None;self.watermark=None
+        if not path.is_absolute():raise ValueError('explicit absolute legacy inventory path required')
+        self.path=path;self.lock=threading.RLock();self.db=None;self.version=None;self.watermark=None;self.file_identity=None
 
     def refresh(self,expected):
         with self.lock:
             if self.db is None:
+                if self.path.resolve(strict=True)!=self.path or not self.path.is_file():
+                    raise ValueError('existing nonsymlink legacy inventory required')
+                info=self.path.stat();self.file_identity=(info.st_dev,info.st_ino)
                 self.db=sqlite3.connect(self.path.resolve().as_uri()+'?mode=ro',uri=True,check_same_thread=False)
                 self.db.execute('PRAGMA query_only=on');self.db.execute('PRAGMA busy_timeout=250')
+            info=self.path.stat()
+            if (info.st_dev,info.st_ino)!=self.file_identity:raise ValueError('geo_source_file_replaced')
             self.version=None;self.watermark=None
             before=self.db.execute('PRAGMA data_version').fetchone()[0]
             self.db.execute('BEGIN')
@@ -84,9 +89,11 @@ class GeoInventoryObservation:
     def current(self,expected):
         if not self.lock.acquire(blocking=False):return False
         try:
+            info=self.path.stat()
+            if (info.st_dev,info.st_ino)!=self.file_identity:return False
             return bool(self.db is not None and self.watermark==expected and self.version is not None
                 and self.db.execute('PRAGMA data_version').fetchone()[0]==self.version)
-        except sqlite3.Error:return False
+        except (sqlite3.Error,OSError):return False
         finally:self.lock.release()
 
     def close(self):
