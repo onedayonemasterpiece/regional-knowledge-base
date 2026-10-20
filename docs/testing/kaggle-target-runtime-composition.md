@@ -34,6 +34,15 @@ existing lossy telemetry adapter. Shutdown drains read cleanup and every tracked
 forward before closing the pool and its owned postmaster on the same event loop.
 Repeated cancellation also drains the asynchronous close task.
 
+The authenticated early environment observation includes actual Python/ABI metadata,
+current effective UID/GID and bounded supplementary groups, plus local nonroot account
+name/UID/GID candidates confirmed by the system numeric-account lookup used by initdb.
+Only bounded `/etc/passwd` bytes are examined; password, home, shell and personal fields
+are never emitted. Unavailable/oversized account metadata is reported explicitly with
+no candidates. This observation neither selects an account nor grants READY or native
+ownership; the controller still pins an explicit service identity and workspace. Older
+ABI-only observations remain parseable.
+
 Fresh controller launches require an explicit typed Stage0Spec and NativeBundleSpec before provider
 authentication or launch claim. Its download name/size/hash inventory must match every
 external prepared model/native/wheel artifact; bundled Python and SQL are extracted
