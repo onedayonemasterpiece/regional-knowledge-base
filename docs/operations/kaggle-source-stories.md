@@ -12,6 +12,14 @@ persisting its empty-generation intent. A schema-007 launch includes exactly
 assembly and native initialization verify the same hashes. Merely shipping the
 007 file in a bundle does not authorize executing it in a schema-006 generation.
 
+Native ACL reference identities use qualified type, role, namespace and database
+names rather than PostgreSQL allocation OIDs. Recreating a synthetic schema and
+vector extension can change those OIDs without changing effective rights. The
+native regression requires identical ACL bytes after that recreation, while an
+actual additional table privilege must change the observation. The observer
+fingerprint changes with this fixed implementation; old accepted genesis pins
+are never silently replaced or normalized during replay.
+
 Each staged candidate remains an immutable source finding even when it produces
 no Story. `basic_variant` supplies an actual body plus a complete Unicode-offset
 evidence map; title and summary have no body fallback. A missing body is either

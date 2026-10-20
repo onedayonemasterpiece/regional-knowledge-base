@@ -208,3 +208,32 @@ async def test_native_typed_get_history_variants_and_resident_search_return_save
         acquire=acquire,tokenizer=PinnedTokenizer(count,REVISION,TOKENIZER_SHA256,SPACE),encode=encode)
     assert result.mode=='hybrid' and result.status=='degraded' and result.evidence[0].text==body
     assert result.evidence[0].exact_variant_ref==f'variant:{VARIANT}:r1'
+
+
+@pytest.mark.asyncio
+async def test_native_acl_pins_ignore_allocation_ids_but_detect_real_privilege_changes(native):
+    from regional_knowledge.kaggle_source_acl import inspect_acl
+    connection=native['connection']
+    async def same_grants():
+        async with connection.transaction():
+            await connection.execute("""DO $$ BEGIN
+                IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='rkb_writer') THEN
+                    CREATE ROLE rkb_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+                END IF;
+                IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='rkb_reader') THEN
+                    CREATE ROLE rkb_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+                END IF;
+            END $$;
+            ALTER DEFAULT PRIVILEGES IN SCHEMA rkb_v4 REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+            GRANT SELECT ON rkb_v4.sources TO rkb_reader""",prepare=False)
+            return await inspect_acl(connection),await(await connection.execute(
+                "SELECT 'rkb_v4'::regnamespace::oid,'public.vector'::regtype::oid")).fetchone()
+    before,old_ids=await same_grants()
+    async with connection.transaction():
+        await connection.execute('DROP SCHEMA rkb_v4 CASCADE;DROP EXTENSION vector',prepare=False)
+    await initialize(connection,native['generation'])
+    after,new_ids=await same_grants()
+    assert old_ids!=new_ids and before==after
+    async with connection.transaction():
+        await connection.execute('GRANT UPDATE ON rkb_v4.sources TO rkb_reader')
+        assert await inspect_acl(connection)!=after
