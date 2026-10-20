@@ -63,7 +63,7 @@ def load_encoder():
         return ResidentEncoder(encode,tokenizer,artifacts,artifacts.model_directory,_MODEL_LOAD_COUNT)
     return encode
 
-def main(*, prepare_runtime=None):
+def main(*, prepare_runtime=None, close_runtime=None):
     config=RUN_CONFIG;started=time.monotonic();stop=threading.Event()
     if prepare_runtime is not None and config.get('transport') != 'wss':
         raise ValueError('resident preparation requires the existing WSS channel')
@@ -78,7 +78,7 @@ def main(*, prepare_runtime=None):
         cpu=os.times();return {'rss_kib':values['VmRSS'],'hwm_kib':values['VmHWM'],'pss_kib':pss,'cpu_seconds':cpu.user+cpu.system,'cpu_threads':4,'pid':os.getpid()}
     if config.get('transport')=='wss':
         try:
-            run_wss_worker(config,load_encoder,diagnostics,prepare_runtime=prepare_runtime)
+            run_wss_worker(config,load_encoder,diagnostics,prepare_runtime=prepare_runtime,close_runtime=close_runtime)
         finally:
             Path('/kaggle/working/bge-run-summary.json').write_text(json.dumps({
                 'run_id':config['run_id'],'space':SPACE,'transport':'wss',

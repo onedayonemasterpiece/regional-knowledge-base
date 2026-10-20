@@ -74,7 +74,7 @@ def reconcile_launch(api, queue, run, ref):
     queue.launch_record(run['id'],ref,provider_version=observed['version'])
     return True
 
-def worker_source(template, queue, run_id, token, broker, *, transport='http'):
+def worker_source(template, queue, run_id, token, broker, *, transport='http', target=None):
     """Build private launch bytes once; no provider call or inferred version."""
     if transport not in ('http','wss'):
         raise ValueError('unsupported BGE transport')
@@ -93,10 +93,20 @@ def worker_source(template, queue, run_id, token, broker, *, transport='http'):
         template=template.replace('# WSS_TRANSPORT_HELPER',helper,1)
     if template.count('RUN_CONFIG = {}')!=1:
         raise ValueError('worker config slot missing')
+    if target is not None:
+        from regional_knowledge.kaggle_target_launch import compose_target
+        return compose_target(template,config,target,queue=queue,repository=Path(__file__).resolve().parents[2])
     return template.replace('RUN_CONFIG = {}','RUN_CONFIG = '+repr(config),1)
 
-def main():
+def main(*, target_spec=None, recovery_journal=None):
     logging.basicConfig(level=logging.INFO)
+    if target_spec is not None:
+        from regional_knowledge.kaggle_target_runtime import TargetLaunchSpec
+        from regional_knowledge.recovery_journal import RecoveryJournal
+        if type(target_spec) is not TargetLaunchSpec or os.getenv('RKB_BGE_TRANSPORT','http')!='wss':
+            raise ValueError('explicit typed target requires WSS configuration')
+        if target_spec.database.mode=='NEW_EMPTY_GENERATION' and not isinstance(recovery_journal,RecoveryJournal):
+            raise TypeError('fresh generation requires existing real RecoveryJournal')
     for line in Path('/home/dev/.env').read_text().splitlines():
         if line.startswith(('KAGGLE_USERNAME=','KAGGLE_KEY=')):
             key,value=line.split('=',1);os.environ[key]=shlex.split(value)[0]
@@ -117,8 +127,17 @@ def main():
                     token=queue.launch_claim(run_id,provider_ref=ref)
                     if token is None:continue
                     folder=state/run_id;folder.mkdir(mode=0o700,exist_ok=True)
+                    if target_spec is not None and target_spec.database.mode=='NEW_EMPTY_GENERATION':
+                        import asyncio
+                        from regional_knowledge.kaggle_target_launch import persist_empty_intent
+                        from regional_knowledge.kaggle_owned_pg import SQL_ARTIFACTS,digest
+                        nonce=queue.prepare_channel(run_id)
+                        sql_root=Path(__file__).resolve().parents[2]/'sql/kaggle'
+                        asyncio.run(persist_empty_intent(queue,run_id,target_spec,launch_nonce=nonce,
+                            recovery_journal=recovery_journal,
+                            sql_hashes={name:digest((sql_root/name).read_bytes()) for name in SQL_ARTIFACTS}))
                     source=worker_source(template,queue,run_id,token,broker,
-                                         transport=os.getenv('RKB_BGE_TRANSPORT','http'))
+                                         transport=os.getenv('RKB_BGE_TRANSPORT','http'),target=target_spec)
                     (folder/'main.py').write_text(source);(folder/'main.py').chmod(0o600)
                     metadata={'id':ref,'title':slug,'code_file':'main.py','language':'python','kernel_type':'script','is_private':True,'enable_gpu':False,'enable_tpu':False,'enable_internet':True,'dataset_sources':[],'competition_sources':[],'kernel_sources':[]}
                     (folder/'kernel-metadata.json').write_text(json.dumps(metadata));(folder/'kernel-metadata.json').chmod(0o600)

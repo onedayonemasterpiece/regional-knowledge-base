@@ -41,7 +41,7 @@ class BgeWssTransport:
 
     def __init__(self, config, load_encoder, diagnostics, *, connector=None,
                  heartbeat_seconds=20, maximum_seconds=11 * 3600, stop=None,
-                 query_handler=None, prepare_runtime=None):
+                 query_handler=None, prepare_runtime=None, close_runtime=None):
         url = urlsplit(config['channel'])
         if (url.scheme != 'wss' or not url.hostname or url.port not in (None, 443)
                 or url.username or url.password or url.query or url.fragment):
@@ -74,6 +74,9 @@ class BgeWssTransport:
         self.changed = asyncio.Event()
         self.shared_reads, self.query_handler = shared, query_handler
         self.prepare_runtime, self.prepared_runtime = prepare_runtime, None
+        if close_runtime is not None and not inspect.iscoroutinefunction(close_runtime):
+            raise ValueError('async close_runtime required')
+        self.close_runtime = close_runtime
         self.forward_lock = asyncio.Lock()
         self.forwards = set()
         self.resource = None
@@ -510,11 +513,17 @@ class BgeWssTransport:
             while self.forwards:
                 for task in tuple(self.forwards):
                     await drain(task)
-                await asyncio.sleep(0)
+                    self.forwards.discard(task)
+            # The pool/native owner belongs to this loop. Repeated cancellation
+            # must not strand an asynchronous close after asyncio.run tears down.
+            if self.close_runtime is not None:
+                closing = asyncio.create_task(self.close_runtime())
+                await drain(closing)
+                closing.result()
             if cancelled:
                 raise asyncio.CancelledError
 
 
-def run_wss_worker(config, load_encoder, diagnostics, *, query_handler=None, prepare_runtime=None):
+def run_wss_worker(config, load_encoder, diagnostics, *, query_handler=None, prepare_runtime=None, close_runtime=None):
     asyncio.run(BgeWssTransport(config, load_encoder, diagnostics, query_handler=query_handler,
-                               prepare_runtime=prepare_runtime).run())
+                               prepare_runtime=prepare_runtime, close_runtime=close_runtime).run())
