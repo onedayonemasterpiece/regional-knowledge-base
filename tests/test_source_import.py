@@ -1,8 +1,11 @@
 """Resolved source intake and opt-in native atomic activation; synthetic data only."""
 import copy
+import base64
+from contextlib import asynccontextmanager
 from dataclasses import replace
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -180,3 +183,44 @@ async def test_native_mid_import_failure_rolls_back_every_projection_and_retries
         assert await (await connection.execute('SELECT projection_seq,text_ready,dense_ready FROM rkb_v4.read_frontier')).fetchone()==(0,True,True)
         await connection.execute('DROP TRIGGER synthetic_import_failure ON rkb_v4.passage_search')
     assert (await apply_native(env,command)).status=='applied'
+
+
+@PG
+@pytest.mark.asyncio
+async def test_worker_accepted_command_applies_native_pg_and_replays_exact_receipt(native_import):
+    from regional_knowledge.kaggle_source_commands import (
+        WorkerSourceExecutor, seal_wire, receipt_wire, decode_receipt,
+    )
+    env = native_import
+    command = resolved()
+    seal = await env['journal'].seal([command], predecessor=None, writer_generation='writer-1')
+    command_hash = await env['journal'].verify_accepted(seal, command)
+    @asynccontextmanager
+    async def acquire():
+        yield env['connection']
+    database = SimpleNamespace(database_generation='source-import-fixture', writer_generation='writer-1')
+    worker = WorkerSourceExecutor(acquire=acquire, registry=env['registry'], database=database,
+        run_id='synthetic-run', launch_nonce='synthetic-nonce', runtime_incarnation='synthetic-incarnation')
+    frame = dict(type='DISPATCH', protocol_version=2, connection_generation=1, id='accepted-job',
+        claim='durable-claim', kind='source_command', run_id='synthetic-run', launch_nonce='synthetic-nonce',
+        runtime_incarnation='synthetic-incarnation', database_generation=database.database_generation,
+        writer_generation=database.writer_generation, command_sha256=command_hash,
+        handler_sha256=env['registry'].resolve(command).fingerprint,
+        command_b64=base64.b64encode(command.encode()).decode(), accepted=seal_wire(seal),
+        compute_claim='actual-resource-claim', dispatch_generation=1)
+    first, first_outcome = decode_receipt(await worker(frame))
+    second, second_outcome = decode_receipt(await worker(frame))
+    assert first.status == 'applied' and not first.duplicate
+    assert second.duplicate and second.outcome == first.outcome
+    assert first_outcome == second_outcome and first_outcome['cursor'] == 1
+    assert first.command_sha256 == command_hash
+    remote = await env['journal'].record_outcome(seal, command=command,
+        database_generation=database.database_generation, writer_generation='writer-1', outcome=first.outcome)
+    assert remote.outcome_sha256 == first.outcome_sha256
+    assert receipt_wire(second)['duplicate'] is True
+    with pytest.raises(PermissionError):
+        await worker(dict(frame, runtime_incarnation='another-incarnation'))
+    with pytest.raises(PermissionError):
+        await worker(dict(frame, handler_sha256='0'*64))
+    async with env['connection'].transaction():
+        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.applied_ops')).fetchone() == (1,)
