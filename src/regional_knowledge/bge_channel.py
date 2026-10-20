@@ -89,9 +89,14 @@ def channel_route(queue):
             if message['type'] == 'websocket.disconnect':
                 return
             hello = _decode(message)
-            _fields(hello, ('type', 'protocol_version', 'run_id', 'launch_nonce', 'runtime_incarnation'))
+            _fields(hello, ('type', 'protocol_version', 'run_id', 'launch_nonce', 'runtime_incarnation'),
+                    ('environment',))
             if hello['type'] != 'ATTACH':
                 raise ValueError('hello_required')
+            environment = None
+            if 'environment' in hello:
+                from .kaggle_environment import validate_environment
+                environment = validate_environment(hello['environment'])
             run_id = _identifier(hello['run_id'])
             attachment = await queue_call(queue.attach_channel, run_id, token,
                                           _identifier(hello['launch_nonce']),
@@ -100,6 +105,11 @@ def channel_route(queue):
             logger.info(json.dumps({'event': 'bge_channel_attached', 'run_id': run_id,
                                     'connection_generation': generation,
                                     'provider_bound': attachment['provider_version'] is not None}))
+            if environment is not None:
+                logger.info(json.dumps({'event': 'kaggle_bootstrap_environment', 'run_id': run_id,
+                    'runtime_incarnation': hello['runtime_incarnation'],
+                    'connection_generation': generation, 'environment': environment,
+                    'readiness_verified': False}))
             outgoing = asyncio.PriorityQueue(maxsize=SEND_QUEUE_FRAMES)
             sequence = count()
             probe_nonce = None

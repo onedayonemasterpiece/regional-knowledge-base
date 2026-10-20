@@ -282,8 +282,13 @@ class BgeWssTransport:
                 raise ValueError('channel send bound')
             await socket.send(raw)
 
+        environment = {}
+        if self.config.get('target_runtime') is not None:
+            from regional_knowledge.kaggle_environment import observe_environment
+            environment['environment'] = observe_environment()
         await send({'type': 'ATTACH', 'run_id': self.config['run_id'],
-                    'launch_nonce': self.config['launch_nonce'], 'runtime_incarnation': self.incarnation})
+                    'launch_nonce': self.config['launch_nonce'], 'runtime_incarnation': self.incarnation,
+                    **environment})
         welcome = await asyncio.wait_for(receive(), 10)
         generation = welcome.get('connection_generation')
         if welcome.get('type') != 'WELCOME' or type(generation) is not int or generation < 1:
