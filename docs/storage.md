@@ -12,6 +12,12 @@ Originals и illustrations сохраняются существующим VibeP
 
 Exact source_text и детерминированный search_material имеют собственные hashes и material version. Passages ссылаются на точные source spans; не размножать полную страницу ради каждого embedding. Model/human accepted decisions сохраняются точно: PDF SHA и повторная модель не воспроизводят прежний accepted result. Старые derived vectors можно убрать после безопасной смены revision; provenance и принятые значения нельзя подменить пересчётом.
 
+## Прямой bulk и временные datasets
+
+[Handoff§5.5](prompts/rkb-scalable-kaggle-implementation-20261019.md) — полный transfer/GC contract. Existing storage принимает private attempt-specific objects; Dev хранит control/refs, не проксирует большие bytes. Client fileParams reference отличается от controller ticket; expiry чужой ссылки требует reattach, reprocess читает archived original. Exact provider version/size и full-hash verification предшествуют first-verified binding; незавершённый upload не accepted/Saved. Native ImageContent остаётся в bounded MCP responses.
+
+Temporary Dataset создаётся лишь для необходимого provider input и регистрируется с owner/consumers/budget. GC и выдача leases используют общий guard: запрет новых refs, reconciliation активных mounts/transfers/UNKNOWN, отсутствие accepted/recovery dependencies, затем exact delete/readback. Expiry не доказывает consumer completion. Confirmed native absence закрывает ownership; quota проверяется если доступна, отсутствие delete API — видимый blocked cleanup. Private DB base/pinned recovery versions не являются disposable staging. Signed URLs/private originals/PGDATA не попадают в notebook source, logs или automatically committed outputs; actual private visibility проверяется до передачи private bytes.
+
 ## ACK и короткий raw spool
 
 Эти durable границы относятся к принятым долгим вопросам, mutations и внешним effects. Обычный `read_query` использует ту же authority допуска, но имеет отдельную ephemeral семантику, описанную ниже; transport response не называется accepted/Saved.

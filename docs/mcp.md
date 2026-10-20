@@ -19,6 +19,12 @@ Active target 2026-10-20. [Single handoff](prompts/rkb-scalable-kaggle-implement
 
 Full search retains the compatible `results[{id,title,url}]` projection; fetch retains id/title/text/url/metadata (source/page/provenance/footnotes/illustrations). Rich status and revision fields extend the versioned envelope, not silently replace its type. Stable URL is not an expiring object-store credential or an unbuilt public page.
 
+## Supported direct files and truthful effects
+
+The complete contract is [handoff §§5.5–5.6](prompts/rkb-scalable-kaggle-implementation-20261019.md). Preserve top-level `file` plus `openai/fileParams`, existing book_ingest/reprocess and actual bounded ImageContent. Client-provided download refs are not controller-issued tickets: the server cannot refresh an expired client URL; return source_ref_expired and reattach to the same operation. Opaque attachment IDs and sandbox paths are not network URLs. Direct PUT requires an explicitly supported client capability and successful readback; baseline fileParams remains usable. Large bytes go between supported client hosting/storage and Kaggle, while Dev holds auth/control. Do not silently substitute a Dev byte proxy or ResourceLink for required media.
+
+Tool annotations describe the complete actual method, not one safe action inside a mutating command tool. Preserve appropriate existing names and narrow read/status surfaces; no hidden launch/import/grant/delete from search or status. Server authorization enforces rights independently of hints. Report only server-observable validation/auth/policy/provider/UNKNOWN outcomes. A client-side approval refusal may prevent the call from reaching the server; no-call alone proves neither refusal nor its reason. Reconcile uncertain effects under the same operation ID. Respect prior user authorization without inventing per-page/retry product approvals; never route a denied action through another wrapper to bypass review. Validate real supported ChatGPT/Dot scenarios and non-owner denials (DBG-11–13); do not suppress features to reduce approvals.
+
 ## Three execution modes, one authority
 
 | Mode | Admission and transport | Durability and completion |

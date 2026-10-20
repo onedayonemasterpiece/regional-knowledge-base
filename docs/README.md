@@ -5,9 +5,10 @@ Updated2026-10-20. Active contracts below describe one target; historical report
 ## Start here
 
 1. **[Single implementation/debugging handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md)** — the complete file to give a coding agent.
-2. [Architecture](architecture.md), [storage/recovery](storage.md), [configuration](configuration.md), [operations](operations.md).
-3. [Protected readiness](mass-ingestion-readiness.md), [target acceptance](testing/rkb-scalable-kaggle-acceptance-20261019.md), [testing method](testing.md).
-4. [Warm Kaggle debugging/lifecycle audit with Opus 5.5 and Dot](reports/rkb-kaggle-debug-lifecycle-audit-20261020.md); [previous Go/Rust and voice-path audit](reports/rkb-native-runtime-voice-critical-audit-20261020.md); [story/storage/speed audit](reports/rkb-opus55-story-storage-speed-20261020.md).
+2. **[Mandatory Kaggle warm-debugging skill](../.agents/skills/kaggle-warm-debugging/SKILL.md)** — install/read before implementation; exact pin and receipt in handoff§0.
+3. [Architecture](architecture.md), [storage/recovery](storage.md), [configuration](configuration.md), [operations](operations.md).
+4. [Protected readiness](mass-ingestion-readiness.md), [target acceptance](testing/rkb-scalable-kaggle-acceptance-20261019.md), [testing method](testing.md).
+5. [Warm Kaggle debugging/lifecycle audit with Opus 5.5 and Dot](reports/rkb-kaggle-debug-lifecycle-audit-20261020.md); [previous Go/Rust and voice-path audit](reports/rkb-native-runtime-voice-critical-audit-20261020.md); [story/storage/speed audit](reports/rkb-opus55-story-storage-speed-20261020.md).
 
 ## Active domain contracts
 

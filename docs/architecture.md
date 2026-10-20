@@ -1,5 +1,7 @@
 # Архитектура базы знаний региона
 
+Дополнение v4: обязательный pinned skill до runtime работы; direct bulk client hosting/storage↔Kaggle без Dev byte proxy; отдельные client refs/controller tickets, exact object verification, временный Dataset GC по refs/leases и truthful MCP effects. Полный контракт — единый handoff §0/5.5–5.6, приёмка DBG-11–13.
+
 Обновлено 20.10.2026. Это целевой контракт, а не отчёт о внедрении. Исходная реализация проверена на [main b1c0689](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/b1c0689b1a09373a900a317a3bac9cf4f86fdaf4): corpus/FTS/graph/stories ещё используют SQLite, книжные vectors — Supabase, story vectors — отдельный SQLite/Python путь.
 
 Единое самодостаточное [задание кодовому агенту](prompts/rkb-scalable-kaggle-implementation-20261019.md) задаёт внедрение и отладку. Здесь описаны компоненты и пути данных; [storage](storage.md), [configuration](configuration.md), [управление нагрузкой](designs/user-request-load-management-20261019.md) и [приёмка](testing/rkb-scalable-kaggle-acceptance-20261019.md) раскрывают соответствующие контракты.

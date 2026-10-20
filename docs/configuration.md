@@ -43,6 +43,10 @@ Precompiled artifact закреплён source SHA/toolchain/dependency lock/has
 
 Cadence не является TTL: нельзя удалять неподтверждённый payload или UNKNOWN outcome ради таймера. Terminal receipt horizon 30 days разрешён только для verifiable server-issued IDs: expired ID never-new-execution; arbitrary legacy keys не GC blindly. UNKNOWN admission/reconciliation ограничивается per provider/route, не всем import. Read-only search не вызывает remote commit. Account quota, доступная RAM/CPU, writable mount, disk headroom, source sizes и restore time измеряются до cutover; старый Supabase pool или quota не переносятся как Kaggle limits.
 
+## File transport capabilities
+
+Зафиксировать поддержанный client fileParams/export/direct-PUT contract, actual URL lifetime/queue behavior, выбранный artifact provider, exact immutable version/checksum readback, HTTPS redirect allowlist, byte/extraction limits и private visibility. Не хранить live signed URLs в release/source manifest. Controller tickets имеют actor/class/source/attempt binding и выдаются при готовности transfer; чужой client URL не получает фиктивный refresh. Provider-enforced upload cap, delete/version capabilities и quota readback обозначаются как verified либо unavailable, не предполагаются. Использовать existing control registry/guard для temporary consumers/GC; отдельный service или framework не нужен. Полный contract и acceptance — handoff§5.5/DBG-11–13.
+
 ## WSS и event loop
 
 Notebook использует единственное outbound authenticated WSS attachment к existing ASGI/HTTPS service; public Kaggle listener отсутствует. Два самостоятельных клиента Dot → RKB и Mira → RKB используют ту же auth/admission authority; Dev relay не добавляет reasoning hop. Проверить реальный reverse-proxy upgrade path. Задать handshake/send deadlines, bounded frame/total-buffer bytes, credits, Ping/Pong, jittered reconnect и resume window. Large artifacts — по existing byte transport и immutable refs.

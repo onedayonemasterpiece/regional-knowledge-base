@@ -2,6 +2,10 @@
 
 This repository contains public code, schemas, tests and documentation for Regional Knowledge Base. Never commit books, scans, extracted private corpus, private draft text, credentials, tokens, signed URLs or private runtime metadata.
 
+## Mandatory Kaggle debugging skill
+
+Before implementing or debugging this Kaggle redesign, install the complete [kaggle-warm-debugging skill](.agents/skills/kaggle-warm-debugging/SKILL.md) and read its SKILL.md, RKB profile and applicable references. Verified source pin: `2102f08478e532b44f2b0e0dfcba8fb11565ac63`. For Codex use `${CODEX_HOME:-$HOME/.codex}/skills/kaggle-warm-debugging`; other agents use their documented skill directory. Record actual source/install path/read evidence and do not claim discovery merely because files were copied. Follow the single handoff §0 if discovery is unavailable. The skill adds no runtime authorization or per-iteration approval requirement. Keep confirmed reusable lessons in the skill and project rules in its RKB profile/current handoff.
+
 ## Current implementation contract — 2026-10-20
 
 Use the single [implementation/debugging handoff](docs/prompts/rkb-scalable-kaggle-implementation-20261019.md), [architecture](docs/architecture.md) and [acceptance](docs/testing/rkb-scalable-kaggle-acceptance-20261019.md). They describe an approved target, not a deployed PostgreSQL/WSS system. Record actual source/runtime heads before implementation. Reports and testing-journal are dated evidence; retired prompts are not alternative deployment instructions.
@@ -20,6 +24,10 @@ Use the single [implementation/debugging handoff](docs/prompts/rkb-scalable-kagg
 - Execute each search end to end beside BGE/PostgreSQL in Kaggle; return bounded evidence, never round-trip a query vector through Dev. Ready reads do not wait for batch fill, fsync or ordinary telemetry. Current auth/withdrawal and read-your-writes fences still apply.
 - Python is the initial thin orchestration baseline over native PG/PyTorch. Go/Rust binaries are possible but conditional component replacements: include IPC/ABI/lifecycle costs and demonstrate latency/resource or reproducible reliability benefit. No mandatory rewrite, extra proxy/authority/model, runtime compilation or implicit inference-space change.
 - Use server-side indexes/bounded SQL for source/story/catalog/entity/GEO retrieval. No full-corpus Python scope enumeration or cosine sort. Maintain projections incrementally, autovacuum/targeted ANALYZE; no scheduled whole-corpus reembedding/REINDEX without measured reason.
+
+## File transfer and temporary resources
+
+Use handoff §§5.5–5.6: control/auth stays on Dev, supported bulk bytes move directly between client hosting/storage and Kaggle. Keep existing top-level fileParams and real ImageContent. Distinguish expiring client refs from controller-issued tickets; do not assume arbitrary client PUT. Verify immutable attempt-specific uploads before binding. Keep tickets/private data out of source/logs/committed outputs. Temporary Dataset cleanup shares the lease/ref guard, waits for actual consumers/UNKNOWN and confirms exact native absence; TTL/delete ACK is insufficient. Preserve existing suitable MCP methods with truthful hints and server authorization; never bypass a denied action or invent server knowledge of client-side refusal.
 
 ## Authorization and channels
 

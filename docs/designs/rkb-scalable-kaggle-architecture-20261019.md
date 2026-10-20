@@ -1,5 +1,7 @@
 # Целевая архитектура RKB: Kaggle PG 17/BGE и короткий DevCoveer control
 
+Дополнение v4: обязательный pinned skill до runtime работы; direct bulk client hosting/storage↔Kaggle без Dev byte proxy; отдельные client refs/controller tickets, exact object verification, временный Dataset GC по refs/leases и truthful MCP effects. Полный контракт — единый handoff §0/5.5–5.6, приёмка DBG-11–13.
+
 Обновлено 20.10.2026; канонический путь документа сохранён. Статус: решение для реализации, не выполненный deploy. Lifecycle/code baseline v4 — [main 3e39046](https://github.com/onedayonemasterpiece/regional-knowledge-base/tree/3e39046fe32aaf14cfa088d65d15ff0082425309); предыдущие source audits сохраняют собственные точные heads.
 
 **Один самодостаточный [handoff кодовому агенту](../prompts/rkb-scalable-kaggle-implementation-20261019.md)** содержит функциональный контракт, порядок внедрения и отладки. Этот документ объясняет принятое размещение; подробные query/index paths — в [architecture](../architecture.md), durability/GC — в [storage](../storage.md).

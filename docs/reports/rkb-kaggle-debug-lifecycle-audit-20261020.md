@@ -2,7 +2,7 @@
 
 Дата: 2026-10-20. Результат — **проектирование по исходникам и документации**, не выполненная реализация. Kaggle runs, installs, inference, imports, stop/delete и benchmarks в этой задаче не запускались. Новые runtime критерии имеют статус **NOT RUN**.
 
-Нормативный результат — [один полный handoff v4](../prompts/rkb-scalable-kaggle-implementation-20261019.md), прежде всего §5.4, §6.6 и §14.5. Этот отчёт хранит основания и разбор критики; он не второй план внедрения. База изменения — main `3e39046fe32aaf14cfa088d65d15ff0082425309` после PR155.
+Нормативный результат — [один полный handoff v4](../prompts/rkb-scalable-kaggle-implementation-20261019.md), прежде всего §0, §5.4–5.6, §6.6 и §14.5. Этот отчёт хранит основания и разбор критики; он не второй план внедрения. База изменения — main `3e39046fe32aaf14cfa088d65d15ff0082425309` после PR155.
 
 ## 1. Принятое решение
 
@@ -43,6 +43,17 @@ Baseline языка из v3 сохранён: Python glue, один resident PyT
 
 Эти выводы относятся к проверенным source paths, не означают, что все executions двух проектов завершались неверно. Установленные версии, действующие provider sessions и реальная отмена в этом аудите не испытывались. Полезные primitives переиспользуются узко; полный перенос чужого оркестратора не нужен.
 
+### Сохранённые реальные incidents Events Bot
+
+Root дополнительно прочитал четыре incident reports на том же head `d431b9f86b87999cf27f74b99857d23aedc28f16`. Это исторические evidence, не проверка сегодняшнего runtime.
+
+| Источник | Наблюдавшийся отказ | Следствие для RKB |
+|---|---|---|
+| [13.06: duplicate videoannounce](https://github.com/onedayonemasterpiece/events-bot-new/blob/d431b9f86b87999cf27f74b99857d23aedc28f16/docs/reports/incidents/INC-2026-06-13-kaggle-duplicate-videoannounce.md) | Публикация состоялась, final output не получен; replacement run повторил публикацию | Отдельные computation/effect/result-transfer receipts; потеря final output не разрешает повтор эффекта |
+| [16.04: SaveKernel drift](https://github.com/onedayonemasterpiece/events-bot-new/blob/d431b9f86b87999cf27f74b99857d23aedc28f16/docs/reports/incidents/INC-2026-04-16-cherryflash-kaggle-save-kernel-drift.md) | Native push вернул quota error, wrapper сообщил успех, продолжал работать прежний source | Проверять native error/version и executed revision, а не лишь отсутствие Python exception; не вводить слепой CPU/GPU fallback |
+| [10.06: watchdog failure loop](https://github.com/onedayonemasterpiece/events-bot-new/blob/d431b9f86b87999cf27f74b99857d23aedc28f16/docs/reports/incidents/INC-2026-06-10-guide-watchdog-kaggle-failure-loop.md) | Session conflict и серия повторных версий, RAM guards терялись после рестарта, registry мог повторить работу | Durable launch intent/ownership до push, exact UNKNOWN reconciliation и конечный retry budget; Telegram authorization не копировать |
+| [26.06: missing video output](https://github.com/onedayonemasterpiece/events-bot-new/blob/d431b9f86b87999cf27f74b99857d23aedc28f16/docs/reports/incidents/INC-2026-06-26-crumple-missing-video-output.md) | Wrapper завершился нормально и сообщил render/report callbacks, обязательного результата не было | Controller expected inventory задан до run; COMPLETE и callbacks не доказывают наличие нужных bytes |
+
 ## 3. Внешняя документация и исправление устаревших выводов
 
 Официальный [Kaggle CLI source 6894864](https://github.com/Kaggle/kaggle-cli/blob/6894864ff4095cf98e9e36d3a694ff5fc9ba3818/src/kaggle/api/kaggle_api_extended.py) содержит `version_label` в status/output и штатный обход output pages, когда caller не ограничивает page token. [Issue1045](https://github.com/Kaggle/kaggle-cli/issues/1045) о пропущенных страницах закрыт [PR1046](https://github.com/Kaggle/kaggle-cli/pull/1046). Следовательно, неверно утверждать, что нынешний официальный CLI всегда скачивает лишь первую страницу, или писать поверх него ещё один paginator. Проверить нужно выбранный installed SDK/adapter и expected inventory.
@@ -55,14 +66,15 @@ Baseline языка из v3 сохранён: Python glue, один resident PyT
 
 Технические ограничения сверены с первичными источниками: [PG17 CREATE FUNCTION](https://www.postgresql.org/docs/17/sql-createfunction.html), [CREATE INDEX](https://www.postgresql.org/docs/17/sql-createindex.html), [PREPARE](https://www.postgresql.org/docs/17/sql-prepare.html), [filesystem backup](https://www.postgresql.org/docs/17/backup-file.html), [Python importlib.reload](https://docs.python.org/3/library/importlib.html#importlib.reload). Их следствия в проекте: совместимость signature/return shape, контролируемые grants/search_path, транзакционный migration ledger, отдельный нетранзакционный concurrent index step при необходимости, actual custom/generic plans, запрет подмены live PGDATA и произвольного reload всей import graph. Это проектные решения, не измеренный прирост производительности.
 
-## 4. Два новых раунда actual Opus 5.5
+## 4. Три новых раунда actual Opus 5.5
 
-Обе консультации — DevCoveer `provided_only`, read-only, provider Anthropic, **actual model claude-opus-5-5**, без fallback. Переданы owner requests, source evidence, draft и ответы root/Dot. Консультант не запускал workload и не изменял документы.
+Все три консультации — DevCoveer `provided_only`, read-only, provider Anthropic, **actual model claude-opus-5-5**, без fallback. Переданы owner requests, source evidence, draft и ответы root/Dot. Консультант не запускал workload и не изменял документы.
 
 | Раунд | Task | SHA-256 сохранённого Markdown | Суть |
 |---|---|---|---|
 | 1 | `dvt_0ccc65088b074973aa02c191256809c8` | `3b6e885266975f1a3224db194745add69a6420c41643d352b62b2a08253ccfda` | Упростить disposable debug, отделить update/restart, уточнить identity/stop/completeness |
 | 2 | `dvt_e643e0fd434b46ad83c9678808fc6887` | `1c8ca801d722c48ae8aec9efdf037b295574640a9ce6a651c868e2e85990999b` | Adversarial review exact §5.4/6.6: семь конкретных must-fix и замечание об объёме |
+| 3 | `dvt_131ee2f66ae44d8eb9e0f4472ace614e` | `fc39be8709b2d27479cc411c617a5d217715bd3a6049d72a67450dd49532146d` | Direct file transfer, temporary Dataset GC и MCP: пять must-fix после новых решений владельца |
 
 ### Принятые замечания и конкретные ответы
 
@@ -76,6 +88,18 @@ Baseline языка из v3 сохранён: Python glue, один resident PyT
 | Manifest не создан либо producer объявил пустой success? | Controller до операции задаёт expected required kinds/IDs и completeness rule. Run manifest сверяется с ними; отсутствие required data/manifest — partial/unknown. |
 | Разработчик пометил реальную БД disposable и reset удалил Saved? | Immutable fixture classification, отдельные test bindings, запрет product routing/real ACK; reset отклоняется при настоящих GEO/accepted/Saved/user refs или прошлой product designation. |
 
+### Закрытие пяти замечаний раунда 3
+
+| Риск | Конкретное исправление |
+|---|---|
+| Чужой fileParams URL назван controller ticket и обещан refresh | Разные типы reference. Client expiry — source_ref_expired/re-attach той же operation; reprocess только archived original. Controller tickets выдаются just-in-time |
+| Два PUT в один key, hash по самоотчёту | Attempt-specific immutable keys, exact provider size/version/checksum readback и first-verified compare-and-set. Если полноценной checksum нет, exact-version verifier вне Dev; никакого bulk streaming через Dev для проверки |
+| Private URL/bytes утекут через Kaggle source/log/output | Передача tickets по private control в память, actual private visibility before transfer, исключение private originals/proof/PGDATA из автоматически публикуемого output |
+| GC конкурирует с выдачей leases, quota readback может не существовать | Один transactional guard/epoch для refs и deleting; активные consumers и UNKNOWN не удаляются по expiry. Native absence закрывает deletion; quota сверяется только если наблюдаема. Unsupported delete — cleanup_blocked_by_provider |
+| Client PUT и client-side отказ ошибочно считаются наблюдаемыми сервером | Явная client capability плюс успешный transfer readback, fileParams baseline сохраняется. Server statuses только по его наблюдениям; no-call не доказывает denial, его причину ищут в клиентском evidence |
+
+Дополнительно закреплены archive extraction/traversal bounds, проверка redirects downloader, сохранность top-level fileParams и native ImageContent. Эти правки не требуют нового storage service, generic transfer framework или отказа от существующих методов. Предложенный консультантом streaming readback через Dev не принят: integrity fallback выполняется существующим adapter/Kaggle вне Dev, иначе нарушался бы direct-bulk contract. Утверждения консультанта о конкретном TTL и provider capabilities оставлены Stage0 checks, а не превращены в установленный факт.
+
 ### Что принято с поправками или отклонено
 
 - В раунде1 TTL/self-exit grace предлагались как практическая граница reuse. **Не принято как proof:** SIGSTOP/зависший parent оставляет живой процесс и прочитанный Telegram credential. Таймер остаётся защитой, UNKNOWN — состоянием, требующим reconciliation.
@@ -84,13 +108,23 @@ Baseline языка из v3 сохранён: Python glue, один resident PyT
 - Не введены обязательные model sidecar, новая WSS file-transfer система, remote shell/IDE, multi-cluster catch-up и отдельный scheduler. Переиспользуются current authority и existing artifact transport.
 - Формальное предложение отклонять fixture reset при **любом** `applied_ops` уточнено: synthetic test ledger нужен для idempotency/migration tests. Запрет относится к реальным product refs/ACK/routing; тестовые записи не повышаются до production.
 - Числовые polling defaults оставлены настройками, не SLA/новыми hard gates. Conditional index/plan checks относятся только к применимому SQL change; не требуется реализовать все optional optimizations до первого run.
-- Заключение консультанта о передаче было условным; root внёс исправления после раунда2. Финальная независимая сверка дополнительно закрыла undispatched accepted v1 queue: одного drain in-flight/UNKNOWN было недостаточно. Отдельного третьего Opus approval и runtime PASS нет. Запусков в этой документационной задаче нет; дальнейшая реализация действует в рамках реально выданного задания и бюджета, без придуманного требования заново согласовывать каждую уже разрешённую итерацию.
+- Заключение консультанта о передаче было условным; root внёс исправления после раунда2. Финальная независимая сверка дополнительно закрыла undispatched accepted v1 queue: одного drain in-flight/UNKNOWN было недостаточно. Раунд3 проверил новую transfer/MCP дельту, также условно до точечных исправлений; отдельного безусловного approval всей реализации и runtime PASS нет. Запусков в этой документационной задаче нет; дальнейшая реализация действует в рамках реально выданного задания и бюджета, без придуманного требования заново согласовывать каждую уже разрешённую итерацию.
 
 ## 5. Обсуждение с Dot и владельцем
 
 Владелец поставил задачи [живой отладки/SQL](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792486703770319), [снижения цены итерации](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792486782748519) и предоставил [Grok guide как спорный input](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792487877523119). Дополнительное [решение о стабильном slug](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792490139433929) закреплено без нового вопроса владельцу.
 
 Dot подтвердил [semantic replay migration case](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792489860546829), [границу delete/absence в MDH](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792489893676429), [installed SDK/attestation/registry facts](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792489949080839), [уточнение current CLI pagination](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792490076972819). В [финальном stop ответе](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792490447774779) готовый verified exact execution cancel в проверенных двух проектах не найден. Это ограниченный результат code/evidence audit, не заявление о невозможностях Kaggle вообще.
+
+Дополнительные явные owner решения: [обязательный skill до кодинга](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792490741573429), [temporary Dataset cleanup и direct files](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792490916370879), [разбор MCP security friction без потери функций](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792491134235729). Они включены до merge. Dot подготовил полный six-file skill и [исправил два уточнения](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792491732524289): сохранение модели относительно процесса-владельца и barrier для undispatched accepted v1 queue. Source pin `2102f08478e532b44f2b0e0dfcba8fb11565ac63`, parent `4e79d5c643fe7c68bb4660ffe92e447f74f22b82`; все шесть файлов прочитаны, обновлённые две позиции сверены. [Skill](../../.agents/skills/kaggle-warm-debugging/SKILL.md) включён целиком, install/read prerequisite — handoff§0 и AGENTS. В этой design-only задаче skill прочитан для review, runtime installation/activation не заявляется.
+
+### Ретроспектива безопасности MCP: наблюдаемое и неизвестное
+
+Поиск доступного сохранённого контекста не дал полного журнала client approval отказов. В найденном evidence есть connector schema-validation error; это не security denial. Dot передал [сводку старых разборов](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792491418840419): отказ generic write_text с subprocess-кодом, отдельный tunnel timeout/lost reply и schema errors. Machine-readable причина первого отказа недоступна, поэтому нельзя приписать его определённому classifier rule или объявить все случаи ложными approvals. Private conversations не копировались в публичную документацию.
+
+Root самостоятельно прочитал [существующие MCP declarations](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/3e39046fe32aaf14cfa088d65d15ff0082425309/src/regional_knowledge/server.py). Полезные методы уже обозначают свои границы: story_edit не выдаёт publication approval; archive обратим; story_export не отправляет; publication_record записывает наблюдённый факт, не публикует сам; geo_receipt читает результат; book_ingest использует typed top-level ChatFile/fileParams. Эти контракты сохраняются и проверяются по реализации, а не переименовываются ради нового backend.
+
+Нормативный вывод согласован с [MCP tools specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools) и [security best practices](https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices): annotations помогают описать effect, но не заменяют authorization. Сервер не знает об отклонённом до отправки вызове. Нельзя скрывать write в read-only tool, обходить отказ другим wrapper или сокращать product функции ради review. Нужны actual supported client tests и минимальная redacted диагностика (DBG-13), не обещание отсутствия будущих отказов.
 
 Root проверил ключевые исходники самостоятельно, не перенёс мнения консультантов в статус установленного runtime факта. Прямое противоречие старого runbook «restore → model load → WSS» исправлено на ранний control/HELLO; recovery pointer отделён от active DB routing.
 
@@ -104,11 +138,11 @@ Root проверил ключевые исходники самостоятел
 
 ## 7. Приёмка, хранение и границы завершения
 
-Новая DBG-1–10 матрица сначала требует дешёвые deterministic fixtures: invalid handler, lost ACK до/после migration, reset с реальными refs, output pagination/hash/identity и unknown push/stop. Один bounded разрешённый Stage0 run проверяет реальные provider boundaries, WSS и useful readback. Не запускать второй notebook только ради mock-сценария; не повторять весь corpus benchmark при каждой SQL правке. Ordered migration/recovery работают до первого настоящего accepted/Saved, включая GEO.
+Новая DBG-1–13 матрица сначала требует дешёвые deterministic fixtures: invalid handler, lost ACK до/после migration, reset с реальными refs, output pagination/hash/identity и unknown push/stop; дополнительно client-ref expiry, upload race, GC/lease race и наблюдаемые MCP outcomes. Один bounded разрешённый Stage0 run проверяет реальные provider boundaries, WSS и useful readback. Не запускать второй notebook только ради mock-сценария; не повторять весь corpus benchmark при каждой SQL правке. Ordered migration/recovery работают до первого настоящего accepted/Saved, включая GEO.
 
 Физическое хранение также ограничено: hash-pinned artifacts и cache reuse, без полного Dev checkout/OS image/HF cache в snapshot; PGDATA/models/secrets вне auto-published output; staging и old/candidate overlap входят в peak budget; reserve нужен для WAL/control/shutdown. Dataset не растёт новой версией от каждой правки. Unreferenced artifacts очищаются по refs/ownership, accepted/UNKNOWN — не по возрасту. Эти меры сокращают повторные downloads/install/reindex и не отнимают индекс/cache, который доказанно улучшает скорость.
 
 Предыдущие функции сохранены: свежий MCP import; настоящий saved Variant.body и отдельная provenance; даты/люди/organizations/events; GEO/toponyms/historical layers; disagreement registry/cases; роли; personal MCP, Slack, Mira/PH. GEO-only перенос не расширен. Девять protected requirement IDs/critical flags и количественные gates в `.devcoveer/requirements.json` **не меняются** этим дополнением.
 
-Документы архитектуры/configuration/storage/operations/cutover/index maintenance/AGENTS и acceptance согласованы с v4; старые отчёты сохраняют историческое содержание. Документ завершает проектные решения. Установленные SDK, exact session/stop semantics, private Dataset attach, writable-volume footprint и реальные latency/restore/iteration timings остаются обязательной проверкой реализации, а не скрытой предпосылкой или уже выполненным обещанием «швейцарских часов».
+Документы архитектуры/configuration/storage/operations/ingestion/MCP/cutover/index maintenance/AGENTS, полный skill и acceptance согласованы с v4; старые отчёты сохраняют историческое содержание. Документ завершает проектные решения. Установленные SDK, exact session/stop semantics, private Dataset attach, writable-volume footprint и реальные latency/restore/iteration timings остаются обязательной проверкой реализации, а не скрытой предпосылкой или уже выполненным обещанием «швейцарских часов».
 

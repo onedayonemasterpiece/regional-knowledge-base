@@ -21,7 +21,9 @@ Controller не запускает kernels_push только из-за поте�
 
 ## Быстрая итерация и SQL maintenance
 
-Канонические правила — [handoff §5.4/6.6](../prompts/rkb-scalable-kaggle-implementation-20261019.md), проверки — DBG-1–10. Локально/CI сначала малый isolated PG fixture, read-handler rollback со stub-моделью и lost-ACK migration case. Затем один ограниченный разрешённый runtime smoke; обычные исправления идут в этот же run по exact artifact ref/hash через existing maintenance authority.
+До runtime работы установить и прочитать [kaggle-warm-debugging](../../.agents/skills/kaggle-warm-debugging/SKILL.md), зафиксировать pin/install/read receipt по handoff§0. Полный skill включён в репозиторий; он не выдаёт runtime authority и не требует отдельного notebook каждой итерации. Direct bulk/temporary Dataset cleanup и client effects — handoff§5.5–5.6.
+
+Канонические правила — [handoff §5.4/6.6](../prompts/rkb-scalable-kaggle-implementation-20261019.md), проверки — DBG-1–13. Локально/CI сначала малый isolated PG fixture, read-handler rollback со stub-моделью и lost-ACK migration case. Затем один ограниченный разрешённый runtime smoke; обычные исправления идут в этот же run по exact artifact ref/hash через existing maintenance authority.
 
 SQL/function patch применяется к живому PG с expected revision, writer fence и PG migration lock. Ledger повторно читается под lock, transactional DDL и migration record фиксируются одним commit. Несовместимая v2 закрывает новое принятие domain commands под v1 и ждёт recorded outcomes всех прежних accepted/sealed v1 commands, включая undispatched queue и UNKNOWN в исходной DB generation. Schema transitions и accepted commands replay в исходном порядке; модельные решения не пересоздаются. Не нужен новый HTTP RPC service.
 

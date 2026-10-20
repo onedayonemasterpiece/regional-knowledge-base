@@ -26,7 +26,7 @@ Verify QUERY without fsync/cloud seal and with a failed telemetry sink, bounded 
 
 ## Warm debug and lifecycle
 
-Follow handoff §14.5 DBG-1–10. Before a live run, use small local/CI fixtures for read-handler import/probe rollback, migration C-v1/lost-ACK/v2 semantics and immutable test-fixture reset guards. Synthetic test applied_ops must remain distinct from real product Saved. No BGE/E5 is installed on DevCoveer.
+Follow handoff §14.5 DBG-1–13. Before a live run, use small local/CI fixtures for read-handler import/probe rollback, migration C-v1/lost-ACK/v2 semantics and immutable test-fixture reset guards. Synthetic test applied_ops must remain distinct from real product Saved. No BGE/E5 is installed on DevCoveer.
 
 Use one bounded authorized owned run with a stable notebook slug to verify actual SDK capabilities, early HELLO/stage diagnostics, exact loaded versions, SQL patch without model reload, artifact completeness and scoped stop/provider readback. UNKNOWN launch/stop and multi-page failure cases begin with deterministic adapter fixtures; repeat a real run only for an unresolved provider boundary. Version-specific status must identify the execution, not merely a saved notebook version. Cancel ACK, resource deletion or lease expiry is not terminal proof.
 

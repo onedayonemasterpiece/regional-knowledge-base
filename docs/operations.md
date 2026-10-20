@@ -10,6 +10,14 @@ DevCoveer raw spool имеет стартовые 4 часа/512 MiB; это н�
 
 Оба выбранных владельцем smart routes сохраняются: Dot→tools и Mira→tools. Дополнительный агент между ними и RKB не нужен. Mira/PH обращается через typed provider к существующему gateway/WSS relay; один исходящий notebook WSS не требует публичного inbound endpoint Kaggle. Одна операция search внутри Kaggle выполняет encode, SQL branches, fusion и batch hydration; в Dev возвращается компактный evidence pack, а не vector/candidates для следующего roundtrip. Обычный Live search не выполняет цепочку дополнительных fetch и не загружает proof pixels без запроса.
 
+## Перед реализацией
+
+Установить/прочитать [kaggle-warm-debugging](../.agents/skills/kaggle-warm-debugging/SKILL.md) целиком по pin и receipt из handoff§0. Skill обязателен для дешёвых Kaggle итераций, не является разрешением на runtime effects. В нём обновлять подтверждённые общие уроки; не создавать второй runbook/controller.
+
+Большие файлы идут по handoff§5.5 напрямую клиентское hosting/storage↔Kaggle; control/auth через Dev, bytes без Dev proxy. Client fileParams URL не перевыпускается сервером; истечение означает reattach той же operation. Controller tickets имеют отдельные attempts, exact object verification, private visibility/output и current grant checks. Жизнь signed URL и уже начатого consumer различается. Временный Dataset — исключение, не транспорт каждой итерации.
+
+GC exact temporary resource использует общий guard с выдачей consumer leases; новые refs закрываются до удаления, существующие consumers/UNKNOWN/recovery защищены. Readback native absence закрывает удаление; quota сверяется только если API наблюдаем, unsupported delete остаётся cleanup_blocked_by_provider. Не удалять permanent DB Dataset и не считать cleanup остановкой compute. Полные сценарии DBG-11–13, без повторного прогона всего корпуса на каждую правку.
+
 ## Перед cutover
 
 1. Зафиксировать actual executing SHA, PG 17/pgvector/model/tokenizer/schema pins, resource mount/quota и применимые differences от main. Не объявлять draft PR151 или историческую canary production implementation.
