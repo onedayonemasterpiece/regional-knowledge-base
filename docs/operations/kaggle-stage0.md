@@ -23,8 +23,8 @@ READY state, permissions or lifecycle terminal proof. Legacy workers can omit it
 
 [`kaggle-cp312-x86_64-wheels.json`](../../scripts/production/manifests/kaggle-cp312-x86_64-wheels.json)
 is a **metadata-only candidate**, not an observed Kaggle ABI or deployment.
-It fixes 49 complete transitive package versions and one compatible wheel per
-package (254,082,374 compressed bytes), including the protected CPU/BGE versions.
+It fixes 50 complete transitive package versions and one compatible wheel per
+package (259,629,367 compressed bytes), including the protected CPU/BGE versions.
 The resolution used uv 0.12.15, CPython 3.12 and
 `--python-platform x86_64-manylinux_2_28 --only-binary :all: --torch-backend cpu`.
 PyPI/official PyTorch metadata supplies SHA256, URL and size; the Torch size was

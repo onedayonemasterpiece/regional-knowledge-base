@@ -5,8 +5,8 @@
   "machine": "x86_64",
   "minimum_glibc": "2.28",
   "resolver": "uv 0.12.15",
-  "resolver_lock_sha256": "a512e6b1c70c877fe2c50d609f3293df8892d8e6d5a5de6f492e4f1d17a9c952",
-  "wheel_bytes": 254082374,
+  "resolver_lock_sha256": "4196b1de258e5bb681a5fd6a4b7620fee864cc7a2954eb5b6c07689a9dee1225",
+  "wheel_bytes": 259629367,
   "packages": [
     {
       "package": "aiohappyeyeballs",
@@ -399,6 +399,14 @@
       "url": "https://files.pythonhosted.org/packages/bc/7b/ca212cbe170ac8b96e45317ecbcf9c3c3ecf0cdec98d5b088a9c4088929b/yarl-1.25.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
       "size": 117050,
       "sha256": "c6f117789d22dce188e5754e8bc65b7e6ebf8cb73963b9fa761f672a5883769d"
+    },
+    {
+      "package": "zstandard",
+      "version": "0.25.0",
+      "name": "wheels-cp312/zstandard-0.25.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/53/60/7be26e610767316c028a2cbedb9a3beabdbe33e2182c373f71a1c0b88f36/zstandard-0.25.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "size": 5546993,
+      "sha256": "5a56ba0db2d244117ed744dfa8f6f5b366e14148e00de44723413b2f3938a902"
     }
   ]
 }
