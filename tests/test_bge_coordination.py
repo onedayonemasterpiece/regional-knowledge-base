@@ -12,7 +12,7 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from regional_knowledge.bge_broker import register_routes
-from regional_knowledge.bge_contract import REVISION, SPACE
+from regional_knowledge.bge_contract import SPACE
 from regional_knowledge.bge_queue import BgeQueue, _WAITERS
 
 
@@ -35,6 +35,10 @@ def test_status_and_results_do_not_wait_for_unrelated_sqlite_writer(tmp_path):
         assert queue.lookup('actor', 'original')['id'] == job_id
         assert queue.status()['state'] == 'ready'
         assert queue.document_pending() == 0
+        # Production creates a new queue object per search; opening that object
+        # must not silently reintroduce the same writer lock.
+        another_instance = BgeQueue(queue.path)
+        assert another_instance.result('actor', job_id)['state'] == 'claimed'
         with pytest.raises(PermissionError):
             queue.result('another-actor', job_id)
     with queue.connect(write=False) as db:
@@ -75,6 +79,21 @@ def test_expired_assignment_returns_conflict_and_run_can_claim_again(tmp_path):
         revoked = client.post('/bge-worker/heartbeat', json={'run_id': run, 'space': SPACE}, headers=headers)
         assert revoked.status_code == 403
         assert revoked.json() == {'error': 'revoked_run'}
+
+
+def test_observation_projects_expired_successor_without_mutating_control(tmp_path):
+    now = [1000.0]
+    queue, run, _, _, _ = prepared(tmp_path, lambda: now[0])
+    with queue.connect() as db:
+        successor = queue._new_run(db, now[0])
+        db.execute('update control set successor=? where id=1', (successor,))
+        now[0] += 901
+        db.execute('update runs set heartbeat=?,useful=? where id=?', (now[0], now[0], run))
+    status = queue.status()
+    assert status['state'] == 'ready'
+    assert status['successor_starting'] is False
+    with queue.connect(write=False) as db:
+        assert db.execute('select successor from control').fetchone()[0] == successor
 
 
 @pytest.mark.asyncio

@@ -43,6 +43,10 @@ class BgeQueue:
         self.path = Path(path)
         self.clock = clock
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Serving readers must not rerun schema initialization behind every
+        # writer. A missing/older schema still takes the serialized migration.
+        if self.path.exists() and self._schema_current():
+            return
         with self.connect() as db:
             db.executescript('''
             pragma journal_mode=WAL;
@@ -65,6 +69,17 @@ class BgeQueue:
             if 'provider_version' not in {row['name'] for row in db.execute('pragma table_info(runs)')}:
                 db.execute('alter table runs add column provider_version integer')
         self.path.chmod(0o600)
+
+    def _schema_current(self):
+        try:
+            with self.connect(write=False) as db:
+                db.execute('select id,status,token_hash,started,heartbeat,useful,ready_at,provider_ref,launch_state,diagnostics,provider_version from runs limit 0')
+                if db.execute('select current_run,successor from control where id=1').fetchone() is None:
+                    return False
+                db.execute('select id,actor,idempotency,kind,texts,identity,state,created,updated,run_id,claim,lease_until,result,attempt from jobs limit 0')
+            return True
+        except sqlite3.OperationalError:
+            return False
 
     @contextlib.contextmanager
     def connect(self, *, write=True):
@@ -112,7 +127,7 @@ class BgeQueue:
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
                 db.execute('update control set current_run=null where current_run=?',(run['id'],))
                 db.execute('update control set successor=null where successor=?',(run['id'],))
-        db.execute("update jobs set state='pending',run_id=null,claim=null where state='claimed' and lease_until<?",(now,))
+        db.execute("update jobs set state='pending',run_id=null,claim=null where state='claimed' and lease_until<=?",(now,))
 
     def _ensure(self, db, now, *, useful=True):
         self._expire(db,now)
@@ -283,7 +298,9 @@ class BgeQueue:
         control=db.execute('select * from control where id=1').fetchone()
         run=db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
         if run and self._run_expired(run,now):run=None
-        return {'state':run['status'] if run else 'stopped','space':SPACE,'queue_depth':db.execute("select count(*) from jobs where state!='done'").fetchone()[0],'successor_starting':bool(control['successor']),'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
+        successor=db.execute('select * from runs where id=?',(control['successor'],)).fetchone()
+        successor_starting=bool(successor and not self._run_expired(successor,now))
+        return {'state':run['status'] if run else 'stopped','space':SPACE,'queue_depth':db.execute("select count(*) from jobs where state!='done'").fetchone()[0],'successor_starting':successor_starting,'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
 
     def status(self):
         with self.connect(write=False) as db:

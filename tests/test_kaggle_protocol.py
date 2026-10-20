@@ -124,6 +124,13 @@ def test_degradation_and_unknown_cursors_are_honest():
     assert unavailable.observed_data_seq is None
 
 
+@pytest.mark.parametrize('evidence', [(), (item(),)])
+def test_withdrawal_gate_can_report_empty_or_retained_subset(evidence):
+    response = result(status='degraded', mode='hybrid', reason='evidence_withdrawn',
+                      evidence=evidence)
+    assert decode_envelope(encode_envelope(response)) == response
+
+
 def test_exact_composite_dependencies_survive_roundtrip():
     evidence = item(kind="story", exact_variant_ref="variant-1", text_form="excerpt",
                     continuation="scoped-locator",

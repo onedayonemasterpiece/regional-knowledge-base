@@ -10,6 +10,9 @@ Status, lookup, result and pending-count reads use query-only snapshot
 transactions, without `BEGIN IMMEDIATE`. They project expired assignments as
 pending without mutating the queue. Claims and maintenance still reconcile
 persisted leases transactionally; observation does not renew them.
+Opening an already compatible queue probes the schema read-only instead of
+running migrations per search; the search constructs its queue off the event
+loop. Creation or an actual schema upgrade still uses the serialized write path.
 
 Local result waiters are notified only after completion commits, including
 between queue instances in the same process. A bounded 250 ms reconciliation

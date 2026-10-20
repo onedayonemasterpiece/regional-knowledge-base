@@ -155,7 +155,7 @@ class QueryResult(ReadIdentity):
         "dense_unavailable", "projection_lag", "deadline_exceeded", "not_ready",
         "disconnected", "caller_cancelled", "turn_replaced", "query_too_large",
         "invalid_filters", "invalid_input", "token_limit_exceeded", "access_denied",
-        "prior_write_pending", "context_gap", "internal_error",
+        "prior_write_pending", "context_gap", "evidence_withdrawn", "internal_error",
     ] | None = None
     prior_write_pending: bool = False
     context_gap: bool = False

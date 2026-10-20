@@ -25,7 +25,7 @@ async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,a
     query_hash=hashlib.sha256(query.encode()).hexdigest()
     # Kaggle is the sole BGE encoder for queries and documents.
     # The remote worker is launched only via the existing durable queue.
-    queue=BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
+    queue=await asyncio.to_thread(BgeQueue,os.environ['RKB_BGE_QUEUE_PATH'])
     status=await asyncio.to_thread(queue.status)
     job=None;bge_vector=None;bge_times={}
     try:
