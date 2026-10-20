@@ -41,6 +41,15 @@ introduce E5 into the target or establish target quality/latency acceptance.
 Kaggle QUERY executes both SQL branches locally and must likewise fail explicitly
 when dense computation is unavailable. Bounded hybrid candidate recall may
 remain explicitly incomplete after both branches actually run.
+The Kaggle executor's finite diagnostics queue emits `kaggle_read_completed`
+with SHA-256 `request_ref`, connection/turn generations and `stages_ms` for
+tokenization, pool acquisition, encoding, lexical SQL, dense SQL, hydration and
+serialization. `executed_branches` lists only branches whose measured call
+completed; a mode label alone supplies no execution evidence. The controller
+must use its own opaque request ID and retain its relation to the public trace
+when wiring target reads. Hashing avoids echoing arbitrary wire locator text.
+This source record is not proof that production emits or retains those stages;
+actual WSS/controller correlation and the deployed sink require E2E verification.
 The existing public `story_search` likewise defaults to hybrid and refuses
 lexical-only or unavailable/stale-vector discovery; direct saved-story readback
 retains its separate contract. Internal branch probes and exact source/catalog

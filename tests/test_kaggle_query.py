@@ -354,7 +354,15 @@ async def test_real_fused_query_is_honestly_degraded_with_snapshot_source_depend
     source = result.evidence[0].dependencies.source_revisions[0]
     assert source == SourceDependency(source_id=SOURCE, content_revision=1, eligibility_revision=1)
     assert decode_envelope(encode_envelope(result)) == result
-    timings = telemetry.get_nowait()
+    record = telemetry.get_nowait()
+    from hashlib import sha256
+    assert record['event'] == 'kaggle_read_completed'
+    assert record['request_ref'] == sha256(query().request_id.encode()).hexdigest()
+    assert record['connection_generation'] == query().connection_generation
+    assert record['turn_generation'] == query().turn_generation
+    assert record['executed_branches'] == ('lexical', 'dense')
+    assert query().query not in str(record)
+    timings = record['stages_ms']
     assert {"encode_ms", "lexical_ms", "dense_ms", "hydrate_ms"} <= set(timings)
     assert all(type(value) is float and value >= 0 for value in timings.values())
 
