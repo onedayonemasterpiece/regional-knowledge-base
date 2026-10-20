@@ -321,7 +321,7 @@ def _install(root_fd,root,plan,inventory,deadline):
                 stream.write(requirements);stream.flush();os.fsync(stream.fileno())
         finally:os.close(fd)
         command=[sys.executable,'-I','-m','pip','--isolated','--disable-pip-version-check',
-            'install','--no-index','--no-deps','--only-binary=:all:','--require-hashes',
+            'install','--break-system-packages','--no-index','--no-deps','--only-binary=:all:','--require-hashes',
             '--no-cache-dir','--no-compile','--no-input','-r',str(root/task/'requirements.txt')]
         result=subprocess.run(command,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,timeout=_remaining(deadline),check=False)

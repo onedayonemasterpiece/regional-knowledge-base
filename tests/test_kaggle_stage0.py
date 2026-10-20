@@ -178,7 +178,7 @@ def test_one_offline_hash_checked_install_and_actual_version_recheck(sandbox,mon
     def pip(command,**options):
         calls.append(command)
         assert command[:4]==[stage0.sys.executable,'-I','-m','pip']
-        for flag in ('--isolated','--no-index','--no-deps','--only-binary=:all:','--require-hashes','--no-cache-dir','--no-compile'):
+        for flag in ('--isolated','--break-system-packages','--no-index','--no-deps','--only-binary=:all:','--require-hashes','--no-cache-dir','--no-compile'):
             assert flag in command
         requirements=Path(command[command.index('-r')+1])
         assert requirements.parent.parent==root and requirements.stat().st_mode&0o777==0o600
