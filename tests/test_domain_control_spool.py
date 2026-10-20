@@ -16,7 +16,8 @@ from test_recovery_journal import fixture as journal_fixture
 
 
 @pytest.mark.asyncio
-async def test_case_requires_exact_current_capabilities_attribution_and_actor_without_book_pending(state):
+@pytest.mark.parametrize('current',[False,True])
+async def test_case_requires_exact_current_capabilities_attribution_and_actor_without_book_pending(state,current):
     s=state;_,journal=journal_fixture();actor=s.auth.p.other.subject
     handler=case_handler(CASE_EDIT,check_sha256='a'*64,apply_sha256='b'*64)
     spool=ControlSpool(s.q,s.auth.p.registry,journal,HandlerRegistry([handler]))
@@ -24,6 +25,10 @@ async def test_case_requires_exact_current_capabilities_attribution_and_actor_wi
         logical_time='2026-10-20T18:00:00Z',case_id='73000000-0000-0000-0000-000000000001',
         object_id='73000000-0000-0000-0000-000000000001',action='create',command=create(),source_dependencies=[],
         attribution=dict(person_id=actor,recorded_by=actor,route='personal',link_id=None,link_revision=None,human_reading_confirmed=False))
+    if current:
+        from regional_knowledge.kaggle_domain_bindings import DOMAIN_REVISIONS,current_handler
+        c=replace(c,schema_revision=DOMAIN_REVISIONS.schema,function_revision=DOMAIN_REVISIONS.function,executor_revision=DOMAIN_REVISIONS.executor)
+        spool.registry=HandlerRegistry([current_handler(c.route,check_sha256='a'*64,apply_sha256='b'*64)])
     try:
         assert decode_command(c.encode())==c
         with pytest.raises(SpoolDenied):await spool.stage_domain_command(s.auth.p.personal,c,database_generation='case-db')

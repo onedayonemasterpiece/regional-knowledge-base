@@ -309,7 +309,10 @@ class ControlSpool:
         """
         if command.route.startswith('disagreement.'):
             from .disagreement_native import validate_case_command,required_capabilities
-            doc=validate_case_command(command)
+            if command.schema_revision=='rkb-v4-sql001-011-v1':
+                from .kaggle_domain_bindings import validate_current_command,required_current_capabilities
+                doc=validate_current_command(command);capabilities=required_current_capabilities(command)
+            else:doc=validate_case_command(command);capabilities=required_capabilities(command)
             if (not isinstance(context,RequestAuthority) or context.public_only
                     or context.route not in ('owner','personal','expert')):
                 raise SpoolDenied('current personal case authority required')
@@ -319,7 +322,7 @@ class ControlSpool:
                     or attr['recorded_by']!=(context.executor_id or context.principal.subject)):
                 raise SpoolDenied('case attribution differs from current authenticated context')
             try:
-                for capability in sorted(required_capabilities(command)):
+                for capability in sorted(capabilities):
                     actor=await _database(self.participants.require,context,capability)
             except ParticipantError:raise SpoolDenied('current case participant capabilities required') from None
             if actor!=command.person_id:raise SpoolDenied('command person does not authenticate its actor')
@@ -377,6 +380,13 @@ class ControlSpool:
         _bounded(command.operation_key,4096)
         frozen,data=_snapshot(command,self.max_command_bytes)
         handler=self.registry.resolve(frozen)
+        if frozen.schema_revision=='rkb-v4-sql001-011-v1':
+            from .kaggle_domain_bindings import current_handler,validate_current_command
+            expected=current_handler(frozen.route,check_sha256=handler.check.definition_sha256,
+                apply_sha256=handler.apply.definition_sha256)
+            if handler!=expected:raise SpoolDenied('only exact reviewed fresh11 handler supported')
+            validate_current_command(frozen)
+            return frozen,data,handler
         if frozen.route.startswith('disagreement.'):
             from .disagreement_native import case_handler,validate_case_command
             expected=case_handler(frozen.route,check_sha256=handler.check.definition_sha256,

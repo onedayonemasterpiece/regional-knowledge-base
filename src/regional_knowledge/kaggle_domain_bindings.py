@@ -96,3 +96,12 @@ def resolved_current_story_access_command(**arguments):
 def resolved_current_case_command(**arguments):
     from .disagreement_native import resolved_case_command
     return _new_at_current(resolved_case_command(**arguments))
+
+
+def required_current_capabilities(command):
+    validate_current_command(command)
+    if command.route.startswith('disagreement.'):
+        from .disagreement_native import CASE_REVISIONS,required_capabilities
+        return required_capabilities(_view(command,CASE_REVISIONS))
+    if command.route in ('story.edit.v1','story.access.v1'):return frozenset({'public_search'})
+    return frozenset({'import'})

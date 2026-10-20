@@ -40,7 +40,10 @@ def decode_command(data):
             'logical_time','schema_revision','function_revision','executor_revision','ids','expected_revisions','kind')},
             payload=base64.b64decode(value['payload_b64'],validate=True))
         if command.encode()!=data:raise ValueError
-        if command.route==SOURCE_IMPORT:validate_import_command(command)
+        if command.schema_revision=='rkb-v4-sql001-011-v1':
+            from .kaggle_domain_bindings import validate_current_command
+            validate_current_command(command)
+        elif command.route==SOURCE_IMPORT:validate_import_command(command)
         elif command.route=='source.import.v2':
             from .source_import_v2 import validate_import_v2_command
             validate_import_v2_command(command)
@@ -130,7 +133,10 @@ def fixed_registry(database,entries):
     if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=12:raise ValueError('fixed source registry required')
     for entry in entries:
         if not isinstance(entry,dict) or set(entry)!={'route','check_sha256','apply_sha256'}:raise ValueError('fixed source registry pins required')
-        if entry['route']==SOURCE_IMPORT:
+        if revisions.schema=='rkb-v4-sql001-011-v1':
+            from .kaggle_domain_bindings import current_handler
+            handler=current_handler(entry['route'],check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
+        elif entry['route']==SOURCE_IMPORT:
             handler=source_import_handler(revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
         elif entry['route']=='source.import.v2':
             from .source_import_v2 import source_import_v2_handler

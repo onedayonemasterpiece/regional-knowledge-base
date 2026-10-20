@@ -33,6 +33,7 @@ from .source_import_v2 import IMPORT_V2_DEPENDENCY, SOURCE_IMPORT_V2, STORY_REVI
 from .source_import_v3 import IMPORT_V3_DEPENDENCY, SOURCE_IMPORT_V3, FACT_REVISIONS, resolved_import_v3_command
 from .source_import_v4 import IMPORT_V4_DEPENDENCY, SOURCE_IMPORT_V4, resolved_import_v4_command
 from .story_editorial import EDITORIAL_REVISIONS
+from .kaggle_domain_bindings import DOMAIN_REVISIONS,resolved_current_import_v4_command
 from .story_contracts import StageStoryCandidateInput
 from .stage_graph import StagedGraph, compile_model_stage, merge_stage, validate_graph
 
@@ -89,7 +90,8 @@ class KaggleSourceImporter:
         choices = [(versions, builder) for route,versions,dependency,builder in (
             (SOURCE_IMPORT_V2,STORY_REVISIONS,IMPORT_V2_DEPENDENCY,resolved_import_v2_command),
             (SOURCE_IMPORT_V3,FACT_REVISIONS,IMPORT_V3_DEPENDENCY,resolved_import_v3_command),
-            (SOURCE_IMPORT_V4,EDITORIAL_REVISIONS,IMPORT_V4_DEPENDENCY,resolved_import_v4_command))
+            (SOURCE_IMPORT_V4,EDITORIAL_REVISIONS,IMPORT_V4_DEPENDENCY,resolved_import_v4_command),
+            (SOURCE_IMPORT_V4,DOMAIN_REVISIONS,IMPORT_V4_DEPENDENCY,resolved_current_import_v4_command))
             if (handler:=self.spool.registry.handlers.get(('domain_command',route,*versions.wire()))) is not None
             and handler.dependency == dependency]
         if len(choices)!=1:
@@ -596,7 +598,7 @@ class KaggleSourceImporter:
                     dimension=DIMENSION, max_tokens=MAX_TOKENS), passages=resolved[:len(passages)], semantic=semantic,
                 research=dict(frontier_id=str(uuid5(UUID(row['ingestion_id']), 'research')),
                     **research.model_dump(mode='json')))
-            if self.import_revisions==EDITORIAL_REVISIONS:
+            if self.import_revisions in (EDITORIAL_REVISIONS,DOMAIN_REVISIONS):
                 from .contracts import StartMetadataInput
                 from .source_manifest import build_source_manifest
                 proof=await self._native_proof(access,row,receipt,graph)

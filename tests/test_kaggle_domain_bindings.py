@@ -22,3 +22,16 @@ def test_current_validation_preserves_exact_original_semantics_and_never_relabel
     with pytest.raises(ValueError):validate_current_command(replace(current,function_revision='unreviewed-latest'))
     old_handler=current_handler(current.route,check_sha256='a'*64,apply_sha256='b'*64)
     assert old_handler.revisions==DOMAIN_REVISIONS and old_handler.route==old.route
+
+
+def test_fixed_current_registry_and_wire_keep_full_current_tuple_and_payload():
+    from types import SimpleNamespace
+    from regional_knowledge.kaggle_source_commands import fixed_registry,decode_command
+    c=resolved_current_import_v4_command(sequence=1,operation_key='current-source-1',request_id='current-request',
+        person_id='60000000-0000-0000-0000-000000000002',logical_time='2026-10-20T18:00:00Z',
+        source_id=manifest_payload()['source_manifest']['source_id'],payload=manifest_payload())
+    db=SimpleNamespace(schema_revision=DOMAIN_REVISIONS.schema,function_revision=DOMAIN_REVISIONS.function,
+        executor_revision=DOMAIN_REVISIONS.executor)
+    registry=fixed_registry(db,[dict(route=c.route,check_sha256='a'*64,apply_sha256='b'*64)])
+    assert registry.resolve(c).revisions==DOMAIN_REVISIONS
+    assert decode_command(c.encode()).encode()==c.encode()
