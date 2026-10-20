@@ -197,7 +197,8 @@ class TargetServiceStartup:
         if self.gate.facts_supported():
             self.routes.update({'source.fact_read':self.backend.source_fact_read,
                 'source.calendar':self.backend.story_calendar,
-                'source.observations':self.backend.story_observation_search})
+                'source.observations':self.backend.story_observation_search,
+                'source.observation_compare':self.backend.story_observation_compare})
         self.editorial=None
         editorial_available=self.gate.editorial_supported() and config.import_tokenizer is not None
         if editorial_available:self.routes.update({'story.edit':self.backend.story_edit,'story.access':self.backend.story_access})

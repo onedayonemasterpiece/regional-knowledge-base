@@ -188,14 +188,20 @@ class KaggleSourceBackend:
                 backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json')}
 
     @staticmethod
-    def _render_fact(result, *, attempt):
-        return dict(status=result.status,reason=result.reason,items=list(result.records),
+    def _render_fact(result, *, attempt, comparison=False):
+        if comparison and result.status=='ok':
+            from .observation_comparison import render_comparison
+            compared=render_comparison(result)
+        else:compared={}
+        output=dict(status=result.status,reason=result.reason,items=list(result.records),
             has_more=result.next_cursor is not None,next_cursor=result.next_cursor,
             retrieval_mode='indexed_native_source_facts',
             observed_data_seq=result.observed_data_seq,
             observed_projection_seq=result.observed_projection_seq,
             read_trace=ReadTrace(**attempt.correlation(),
                 backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json'))
+        output.update(compared)
+        return output
 
     @staticmethod
     def _render_graph(result,*,attempt):
@@ -300,7 +306,7 @@ class KaggleSourceBackend:
                 if (gated.result.status != 'ok' if exact else gated.result.mode != 'hybrid'):
                     raise ToolError(json.dumps({'status': status, 'reason': reason}))
                 render = (lambda value:self._render_graph(value,attempt=attempt)) if graph_request is not None else (lambda value:BookFindOutput(
-                    query=catalog_request['query'],results=list(value.records))) if catalog_request is not None else (lambda value:self._render_fact(value,attempt=attempt)) if fact_request is not None else (lambda value:self._render_story(value,attempt=attempt)) if story_request is not None else (lambda value: self._render_fetch(value, locator=exact_locator, attempt=attempt)) if exact_locator is not None else (
+                    query=catalog_request['query'],results=list(value.records))) if catalog_request is not None else (lambda value:self._render_fact(value,attempt=attempt,comparison=fact_request['action']=='observation_compare')) if fact_request is not None else (lambda value:self._render_story(value,attempt=attempt)) if story_request is not None else (lambda value: self._render_fetch(value, locator=exact_locator, attempt=attempt)) if exact_locator is not None else (
                     lambda value: self._render(value, evidence=evidence, attempt=attempt))
                 output = render(gated.result)
                 if not retain_read_output(self.source_gate, gated, render,
@@ -426,3 +432,7 @@ class KaggleSourceBackend:
     async def story_observation_search(self,principal,*,metric_key,unit_code=None,limit=3,cursor=None):
         return await self._search(None,principal,evidence=True,kinds=('fact',),fact_request=dict(
             action='observations',metric_key=metric_key,unit_code=unit_code,limit=limit,cursor=cursor))
+
+    async def story_observation_compare(self,story_id,left_id,right_id,principal):
+        return await self._search(None,principal,evidence=True,kinds=('fact',),fact_request=dict(
+            action='observation_compare',story_id=story_id,left_id=left_id,right_id=right_id,limit=2))

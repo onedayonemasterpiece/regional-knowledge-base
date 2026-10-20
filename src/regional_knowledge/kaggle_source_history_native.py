@@ -122,7 +122,7 @@ class NativeSourceHistoryObserver:
                 or not {'source.fetch','source.search','source.withdraw'}<=set(args['routes'])
                 or set(args['routes'])-{'source.fetch','source.search','source.withdraw','source.import',
                     'story.get','story.history','story.search','story.variants','story.edit','story.access',
-                    'source.calendar','source.fact_read','source.observations','source.catalog',
+                    'source.calendar','source.fact_read','source.observations','source.observation_compare','source.catalog',
                     'case.read','case.edit','case.access','case.contribute','case.conclusion','geo.identity_read','geo.members_read','source.entity_read','source.entity_list'}
                 or type(args['pending_sequences']) is not list or len(args['pending_sequences'])>self.max_commands
                 or len(set(args['pending_sequences']))!=len(args['pending_sequences'])
