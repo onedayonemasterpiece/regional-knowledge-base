@@ -442,6 +442,8 @@ class SharedReadAdmission:
                     continue
                 if not ready:continue
                 if doc['kind']=='source_command':
+                    if (self.queue._source_commands is None
+                            or self.queue._source_commands.maintenance_blocks_dispatch()):continue
                     context=self._commands.get(doc['actor'])
                     if context is not None and self.queue._source_commands is not None:
                         try:actor=await self.queue._source_commands.authorize_job(context,doc)
@@ -499,6 +501,8 @@ class SharedReadAdmission:
                 self._read_streak=min(self.max_read_streak,self._read_streak+1)
                 self._dialog_turn[(person,read.dialog)]=self._turn+1
             else:
+                if (selected_doc['kind']=='source_command'
+                        and self.queue._source_commands.maintenance_blocks_dispatch()):return None
                 # Reserve before the durable writer await. Cancellation of the
                 # dispatcher cannot free an ambiguously committed assignment.
                 resource=ResourceClaim(run_id,run['runtime_incarnation'],secrets.token_urlsafe(24),connection_generation,'document',selected_doc['id'])

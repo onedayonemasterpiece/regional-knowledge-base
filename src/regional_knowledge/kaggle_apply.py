@@ -5,7 +5,9 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import re
+import time
 import weakref
 from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -19,6 +21,20 @@ from psycopg.rows import tuple_row
 from psycopg.types.json import Jsonb
 
 from .recovery_journal import AcceptedSeal, ExactCommand, RecoveryJournal, StaleWriter
+
+_LOG = logging.getLogger(__name__)
+
+
+def _log_pg_failure(error, *, command, stage, started):
+    # PostgreSQL messages and SQL parameters can contain private source text.
+    # Retain only the fixed SQLSTATE and execution boundary for diagnosis.
+    code = getattr(error, 'sqlstate', None)
+    if type(code) is not str or re.fullmatch('[A-Z0-9]{5}', code) is None:
+        code = 'unknown'
+    _LOG.warning('native_apply_failure sequence=%s command_sha256=%s stage=%s '
+                 'elapsed_ms=%s error_type=%s sqlstate=%s', command.sequence,
+                 _hash(command.encode()), stage, round((time.monotonic()-started)*1000, 1),
+                 type(error).__name__, code)
 
 
 class ApplyError(RuntimeError):
@@ -372,10 +388,15 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
         command_hash = await journal.verify_accepted(seal, command)
         if command_hash != _hash(encoded):
             raise ApplyConflict("journal did not verify the exact immutable command")
+        started = time.monotonic()
+        stage = 'transaction'
         try:
             async with connection.transaction():
+                stage = 'settings'
                 await _settings(connection)
+                stage = 'writer_state'
                 state = await _state(connection, database_generation, writer_generation)
+                stage = 'existing_outcome'
                 duplicates = await (await connection.execute("""SELECT operation_key,sequence,command_bytes,
                     command_sha256,status,outcome_bytes,outcome_sha256,database_generation
                     FROM rkb_v4.applied_ops WHERE operation_key=%s OR sequence=%s""",
@@ -406,9 +427,11 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                                     "predecessor": transition.predecessor}
                         if command.payload != _json(expected) or state[6] != transition.predecessor:
                             raise ApplyConflict("migration artifact/predecessor differs from trusted transition")
+                    stage = 'function_pins'
                     await _definition(connection, handler.check, precondition=True)
                     await _definition(connection, handler.apply, precondition=False)
                     args = (command.payload, Jsonb(dict(command.ids)), Jsonb(dict(command.expected_revisions)), command.logical_time)
+                    stage = 'precondition'
                     checked = await (await connection.execute(sql.SQL("SELECT ") + _call(handler.check), args)).fetchone()
                     if checked is None or type(checked[0]) is not bool:
                         raise ApplyConflict("precondition function must return one boolean")
@@ -416,6 +439,7 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                     result = b""
                     after = before
                     if checked[0]:
+                        stage = 'effect'
                         row = await (await connection.execute(sql.SQL("WITH x AS MATERIALIZED (SELECT ")
                             + _call(handler.apply) + sql.SQL(" AS body) SELECT octet_length(body), "
                             "CASE WHEN octet_length(body)<=%s THEN body END FROM x"), (*args, max_outcome_bytes))).fetchone()
@@ -432,6 +456,7 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                     if len(outcome) > max_outcome_bytes:
                         raise ApplyLimit("canonical outcome exceeds byte budget")
                     digest = _hash(outcome)
+                    stage = 'receipt'
                     await connection.execute("""INSERT INTO rkb_v4.applied_ops VALUES
                         (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                         (command.operation_key, command.sequence, encoded, command_hash, seal.manifest.sha256,
@@ -444,8 +469,11 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                         (command.sequence, *after.wire(), migration_id, migration_hash))
                     receipt = ApplyReceipt(database_generation, command.operation_key, command.sequence,
                                            command_hash, status, outcome, digest, False)
+                stage = 'commit'
             return receipt  # Only after the actual commit ACK.
-        except psycopg.OperationalError:
+        except psycopg.OperationalError as error:
+            _log_pg_failure(error, command=command, stage=stage, started=started)
             raise ApplyUnknown("apply outcome unknown; reconcile same operation in original database generation") from None
-        except psycopg.Error:
+        except psycopg.Error as error:
+            _log_pg_failure(error, command=command, stage=stage, started=started)
             raise ApplyExecutionError("PostgreSQL apply failed; transaction must be reconciled/rolled back") from None

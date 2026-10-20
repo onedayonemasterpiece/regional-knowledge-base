@@ -284,3 +284,99 @@ def test_geo_window_cannot_expand_ordinary_source_or_unlisted_operation_budget(e
     for command in (env.cmd,SimpleNamespace(**dict(vars(geo),operation_key='not-configured'))):
         with pytest.raises(SpoolConflict):p.v._charge_history([p.v.max_history_bytes,0],command,1)
     with pytest.raises(SpoolConflict):p.v._charge_history([0,GEO_BOOTSTRAP_HISTORY_BYTES],geo,1)
+
+
+@pytest.mark.asyncio
+async def test_history_page_timeout_drains_native_abort_before_unlock(env):
+    """A timed-out PAGE cannot release writes while its native SHARE tx lives."""
+    p=pair(env);p.v.timeout_seconds=.03
+    original=p.v._phase;aborting=asyncio.Event();release_abort=asyncio.Event()
+    async def phase(binding,args):
+        if args['action']=='page':await asyncio.Event().wait()
+        if args['action']=='abort':
+            aborting.set();await release_abort.wait()
+        return await original(binding,args)
+    p.v._phase=phase
+    task=asyncio.create_task(p.v.establish_genesis(p.b))
+    try:
+        await asyncio.wait_for(aborting.wait(),.5)
+        assert env.spool._lock.locked() and env.spool._native_history_unsettled
+        assert p.n._sessions and not task.done()
+        release_abort.set()
+        with pytest.raises(TimeoutError):await task
+        assert not env.spool._lock.locked() and not env.spool._native_history_unsettled
+        assert not p.n._sessions and p.v._coverage is None
+        assert p.calls[-1]['action']=='abort'
+    finally:
+        release_abort.set()
+        if not task.done():task.cancel();await asyncio.gather(task,return_exceptions=True)
+        await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repeated_page_cancel_keeps_exclusion_until_actual_abort(env):
+    p=pair(env);original=p.v._phase
+    paging=asyncio.Event();aborting=asyncio.Event();release_abort=asyncio.Event()
+    async def phase(binding,args):
+        if args['action']=='page':paging.set();await asyncio.Event().wait()
+        if args['action']=='abort':aborting.set();await release_abort.wait()
+        return await original(binding,args)
+    p.v._phase=phase;task=asyncio.create_task(p.v.establish_genesis(p.b))
+    try:
+        await asyncio.wait_for(paging.wait(),.5);task.cancel()
+        await asyncio.wait_for(aborting.wait(),.5)
+        for _ in range(3):task.cancel();await asyncio.sleep(0)
+        assert not task.done() and env.spool._lock.locked()
+        assert env.spool._native_history_unsettled and p.n._sessions
+        release_abort.set()
+        with pytest.raises(asyncio.CancelledError):await task
+        assert not p.n._sessions and not env.spool._lock.locked()
+        assert not env.spool._native_history_unsettled and p.v._coverage is None
+    finally:
+        release_abort.set()
+        if not task.done():task.cancel();await asyncio.gather(task,return_exceptions=True)
+        await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_abort_unknown_retains_write_guard_until_fresh_exact_native_close(env):
+    p=pair(env);original=p.v._phase
+    async def broken(binding,args):
+        if args['action']=='page':raise SpoolConflict('synthetic page receipt unavailable')
+        if args['action']=='abort':raise TimeoutError('synthetic unknown abort')
+        return await original(binding,args)
+    p.v._phase=broken
+    try:
+        with pytest.raises(SpoolConflict):await p.v.establish_genesis(p.b)
+        assert not env.spool._lock.locked() and env.spool._native_history_unsettled
+        assert p.n._sessions and p.v._coverage is None
+        p.v._phase=original
+        # An arbitrary new request cannot prove the old native transaction ended.
+        with pytest.raises(SpoolConflict,match='session_busy'):await p.v.establish_genesis(p.b)
+        assert env.spool._native_history_unsettled
+        await p.n.aclose()  # Actual native owner closes the previous transaction.
+        assert env.spool._native_history_unsettled
+        proof=await p.v.establish_genesis(p.b)
+        assert proof.current() and not env.spool._native_history_unsettled
+        assert not p.n._sessions
+    finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_lost_open_receipt_never_guesses_native_lock_release(env):
+    p=pair(env);original=p.v._phase
+    async def lost(binding,args):
+        value=await original(binding,args)
+        if args['action']=='open':raise TimeoutError('synthetic lost open receipt')
+        return value
+    p.v._phase=lost
+    try:
+        with pytest.raises(TimeoutError):await p.v.establish_genesis(p.b)
+        assert env.spool._native_history_unsettled and p.n._sessions
+        assert not any(c['action']=='abort' for c in p.calls)  # Session identity was never received.
+        await p.n.aclose()
+        assert env.spool._native_history_unsettled
+        p.v._phase=original
+        assert (await p.v.establish_genesis(p.b)).current()
+        assert not env.spool._native_history_unsettled
+    finally:await p.n.aclose()
