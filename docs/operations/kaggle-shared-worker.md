@@ -73,7 +73,9 @@ The last exact release descriptor is retained across reconnect and sent before
 idle RESOURCE_STATE, until the next accepted assignment implicitly acknowledges
 it. Control frames have sender priority over queued results. RESOURCE_PROBE is
 handled by the same ordered reader and echoes its bounded `probe_nonce` with
-actual current state. The existing controller helper must bind this challenge
+actual current state. A retained release is replayed before this probe reply as
+well, so completed work awaiting durable RESULT cannot be mistaken for work never
+received. The existing controller helper must bind this challenge
 to the same run/incarnation/current generation and slot version and mark work
 ownership before network send. This can reconcile a dispatch lost before receipt;
 ordinary idle state or elapsed lease alone cannot prove that loss. These frames

@@ -320,6 +320,10 @@ class BgeWssTransport:
                     if not self._identifier(frame.get('probe_nonce')):
                         raise ValueError('bounded resource probe nonce required')
                     self._maybe_release()
+                    if self.last_released is not None:
+                        # Idle alone cannot distinguish a never-received claim
+                        # from completed work whose durable result is pending.
+                        await put({'type': 'RESOURCE_RELEASED', **self.last_released})
                     await put(self._resource_state(frame['probe_nonce']))
                 elif self.shared_reads and kind == 'CANCEL_QUERY':
                     if (not self._identifier(frame.get('request_id'))
