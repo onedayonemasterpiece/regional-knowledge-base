@@ -208,17 +208,18 @@ async def test_probe_cannot_free_new_reservation_or_cross_attachment(state):
 
 
 @pytest.mark.asyncio
-async def test_probe_rechecks_slot_after_reconciliation_writer_await(state,monkeypatch):
+async def test_probe_rechecks_slot_after_reconciliation_snapshot_await(state,monkeypatch):
     s=state
     await begin(s,'probe-send-race')
     work=await s.q.next_channel_work(s.run,s.token,1)
     nonce=await s.a.begin_resource_probe(s.run,s.token,1)
-    entered=threading.Event();resume=threading.Event();original=s.q._admission_bind
-    def blocked(*args):
+    entered=threading.Event();resume=threading.Event();original=s.q._admission_snapshot
+    def blocked(*args,**kwargs):
+        snapshot=original(*args,**kwargs)
         entered.set()
         assert resume.wait(2)
-        return original(*args)
-    monkeypatch.setattr(s.q,'_admission_bind',blocked)
+        return snapshot
+    monkeypatch.setattr(s.q,'_admission_snapshot',blocked)
     reconciling=asyncio.create_task(s.a.resource_state(s.run,s.token,1,runtime_incarnation='incarnation-a',state='idle',probe_nonce=nonce))
     assert await asyncio.to_thread(entered.wait,2)
     s.a.mark_work_sent(work) # new send after worker's earlier idle observation.

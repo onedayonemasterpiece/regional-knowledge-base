@@ -277,9 +277,13 @@ class SharedReadAdmission:
                         and self._probe[2] is self._slot_version
                         and (owner['run_id'],owner['incarnation'])==(run_id,runtime_incarnation))
                 if not probed:raise StaleAttachment('stale resource probe')
-            # This setup/reconnect transaction also refuses a different run's
-            # idle report while old capacity ownership remains unknown.
-            await asyncio.to_thread(self.queue._admission_bind,run_id,token,connection_generation,runtime_incarnation)
+            # Persist ownership only at its first baseline. The worker reports
+            # busy/idle for every assignment, so repeating this transaction
+            # would make ordinary QUERY wait for the SQLite writer. _snapshot
+            # already authenticates the current attachment and exact owner;
+            # the one controller lock serializes terminal/owner transitions.
+            if owner['run_id'] is None:
+                await asyncio.to_thread(self.queue._admission_bind,run_id,token,connection_generation,runtime_incarnation)
             if probed and (self._probe is not probe_record or probe_record[2] is not self._slot_version):
                 raise StaleAttachment('resource changed during probe reconciliation')
             if self._work is not None:

@@ -16,6 +16,11 @@ compute slot for QUERY and existing durable document jobs. It has no transport,
 model, second dispatcher, cloud journal, or user identity registry. Ready reads
 use current authority reads and bounded queue/attachment snapshots; they never
 take a SQLite writer lock or persist a row, fairness counter, result, or receipt.
+The worker's per-assignment RESOURCE_STATE controls also use only authenticated
+read snapshots once the owned run is bound. Persisting that same owner again
+would serialize each QUERY behind a queue writer; the ASGI regression holds a
+real SQLite writer while busy/result/release frames still complete. The first
+owned-run baseline remains an explicit startup write.
 
 ## Controller calls
 

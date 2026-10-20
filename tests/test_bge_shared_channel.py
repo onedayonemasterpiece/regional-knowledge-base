@@ -1,5 +1,6 @@
 """Actual ASGI shared channel with synthetic OAuth/queue; no provider/model/PG."""
 import json
+import asyncio
 import threading
 import time
 from types import SimpleNamespace
@@ -121,6 +122,38 @@ def heartbeat(socket, generation):
     send(socket, generation, 'HEARTBEAT')
     ack = receive_expected(socket, 'HEARTBEAT_ACK')
     assert ack['type'] == 'HEARTBEAT_ACK'
+
+
+def test_worker_resource_updates_do_not_wait_for_queue_writer(peer):
+    """Actual worker busy/idle controls must not turn each QUERY into a write."""
+    p = peer
+    with connect(p) as socket:
+        generation = attach(p, socket)
+        ready(socket, generation)
+        with p.q.connect() as writer:
+            writer.execute('UPDATE runs SET useful=useful WHERE id=?', (p.run,))
+            ticket = begin(p, generation, 'read-during-queue-write')
+            frame = receive_expected(socket, 'QUERY')
+            send(socket, generation, 'RESOURCE_STATE', state='busy', resource_kind='read',
+                resource_id=frame['request_id'], compute_claim=frame['compute_claim'],
+                dispatch_generation=generation)
+            socket.send_json(answer(frame))
+
+            async def delivered():
+                return await asyncio.wait_for(asyncio.shield(ticket.result), .5)
+
+            result = p.client.portal.call(delivered)
+            assert result.mode == 'hybrid'
+            release(socket, generation, frame)
+            send(socket, generation, 'RESOURCE_STATE', state='idle')
+
+            async def released():
+                async with asyncio.timeout(.5):
+                    while p.a.status()['state'] != 'idle':
+                        await asyncio.sleep(.005)
+
+            p.client.portal.call(released)
+        heartbeat(socket, generation)
 
 
 @pytest.mark.parametrize('large', [False, True])
