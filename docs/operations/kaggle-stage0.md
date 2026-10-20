@@ -15,6 +15,25 @@ A competing incarnation with the same nonce blocks attachment and slot release.
 The controller must retain the original incarnation and provide the competing
 instance IDs; the helper is deliberately stateless.
 
+Target ATTACH now reports bounded Python version/cache tag, machine, glibc and
+OS-release metadata before Stage0 or model loading. The authenticated channel
+logs it as `kaggle_bootstrap_environment` with run/incarnation/connection identity.
+This is an observation for choosing independently pinned artifacts; it grants no
+READY state, permissions or lifecycle terminal proof. Legacy workers can omit it.
+
+[`kaggle-cp312-x86_64-wheels.json`](../../scripts/production/manifests/kaggle-cp312-x86_64-wheels.json)
+is a **metadata-only candidate**, not an observed Kaggle ABI or deployment.
+It fixes 49 complete transitive package versions and one compatible wheel per
+package (254,082,374 compressed bytes), including the protected CPU/BGE versions.
+The resolution used uv 0.12.15, CPython 3.12 and
+`--python-platform x86_64-manylinux_2_28 --only-binary :all: --torch-backend cpu`.
+PyPI/official PyTorch metadata supplies SHA256, URL and size; the Torch size was
+read by HTTPS HEAD. No wheel or model was installed or executed on DevCoveer.
+Select it only after observing the actual target ABI. Native server libraries,
+expanded install space, exact installed dependency fingerprint, imports and
+resident BGE inference remain separate mandatory checks. The candidate does not
+silently authorize latest-version resolution or a different model space.
+
 `CapabilityReceipt` records selected installed package/version, adapter path and
 evidence reference. Flags default to unverified. Call `validate_capabilities`
 with capabilities required by the operation, rather than treating unsupported
