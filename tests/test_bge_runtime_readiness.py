@@ -13,6 +13,8 @@ from regional_knowledge.bge_queue import BgeQueue, StaleAttachment
 from regional_knowledge.kaggle_readiness import (
     RUNTIME_HASHES, RunIdentity, SearchRuntimeExpectation, validate_search_runtime,
 )
+from test_read_authority import auth
+from test_participants import people
 
 
 def expected():
@@ -85,6 +87,14 @@ def run(tmp_path):
     return queue, ident, token, nonce
 
 
+@pytest.fixture
+def shared_channel_run(run,auth):
+    queue,*_=run
+    admission=queue.configure_shared_reads(auth.resolver)
+    yield run
+    admission.close()
+
+
 def test_current_readiness_is_required_again_after_reconnect(run, monkeypatch):
     queue, ident, token, nonce = run
     generation = queue.attach_channel(ident, token, nonce, 'incarnation')['connection_generation']
@@ -123,13 +133,15 @@ def test_current_readiness_is_required_again_after_reconnect(run, monkeypatch):
         queue.expect_search_runtime(ident, replace(expected(), database_generation='other'))
 
 
-def test_model_only_ready_does_not_promote_target_channel(run):
-    queue, ident, token, nonce = run
+def test_model_only_ready_does_not_promote_target_channel(shared_channel_run):
+    queue, ident, token, nonce = shared_channel_run
     with TestClient(Starlette(routes=[channel_route(queue)])) as app:
         with app.websocket_connect('/bge-worker/channel', headers={'Authorization': 'Bearer ' + token}) as socket:
             socket.send_json(dict(type='ATTACH', protocol_version=2, run_id=ident,
                 launch_nonce=nonce, runtime_incarnation='incarnation'))
             generation = socket.receive_json()['connection_generation']
+            socket.send_json(dict(type='RESOURCE_STATE',protocol_version=2,
+                connection_generation=generation,state='idle'))
 
             def ready(payload=None):
                 fields = {} if payload is None else {'runtime_readiness': payload}
@@ -141,24 +153,41 @@ def test_model_only_ready_does_not_promote_target_channel(run):
             assert not queue.channel_status(ident, token, generation)['ready']
             assert ready(observation(database_generation='wrong'))['status'] == 'runtime_not_ready'
             assert ready(observation())['status'] == 'ready'
-            assert socket.receive_json()['type'] == 'DISPATCH'
             assert queue.channel_status(ident, token, generation)['runtime_verified']
+            # No original canonical import authority was restored for the
+            # fixture document. READY cannot authorize that durable work.
+            assert queue.shared_reads.status()['document_contexts']==0
 
 
 @pytest.mark.parametrize('changed', [None, observation(database_generation='other')])
-def test_promoted_target_rejects_changed_or_missing_runtime_proof(run, changed):
-    queue, ident, token, nonce = run
+def test_promoted_target_rejects_changed_or_missing_runtime_proof(shared_channel_run, changed):
+    queue, ident, token, nonce = shared_channel_run
     with TestClient(Starlette(routes=[channel_route(queue)])) as app:
         with app.websocket_connect('/bge-worker/channel', headers={'Authorization': 'Bearer ' + token}) as socket:
             socket.send_json(dict(type='ATTACH', protocol_version=2, run_id=ident,
                 launch_nonce=nonce, runtime_incarnation='incarnation'))
             generation = socket.receive_json()['connection_generation']
+            socket.send_json(dict(type='RESOURCE_STATE',protocol_version=2,
+                connection_generation=generation,state='idle'))
             frame = dict(type='READY', protocol_version=2, connection_generation=generation,
                 model_revision=REVISION, space=SPACE)
             socket.send_json(frame | {'runtime_readiness': observation()})
             assert socket.receive_json()['status'] == 'ready'
-            assert socket.receive_json()['type'] == 'DISPATCH'
             socket.send_json(frame if changed is None else frame | {'runtime_readiness': changed})
             with pytest.raises(WebSocketDisconnect) as closed:
                 socket.receive_json()
             assert closed.value.code == 4409
+
+
+def test_exact_target_ready_stays_closed_without_canonical_shared_admission(run):
+    queue,ident,token,nonce=run
+    with TestClient(Starlette(routes=[channel_route(queue)])) as app:
+        with app.websocket_connect('/bge-worker/channel',headers={'Authorization':'Bearer '+token}) as socket:
+            socket.send_json(dict(type='ATTACH',protocol_version=2,run_id=ident,launch_nonce=nonce,
+                runtime_incarnation='incarnation'))
+            generation=socket.receive_json()['connection_generation']
+            socket.send_json(dict(type='READY',protocol_version=2,connection_generation=generation,
+                model_revision=REVISION,space=SPACE,runtime_readiness=observation()))
+            response=socket.receive_json()
+            assert response['status']=='runtime_not_ready' and response['reasons']==['shared_admission_required']
+            assert not queue.channel_status(ident,token,generation)['ready']
