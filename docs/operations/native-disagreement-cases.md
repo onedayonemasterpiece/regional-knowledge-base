@@ -10,7 +10,7 @@ Resolved commands have stable case/object/operation IDs before acceptance, actor
 ID equal to the canonical accepted command person, explicit case/object CAS
 preconditions, immutable model-authored input, exhaustive current source
 content/eligibility dependencies and trusted attribution. Human reading/support
-is never inferred. Payloads are bounded to 128 KiB; larger commands are explicitly
+is never inferred. Payloads are bounded to 64 KiB; larger commands are explicitly
 unsupported, never clipped. Historical schema/version validators remain exact.
 A later combined schema must explicitly bind compatible handler revisions; merely
 registering schema9 and schema10 routes together does not make both executable

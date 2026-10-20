@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from uuid import UUID
+from uuid import UUID,uuid5
 
 from .disagreement_contracts import (CaseCreate,CaseRevise,CaseState,CaseGrant,EvidenceAdd,
     ContributionAdd,ContributionCorrect,ConclusionAdd,PersonalDraft,DraftPublication)
@@ -42,7 +42,7 @@ def _revision(value):
 
 
 def validate_case_payload(payload):
-    if type(payload) is not bytes or not 1<=len(payload)<=128*1024:raise ValueError('bounded exact case command required')
+    if type(payload) is not bytes or not 1<=len(payload)<=64*1024:raise ValueError('bounded exact case command required')
     doc=json.loads(payload)
     if (type(doc) is not dict or set(doc)!={'codec','action','command','source_dependencies','attribution'}
             or doc['codec']!='rkb.disagreement-command.v1' or doc['action'] not in _ACTIONS
@@ -83,11 +83,13 @@ def validate_case_payload(payload):
 def validate_case_command(command):
     if (type(command) is not ExactCommand or command.kind!='domain_command'
             or (command.schema_revision,command.function_revision,command.executor_revision)!=CASE_REVISIONS.wire()
-            or set(command.ids)!={'case_id','object_id','actor_id'} or set(command.expected_revisions)!=_PRECONDITIONS):
+            or set(command.expected_revisions)!=_PRECONDITIONS):
         raise ValueError('exact ordered native case command required')
+    doc=validate_case_payload(command.payload)
+    wanted={'case_id','object_id','actor_id'}|({'result_id'} if doc['action']=='draft_publish' else set())
+    if set(command.ids)!=wanted:raise ValueError('exact case effect/object IDs required')
     for value in command.ids.values():_uuid(value)
     if command.ids['actor_id']!=command.person_id:raise ValueError('case actor must equal the accepted command person')
-    doc=validate_case_payload(command.payload)
     if command.route!=_ACTIONS[doc['action']][0] or doc['attribution']['person_id']!=command.person_id:
         raise ValueError('case route/action/attribution mismatch')
     case_revision=_revision(command.expected_revisions['case_revision'])
@@ -118,16 +120,20 @@ def required_capabilities(command):
 
 def resolved_case_command(*,sequence,operation_key,request_id,person_id,logical_time,case_id,object_id,
                           action,command,source_dependencies,attribution,case_revision=0,object_version=0,
-                          revisions=CASE_REVISIONS):
+                          revisions=CASE_REVISIONS,publication_id=None):
     if revisions!=CASE_REVISIONS or action not in _ACTIONS:raise ValueError('ordered case handler required')
     _,kind=_ACTIONS[action]
     if type(command) is not kind:raise TypeError('exact case action input required')
     doc=dict(codec='rkb.disagreement-command.v1',action=action,command=command.model_dump(mode='json'),
         source_dependencies=source_dependencies,attribution=attribution)
+    ids=dict(case_id=case_id,object_id=object_id,actor_id=person_id)
+    if action=='draft_publish':
+        ids['result_id']=publication_id or str(uuid5(UUID(case_id),'draft-publication:'+person_id+':'+operation_key))
+    elif publication_id is not None:raise ValueError('unexpected publication effect ID')
     exact=ExactCommand(sequence=sequence,operation_key=operation_key,request_id=request_id,person_id=person_id,
         logical_time=logical_time,route=_ACTIONS[action][0],schema_revision=revisions.schema,
         function_revision=revisions.function,executor_revision=revisions.executor,
-        ids=dict(case_id=case_id,object_id=object_id,actor_id=person_id),
+        ids=ids,
         expected_revisions=dict(case_revision=str(case_revision),object_version=str(object_version)),payload=canonical(doc))
     validate_case_command(exact)
     return exact
