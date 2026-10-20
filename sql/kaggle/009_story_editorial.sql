@@ -165,7 +165,7 @@ RETURNS bytea LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_cata
 DECLARE doc jsonb:=convert_from(p,'UTF8')::jsonb;op jsonb:=doc->'operation';wanted uuid:=(ids->>'story_id')::uuid;
  variant uuid:=(doc->>'resolved_variant_id')::uuid;head rkb_v4.editorial_story_heads;
  variant_revision bigint:=(expected->>'variant_revision')::bigint+1;new_revision bigint;refs jsonb;data jsonb;
- state rkb_v4.recovery_state;visibility bigint;
+ state rkb_v4.recovery_state;visibility bigint;prior rkb_v4.read_frontier;
 BEGIN
  IF NOT rkb_v4.check_story_edit_v1(p,ids,expected,logical_time) THEN RAISE EXCEPTION 'editorial precondition differs';END IF;
  SELECT * INTO STRICT head FROM rkb_v4.editorial_story_heads WHERE story_id=wanted FOR UPDATE;
@@ -193,8 +193,10 @@ BEGIN
    (doc->'embedding')::text::public.vector,DEFAULT);
  END IF;
  SELECT * INTO STRICT state FROM rkb_v4.recovery_state WHERE singleton;
- SELECT visibility_epoch INTO STRICT visibility FROM rkb_v4.read_frontier WHERE singleton;
- PERFORM rkb_v4.prepare_read_frontier(state.database_generation,state.writer_generation,visibility,state.applied_seq+1,true,true);
+ SELECT * INTO STRICT prior FROM rkb_v4.read_frontier WHERE singleton;visibility:=prior.visibility_epoch;
+ PERFORM rkb_v4.prepare_read_frontier(state.database_generation,state.writer_generation,visibility,state.applied_seq+1,
+  prior.text_ready AND prior.projection_seq IS NOT DISTINCT FROM state.applied_seq,
+  prior.dense_ready AND prior.projection_seq IS NOT DISTINCT FROM state.applied_seq);
  RETURN convert_to(jsonb_build_object('story_id',wanted,'revision',new_revision,'variant_id',variant,
   'variant_revision',variant_revision,'body_sha256',encode(sha256(convert_to(op->>'body','UTF8')),'hex'),
   'state','drafting','publication_approval',NULL)::text,'UTF8');
@@ -229,11 +231,11 @@ END $$;
 CREATE FUNCTION rkb_v4.apply_story_access_v1(p bytea,ids jsonb,expected jsonb,logical_time text)
 RETURNS bytea LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE doc jsonb:=convert_from(p,'UTF8')::jsonb;wanted uuid:=(ids->>'story_id')::uuid;
- head rkb_v4.editorial_story_heads;prior jsonb;state rkb_v4.recovery_state;visibility bigint;
+ head rkb_v4.editorial_story_heads;previous_data jsonb;state rkb_v4.recovery_state;visibility bigint;prior rkb_v4.read_frontier;
 BEGIN
  IF NOT rkb_v4.check_story_access_v1(p,ids,expected,logical_time) THEN RAISE EXCEPTION 'manager precondition differs';END IF;
  SELECT * INTO STRICT head FROM rkb_v4.editorial_story_heads WHERE story_id=wanted FOR UPDATE;
- SELECT data INTO STRICT prior FROM rkb_v4.editorial_story_versions WHERE story_id=wanted AND revision=head.revision;
+ SELECT data INTO STRICT previous_data FROM rkb_v4.editorial_story_versions WHERE story_id=wanted AND revision=head.revision;
  IF doc->>'capability'='revoke' THEN
   DELETE FROM rkb_v4.story_editor_grants WHERE story_id=wanted AND grantee_id=(doc->>'grantee_user_id')::uuid;
  ELSE
@@ -243,25 +245,252 @@ BEGIN
    granted_by=excluded.granted_by,story_revision=excluded.story_revision;
  END IF;
  UPDATE rkb_v4.editorial_story_heads SET revision=revision+1 WHERE story_id=wanted;
- INSERT INTO rkb_v4.editorial_story_versions VALUES(wanted,head.revision+1,prior,
+ INSERT INTO rkb_v4.editorial_story_versions VALUES(wanted,head.revision+1,previous_data,
   (ids->>'actor_id')::uuid,logical_time,'access_change');
  SELECT * INTO STRICT state FROM rkb_v4.recovery_state WHERE singleton;
- SELECT visibility_epoch INTO STRICT visibility FROM rkb_v4.read_frontier WHERE singleton;
- PERFORM rkb_v4.prepare_read_frontier(state.database_generation,state.writer_generation,visibility,state.applied_seq+1,true,true);
+ SELECT * INTO STRICT prior FROM rkb_v4.read_frontier WHERE singleton;visibility:=prior.visibility_epoch;
+ PERFORM rkb_v4.prepare_read_frontier(state.database_generation,state.writer_generation,visibility,state.applied_seq+1,
+  prior.text_ready AND prior.projection_seq IS NOT DISTINCT FROM state.applied_seq,
+  prior.dense_ready AND prior.projection_seq IS NOT DISTINCT FROM state.applied_seq);
  RETURN convert_to(jsonb_build_object('story_id',wanted,'revision',head.revision+1,
   'grantee_user_id',doc->>'grantee_user_id','capability',doc->>'capability')::text,'UTF8');
 END $$;
 
 -- A new exact import route binds the fresh9 semantics; v3 and its callbacks are
 -- preserved unchanged for original ordered replay, never relabelled as v4.
+CREATE TABLE rkb_v4.source_manifests (
+ source_id uuid NOT NULL,source_revision bigint NOT NULL,
+ manifest jsonb NOT NULL,payload_sha256 text NOT NULL CHECK(payload_sha256 ~ '^[0-9a-f]{64}$'),
+ original_receipt bytea NOT NULL CHECK(octet_length(original_receipt) BETWEEN 1 AND 12288),
+ PRIMARY KEY(source_id,source_revision),
+ FOREIGN KEY(source_id,source_revision) REFERENCES rkb_v4.revisions,
+ CHECK(manifest->>'source_id'=source_id::text AND manifest->>'source_revision'=source_revision::text)
+);
+CREATE TRIGGER immutable_source_manifest BEFORE UPDATE OR DELETE ON rkb_v4.source_manifests
+ FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_revision_update();
+
+CREATE FUNCTION rkb_v4.check_source_manifest_v1(doc jsonb,source uuid)
+RETURNS boolean LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE m jsonb:=doc->'source_manifest';original jsonb:=doc->'original';receipt jsonb;raw bytea;
+ metadata jsonb;catalog jsonb;page jsonb;region jsonb;render jsonb;value jsonb;key text;
+ pages uuid[]:='{}';regions uuid[]:='{}';page_index integer:=0;matching jsonb;
+BEGIN
+ IF jsonb_typeof(m) IS DISTINCT FROM 'object'
+ OR NOT m ?& ARRAY['codec','source_id','source_revision','original_receipt_b64','native_pages_proof_sha256','metadata','pages','regions']
+ OR m-ARRAY['codec','source_id','source_revision','original_receipt_b64','native_pages_proof_sha256','metadata','pages','regions']<>'{}'::jsonb
+ OR m->>'codec' IS DISTINCT FROM 'rkb.source-manifest.v1' OR m->>'source_id' IS DISTINCT FROM source::text
+ OR m->'source_revision' IS DISTINCT FROM '1'::jsonb OR m->>'native_pages_proof_sha256' !~ '^[0-9a-f]{64}$'
+ OR jsonb_typeof(m->'original_receipt_b64') IS DISTINCT FROM 'string'
+ OR length(m->>'original_receipt_b64') NOT BETWEEN 1 AND 16384
+ OR m->>'original_receipt_b64' !~ '^[A-Za-z0-9+/]*={0,2}$' THEN RETURN false;END IF;
+ raw:=decode(m->>'original_receipt_b64','base64');receipt:=convert_from(raw,'UTF8')::jsonb;
+ IF replace(encode(raw,'base64'),E'\n','')<>m->>'original_receipt_b64'
+ OR jsonb_typeof(receipt) IS DISTINCT FROM 'object'
+ OR NOT receipt ?& ARRAY['codec','source_id','ingestion_id','request_id','revision','sha256','size','key','native_version','format','page_count','parser_sha256','acquisition_sha256','native_verification_sha256']
+ OR receipt-ARRAY['codec','source_id','ingestion_id','request_id','revision','sha256','size','key','native_version','format','page_count','parser_sha256','acquisition_sha256','native_verification_sha256']<>'{}'::jsonb
+ OR receipt->>'codec' IS DISTINCT FROM 'rkb.original-receipt.v1' OR receipt->>'source_id' IS DISTINCT FROM source::text
+ OR receipt->'revision' IS DISTINCT FROM '1'::jsonb OR receipt->>'format' IS DISTINCT FROM 'pdf'
+ OR (receipt->>'ingestion_id')::uuid::text IS DISTINCT FROM receipt->>'ingestion_id'
+ OR (receipt->>'request_id')::uuid::text IS DISTINCT FROM receipt->>'request_id'
+ OR jsonb_typeof(receipt->'page_count') IS DISTINCT FROM 'number' OR receipt->>'page_count' !~ '^[1-9][0-9]*$'
+ OR (receipt->>'page_count')::integer NOT BETWEEN 1 AND 32
+ OR jsonb_typeof(receipt->'size') IS DISTINCT FROM 'number' OR receipt->>'size' !~ '^[1-9][0-9]*$'
+ OR (receipt->>'size')::bigint NOT BETWEEN 1 AND 536870912
+ OR jsonb_typeof(receipt->'key') IS DISTINCT FROM 'string' OR length(receipt->>'key') NOT BETWEEN 1 AND 1024
+ OR receipt->>'key' ~ '://|(^|/)(\.|\.\.)?(/|$)'
+ OR jsonb_typeof(receipt->'native_version') IS DISTINCT FROM 'string' OR length(receipt->>'native_version') NOT BETWEEN 1 AND 512
+ OR original IS DISTINCT FROM jsonb_build_object('sha256',receipt->>'sha256','size',receipt->'size',
+    'ref','archive:'||(receipt->>'key'),'receipt_sha256',encode(sha256(raw),'hex')) THEN RETURN false;END IF;
+ FOREACH key IN ARRAY ARRAY['sha256','parser_sha256','acquisition_sha256','native_verification_sha256'] LOOP
+  IF receipt->>key !~ '^[0-9a-f]{64}$' THEN RETURN false;END IF;
+ END LOOP;
+ metadata:=m->'metadata';catalog:=metadata->'catalog';
+ IF jsonb_typeof(metadata) IS DISTINCT FROM 'object'
+ OR NOT metadata ?& ARRAY['title','authors','publication_year','language','catalog']
+ OR metadata-ARRAY['title','authors','publication_year','language','catalog']<>'{}'::jsonb
+ -- jsonb rendering has additional insignificant spaces; full input is bounded.
+ OR octet_length(metadata::text)>32768
+ OR jsonb_typeof(metadata->'authors') IS DISTINCT FROM 'array' OR jsonb_array_length(metadata->'authors')>50
+ OR EXISTS(SELECT 1 FROM jsonb_array_elements(metadata->'authors') a WHERE jsonb_typeof(a)<>'string' OR length(a#>>'{}')>4000)
+ OR metadata->'title'<>'null'::jsonb AND (jsonb_typeof(metadata->'title')<>'string' OR length(metadata->>'title')>500)
+ OR metadata->'language'<>'null'::jsonb AND (jsonb_typeof(metadata->'language')<>'string' OR length(metadata->>'language')>80)
+ OR metadata->'publication_year'<>'null'::jsonb AND (jsonb_typeof(metadata->'publication_year')<>'number'
+   OR metadata->>'publication_year' !~ '^[1-9][0-9]*$' OR (metadata->>'publication_year')::integer NOT BETWEEN 1 AND 3000)
+ THEN RETURN false;END IF;
+ IF catalog<>'null'::jsonb THEN
+  IF jsonb_typeof(catalog) IS DISTINCT FROM 'object'
+   OR NOT catalog ?& ARRAY['kind','parent_id','region_ids','subtitle','editors','translators','compilers','publisher','date','edition','volume','issue','identifiers','form','purpose','searchable','topics','annotation','annotation_origin','annotation_page','cover_page','cover_kind','physical_page_start','physical_page_end']
+   OR catalog-ARRAY['kind','parent_id','region_ids','subtitle','editors','translators','compilers','publisher','date','edition','volume','issue','identifiers','form','purpose','searchable','topics','annotation','annotation_origin','annotation_page','cover_page','cover_kind','physical_page_start','physical_page_end']<>'{}'::jsonb
+   OR catalog->>'kind' IS DISTINCT FROM 'book' OR catalog->'parent_id' IS DISTINCT FROM 'null'::jsonb
+   OR catalog->'region_ids' IS DISTINCT FROM '[]'::jsonb OR jsonb_typeof(catalog->'searchable') IS DISTINCT FROM 'boolean'
+   OR jsonb_typeof(catalog->'identifiers') IS DISTINCT FROM 'array' OR jsonb_array_length(catalog->'identifiers')>30
+   OR EXISTS(SELECT 1 FROM jsonb_array_elements(catalog->'identifiers') i WHERE jsonb_typeof(i)<>'object') THEN RETURN false;END IF;
+  FOREACH key IN ARRAY ARRAY['editors','translators','compilers','topics'] LOOP
+   IF jsonb_typeof(catalog->key) IS DISTINCT FROM 'array' OR jsonb_array_length(catalog->key)>50
+    OR EXISTS(SELECT 1 FROM jsonb_array_elements(catalog->key) a WHERE jsonb_typeof(a)<>'string' OR length(a#>>'{}')>4000) THEN RETURN false;END IF;
+  END LOOP;
+  FOREACH key IN ARRAY ARRAY['annotation_page','cover_page','physical_page_start','physical_page_end'] LOOP
+   IF catalog->key<>'null'::jsonb AND (jsonb_typeof(catalog->key)<>'number' OR catalog->>key !~ '^(0|[1-9][0-9]*)$'
+    OR (catalog->>key)::bigint>2147483647) THEN RETURN false;END IF;
+  END LOOP;
+  IF catalog->'physical_page_start'<>'null'::jsonb AND catalog->'physical_page_end'<>'null'::jsonb
+    AND (catalog->>'physical_page_start')::bigint>(catalog->>'physical_page_end')::bigint THEN RETURN false;END IF;
+ END IF;
+ IF jsonb_typeof(m->'pages') IS DISTINCT FROM 'array' OR jsonb_array_length(m->'pages')<>(receipt->>'page_count')::integer THEN RETURN false;END IF;
+ FOR page IN SELECT x FROM jsonb_array_elements(m->'pages') x LOOP
+  IF jsonb_typeof(page) IS DISTINCT FROM 'object'
+   OR NOT page ?& ARRAY['page_id','physical_page_index','printed_page_number','width','height','page_receipt_sha256','image_sha256','native_text_sha256','native_blocks_sha256','preview_render']
+   OR page-ARRAY['page_id','physical_page_index','printed_page_number','width','height','page_receipt_sha256','image_sha256','native_text_sha256','native_blocks_sha256','preview_render']<>'{}'::jsonb
+   OR page->'physical_page_index' IS DISTINCT FROM to_jsonb(page_index)
+   OR (page->>'page_id')::uuid=ANY(pages) OR (page->>'page_id')::uuid::text IS DISTINCT FROM page->>'page_id'
+   OR page->'printed_page_number'<>'null'::jsonb AND (jsonb_typeof(page->'printed_page_number')<>'string' OR length(page->>'printed_page_number')>80)
+   THEN RETURN false;END IF;
+  pages:=array_append(pages,(page->>'page_id')::uuid);page_index:=page_index+1;
+  FOREACH key IN ARRAY ARRAY['page_receipt_sha256','image_sha256','native_text_sha256','native_blocks_sha256'] LOOP
+   IF page->>key !~ '^[0-9a-f]{64}$' THEN RETURN false;END IF;
+  END LOOP;
+  FOREACH key IN ARRAY ARRAY['width','height'] LOOP
+   IF jsonb_typeof(page->key) IS DISTINCT FROM 'number' OR (page->>key)::numeric<=0 OR (page->>key)::numeric>100000 THEN RETURN false;END IF;
+  END LOOP;
+  render:=page->'preview_render';
+  IF jsonb_typeof(render) IS DISTINCT FROM 'object' OR NOT render ?& ARRAY['policy','width','height','scale','max_edge','jpeg_quality','byte_limit','preview_only']
+   OR render-ARRAY['policy','width','height','scale','max_edge','jpeg_quality','byte_limit','preview_only']<>'{}'::jsonb
+   OR render->>'policy' IS DISTINCT FROM 'rkb.pdf-preview.v1' OR render->'preview_only' IS DISTINCT FROM 'true'::jsonb
+   OR render->'byte_limit' IS DISTINCT FROM '262144'::jsonb OR jsonb_typeof(render->'scale') IS DISTINCT FROM 'number'
+   OR (render->>'scale')::numeric<=0 OR (render->>'scale')::numeric>100 THEN RETURN false;END IF;
+  FOREACH key IN ARRAY ARRAY['width','height','max_edge','jpeg_quality'] LOOP
+   IF jsonb_typeof(render->key) IS DISTINCT FROM 'number' OR render->>key !~ '^[1-9][0-9]*$'
+    OR (render->>key)::bigint>CASE WHEN key='jpeg_quality' THEN 100 ELSE 20000 END THEN RETURN false;END IF;
+  END LOOP;
+ END LOOP;
+ IF jsonb_typeof(m->'regions') IS DISTINCT FROM 'array' OR jsonb_array_length(m->'regions') NOT BETWEEN 1 AND 800
+  OR jsonb_array_length(m->'regions')<>jsonb_array_length(doc->'semantic'->'regions') THEN RETURN false;END IF;
+ FOR region IN SELECT x FROM jsonb_array_elements(m->'regions') x LOOP
+  IF jsonb_typeof(region) IS DISTINCT FROM 'object'
+   OR NOT region ?& ARRAY['region_id','page_id','kind','bbox','reading_order','column_id','text_sha256','native_block_index','native_block_sha256','start_offset','end_offset']
+   OR region-ARRAY['region_id','page_id','kind','bbox','reading_order','column_id','text_sha256','native_block_index','native_block_sha256','start_offset','end_offset']<>'{}'::jsonb
+   OR (region->>'region_id')::uuid=ANY(regions) OR NOT((region->>'page_id')::uuid=ANY(pages))
+   OR region->>'text_sha256' !~ '^[0-9a-f]{64}$' OR region->>'native_block_sha256' !~ '^[0-9a-f]{64}$'
+   OR region->>'kind' NOT IN ('heading','body','caption','footnote','figure','table','header','footer','page_number','marginalia')
+   OR region->'column_id'<>'null'::jsonb AND (jsonb_typeof(region->'column_id')<>'string' OR length(region->>'column_id')>120)
+   THEN RETURN false;END IF;
+  regions:=array_append(regions,(region->>'region_id')::uuid);
+  SELECT x INTO STRICT matching FROM jsonb_array_elements(doc->'semantic'->'regions') x WHERE x->>'region_id'=region->>'region_id';
+  IF region->>'page_id' IS DISTINCT FROM matching->>'page_id' OR region->>'text_sha256' IS DISTINCT FROM matching->>'source_text_sha256'
+   OR jsonb_typeof(region->'bbox') IS DISTINCT FROM 'object' OR NOT(region->'bbox') ?& ARRAY['left','top','right','bottom']
+   OR (region->'bbox')-ARRAY['left','top','right','bottom']<>'{}'::jsonb THEN RETURN false;END IF;
+  FOREACH key IN ARRAY ARRAY['left','top','right','bottom'] LOOP
+   IF jsonb_typeof(region->'bbox'->key) IS DISTINCT FROM 'number' OR region->'bbox'->>key !~ '^(0|[1-9][0-9]*)$'
+    OR (region->'bbox'->>key)::bigint>1000 THEN RETURN false;END IF;
+  END LOOP;
+  IF (region->'bbox'->>'left')::integer>=(region->'bbox'->>'right')::integer
+   OR (region->'bbox'->>'top')::integer>=(region->'bbox'->>'bottom')::integer THEN RETURN false;END IF;
+  FOREACH key IN ARRAY ARRAY['reading_order','native_block_index','start_offset','end_offset'] LOOP
+   IF jsonb_typeof(region->key) IS DISTINCT FROM 'number' OR region->>key !~ '^(0|[1-9][0-9]*)$'
+    OR (region->>key)::bigint>2147483647 THEN RETURN false;END IF;
+  END LOOP;
+  IF (region->>'end_offset')::bigint-(region->>'start_offset')::bigint<>length(matching->>'source_text')
+   OR length(btrim(matching->>'source_text'))=0 THEN RETURN false;END IF;
+ END LOOP;
+ RETURN true;
+EXCEPTION WHEN data_exception OR no_data_found OR too_many_rows THEN RETURN false;
+END $$;
+
 CREATE FUNCTION rkb_v4.check_source_import_v4(p bytea,ids jsonb,expected jsonb,logical_time text)
-RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
- SELECT rkb_v4.check_source_import_v3(p,ids,expected,logical_time)
+RETURNS boolean LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE doc jsonb;legacy bytea;
+BEGIN
+ IF octet_length(p) NOT BETWEEN 1 AND 786432 THEN RETURN false;END IF;
+ doc:=convert_from(p,'UTF8')::jsonb;
+ IF doc->>'codec' IS DISTINCT FROM 'rkb.source-import.v4' OR NOT doc ? 'source_manifest' THEN RETURN false;END IF;
+ legacy:=convert_to(((doc-'source_manifest')||jsonb_build_object('codec','rkb.source-import.v2'))::text,'UTF8');
+ RETURN rkb_v4.check_source_import_v3(legacy,ids,expected,logical_time)
+    AND rkb_v4.check_source_manifest_v1(doc,(ids->>'source_id')::uuid);
+EXCEPTION WHEN data_exception THEN RETURN false;
+END $$;
+CREATE FUNCTION rkb_v4.apply_source_import_v4(p bytea, ids jsonb, expected jsonb, logical_time text)
+RETURNS bytea LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE state rkb_v4.recovery_state; prior rkb_v4.read_frontier; frontier rkb_v4.read_frontier;
+        source uuid; doc jsonb; item jsonb; research jsonb; original jsonb; eligibility bigint; story jsonb; variant jsonb;
+BEGIN
+    SELECT * INTO STRICT state FROM rkb_v4.recovery_state WHERE singleton FOR UPDATE;
+    SELECT * INTO STRICT prior FROM rkb_v4.read_frontier WHERE singleton FOR UPDATE;
+    IF NOT rkb_v4.check_source_import_v4(p,ids,expected,logical_time) THEN
+        RAISE EXCEPTION 'source import requires exact resolved new-source precondition';
+    END IF;
+    source:=(ids->>'source_id')::uuid; doc:=convert_from(p,'UTF8')::jsonb;
+    research:=doc->'research'; original:=doc->'original';
+    INSERT INTO rkb_v4.sources VALUES (source,doc->>'bibliography',true,false);
+    INSERT INTO rkb_v4.revisions VALUES (source,1);
+    INSERT INTO rkb_v4.source_import_origins VALUES (source,1,(doc->>'work_id')::uuid,
+        (doc->>'edition_id')::uuid,original->>'sha256',(original->>'size')::bigint,
+        original->>'ref',original->>'receipt_sha256',encode(sha256(p),'hex'),
+        doc->'model'->>'revision',doc->'model'->>'space',doc->'model'->>'tokenizer_sha256',logical_time);
+    INSERT INTO rkb_v4.source_research_frontier VALUES (source,1,(research->>'frontier_id')::uuid,
+        research->>'state',research->'continuation');
+    FOR item IN SELECT value FROM jsonb_array_elements(doc->'passages') LOOP
+        INSERT INTO rkb_v4.passage_search(passage_id,source_id,revision,ordinal,locator,body,language,config,embedding)
+        VALUES ((item->>'passage_id')::uuid,source,1,(item->>'ordinal')::integer,item->>'locator',item->>'body',
+            item->>'language',CASE item->>'language' WHEN 'ru' THEN 'pg_catalog.russian'::regconfig
+                WHEN 'de' THEN 'pg_catalog.german'::regconfig ELSE 'pg_catalog.simple'::regconfig END,
+            (item->'embedding')::text::public.vector);
+    END LOOP;
+    FOR item IN SELECT value FROM jsonb_array_elements(doc->'semantic'->'regions') LOOP
+        INSERT INTO rkb_v4.source_regions VALUES(source,1,(item->>'region_id')::uuid,
+            (item->>'page_id')::uuid,item->>'source_text',item->>'source_text_sha256');
+    END LOOP;
+    FOR item IN SELECT value FROM jsonb_array_elements(doc->'semantic'->'findings') LOOP
+        INSERT INTO rkb_v4.story_assertion_versions VALUES((item->>'assertion_id')::uuid,1,
+            source,1,item->>'candidate_key',item->>'proposition',item);
+    END LOOP;
+    FOR story IN SELECT value FROM jsonb_array_elements(doc->'semantic'->'stories') LOOP
+        variant:=story->'default_variant';
+        INSERT INTO rkb_v4.stories VALUES((story->>'story_id')::uuid,1,source,1,
+            (variant->>'variant_id')::uuid,1);
+        INSERT INTO rkb_v4.story_versions VALUES((story->>'story_id')::uuid,1,
+            story-'default_variant',logical_time,encode(sha256(p),'hex'));
+        INSERT INTO rkb_v4.story_variant_versions VALUES((variant->>'variant_id')::uuid,1,
+            (story->>'story_id')::uuid,variant->>'body',
+            encode(sha256(convert_to(variant->>'body','UTF8')),'hex'),variant-'embedding');
+        INSERT INTO rkb_v4.story_search(story_id,variant_id,variant_revision,source_id,source_revision,body,config,embedding)
+        VALUES((story->>'story_id')::uuid,(variant->>'variant_id')::uuid,1,source,1,variant->>'body',
+            CASE variant->>'language' WHEN 'ru' THEN 'pg_catalog.russian'::regconfig
+            WHEN 'de' THEN 'pg_catalog.german'::regconfig ELSE 'pg_catalog.simple'::regconfig END,
+            (variant->'embedding')::text::public.vector);
+    END LOOP;
+    FOR item IN SELECT value FROM jsonb_array_elements(doc->'semantic'->'pending') LOOP
+        INSERT INTO rkb_v4.source_story_pending VALUES(source,item->>'candidate_key',item);
+    END LOOP;
+    -- Activation happens after every exact passage and its research continuation
+    -- exist. All source/projection/receipt/frontier work commits or rolls back.
+    INSERT INTO rkb_v4.source_manifests VALUES(source,1,doc->'source_manifest',encode(sha256(p),'hex'),
+        decode(doc->'source_manifest'->>'original_receipt_b64','base64'));
+    INSERT INTO rkb_v4.active_revision VALUES (source,1);
+    SELECT * INTO STRICT frontier FROM rkb_v4.read_frontier WHERE singleton;
+    SELECT eligibility_revision INTO STRICT eligibility FROM rkb_v4.source_visibility WHERE source_id=source;
+    PERFORM rkb_v4.prepare_read_frontier(state.database_generation,state.writer_generation,
+        frontier.visibility_epoch,state.applied_seq+1,
+        prior.text_ready AND prior.projection_seq IS NOT DISTINCT FROM state.applied_seq,
+        prior.dense_ready AND prior.projection_seq IS NOT DISTINCT FROM state.applied_seq);
+    RETURN convert_to(jsonb_build_object('source_id',source,'content_revision',1,'accepted',true,
+        'withdrawn',false,'eligibility_revision',eligibility,'visibility_epoch',frontier.visibility_epoch,
+        'passage_count',jsonb_array_length(doc->'passages'),'story_count',jsonb_array_length(doc->'semantic'->'stories'),
+        'finding_count',jsonb_array_length(doc->'semantic'->'findings'),'story_refs',(SELECT coalesce(jsonb_agg(jsonb_build_object(
+            'story_id',s->>'story_id','variant_id',s->'default_variant'->>'variant_id','variant_revision',1,
+            'body_sha256',encode(sha256(convert_to(s->'default_variant'->>'body','UTF8')),'hex'))),'[]'::jsonb)
+            FROM jsonb_array_elements(doc->'semantic'->'stories') s),'payload_sha256',encode(sha256(p),'hex'),
+        'research_frontier_id',research->>'frontier_id','research_state',research->>'state',
+        'logical_time',logical_time)::text,'UTF8');
+END $$;
+
+CREATE FUNCTION rkb_v4.read_source_manifest_v1(wanted uuid)
+RETURNS jsonb LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT m.manifest FROM rkb_v4.source_manifests m JOIN rkb_v4.sources s USING(source_id)
+ JOIN rkb_v4.active_revision a ON a.source_id=m.source_id AND a.revision=m.source_revision
+ WHERE m.source_id=wanted AND s.accepted AND NOT s.withdrawn
 $$;
-CREATE FUNCTION rkb_v4.apply_source_import_v4(p bytea,ids jsonb,expected jsonb,logical_time text)
-RETURNS bytea LANGUAGE sql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
- SELECT rkb_v4.apply_source_import_v3(p,ids,expected,logical_time)
-$$;
+REVOKE ALL ON rkb_v4.source_manifests FROM PUBLIC;
+REVOKE ALL ON FUNCTION rkb_v4.check_source_manifest_v1(jsonb,uuid),rkb_v4.read_source_manifest_v1(uuid) FROM PUBLIC;
 CREATE FUNCTION rkb_v4.capture_editorial_receipt_v1() RETURNS trigger
 LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE c jsonb;wanted uuid;story record;v jsonb;refs jsonb;new_revision bigint;
@@ -382,6 +611,10 @@ BEGIN
   source:=(c->'ids'->>'source_id')::uuid;
   doc:=convert_from(decode(c->>'payload_b64','base64'),'UTF8')::jsonb;sem:=doc->'semantic';
   verified:=array_append(verified,source);
+  IF c->>'route'='source.import.v4' AND NOT EXISTS(SELECT 1 FROM rkb_v4.source_manifests m
+   WHERE m.source_id=source AND m.source_revision=1 AND m.manifest=doc->'source_manifest'
+    AND m.payload_sha256=encode(sha256(decode(c->>'payload_b64','base64')),'hex')
+    AND m.original_receipt=decode(doc->'source_manifest'->>'original_receipt_b64','base64')) THEN RETURN false;END IF;
   IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_import_origins o WHERE o.source_id=source
     AND o.payload_sha256=encode(sha256(decode(c->>'payload_b64','base64')),'hex'))
    OR (SELECT count(*) FROM rkb_v4.source_regions r WHERE r.source_id=source)<>jsonb_array_length(sem->'regions')

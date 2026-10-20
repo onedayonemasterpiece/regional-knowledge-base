@@ -15,6 +15,7 @@ from test_kaggle_apply import pinned
 from test_recovery_journal import fixture as journal_fixture
 from test_source_import_v2 import payload,STORY,VARIANT,FINDING
 from test_source_import import SOURCE
+from test_source_manifest import manifest_payload
 from test_story_editorial import operation
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -58,7 +59,7 @@ async def native():
 
 def imported():
     return resolved_import_v4_command(sequence=1,operation_key='editorial-source-first',request_id='import-1',
-        person_id=MANAGER,logical_time='2026-10-20T18:00:00Z',source_id=SOURCE,payload=payload())
+        person_id=MANAGER,logical_time='2026-10-20T18:00:00Z',source_id=SOURCE,payload=manifest_payload())
 
 
 async def eligibility(n):
@@ -89,6 +90,10 @@ async def read(n,*,revision=None,view='get'):
 async def test_native_editor_grant_actual_body_default_ref_history_retry_and_restart(native):
     assert (await apply(native,imported())).status=='applied'
     original=await read(native);assert original['body']==payload()['semantic']['stories'][0]['default_variant']['body']
+    async with native['connection'].transaction():
+        stored=(await(await native['connection'].execute('SELECT rkb_v4.read_source_manifest_v1(%s)',(SOURCE,))).fetchone())[0]
+        assert stored==manifest_payload()['source_manifest']
+        assert await(await native['connection'].execute('SELECT rkb_v4.verify_source_story_origins_v3(ARRAY[%s::uuid])',(SOURCE,))).fetchone()==(True,)
     assert (await apply(native,await grant(native,2,1))).status=='applied'
     c=await edit(native,3,2);saved=await apply(native,c);assert saved.status=='applied'
     current=await read(native)
@@ -102,6 +107,12 @@ async def test_native_editor_grant_actual_body_default_ref_history_retry_and_res
     try:
         other=dict(native,connection=conn)
         assert (await read(other))['body']==current['body']
+        async with conn.transaction():
+            from regional_knowledge.source_import import _json
+            import base64
+            row=await(await conn.execute('SELECT manifest,payload_sha256,original_receipt FROM rkb_v4.source_manifests WHERE source_id=%s',(SOURCE,))).fetchone()
+            assert row[0]==manifest_payload()['source_manifest'] and row[1]==hashlib.sha256(imported().payload).hexdigest()
+            assert bytes(row[2])==base64.b64decode(row[0]['original_receipt_b64'])
     finally:await conn.close();os.close(fd)
     history=(await read(native,view='history'))['entries']
     assert [x['action'] for x in history]==['source_import','access_change','upsert_variant']
