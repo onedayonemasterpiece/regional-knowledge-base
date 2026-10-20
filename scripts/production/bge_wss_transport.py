@@ -247,12 +247,21 @@ class BgeWssTransport:
         finally:
             # Thread cancellation is not forward completion. Drain any started
             # load/encode before relinquishing this worker's inference ownership.
+            cancelled = False
             for task in (self.loading, self.encoding):
-                if task is not None:
+                if task is None:
+                    continue
+                while not task.done():
                     try:
                         await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        cancelled = True
                     except Exception:
-                        pass
+                        break
+                if not task.cancelled():
+                    task.exception()
+            if cancelled:
+                raise asyncio.CancelledError
 
 
 def run_wss_worker(config, load_encoder, diagnostics):

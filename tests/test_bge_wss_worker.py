@@ -147,6 +147,34 @@ async def test_wrong_ack_nonce_does_not_discard_exact_pending_result():
     assert worker.pending['claim'] == 'claim'
 
 
+@pytest.mark.asyncio
+async def test_repeated_caller_cancellation_drains_actual_forward():
+    transport = module('bge_wss_transport')
+    entered, finish = threading.Event(), threading.Event()
+    wire = Wire(asyncio.Event())
+
+    def encode(text):
+        entered.set()
+        assert finish.wait(2)
+        return [1.] + [0.] * 1023
+
+    worker = transport.BgeWssTransport(CONFIG, lambda: encode, lambda: {},
+                                      connector=wire.connect, maximum_seconds=3)
+    running = asyncio.create_task(worker.run())
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        running.cancel()
+        await asyncio.sleep(.01)
+        assert not running.done()
+        running.cancel()
+        await asyncio.sleep(.01)
+        assert not running.done()
+    finally:
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+
 def test_controller_embeds_one_helper_and_stable_prelaunch_nonce(tmp_path):
     from regional_knowledge.bge_queue import BgeQueue
     controller = module('bge_kaggle_controller')
