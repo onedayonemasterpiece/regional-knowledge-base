@@ -16,7 +16,7 @@ import time
 from types import MappingProxyType
 
 from .bge_queue import StaleAttachment
-from .kaggle_protocol import Query, QueryResult, encode_envelope
+from .kaggle_protocol import Query, QueryResult, PassageReadRequest, PassageReadResult, encode_envelope
 from .read_authority import ReadAuthority, VerifiedReadAuthority
 from .participants import RequestAuthority
 
@@ -54,7 +54,7 @@ class ResourceClaim:
 @dataclass(frozen=True)
 class ChannelWork:
     resource: ResourceClaim
-    query: Query | None = None
+    query: Query | PassageReadRequest | None = None
     document_payload: object | None = None
 
     @property
@@ -71,7 +71,7 @@ class ChannelWork:
 class _Read:
     ticket: ReadTicket
     authority: VerifiedReadAuthority
-    query: Query
+    query: Query | PassageReadRequest
     dialog: str
     deadline: float
     timer: object
@@ -177,7 +177,7 @@ class SharedReadAdmission:
         if (not isinstance(deadline,(float,int)) or isinstance(deadline,bool)
                 or not math.isfinite(deadline) or not now<deadline<=now+2):
             raise ValueError('absolute remaining deadline must be at most two seconds')
-        if not isinstance(query,Query) or not isinstance(authority,VerifiedReadAuthority):
+        if not isinstance(query,(Query,PassageReadRequest)) or not isinstance(authority,VerifiedReadAuthority):
             raise TypeError('typed query and verified authority required')
         if on_dispatch is not None and not callable(on_dispatch):
             raise TypeError('internal dispatch observer must be callable')
@@ -362,6 +362,12 @@ class SharedReadAdmission:
             return True
         return False
 
+    def require_durable_resource(self,run_id,incarnation,generation,job_id,compute_claim,dispatch_generation):
+        self._active()
+        descriptor=self._descriptor(run_id,incarnation,generation,'document',job_id,compute_claim,dispatch_generation)
+        if descriptor!=self._last_release and not (self._work is not None and self._sent and self._work.resource==descriptor):
+            raise StaleAttachment('source receipt has no actual admitted resource binding')
+
     async def next_channel_work(self, run_id, token, connection_generation):
         self._active()
         async with self._lock:
@@ -428,7 +434,12 @@ class SharedReadAdmission:
                 except BaseException:
                     self._state='unknown';raise
                 if payload is None:self._work=None;self._state='idle';return None
-                work=ChannelWork(resource,document_payload=MappingProxyType({**payload,'texts':tuple(payload['texts'])}))
+                if payload['kind']=='source_command':
+                    payload=await self.queue._source_commands.dispatch_payload(selected_doc['id'],
+                        run_id=run_id,token=token,generation=connection_generation)
+                    work=ChannelWork(resource,document_payload=MappingProxyType(payload))
+                else:
+                    work=ChannelWork(resource,document_payload=MappingProxyType({**payload,'texts':tuple(payload['texts'])}))
                 person=selected_doc['actor'];self._read_streak=0
             self._turn+=1;self._person_turn[person]=self._turn
             dialogs={(r.authority.person_id,r.dialog) for r in self._reads.values()}
@@ -479,9 +490,9 @@ class SharedReadAdmission:
     async def finish_read(self, run_id, token, connection_generation, result):
         """Consumer delivery only. Source/withdrawal output gate remains separate."""
         self._active()
-        if not isinstance(result,QueryResult):raise TypeError('typed query result required')
+        if not isinstance(result,(QueryResult,PassageReadResult)):raise TypeError('typed query result required')
         encode_envelope(result)
-        if result.status in {'ok','degraded'} and result.mode!='hybrid':
+        if isinstance(result,QueryResult) and result.status in {'ok','degraded'} and result.mode!='hybrid':
             raise ValueError('target reads require actual hybrid retrieval')
         run,_,_,_=await self._snapshot(run_id,token,connection_generation,observe=False)
         if self._attachment!=(run_id,connection_generation,run['runtime_incarnation']):return False
@@ -491,6 +502,8 @@ class SharedReadAdmission:
                 or read.ticket.turn_generation!=result.turn_generation
                 or read.dispatched is None
                 or read.deadline<=self.clock()):return False
+        if isinstance(read.query,PassageReadRequest)!=isinstance(result,PassageReadResult):
+            raise ValueError('read response operation type differs from admitted request')
         try:await self.authority.require(read.authority,'public_search')
         except PermissionError:
             if self._reads.get(key) is read:self._cancel(key)

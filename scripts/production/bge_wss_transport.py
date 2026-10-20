@@ -27,12 +27,14 @@ def _channel_json(raw):
             result[key] = value
         return result
 
-    if not isinstance(raw, (str, bytes)) or len(raw.encode() if isinstance(raw, str) else raw) > 262144:
+    if not isinstance(raw, (str, bytes)) or len(raw.encode() if isinstance(raw, str) else raw) > 2*1024*1024:
         raise ValueError('channel frame bound')
     frame = json.loads(raw, object_pairs_hook=unique,
                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite channel value')))
     if not isinstance(frame, dict) or type(frame.get('protocol_version')) is not int or frame['protocol_version'] != 2:
         raise ValueError('channel protocol')
+    limit=2*1024*1024 if frame.get('type')=='DISPATCH' and frame.get('kind')=='source_command' else 262144
+    if len(raw.encode() if isinstance(raw,str) else raw)>limit:raise ValueError('channel frame bound')
     return frame
 
 
@@ -74,6 +76,7 @@ class BgeWssTransport:
         self.changed = asyncio.Event()
         self.shared_reads, self.query_handler = shared, query_handler
         self.prepare_runtime, self.prepared_runtime = prepare_runtime, None
+        self.source_handler = None
         if close_runtime is not None and not inspect.iscoroutinefunction(close_runtime):
             raise ValueError('async close_runtime required')
         self.close_runtime = close_runtime
@@ -152,23 +155,35 @@ class BgeWssTransport:
 
     @staticmethod
     def _unavailable(frame, reason):
-        return {'type': 'QUERY_RESULT', 'protocol_version': 2,
+        exact=frame.get('type')=='PASSAGE_READ'
+        return {'type': 'PASSAGE_READ_RESULT' if exact else 'QUERY_RESULT', 'protocol_version': 2,
             **{key: frame[key] for key in ('request_id', 'connection_generation', 'turn_generation')},
-            'status': 'unavailable', 'mode': None, 'evidence': [],
+            'status': 'unavailable', **({} if exact else {'mode':None}), 'evidence': [],
             'observed_data_seq': None, 'observed_projection_seq': None, 'reason': reason}
 
     def _validate_query(self, frame):
+        exact=frame.get('type')=='PASSAGE_READ'
+        if exact:
+            from regional_knowledge.kaggle_protocol import decode_envelope,PassageReadRequest
+            if not isinstance(decode_envelope(json.dumps(frame,allow_nan=False).encode()),PassageReadRequest):
+                raise ValueError('shared exact read contract')
         if (len(json.dumps(frame, allow_nan=False).encode()) > 16384
                 or not all(self._identifier(frame.get(key)) for key in ('request_id', 'compute_claim'))
                 or type(frame.get('turn_generation')) is not int or frame['turn_generation'] < 0
                 or type(frame.get('deadline_ms')) is not int or not 0 < frame['deadline_ms'] <= 2000
-                or not isinstance(frame.get('query'), str) or not frame['query'].strip()
-                or len(frame['query']) > 1000 or len(frame['query'].encode()) > 4096
+                or (not exact and (not isinstance(frame.get('query'), str) or not frame['query'].strip()
+                or len(frame['query']) > 1000 or len(frame['query'].encode()) > 4096))
                 or self.encoder is None
                 or self.prepare_runtime is not None and self.prepared_runtime is None):
             raise ValueError('shared QUERY contract')
 
     def _validate_query_result(self, frame, result):
+        if frame.get('type')=='PASSAGE_READ':
+            from regional_knowledge.kaggle_protocol import decode_envelope,PassageReadResult
+            typed=decode_envelope(json.dumps(result,allow_nan=False).encode())
+            if not isinstance(typed,PassageReadResult) or self._read_identity(result)!=self._read_identity(frame):
+                raise ValueError('exact read result identity/type mismatch')
+            return result
         if (not isinstance(result, dict) or result.get('type') != 'QUERY_RESULT'
                 or type(result.get('protocol_version')) is not int or result['protocol_version'] != 2
                 or self._read_identity(result) != self._read_identity(frame)
@@ -222,9 +237,20 @@ class BgeWssTransport:
             prepared.__post_init__()
             prepared.readiness.to_wire()
             self.query_handler, self.prepared_runtime = prepared.query_handler, prepared
+            self.source_handler = prepared.source_handler
         self.changed.set()
 
     async def _encode(self, job):
+        if job['kind']=='source_command':
+            if self.source_handler is None:raise ValueError('fixed source executor unavailable')
+            receipt=await self.source_handler(job)
+            self.pending=dict(job_id=job['id'],claim=job['claim'],receipt=receipt,
+                **{key:job[key] for key in ('run_id','launch_nonce','runtime_incarnation',
+                    'compute_claim','dispatch_generation')})
+            if len(json.dumps(self.pending,allow_nan=False).encode())>15500:
+                raise ValueError('source command receipt bound')
+            self.changed.set()
+            return
         before = time.monotonic()
         vector = await self._forward(job['texts'][0], self.resource if self.shared_reads else None)
         self.pending = {'job_id': job['id'], 'claim': job['claim'], 'space': SPACE,
@@ -336,7 +362,7 @@ class BgeWssTransport:
                     await put(frame)
                     ready_sent = True
                 if self.pending is not None and result_sent != (self.pending['job_id'], self.pending['claim']):
-                    await put({'type': 'RESULT', **self.pending}, priority=1)
+                    await put({'type': 'SOURCE_COMMAND_RESULT' if self.job['kind']=='source_command' else 'RESULT', **self.pending}, priority=1)
                     result_sent = (self.pending['job_id'], self.pending['claim'])
 
         async def reader():
@@ -361,7 +387,7 @@ class BgeWssTransport:
                     if (self.read_frame is not None
                             and self._read_identity(frame) == self._read_identity(self.read_frame)):
                         self._cancel_read()
-                elif self.shared_reads and kind == 'QUERY':
+                elif self.shared_reads and kind in ('QUERY','PASSAGE_READ'):
                     self._validate_query(frame)
                     if (self.read_frame is not None
                             and frame['compute_claim'] == self.read_frame['compute_claim']
@@ -374,7 +400,14 @@ class BgeWssTransport:
                     await queue_read_result()
                     self._start_read(frame)
                 elif kind == 'DISPATCH':
-                    if (frame.get('space') != SPACE or frame.get('kind') not in ('query', 'document')
+                    source=frame.get('kind')=='source_command'
+                    if source:
+                        if (not self.shared_reads or self.source_handler is None
+                                or tuple(frame.get(key) for key in ('run_id','launch_nonce','runtime_incarnation'))
+                                    !=(self.config['run_id'],self.config['launch_nonce'],self.incarnation)
+                                or any(not self._identifier(frame.get(key)) for key in ('id','claim'))):
+                            raise ValueError('source dispatch contract')
+                    elif (frame.get('space') != SPACE or frame.get('kind') not in ('query', 'document')
                             or not isinstance(frame.get('texts'), list) or len(frame['texts']) != 1
                             or not isinstance(frame['texts'][0], str)
                             or not 0 < len(frame['texts'][0]) <= 40000
@@ -384,13 +417,16 @@ class BgeWssTransport:
                         raise ValueError('durable BGE dispatch contract')
                     if self.shared_reads and (not self._identifier(frame.get('compute_claim'))
                             or type(frame.get('dispatch_generation')) is not int
-                            or frame['dispatch_generation'] < 1 or frame['kind'] != 'document'):
+                            or frame['dispatch_generation'] < 1 or frame['kind'] not in ('document','source_command')):
                         raise ValueError('shared document resource contract')
                     key = (frame['id'], frame['claim'])
                     if key == self.acknowledged:
                         continue  # A control ACK can overtake a buffered replay.
                     if self.job is not None and key == (self.job['id'], self.job['claim']):
-                        if frame['texts'] != self.job['texts'] or frame['kind'] != self.job['kind']:
+                        if frame['kind'] != self.job['kind'] or (source and any(frame.get(key)!=self.job.get(key)
+                                for key in ('command_b64','command_sha256','accepted','handler_sha256','database_generation','writer_generation',
+                                            'run_id','launch_nonce','runtime_incarnation'))
+                                or not source and frame['texts'] != self.job['texts']):
                             raise ValueError('replayed assignment payload mismatch')
                         if self.shared_reads and any(frame.get(key) != self.job.get(key)
                                 for key in ('compute_claim', 'dispatch_generation')):
@@ -417,8 +453,11 @@ class BgeWssTransport:
                 elif kind == 'RESULT_ACK':
                     if (self.pending is None or frame.get('job_id') != self.pending['job_id']
                             or frame.get('claim') != self.pending['claim']
-                            or frame.get('status') not in ('accepted', 'duplicate', 'stale')):
+                            or frame.get('status') not in ('accepted', 'duplicate', 'stale','apply_received')):
                         raise ValueError('result acknowledgment mismatch')
+                    if frame['status']=='apply_received':
+                        if self.job['kind']!='source_command':raise ValueError('unexpected apply receipt acknowledgment')
+                        continue  # Durable local receipt only; retain until remote outcome.
                     self.acknowledged = (self.pending['job_id'], self.pending['claim'])
                     self.pending, self.job = None, None
                     if not self.shared_reads or (self.encoding is not None and self.encoding.done()):
@@ -451,7 +490,7 @@ class BgeWssTransport:
             async with aiohttp.ClientSession(trust_env=False) as client:
                 async with client.ws_connect(self.config['channel'],
                         headers={'Authorization': 'Bearer ' + self.config['token']},
-                        max_msg_size=262144, heartbeat=30) as socket:
+                        max_msg_size=2*1024*1024, heartbeat=30) as socket:
                     class Adapter:
                         async def send(self, raw):
                             await socket.send_str(raw)

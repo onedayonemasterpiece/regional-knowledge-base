@@ -284,6 +284,7 @@ class CandidateReadiness:
 class PreparedRuntime:
     query_handler: object
     readiness: CandidateReadiness
+    source_handler: object = None
 
     def __post_init__(self):
         if (not (inspect.iscoroutinefunction(self.query_handler)
@@ -292,6 +293,10 @@ class PreparedRuntime:
                 or not self.readiness.text_search_ready or not self.readiness.dense_search_ready
                 or self.readiness.visibility_epoch is None):
             raise BootstrapUnavailable('database_not_ready')
+        if self.source_handler is not None and not (
+                inspect.iscoroutinefunction(self.source_handler)
+                or inspect.iscoroutinefunction(getattr(self.source_handler,'__call__',None))):
+            raise BootstrapUnavailable('source_handler_invalid')
 
 
 async def prepare_resident_runtime(encoder, *, acquire, probe_database, launch_config,

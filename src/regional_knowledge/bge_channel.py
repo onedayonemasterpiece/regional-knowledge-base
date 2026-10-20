@@ -18,10 +18,12 @@ from starlette.websockets import WebSocketDisconnect
 
 from .bge_contract import REVISION, SPACE
 from .bge_queue import StaleClaim, StaleAttachment
-from .kaggle_protocol import RESULT_MAX_BYTES, decode_envelope, QueryResult
+from .kaggle_protocol import RESULT_MAX_BYTES, decode_envelope, QueryResult, PassageReadResult
 
 MAX_FRAME_BYTES = 65536
 MAX_DISPATCH_BYTES = 256 * 1024
+MAX_SOURCE_DISPATCH_BYTES = 2 * 1024 * 1024
+MAX_SOURCE_RESULT_BYTES = 16 * 1024
 SEND_QUEUE_FRAMES = 8
 RECONCILE_SECONDS = .25
 SEND_TIMEOUT_SECONDS = 5
@@ -46,8 +48,10 @@ def _decode(message):
     frame = json.loads(raw, object_pairs_hook=unique, parse_constant=nonfinite)
     if not isinstance(frame, dict) or type(frame.get('protocol_version')) is not int or frame['protocol_version'] != 2:
         raise ValueError('protocol')
-    if frame.get('type') != 'QUERY_RESULT' and len(raw) > MAX_FRAME_BYTES:
+    if frame.get('type') not in ('QUERY_RESULT','PASSAGE_READ_RESULT') and len(raw) > MAX_FRAME_BYTES:
         raise ValueError('frame_size')
+    if frame.get('type')=='SOURCE_COMMAND_RESULT' and len(raw)>MAX_SOURCE_RESULT_BYTES:
+        raise ValueError('source_receipt_size')
     return frame
 
 
@@ -68,6 +72,7 @@ def channel_route(queue):
         # Explicit startup configuration only. Legacy encoding stays on its
         # existing path; attaching a socket never enables the target mode.
         shared = getattr(queue, '_shared_reads', None)
+        source_dispatch = getattr(queue, '_source_commands', None)
         generation = run_id = None
         tasks = []
         token = ''
@@ -111,6 +116,7 @@ def channel_route(queue):
                          'connection_generation': generation, **payload}
                 encoded = json.dumps(frame, allow_nan=False, ensure_ascii=False, separators=(',', ':'))
                 limit = MAX_DISPATCH_BYTES if frame_type == 'DISPATCH' else MAX_FRAME_BYTES
+                if frame_type=='DISPATCH' and payload.get('kind')=='source_command':limit=MAX_SOURCE_DISPATCH_BYTES
                 if len(encoded.encode('utf-8')) > limit:
                     raise ValueError('outgoing_size')
                 await asyncio.wait_for(outgoing.put((priority, next(sequence), frame, encoded, work)), SEND_TIMEOUT_SECONDS)
@@ -176,6 +182,10 @@ def channel_route(queue):
                     observed = await status()
                     await promote(observed)
                     if shared is not None:
+                        if promoted and source_dispatch is not None:
+                            settled=await source_dispatch.poll_settlement(run_id=run_id,token=token,generation=generation)
+                            if settled is not None:
+                                await send('RESULT_ACK',**settled)
                         if (last_work is not None and last_work.query is not None
                                 and last_work.query.connection_generation == generation
                                 and shared.status()['resource'] == last_work.resource
@@ -194,9 +204,9 @@ def channel_route(queue):
                                 try:
                                     if work.query is not None:
                                         payload = work.query.model_dump(mode='json')
-                                        payload.pop('type')
+                                        read_type=payload.pop('type')
                                         payload.pop('protocol_version')
-                                        await send('QUERY', priority=1, work=work, **payload)
+                                        await send(read_type, priority=1, work=work, **payload)
                                     else:
                                         await send('DISPATCH', priority=1, work=work,
                                             **dict(work.document_payload),
@@ -262,10 +272,10 @@ def channel_route(queue):
                             # challenge issued before it cannot establish idle.
                             probe_nonce = await shared.begin_resource_probe(run_id, token, generation)
                             await send('RESOURCE_PROBE', probe_nonce=probe_nonce)
-                    elif shared is not None and frame['type'] == 'QUERY_RESULT':
+                    elif shared is not None and frame['type'] in ('QUERY_RESULT','PASSAGE_READ_RESULT'):
                         result = decode_envelope(json.dumps(frame, allow_nan=False,
                             ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
-                        if not isinstance(result, QueryResult):
+                        if not isinstance(result, (QueryResult,PassageReadResult)):
                             raise ValueError('query_result_required')
                         if not ready or observed['provider_version'] is None:
                             raise ValueError('not_ready')
@@ -301,6 +311,21 @@ def channel_route(queue):
                                          connection_generation=generation)
                         await send('HEARTBEAT_ACK', provider_version=(str(observed['provider_version'])
                                    if observed['provider_version'] is not None else None))
+                    elif frame['type']=='SOURCE_COMMAND_RESULT':
+                        _fields(frame,(*common,'job_id','claim','receipt','run_id','launch_nonce',
+                            'runtime_incarnation','compute_claim','dispatch_generation'))
+                        if source_dispatch is None or shared is None or not ready or observed['provider_version'] is None:
+                            raise ValueError('source_executor_unavailable')
+                        _identifier(frame['job_id']);_identifier(frame['claim'])
+                        try:
+                            settled=await source_dispatch.receive(frame,run_id=run_id,token=token,generation=generation)
+                        except (StaleClaim,LookupError):
+                            settled=dict(job_id=frame['job_id'],claim=frame['claim'],status='stale')
+                        if settled is None:
+                            await send('RESULT_ACK',job_id=frame['job_id'],claim=frame['claim'],status='apply_received')
+                        else:
+                            shared.durable_result_settled(frame['job_id'],frame['claim'],settled['status'])
+                            await send('RESULT_ACK',**settled)
                     elif frame['type'] == 'RESULT':
                         _fields(frame, (*common, 'job_id', 'claim', 'space', 'vectors'), ('timings',))
                         if not ready or observed['provider_version'] is None:

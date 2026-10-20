@@ -32,6 +32,7 @@ class TargetLaunchSpec:
     stage0_receipt: str
     initialized_receipt: dict | None = None
     min_data_seq: int = 0
+    command_handlers: tuple[dict, ...] = ()
 
     def __post_init__(self):
         if type(self.database) is not OwnedDatabase:
@@ -64,13 +65,17 @@ class TargetLaunchSpec:
             raise ValueError('fresh generation has no initialized receipt or accepted cursor')
         # Freeze a detached canonical inventory; callers cannot mutate expected pins.
         object.__setattr__(self,'artifacts',tuple(json.loads(canonical(entries))))
+        if self.command_handlers:
+            from .kaggle_source_commands import fixed_registry
+            fixed_registry(self.database,self.command_handlers)
+        object.__setattr__(self,'command_handlers',tuple(json.loads(canonical(self.command_handlers))))
 
     def wire(self):
         return dict(database=self.database.wire(),artifact_root=self.artifact_root,
             artifacts=list(self.artifacts),dependency_packages=list(self.dependency_packages),
             dependency_sha256=self.dependency_sha256,schema_sha256=self.schema_sha256,
             stage0_receipt=self.stage0_receipt,initialized_receipt=self.initialized_receipt,
-            min_data_seq=self.min_data_seq)
+            min_data_seq=self.min_data_seq,command_handlers=list(self.command_handlers))
 
 
 class TargetRuntime:
@@ -88,6 +93,7 @@ class TargetRuntime:
         self.probe = probe or NativeDatabaseProbe()
         self.prepare_resident = prepare
         self.pool = None
+        self.writer_pool = None
         self.prepared = None
         self.identity = None
         self.closed = False
@@ -140,7 +146,16 @@ class TargetRuntime:
             from .query_telemetry import ReadRuntime, bind_read_runtime
             with bind_read_runtime(ReadRuntime(run_id,runtime_incarnation)):
                 return await handler(frame,encode=encode)
-        self.prepared = PreparedRuntime(invoke,readiness)
+        source_handler=None
+        if self.target.get('command_handlers'):
+            from .kaggle_source_commands import fixed_registry,WorkerSourceExecutor
+            self.writer_pool=self.pool_factory(kwargs={**self.database.connection(),'user':'rkb_writer'},
+                min_size=1,max_size=1,open=False,timeout=2,max_waiting=1)
+            await self.writer_pool.open(wait=True,timeout=10)
+            source_handler=WorkerSourceExecutor(acquire=self.writer_pool.connection,
+                registry=fixed_registry(self.database,self.target['command_handlers']),database=self.database,
+                run_id=run_id,launch_nonce=launch_nonce,runtime_incarnation=runtime_incarnation)
+        self.prepared = PreparedRuntime(invoke,readiness,source_handler)
         return self.prepared
 
     async def aclose(self):
@@ -148,7 +163,11 @@ class TargetRuntime:
             return
         self.closed = True
         try:
-            if self.pool is not None:
-                await self.pool.close(timeout=10)
+            try:
+                if self.writer_pool is not None:
+                    await self.writer_pool.close(timeout=10)
+            finally:
+                if self.pool is not None:
+                    await self.pool.close(timeout=10)
         finally:
             await self.owner.aclose()
