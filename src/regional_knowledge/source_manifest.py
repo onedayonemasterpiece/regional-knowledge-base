@@ -260,7 +260,7 @@ def build_source_manifest(*, metadata, receipt, proof, graph, semantic, passages
         raise ValueError('staged page has no native proof')
     manifest=dict(codec=MANIFEST_CODEC,source_id=receipt.source_id,source_revision=1,
         original_receipt_b64=base64.b64encode(_json(receipt.wire())).decode(),native_pages_proof_sha256=proof.sha256,
-        metadata={k:v for k,v in metadata.model_dump(mode='json').items() if k not in ('catalog_update','duplicate_policy')},
+        metadata={k:v for k,v in metadata.model_dump(mode='json').items() if k in ('title','authors','publication_year','language','catalog')},
         pages=sorted(pages,key=lambda p:p['physical_page_index']),regions=sorted(regions,key=lambda r:r['region_id']),
         passages=[dict(passage_id=str(c.chunk_id),region_ids=list(map(str,c.region_ids)),
             footnote_region_ids=list(map(str,c.footnote_region_ids)),page_ids=list(map(str,c.page_ids)),

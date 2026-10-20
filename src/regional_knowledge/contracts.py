@@ -173,6 +173,9 @@ class CatalogUpdateInput(BaseModel):
 
 
 class StartMetadataInput(BaseModel):
+    # Compatibility for clients whose existing book_ingest schema exposes an
+    # open metadata object but has not refreshed the optional top-level field.
+    source_import: dict[str, Any] | None = Field(default=None,max_length=2)
     catalog_update: CatalogUpdateInput | None = None
     catalog: CatalogMetadata | None = None
     duplicate_policy: Literal['reuse', 'new_revision'] = 'reuse'

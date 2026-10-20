@@ -239,7 +239,8 @@ async def test_embeddings_bind_exact_native_receipt_graph_and_document_text(inta
 
 
 @pytest.mark.asyncio
-async def test_existing_mcp_fileparams_and_stage_json_use_target_owned_workflow(intake,monkeypatch,tmp_path):
+@pytest.mark.parametrize('nested',[False,True])
+async def test_existing_mcp_fileparams_and_stage_json_use_target_owned_workflow(intake,monkeypatch,tmp_path,nested):
     from starlette.requests import Request
     from regional_knowledge.server import build_server
     from regional_knowledge.read_issuance import _SCOPE_KEY
@@ -259,11 +260,15 @@ async def test_existing_mcp_fileparams_and_stage_json_use_target_owned_workflow(
         finally:
             retained=request.scope.pop(_SCOPE_KEY,None)
             if retained:retained[1].release()
-    await call('book_ingest',dict(command='start',file=dict(file_id='synthetic-pdf',
+    arguments=dict(command='start',file=dict(file_id='synthetic-pdf',
         download_url='https://files.example.test/private.pdf',mime_type='application/pdf'),
-        metadata={'title':'Synthetic source','language':'simple'},source_import=options().model_dump(mode='json')))
+        metadata={'title':'Synthetic source','language':'en'},source_import=options().model_dump(mode='json'))
+    if nested:arguments['metadata']['source_import']=arguments.pop('source_import')
+    await call('book_ingest',arguments)
     with s.t.queue.connect(write=False) as db:
         row=dict(db.execute('SELECT * FROM rkb_source_intake_control').fetchone())
+    assert json.loads(row['metadata_json'])['language']=='en'
+    assert 'source_import' not in json.loads(row['metadata_json'])
     result=SimpleNamespace(ingestion_id=row['ingestion_id'],document_id=row['source_id'])
     payload=stage_payload(s,result)
     stage=dict(ingestion_id=result.ingestion_id,source_revision=1,pages=payload['pages'][:8],chunks=payload['chunks'][:8])
@@ -301,7 +306,7 @@ async def test_source_and_authored_story_activate_only_after_exact_remote_outcom
     import hashlib
     from regional_knowledge.kaggle_apply import ApplyReceipt
     from regional_knowledge.kaggle_source_commands import canonical,receipt_wire
-    s=intake;result=await staged(s)
+    s=intake;result=await staged(s,dict(title='Synthetic source',authors=['A; B'],language='en'))
     first=s.originals.proofs[result.ingestion_id].pages[0]
     body='An independently authored short narrative with exact source evidence.'
     candidate=dict(candidate_key='harbour-finding',title='A harbour episode',summary='A separate editorial summary.',
@@ -326,6 +331,9 @@ async def test_source_and_authored_story_activate_only_after_exact_remote_outcom
     if expected_route=='source.import.v4':
         assert len(value['source_manifest']['pages'])==10 and len(value['source_manifest']['passages'])==10
         assert value['source_manifest']['metadata']['title']=='Synthetic source'
+        assert value['source_manifest']['metadata']['language']=='en'
+        assert value['source_manifest']['metadata']['authors']==['A; B']
+    assert {p['language'] for p in value['passages']}=={'simple'}
     assert 'https://' not in entry.command.payload.decode() and 'download_url' not in entry.command.encode().decode()
     assert len(s.originals.calls)==1
     a=s.startup.admission;t=s.t

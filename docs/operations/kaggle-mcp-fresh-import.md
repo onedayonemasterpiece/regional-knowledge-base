@@ -71,6 +71,10 @@ counter. No BGE weights or model inference run on Dev.
    and `source_import.public_rights`. The existing public rights policy must
    allow the explicitly supplied status/evidence/policy version. The server
    assigns stable source/ingestion identities and persists bounded control state.
+   Clients whose installed tool schema has not refreshed the optional top-level
+   input may pass the same object as `metadata.source_import`. Both locations
+   use the same validator and authorization; supplying both is rejected. This
+   control input never enters the bibliographic catalogue or original manifest.
 2. Native intake downloads the original directly on Kaggle, archives it through
    the existing storage authority, and independently rereads/hashes the stored
    exact version. Dev never downloads original bytes. Pending/unknown outcomes
@@ -94,10 +98,17 @@ counter. No BGE weights or model inference run on Dev.
    bound to original receipt, parser, stage hash, text hash and pinned BGE space.
    Vectors are produced by the resident Kaggle encoder. No query-vector roundtrip
    or Dev inference occurs.
-6. Finalize freezes one `source.import.v2` command under the existing spool's
-   ordering lock. The accepted journal segment precedes native activation.
-   Source, immutable findings and supplied narrative/default variant activate
-   atomically through the fixed v2 handler. A local apply receipt is still
+6. Finalize freezes the exact installed import command under the existing
+   spool's ordering lock: v2 at schema7, v3 at schema8, or v4 at the explicitly
+   selected schema9/current11 binding. Existing accepted versions are unchanged.
+   The accepted journal segment precedes native activation. Source, findings
+   and supplied narrative/default variant activate atomically. V4 also stores
+   structured title/authors/year/language/catalogue, original receipt, physical
+   page and native block hashes, normalized region geometry, exact Unicode
+   spans, and complete passage/page/region references in PG. No bibliography
+   parsing or surviving local spool is required to recover these fields.
+   Passage FTS selects ru/de/simple while the actual metadata language is kept.
+   A local apply receipt is still
    processing until its exact outcome is remotely durable. Retry retains the
    original command/job identities. V1 remains immutable and independently
    replayable.

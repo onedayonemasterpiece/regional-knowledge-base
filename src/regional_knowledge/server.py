@@ -1106,7 +1106,14 @@ def build_server(
     ) -> BookIngestOutput:
         payload: dict[str, Any] | None = None
         if metadata is not None:
-            payload = metadata.model_dump(mode="json", exclude_none=True)
+            if metadata.source_import is not None:
+                if source_import is not None:
+                    raise ToolError('source_import_must_use_one_input_location')
+                try:
+                    source_import=TargetSourceImportInput.model_validate(metadata.source_import)
+                except ValueError:
+                    raise ToolError('invalid_source_import_input') from None
+            payload = metadata.model_dump(mode="json", exclude_none=True,exclude={'source_import'})
             if metadata.catalog_update is not None:
                 if command != 'stage' or file is not None or any(
                     value is not None for value in
