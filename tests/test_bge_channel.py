@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from regional_knowledge import bge_queue
 from regional_knowledge.bge_channel import channel_route
@@ -61,6 +61,10 @@ class Queue:
             return None
         self.claimed, self.pending = self.pending, None
         return self.claimed
+
+    def resume_channel_claim(self, run, token, generation):
+        self.channel_status(run, token, generation)
+        return self.claimed if self.completed is None else None
 
     def complete(self, run, token, job_id, claim, space, vectors, timings, *, connection_generation=None):
         self.channel_status(run, token, connection_generation)
@@ -274,3 +278,87 @@ def test_real_queue_receipt_roundtrip_waiter_and_lost_ack_replay(tmp_path):
             send(socket, generation, 'RESULT', **payload)
             ack = socket.receive_json()
             assert ack['status'] == 'duplicate' and ack['claim'] == job['claim']
+
+
+def test_dispatch_lost_before_worker_observes_it_resumes_same_real_claim(tmp_path, monkeypatch):
+    queue = bge_queue.BgeQueue(tmp_path / 'queue.sqlite')
+    job_id = queue.enqueue('actor', 'one', ['fixture text'], kind='document')
+    with queue.connect(write=False) as db:
+        run_id = db.execute('select id from runs').fetchone()[0]
+    token = (queue.path.parent / 'bge-worker-credentials' / run_id).read_text()
+    nonce = queue.prepare_channel(run_id)
+    queue.launch_claim(run_id)
+    queue.launch_record(run_id, 'fixture-owner/stable-slug', provider_version=7)
+    original_send = WebSocket.send_text
+    dropped = []
+    dropped_event = threading.Event()
+
+    async def lose_first_dispatch(socket, data):
+        import json
+        frame = json.loads(data)
+        if frame['type'] == 'DISPATCH' and not dropped:
+            dropped.append(frame)
+            dropped_event.set()
+            # Simulate the connection dropping before ASGI writes this frame.
+            raise WebSocketDisconnect()
+        await original_send(socket, data)
+
+    monkeypatch.setattr(WebSocket, 'send_text', lose_first_dispatch)
+
+    def connect(socket):
+        socket.send_json({'type': 'ATTACH', 'protocol_version': 2, 'run_id': run_id,
+                          'launch_nonce': nonce, 'runtime_incarnation': 'real-fixture'})
+        return socket.receive_json()['connection_generation']
+
+    with client(queue) as app:
+        with app.websocket_connect('/bge-worker/channel', headers={'Authorization': 'Bearer ' + token}) as first:
+            generation = connect(first)
+            assert ready(first, generation)['status'] == 'ready'
+            assert dropped_event.wait(2)
+        assert len(dropped) == 1
+        with app.websocket_connect('/bge-worker/channel', headers={'Authorization': 'Bearer ' + token}) as second:
+            new_generation = connect(second)
+            assert ready(second, new_generation)['status'] == 'ready'
+            resumed = second.receive_json()
+            assert new_generation > generation
+            assert resumed['type'] == 'DISPATCH' and resumed['id'] == job_id
+            for key in ('id', 'claim', 'kind', 'texts', 'space'):
+                assert resumed[key] == dropped[0][key]
+            with queue.connect(write=False) as db:
+                row = db.execute('select * from jobs where id=?', (job_id,)).fetchone()
+                assert row['attempt'] == 1
+                assert db.execute("select count(*) from jobs where state='claimed'").fetchone()[0] == 1
+
+
+def test_buffered_dispatch_is_dropped_when_completion_overtakes_it(queue):
+    queue.enqueue()
+    queue.claimed, queue.pending = queue.pending, None
+    entered = threading.Event()
+    release = threading.Event()
+    resume = queue.resume_channel_claim
+    calls = 0
+
+    def held_resume(run, token, generation):
+        nonlocal calls
+        calls += 1
+        if calls == 2:  # Initial recovery queued it; sender is about to validate.
+            entered.set()
+            assert release.wait(2)
+        return resume(run, token, generation)
+
+    queue.resume_channel_claim = held_resume
+    try:
+        with client(queue) as app, app.websocket_connect('/bge-worker/channel', headers={'Authorization': 'Bearer secret'}) as socket:
+            generation = attach(socket)['connection_generation']
+            assert ready(socket, generation)['status'] == 'ready'
+            assert entered.wait(1)
+            send(socket, generation, 'RESULT', job_id='job', claim='claim', space=SPACE,
+                 vectors=[[1., *([0.] * 1023)]])
+            assert queue.completion.wait(1)
+            release.set()
+            # A stale buffered DISPATCH would arrive before this ACK if emitted.
+            assert socket.receive_json()['type'] == 'RESULT_ACK'
+            send(socket, generation, 'HEARTBEAT')
+            assert socket.receive_json()['type'] == 'HEARTBEAT_ACK'
+    finally:
+        release.set()

@@ -27,6 +27,17 @@ timings are excluded from that payload identity. A different
 incarnation commits a permanent conflict and disables both attachments and HTTP
 dispatch. Reattaching the original incarnation cannot clear that conflict.
 
+After readiness on a new connection, `resume_channel_claim` reads the existing
+unexpired durable claim before normal allocation. The same id/claim/input is
+sent once, covering disconnect after claim commit but before the worker received
+DISPATCH. This read neither creates an attempt nor renews a lease. Completed or
+expired assignments do not resume. Buffered DISPATCH frames are checked against
+that current claim immediately before sending and discarded if it changed.
+The SQLite read and network write cannot be atomic without holding a database
+lock during network I/O. Worker deduplication of its in-flight and most recently
+acknowledged claim handles a completion racing that final check/write boundary.
+This recovery applies only to legacy durable encoding jobs, never ephemeral QUERY.
+
 `channel_status` uses a query-only snapshot and validates authentication,
 generation and conflict state. It returns state, readiness and provider version
 without renewing leases or persisting expiry. `detach_channel` clears only the

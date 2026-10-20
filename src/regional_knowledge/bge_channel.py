@@ -101,13 +101,21 @@ def channel_route(queue):
                 limit = MAX_DISPATCH_BYTES if frame_type == 'DISPATCH' else MAX_FRAME_BYTES
                 if len(encoded.encode('utf-8')) > limit:
                     raise ValueError('outgoing_size')
-                await asyncio.wait_for(outgoing.put((priority, next(sequence), encoded)), SEND_TIMEOUT_SECONDS)
+                await asyncio.wait_for(outgoing.put((priority, next(sequence), frame, encoded)), SEND_TIMEOUT_SECONDS)
 
             async def sender():
                 while True:
-                    priority, _, encoded = await outgoing.get()
+                    priority, _, frame, encoded = await outgoing.get()
                     if priority == 1:
-                        await status()  # Fence a DISPATCH delayed in the send buffer.
+                        # Drop a completed, expired or superseded assignment
+                        # while it waited behind higher-priority control ACKs.
+                        current = await queue_call(queue.resume_channel_claim, run_id, token, generation)
+                        if current is None or any(frame[key] != current[key]
+                                                  for key in ('id', 'claim', 'kind', 'texts', 'space')):
+                            logger.info(json.dumps({'event': 'bge_channel_dispatch_discarded',
+                                                    'run_id': run_id, 'connection_generation': generation,
+                                                    'reason': 'claim_changed'}))
+                            continue
                     await asyncio.wait_for(socket.send_text(encoded), SEND_TIMEOUT_SECONDS)
 
             async def status():
@@ -125,12 +133,21 @@ def channel_route(queue):
                         await send('READY_ACK', status='ready', provider_version=str(observed['provider_version']))
 
             async def dispatch():
+                resume_pending = True
                 while True:
                     observed = await status()
                     await promote(observed)
                     if promoted:
-                        job = await queue_call(queue.claim, run_id, token,
-                                               connection_generation=generation)
+                        job = None
+                        if resume_pending:
+                            job = await queue_call(queue.resume_channel_claim, run_id, token, generation)
+                            resume_pending = False
+                            if job:
+                                logger.info(json.dumps({'event': 'bge_channel_claim_resumed',
+                                                        'run_id': run_id, 'connection_generation': generation}))
+                        if job is None:
+                            job = await queue_call(queue.claim, run_id, token,
+                                                   connection_generation=generation)
                         if job:
                             await send('DISPATCH', priority=1, **job)
                     await asyncio.sleep(RECONCILE_SECONDS)

@@ -314,6 +314,31 @@ class BgeQueue:
             db.execute('update runs set channel_active=0 where id=?',(run_id,))
             return True
 
+    def resume_channel_claim(self, run_id, token, connection_generation):
+        """Read this run's existing durable assignment without renewing it.
+
+        A dropped socket can lose DISPATCH after claim commit. Reattachment
+        recovers that same assignment; it must not allocate another attempt.
+        """
+        now=self.clock()
+        with self.connect(write=False) as db:
+            run=self._authorize(db,run_id,token,now)
+            self._dispatch_authorize(run,connection_generation)
+            if connection_generation is None:
+                raise StaleAttachment('BGE channel generation required')
+            if self._run_expired(run,now):
+                raise RevokedRun('invalid or stale BGE worker')
+            job=db.execute(
+                "select * from jobs where run_id=? and state='claimed' and lease_until>? limit 1",
+                (run_id,now),
+            ).fetchone()
+            return self._claim_payload(job) if job else None
+
+    @staticmethod
+    def _claim_payload(job):
+        return {'id':job['id'],'claim':job['claim'],'kind':job['kind'],
+                'texts':json.loads(job['texts']),'space':SPACE}
+
     def heartbeat(self, run_id, token, *, ready=False, diagnostics=None, connection_generation=None):
         now=self.clock()
         with self.connect() as db:
@@ -353,7 +378,7 @@ class BgeQueue:
             claim=secrets.token_urlsafe(24)
             db.execute("update jobs set state='claimed',run_id=?,claim=?,lease_until=?,attempt=attempt+1,updated=? where id=?",(run_id,claim,now+JOB_SECONDS,now,job['id']))
             db.execute('update runs set useful=? where id=?',(now,run_id))
-            return {'id':job['id'],'claim':claim,'kind':job['kind'],'texts':json.loads(job['texts']),'space':SPACE}
+            return self._claim_payload({**dict(job),'claim':claim})
 
     def complete(self, run_id, token, job_id, claim, space, vectors, timings, *, connection_generation=None):
         if space!=SPACE or len(vectors)!=1:raise ValueError('BGE result space/batch mismatch')

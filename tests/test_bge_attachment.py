@@ -77,6 +77,7 @@ def test_competing_incarnation_persists_conflict_and_blocks_both(tmp_path, caplo
         lambda: reopened.claim(run, token, connection_generation=1),
         lambda: reopened.claim(run, token),
         lambda: reopened.channel_status(run, token, 1),
+        lambda: reopened.resume_channel_claim(run, token, 1),
         lambda: complete(reopened, run, token, job, 1),
         lambda: complete(reopened, run, token, job, None),
     ):
@@ -269,3 +270,53 @@ def test_never_attached_run_keeps_legacy_http_after_preparation(tmp_path):
     job = queue.claim(run, token)
     assert complete(queue, run, token, job, None) == 'accepted'
     assert not queue.detach_channel(run, token, 1)
+
+
+def test_resume_reads_same_durable_claim_after_dispatch_loss_without_writes(tmp_path):
+    queue, run, token, nonce, job_id, now = prepared(tmp_path)
+    queue.attach_channel(run, token, nonce, 'runtime-a')
+    queue.heartbeat(run, token, ready=True)
+    job = queue.claim(run, token, connection_generation=1)
+    with queue.connect(write=False) as db:
+        before_job = dict(db.execute('select * from jobs where id=?', (job_id,)).fetchone())
+        before_run = dict(db.execute('select * from runs where id=?', (run,)).fetchone())
+    # No worker received DISPATCH. A fresh connection recovers its exact claim.
+    queue.detach_channel(run, token, 1)
+    assert queue.attach_channel(run, token, nonce, 'runtime-a')['connection_generation'] == 2
+    now[0] += 10
+    with queue.connect() as writer:
+        writer.execute('update jobs set updated=updated where id=?', (job_id,))
+        assert queue.resume_channel_claim(run, token, 2) == job
+        assert queue.resume_channel_claim(run, token, 2) == job
+    with queue.connect(write=False) as db:
+        assert dict(db.execute('select * from jobs where id=?', (job_id,)).fetchone()) == before_job
+        after_run = dict(db.execute('select * from runs where id=?', (run,)).fetchone())
+        for key in ('heartbeat', 'useful', 'ready_at'):
+            assert after_run[key] == before_run[key]
+    with pytest.raises(StaleAttachment):
+        queue.resume_channel_claim(run, token, 1)
+    with pytest.raises(StaleAttachment):
+        queue.resume_channel_claim(run, token, None)
+    with pytest.raises(RevokedRun):
+        queue.resume_channel_claim(run, 'wrong-token', 2)
+    assert queue.claim(run, token, connection_generation=2) is None
+    assert complete(queue, run, token, job, 2) == 'accepted'
+    assert queue.resume_channel_claim(run, token, 2) is None
+
+
+def test_expired_claim_is_not_resumed_or_rewritten(tmp_path):
+    queue, run, token, nonce, job_id, now = prepared(tmp_path)
+    queue.attach_channel(run, token, nonce, 'runtime-a')
+    queue.heartbeat(run, token, ready=True)
+    queue.claim(run, token, connection_generation=1)
+    now[0] += 100
+    queue.heartbeat(run, token, connection_generation=1)
+    now[0] += 81
+    assert queue.resume_channel_claim(run, token, 1) is None
+    with queue.connect(write=False) as db:
+        row = db.execute('select * from jobs where id=?', (job_id,)).fetchone()
+        assert row['state'] == 'claimed' and row['attempt'] == 1
+        assert row['lease_until'] == 1180.0
+    now[0] += 40
+    with pytest.raises(RevokedRun):
+        queue.resume_channel_claim(run, token, 1)
