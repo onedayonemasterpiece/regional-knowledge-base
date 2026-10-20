@@ -89,3 +89,44 @@ This forced diagnostic is not serving-performance evidence. Both execution
 plans and the transaction rollback are recorded in the managed task's
 `pg/search-sql-reviewed.txt`. No BGE inference, corpus import, real GEO/Saved writes or
 Kaggle runtime action was performed.
+
+## Actual asynchronous driver verification
+
+`tests/test_kaggle_pg_driver.py` adds three actual psycopg asynchronous driver
+checks. Local execution requires `RKB_PG_DRIVER_FIXTURE_SOCKET` to equal exactly
+`/home/dev/artifacts/regional-knowledge-base/20261020T110555Z-kaggle-implementation-20261020/pg/socket`.
+Before DDL, the fixture checks the named Docker container's `rkb.data_class`
+label is `test_fixture`, its network is `none`, it is running and its socket
+mount matches that exact directory. It independently checks the connected
+database/user and PostgreSQL/pgvector versions. The long artifact path exceeds
+Linux's Unix socket address length, so the fixture opens only that directory
+and connects through its short `/proc/self/fd/<directory descriptor>` path;
+the descriptor stays open until all test connections close.
+
+CI may instead set `RKB_KAGGLE_TEST_DSN` for the existing graph-postgres service.
+This path requires `GITHUB_ACTIONS=true` and exact repository
+`onedayonemasterpiece/regional-knowledge-base`. Parsed connection parameters
+must exactly match the existing synthetic service: loopback `127.0.0.1`, port
+`54329`, database `rkb_graph_test`, user `postgres` and its declared fixture-only
+password. Extra connection parameters and arbitrary DSNs are rejected. The
+actual database/user and PG17/pgvector 0.8.2 are checked again before schema
+creation. This adds no container or service. CI execution/results must still be
+reported separately from local checks.
+
+Run these tests serially with the SQL fixture tests. Each driver test requires
+`rkb_v4` to be absent, creates exactly that schema from the migration payload,
+uses synthetic rows and drops only its own schema afterward. Setup errors roll
+back instead of deleting a preexisting schema. There is no production DSN,
+model inference, corpus data or product configuration involved.
+
+Verified locally on 2026-10-20 using actual psycopg 3.3.6 and the isolated PG17.10 /
+pgvector 0.8.2 fixture: injected encode → lexical/dense SQL → batch hydration
+returned all 5017 body and 5013 bibliography characters. Two additional tests
+held a real exclusive table lock through an independent connection, observed
+the serving backend in `pg_stat_activity` waiting on `Lock`, and exercised
+respectively the search deadline and caller cancellation. Both returned the
+proper exception, left the serving connection IDLE, restored transaction-local
+statement/HNSW settings, allowed a subsequent `SELECT 42`, and successfully
+searched again after releasing the lock. The combined SQL/unit/driver run had
+11 passing tests. Structured local evidence is in the managed task directory's
+`pg/driver-tests.txt`. No remote GitHub Actions result is implied.
