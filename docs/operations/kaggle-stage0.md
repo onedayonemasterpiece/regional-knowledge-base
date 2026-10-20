@@ -159,3 +159,18 @@ The grant remains limited to explicit verified public-code parents and files.
 It adds no group write or world access, changes no file owner, and leaves the
 working root, model and private configuration permissions unchanged. Startup
 logging classifies directory-read denial with a fixed code and no path content.
+
+## Notebook source envelope
+
+The complete shipped Python/SQL package is transported as bounded compressed
+JSON inside the existing private notebook source. The generated decoder rejects
+corruption, extra streams and expansion beyond 3 MiB before extracting files.
+Every extracted file still passes the original byte/hash inventory checks.
+The generator rejects notebook source above 1,000,000 bytes before provider
+submission; the complete launch configuration retains its separate 64 KiB limit.
+
+The 2026-10-20 fresh11 candidate measured 1,562,414 source bytes before this
+change and 622,363 after it, with the same 132 prepared entries and nine command
+handlers. These are local generation measurements, not provider acceptance or
+PG/BGE readiness. The original HTTP error did not retain a provider response,
+so a provider size rejection remains a hypothesis.
