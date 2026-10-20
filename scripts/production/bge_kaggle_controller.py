@@ -109,6 +109,8 @@ def main(*, target_spec=None, recovery_journal=None):
             raise TypeError('fresh generation requires existing real RecoveryJournal')
         if target_spec.database.mode=='NEW_EMPTY_GENERATION' and target_spec.stage0 is None:
             raise ValueError('fresh launch requires complete pinned Stage0 preparation')
+        if target_spec.database.mode=='NEW_EMPTY_GENERATION' and target_spec.native_bundle is None:
+            raise ValueError('fresh launch requires complete pinned native bundle')
     for line in Path('/home/dev/.env').read_text().splitlines():
         if line.startswith(('KAGGLE_USERNAME=','KAGGLE_KEY=')):
             key,value=line.split('=',1);os.environ[key]=shlex.split(value)[0]

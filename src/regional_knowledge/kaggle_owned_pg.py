@@ -214,15 +214,33 @@ class OwnedPostgres:
                 or intent.get('database') != spec.wire() or intent.get('journal_head') is not None
                 or not intent.get('journal_stream') or not intent.get('run_id') or not intent.get('launch_nonce')):
             raise BootstrapUnavailable('native_pg_initialization_intent_missing')
-        verified = {str(artifacts.root/e.requirement.name):e.requirement for e in artifacts.entries if e.role=='code'}
+        executable={spec.native_paths[name] for name in ('initdb','postgres','pg_config')}
+        verified = {str(artifacts.root/e.requirement.name):(e.requirement.size,e.requirement.sha256,
+            str(artifacts.root/e.requirement.name) in executable) for e in artifacts.entries if e.role=='code'}
+        if native_bundle is not None:
+            from .kaggle_native_bundle import VerifiedNativeBundle,NativeBundleSpec
+            if (type(native_bundle) is not VerifiedNativeBundle or native_bundle.root!=artifacts.root
+                    or intent.get('native_bundle')!=NativeBundleSpec(native_bundle.manifest_name,native_bundle.manifest_sha256).wire()
+                    or not await asyncio.to_thread(native_bundle.current)):
+                raise BootstrapUnavailable('native_pg_verified_bundle_required')
+            manifest=verified.get(str(artifacts.root/native_bundle.manifest_name))
+            if manifest is None or manifest[1]!=native_bundle.manifest_sha256:
+                raise BootstrapUnavailable('native_pg_bundle_manifest_binding_missing')
+            for path,size,sha,execute in native_bundle.pins:
+                if path in verified or not Path(path).is_relative_to(native_bundle.prefix):
+                    raise BootstrapUnavailable('native_pg_bundle_path_binding_invalid')
+                verified[path]=(size,sha,execute)
+            if any(path not in verified or not verified[path][2] for path in executable):
+                raise BootstrapUnavailable('native_pg_bundle_executable_binding_invalid')
+        elif intent.get('native_bundle') is not None:
+            raise BootstrapUnavailable('native_pg_verified_bundle_required')
         if not set(spec.native_paths.values()) <= verified.keys():
             raise BootstrapUnavailable('native_pg_artifact_binding_missing')
         for path in spec.native_paths.values():
-            requirement = verified[path]
-            if _file_hash(path,requirement.size) != requirement.sha256:
+            size,sha,_ = verified[path]
+            if _file_hash(path,size) != sha:
                 raise BootstrapUnavailable('native_pg_artifact_hash_mismatch')
-        executable={spec.native_paths[name] for name in ('initdb','postgres','pg_config')}
-        pins=[(path,e.size,e.sha256,path in executable) for path,e in verified.items()]
+        pins=[(path,*entry) for path,entry in verified.items()]
         await asyncio.to_thread(grant_native_code_access,artifacts.root,pins,uid=spec.uid,gid=spec.gid)
         files = {name:(Path(sql_root)/name).read_bytes() for name in SQL_ARTIFACTS}
         if intent.get('sql_hashes') != {name:digest(data) for name,data in files.items()}:

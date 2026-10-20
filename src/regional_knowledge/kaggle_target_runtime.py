@@ -34,6 +34,7 @@ class TargetLaunchSpec:
     min_data_seq: int = 0
     command_handlers: tuple[dict, ...] = ()
     stage0: object = None
+    native_bundle: object = None
 
     def __post_init__(self):
         if type(self.database) is not OwnedDatabase:
@@ -70,6 +71,18 @@ class TargetLaunchSpec:
             from .kaggle_source_commands import fixed_registry
             fixed_registry(self.database,self.command_handlers)
         object.__setattr__(self,'command_handlers',tuple(json.loads(canonical(self.command_handlers))))
+        if self.native_bundle is not None:
+            from .kaggle_native_bundle import NativeBundleSpec
+            if type(self.native_bundle) is not NativeBundleSpec:
+                raise TypeError('typed pinned native bundle required')
+            manifest=next((e for e in entries if e['name']==self.native_bundle.manifest_name),None)
+            if manifest is None or manifest['role']!='code' or manifest['sha256']!=self.native_bundle.manifest_sha256:
+                raise ValueError('native manifest must match exact top-level code inventory')
+            if any(e['name'].startswith('rkb-native-') for e in entries):
+                raise ValueError('native extraction prefix cannot be a Stage0 download')
+            if self.database.mode=='NEW_EMPTY_GENERATION' and any(
+                    not Path(path).is_relative_to(self.native_bundle.prefix(root)) for path in self.database.native_paths.values()):
+                raise ValueError('native PostgreSQL paths must match content-addressed bundle prefix')
         if self.stage0 is not None:
             from .kaggle_stage0 import Stage0Spec
             if type(self.stage0) is not Stage0Spec:
@@ -90,7 +103,7 @@ class TargetLaunchSpec:
                 raise ValueError('protected BGE runtime versions cannot change through Stage0')
             if any(declared[name]['role']!='code' for name in self.stage0.wheels):
                 raise ValueError('Stage0 wheels require separate pinned code artifacts')
-            if self.database.mode=='NEW_EMPTY_GENERATION':
+            if self.database.mode=='NEW_EMPTY_GENERATION' and self.native_bundle is None:
                 native={str(root/e['name']) for e in entries if e['role']=='code'}
                 if not set(self.database.native_paths.values())<=native:
                     raise ValueError('Stage0 exact native PostgreSQL path inventory required')
@@ -105,7 +118,8 @@ class TargetLaunchSpec:
             dependency_sha256=self.dependency_sha256,schema_sha256=self.schema_sha256,
             stage0_receipt=self.stage0_receipt,initialized_receipt=self.initialized_receipt,
             min_data_seq=self.min_data_seq,command_handlers=list(self.command_handlers),
-            stage0=self.stage0.wire() if self.stage0 is not None else None)
+            stage0=self.stage0.wire() if self.stage0 is not None else None,
+            native_bundle=self.native_bundle.wire() if self.native_bundle is not None else None)
 
 
 class TargetRuntime:
@@ -169,8 +183,17 @@ class TargetRuntime:
                     for key in ('host','port','dbname','user'))):
                 raise BootstrapUnavailable('target_restore_connection_binding_mismatch')
         else:
-            await self.owner.start_empty(intent=self.target.get('initialization_intent'),
-                artifacts=encoder.artifacts,sql_root=self.target['sql_root'])
+            native_bundle=None
+            if self.target.get('native_bundle') is not None:
+                from .kaggle_native_bundle import NativeBundleSpec,prepare_native_bundle
+                bundle=NativeBundleSpec.from_wire(self.target['native_bundle'])
+                inventory=tuple(dict(name=e.requirement.name,size=e.requirement.size,
+                    sha256=e.requirement.sha256,role=e.role) for e in encoder.artifacts.entries)
+                native_bundle=await asyncio.to_thread(prepare_native_bundle,encoder.artifacts.root,
+                    bundle.manifest_name,bundle.manifest_sha256,inventory=inventory)
+            options=dict(intent=self.target.get('initialization_intent'),artifacts=encoder.artifacts,sql_root=self.target['sql_root'])
+            if native_bundle is not None:options['native_bundle']=native_bundle
+            await self.owner.start_empty(**options)
         self.pool = self.pool_factory(kwargs=reader_kwargs,min_size=1,max_size=4,
             open=False,timeout=2,max_waiting=4)
         await self.pool.open(wait=True,timeout=10)

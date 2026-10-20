@@ -23,22 +23,39 @@ existing lossy telemetry adapter. Shutdown drains read cleanup and every tracked
 forward before closing the pool and its owned postmaster on the same event loop.
 Repeated cancellation also drains the asynchronous close task.
 
-Fresh controller launches require an explicit typed Stage0Spec before provider
+Fresh controller launches require an explicit typed Stage0Spec and NativeBundleSpec before provider
 authentication or launch claim. Its download name/size/hash inventory must match every
 external prepared model/native/wheel artifact; bundled Python and SQL are extracted
 directly and never downloaded. Exact package versions match the dependency-hash
-inventory and preserve the four protected BGE runtime pins. Native PostgreSQL binaries
-must have explicit executable flags. The complete launch configuration is bounded.
+inventory and preserve the four protected BGE runtime pins. The native descriptor binds
+one exact top-level code manifest; its pinned package archives are also top-level code
+entries. PostgreSQL paths must lie in that manifest's content-addressed prefix. The
+complete launch configuration is bounded.
 After ATTACH/WELCOME, load_encoder invokes the standard-library Stage0 preparer before
 psycopg/pool/pydantic/torch imports. It checks/reuses cached bytes, streams missing pinned
 assets and installs only the declared offline hash-pinned wheel closure. A deferred
 runtime proxy imports and constructs TargetRuntime only after that preparation and
 encoder loading succeed. No downloads, installation or model load occur in Dev tests.
 
+After the encoder is available, TargetRuntime invokes the standard-library native bundle
+preparer in a worker thread. It verifies the manifest, OS/ABI, exact package archives and
+bounded nested file inventory before extracting an exclusive prefix or reusing a fully
+rechecked prefix. Package scripts never execute. The retained VerifiedNativeBundle
+receipt supplies the exact nested file pins to OwnedPostgres, which rechecks the receipt
+and intent binding before using any native binary. Manifest and package hashes anchor
+the nested code without expanding the top-level prepared-artifact inventory. Reconnect
+retains this preparation and the existing pools.
+
+Before nonroot PostgreSQL starts, all exact verified code files receive only the service
+group read permission and declared native executable permission; exact owned parents
+receive traversal permission. Owners, hashes and world permissions stay unchanged, and
+group write is removed. Model/tokenizer files and private generated launch source are
+excluded. The working root must already be traversable by the verified native identity.
+
 Fresh mode is `OwnedDatabase(mode='NEW_EMPTY_GENERATION', ...)`. Before source generation,
 `persist_empty_intent` reads the injected existing `RecoveryJournal.head()` and refuses
 any history or UNKNOWN. It persists an immutable run/nonce/database/writer/001–006 hash
-binding in the controller store before first attachment. The caller must retain writer
+binding and native bundle descriptor in the controller store before first attachment. The caller must retain writer
 and intake fencing throughout genesis. Fresh initialization creates an exclusive new
 leaf beneath `/kaggle/working`; existing, partial or symlinked clusters are refused. It
 rechecks exact native file hashes and pg_config-resolved vector 0.8.2 extension paths,

@@ -14,7 +14,8 @@ from .recovery_journal import RecoveryJournal
 MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_search',
     'kaggle_readiness','kaggle_worker_query','kaggle_database_probe','kaggle_bootstrap',
     'kaggle_owned_pg','kaggle_target_runtime','kaggle_apply','recovery_journal','query_telemetry',
-    'source_import','kaggle_source_commands','kaggle_stage0','kaggle_restored_database')
+    'source_import','kaggle_source_commands','kaggle_stage0','kaggle_restored_database','kaggle_native_bundle',
+    'kaggle_environment')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 
 
@@ -49,7 +50,8 @@ async def persist_empty_intent(queue, run_id, target, *, launch_nonce, recovery_
         raise ValueError('accepted history requires verified restore; initialization refused')
     intent = dict(codec='rkb.empty-generation.v1',run_id=run_id,launch_nonce=launch_nonce,
         database=target.database.wire(),journal_stream=recovery_journal.stream,journal_head=None,
-        stage0_receipt=target.stage0_receipt,sql_hashes=dict(sql_hashes))
+        stage0_receipt=target.stage0_receipt,sql_hashes=dict(sql_hashes),
+        native_bundle=target.native_bundle.wire() if target.native_bundle is not None else None)
     data = canonical(intent).decode()
     with queue.connect() as db:
         run = db.execute('SELECT status,connection_generation,channel_active,launch_nonce FROM runs WHERE id=?',
@@ -87,6 +89,7 @@ def compose_target(template,config,target,*,queue,repository):
         sql_hashes = {name:digest(base64.b64decode(files['sql/'+name])) for name in SQL_ARTIFACTS}
         if (intent is None or intent['database']!=target.database.wire()
                 or intent['run_id']!=config['run_id'] or intent['launch_nonce']!=config['launch_nonce']
+                or intent.get('native_bundle')!=(target.native_bundle.wire() if target.native_bundle is not None else None)
                 or intent['sql_hashes']!=sql_hashes):
             raise ValueError('persist actual empty-journal initialization intent first')
     runtime_wire=target.wire()

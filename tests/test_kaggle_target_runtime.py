@@ -371,3 +371,79 @@ async def test_restored_runtime_requires_retained_capability_and_closes_owned_ca
     await runtime.aclose()
     assert events==['verify-capability','pool','pool-close','candidate-close','owner-close']
     assert cap not in factory._capabilities and not factory._owned_candidates
+
+
+def test_controller_fresh_launch_requires_native_closure_before_provider(monkeypatch):
+    controller=module('bge_kaggle_controller')
+    monkeypatch.setenv('RKB_BGE_TRANSPORT','wss')
+    _,journal=journal_fixture()
+    target=spec(fresh=True);target=replace(target,stage0=stage0(target))
+    with pytest.raises(ValueError,match='complete pinned native bundle'):
+        controller.main(target_spec=target,recovery_journal=journal)
+
+
+def bundled_spec():
+    from regional_knowledge.kaggle_native_bundle import NativeBundleSpec
+    bundle=NativeBundleSpec('native-manifest.json','9'*64)
+    target=spec(fresh=True)
+    database=replace(target.database,native_paths={key:str(bundle.prefix(Path(target.artifact_root))/key)
+        for key in target.database.native_paths})
+    inventory=tuple(entry for entry in target.artifacts if not entry['name'].startswith('native/'))+(
+        dict(name=bundle.manifest_name,size=100,sha256=bundle.manifest_sha256,role='code'),
+        dict(name='postgres.deb',size=500,sha256='8'*64,role='code'))
+    return replace(target,database=database,artifacts=inventory,native_bundle=bundle)
+
+
+@pytest.mark.asyncio
+async def test_bundle_descriptor_is_bound_before_intent_and_generated_once(tmp_path):
+    target=bundled_spec();target=replace(target,stage0=stage0(target))
+    queue,run=queue_run(tmp_path);_,journal=journal_fixture()
+    intent=await persist_empty_intent(queue,run,target,launch_nonce=queue.prepare_channel(run),
+        recovery_journal=journal,sql_hashes=hashes())
+    assert intent['native_bundle']==target.native_bundle.wire()
+    source=generate(queue,run,target)
+    config=next(ast.literal_eval(node.value) for node in ast.parse(source).body
+        if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='RUN_CONFIG' for t in node.targets))
+    assert config['target_runtime']['native_bundle']==target.native_bundle.wire()
+    assert 'native_bundle' not in {key for key in config if key!='target_runtime'}
+    names={entry['name'] for entry in config['prepared_model']['entries']}
+    assert any(name.endswith('/regional_knowledge/kaggle_native_bundle.py') for name in names)
+    assert any(name.endswith('/regional_knowledge/kaggle_environment.py') for name in names)
+    with pytest.raises(ValueError,match='exact top-level code inventory'):
+        replace(target,native_bundle=replace(target.native_bundle,manifest_sha256='0'*64))
+    with pytest.raises(ValueError,match='content-addressed bundle prefix'):
+        replace(target,database=spec(fresh=True).database)
+
+
+@pytest.mark.asyncio
+async def test_runtime_extracts_bundle_after_encoder_and_forwards_retained_receipt(monkeypatch):
+    target=bundled_spec();events=[];receipt=object()
+    encoder=SimpleNamespace(artifacts=SimpleNamespace(root=Path(target.artifact_root),entries=tuple(
+        SimpleNamespace(requirement=SimpleNamespace(**{key:entry[key] for key in ('name','size','sha256')}),
+            role=entry['role']) for entry in target.artifacts)))
+    def extract(root,name,sha,*,inventory):
+        assert root==encoder.artifacts.root and name==target.native_bundle.manifest_name
+        assert sha==target.native_bundle.manifest_sha256 and inventory==target.artifacts
+        events.append('extract');return receipt
+    monkeypatch.setattr('regional_knowledge.kaggle_native_bundle.prepare_native_bundle',extract)
+    class Owner:
+        def __init__(self,spec):pass
+        async def start_empty(self,**kwargs):
+            assert kwargs['native_bundle'] is receipt and kwargs['artifacts'] is encoder.artifacts
+            events.append('owned')
+        async def aclose(self):events.append('close')
+    class Pool:
+        def __init__(self,**kwargs):events.append('pool')
+        async def open(self,**kwargs):pass
+        async def close(self,**kwargs):pass
+        def connection(self):pass
+    async def prepare(encoder,**kwargs):
+        async def read(frame,*,encode):pass
+        return PreparedRuntime(read,candidate())
+    runtime=TargetRuntime(dict(CONFIG,target_runtime=dict(target.wire(),sql_root='/unused')),
+        executed_source='/fixture',owner_factory=Owner,pool_factory=Pool,prepare=prepare)
+    assert events==[]
+    args=dict(run_id=CONFIG['run_id'],launch_nonce=CONFIG['launch_nonce'],runtime_incarnation='bundle-inc')
+    await runtime.prepare(encoder,**args);await runtime.prepare(None,**args)
+    await runtime.aclose()
+    assert events==['extract','owned','pool','close']
