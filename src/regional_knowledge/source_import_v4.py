@@ -17,15 +17,20 @@ def validate_import_v4_command(command):
             or (command.schema_revision,command.function_revision,command.executor_revision)!=EDITORIAL_REVISIONS.wire()):
         raise ValueError('exact fresh9 source import required')
     _uuid(command.ids['source_id'])
-    if type(command.payload) is not bytes or not 1<=len(command.payload)<=MAX_IMPORT_BYTES:
+    return validate_import_v4_payload(command.payload,source_id=command.ids['source_id'])
+
+
+def validate_import_v4_payload(payload,*,source_id):
+    _uuid(source_id)
+    if type(payload) is not bytes or not 1<=len(payload)<=MAX_IMPORT_BYTES:
         raise ValueError('bounded exact source import v4 required')
-    doc=json.loads(command.payload)
-    if _json(doc)!=command.payload or doc.get('codec')!='rkb.source-import.v4' or 'source_manifest' not in doc:
+    doc=json.loads(payload)
+    if _json(doc)!=payload or doc.get('codec')!='rkb.source-import.v4' or 'source_manifest' not in doc:
         raise ValueError('canonical source import v4 with manifest required')
     base={k:v for k,v in doc.items() if k!='source_manifest'}
     base['codec']='rkb.source-import.v2'
     validate_import_v3_payload(_json(base))
-    validate_source_manifest(doc['source_manifest'],source_id=command.ids['source_id'],
+    validate_source_manifest(doc['source_manifest'],source_id=source_id,
         original=doc['original'],semantic=doc['semantic'],passages=doc['passages'])
     return doc
 
