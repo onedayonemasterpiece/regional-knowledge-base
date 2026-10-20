@@ -20,12 +20,15 @@ INITIAL_REVISIONS=Revisions('rkb-v4-sql001-006-v1','rkb-v4-source-import-v1','rk
 
 def build_bootstrap_target(*,wheel_lock,native_receipt,native_manifest_bytes,native_downloads,
                            database_generation,writer_generation,uid,gid,identity_evidence,
-                           seconds=1800,revisions=INITIAL_REVISIONS):
+                           seconds=1800,revisions=INITIAL_REVISIONS,original_intake=None):
     """Build full load_target_launch-compatible wire metadata with no guessed pins.
 
     uid/gid are explicit candidate numeric identities. Actual early observation
     and native account lookup must verify them; no account is created. Native
     helper checks the actual OS/ABI before extraction, pip checks wheel ABI.
+    original_intake is an explicit typed deployment, checked against the exact
+    supplied wheel closure by TargetLaunchSpec. It never installs a parser or
+    widens supported formats merely because an import is requested.
     """
     if (type(wheel_lock) is not dict or wheel_lock.get('codec')!='rkb.candidate_wheel_lock.v1'
             or type(native_receipt) is not dict or native_receipt.get('codec')!='rkb.native_collection_artifacts.v1'
@@ -70,4 +73,4 @@ def build_bootstrap_target(*,wheel_lock,native_receipt,native_manifest_bytes,nat
         install_bytes=max(1024*1024,int(wheel_lock['wheel_bytes'])*6),total_seconds=min(seconds,900))
     return TargetLaunchSpec(database,str(root),tuple((*model_entries,*wheel_entries,*native_entries)),
         tuple(sorted(packages)),None,None,identity_evidence,stage0=plan,native_bundle=bundle,
-        bootstrap_only=True,bootstrap_seconds=seconds)
+        bootstrap_only=True,bootstrap_seconds=seconds,original_intake=original_intake)

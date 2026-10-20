@@ -14,6 +14,14 @@ DjVu, reprocess/rechunk, catalog corrections and entity/POI mutations return an
 explicit unsupported result. A deployed target needs its independently pinned
 PDF parser wheel closure and `TargetLaunchSpec.original_intake` opt-in first.
 
+The metadata builder accepts that opt-in directly as
+`build_bootstrap_target(..., original_intake=OriginalIntakeConfig(...))`.
+It binds the parser package/version map to the supplied Stage0 wheel closure;
+a missing package or different version refuses construction. Keep the legacy
+bootstrap revision default unchanged and select a reviewed source-story revision
+explicitly for a new empty generation. Adding the parser does not migrate an
+existing generation, finalize bootstrap observations, or enable public routes.
+
 ## Existing owners and private configuration
 
 `compose_source_service(..., source_import=SourceImportOwners(...))` takes typed

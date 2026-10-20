@@ -29,12 +29,11 @@ def test_concrete_builder_combines_full_receipts_without_fake_ready_pins(native_
     options=dict(wheel_lock=lock,native_receipt=receipt,native_manifest_bytes=(root/spec.manifest_name).read_bytes(),
         native_downloads=downloads,database_generation='fixture-new-generation',writer_generation='writer-1',
         uid=65534,gid=65534,identity_evidence='explicit candidate; actual lookup mandatory')
-    target=build_bootstrap_target(**options)
     if parser_enabled:
-        from dataclasses import replace
         from regional_knowledge.kaggle_original_native import OriginalIntakeConfig
-        target=replace(target,original_intake=OriginalIntakeConfig(
-            ('https://archive.fixture.invalid',),(('pymupdf','1.28.2'),)))
+        options['original_intake']=OriginalIntakeConfig(
+            ('https://archive.fixture.invalid',),(('pymupdf','1.28.2'),))
+    target=build_bootstrap_target(**options)
     assert target.bootstrap_only and target.dependency_sha256 is None and target.schema_sha256 is None
     assert target.database.cluster.startswith('/kaggle/temp/rkb-')
     assert len(target.stage0.wheels)==len(lock['packages'])
@@ -43,6 +42,11 @@ def test_concrete_builder_combines_full_receipts_without_fake_ready_pins(native_
     assert restored.wire()==target.wire()
     if parser_enabled:
         assert type(restored.original_intake) is OriginalIntakeConfig
+        with pytest.raises(ValueError,match='dependency attestation'):
+            build_bootstrap_target(**dict(options,wheel_lock=dict(lock,packages=lock['packages'][:-1])))
+        with pytest.raises(ValueError,match='exact Stage0 wheel closure'):
+            build_bootstrap_target(**dict(options,original_intake=OriginalIntakeConfig(
+                ('https://archive.fixture.invalid',),(('pymupdf','0.0.1'),))))
         bad=target.wire();bad['original_intake']['unknown']=True
         with pytest.raises(ValueError,match='original_deployment_invalid'):
             target_launch_from_wire(bad)
