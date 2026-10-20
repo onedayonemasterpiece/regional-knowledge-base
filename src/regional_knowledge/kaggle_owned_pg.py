@@ -15,6 +15,7 @@ import re
 import signal
 import stat
 import pwd
+import logging
 from collections.abc import Mapping
 from types import MappingProxyType
 
@@ -27,6 +28,7 @@ from .kaggle_bootstrap import BootstrapUnavailable, _file_hash
 
 # Kaggle saves /kaggle/working outputs; /kaggle/temp is session-only.
 PRIVATE_RUNTIME_ROOT = Path('/kaggle/temp')
+_LOG=logging.getLogger(__name__)
 
 SQL_ARTIFACTS = ('001_search.sql', '002_recovery.sql', '003_search_scope.sql',
                  '004_read_fences.sql', '005_source_withdraw.sql', '006_source_import.sql')
@@ -175,6 +177,39 @@ class OwnedPostgres:
         self.spec, self.connect, self.spawn = spec, connect, spawn
         self.process = None
         self.native_env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'}
+        self._startup_complete=False
+        self._postgres_stderr=None
+        self._startup_stderr=bytearray()
+
+    async def _capture_stderr(self,process,buffer,*,startup_only=False):
+        while chunk:=await process.stderr.read(1024):
+            if startup_only and self._startup_complete:
+                buffer.clear();continue
+            remaining=8192-len(buffer)
+            buffer.extend(chunk[:remaining])
+            if len(chunk)>remaining and process.returncode is None:
+                process.kill()  # Finite startup output budget, owned child only.
+                return
+
+    def _retain_failure(self,tool,exit_code,data):
+        tool=Path(tool).name
+        if tool not in {'initdb','pg_config','postgres'}:tool='native_tool'
+        retained=False
+        if data:
+            # This exact private session root is excluded from provider outputs.
+            parent=Path(self.spec.cluster).parent
+            path=parent/('.rkb-native-'+digest(self.spec.database_generation.encode())[:20]+'.log')
+            try:
+                if parent.resolve(strict=True)!=parent:raise OSError('private parent')
+                fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+                with os.fdopen(fd,'wb') as handle:handle.write(bytes(data[:8192]))
+                retained=True
+            except OSError:pass  # Never overwrite retained diagnostic evidence.
+        metadata=dict(event='native_pg_bootstrap_failed',tool=tool,exit_code=exit_code,
+            diagnostic_bytes=min(8192,len(data)),diagnostic_retained=retained)
+        missing=re.search(rb'error while loading shared libraries: ([A-Za-z0-9_.+-]{1,128}):',bytes(data))
+        if missing:metadata['missing_library']=missing.group(1).decode('ascii')
+        _LOG.warning(json.dumps(metadata,sort_keys=True))
 
     def _identity(self):
         spec = self.spec
@@ -190,8 +225,11 @@ class OwnedPostgres:
     async def _command(self, *args, timeout=30):
         spec = self.spec
         process = await self.spawn(*args, stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             env=self.native_env,**self._identity())
+        errors=bytearray()
+        capture=(asyncio.create_task(self._capture_stderr(process,errors))
+            if getattr(process,'stderr',None) is not None else None)
         try:
             async with asyncio.timeout(timeout):
                 # pg_config/initdb output is bounded; drain at most 64KiB.
@@ -201,12 +239,17 @@ class OwnedPostgres:
                     if len(output)>65536:
                         raise BootstrapUnavailable('native_pg_output_bound')
                 if await process.wait() != 0:
+                    if capture is not None:await capture
+                    self._retain_failure(args[0],process.returncode,errors)
                     raise BootstrapUnavailable('native_pg_command_failed')
                 return output.decode('utf-8').strip()
         finally:
             if process.returncode is None:
                 process.kill()
                 await process.wait()
+            if capture is not None:
+                if not capture.done():capture.cancel()
+                await asyncio.gather(capture,return_exceptions=True)
 
     async def start_empty(self, *, intent, artifacts, sql_root, native_bundle=None):
         spec = self.spec
@@ -287,8 +330,9 @@ class OwnedPostgres:
             '-p',str(spec.port),'-c','shared_buffers=32MB','-c','max_connections=8',
             '-c','work_mem=4MB','-c','maintenance_work_mem=16MB','-c','max_wal_size=64MB',
             '-c','min_wal_size=32MB',stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.PIPE,
             env=self.native_env,**self._identity())
+        self._postgres_stderr=asyncio.create_task(self._capture_stderr(self.process,self._startup_stderr,startup_only=True))
         async with asyncio.timeout(20):
             while True:
                 if self.process.returncode is not None:
@@ -342,9 +386,19 @@ class OwnedPostgres:
             async with admin.transaction():
                 await admin.execute('SELECT rkb_v4.publish_read_frontier(%s,%s,0,0,true,true)',
                                     (spec.database_generation,spec.writer_generation))
+        self._startup_complete=True
+        self._startup_stderr.clear()  # Accepted/query diagnostics are never retained.
 
     async def aclose(self):
-        if self.process is not None and self.process.returncode is None:
-            self.process.send_signal(signal.SIGINT)  # PG fast shutdown; owned postmaster only.
-            async with asyncio.timeout(30):
-                await self.process.wait()
+        try:
+            if self.process is not None and self.process.returncode is None:
+                self.process.send_signal(signal.SIGINT)  # PG fast shutdown; owned postmaster only.
+                async with asyncio.timeout(30):
+                    await self.process.wait()
+        finally:
+            if self._postgres_stderr is not None:
+                if not self._postgres_stderr.done():self._postgres_stderr.cancel()
+                await asyncio.gather(self._postgres_stderr,return_exceptions=True)
+                if not self._startup_complete:
+                    self._retain_failure('postgres',self.process.returncode,self._startup_stderr)
+                self._postgres_stderr=None

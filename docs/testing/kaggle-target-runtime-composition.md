@@ -27,6 +27,14 @@ nonroot numeric service account must resolve to the exact configured primary GID
 before initdb. The same exported verified_native_environment helper is available
 to owned backup/restore tools.
 
+Owned pg_config/initdb/postmaster startup stderr is capped at 8 KiB. Failures
+retain those bytes in one exclusive 0600 diagnostic file under the private
+session root, outside saved outputs. Public logs contain only tool basename,
+exit code, retained byte count and an optional bounded missing-library basename;
+raw stderr and arguments are excluded. Oversized startup stderr kills only the
+owned child. After initialization succeeds, the collector drops all subsequent
+diagnostics and clears its startup buffer, so accepted/query text is not retained.
+
 For the real controller invocation, serialize exactly `TargetLaunchSpec.wire()`
 to a bounded regular JSON configuration file. `load_target_launch(path)` reconstructs
 the typed database, Stage0 and native bundle descriptors and rejects unknown or
