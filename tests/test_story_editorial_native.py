@@ -101,6 +101,15 @@ async def test_native_editor_grant_actual_body_default_ref_history_retry_and_res
     assert current['body']!=current['summary'] and current['default_variant_ref']==dict(variant_id=VARIANT,revision=2)
     assert current['variant']['state']=='drafting' and current['publication_approval'] is None
     assert current['variant']['approved_revision'] is None and current['variant']['approval_fingerprint'] is None
+    from regional_knowledge.kaggle_editorial_contracts import EditorialReadResult
+    from regional_knowledge.kaggle_story_read import story_item
+    EditorialReadResult(request_id='native-editorial-proof',connection_generation=1,turn_generation=1,status='ok',
+        record=current,evidence=(story_item(current),),observed_data_seq=3,observed_projection_seq=3,
+        observed_visibility_epoch=1,observed_database_generation=native['generation'])
+    async with native['connection'].transaction():
+        editor=(await(await native['connection'].execute('SELECT rkb_v4.read_story_edit_context_v1(%s,%s)',(STORY,EDITOR))).fetchone())[0]
+        assert editor['role']=='editor' and editor['revision']==3 and editor['view']=='edit_context'
+
     assert (await read(native,revision=1))['body']==original['body']
     assert (await apply(native,c)).duplicate and (await apply(native,c)).outcome==saved.outcome
     conn,fd=await connect()

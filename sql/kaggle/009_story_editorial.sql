@@ -705,15 +705,27 @@ BEGIN
  ELSE entries:='[]'::jsonb;END IF;
  result:=jsonb_build_object('story_id',wanted,'revision',version.revision,'current_revision',head.revision,
   'title',metadata->>'title','summary',metadata->>'summary','material_type',metadata->>'material_type',
-  'body',variant.body,'body_sha256',variant.body_sha256,'variant',variant.data,
+  'body',variant.body,'body_sha256',variant.body_sha256,'variant',CASE WHEN view_name='variants' THEN NULL ELSE variant.data END,
   'default_variant_ref',version.data->'default_variant_ref','state',version.data->>'state',
   'narrative_availability','available','visibility','shared','publication_approval',NULL,
   'bibliography',source.bibliography,'source',jsonb_build_object('source_id',head.source_id,
    'content_revision',head.source_revision,'eligibility_revision',eligibility),
   'finding_ids',metadata->'finding_ids','view',view_name,'entries',entries,'next_revision',next_revision,'next_variant_id',next_variant);
- IF octet_length(result::text)>131072 THEN RAISE EXCEPTION 'bounded editorial response required';END IF;
+ -- Return a byte-bounded page without duplicating the default metadata in a
+ -- variants page. All remaining immutable rows stay reachable by keyset cursor.
+ WHILE octet_length(result::text)>196608 AND view_name='variants' AND jsonb_array_length(entries)>1 LOOP
+  entries:=entries-(jsonb_array_length(entries)-1);next_variant:=(entries->-1->>'variant_id')::uuid;
+  result:=result||jsonb_build_object('entries',entries,'next_variant_id',next_variant);
+ END LOOP;
+ IF octet_length(result::text)>196608 THEN RAISE EXCEPTION 'bounded editorial response required';END IF;
  RETURN result;
 END $$;
+CREATE FUNCTION rkb_v4.read_story_edit_context_v1(wanted uuid,actor uuid)
+RETURNS jsonb LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT base||jsonb_build_object('view','edit_context','role',rkb_v4.story_editor_role_v1(wanted,actor))
+ FROM (SELECT rkb_v4.read_editorial_story_v1(wanted,NULL,'get',0,1,NULL) base) r WHERE base IS NOT NULL
+$$;
+REVOKE ALL ON FUNCTION rkb_v4.read_story_edit_context_v1(uuid,uuid) FROM PUBLIC;
 REVOKE ALL ON rkb_v4.editorial_story_heads,rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_heads,
  rkb_v4.editorial_variant_versions,rkb_v4.story_editor_grants,rkb_v4.editorial_story_receipts,
  rkb_v4.editorial_story_search FROM PUBLIC;

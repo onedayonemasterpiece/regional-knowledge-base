@@ -473,7 +473,7 @@ class OwnedPostgres:
                         'rkb_v4.source_passage_provenance TO rkb_reader')
                     await admin.execute('GRANT SELECT(source_id,source_revision,manifest) ON rkb_v4.source_manifests TO rkb_reader')
                     await admin.execute('GRANT SELECT(source_id,revision,original_sha256) ON rkb_v4.source_import_origins TO rkb_reader')
-                    domain_functions=('read_editorial_story_v1(uuid,bigint,text,bigint,integer,uuid)',
+                    domain_functions=('read_story_edit_context_v1(uuid,uuid)','story_editor_role_v1(uuid,uuid)','read_editorial_story_v1(uuid,bigint,text,bigint,integer,uuid)',
                         'editorial_lexical_candidates_v1(text,integer,uuid[])',
                         'editorial_dense_candidates_v1(public.vector,integer,uuid[])','editorial_hydrate_v1(uuid[],uuid[])',
                         'read_source_manifest_v1(uuid)','find_source_catalog_v1(text,integer)','source_passage_metadata_v1(uuid[])')

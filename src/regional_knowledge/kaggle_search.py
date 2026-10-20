@@ -140,6 +140,11 @@ async def fused_search(connection, query: str, *,
                     await cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                     if snapshot_guard is not None:
                         await snapshot_guard(cursor, execute)
+                    editorial=False
+                    if story:
+                        await execute('SELECT schema_revision FROM rkb_v4.recovery_state WHERE singleton')
+                        semantic=await cursor.fetchone()
+                        editorial=semantic in [('rkb-v4-sql001-009-v1',),('rkb-v4-sql001-011-v1',)]
                     async def timed_encode():
                         began = loop.time()
                         try:
@@ -156,7 +161,8 @@ async def fused_search(connection, query: str, *,
                     await execute("SET LOCAL hnsw.ef_search = 100")
                     began = loop.time()
                     if story:
-                        await execute("SELECT * FROM rkb_v4.story_lexical_candidates_v1(%s,%s,%s::uuid[])",
+                        await execute("SELECT * FROM rkb_v4.editorial_lexical_candidates_v1(%s,%s,%s::uuid[])" if editorial else
+                                      "SELECT * FROM rkb_v4.story_lexical_candidates_v1(%s,%s,%s::uuid[])",
                                       (query,candidate_budget,source_ids))
                     elif source_ids is None:
                         await execute("SELECT * FROM rkb_v4.lexical_candidates(%s, %s)",
@@ -170,7 +176,8 @@ async def fused_search(connection, query: str, *,
                     vector = vector_literal(await asyncio.shield(encoding))
                     began = loop.time()
                     if story:
-                        await execute("SELECT * FROM rkb_v4.story_dense_candidates_v1(%s::public.vector,%s,%s::uuid[])",
+                        await execute("SELECT * FROM rkb_v4.editorial_dense_candidates_v1(%s::public.vector,%s,%s::uuid[])" if editorial else
+                                      "SELECT * FROM rkb_v4.story_dense_candidates_v1(%s::public.vector,%s,%s::uuid[])",
                                       (vector,candidate_budget,source_ids))
                     elif source_ids is None:
                         await execute("SELECT * FROM rkb_v4.dense_candidates(%s::public.vector, %s)",
@@ -188,7 +195,8 @@ async def fused_search(connection, query: str, *,
                     ids = sorted(scores, key=lambda key: (-scores[key], str(key)))[:top_k]
                     began = loop.time()
                     if story:
-                        await execute("SELECT * FROM rkb_v4.story_hydrate_v1(%s::uuid[],%s::uuid[])", (ids,source_ids))
+                        await execute("SELECT * FROM rkb_v4.editorial_hydrate_v1(%s::uuid[],%s::uuid[])" if editorial else
+                                      "SELECT * FROM rkb_v4.story_hydrate_v1(%s::uuid[],%s::uuid[])", (ids,source_ids))
                     elif source_ids is None:
                         await execute("SELECT * FROM rkb_v4.hydrate(%s::uuid[])", (ids,))
                     else:
