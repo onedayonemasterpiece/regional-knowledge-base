@@ -14,14 +14,14 @@ current source-history gate.
 | --- | --- |
 | `search`, `fetch`, live `knowledge_search` | Bounded native source search and exact passage continuation; current source/history/output fences required. |
 | `book_ingest`, `book_pages` | Explicit pinned PDF parser/intake and independent HF counter required; direct original archive receipt, complete page/block continuation. DjVu, multipart and later reprocess paths remain unsupported. |
-| `story_search`, `story_get`, `story_history`, variants | Typed native Story reads are being integrated separately; exact saved body/default reference and accepted origin proof required. |
+| `story_search`, `story_get`, `story_history`, variants | Native saved-body, default-variant, editorial revision/history and bounded variant reads are prepared behind the shared source/output fence. Production-role PG fixture passes; live MCP acceptance remains open. |
 | `story_calendar`, `story_observation_search` | Fresh schema8 adds indexed source facts independent of Story. Exact event-day/calendar semantics and decimal/unit preservation are required. No schema7 adoption is implied. |
 | `story_observation_compare` | Not enabled by the initial facts read path; source subject identity/method review remains necessary, with no automatic arithmetic. |
-| `entity_list`, graph stage/fetch/related, POI context/registry | Stable native people/organization/place identity, aliases, directional relations and exact source evidence are not implemented. Street Story retains physical POI ownership. |
-| GEO status/receipt/lookup/request/claim/stage/apply/recheck | GEO whitelist, stable retained identities and native bounded resolution state are not implemented. Do not copy non-GEO corpus or create another POI authority. |
-| Cases, contributions, conclusions, personal drafts and public pages | Native versioned lifecycle, scoped access, accepted recovery and public projection are not implemented. Cases must be independent of a Story. |
+| `entity_list`, graph stage/fetch/related, POI context/registry | Fresh11 source graph writes retain five entity kinds, explicit identities, aliases, directional relations and exact passage/page/region/Unicode evidence. Native atomicity, duplicate, withdrawal and corruption tests pass; typed public graph reads are still being integrated. Street Story retains physical POI ownership. |
+| GEO status/receipt/lookup/request/claim/stage/apply/recheck | Bounded whitelist manifest staging/activation, retained identities, indexed native lookup/context and shared MCP reads are prepared. Native and production-role fixtures pass. Actual GEO-only migration and full operation parity are not accepted. |
+| Cases, contributions, conclusions, personal drafts and public pages | Native versioned lifecycle, explicit publication selection, scoped access, exact accepted origins and production-role reads/writes pass synthetic PG tests. Four public MCP operation groups are being integrated. Real non-owner and recovery acceptance remain open. Cases remain independent of a Story. |
 | Story create/edit/archive/extract/reconcile/transition/merge/access/export/publication, extraction jobs | Editorial and research mutation/recovery parity is not established by source import or read support. Private versions and publication approval remain distinct. |
-| `catalog`, `book_find`, `corpus_read`, illustrations, `source_proof`, `document_access`, `indexing_status` | Each needs an explicit native adapter, proper artifact/scan/original policy and same-generation read/output fences. None may silently read a legacy corpus in target mode. |
+| `catalog`, `book_find`, `corpus_read`, illustrations, `source_proof`, `document_access`, `indexing_status` | Indexed `book_find` and exact passage fetch with structured page/region/span provenance are prepared and production-role tested. Full catalogue browse/corrections, corpus utilities and artifact/proof access parity remain incomplete. None may silently read a legacy corpus in target mode. |
 | PH/Mira and Slack | Real delegated authorities, generation/deadline/result recovery and delivery fences require separately verified integration; naming a compatible client is not acceptance. |
 
 Schema8 is selected explicitly for a new empty generation; SQL001–007 bytes and
@@ -47,6 +47,26 @@ retains source revision/eligibility dependencies and selected exact evidence.
 
 Unit tests and authored SQL do not establish native fixture, live deployment,
 source fidelity, capacity, latency, dense quality or full cutover acceptance.
+
+Current integration uses an explicitly selected fresh11 generation. Frozen
+historical import validators and accepted commands retain their original
+versions. The new source graph belongs only to fresh11 `source.import.v4`,
+whose new native handler preserves the complete accepted payload hash. Its
+tables must join the exact catalog, grants and history inventory before startup.
+
+The joined source/editorial/Case/GEO PG17.11 fixture passed ten tests. A separate
+fixture using the actual production `rkb_writer` and `rkb_reader` setup passed
+source import, Case/GEO effects, all four read families, hybrid SQL, exact fetch
+and rejection of raw original-receipt access. Its vector was synthetic: it did
+not run BGE or prove live search quality. Retained evidence:
+`/home/dev/artifacts/regional-knowledge-base/20261020T190433Z-native-reader-proof-pg1711-20261020`.
+
+After adding the source graph, thirteen focused tests passed, including native
+atomic rollback and exact origin corruption refusal. The unconfigured fresh11
+catalog measured1329 records/606416 bytes. The previous1152-row native metadata
+budget therefore cannot admit that union; measure and explicitly bind the new
+budget before activation. These measurements are not release pins. Evidence:
+`/home/dev/artifacts/regional-knowledge-base/20261020T191731Z-native-source-graph-verified-pg1711-20261020`.
 
 Root's isolated exact Noble PG17.11 fixture passed7Story+3facts tests and measured
 fresh8 catalog545records/218231bytes. Fresh8 runtime/history/physical-restore
