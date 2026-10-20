@@ -35,3 +35,13 @@ def test_fixed_current_registry_and_wire_keep_full_current_tuple_and_payload():
     registry=fixed_registry(db,[dict(route=c.route,check_sha256='a'*64,apply_sha256='b'*64)])
     assert registry.resolve(c).revisions==DOMAIN_REVISIONS
     assert decode_command(c.encode()).encode()==c.encode()
+
+
+def test_current_graph_handler_preserves_frozen_nine_function_binding():
+    from regional_knowledge.source_import_v4 import source_import_v4_handler
+    current=current_handler('source.import.v4',check_sha256='a'*64,apply_sha256='b'*64)
+    frozen=source_import_v4_handler(check_sha256='a'*64,apply_sha256='b'*64)
+    assert current.check.name=='check_source_import_graph_v1'
+    assert current.apply.name=='apply_source_import_graph_v1'
+    assert frozen.check.name=='check_source_import_v4'
+    assert frozen.apply.name=='apply_source_import_v4'

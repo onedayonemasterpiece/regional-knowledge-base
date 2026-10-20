@@ -149,11 +149,11 @@ def native_probe_for_schema(schema_revision, *, timeout_seconds=2.0):
 
     The exact PG17.11 fresh8 fixture measured545 records/218231 bytes.576 gives
     31 records of fixed headroom. Existing schema6/7 and unrecognized revisions
-    retain512. The complete001..011 PG17.11 fixture measured1122 records /
-    502765 bytes; explicit11 uses1152. Byte/definition limits are unchanged.
+    retain512. The complete001..011 PG17.11 graph fixture measured1329 records /
+    606416 bytes before role hardening; explicit11 uses1376. Byte/definition limits are unchanged.
     """
     return NativeDatabaseProbe(timeout_seconds=timeout_seconds,
-        max_catalog_rows=(1152 if schema_revision=='rkb-v4-sql001-011-v1' else
+        max_catalog_rows=(1376 if schema_revision=='rkb-v4-sql001-011-v1' else
             576 if schema_revision=='rkb-v4-sql001-008-v1' else 512))
 
 

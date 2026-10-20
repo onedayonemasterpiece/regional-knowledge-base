@@ -27,10 +27,10 @@ def validate_current_command(command):
         raise ValueError('explicit reviewed fresh11 command binding required')
     route=command.route
     if route=='source.import.v4':
-        from .source_import_v4 import validate_import_v4_payload
+        from .source_graph import validate_graph_import_payload
         if set(command.ids)!={'source_id'} or command.expected_revisions!={'absent_source':'true'}:
             raise ValueError('exact absent-source precondition required')
-        return validate_import_v4_payload(command.payload,source_id=command.ids['source_id'])
+        return validate_graph_import_payload(command.payload,source_id=command.ids['source_id'],person_id=command.person_id)
     if route in ('story.edit.v1','story.access.v1'):
         from .story_editorial import EDITORIAL_REVISIONS,validate_story_edit_command,validate_story_access_command
         return (validate_story_edit_command if route=='story.edit.v1' else validate_story_access_command)(_view(command,EDITORIAL_REVISIONS))
@@ -55,6 +55,8 @@ def current_handler(route,*,check_sha256,apply_sha256):
     if route=='source.import.v4':
         from .source_import_v4 import source_import_v4_handler
         original=source_import_v4_handler(check_sha256=check_sha256,apply_sha256=apply_sha256)
+        original=replace(original,check=PgFunction('check_source_import_graph_v1',check_sha256),
+            apply=PgFunction('apply_source_import_graph_v1',apply_sha256))
     elif route in ('story.edit.v1','story.access.v1'):
         from .story_editorial import editorial_handler
         original=editorial_handler(route=route,check_sha256=check_sha256,apply_sha256=apply_sha256)
@@ -79,8 +81,8 @@ def _new_at_current(command):
 
 def resolved_current_import_v4_command(*,revisions=DOMAIN_REVISIONS,**arguments):
     if revisions!=DOMAIN_REVISIONS:raise ValueError('exact installed domain revisions required')
-    from .source_import_v4 import resolved_import_v4_command
-    return _new_at_current(resolved_import_v4_command(**arguments))
+    from .source_graph import resolved_graph_import_command
+    return resolved_graph_import_command(revisions=revisions,**arguments)
 
 
 def resolved_current_story_edit_command(**arguments):

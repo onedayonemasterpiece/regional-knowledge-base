@@ -112,7 +112,7 @@ async def configure_native_roles(admin,*,selected_sql,dbname):
     if len(selected_sql)>=11:
         from .kaggle_domain_schema import TABLES_11
         await admin.execute('GRANT SELECT ON '+','.join('rkb_v4.'+name for name in sorted(TABLES_11))+' TO rkb_reader')
-        domain_functions+=('read_geo_identity_v1(uuid,uuid,text,text,text,integer,uuid,integer)',
+        domain_functions+=('read_source_graph_v1(uuid,uuid,text,uuid,text,integer)','read_geo_identity_v1(uuid,uuid,text,text,text,integer,uuid,integer)',
             'read_geo_members_v1(uuid,uuid,text,text,integer)')
     for signature in READER_FUNCTIONS+(STORY_READER_FUNCTIONS if len(selected_sql)>=7 else ())+fact_functions+domain_functions:
         await admin.execute('GRANT EXECUTE ON FUNCTION rkb_v4.'+signature+' TO rkb_reader')
