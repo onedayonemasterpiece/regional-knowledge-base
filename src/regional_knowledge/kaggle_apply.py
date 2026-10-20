@@ -120,7 +120,7 @@ class DependencySpec:
 
     def __post_init__(self):
         _text(self.operation)
-        if self.scope_class not in {'public_source','private_draft','case','unknown'}:
+        if self.scope_class not in {'public_source','private_draft','case','geo_manifest','unknown'}:
             raise ValueError('unsupported static dependency class')
         if self.scope_owner not in {'actor','shared'} or type(self.restriction) is not bool:
             raise ValueError('explicit dependency scope ownership required')
@@ -128,7 +128,7 @@ class DependencySpec:
                 or any(not isinstance(k,str) for k in self.resource_keys)):
             raise ValueError('bounded immutable resource ID keys required')
         for key in self.resource_keys:_text(key)
-        if (self.scope_class=='private_draft' and self.scope_owner!='actor'
+        if (self.scope_class in {'private_draft','geo_manifest'} and self.scope_owner!='actor'
                 or self.scope_class=='public_source' and self.scope_owner!='shared'):
             raise ValueError('dependency class ownership mismatch')
 

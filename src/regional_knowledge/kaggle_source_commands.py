@@ -53,11 +53,17 @@ def decode_command(data):
         elif command.route in ('story.edit.v1','story.access.v1'):
             from .story_editorial import validate_story_edit_command,validate_story_access_command
             (validate_story_edit_command if command.route=='story.edit.v1' else validate_story_access_command)(command)
+        elif command.route.startswith('disagreement.'):
+            from .disagreement_native import validate_case_command
+            validate_case_command(command)
+        elif command.route=='geo.manifest.install.v1':
+            from .geo_manifest_commands import validate_geo_manifest_command
+            validate_geo_manifest_command(command)
         elif (command.route!=SOURCE_WITHDRAW or command.kind!='domain_command'
               or set(command.ids)!={'source_id'} or set(command.expected_revisions)!={'eligibility_revision'}
               or command.payload!=b'{"withdrawn":true}'):
             raise ValueError
-        if str(UUID(command.ids['source_id']))!=command.ids['source_id']:raise ValueError
+        if 'source_id' in command.ids and str(UUID(command.ids['source_id']))!=command.ids['source_id']:raise ValueError
         if command.route==SOURCE_WITHDRAW:
             revision=command.expected_revisions['eligibility_revision']
             if not revision.isdecimal() or not revision.isascii() or str(int(revision))!=revision or not 1<=int(revision)<2**63:
@@ -121,7 +127,7 @@ def fixed_registry(database,entries):
     from .kaggle_apply import DependencySpec
     handlers=[]
     revisions=Revisions(database.schema_revision,database.function_revision,database.executor_revision)
-    if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=6:raise ValueError('fixed source registry required')
+    if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=12:raise ValueError('fixed source registry required')
     for entry in entries:
         if not isinstance(entry,dict) or set(entry)!={'route','check_sha256','apply_sha256'}:raise ValueError('fixed source registry pins required')
         if entry['route']==SOURCE_IMPORT:
@@ -141,6 +147,12 @@ def fixed_registry(database,entries):
             from .story_editorial import editorial_handler,EDITORIAL_REVISIONS
             if revisions!=EDITORIAL_REVISIONS:raise ValueError('explicit editorial revision required')
             handler=editorial_handler(route=entry['route'],check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
+        elif entry['route'].startswith('disagreement.'):
+            from .disagreement_native import case_handler
+            handler=case_handler(entry['route'],revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
+        elif entry['route']=='geo.manifest.install.v1':
+            from .geo_manifest_commands import geo_manifest_handler
+            handler=geo_manifest_handler(revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
         elif entry['route']==SOURCE_WITHDRAW:
             handler=HandlerSpec('domain_command',SOURCE_WITHDRAW,revisions,
                 PgFunction('check_source_withdraw_v1',entry['check_sha256']),PgFunction('apply_source_withdraw_v1',entry['apply_sha256']),
