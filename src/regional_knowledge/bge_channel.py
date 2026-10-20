@@ -326,10 +326,11 @@ def channel_route(queue):
         except asyncio.CancelledError:
             pass
         except PermissionError as error:
+            from .bge_queue import StaleAttachment as CurrentStaleAttachment
             logger.info(json.dumps({'event': 'bge_channel_rejected', 'run_id': run_id,
                                     'connection_generation': generation,
-                                    'reason': 'stale_attachment' if isinstance(error, StaleAttachment) else 'revoked_run'}))
-            await socket.close(code=4409 if isinstance(error, StaleAttachment) else 4403)
+                                    'reason': 'stale_attachment' if isinstance(error, CurrentStaleAttachment) else 'revoked_run'}))
+            await socket.close(code=4409 if isinstance(error, CurrentStaleAttachment) else 4403)
         except (ValueError, KeyError, TypeError, UnicodeError, TimeoutError):
             logger.info(json.dumps({'event': 'bge_channel_rejected', 'run_id': run_id,
                                     'connection_generation': generation, 'reason': 'invalid_frame'}))
