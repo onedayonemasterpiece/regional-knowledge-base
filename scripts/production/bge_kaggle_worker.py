@@ -67,6 +67,10 @@ def main(*, prepare_runtime=None):
     config=RUN_CONFIG;started=time.monotonic();stop=threading.Event()
     if prepare_runtime is not None and config.get('transport') != 'wss':
         raise ValueError('resident preparation requires the existing WSS channel')
+    if prepare_runtime is not None and (config.get('shared_reads') is not True
+            or not isinstance(config.get('prepared_model'), dict)
+            or set(config['prepared_model']) != {'root', 'entries', 'max_total_bytes'}):
+        raise ValueError('resident preparation requires explicit shared model inventory')
     def diagnostics():
         status=Path('/proc/self/status').read_text().splitlines()
         values={line.split(':',1)[0]:int(line.split()[1]) for line in status if line.startswith(('VmRSS:','VmHWM:'))}

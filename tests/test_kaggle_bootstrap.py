@@ -128,6 +128,37 @@ async def test_actual_loaded_handle_complete_count_offloop_and_effective_setting
 
 
 @pytest.mark.asyncio
+async def test_cancelled_native_token_count_drains_and_serializes_resident_tokenizer(artifacts):
+    encoder, _ = resident(artifacts)
+    entered, finish, encoded = threading.Event(), threading.Event(), threading.Event()
+    def count(*args, **kwargs):
+        entered.set()
+        assert finish.wait(2)
+        return [1, 2, 3]
+    encoder.tokenizer.encode = count
+    encoder = replace(encoder, encode=lambda _: encoded.set())
+    task = asyncio.create_task(encoder.count('synthetic'))
+    forward = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        await asyncio.sleep(.01)
+        task.cancel()
+        await asyncio.sleep(.01)
+        assert not task.done(), 'native token count must finish before handler cleanup'
+        forward = asyncio.create_task(asyncio.to_thread(encoder, 'next document'))
+        await asyncio.sleep(.01)
+        assert not encoded.is_set(), 'same tokenizer cannot count and encode concurrently'
+    finally:
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        if forward is not None:
+            await forward
+    assert encoded.is_set()
+
+
+@pytest.mark.asyncio
 async def test_prepare_uses_existing_owned_lease_and_hashes_actual_observations(artifacts):
     encoder, _ = resident(artifacts)
     leased = []
@@ -270,3 +301,20 @@ def test_factory_hook_validation_and_template_local_only_target_path():
     source = (Path(__file__).resolve().parents[1]/'scripts/production/bge_kaggle_worker.py').read_text()
     assert 'tokenizer_file=str(model_path/' in source and source.count('local_files_only=True') == 2
     assert 'prepare_runtime=prepare_runtime' in source and 'pip install' not in source
+
+
+@pytest.mark.parametrize('changes', [
+    {}, {'shared_reads': True}, {'shared_reads': True, 'prepared_model': {}},
+    {'shared_reads': False, 'prepared_model': {'root': 'unused', 'entries': [], 'max_total_bytes': 1}},
+])
+def test_prepared_template_rejects_missing_target_inventory_before_any_loader(monkeypatch, changes):
+    worker = module('bge_kaggle_worker')
+    monkeypatch.setattr(worker, 'RUN_CONFIG', dict(CONFIG, transport='wss') | changes)
+    def forbidden(*args, **kwargs):
+        pytest.fail('incomplete target must not enter legacy model loader or WSS runner')
+    monkeypatch.setattr(worker, 'load_encoder', forbidden)
+    monkeypatch.setattr(worker, 'run_wss_worker', forbidden, raising=False)
+    async def prepare(*args, **kwargs):
+        pytest.fail('incomplete target must not prepare')
+    with pytest.raises(ValueError, match='explicit shared model inventory'):
+        worker.main(prepare_runtime=prepare)

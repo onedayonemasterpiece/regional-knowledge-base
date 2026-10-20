@@ -132,6 +132,9 @@ with exactly `root`, `entries` and `max_total_bytes`. In this path it verifies
 artifacts before loading, pins the tokenizer.json file explicitly, uses only the
 local model directory and sets `local_files_only=True,trust_remote_code=False`
 for model/tokenizer loading. There is no download/install fallback in this path.
+`main(prepare_runtime=...)` rejects missing/malformed inventory or disabled shared
+mode before entering the loader, preventing a target configuration from falling
+through into legacy network-capable loading. Legacy `main()` stays compatible.
 It returns a callable `ResidentEncoder` exposing the actual locally loaded fast
 tokenizer, verified artifact binding, model directory and actual load counter.
 The effective native tokenizer backend must match the pinned tokenizer.json
@@ -141,6 +144,9 @@ Stage0 check. The tokenizer settings document is bounded to64MiB.
 Its nonblocking `count` uses `to_thread` with complete special-token-inclusive,
 no-truncation/no-padding token IDs. The same resident encoder remains the only
 model; this unit does not load a model in tests or on DevCoveer.
+Counting and inference serialize access to the same mutable fast tokenizer.
+Cancellation drains any started native count, including repeated cancellation,
+before handler cleanup may relinquish the worker resource.
 
 `prepare_resident_runtime` composes that handle with `acquire` from the already
 owned initialized **Kaggle** PG pool, `probe_database`, the actual launch config,

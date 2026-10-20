@@ -7,7 +7,7 @@ and opens no PG/provider connection.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 import hashlib
 import importlib.metadata
 import inspect
@@ -18,6 +18,7 @@ import platform
 import re
 import stat
 import sys
+import threading
 from types import MappingProxyType
 
 from .bge_contract import REVISION, SPACE, TOKENIZER_SHA256
@@ -185,6 +186,7 @@ class ResidentEncoder:
     artifacts: VerifiedArtifacts
     model_directory: Path
     model_load_count: int
+    _tokenizer_lock: object = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if type(self.artifacts) is not VerifiedArtifacts:
@@ -214,15 +216,32 @@ class ResidentEncoder:
             raise BootstrapUnavailable('loaded_tokenizer_settings_mismatch') from None
 
     def __call__(self, text):
-        return self.encode(text)
+        # Fast tokenizer calls can change backend padding/truncation settings.
+        # Count and actual inference use the same resident handle serially.
+        with self._tokenizer_lock:
+            return self.encode(text)
 
     async def count(self, text):
         def exact():
-            ids = self.tokenizer.encode(text, add_special_tokens=True, truncation=False, padding=False)
-            if not isinstance(ids, list) or any(type(token) is not int for token in ids):
-                raise BootstrapUnavailable('tokenizer_count_invalid')
-            return len(ids)
-        return await asyncio.to_thread(exact)
+            with self._tokenizer_lock:
+                ids = self.tokenizer.encode(text, add_special_tokens=True, truncation=False, padding=False)
+                if not isinstance(ids, list) or any(type(token) is not int for token in ids):
+                    raise BootstrapUnavailable('tokenizer_count_invalid')
+                return len(ids)
+        task = asyncio.create_task(asyncio.to_thread(exact))
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            if not task.cancelled():
+                task.exception()
+            raise asyncio.CancelledError
+        return task.result()
 
 
 @dataclass(frozen=True)
