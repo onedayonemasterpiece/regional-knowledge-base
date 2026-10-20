@@ -16,6 +16,7 @@ from .kaggle_protocol import (
     QUERY_MAX_BYTES, Query, QueryResult, ReadIdentity, decode_envelope, encode_envelope,
 )
 from .kaggle_query import PinnedTokenizer, execute_query
+from .query_telemetry import NativeReadTelemetry
 
 
 class WorkerQueryInputError(ValueError):
@@ -80,6 +81,22 @@ class KaggleWorkerQuery:
             raise ValueError('finite dropping telemetry queue required')
 
     async def __call__(self, frame_dict, *, encode):
+        with NativeReadTelemetry(self.telemetry, frame_dict) as diagnostics:
+            try:
+                result = await self._call(frame_dict, encode=encode)
+            except asyncio.CancelledError:
+                diagnostics.finish(status='cancelled', reason='consumer_cancelled')
+                raise
+            except WorkerQueryInputError:
+                diagnostics.finish(status='invalid_query', reason='invalid_input')
+                raise
+            except Exception:
+                diagnostics.finish(status='error', reason='internal_error')
+                raise
+            diagnostics.finish(result)
+            return result
+
+    async def _call(self, frame_dict, *, encode):
         loop = asyncio.get_running_loop()
         started = loop.time()
         identity = _identity(frame_dict)

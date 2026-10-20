@@ -11,6 +11,8 @@ import threading
 import time
 from uuid import uuid4
 
+from .query_telemetry import ReadAttempt
+
 current_trace_id: ContextVar[str | None] = ContextVar("rkb_read_trace", default=None)
 _STAGES = frozenset({"database_seconds", "queue_seconds", "encoder_seconds",
                      "hydration_seconds", "search_seconds", "total_seconds",
@@ -57,6 +59,45 @@ class ReadTelemetry:
             self._queue.put_nowait(record)
         except queue.Full:
             self.dropped += 1
+
+    def _attempt_record(self, record):
+        try:
+            record = dict(record, loss_before={'dropped': self.dropped, 'failed': self.failed})
+            if self.dropped or self.failed:
+                record['diagnostic_state'] = 'inconclusive'
+            self._record(json.dumps(record, allow_nan=False, separators=(',', ':')))
+        except Exception:
+            self.failed += 1
+
+    def begin_attempt(self, operation='knowledge_search', *, trace_id=None):
+        """Call before admission/dispatch; the returned request ID is server owned."""
+        if operation not in {'search', 'knowledge_search'}:
+            raise ValueError('unknown read operation')
+        attempt = ReadAttempt(trace_id or current_trace_id.get() or uuid4().hex)
+        self._attempt_record({'event': 'read_attempt_started', 'plane': 'controller', 'terminal': False,
+            **attempt.correlation(), 'operation': operation, 'diagnostic_state': 'observed'})
+        return attempt
+
+    def bind_dispatch(self, attempt, *, runtime, connection_generation, turn_generation):
+        """Bind once. A retry or changed attachment needs a new attempt/request ID."""
+        if type(attempt) is not ReadAttempt:
+            raise TypeError('server-minted ReadAttempt required')
+        if not attempt.bind(runtime, connection_generation, turn_generation):
+            return False
+        self._attempt_record({'event': 'read_attempt_dispatched', 'plane': 'controller', 'terminal': False,
+            **attempt.correlation(), **runtime.fields(), 'connection_generation': connection_generation,
+            'turn_generation': turn_generation, 'diagnostic_state': 'observed'})
+        return True
+
+    def finish_attempt(self, attempt, *, status, reason=None, executed_branches=(), stages_ms=None):
+        """Emit one terminal observation, including refusal/cancel before dispatch."""
+        if type(attempt) is not ReadAttempt:
+            raise TypeError('server-minted ReadAttempt required')
+        record = attempt.terminal(status, reason, executed_branches, stages_ms or {})
+        if record is None:
+            return False
+        self._attempt_record(record)
+        return True
 
     async def measure(self, operation, awaitable):
         """Measure backend execution, excluding auth, MCP serialization and I/O."""

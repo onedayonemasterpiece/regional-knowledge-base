@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from hashlib import sha256
 from typing import Literal
 from uuid import UUID
 
@@ -228,20 +227,10 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
     except psycopg.Error:
         return _unavailable(query, "internal_error", observed)
     finally:
-        if telemetry is not None and telemetry.maxsize > 0:
+        if telemetry is not None:
+            from .query_telemetry import emit_executor_stage
             stages["total_ms"] = (loop.time() - started) * 1000
-            try:
-                telemetry.put_nowait({"event": "kaggle_read_completed",
-                    # The controller owns request IDs. Hash even that bounded
-                    # locator so diagnostics never echo arbitrary wire text.
-                    "request_ref": sha256(query.request_id.encode("utf-8")).hexdigest(),
-                    "connection_generation": query.connection_generation,
-                    "turn_generation": query.turn_generation,
-                    "executed_branches": tuple(name for name in ("lexical", "dense")
-                                               if name + "_ms" in stages),
-                    "stages_ms": dict(stages)})
-            except asyncio.QueueFull:
-                pass
+            emit_executor_stage(telemetry, query, stages)
 
 
 async def read_continuation(query: Query, locator: PassageContinuation, *, acquire) -> PassageRead:
