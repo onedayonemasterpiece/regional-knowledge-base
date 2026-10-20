@@ -14,9 +14,13 @@ Pending replacement сохраняет прежнюю accepted active revision. 
 
 Existing BgeQueue/controller принимает book и story jobs с общими query-first guard, idempotency и capacity reservation. Query reserve нельзя обойти вторым producer. Проверка свободного места и enqueue атомарны.
 
+Ephemeral `read_query` использует ту же fairness/admission authority, но не создаёт durable encoder job/user turn и не ждёт fsync, remote seal или durable RESUME. При свободном permit запрос dispatches сразу; batch объединяет уже ожидающую работу, не ждёт заполнения ради throughput. Mutations и принятые долгие вопросы сохраняют durable lifecycle. Асинхронная bounded read telemetry не пишет в queue SQLite и не держит её write locks.
+
 У исходного кода document window 64 и общий BGE backlog 256; это исходные ограничения для оценки, а не доказанный PG+BGE capacity envelope. Target batch/window фиксируются после измерения source sizes, RAM/CPU, WSS buffers и serving latency. Следующий bounded batch стартует только с permit; already running encode не прерывается. Proof/import получают aging и положительное продвижение.
 
 Index worker читает exact minimal search material напрямую из domain authority, не public evidence hydration с PDF/illustrations. Не пересылать полную книгу через MCP/WSS JSON и не держать network call под writer lock. Completed results устанавливаются batch transaction с hash/revision checks, не отдельным round trip на каждый vector.
+
+В целевом размещении domain authority, BGE и PG installation находятся на Kaggle: vectors не делают круг через Dev для записи в соседнюю БД. Пользовательский search — одна операция того же worker: encode/parallel lexical branches → dense/fusion → batched hydration → компактный evidence pack. Query vector и промежуточные candidate arrays остаются локальными. Reuse BgeQueue/controller не означает сохранение старой сетевой границы encode→Dev→PG.
 
 ## Индексы и serving projection
 
@@ -26,6 +30,8 @@ Bulk initial load предшествует initial index build. После кр�
 
 Ready derived row переиспользуется при точном совпадении source/material/model version/hash. Новый encoder result не заменяет принятую source transcription или человеческую правку. Canonical command outcome не хеширует заново BGE floats/FTS/crops: exact domain values/evidence сохраняются, derived projection может стать dirty и rebuild отдельно от canonical replay. Durable accepted BGE artifacts reuse; actual dense readiness проверяется после восстановления projection. Existing delivered artifact bytes/hash/receipt не подменяются.
 
+Status/search не запускают повторное full hashing, repacking или reembedding неизменённого verified material. Проверка hashes при принятии/установке/recovery и при изменении integrity остаётся обязательной. Bounded caches и нужные FP32/index projections сохраняются ради скорости в общих 80/90% capacity gates, а не удаляются ради экономии с последующим recompute каждого запроса.
+
 После durable installation и protected receipt job body освобождается; queue не становится второй vector database. Удаление старых derived revisions не удаляет evidence/history.
 
 ## Пробуждение, прогресс и recovery
@@ -34,9 +40,11 @@ Notify публикуется после commit; controller имеет bounded r
 
 Состояния различают source accepted, indexing pending, model/worker unavailable, active searchable, superseded, needs_recovery. Ноль missing vectors не доказывает live query readiness. Actual SQL+dense probe проверяет правильный material/model и useful evidence. Status counts не раскрывают private records.
 
+`text_search_ready`, `archive_read_ready` и `proof_ready` публикуются отдельно. Telegram/FloodWait или незавершённый crop не переводят прогретые PG/BGE в unavailable; readiness не требует архивного preflight на каждом text query. Один run по-прежнему требует exclusive genuine Telegram session lease: разделение capability readiness не увеличивает установленный владельцем cap runs.
+
 Progress checkpoint содержит source/revision, installed vector cursor, unfinished dependencies и exact job IDs. Restart продолжает их, не делает reencode всего corpus. Persistent mismatch или poison stage сохраняет checkpoint и diagnostic incident; bounded retry не превращается в GC accepted work. Optional archive/mirror verification не удерживает publication critical path, но остаётся отдельной resumed работой.
 
-Read-only query-result cache имеет ограниченный lifecycle. Исчезновение такого cache не удаляет durable human request: consumer checkpoint/result защищён отдельно. Shared encoder job retires лишь после учёта всех consumers; document publication jobs не удаляются как «старый поиск».
+Read-only query-result cache имеет ограниченный lifecycle и актуальные dependency/scope checks. Исчезновение такого cache допускает повтор ephemeral read, но не удаляет durable human request, если поиск был его стадией: consumer checkpoint/result защищён отдельно. Shared encoder job retires лишь после учёта всех consumers; document publication jobs не удаляются как «старый поиск».
 
 ## Приёмка
 

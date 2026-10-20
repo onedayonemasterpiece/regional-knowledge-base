@@ -12,6 +12,8 @@ Exact source_text и детерминированный search_material имею
 
 ## ACK и короткий raw spool
 
+Эти durable границы относятся к принятым долгим вопросам, mutations и внешним effects. Обычный `read_query` использует ту же authority допуска, но имеет отдельную ephemeral семантику, описанную ниже; transport response не называется accepted/Saved.
+
 | Граница | Значение |
 |---|---|
 | Local intake receipt | pending: известны request/idempotency key и временно сохранён input; финальное accepted ещё не обещано. |
@@ -19,7 +21,7 @@ Exact source_text и детерминированный search_material имею
 | Applied / Saved | PG transaction сохранила domain effects, applied_ops и непрерывный cursor; exact outcome/receipt также remotely verified. Cloud intake сам по себе не applied. |
 | Delivered | Единственный sender подтвердил native receipt/readback конкретного result hash. Unknown outcome остаётся UNKNOWN до reconciliation. |
 
-Accepted mutations и реальные user turns группируются в bounded group commit: готовая группа ждёт flush не более 1 секунды. Это предел batching delay, а не обещание provider latency. Ошибка remote commit оставляет pending и не превращается в Saved. Обычный read-only поиск не ставится в очередь remote journal и не требует S3 round trip.
+Accepted mutations и durable user turns группируются в bounded group commit: готовая группа ждёт flush не более 1 секунды. Это верхняя граница накопления, не обязательный sleep и не обещание provider latency: при свободном uploader готовый singleton можно отправить сразу. Ошибка remote commit оставляет pending и не превращается в Saved. Обычный read-only поиск не ставится в очередь remote journal и не требует S3 round trip.
 
 Existing S3ObjectStore — transport put/get/delete. Immutable create/seal, exact verification и conditional manifest CAS ещё реализуются поверх него. [Yandex PutObject](https://yandex.cloud/en/docs/storage/s3/api-ref/object/upload) документирует If-Match/If-None-Match; runtime probe проверяет конкретный SDK/bucket и competing-writer race, а не существование headers в спецификации. Segment содержит sequence range/count, payload hashes и previous hash. Manifest принимает только verified continuous chain; orphan upload не accepted.
 
@@ -47,21 +49,32 @@ Sealed-tail compaction ограничивает object count/bytes/replay time. 
 
 Проверка candidate: provider status → скачать exact version → hashes/size → restore с нужными extensions/WAL → SQL invariants/cursor → replay непрерывного tail → actual SQL+dense probes. Canonical pointer переключается внешним fenced CAS только после этих проверок. Crash между apply и ACK возвращает тот же результат через applied_ops, не повторяет внешнюю отправку.
 
+Один consistent base artifact можно отправить в Kaggle и Yandex с независимым transport readback, без второго pg_basebackup и одинакового restore тех же bytes/runtime. Если уже разрешённый reader/planned successor доступен, проверять candidate на нём и сохранять восстановленный instance для serving после replay/readiness/fencing. Не выбрасывать его ради повторного скачивания и restore. Weekly recovery drill можно совместить с candidate verification только при выполнении всех его SQL/dense/control-receipt/recovery checks. Если свободного разрешённого run нет, verification использует ограниченный maintenance CPU/I/O/memory budget с search reserve; дополнительный Kaggle run в обход Telegram-session cap не создаётся. Hash-only verification не заменяет restore proof, а откладывание maintenance не нарушает replay/tail budgets.
+
 ## Failure domains и быстрые reads
 
 Потеря Kaggle session: восстановить verified base, replay exact remotely accepted tail, подтвердить новые readiness probes. Canonical outcome hash фиксирует exact domain IDs/body/evidence, исключая заново вычисленные BGE floats, derived FTS и crops. Derived projections могут стать dirty и rebuild асинхронно, accepted BGE artifacts reuse; dense lag не задерживает canonical replay. Уже delivered artifact bytes/hash/receipt остаются exact и не подменяются regenerated изображением. Потеря DevCoveer disk: восстановить compact control checkpoint и remote command/control/receipt tail; не воскресить старую writer authority или отозванный grant. Потеря Yandex требует отдельного анализа остаточного Dataset recovery point: две копии в одном Yandex не доказывают RPO=0.
 
-Read-only evidence search использует прогретый serving PG/BGE, не создаёт durable user-turn запись автоматически. Уже managed request передаёт request/generation context без второго lifecycle. min_data_seq обеспечивает read-after-write; ordinary reader сообщает data_as_of. Current withdrawal/capability barriers проверяются gateway перед output/cache reuse/delivery, даже если reader snapshot отстаёт.
+Ephemeral `read_query` использует ту же person fairness/resource admission authority и прогретый serving PG/BGE. Его bounded in-flight correlation/context generation не создаёт durable user-turn автоматически: ни fsync, ни remote seal, ни durable RESULT_ACK/RESUME не стоят перед dispatch/result. После потери соединения такой read можно выполнить заново с актуальным контекстом; это не replay принятого domain effect. Уже managed request передаёт request/generation context без второго lifecycle; его собственная durable история/результат сохраняются по прежнему контракту. `min_data_seq` обеспечивает read-after-write; ordinary reader сообщает `data_as_of`.
 
-## Ёмкость и экономичность
+Read telemetry/history references отправляются асинхронно в bounded sink вне queue/control SQLite write path: они не захватывают её write locks и не используют durable job queue. Переполнение coalesces/drops telemetry с видимым счётчиком, а не задерживает поиск и не теряет принятые mutations. Это не обещание durable хранения каждого быстрого read. Не журналировать private query bodies по умолчанию.
+
+Ingress проверяет resource-bound identity и передаёт компактный actor/audience/request/policy context, без перечисления всех доступных книг. PG применяет scope predicates; gateway перед output/cache reuse/delivery выполняет текущую batched проверку dependencies top-K. Current withdrawal/capability barrier сохраняется даже при отставшем reader; cached token/identity не заменяет проверку отзыва.
+
+`text_search_ready`, `archive_read_ready` и `proof_ready` независимы внутри разрешённого run. Telegram reconnect/FloodWait или pending crop не отключают готовые PG/BGE и не удерживают текстовый ответ. Сам лимит simultaneous runs по независимо авторизованным Telegram sessions остаётся в силе.
+
+## Ёмкость и скорость
 
 Измерять отдельно:
+
 - Kaggle writable mount: PG heap/TOAST/indexes, WAL, temp, staging, restored data, candidate backup и download/render cache;
 - private Dataset quota: retained base versions и upload overlap;
 - Yandex: designated bases, immutable tail/payloads, pending artifacts и overlap;
 - DevCoveer: raw spool, compact metadata/checkpoints и bounded network buffers.
 
 Gates: steady usage **≤80%**, крупнейший import/restore/snapshot/cutover peak **≤90%** каждого applicable budget. Minimum benchmark — **100 book-equivalent sources и 100000 active chunks**; это не product limit. Raw-vector arithmetic не заменяет measured index/volume usage.
+
+Приоритет владельца — полезное уменьшение E2E latency, в том числе на 0.5 s. Полезные bounded caches, FP32 vectors и indexed serving projections допустимы в этом budget; экономия bytes сама по себе не оправдывает дополнительные roundtrips, recompute или распаковку на каждом read. Выигрыш подтверждается сопоставимым измерением, а не объявляется по выбору Go/Rust/native реализации.
 
 По текущей [Kaggle Dataset документации](https://www.kaggle.com/docs/datasets): 200 GB на Dataset, 200 GB суммарно private datasets, максимум 50 top-level files. Archives распаковываются; zip не обходит лимит. [Notebook docs](https://www.kaggle.com/docs/notebooks) отдельно указывают 20 GB autosaved working space и конечную session lifetime. Реальный аккаунт, mounts и свободные quotas проверяются перед cutover; Dataset capacity не равна рабочему диску PG.
 
@@ -84,6 +97,8 @@ Exact hashes используются для integrity/dedup, не как уга
 Сохраняются bounded streaming, incremental hash, MIME/signature/container validation и SSRF guard загрузки: HTTPS/443, без credentials/redirects/IP-literal/localhost/private DNS targets; approved DNS pins, без proxy/cookie inheritance и неожиданной content decompression. Существующий source size default 128 MiB и operator ceiling 512 MiB проверяются до и во время download. Это размер входного файла, не spool budget.
 
 Original cache и proof cache имеют свои отдельные byte/idle caps и cross-process leases. Exact preview/hash/rotation/transform сохраняется до terminal locator callback; утрата preview требует новой generation и повторной локализации. Подтверждённый callback/artifact ref позволяет освободить временные bytes. Сессии Telegram независимы и имеют exclusive lease; account FLOOD_WAIT остаётся общим пределом.
+
+Concurrent reads одного exact source SHA могут разделять одну in-flight загрузку и verified immutable cache object под lease. Hash проверяется при streaming download/restore и atomic install; warm read неизменённого проверенного объекта не требует повторного полного hashing/repacking/reembedding. Изменение bytes/identity или сомнение в integrity требует повторной verification до использования. Каждый вывод всё равно проверяет текущие права. Cache keys/refs различают source/render generation, actual geometry, artifact class и scope; public illustration не переиспользует restricted page/quote rendition как публичный ответ.
 
 Source deletion/withdrawal сначала отзывает видимость и delivery grants, затем отменяет разрешённые downstream projections и выполняет checked lifecycle. Незавершённый consumer, legal retention и историческое evidence не стираются случайным cache GC. Не менять исходный чужой archive/POI/map owner.
 

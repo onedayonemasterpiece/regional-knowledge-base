@@ -10,11 +10,15 @@
 
 Original archive pending означает wait/resume. Если verified archive действительно недоступен, owner может приложить тот же оригинал к reprocess: сервер проверяет SHA/format/page count до открытия revision, резервирует staging capacity и восстанавливает только private source bytes. Иное издание не принимается как тот же источник. Предыдущая active revision продолжает работать до принятия замены.
 
+Ожидание относится к конкретной операции с ещё недоступными bytes. Готовый текстовый поиск по уже принятому корпусу не ждёт Telegram preflight, оригинала или proof. Text/archive/proof readiness различаются; source-fidelity и обязательные archive/recovery gates самого импорта этим не обходятся.
+
 ## Чтение и ограниченный stage
 
 `book_pages` возвращает реальные MCP ImageContent и native block previews: default4, maximum8 страниц. Native extraction — помощь чтению, не OCR/semantic authority. Calling model визуально читает source, backend не вводит скрытый OCR/VLM/LLM extraction service.
 
 Native block metadata сохраняет original_length/offset/end/truncated/continuation. Block continuation выдаёт до1000 символов и соответствующую страницу; repeated cursor возвращает тот же диапазон. Finish block cursor до перехода к следующему; `blocks_continuation` раскрывает блоки за preview cap80. Page preview до24000 символов не доказывает полноту. Empty native text может сопровождать содержательную scan page. CID/ToUnicode encoding_notice требует сверки с изображением; отсутствие notice не отменяет её.
+
+Versioned opt-in клиента может избежать повторной передачи того же изображения: первая порция всегда содержит actual ImageContent, дальнейшие native continuations той же страницы **в том же живом visual context** могут возвращать offsets + exact source/page/render hash reference. Это не урезает текст или image resolution. Новый чат/context, потеря картинки, неизвестный context или изменение render требуют снова actual ImageContent до визуального review; одна сохранённая hash/reference не доказывает, что модель видит страницу. Без согласованной поддержки клиент получает прежний ответ с изображением на continuation. Cursor/full-coverage, все figures/captions и visual-review requirements остаются прежними.
 
 Source regions ограничены8000 символами с правильным reading order. Continuation portion не становится автоматически semantic region. Каждая новая/изменённая страница, включая image-only, имеет visual_reviewed + source_review_note; unreviewed/preview/full_native не проходят как визуально проверенные. Сервер проверяет attestation/schema/coverage, но не притворяется независимым читателем книги.
 
@@ -38,6 +42,8 @@ Inline stage или один UTF-8 JSON file — два транспорта о�
 
 Source revision activation, accepted facts/подготовленные bodies и reachable research frontier фиксируются атомарно в PG. Сначала готовить staging/projections; activation меняет компактный pointer, не переписывает все активные passages. Body+default ref+source dependencies+receipt атомарны, после commit ordinary readback проверяет exact body/revision/hash. Exact accepted model payload удалённо закреплён до application; retry/recovery не вызывает модель заново.
 
+Document indexing выполняется рядом с PG/BGE на Kaggle: exact minimal search material читается локально, bounded vector batch устанавливается там же с revision/hash checks. Dev не служит промежуточным хранилищем query/document vectors. Уже принятые payloads и точные outcomes остаются remotely durable; сокращение network copies не меняет accepted/Saved или ordinary body readback. Импорт уступает измеренный search reserve на существующих safe batch boundaries, не ждёт заполнения query batch и не прерывается посреди commit.
+
 Research frontier один для story reconcile, сопоставления источников/cases, открытых source needs и POI enrichment. Не два полных N² scans. Активация не ждёт будущего экспертного консенсуса, идеальной карты или Street Story; downstream effects живут в существующем outbox. Pending compose/context явно виден. Индекс/source acceptance/research completeness/publication approval — разные состояния.
 
 Ошибочное optional metadata item получает needs_review с исходным payload/reason и сохранёнными корректными facts. Unexpected transactional error не оставляет частично перезаписанный candidate checkpoint. Исправление metadata-only тем же stage/checkpoint не меняет source/chunks/vectors. Repeated activation не создаёт новые dates/Story/Variant/cases; superseded source не переписывает approved/human variants.
@@ -55,3 +61,5 @@ Accepted source pages/evidence/history остаются immutable. Catalog.updat
 ## Приёмка
 
 Свежие A→B, B→A и concurrent imports; retry stage/finalize/extract/body save; отсутствие эпизода при полной сохранности фактов;Cross-page episode; настоящие body после restart через get/search/voice; exact proof и archive continuation; metadata repair без переписывания source; withdrawal/read-after-write; per-book natural/paraphrased/cross-language retrieval на точной revision. Затем protected scale100books/100kchunks, BGE Hit@5/10, latency и80/90% headroom. Одни vectors-ready/успешный finalize не являются массовой готовностью.
+
+Opt-in image continuation дополнительно проверяется в одном live context, после потери image/context, в новом чате и после изменения render. Все native offsets/blocks и source facts совпадают с полным контрактом; новый context снова получает реальные pixels. Проверить, что Telegram/proof outage не блокирует готовый text search во время imports, без увеличения разрешённого числа Kaggle runs.
