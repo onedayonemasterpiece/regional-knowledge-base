@@ -11,6 +11,7 @@ from .disagreement_native import CASE_REVISIONS
 from .kaggle_domain_bindings import DOMAIN_REVISIONS
 
 CASE_READER_FUNCTIONS=(
+    'verify_disagreement_origins_v1(uuid[])',
     'read_disagreement_v1(uuid,uuid,text,bigint,integer,bigint,uuid,bigint,uuid)',
     'read_disagreement_operation_v1(uuid,uuid,text)',
 )
@@ -38,6 +39,8 @@ async def execute_case_read(request,*,acquire):
                         await execute('SELECT schema_revision,function_revision,executor_revision FROM rkb_v4.recovery_state WHERE singleton')
                         if tuple(await cursor.fetchone() or ()) not in (CASE_REVISIONS.wire(),DOMAIN_REVISIONS.wire()):
                             raise ReadUnavailable('not_ready')
+                        await execute('SELECT rkb_v4.verify_disagreement_origins_v1(%s::uuid[])',([request.case_id],))
+                        if await cursor.fetchone()!=(True,):raise ReadUnavailable('not_ready')
                         if request.section=='operation':
                             await execute('SELECT rkb_v4.read_disagreement_operation_v1(%s::uuid,%s::uuid,%s)',
                                 (request.case_id,request.actor.person_id,request.operation_key))

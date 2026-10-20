@@ -96,6 +96,7 @@ async def next_command(n,action,value,*,actor=ACTOR,object_id=OBJECT,case_revisi
 
 async def read(n,*,actor=ACTOR,section='case',after_seq=0,take=20,revision=None,draft_id=None,version=None):
     async with n['connection'].transaction():
+        assert (await(await n['connection'].execute('SELECT rkb_v4.verify_disagreement_origins_v1(%s::uuid[])',([CASE],))).fetchone())[0]
         return (await(await n['connection'].execute('SELECT rkb_v4.read_disagreement_v1(%s,%s,%s,%s,%s,%s,%s,%s,NULL)',
             (CASE,actor,section,after_seq,take,revision,draft_id,version))).fetchone())[0]
 
