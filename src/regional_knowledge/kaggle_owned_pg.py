@@ -105,7 +105,8 @@ async def configure_native_roles(admin,*,selected_sql,dbname):
     if len(selected_sql)>=10:
         from .kaggle_domain_schema import TABLES_10
         await admin.execute('GRANT SELECT ON '+','.join('rkb_v4.'+name for name in sorted(TABLES_10))+' TO rkb_reader')
-        domain_functions+=('case_role_v1(uuid,uuid)','case_sources_v1(uuid)',
+        await admin.execute('GRANT SELECT(operation_key,sequence,status,command_bytes,command_sha256,outcome_bytes) ON rkb_v4.applied_ops TO rkb_reader')
+        domain_functions+=('verify_disagreement_origins_v1(uuid[])','case_role_v1(uuid,uuid)','case_sources_v1(uuid)',
             'read_disagreement_v1(uuid,uuid,text,bigint,integer,bigint,uuid,bigint,uuid)',
             'read_disagreement_operation_v1(uuid,uuid,text)')
     if len(selected_sql)>=11:
