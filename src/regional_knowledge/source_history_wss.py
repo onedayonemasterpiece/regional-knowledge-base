@@ -62,16 +62,6 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
         if not isinstance(value,dict) or 'error' in value:raise SpoolConflict('native source history observation unavailable')
         return value
 
-    def _classify(self,raw,ref):
-        c=_command(raw);h=self.spool.registry.resolve(c);dep=h.dependency
-        if (dep is None or dep.scope_class!='public_source' or dep.scope_owner!='shared'
-                or dep.resource_keys!=frozenset({'source_id'}) or h.transition is not None
-                or set(c.ids)!={'source_id'} or c.route not in ('source.import.v1','source.import.v2','source.withdraw.v1')
-                or c.route in ('source.import.v1','source.import.v2') and 'source.import' not in self.routes):
-            raise SpoolConflict('unclassified accepted source dependency')
-        _uuid(c.ids['source_id'])
-        return c,h,ref
-
     async def restore(self,binding):return await self._verify_remote(binding,mode='full')
     async def establish_genesis(self,binding):return await self._verify_remote(binding,mode='full',genesis=True)
     async def extend(self,binding):return await self._verify_remote(binding,mode='delta')
@@ -192,8 +182,9 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                             if (remote.data!=_json(expected_outcome) or len(body)!=outcome[2] or _hash(body)!=outcome[1]
                                     or used>self.max_history_bytes):raise SpoolConflict('remote outcome differs from native exact prefix')
                             durable=True
-                        if c.route in ('source.import.v1','source.import.v2') and outcome[0]=='applied':origins.append(c.ids['source_id'])
+                        if h.dependency.scope_class=='public_source' and outcome[0]=='applied':origins.append(c.ids['source_id'])
                     if not durable:pending.append((c.encode(),h.fingerprint,m))
+                    if h.dependency.scope_class!='public_source':continue
                     source=c.ids['source_id'];old=changes.get(source)
                     changes[source]=SourceChange(source,c.sequence,_hash(c.encode()),bool(h.dependency.restriction or old and old.restriction),
                         bool(not durable or old and old.pending),False)
