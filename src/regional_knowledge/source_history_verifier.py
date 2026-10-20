@@ -10,6 +10,7 @@ import base64
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import secrets
 import time
 from types import MappingProxyType
@@ -20,6 +21,8 @@ from psycopg.rows import tuple_row
 from .control_spool import SourceChange, SpoolConflict, _command, _database
 from .kaggle_database_probe import NativeDatabaseProbe
 from .source_read_gate import binding_key
+
+_LOG=logging.getLogger(__name__)
 
 
 def _json(value):
@@ -90,6 +93,9 @@ class _Coverage:
     key: tuple
     deadline: float
     nonce: str
+    head: object
+    accepted_sequence: int
+    applied_sequence: int
 
     def current(self):
         v = self.verifier
@@ -148,6 +154,76 @@ class NativeSourceHistoryVerifier:
 
     async def restore(self, binding):
         return await self._verify(binding, genesis=False)
+
+    async def _head_unchanged(self,head):
+        # The retained verified token names these exact previously checked
+        # pointer bytes. Re-read only that bounded pointer, never old segments.
+        j=self.spool.journal
+        value=await j._read(j.head_key,4096)
+        if head is None:return value is None
+        if value is None or value.token!=head.token:return False
+        pointer=json.loads(value.data)
+        return (pointer.get('codec')=='rkb.head.v1' and pointer.get('stream')==j.stream
+            and j._parse_ref(pointer.get('manifest'))==head.reference)
+
+    async def renew(self,binding):
+        """Renew an unchanged, already verified exact prefix without replay.
+
+        This is controller maintenance, never an implicit step on ready reads.
+        A changed head/native cursor requires explicit recovery verification.
+        """
+        s,j=self.spool,self.spool.journal
+        key=binding_key(binding)
+        async with s._lock:
+            proof=self._coverage
+            if (proof is None or s._source_anchor is not proof or proof.binding is not binding
+                    or proof.key!=key or not self.binding_current(binding)
+                    or not self._routes_current() or self._registry_hash()!=self.registry_hash
+                    or s._source_head!=(proof.head.reference if proof.head else None)
+                    or s._source_covered_sequence!=proof.accepted_sequence or s._writing):
+                s.invalidate_source_history();self._coverage=None
+                raise SpoolConflict('exact retained source prefix unavailable for renewal')
+            # Invalidate before any cancellable native/provider read: an unknown
+            # verification outcome cannot prolong the previous capability.
+            s.invalidate_source_history();self._coverage=None
+            renewal_version=s._source_version
+            async with asyncio.timeout(self.timeout_seconds):
+                if not await self._head_unchanged(proof.head):
+                    raise SpoolConflict('source journal prefix changed during renewal')
+                catalog,fields=await NativeDatabaseProbe(timeout_seconds=min(2,self.timeout_seconds))(acquire=self.acquire)
+                if (_hash(catalog)!=self.catalog_hash or fields['database_generation']!=key[3]
+                        or fields['applied_seq']!=proof.applied_sequence):
+                    raise SpoolConflict('native source prefix changed during renewal')
+                async with self.acquire() as connection:
+                    if (connection.closed or connection.row_factory is not tuple_row
+                            or connection.info.transaction_status!=TransactionStatus.IDLE):
+                        raise SpoolConflict('native verifier connection unavailable')
+                    async with connection.transaction():
+                        async with connection.cursor() as cursor:
+                            await cursor.execute('SET TRANSACTION READ ONLY')
+                            await cursor.execute("SET LOCAL statement_timeout='2000ms'")
+                            await cursor.execute('SET LOCAL search_path=pg_catalog')
+                            if _hash(await inspect_acl(connection))!=self.acl_hash:
+                                raise SpoolConflict('native role ACL closure differs during renewal')
+                            await cursor.execute('SELECT s.database_generation,s.writer_generation,s.applied_seq '
+                                'FROM rkb_v4.recovery_state s JOIN rkb_v4.writer_generations w '
+                                'ON w.generation=s.writer_generation WHERE s.singleton AND NOT w.retired LIMIT 2')
+                            if await cursor.fetchall()!=[(key[3],self.writer_generation,proof.applied_sequence)]:
+                                raise SpoolConflict('native writer prefix changed during renewal')
+                            nonce=secrets.token_hex(24)
+                            await cursor.execute('SELECT %s::text',(nonce,))
+                            if await cursor.fetchone()!=(nonce,):raise SpoolConflict('native renewal nonce differs')
+                # invalidate_source_history itself replaced version once. Any
+                # additional write while the native observation awaited is stale.
+                if (not await self._head_unchanged(proof.head) or not self.binding_current(binding)
+                        or s._writing or s._source_version is not renewal_version):
+                    raise SpoolConflict('source prefix changed at renewal completion')
+                coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,
+                    nonce,proof.head,proof.accepted_sequence,proof.applied_sequence)
+                self._coverage=coverage;s._source_anchor=coverage;s._source_version=object()
+                _LOG.info('source_history_renewed generation_hash=%s accepted_seq=%s applied_seq=%s',
+                    _hash(key[3].encode()),proof.accepted_sequence,proof.applied_sequence)
+                return coverage
 
     async def _verify(self, binding, *, genesis):
         s, j = self.spool, self.spool.journal
@@ -293,8 +369,11 @@ class NativeSourceHistoryVerifier:
                 if (not self.binding_current(binding) or await j.head()!=head
                         or s._writing or s._source_version is not version):
                     raise SpoolConflict('source binding changed at native completion')
-                coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce)
+                coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,
+                    head,len(commands),applied_seq)
                 self._coverage=coverage
                 s._source_anchor=coverage; s._source_head=head.reference if head else None
                 s._source_covered_sequence=len(commands); s._source_version=object()
+                _LOG.info('source_history_verified generation_hash=%s accepted_seq=%s applied_seq=%s genesis=%s',
+                    _hash(key[3].encode()),len(commands),applied_seq,genesis)
                 return coverage

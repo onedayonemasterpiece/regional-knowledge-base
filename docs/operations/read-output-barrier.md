@@ -212,6 +212,18 @@ same queue spool. It never restores corpus, bibliography or independent grants
 into DevCoveer, never reruns a model choice, and provides no non-genesis snapshot
 shortcut. Exceeding any verification budget keeps coverage unavailable.
 
+`renew(binding)` can cheaply renew an expired retained capability only when
+the exact previously verified pointer/token, native applied cursor, DB/writer,
+catalog, ACLs, registry, actual routes and binding remain unchanged. It reads
+the bounded head pointer and native metadata, without traversing old segments
+or reading corpus rows. It never treats maximum sequence as a prefix proof.
+Run this through existing maintenance outside search serving. A changed
+accepted/applied prefix requires explicit full verification in this version.
+Full genesis replay has finite command/byte limits; a permanent verified remote
+checkpoint and incremental native-prefix extension remain an explicit scaling
+acceptance gap. Full replay must never be introduced on the read path or as
+blocking query maintenance merely to hide that gap.
+
 Coverage expires within a bounded lifetime and is revoked by runtime generation,
 route object or registry changes. The controller must call
 `invalidate_source_history()`/`gate.invalidate()` **before** DDL, grants, route,

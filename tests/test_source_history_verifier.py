@@ -50,7 +50,7 @@ class Pg:
 def verifier(e,pg,b,monkeypatch):
     class Probe:
         def __init__(self,**kwargs):pass
-        async def __call__(self,**kwargs):return b'catalog',{'database_generation':'db-source'}
+        async def __call__(self,**kwargs):return b'catalog',{'database_generation':'db-source','applied_seq':pg.applied_seq}
     monkeypatch.setattr(module,'NativeDatabaseProbe',Probe)
     # Keep the real safe-attribute validation and exact native ACL hash check.
     expected=module._json(pg.acl)
@@ -121,4 +121,50 @@ async def test_nonempty_unjournaled_source_after_genesis_cannot_be_restored(env,
     await v.establish_genesis(b)
     pg.nonempty=True
     with pytest.raises(SpoolConflict,match='canonical applied import origin'):await v.restore(b)
+    assert env.spool._source_anchor is None
+
+
+@pytest.mark.asyncio
+async def test_expired_exact_unchanged_prefix_renews_without_traversal(env,monkeypatch):
+    pg=Pg();b=binding();v=verifier(env,pg,b,monkeypatch)
+    now=[0.0];v.clock=lambda:now[0]
+    proof=await v.establish_genesis(b)
+    now[0]=31
+    assert not proof.current()
+    async def forbidden(*args):raise AssertionError('unchanged renewal traversed old journal history')
+    monkeypatch.setattr(env.journal,'read_segment',forbidden)
+    renewed=await v.renew(b)
+    assert renewed.current() and renewed is not proof and renewed.nonce!=proof.nonce
+    assert renewed.head==proof.head and renewed.applied_sequence==proof.applied_sequence
+
+
+@pytest.mark.asyncio
+async def test_renewal_reads_only_retained_head_pointer_for_nonempty_verified_chain(env,monkeypatch):
+    pg=Pg();b=binding();v=verifier(env,pg,b,monkeypatch)
+    await v.establish_genesis(b)
+    await accept(env)
+    proof=await v.restore(b)
+    async def forbidden(*args):raise AssertionError('renewal traversed an already verified segment')
+    monkeypatch.setattr(env.journal,'read_segment',forbidden)
+    env.store.reads.clear()
+    renewed=await v.renew(b)
+    assert renewed.current() and renewed.accepted_sequence==1
+    assert env.store.reads==[env.journal.head_key,env.journal.head_key]
+
+
+@pytest.mark.asyncio
+async def test_changed_native_prefix_cannot_renew_verified_history(env,monkeypatch):
+    pg=Pg();b=binding();v=verifier(env,pg,b,monkeypatch)
+    await v.establish_genesis(b)
+    pg.applied_seq=1
+    with pytest.raises(SpoolConflict,match='prefix changed'):await v.renew(b)
+    assert env.spool._source_anchor is None
+
+
+@pytest.mark.asyncio
+async def test_locally_appended_accepted_head_requires_native_prefix_extension(env,monkeypatch):
+    pg=Pg();b=binding();v=verifier(env,pg,b,monkeypatch)
+    await v.establish_genesis(b)
+    await accept(env)
+    with pytest.raises(SpoolConflict,match='retained source prefix unavailable'):await v.renew(b)
     assert env.spool._source_anchor is None
