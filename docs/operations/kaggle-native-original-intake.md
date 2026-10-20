@@ -9,6 +9,18 @@ transfer deadline. Parser packages must also be present in the independently
 attested dependency inventory and exact Stage0 wheel closure. No host parser
 fallback or dependency installation outside Stage0 is used.
 
+The additive metadata lock is
+`scripts/production/manifests/kaggle-cp313-x86_64-pdf-wheels.json`: all 50 original
+CP313 wheel rows are unchanged, plus the official 25,762,500-byte PyMuPDF 1.28.2
+`cp310-abi3-manylinux_2_28_x86_64` wheel. Its metadata declares no mandatory Python
+dependencies; this PDF path needs no Pillow, OCR or layout-analysis package.
+The lock records exact official URL/hash, wheel metadata hash, bundled ELF hashes
+and dynamic-library/symbol requirements. Use `parser_packages=(("pymupdf",
+"1.28.2"),)` together with that exact complete Stage0 lock. The Dev CP313.15
+tokenizer-only fixture rendered ten synthetic pages without Torch, model weights
+or model inference. The target image still requires its own observed ABI/load
+proof; the fixture is not Kaggle execution evidence.
+
 `OriginalIntakeController` retains the existing queue, spool, Participants,
 object-store client and current binding callbacks. Its constructor performs no
 provider effect. `begin(RequestAuthority, operation_id=..., source_id=...,
