@@ -157,6 +157,11 @@ class NativeSourceHistoryObserver:
                     'rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
             if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
                 await connection.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
+            if getattr(self.database,'schema_revision',None)=='rkb-v4-sql001-011-v1':
+                await connection.execute('LOCK TABLE rkb_v4.source_graph_documents,rkb_v4.source_entity_ids,'
+                    'rkb_v4.source_entity_representations,rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,'
+                    'rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,rkb_v4.source_entity_finding_links,'
+                    'rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts IN SHARE MODE')
             if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
                 await connection.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
                     'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
@@ -235,6 +240,9 @@ class NativeSourceHistoryObserver:
                 'SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])')
             cursor=await session.connection.execute(statement,(args['origin_ids'],))
             if await cursor.fetchone()!=(True,):raise NativeHistoryError('native_history_story_origin_uncovered')
+            if getattr(self.database,'schema_revision',None)=='rkb-v4-sql001-011-v1':
+                cursor=await session.connection.execute('SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])',(args['origin_ids'],))
+                if await cursor.fetchone()!=(True,):raise NativeHistoryError('native_history_graph_origin_uncovered')
         if digest(await inspect_acl(session.connection))!=session.closure[1] or not self.valid(session.binding):
             raise NativeHistoryError('native_history_closure_changed')
         cursor=await session.connection.execute('SELECT %s::text',(session.nonce,))

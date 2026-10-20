@@ -24,6 +24,7 @@ class NativeCursor(Cursor):
         elif sql.startswith('SELECT sequence,'):
             start,earlier,enabled,_=args
             self.rows=[r for r in self.pg.receipts if enabled and (r[0]>start or r[0] in earlier)]
+        elif sql.startswith('SELECT rkb_v4.verify_source_graph_origins_'):self.rows=[(getattr(self.pg,'graph_valid',True),)]
         elif sql.startswith('SELECT rkb_v4.verify_source_story_origins_'):self.rows=[(getattr(self.pg,'origin_valid',True),)]
         elif sql.startswith('SELECT %s'):self.rows=[args]
         else:self.rows=[]
@@ -41,10 +42,10 @@ def pair(e,*,lease_seconds=10,schema_revision=None):
     b=binding();pg=NativePg();database=SimpleNamespace(database_generation='db-source',writer_generation='writer-1')
     if schema_revision is not None:database.schema_revision=schema_revision
     routes=('source.search','source.fetch','source.withdraw')
-    if schema_revision in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1'):
+    if schema_revision in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):
         routes=routes+('source.import','story.get','story.history','story.search','story.variants',
             'source.fact_read','source.calendar','source.observations')
-    if schema_revision=='rkb-v4-sql001-009-v1':routes=routes+('story.edit','story.access','source.catalog')
+    if schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):routes=routes+('story.edit','story.access','source.catalog')
     async def probe(**kwargs):return b'catalog',dict(database_generation='db-source',applied_seq=pg.applied_seq)
     native=NativeSourceHistoryObserver(acquire=pg.acquire,database=database,identity=('run','nonce','inc'),registry=e.registry,
         current=lambda key:key==('run','inc',1),probe=probe,lease_seconds=lease_seconds)
@@ -201,3 +202,20 @@ def test_editorial_history_classification_uses_exact_installed_contract_and_rout
     assert p.v._classify(c.encode(),None)[1]==h
     p.v.routes.pop('story.edit')
     with pytest.raises(SpoolConflict):p.v._classify(c.encode(),None)
+
+
+@pytest.mark.asyncio
+async def test_fresh11_requires_both_story_and_graph_origin_proofs(env):
+    from regional_knowledge.kaggle_domain_schema import TABLES_11
+    p=pair(env,schema_revision='rkb-v4-sql001-011-v1')
+    try:
+        assert (await p.v.establish_genesis(p.b)).current()
+        assert 'SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])' in p.pg.sql
+        assert 'SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])' in p.pg.sql
+        locks=' '.join(sql for sql in p.pg.sql if sql.startswith('LOCK TABLE'))
+        assert all('rkb_v4.'+name in locks for name in TABLES_11 if name.startswith('source_'))
+        p.pg.graph_valid=False
+        with pytest.raises(SpoolConflict,match='graph_origin_uncovered'):
+            await p.v.renew(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()

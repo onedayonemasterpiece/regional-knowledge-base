@@ -287,6 +287,11 @@ class NativeSourceHistoryVerifier:
                                     'rkb_v4.story_search,rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
                             if fields.get('schema_revision') in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
                                 await cursor.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
+                            if fields.get('schema_revision')=='rkb-v4-sql001-011-v1':
+                                await cursor.execute('LOCK TABLE rkb_v4.source_graph_documents,rkb_v4.source_entity_ids,'
+                                    'rkb_v4.source_entity_representations,rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,'
+                                    'rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,rkb_v4.source_entity_finding_links,'
+                                    'rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts IN SHARE MODE')
                             if fields.get('schema_revision') in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
                                 await cursor.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
                                     'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
@@ -353,6 +358,9 @@ class NativeSourceHistoryVerifier:
                                     'SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])')
                                 await cursor.execute(statement,(origins,))
                                 if await cursor.fetchone()!=(True,):raise SpoolConflict('native story origin differs')
+                                if fields.get('schema_revision')=='rkb-v4-sql001-011-v1':
+                                    await cursor.execute('SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])',(origins,))
+                                    if await cursor.fetchone()!=(True,):raise SpoolConflict('native graph origin differs')
                             if await j.head()!=head or s._writing or s._source_version is not version:
                                 raise SpoolConflict('source prefix changed during extension')
                             await s._write(self._merge_source_heads,tuple(by_source.values()))
@@ -452,6 +460,11 @@ class NativeSourceHistoryVerifier:
                                     'rkb_v4.story_search,rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
                             if fields.get('schema_revision') in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
                                 await cursor.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
+                            if fields.get('schema_revision')=='rkb-v4-sql001-011-v1':
+                                await cursor.execute('LOCK TABLE rkb_v4.source_graph_documents,rkb_v4.source_entity_ids,'
+                                    'rkb_v4.source_entity_representations,rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,'
+                                    'rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,rkb_v4.source_entity_finding_links,'
+                                    'rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts IN SHARE MODE')
                             if fields.get('schema_revision') in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
                                 await cursor.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
                                     'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
@@ -510,6 +523,11 @@ class NativeSourceHistoryVerifier:
                                     'rkb_v4.story_search,rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
                             if fields.get('schema_revision') in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
                                 await cursor.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
+                            if fields.get('schema_revision')=='rkb-v4-sql001-011-v1':
+                                await cursor.execute('LOCK TABLE rkb_v4.source_graph_documents,rkb_v4.source_entity_ids,'
+                                    'rkb_v4.source_entity_representations,rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,'
+                                    'rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,rkb_v4.source_entity_finding_links,'
+                                    'rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts IN SHARE MODE')
                             if _hash(await inspect_acl(connection)) != self.acl_hash:
                                 raise SpoolConflict('native role ACL closure differs')
                             await cursor.execute('SELECT s.database_generation,s.writer_generation,s.applied_seq '
@@ -626,6 +644,9 @@ class NativeSourceHistoryVerifier:
                                     'SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])')
                                 await cursor.execute(statement,(imported,))
                                 if await cursor.fetchone()!=(True,):raise SpoolConflict('native story origin differs')
+                                if fields.get('schema_revision')=='rkb-v4-sql001-011-v1':
+                                    await cursor.execute('SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])',(imported,))
+                                    if await cursor.fetchone()!=(True,):raise SpoolConflict('native graph origin differs')
                             if await j.head()!=head or not self.binding_current(binding):
                                 raise SpoolConflict('source history changed during verification')
                             await s._write(s._replace_source_heads,tuple(changes.values()))
