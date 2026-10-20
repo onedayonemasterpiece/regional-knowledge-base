@@ -31,8 +31,8 @@ def observation(plan):
     return dict(runtime_readiness=readiness,dependencies=dependencies,catalog_b64=base64.b64encode(raw).decode())
 
 
-def setup(tmp_path):
-    now=[1000.]
+def setup(tmp_path,now_value=1000.):
+    now=[now_value]
     queue=BgeQueue(tmp_path/'bootstrap.sqlite',clock=lambda:now[0])
     queue.enqueue('owner','synthetic-document',['not-dispatched'],kind='document')
     run=queue.maintenance()[0]['id'];nonce=queue.prepare_channel(run)
@@ -139,7 +139,7 @@ async def test_worker_emits_bootstrap_observation_without_ready_or_reload():
     assert not any(frame['type']=='READY' for frame in sent)
 
 
-def test_authenticated_wss_observation_stays_closed_until_exact_local_finalization(tmp_path):
+def test_authenticated_wss_observation_stays_closed_without_shared_admission(tmp_path):
     from starlette.applications import Starlette
     from starlette.testclient import TestClient
     from regional_knowledge.bge_channel import channel_route
@@ -158,8 +158,110 @@ def test_authenticated_wss_observation_stays_closed_until_exact_local_finalizati
             assert not s.q.channel_status(s.run,s.token,generation)['ready']
             s.q.finalize_bootstrap_runtime(s.run,s.expected,
                 observation_sha256=acknowledgment['observation_sha256'],review_evidence='independent native/catalog review')
-            for _ in range(5):
-                frame=socket.receive_json()
-                if frame['type']=='READY_ACK' and frame['status']=='ready':break
-            else:pytest.fail('trusted finalization did not promote retained candidate')
-            assert s.q.channel_status(s.run,s.token,generation)['ready']
+            frame=socket.receive_json()
+            assert frame['type']=='READY_ACK' and frame['status']=='runtime_not_ready'
+            assert frame['reasons']==['shared_admission_required']
+            assert not s.q.channel_status(s.run,s.token,generation)['ready']
+
+
+@pytest.mark.asyncio
+async def test_generated_bootstrap_transport_idle_reaches_real_default_asgi_queue(tmp_path,monkeypatch):
+    """Generated transport bytes, real local WebSocket, stub encoder/native proof."""
+    import ast
+    import time
+    import socket as sockets
+    import aiohttp
+    import uvicorn
+    from regional_knowledge.server import build_server
+    from regional_knowledge.bge_contract import SPACE,REVISION
+    from test_bge_wss_worker import ROOT
+    s=setup(tmp_path,now_value=time.time())
+    s.q.detach_channel(s.run,s.token,s.generation)
+    controller=module('bge_kaggle_controller')
+    generated_queue,generated_run=queue_run(tmp_path/'generated')
+    source=controller.worker_source((ROOT/'scripts/production/bge_kaggle_worker.py').read_text(),
+        generated_queue,generated_run,'synthetic-token','https://fixture.example/bge-worker',transport='wss')
+    # Execute precisely the outbound helper embedded in generated launch bytes;
+    # leave model/runtime entrypoint functions inert and inject bounded fixtures.
+    tree=ast.parse(source)
+    names={'BgeChannelStopped','_channel_json','BgeWssTransport'}
+    body=[node for node in tree.body if isinstance(node,(ast.Import,ast.ImportFrom))
+        or getattr(node,'name',None) in names]
+    namespace={'SPACE':SPACE,'REVISION':REVISION}
+    exec(compile(ast.Module(body=body,type_ignores=[]),'generated-bootstrap-transport','exec'),namespace)
+    monkeypatch.setenv('RKB_DEV_NOAUTH','1')
+    monkeypatch.setenv('RKB_BGE_QUEUE_PATH',str(s.q.path))
+    app=build_server().streamable_http_app()
+    listener=sockets.socket();listener.bind(('127.0.0.1',0));listener.listen(5)
+    port=listener.getsockname()[1]
+    server=uvicorn.Server(uvicorn.Config(app,log_level='error',lifespan='off',ws='websockets-sansio'))
+    serving=asyncio.create_task(server.serve(sockets=[listener]))
+    stop=asyncio.Event();sent=[];received=[];loads=[]
+    @asynccontextmanager
+    async def connect():
+        async with aiohttp.ClientSession() as client:
+            async with client.ws_connect(f'http://127.0.0.1:{port}/bge-worker/channel',
+                    headers={'Authorization':'Bearer '+s.token}) as wire:
+                class Socket:
+                    async def send(self,raw):
+                        sent.append(json.loads(raw));await wire.send_str(raw)
+                    async def receive(self):
+                        message=await wire.receive()
+                        if message.type!=aiohttp.WSMsgType.TEXT:raise ConnectionError('fixture wire closed')
+                        frame=json.loads(message.data);received.append(frame)
+                        if frame['type']=='BOOTSTRAP_ACK':stop.set()
+                        return message.data
+                yield Socket()
+    def load():
+        loads.append(True)
+        return lambda text:(_ for _ in ()).throw(AssertionError('bootstrap cannot encode documents'))
+    async def prepare(encoder,**kwargs):
+        async def query(frame,*,encode):raise AssertionError('bootstrap cannot query')
+        return PreparedRuntime(query,CandidateReadiness(**s.value['runtime_readiness']),bootstrap_observation=s.value)
+    worker=namespace['BgeWssTransport'](dict(CONFIG,run_id=s.run,token=s.token,launch_nonce=s.nonce,
+        shared_reads=True,target_runtime=dict(bootstrap_only=True,bootstrap_seconds=30)),load,lambda:{},
+        prepare_runtime=prepare,connector=connect,heartbeat_seconds=.02,maximum_seconds=5,stop=stop)
+    worker.incarnation='retained-incarnation'
+    try:
+        for _ in range(100):
+            if server.started:break
+            await asyncio.sleep(.005)
+        assert server.started
+        await asyncio.wait_for(worker.run(),5)
+        assert len(loads)==1
+        idle=[frame for frame in sent if frame['type']=='RESOURCE_STATE']
+        assert idle and all(frame['state']=='idle' for frame in idle)
+        assert any(frame['type']=='BOOTSTRAP_ACK' for frame in received)
+        assert not any(frame['type'] in ('DISPATCH','QUERY','PASSAGE_READ') for frame in received)
+        assert not any(frame['type']=='READY_ACK' and frame['status']=='ready' for frame in received)
+        with s.q.connect(write=False) as db:
+            row=db.execute('SELECT status FROM runs WHERE id=?',(s.run,)).fetchone()
+            assert row['status']=='starting'
+            assert db.execute('SELECT attempt FROM jobs').fetchone()[0]==0
+    finally:
+        stop.set();server.should_exit=True
+        await asyncio.wait_for(serving,3);listener.close()
+
+
+@pytest.mark.parametrize('change',['busy','resource','no_plan','expired','finalized'])
+def test_default_channel_rejects_resource_state_outside_finite_idle_bootstrap(tmp_path,change):
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+    from regional_knowledge.bge_channel import channel_route
+    s=setup(tmp_path);s.q.detach_channel(s.run,s.token,s.generation)
+    if change=='no_plan':
+        with s.q.connect() as db:db.execute('DELETE FROM bge_runtime_expectations WHERE run_id=?',(s.run,))
+    if change=='expired':s.now[0]+=61
+    if change=='finalized':
+        with s.q.connect() as db:db.execute('UPDATE bge_runtime_bootstrap SET finalized=1 WHERE run_id=?',(s.run,))
+    with TestClient(Starlette(routes=[channel_route(s.q)])) as client:
+        with client.websocket_connect('/bge-worker/channel',headers={'Authorization':'Bearer '+s.token}) as socket:
+            socket.send_json(dict(type='ATTACH',protocol_version=2,run_id=s.run,launch_nonce=s.nonce,
+                runtime_incarnation='retained-incarnation'))
+            welcome=socket.receive_json()
+            frame=dict(type='RESOURCE_STATE',protocol_version=2,
+                connection_generation=welcome['connection_generation'],state='busy' if change=='busy' else 'idle')
+            if change=='resource':frame['resource_id']='not-allowed'
+            socket.send_json(frame)
+            with pytest.raises(WebSocketDisconnect):socket.receive_json()

@@ -170,12 +170,31 @@ def channel_route(queue):
             async def status():
                 return await queue_call(queue.channel_status, run_id, token, generation)
 
+            def bootstrap_idle_current():
+                # An idle baseline is control evidence only. Reauthenticate and
+                # bind it to the persisted finite plan on every reception.
+                from .kaggle_bootstrap_pins import BootstrapRuntimeExpectation
+                with queue.connect(write=False) as db:
+                    run = queue._authorize(db, run_id, token, queue.clock())
+                    queue._dispatch_authorize(run, generation)
+                    expected = queue._runtime_row(db, run_id)
+                    if expected is None:
+                        raise ValueError('bootstrap_control_unavailable')
+                    plan = BootstrapRuntimeExpectation.from_wire(json.loads(expected['expected_json']))
+                    row = db.execute('SELECT * FROM bge_runtime_bootstrap WHERE run_id=?', (run_id,)).fetchone()
+                    if (row is None or row['finalized'] or row['deadline'] <= queue.clock()
+                            or run['status'] != 'starting' or queue._run_expired(run, queue.clock())
+                            or json.loads(row['plan_json']) != plan.wire()):
+                        raise ValueError('bootstrap_control_unavailable')
+
             async def promote(observed):
                 nonlocal promoted, runtime_blocked
                 async with promotion_lock:
                     if ready and not promoted and observed['provider_version'] is not None:
                         if observed.get('runtime_required'):
-                            if runtime_readiness is None:
+                            if shared is None:
+                                issues = ('shared_admission_required',)
+                            elif runtime_readiness is None:
                                 issues = ('runtime_readiness_required',)
                             else:
                                 proof = await queue_call(queue.accept_search_runtime, run_id, token,
@@ -265,7 +284,12 @@ def channel_route(queue):
                         raise StaleAttachment('generation')
                     observed = await status()
                     common = ('type', 'protocol_version', 'connection_generation')
-                    if shared is not None and frame['type'] == 'RESOURCE_STATE':
+                    if shared is None and frame['type'] == 'RESOURCE_STATE':
+                        _fields(frame, (*common, 'state'))
+                        if frame['state'] != 'idle':
+                            raise ValueError('bootstrap_idle_required')
+                        await queue_call(bootstrap_idle_current)
+                    elif shared is not None and frame['type'] == 'RESOURCE_STATE':
                         _fields(frame, (*common, 'state'),
                                 ('resource_kind', 'resource_id', 'compute_claim',
                                  'dispatch_generation', 'probe_nonce'))
@@ -381,7 +405,8 @@ def channel_route(queue):
                             await send('RESULT_ACK',**settled)
                     elif frame['type'] == 'RESULT':
                         _fields(frame, (*common, 'job_id', 'claim', 'space', 'vectors'), ('timings',))
-                        if not ready or observed['provider_version'] is None:
+                        if (not ready or observed['provider_version'] is None
+                                or (observed.get('runtime_required') and not promoted)):
                             raise ValueError('not_ready')
                         job_id = _identifier(frame['job_id'])
                         _identifier(frame['claim'])
