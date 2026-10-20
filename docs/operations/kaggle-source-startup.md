@@ -271,3 +271,24 @@ fresh post-activation source watermark matches. Delayed outputs/authority still
 use the existing fences. This is prepared implementation; native installation,
 actual source cutover and post-GC compact GEO recovery need their separate
 runtime proofs.
+## Prepared residency before public activation
+
+Trusted bootstrap finalization now records `runs.bootstrap_finalized_at` in the
+same SQLite transaction as the one-time pinset CAS. The runtime has completed
+actual model/tokenizer and native PG preparation and its independent pin review;
+its status remains `starting` and `accepted_generation` stays unset. An
+unfinalized cold start still expires after 900 seconds even with heartbeats.
+After that exact proof, the existing 120-second heartbeat, 30-minute useful-idle
+and 11-hour maximum lifetime apply. No readiness or resource permit follows from
+the prepared marker.
+
+On the authenticated current attachment, the channel sends
+`BOOTSTRAP_ACK(status=pins_finalized)` bound to the run, incarnation, provider
+version, complete pinset and exact observation hash. The worker compares those
+facts with its retained prepared object and reschedules only its existing finite
+overall timeout. This latch is separate from serving `READY_ACK`. The default API
+can keep that owned PG/BGE resident while its public backend remains legacy;
+ordinary reads and durable dispatch still require configured shared admission and
+honest accepted READY. Merely enabling shared admission persistently rejects the
+legacy durable-query path, so it is not a transparent public compatibility mode.
+Both API and controller must use the released queue code for the prepared lease.

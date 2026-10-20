@@ -176,3 +176,29 @@ def finalize_bootstrap(queue,run_id,expected,*,observation_sha256,review_evidenc
             raise ValueError('reviewed final pins differ from exact bootstrap evidence')
         db.execute('UPDATE bge_runtime_expectations SET expected_json=? WHERE run_id=?',(data,run_id))
         db.execute('UPDATE bge_runtime_bootstrap SET finalized=1,review_evidence=? WHERE run_id=?',(review_evidence,run_id))
+        db.execute('UPDATE runs SET bootstrap_finalized_at=?,useful=max(useful,?) WHERE id=?',
+            (queue.clock(),queue.clock(),run_id))
+
+
+def finalized_pins(queue,run_id,token,generation):
+    """Authenticated prepared proof; never accepts READY or grants admission."""
+    with queue.connect(write=False) as db:
+        run=queue._authorize(db,run_id,token,queue.clock());queue._dispatch_authorize(run,generation)
+        if run['bootstrap_finalized_at'] is None:return None
+        row=db.execute('SELECT * FROM bge_runtime_bootstrap WHERE run_id=?',(run_id,)).fetchone()
+        runtime=queue._runtime_row(db,run_id)
+        if (row is None or not row['finalized'] or not row['review_evidence']
+                or row['incarnation']!=run['runtime_incarnation']
+                or row['provider_version']!=run['provider_version'] or run['provider_version'] is None
+                or not 0<row['connection_generation']<=generation):
+            raise ValueError('exact finalized bootstrap attachment required')
+        value=json.loads(row['observation_json'])
+        if digest(canonical(value))!=row['observation_sha256']:
+            raise ValueError('finalized bootstrap observation integrity differs')
+        candidate=verify_observation(BootstrapRuntimeExpectation.from_wire(json.loads(row['plan_json'])),value)
+        expected=json.loads(runtime['expected_json'])
+        if (expected['hashes']!=dict(candidate.hashes) or any(expected[k]!=getattr(candidate,k) for k in
+                ('database_generation','schema_revision','function_revision','executor_revision'))):
+            raise ValueError('finalized bootstrap pins changed')
+        return dict(run_id=run_id,runtime_incarnation=run['runtime_incarnation'],
+            provider_version=str(run['provider_version']),observation_sha256=row['observation_sha256'],hashes=expected['hashes'])

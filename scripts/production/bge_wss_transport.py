@@ -79,6 +79,7 @@ class BgeWssTransport:
         self.prepare_runtime, self.prepared_runtime = prepare_runtime, None
         self.bootstrap_only=bool(config.get('target_runtime',{}).get('bootstrap_only'))
         self.bootstrap_finalized=False
+        self.bootstrap_pins_finalized=False
         self.source_handler = None
         self.source_history_handler=None
         self.original_intake_handler=None
@@ -553,11 +554,16 @@ class BgeWssTransport:
                     if self.waiting_job is not None:
                         job, self.waiting_job = self.waiting_job, None
                         self._start(job)
+                elif kind=='BOOTSTRAP_ACK':
+                    if frame.get('status')=='pins_finalized':
+                        self._accept_bootstrap_pins(frame,generation,welcome.get('provider_version'))
+                    elif frame.get('status')!='observed_not_ready':
+                        raise ValueError('bootstrap acknowledgment status')
                 elif kind=='READY_ACK':
                     if self.bootstrap_only and frame.get('status')=='ready':
                         self.bootstrap_finalized=True
                         self._lifetime_timeout.reschedule(self._overall_deadline)
-                elif kind not in ('HEARTBEAT_ACK','BOOTSTRAP_ACK'):
+                elif kind!='HEARTBEAT_ACK':
                     raise ValueError('unexpected channel frame')
 
         tasks = [asyncio.create_task(coro()) for coro in (writer, heartbeat, states, reader)]
@@ -576,6 +582,23 @@ class BgeWssTransport:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _accept_bootstrap_pins(self,frame,generation,provider_version):
+        import hashlib
+        prepared=self.prepared_runtime
+        fields={'type','protocol_version','connection_generation','status','run_id','runtime_incarnation',
+            'provider_version','observation_sha256','hashes'}
+        if (set(frame)!=fields or not self.bootstrap_only or prepared is None or prepared.bootstrap_observation is None
+                or frame['connection_generation']!=generation or frame['run_id']!=self.config['run_id']
+                or frame['runtime_incarnation']!=self.incarnation or frame['hashes']!=prepared.readiness.to_wire()['hashes']
+                or type(frame['provider_version']) is not str or not frame['provider_version'].isdigit()
+                or provider_version is not None and frame['provider_version']!=str(provider_version)):
+            raise ValueError('exact prepared bootstrap acknowledgment required')
+        raw=json.dumps(prepared.bootstrap_observation,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
+        if frame['observation_sha256']!=hashlib.sha256(raw).hexdigest():
+            raise ValueError('prepared bootstrap observation differs')
+        self.bootstrap_pins_finalized=True
+        self._lifetime_timeout.reschedule(self._overall_deadline)
 
     async def run(self):
         from contextlib import asynccontextmanager

@@ -99,6 +99,7 @@ class BgeQueue:
                 ('connection_generation','integer not null default 0'),
                 ('channel_active','integer not null default 0'),
                 ('attachment_conflict','integer not null default 0'),
+                ('bootstrap_finalized_at','real'),
             ):
                 if name not in columns:
                     db.execute(f'alter table runs add column {name} {definition}')
@@ -107,7 +108,7 @@ class BgeQueue:
     def _schema_current(self):
         try:
             with self.connect(write=False) as db:
-                db.execute('select id,status,token_hash,started,heartbeat,useful,ready_at,provider_ref,launch_state,diagnostics,provider_version,launch_nonce,runtime_incarnation,connection_generation,channel_active,attachment_conflict from runs limit 0')
+                db.execute('select id,status,token_hash,started,heartbeat,useful,ready_at,provider_ref,launch_state,diagnostics,provider_version,launch_nonce,runtime_incarnation,connection_generation,channel_active,attachment_conflict,bootstrap_finalized_at from runs limit 0')
                 if db.execute('select current_run,successor from control where id=1').fetchone() is None:
                     return False
                 db.execute('select id,actor,idempotency,kind,texts,identity,state,created,updated,run_id,claim,lease_until,result,attempt from jobs limit 0')
@@ -146,16 +147,18 @@ class BgeQueue:
     def _run_expired(run, now):
         if run['status']=='failed' and now-run['heartbeat']<60:
             return False
+        prepared=('bootstrap_finalized_at' in run.keys() and run['bootstrap_finalized_at'] is not None)
         lost = (now-run['heartbeat']>HEARTBEAT_SECONDS
-                if run['status']!='starting' else now-run['started']>900)
+                if run['status']!='starting' or prepared else now-run['started']>900)
         return (run['status']=='expired' or now>=run['started']+MAX_LIFETIME
                 or now>=run['useful']+IDLE_SECONDS or lost or run['status']=='failed')
 
     def _expire(self, db, now):
         for run in db.execute("select * from runs where status in ('starting','ready','draining','failed')").fetchall():
             if run['status']=='failed' and now-run['heartbeat']<60:continue
-            # A cold start gets at most 15 minutes to become ready. Heartbeats
-            # cannot perpetually preserve an idle run or a failed warm-up.
+            # A cold start gets at most 15 minutes to prove the completed native
+            # bootstrap or become ready. Only trusted finalized pins permit the
+            # normal heartbeat lease; idle and maximum lifetimes still apply.
             if self._run_expired(run, now):
                 from .queue_writer import pending
                 if pending(db,run['id']):continue  # UNKNOWN publication is not released ownership.
@@ -406,6 +409,10 @@ class BgeQueue:
     def finalize_bootstrap_runtime(self,run_id,expected,*,observation_sha256,review_evidence):
         from .kaggle_bootstrap_pins import finalize_bootstrap
         return finalize_bootstrap(self,run_id,expected,observation_sha256=observation_sha256,review_evidence=review_evidence)
+
+    def bootstrap_pins_current(self,run_id,token,generation):
+        from .kaggle_bootstrap_pins import finalized_pins
+        return finalized_pins(self,run_id,token,generation)
 
     def _runtime_check(self, db, run, generation, observation):
         from .kaggle_readiness import (SearchRuntimeExpectation, RunIdentity, Validation,
