@@ -6,6 +6,7 @@ from .local_e5 import LocalE5Embedder
 from .bge_queue import BgeQueue
 from .contracts import IndexingStatus
 from .vector_policy import missing_required,required_vector_spaces
+from .rank_fusion import public_hybrid_mode
 
 def enabled():return os.getenv('RKB_AUTO_INDEX_ENABLED')=='1'
 
@@ -25,9 +26,8 @@ def maintenance_state():
 
 async def status(backend,principal,document_id=None):
     values=await counts(backend,principal,document_id);n=values['active_chunks'];e=values['e5_ready'];b=values['bge_ready']
-    warm_mode=os.getenv('RKB_BGE_WARM_MODE','bge')
-    if warm_mode not in ('bge_lexical','e5_bge_lexical','bge','e5_bge'):
-        warm_mode='bge'
+    try:warm_mode=public_hybrid_mode(os.getenv('RKB_BGE_WARM_MODE','bge_lexical'))
+    except ValueError:warm_mode='bge_lexical'
     needs_e5=warm_mode in ('e5_bge_lexical','e5_bge')
     need_fast_health=needs_e5 or b<n
     fast=await backend.embedder.status() if need_fast_health and isinstance(backend.embedder,LocalE5Embedder) else {'ready':False}

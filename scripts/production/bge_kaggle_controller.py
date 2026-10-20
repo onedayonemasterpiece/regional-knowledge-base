@@ -17,6 +17,24 @@ def provider_phase(status):
     phase=status.get('status') if isinstance(status,dict) else getattr(status,'status',None)
     return str(getattr(phase,'name',phase)).rsplit('.',1)[-1].upper()
 
+def version_status(api, ref, version, *, request_factory=None):
+    """Read a frozen version; this alone does not prove exact execution Stop."""
+    if type(version) is not int or version < 1 or ref.count('/') != 1:
+        raise ValueError('exact provider version required')
+    owner,slug=ref.split('/')
+    if not owner or not slug:raise ValueError('exact notebook ref required')
+    if request_factory is None:
+        from kagglesdk.kernels.types.kernels_api_service import ApiGetKernelSessionStatusRequest
+        request_factory=ApiGetKernelSessionStatusRequest
+    request=request_factory()
+    if not hasattr(request,'version_label'):
+        raise RuntimeError('version_qualified_status_unsupported')
+    request.user_name=owner;request.kernel_slug=slug
+    # Native API expects v<N>; bare integers give HTTP 404.
+    request.version_label='v'+str(version)
+    with api.build_kaggle_client() as client:
+        return client.kernels.kernels_api_client.get_kernel_session_status(request)
+
 def notebook_ref(run, state):
     if run.get('provider_ref'):return run['provider_ref']
     if run['launch_state']=='dispatching':
@@ -56,8 +74,57 @@ def reconcile_launch(api, queue, run, ref):
     queue.launch_record(run['id'],ref,provider_version=observed['version'])
     return True
 
-def main():
+def worker_source(template, queue, run_id, token, broker, *, transport='http', target=None, provider_image=None):
+    """Build private launch bytes once; no provider call or inferred version."""
+    if transport not in ('http','wss'):
+        raise ValueError('unsupported BGE transport')
+    config={'run_id':run_id,'token':token,'broker':broker}
+    if provider_image is not None:
+        if re.fullmatch(r'gcr\.io/kaggle-images/python@sha256:[0-9a-f]{64}',provider_image) is None:
+            raise ValueError('exact pinned Kaggle provider image required')
+        config['provider_image']=provider_image
+    if transport=='wss':
+        from urllib.parse import urlsplit,urlunsplit
+        url=urlsplit(broker)
+        if (url.scheme!='https' or not url.hostname or url.port not in (None,443)
+                or url.username or url.password or url.query or url.fragment):
+            raise ValueError('HTTPS/443 worker authority required')
+        config.update(transport='wss',launch_nonce=queue.prepare_channel(run_id),
+                      channel=urlunsplit(('wss',url.netloc,url.path.rstrip('/')+'/channel','','')))
+        helper=Path(__file__).with_name('bge_wss_transport.py').read_text()
+        if template.count('# WSS_TRANSPORT_HELPER')!=1:
+            raise ValueError('WSS worker template slot missing')
+        template=template.replace('# WSS_TRANSPORT_HELPER',helper,1)
+    if template.count('RUN_CONFIG = {}')!=1:
+        raise ValueError('worker config slot missing')
+    if target is not None:
+        from regional_knowledge.kaggle_target_launch import compose_target
+        return compose_target(template,config,target,queue=queue,repository=Path(__file__).resolve().parents[2])
+    return template.replace('RUN_CONFIG = {}','RUN_CONFIG = '+repr(config),1)
+
+def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
     logging.basicConfig(level=logging.INFO)
+    target_config_path=target_config_path or os.getenv('RKB_BGE_TARGET_CONFIG','').strip()
+    if target_config_path:
+        if target_spec is not None:
+            raise ValueError('one explicit target launch configuration required')
+        from regional_knowledge.kaggle_launch_config import load_target_launch
+        target_spec=load_target_launch(target_config_path)
+    if target_spec is not None:
+        from regional_knowledge.kaggle_target_runtime import TargetLaunchSpec
+        from regional_knowledge.recovery_journal import RecoveryJournal
+        if type(target_spec) is not TargetLaunchSpec or os.getenv('RKB_BGE_TRANSPORT','http')!='wss':
+            raise ValueError('explicit typed target requires WSS configuration')
+        if target_spec.database.mode=='NEW_EMPTY_GENERATION' and not isinstance(recovery_journal,RecoveryJournal):
+            raise TypeError('fresh generation requires existing real RecoveryJournal')
+        if target_spec.database.mode=='NEW_EMPTY_GENERATION' and target_spec.stage0 is None:
+            raise ValueError('fresh launch requires complete pinned Stage0 preparation')
+        if target_spec.database.mode=='NEW_EMPTY_GENERATION' and target_spec.native_bundle is None:
+            raise ValueError('fresh launch requires complete pinned native bundle')
+        image=os.getenv('RKB_BGE_DOCKER_IMAGE','').strip()
+        if re.fullmatch(r'gcr\.io/kaggle-images/python@sha256:[0-9a-f]{64}',image) is None:
+            raise ValueError('target launch requires exact RKB_BGE_DOCKER_IMAGE digest')
+    else:image=None
     for line in Path('/home/dev/.env').read_text().splitlines():
         if line.startswith(('KAGGLE_USERNAME=','KAGGLE_KEY=')):
             key,value=line.split('=',1);os.environ[key]=shlex.split(value)[0]
@@ -78,10 +145,21 @@ def main():
                     token=queue.launch_claim(run_id,provider_ref=ref)
                     if token is None:continue
                     folder=state/run_id;folder.mkdir(mode=0o700,exist_ok=True)
-                    config={'run_id':run_id,'token':token,'broker':broker}
-                    source=template.replace('RUN_CONFIG = {}', 'RUN_CONFIG = '+repr(config),1)
+                    if target_spec is not None and target_spec.database.mode=='NEW_EMPTY_GENERATION':
+                        import asyncio
+                        from regional_knowledge.kaggle_target_launch import persist_empty_intent
+                        from regional_knowledge.kaggle_owned_pg import SQL_ARTIFACTS,digest
+                        nonce=queue.prepare_channel(run_id)
+                        sql_root=Path(__file__).resolve().parents[2]/'sql/kaggle'
+                        asyncio.run(persist_empty_intent(queue,run_id,target_spec,launch_nonce=nonce,
+                            recovery_journal=recovery_journal,
+                            sql_hashes={name:digest((sql_root/name).read_bytes()) for name in SQL_ARTIFACTS}))
+                    source=worker_source(template,queue,run_id,token,broker,
+                                         transport=os.getenv('RKB_BGE_TRANSPORT','http'),target=target_spec,provider_image=image)
                     (folder/'main.py').write_text(source);(folder/'main.py').chmod(0o600)
                     metadata={'id':ref,'title':slug,'code_file':'main.py','language':'python','kernel_type':'script','is_private':True,'enable_gpu':False,'enable_tpu':False,'enable_internet':True,'dataset_sources':[],'competition_sources':[],'kernel_sources':[]}
+                    if image is not None:
+                        metadata.update(docker_image=image,docker_image_pinning_type='original')
                     (folder/'kernel-metadata.json').write_text(json.dumps(metadata));(folder/'kernel-metadata.json').chmod(0o600)
                     # Credential is run-bound and source remains private. SDK
                     # provider request is the only notebook creation boundary.
@@ -98,8 +176,9 @@ def main():
                 elif run['status']=='starting' and run['launch_state']=='dispatched' and time.monotonic()-probed.get(run_id,0)>30:
                     probed[run_id]=time.monotonic()
                     if run.get('provider_version') and not reconcile_launch(api,queue,run,ref):continue
-                    status=api.kernels_status(ref)
+                    status=version_status(api,ref,run.get('provider_version'))
                     phase=provider_phase(status)
+                    logging.info(json.dumps({'event':'bge_version_status_observed','run_id':run_id,'provider_version':run['provider_version'],'phase':phase}))
                     if phase in ('ERROR','FAILED','CANCELED','CANCELLED','COMPLETE'):
                         queue.launch_record(run_id,ref,failed=True)
                         logging.warning(json.dumps({'event':'bge_startup_failed','run_id':run_id,'provider_status':str(phase)}))

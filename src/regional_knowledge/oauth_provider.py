@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
+from contextlib import contextmanager
+import fcntl
 import hmac
 import html
 import json
@@ -30,6 +33,7 @@ from mcp.server.auth.middleware.client_auth import ClientAuthenticator, Authenti
 from pydantic import AnyHttpUrl, AnyUrl
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response, JSONResponse
+from .personal_auth import PersonalOAuthMixin
 
 
 KNOWLEDGE_SCOPE = "knowledge:manage"
@@ -54,7 +58,7 @@ def _random() -> str:
 
 
 class _EncryptedStateStore:
-    """Small single-writer encrypted state file for OAuth credentials.
+    """Encrypted OAuth state shared by web workers and the local owner CLI.
 
     Opaque credentials are indexed only by SHA-256 digest. The entire state file
     is additionally Fernet-encrypted and both key/state are mode 0600.
@@ -66,9 +70,10 @@ class _EncryptedStateStore:
         self._lock = threading.RLock()
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.key_file.parent.mkdir(parents=True, exist_ok=True)
-        self._fernet = Fernet(self._load_or_create_key())
-        if not self.state_file.exists():
-            self._write(self._empty())
+        with self._file_lock(exclusive=True):
+            self._fernet = Fernet(self._load_or_create_key())
+            if not self.state_file.exists():
+                self._write(self._empty())
 
     @staticmethod
     def _empty() -> dict[str, Any]:
@@ -80,10 +85,14 @@ class _EncryptedStateStore:
             "refresh": {},
             "used_refresh": {},
             "sessions": {},
+            "personal_credentials": {},
+            "personal_audit": {},
         }
 
     def _load_or_create_key(self) -> bytes:
         if self.key_file.exists():
+            if self.key_file.stat().st_mode & 0o077:
+                raise RuntimeError("OAuth key must be private")
             key = self.key_file.read_bytes().strip()
             Fernet(key)
             return key
@@ -139,18 +148,33 @@ class _EncryptedStateStore:
         os.chmod(self.state_file, 0o600)
 
     def read(self, callback: Callable[[dict[str, Any]], Any]) -> Any:
-        with self._lock:
+        with self._lock, self._file_lock(exclusive=False):
             state = self._read()
             self._prune(state)
             return callback(state)
 
     def mutate(self, callback: Callable[[dict[str, Any]], Any]) -> Any:
-        with self._lock:
+        with self._lock, self._file_lock(exclusive=True):
             state = self._read()
             self._prune(state)
             result = callback(state)
             self._write(state)
             return result
+
+    @contextmanager
+    def _file_lock(self, *, exclusive):
+        # The stable lock inode survives atomic state-file replacement. Native
+        # credential CLI and web workers must not lose each other's grants.
+        path = self.state_file.with_name(self.state_file.name + ".lock")
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            if os.fstat(fd).st_mode & 0o077:
+                raise RuntimeError("OAuth lock must be private")
+            fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     @staticmethod
     def _prune(state: dict[str, Any]) -> None:
@@ -162,14 +186,15 @@ class _EncryptedStateStore:
             "refresh",
             "used_refresh",
             "sessions",
+            "personal_credentials",
         ):
             for key, record in list(state[bucket].items()):
                 if float(record.get("expires_at", 0)) <= now:
                     del state[bucket][key]
 
 
-class RegionalOAuthProvider:
-    """One-owner beta OAuth AS with durable opaque grants and explicit consent."""
+class RegionalOAuthProvider(PersonalOAuthMixin):
+    """Resource OAuth with current canonical-person policy and explicit consent."""
 
     def __init__(
         self,
@@ -260,9 +285,8 @@ class RegionalOAuthProvider:
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         if client_id == self.client.client_id:
             return self.client
-        record = self.store.read(
-            lambda state: state["clients"].get(_digest(client_id))
-        )
+        record = await asyncio.to_thread(self.store.read,
+            lambda state: state["clients"].get(_digest(client_id)))
         if not record:
             return None
         return OAuthClientInformationFull.model_validate(record)
@@ -328,7 +352,7 @@ class RegionalOAuthProvider:
                 )
             state["clients"][key] = record
 
-        self.store.mutate(write)
+        await asyncio.to_thread(self.store.mutate, write)
 
     def _admit(self) -> None:
         now = self.clock()
@@ -379,7 +403,7 @@ class RegionalOAuthProvider:
                 "expires_at": self.clock() + _REQUEST_SECONDS,
             }
 
-        self.store.mutate(write)
+        await asyncio.to_thread(self.store.mutate, write)
         return f"{self.origin}/oauth/consent?id={request_id}"
 
     def _pending(self, request_id: str) -> dict[str, Any] | None:
@@ -400,14 +424,8 @@ class RegionalOAuthProvider:
         return csrf
 
     def _session_subject(self, raw_session: str | None) -> str | None:
-        if not raw_session:
-            return None
-        record = self.store.read(
-            lambda state: state["sessions"].get(_digest(raw_session))
-        )
-        if not record:
-            return None
-        return str(record["subject"])
+        record = self._session_record(raw_session)
+        return str(record["subject"]) if record else None
 
     def _new_owner_session(self) -> str:
         raw = _random()
@@ -440,16 +458,20 @@ class RegionalOAuthProvider:
             submitted,
         )
 
-    def approve(self, request_id: str) -> str:
+    def approve(self, request_id: str, *, session_record=None) -> str:
         code = _random()
+        authority = session_record or {"subject": self.owner_subject}
 
         def write(state: dict[str, Any]) -> str:
+            if not self._record_allowed(authority, state=state):
+                raise ValueError("login")
             pending = state["pending"].pop(_digest(request_id), None)
             if pending is None:
                 raise LookupError("authorization request expired")
             state["codes"][_digest(code)] = {
                 **pending,
-                "subject": self.owner_subject,
+                "subject": authority["subject"],
+                **{key: authority[key] for key in ("personal_credential_id", "personal_credential_epoch") if key in authority},
                 "expires_at": self.clock() + _CODE_SECONDS,
             }
             return construct_redirect_uri(
@@ -480,10 +502,9 @@ class RegionalOAuthProvider:
         client: OAuthClientInformationFull,
         authorization_code: str,
     ) -> AuthorizationCode | None:
-        record = self.store.read(
-            lambda state: state["codes"].get(_digest(authorization_code))
-        )
-        if not record or record["client_id"] != client.client_id:
+        record = await asyncio.to_thread(self.store.read,
+            lambda state: state["codes"].get(_digest(authorization_code)))
+        if not record or record["client_id"] != client.client_id or not await asyncio.to_thread(self._record_allowed, record):
             return None
         return AuthorizationCode(
             code=authorization_code,
@@ -508,17 +529,27 @@ class RegionalOAuthProvider:
         resource: str,
         subject: str,
         family: str | None = None,
+        authority: dict | None = None,
     ) -> OAuthToken:
         family = family or _random()
         access = _random()
         refresh = _random()
         common = {
             "family": family,
+            "issuer": self.issuer,
             "client_id": client_id,
             "scopes": scopes,
             "resource": resource,
             "subject": subject,
+            **{key: authority[key] for key in ("personal_credential_id", "personal_credential_epoch") if authority and key in authority},
         }
+        if self.personal_policy is not None:
+            from .request_grants import save
+            expiry=self.clock()+_REFRESH_SECONDS
+            if common.get('personal_credential_id'):
+                expiry=min(expiry,state['personal_credentials'][common['personal_credential_id']]['expires_at'])
+            if save(self.personal_policy.participants.corpus,common,expiry) is None:
+                raise TokenError('invalid_grant','The authorization was revoked')
         state["access"][_digest(access)] = {
             **common,
             "expires_at": self.clock() + _ACCESS_SECONDS,
@@ -542,7 +573,7 @@ class RegionalOAuthProvider:
     ) -> OAuthToken:
         def write(state: dict[str, Any]) -> OAuthToken:
             record = state["codes"].pop(_digest(authorization_code.code), None)
-            if record is None or record["client_id"] != client.client_id:
+            if record is None or record["client_id"] != client.client_id or not self._record_allowed(record, state=state):
                 raise TokenError(error="invalid_grant")
             return self._mint_family(
                 state,
@@ -550,9 +581,10 @@ class RegionalOAuthProvider:
                 scopes=list(record["scopes"]),
                 resource=str(record["resource"]),
                 subject=str(record["subject"]),
+                authority=record,
             )
 
-        return self.store.mutate(write)
+        return await asyncio.to_thread(self.store.mutate, write)
 
     async def load_refresh_token(
         self,
@@ -568,11 +600,11 @@ class RegionalOAuthProvider:
                 self._revoke_family(state, family)
                 return None
             record = state["refresh"].get(key)
-            if not record or record["client_id"] != client.client_id:
+            if not record or record["client_id"] != client.client_id or not self._record_allowed(record, state=state):
                 return None
             return dict(record)
 
-        record = self.store.mutate(read_or_revoke)
+        record = await asyncio.to_thread(self.store.mutate, read_or_revoke)
         if not record:
             return None
         return RefreshToken(
@@ -596,7 +628,7 @@ class RegionalOAuthProvider:
 
         def rotate(state: dict[str, Any]) -> OAuthToken:
             record = state["refresh"].pop(key, None)
-            if record is None or record["client_id"] != client.client_id:
+            if record is None or record["client_id"] != client.client_id or not self._record_allowed(record, state=state):
                 raise TokenError(error="invalid_grant")
             state["used_refresh"][key] = {
                 "family": record["family"],
@@ -609,14 +641,27 @@ class RegionalOAuthProvider:
                 resource=str(record["resource"]),
                 subject=str(record["subject"]),
                 family=str(record["family"]),
+                authority=record,
             )
 
-        return self.store.mutate(rotate)
+        return await asyncio.to_thread(self.store.mutate, rotate)
 
     async def load_access_token(self, token: str) -> AccessToken | None:
-        record = self.store.read(
-            lambda state: state["access"].get(_digest(token))
-        )
+        def verified(state):
+            row=state['access'].get(_digest(token))
+            if not row or not self._record_allowed(row,state=state):return None
+            row=dict(row)
+            if self.personal_policy is not None:
+                from .request_grants import allowed, reference
+                # Projection writes belong to mint/refresh/revoke only. A ready
+                # read cannot create authority for an unprojected old family.
+                row['request_grant'] = reference(row['family'])
+                with self.personal_policy.participants.corpus.connect() as db:
+                    if not allowed(db, row['request_grant'], row['subject'], self.resource,
+                                   self.clock(), client_id=row['client_id'], issuer=self.issuer):
+                        return None
+            return row
+        record = await asyncio.to_thread(self.store.read,verified)
         if not record:
             return None
         return AccessToken(
@@ -626,11 +671,13 @@ class RegionalOAuthProvider:
             expires_at=int(record["expires_at"]),
             resource=str(record["resource"]),
             subject=str(record["subject"]),
-            claims={"iss": self.issuer},
+            claims={"iss": self.issuer,**({'rkb_request_grant':record['request_grant']} if record.get('request_grant') else {})},
         )
 
-    @staticmethod
-    def _revoke_family(state: dict[str, Any], family: str) -> None:
+    def _revoke_family(self,state: dict[str, Any], family: str) -> None:
+        if self.personal_policy is not None:
+            from .request_grants import revoke
+            revoke(self.personal_policy.participants.corpus,family=family)
         for bucket in ("access", "refresh"):
             for key, record in list(state[bucket].items()):
                 if record.get("family") == family:
@@ -644,7 +691,7 @@ class RegionalOAuthProvider:
             if record:
                 self._revoke_family(state, str(record["family"]))
 
-        self.store.mutate(revoke)
+        await asyncio.to_thread(self.store.mutate, revoke)
 
     async def revoke_endpoint(self, request: Request) -> Response:
         # The SDK revocation schema currently requires a client_secret form field
@@ -661,11 +708,15 @@ class RegionalOAuthProvider:
             client = await ClientAuthenticator(self).authenticate_request(request)
         except AuthenticationError:
             return JSONResponse({"error": "unauthorized_client"}, status_code=401)
-        token = await self.load_access_token(supplied)
-        if token is None:
-            token = await self.load_refresh_token(client, supplied)
-        if token is not None and token.client_id == client.client_id:
-            await self.revoke_token(token)
+        key = _digest(supplied)
+        def revoke(state: dict[str, Any]) -> None:
+            # Revocation is independent of current eligibility/expiry/projection.
+            # Looking up and removing under the same store lock also prevents a
+            # concurrent refresh from resurrecting the identified family.
+            record = state['access'].get(key) or state['refresh'].get(key)
+            if record and record.get('client_id') == client.client_id:
+                self._revoke_family(state, str(record['family']))
+        await asyncio.to_thread(self.store.mutate, revoke)
         _LOGGER.info("oauth_revocation outcome=accepted method=%s", client.token_endpoint_auth_method)
         return Response(status_code=200, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
@@ -709,7 +760,7 @@ class RegionalOAuthProvider:
         return HTMLResponse(
             "<!doctype html><html lang='ru'><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>Regional Knowledge · ChatGPT</title>"
+            "<title>База знаний региона · Подключение</title>"
             "<style>body{font:17px/1.5 system-ui;max-width:620px;margin:8vh auto;"
             "padding:24px;background:#f6f6fb;color:#171725}form{display:grid;gap:14px}"
             "input,button{font:inherit;padding:12px;border:1px solid #bbb;border-radius:10px}"
@@ -723,37 +774,44 @@ class RegionalOAuthProvider:
         @mcp.custom_route("/oauth/consent", methods=["GET"])
         async def consent_page(request: Request) -> Response:
             request_id = request.query_params.get("id", "")
-            pending = self._pending(request_id)
+            pending = await asyncio.to_thread(self._pending, request_id)
             if not pending:
                 return Response("Authorization request expired", status_code=400)
-            csrf = self._set_csrf(request_id)
-            subject = self._session_subject(request.cookies.get(_COOKIE_SESSION))
-            if subject != self.owner_subject:
+            csrf = await asyncio.to_thread(self._set_csrf, request_id)
+            session_record = await asyncio.to_thread(self._session_record, request.cookies.get(_COOKIE_SESSION))
+            if session_record is None:
+                heading = "Вход в базу знаний" if self.personal_policy is not None else "Вход владельца"
+                explanation = ("Введите ваш персональный код входа в РКБ. После входа подтвердите доступ выбранного подключения."
+                    if self.personal_policy is not None else
+                    "Введите код входа владельца Regional Knowledge. После входа доступ коннектора подтверждается отдельно.")
                 body = (
-                    "<h1>Вход владельца</h1>"
-                    "<p>Введите код входа владельца Regional Knowledge. "
-                    "После входа доступ коннектора подтверждается отдельно.</p>"
+                    f"<h1>{heading}</h1><p>{explanation}</p>"
                     "<form method='post' action='/oauth/login'>"
                     f"<input type='hidden' name='id' value='{html.escape(request_id)}'>"
                     f"<input type='hidden' name='csrf' value='{html.escape(csrf)}'>"
-                    "<input type='password' name='secret' autocomplete='one-time-code' "
-                    "required minlength='12'>"
+                    "<label>Код входа<input type='password' name='secret' autocomplete='current-password' "
+                    "required minlength='12' maxlength='256'></label>"
                     "<button type='submit'>Войти</button></form>"
                 )
             else:
+                label = await asyncio.to_thread(self._login_label, session_record)
                 body = (
                     "<h1>Подключить базу знаний региона</h1>"
-                    "<p>Regional Knowledge предоставит этому подключению доступ к "
-                    "вашим книгам, поиску и импорту. Доступ можно отозвать.</p>"
+                    f"<p>Вы вошли как <strong>{html.escape(label)}</strong>.</p>"
+                    "<p>Подключение получит доступ к материалам и действиям в пределах ваших прав в РКБ. "
+                    "Доступ можно отозвать. Запись моделью ответа не означает ваше личное согласие.</p>"
                     "<form method='post' action='/oauth/consent'>"
                     f"<input type='hidden' name='id' value='{html.escape(request_id)}'>"
                     f"<input type='hidden' name='csrf' value='{html.escape(csrf)}'>"
                     "<button name='decision' value='allow'>Разрешить доступ</button>"
                     "<button name='decision' value='deny'>Отмена</button></form>"
+                    "<form method='post' action='/oauth/logout'>"
+                    f"<input type='hidden' name='id' value='{html.escape(request_id)}'>"
+                    f"<input type='hidden' name='csrf' value='{html.escape(csrf)}'>"
+                    "<button type='submit'>Выйти и сменить пользователя</button></form>"
                 )
             response = self._html_page(
-                body,
-                str(pending["redirect_uri"]) if subject == self.owner_subject else None,
+                body, str(pending["redirect_uri"]) if session_record is not None else None,
             )
             response.set_cookie(
                 _COOKIE_CSRF,
@@ -773,16 +831,17 @@ class RegionalOAuthProvider:
                     raise ValueError("invalid origin")
                 form = await self._form(request)
                 request_id = form.get("id", "")
-                if not self._verify_csrf(
+                if not await asyncio.to_thread(self._verify_csrf,
                     request_id,
                     request.cookies.get(_COOKIE_CSRF),
                     form.get("csrf", ""),
                 ):
                     raise ValueError("csrf")
-                if not self.verify_owner_login(form.get("secret", "")):
+                supplied = form.get("secret", "")
+                if len(supplied) > 256:
                     raise ValueError("login")
-                session = self._new_owner_session()
-                _LOGGER.info("oauth_owner_login outcome=accepted")
+                session = await asyncio.to_thread(self._login, supplied)
+                _LOGGER.info("oauth_login outcome=accepted")
                 response = RedirectResponse(
                     f"/oauth/consent?id={request_id}",
                     status_code=303,
@@ -803,7 +862,7 @@ class RegionalOAuthProvider:
                     "invalid origin", "csrf", "login", "duplicate form field",
                     "form too large", "authorization request expired",
                 } else "invalid form"
-                _LOGGER.warning("oauth_owner_login outcome=rejected reason=%s", reason)
+                _LOGGER.warning("oauth_login outcome=rejected reason=%s", reason)
                 return Response(
                     "Login rejected",
                     status_code=401,
@@ -817,24 +876,23 @@ class RegionalOAuthProvider:
                     raise ValueError("invalid origin")
                 form = await self._form(request)
                 request_id = form.get("id", "")
-                if self._session_subject(
-                    request.cookies.get(_COOKIE_SESSION)
-                ) != self.owner_subject:
-                    raise ValueError("owner session required")
-                if not self._verify_csrf(
+                session_record = await asyncio.to_thread(self._session_record, request.cookies.get(_COOKIE_SESSION))
+                if session_record is None:
+                    raise ValueError("session required")
+                if not await asyncio.to_thread(self._verify_csrf,
                     request_id,
                     request.cookies.get(_COOKIE_CSRF),
                     form.get("csrf", ""),
                 ):
                     raise ValueError("csrf")
                 decision = form.get("decision")
-                pending = self._pending(request_id)
+                pending = await asyncio.to_thread(self._pending, request_id)
                 if not pending:
                     raise LookupError("authorization request expired")
                 if decision == "allow":
-                    target = self.approve(request_id)
+                    target = await asyncio.to_thread(self.approve, request_id, session_record=session_record)
                 elif decision == "deny":
-                    target = self.deny(request_id)
+                    target = await asyncio.to_thread(self.deny, request_id)
                 else:
                     raise ValueError("decision")
                 _LOGGER.info("oauth_consent outcome=accepted decision=%s", decision)
@@ -847,7 +905,7 @@ class RegionalOAuthProvider:
                 return response
             except (ValueError, LookupError) as exc:
                 reason = str(exc) if str(exc) in {
-                    "invalid origin", "owner session required", "csrf", "decision",
+                    "invalid origin", "session required", "csrf", "decision",
                     "duplicate form field", "form too large", "authorization request expired",
                 } else "invalid form"
                 _LOGGER.warning("oauth_consent outcome=rejected reason=%s", reason)
@@ -856,6 +914,24 @@ class RegionalOAuthProvider:
                     status_code=400,
                     headers=self._security_headers(),
                 )
+
+        @mcp.custom_route("/oauth/logout", methods=["POST"])
+        async def logout(request: Request) -> Response:
+            try:
+                if request.headers.get("origin") != self.origin:
+                    raise ValueError()
+                form = await self._form(request)
+                request_id = form.get("id", "")
+                if not await asyncio.to_thread(self._verify_csrf, request_id, request.cookies.get(_COOKIE_CSRF), form.get("csrf", "")):
+                    raise ValueError()
+                raw = request.cookies.get(_COOKIE_SESSION)
+                if raw:
+                    await asyncio.to_thread(self.store.mutate, lambda state: state["sessions"].pop(_digest(raw), None))
+                response = RedirectResponse(f"/oauth/consent?id={request_id}", status_code=303, headers=self._security_headers())
+                response.delete_cookie(_COOKIE_SESSION, path="/", secure=True, httponly=True, samesite="lax")
+                return response
+            except (ValueError, LookupError):
+                return Response("Logout rejected", status_code=400, headers=self._security_headers())
 
         @mcp.custom_route("/health", methods=["GET"])
         async def health(_: Request) -> Response:

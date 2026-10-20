@@ -283,10 +283,10 @@ async def test_main_retrieval_defaults_to_bge_without_e5_or_lexical(monkeypatch)
     out = await retrieval.main_search(
         Backend(), query, actor, main_job_id="ready-job"
     )
-    assert out.retrieval_mode == "bge" and out.main_state == "ready"
+    assert out.retrieval_mode == "bge_lexical" and out.main_state == "ready"
     assert out.results[0].id == "hit"
     assert len(calls) == 1
-    assert calls[0]["include_lexical"] is False
+    assert calls[0]["include_lexical"] is True
     assert calls[0]["e5_vector"] is None
 
 

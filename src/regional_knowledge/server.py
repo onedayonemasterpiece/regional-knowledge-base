@@ -75,6 +75,17 @@ def _principal() -> Principal:
     )
 
 
+def _require_hybrid_read(result):
+    """Public search never substitutes lexical evidence for unavailable BGE."""
+    if (result.mode != "hybrid" or result.main_state != "ready"
+            or result.retrieval_mode not in {"bge_lexical", "e5_bge_lexical"}):
+        raise ToolError(json.dumps({"status": "unavailable", "reason": "hybrid_search_required",
+            "main_state": result.main_state, "main_job_id": result.main_job_id,
+            "read_trace": result.read_trace.model_dump() if result.read_trace else None},
+            separators=(",", ":")))
+    return result
+
+
 async def _attach_story_extraction(
     backend: KnowledgeBackend,
     principal: Principal,
@@ -150,8 +161,26 @@ def _transport_security(resource_url: str | None = None) -> TransportSecuritySet
 class KnowledgeMCPServer(MCPServer):
     """Advertise the public PKCE clients supported by our embedded provider."""
 
+    async def call_tool(self, name, arguments, context=None):
+        if getattr(self,'_target_source_profile',False) and name not in {'search','fetch','knowledge_search','profile'}:
+            raise ToolError('{"status":"unavailable","reason":"target_domain_unavailable"}')
+        from .read_issuance import capture_read_output, bind_request_output
+        with capture_read_output() as calls:
+            result = await super().call_tool(name, arguments, context)
+            if calls:
+                bind_request_output(context, calls)
+            return result
+
     def streamable_http_app(self, **kwargs):
+        guarded = getattr(self, '_current_read_output_required', False)
+        if guarded:
+            if kwargs.get('stateless_http', False) is not True or kwargs.get(
+                    'json_response', False) is not True:
+                raise RuntimeError('current evidence requires stateless JSON HTTP')
         app = super().streamable_http_app(**kwargs)
+        if guarded:
+            from .read_issuance import ReadIssuanceMiddleware
+            app.add_middleware(ReadIssuanceMiddleware)
         if isinstance(self._auth_server_provider, RegionalOAuthProvider):
             auth = self.settings.auth
             metadata = build_metadata(
@@ -174,6 +203,9 @@ class KnowledgeMCPServer(MCPServer):
                         endpoint=cors_middleware(self._auth_server_provider.revoke_endpoint, ["POST", "OPTIONS"]),
                         methods=["POST", "OPTIONS"],
                     )
+        channel = getattr(self, '_bge_channel_route', None)
+        if channel is not None:
+            app.routes.append(channel)
         return app
 
 
@@ -185,8 +217,33 @@ def build_server(
     jwks_url: str | None = None,
     oauth_provider: RegionalOAuthProvider | None = None,
     profile: Literal["full", "live", "story_reader", "story_contributor", "story_editor"] = "full",
+    backend_profile: Literal['legacy','kaggle_source'] | None = None,
+    target_startup=None,
 ) -> MCPServer:
-    backend = backend or backend_from_env()
+    selected=backend_profile or os.getenv('RKB_BACKEND_PROFILE','').strip() or (
+        'kaggle_source' if target_startup is not None else 'legacy')
+    if selected not in {'legacy','kaggle_source'}:
+        raise RuntimeError('RKB_BACKEND_PROFILE must be legacy or kaggle_source')
+    if selected=='kaggle_source':
+        from .kaggle_service_startup import TargetServiceStartup
+        if type(target_startup) is not TargetServiceStartup:
+            raise RuntimeError('kaggle_source requires explicit typed TargetServiceStartup')
+        if backend is not None or oauth_provider is not None:
+            raise RuntimeError('target startup owns the configured backend and OAuth provider')
+        if profile not in {'full','live'}:
+            raise RuntimeError('target story capability bundle is unavailable')
+        backend=target_startup.backend
+        oauth_provider=target_startup.config.oauth_provider
+        if ((issuer is not None and issuer.rstrip('/')!=oauth_provider.issuer)
+                or (resource_url is not None and resource_url.rstrip('/')!=oauth_provider.resource)):
+            raise RuntimeError('target OAuth issuer/resource must match existing authority')
+        issuer,resource_url=oauth_provider.issuer,oauth_provider.resource
+    elif target_startup is not None:
+        raise RuntimeError('target startup cannot use legacy backend profile')
+    else:
+        backend = backend if backend is not None else backend_from_env()
+    from .read_telemetry import ReadTelemetry
+    read_telemetry = getattr(backend, 'read_telemetry', None) or ReadTelemetry()
     issuer = (
         issuer
         or os.getenv("RKB_AUTH_ISSUER", "").strip()
@@ -208,6 +265,8 @@ def build_server(
         raise RuntimeError("RKB_AUTH_MODE must be 'embedded' or 'external'")
 
     kwargs: dict[str, Any] = {}
+    if selected=='kaggle_source':
+        kwargs['lifespan']=target_startup.lifespan
     embedded_provider: RegionalOAuthProvider | None = None
     if auth_mode == "embedded":
         if not issuer or not resource_url:
@@ -334,10 +393,22 @@ def build_server(
     if embedded_provider is not None:
         embedded_provider.register_routes(mcp)
 
-    if os.getenv('RKB_BGE_QUEUE_PATH'):
+    mcp._target_source_profile=selected=='kaggle_source'
+    mcp._target_startup=target_startup
+    mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
+    worker_queue = getattr(backend, 'worker_queue', None)
+    if worker_queue is not None or os.getenv('RKB_BGE_QUEUE_PATH'):
         from .bge_queue import BgeQueue
         from .bge_broker import register_routes
-        register_routes(mcp,BgeQueue(os.environ['RKB_BGE_QUEUE_PATH']))
+        from .bge_channel import channel_route
+        if worker_queue is None:
+            worker_queue = BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
+        elif os.getenv('RKB_BGE_QUEUE_PATH'):
+            from pathlib import Path
+            if worker_queue.path.resolve() != Path(os.environ['RKB_BGE_QUEUE_PATH']).resolve():
+                raise RuntimeError('backend and channel must share the same owned queue')
+        register_routes(mcp,worker_queue)
+        mcp._bge_channel_route = channel_route(worker_queue)
 
     @mcp.custom_route("/fast-tier/health", methods=["GET"])
     async def fast_tier_health(request: Request):
@@ -396,12 +467,15 @@ def build_server(
                 description="ACL-scoped compact editorial story search; story content and book evidence remain distinct.",
                 annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
             async def story_search(query: str = "", filters: dict[str,str] | None = None,
-                    mode: Literal["lexical","semantic","hybrid"] = "lexical",
+                    mode: Literal["lexical","semantic","hybrid"] = "hybrid",
                     order: Literal["updated","potential"] = "updated",
                     limit: Annotated[int, Field(ge=1,le=20)] = 3,
                     cursor: str | None = None) -> dict[str,Any]:
                 vector = None
                 kaggle_state = None
+                if mode == "lexical" or not query.strip():
+                    raise ToolError("hybrid_search_required: provide a nonempty query and hybrid mode")
+                mode = "hybrid"
                 if mode != "lexical" and query.strip():
                     try:
                         from .bge_queue import BgeQueue
@@ -417,12 +491,16 @@ def build_server(
                             "event": "story_kaggle_query_degraded",
                             "error_type": type(error).__name__,
                         }))
+                if vector is None:
+                    return {"status": "unavailable", "reason": "hybrid_search_required",
+                            "kaggle_query_state": kaggle_state or "kaggle_unavailable"}
                 result = await story_call(
                     registry.search, query, filters, mode, order, limit, cursor, vector)
-                if kaggle_state and isinstance(result, dict) and "error" not in result:
+                if isinstance(result, dict) and "error" not in result:
+                    if result.get("retrieval_mode") not in {"story_bge_lexical", "story_bge_lexical_partial"}:
+                        return {"status": "unavailable", "reason": "hybrid_search_required",
+                                "kaggle_query_state": kaggle_state or "projection_unavailable"}
                     result["kaggle_query_state"] = kaggle_state
-                    if vector is None:
-                        result["indexing_state"] = kaggle_state
                 return result
 
             @mcp.tool(name="story_calendar", title="Historical events on a calendar day",
@@ -750,13 +828,13 @@ def build_server(
             main_job_id: str | None = None,
             document_ids: list[str] | None = None,
         ) -> EvidenceSearchOutput:
-            return await backend.search_evidence(
+            return _require_hybrid_read(await read_telemetry.measure("knowledge_search", backend.search_evidence(
                 query.strip(),
                 _principal(),
                 max_evidence=max(1, min(max_evidence, 5)),
                 **({'main_job_id': main_job_id} if main_job_id else {}),
                 **({'document_ids': document_ids} if document_ids is not None else {}),
-            )
+            )))
 
         return mcp
 
@@ -773,13 +851,14 @@ def build_server(
         if document_ids is not None:options['document_ids']=document_ids
         if main_job_id:options['main_job_id']=main_job_id
         if aliases:options['aliases']=aliases
-        return await backend.search(query.strip(), _principal(),**options)
+        return _require_hybrid_read(await read_telemetry.measure("search", backend.search(query.strip(), _principal(),**options)))
 
     @mcp.tool(
         title="Fetch regional evidence",
         description=(
-            "Fetch the full evidence for an ID returned by search, including page "
-            "provenance, footnotes and illustration descriptors when available."
+            "Fetch evidence for an ID returned by search, including source provenance. "
+            "A bounded source passage includes explicit offsets and next_id when more text "
+            "or bibliography remains; fetch next_id until continuation_complete."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
@@ -1144,17 +1223,19 @@ def build_server(
     return mcp
 
 
-def main() -> None:
+def main(*,target_startup=None) -> None:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("regional_knowledge.oauth_provider").setLevel(logging.INFO)
+    logging.getLogger("regional_knowledge.reads").setLevel(logging.INFO)
     profile = os.getenv("RKB_MCP_PROFILE", "full").strip().lower()
     if profile not in {"full", "live", "story_reader", "story_contributor", "story_editor"}:
         raise RuntimeError("RKB_MCP_PROFILE must be full, live or an enabled story capability bundle")
-    build_server(profile=profile).run(
+    build_server(profile=profile,target_startup=target_startup).run(
         transport="streamable-http",
         stateless_http=True,
         json_response=True,
-        transport_security=_transport_security(),
+        transport_security=_transport_security(
+            target_startup.config.oauth_provider.resource if target_startup is not None else None),
     )
 
 

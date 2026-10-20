@@ -1955,6 +1955,8 @@ class StoryRegistry:
                 predicates.append(score + ">=?")
                 params.append(min_score)
             rows = None
+            hybrid_dense = None
+            hybrid_complete = False
             if mode in {"semantic", "hybrid"} and str(query).strip() and query_vector is not None:
                 # Reuse the lexical SQL's full source/actor visibility predicate;
                 # apply it BEFORE reading any derived vectors for ranking.
@@ -1982,10 +1984,17 @@ class StoryRegistry:
                     scored.append((similarity(record["vector_blob"], query_embedding), record))
                 if scored:
                     scored.sort(key=lambda pair: (-pair[0], pair[1]["id"]))
-                    rows = [record for _, record in scored[offset:offset + limit + 1]]
                     complete = len(scored) == len(admitted)
-                    actual_mode = "story_bge" if complete else "story_bge_partial"
-                    vector_state = "story_bge_ready" if complete else "story_bge_partial"
+                    if mode == "hybrid":
+                        # Legacy compatibility only: retain the existing vector
+                        # scan, but fuse bounded independent candidates. The
+                        # Kaggle target replaces this scan with indexed SQL.
+                        hybrid_dense = [record for _, record in scored[:200]]
+                        hybrid_complete = complete
+                    else:
+                        rows = [record for _, record in scored[offset:offset + limit + 1]]
+                        actual_mode = "story_bge" if complete else "story_bge_partial"
+                        vector_state = "story_bge_ready" if complete else "story_bge_partial"
             if rows is None:
                 tokens = re.findall(r"[^\W_]+", str(query), re.UNICODE)[:12]
                 expression = " OR ".join('"' + t + '"' for t in tokens)
@@ -2010,14 +2019,35 @@ class StoryRegistry:
                     WHERE """ + " AND ".join(predicates)
                     sql += (" ORDER BY COALESCE(" + score + ",-1) DESC,r.relevance,s.id LIMIT ? OFFSET ?"
                             if order == "potential" else " ORDER BY r.relevance,s.id LIMIT ? OFFSET ?")
-                    args = [actor, expression, expression, *params[1:], limit + 1, offset]
+                    args = [actor, expression, expression, *params[1:],
+                            200 if hybrid_dense is not None else limit + 1,
+                            0 if hybrid_dense is not None else offset]
                 else:
                     sql = """WITH who(actor_id) AS (VALUES (?))
                         SELECT s.* FROM story_records s WHERE """ + " AND ".join(predicates)
+                    if hybrid_dense is not None:
+                        # No lexical tokens means no lexical matches, not a
+                        # request to browse the whole catalog as ranked evidence.
+                        sql += " AND 0"
                     sql += (" ORDER BY COALESCE(" + score + ",-1) DESC,s.updated_at DESC,s.id LIMIT ? OFFSET ?"
                             if order == "potential" else " ORDER BY s.updated_at DESC,s.id LIMIT ? OFFSET ?")
                     args = [*params, limit + 1, offset]
                 rows = db.execute(sql, args).fetchall()
+                if hybrid_dense is not None:
+                    # Neither branch restricts the other's candidates. A lexical
+                    # hit without a vector can contribute to a disclosed partial
+                    # hybrid result; missing dense computation cannot.
+                    by_id = {}
+                    ranks = {}
+                    for branch in (rows, hybrid_dense):
+                        for rank, record in enumerate(branch, 1):
+                            ident = record['id']
+                            by_id[ident] = record
+                            ranks[ident] = ranks.get(ident, 0) + 1 / (60 + rank)
+                    ordered = sorted(ranks, key=lambda ident: (-ranks[ident], ident))
+                    rows = [by_id[ident] for ident in ordered[offset:offset + limit + 1]]
+                    actual_mode = 'story_bge_lexical' if hybrid_complete else 'story_bge_lexical_partial'
+                    vector_state = 'story_bge_ready' if hybrid_complete else 'story_bge_partial'
 
             hits = []
             for r in rows[:limit]:
@@ -2059,7 +2089,10 @@ class StoryRegistry:
             return {"results": hits, "has_more": more,
                     "next_cursor": str(offset + limit) if more else None,
                     "retrieval_mode": actual_mode,
-                    "indexing_state": vector_state}
+                    "indexing_state": vector_state,
+                    **({"incomplete": True, "limitation": "legacy_bounded_fusion_unverified",
+                        "executed_branches": ["lexical", "dense"]}
+                       if actual_mode.startswith('story_bge_lexical') else {})}
 
     def access(self, principal, story_id, expected_revision, grantee_user_id, capability, idempotency_key):
         grantee = str(UUID(grantee_user_id))

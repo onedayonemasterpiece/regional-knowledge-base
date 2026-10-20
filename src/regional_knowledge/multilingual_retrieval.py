@@ -4,11 +4,13 @@ from .bge_queue import BgeQueue
 from .bge_contract import SPACE as BGE_SPACE,validate_vector
 from .e5_contract import SPACE as E5_SPACE
 from .contracts import SearchOutput,SearchResult
-from .rank_fusion import MODES,fuse
+from .rank_fusion import MODES,fuse,public_hybrid_mode
 from .local_e5 import encoding_timings
 logger=logging.getLogger(__name__)
 
 async def wait_result(queue,actor,job_id,seconds):
+    if hasattr(queue,'wait_result'):
+        return await queue.wait_result(actor,job_id,seconds)
     deadline=time.monotonic()+seconds
     while True:
         row=await asyncio.to_thread(queue.result,actor,job_id)
@@ -18,12 +20,14 @@ async def wait_result(queue,actor,job_id,seconds):
 
 async def main_search(backend,query,principal,*,match_count=8,main_job_id=None,aliases=None,document_ids=None):
     started=time.monotonic()
-    mode=os.environ.get('RKB_BGE_WARM_MODE','bge')
-    if mode not in ('bge','bge_lexical','e5_bge','e5_bge_lexical'):raise RuntimeError('invalid BGE warm path')
+    mode=os.environ.get('RKB_BGE_WARM_MODE','bge_lexical')
+    # Public search always executes lexical and BGE branches. Legacy vector-only
+    # configuration cannot silently disable the lexical half of hybrid search.
+    mode=public_hybrid_mode(mode)
     query_hash=hashlib.sha256(query.encode()).hexdigest()
     # Kaggle is the sole BGE encoder for queries and documents.
     # The remote worker is launched only via the existing durable queue.
-    queue=BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
+    queue=await asyncio.to_thread(BgeQueue,os.environ['RKB_BGE_QUEUE_PATH'])
     status=await asyncio.to_thread(queue.status)
     job=None;bge_vector=None;bge_times={}
     try:

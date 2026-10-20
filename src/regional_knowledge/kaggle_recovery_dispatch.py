@@ -1,0 +1,183 @@
+"""Dev retained maintenance owner using the existing durable jobs and admission.
+
+No public enqueue surface, human impersonation, SQL RPC or second dispatcher.
+The existing run authentication, document resource and durable RESULT_ACK own
+assignment/reconnect semantics; a timeout preserves an unknown operation.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import uuid
+
+from .bge_queue import StaleClaim
+from .kaggle_recovery_phases import PHASES,b64,bounded,MAX_PHASE_RESULT_BYTES
+from .kaggle_pg_snapshot_native import SnapshotError,encode,sha
+
+_LOG=logging.getLogger(__name__)
+
+
+class RecoveryPhaseDispatch:
+    def __init__(self,queue,*,database,identity,binding_current,timeout_seconds=900,snapshot_tickets=None):
+        if (queue._shared_reads is None or getattr(queue,'_recovery_phases',None) is not None
+                or not callable(binding_current) or not isinstance(identity,tuple) or len(identity)!=3
+                or type(timeout_seconds) not in (int,float) or not 0<timeout_seconds<=900):
+            raise TypeError('configured current maintenance owner required')
+        self.queue,self.database,self.identity=queue,database,identity
+        self.binding_current,self.timeout=binding_current,timeout_seconds
+        self.snapshot_tickets=snapshot_tickets
+        self._bindings={};self.closed=False
+        queue._recovery_phases=self
+
+    def current(self,binding):
+        return (not self.closed and self.queue._recovery_phases is self and self.binding_current(binding))
+
+    def _run(self,db,run_id,token,generation):
+        q=self.queue;run=q._authorize(db,run_id,token,q.clock());q._dispatch_authorize(run,generation)
+        if (run_id,run['launch_nonce'],run['runtime_incarnation'])!=self.identity:
+            raise PermissionError('recovery run identity changed')
+        if db.execute('select current_run from control where id=1').fetchone()[0]!=run_id:
+            raise PermissionError('recovery requires owned current run')
+        return run
+
+    def eligible(self,job,run,generation):
+        binding=self._bindings.get(job['id'])
+        return (binding is not None and self.current(binding)
+                and (run['id'],run['launch_nonce'],run['runtime_incarnation'])==self.identity
+                and job['kind']=='recovery_phase')
+
+    def _enqueue(self,identity):
+        q=self.queue;actor='maintenance:'+self.identity[0];key='recovery:'+identity['operation_key']
+        encoded=encode(identity).decode();now=q.clock()
+        with q.connect() as db:
+            row=db.execute('select * from jobs where actor=? and idempotency=?',(actor,key)).fetchone()
+            if row:
+                if row['kind']!='recovery_phase' or row['identity']!=encoded:
+                    raise SnapshotError('recovery_operation_changed')
+                return row['id'],actor
+            if db.execute("select count(*) from jobs where state!='done'").fetchone()[0]>=256:
+                raise SnapshotError('recovery_queue_capacity')
+            run=db.execute('select * from runs where id=?',(self.identity[0],)).fetchone()
+            if run is None or (run['launch_nonce'],run['runtime_incarnation'])!=self.identity[1:]:
+                raise PermissionError('recovery requires actual attached run')
+            job=str(uuid.uuid4())
+            db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) '
+                'values(?,?,?,?,?,?,?,?,?)',(job,actor,key,'recovery_phase','[]',encoded,'pending',now,now))
+            return job,actor
+
+    async def request(self,binding,phase,arguments,*,operation_key):
+        if not self.current(binding):raise PermissionError('current maintenance binding required')
+        if phase not in PHASES or not isinstance(operation_key,str) or not 1<=len(operation_key.encode())<=256:
+            raise SnapshotError('recovery_phase_contract')
+        if len(self._bindings)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
+        arguments=json.loads(encode(arguments));request_hash=sha(encode({'phase':phase,'arguments':arguments}))
+        identity=bounded(dict(phase=phase,arguments=arguments,operation_key=operation_key,
+            request_sha256=request_hash,database_generation=self.database.database_generation,
+            writer_generation=self.database.writer_generation,run_id=self.identity[0],launch_nonce=self.identity[1],
+            runtime_incarnation=self.identity[2]))
+        job,actor=await asyncio.to_thread(self._enqueue,identity)
+        self._bindings[job]=binding;self.queue.shared_reads._event.set()
+        result=await self.queue.wait_result(actor,job,self.timeout)
+        if result is None:
+            _LOG.warning('recovery_phase_unknown run_id=%s phase=%s operation_hash=%s',self.identity[0],phase,sha(operation_key.encode()))
+            raise SnapshotError('recovery_phase_unknown_reconcile_same_operation')
+        if not self.current(binding):raise PermissionError('recovery binding expired before delivery')
+        return result['result']['value']
+
+    async def dispatch_payload(self,job_id,*,run_id,token,generation):
+        with self.queue.connect(write=False) as db:
+            run=self._run(db,run_id,token,generation)
+            job=db.execute('select * from jobs where id=?',(job_id,)).fetchone()
+            if (job is None or not self.eligible(job,run,generation) or job['state']!='claimed'
+                    or job['run_id']!=run_id or job['lease_until']<=self.queue.clock()):
+                raise StaleClaim('recovery assignment changed')
+            identity=json.loads(job['identity'])
+            payload=dict(id=job_id,claim=job['claim'],kind='recovery_phase',**identity)
+        if identity['phase']=='prepare' and self.snapshot_tickets is not None:
+            from .kaggle_pg_snapshot_native import BlobRef
+            ticket=await self.snapshot_tickets.issue_download(self._bindings[job_id],identity['operation_key'],
+                BlobRef(**identity['arguments']['blob']))
+            payload['download_ticket']=ticket.wire()
+        return payload
+
+    async def issue_upload(self,frame,*,run_id,token,generation):
+        """Ticket intent stays on control while capture retains compute permit."""
+        if self.snapshot_tickets is None:raise PermissionError('snapshot ticket issuer unavailable')
+        with self.queue.connect(write=False) as db:
+            run=self._run(db,run_id,token,generation)
+            job=db.execute("select * from jobs where id=? and kind='recovery_phase'",(frame['job_id'],)).fetchone()
+            if (job is None or job['run_id']!=run_id or job['claim']!=frame['claim']
+                    or job['state']!='claimed' or not self.eligible(job,run,generation)):
+                raise StaleClaim('snapshot transfer assignment changed')
+            identity=json.loads(job['identity'])
+            if (identity['phase']!='capture' or frame['operation_key']!=identity['operation_key']
+                    or tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))!=self.identity):
+                raise PermissionError('snapshot transfer capture binding changed')
+            self.queue.shared_reads.require_durable_resource(run_id,self.identity[2],generation,job['id'],
+                frame['compute_claim'],frame['dispatch_generation'])
+            binding=self._bindings[job['id']]
+        ticket=await self.snapshot_tickets.issue_upload(binding,frame['operation_key'],size=frame['size'],sha256=frame['sha256'])
+        if not self.current(binding):raise PermissionError('snapshot transfer binding expired')
+        return ticket.wire()
+
+    async def receive(self,frame,*,run_id,token,generation):
+        bounded(frame['receipt'],MAX_PHASE_RESULT_BYTES)
+        with self.queue.connect() as db:
+            run=self._run(db,run_id,token,generation)
+            job=db.execute("select * from jobs where id=? and kind='recovery_phase'",(frame['job_id'],)).fetchone()
+            if (job is None or job['run_id']!=run_id or job['claim']!=frame['claim']
+                    or not self.eligible(job,run,generation)):
+                raise StaleClaim('recovery assignment changed')
+            if tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))!=self.identity:
+                raise PermissionError('recovery receipt runtime changed')
+            self.queue.shared_reads.require_durable_resource(run_id,self.identity[2],generation,job['id'],
+                frame['compute_claim'],frame['dispatch_generation'])
+            identity=json.loads(job['identity']);receipt=frame['receipt']
+            if (not isinstance(receipt,dict) or set(receipt)!={'phase','request_sha256','value'}
+                    or receipt['phase']!=identity['phase'] or receipt['request_sha256']!=identity['request_sha256']):
+                raise SnapshotError('recovery_receipt_request_changed')
+            encoded=encode(receipt).decode();status='accepted'
+            if job['state']=='done':
+                if job['result']!=encoded:raise SnapshotError('recovery_receipt_changed')
+                status='duplicate'
+            elif job['state']!='claimed':raise StaleClaim('recovery assignment no longer claimed')
+            else:db.execute("update jobs set state='done',result=?,updated=? where id=?",(encoded,self.queue.clock(),job['id']))
+        self.queue._notify_result(frame['job_id'])
+        _LOG.info('recovery_phase_settled run_id=%s phase=%s status=%s',run_id,receipt['phase'],status)
+        return dict(job_id=frame['job_id'],claim=frame['claim'],status=status)
+
+    async def aclose(self):
+        self.closed=True
+        if self.queue._recovery_phases is self:self.queue._recovery_phases=None
+
+
+class WssSnapshotPhases:
+    """Typed adapter consumed directly by PhysicalSnapshotRecovery."""
+    def __init__(self,dispatch,*,operation_key):
+        if type(dispatch) is not RecoveryPhaseDispatch or not isinstance(operation_key,str) or not operation_key:
+            raise TypeError('retained recovery dispatch and stable operation required')
+        self.dispatch,self.operation=dispatch,operation_key
+
+    async def _call(self,binding,phase,args):
+        # Content-derived stable subkeys survive lost receipts/reconnects.
+        key=sha(encode({'operation':self.operation,'phase':phase,'arguments':args}))
+        return await self.dispatch.request(binding,phase,args,operation_key=key)
+
+    async def capture(self,binding,**args):return await self._call(binding,'capture',args)
+
+    async def prepare(self,binding,*,operation_key,manifest_bytes,control_bytes,**args):
+        return (await self._call(binding,'prepare',dict(args,manifest_b64=b64(manifest_bytes),
+            control_b64=b64(control_bytes),restore_operation=operation_key)))['handle']
+
+    async def apply(self,binding,handle,*,command_bytes,**args):
+        return await self._call(binding,'apply',dict(args,handle=handle,command_b64=b64(command_bytes)))
+
+    async def finish(self,binding,handle,*,control_bytes,**args):
+        return (await self._call(binding,'finish',dict(args,handle=handle,control_b64=b64(control_bytes))))['reference']
+
+    async def verify_initialized(self,binding,reference):
+        # Readback is a fresh operation, never a cached historical observation.
+        import secrets
+        return await self.dispatch.request(binding,'verify',{'reference':reference},
+            operation_key=sha(encode([self.operation,'verify',secrets.token_hex(24)])))
