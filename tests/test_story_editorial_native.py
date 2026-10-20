@@ -180,3 +180,25 @@ async def test_native_catalogue_and_page_provenance_survive_without_local_spool(
         assert not await(await conn.execute('SELECT * FROM rkb_v4.find_source_catalog_v1(%s,8)',('Exact title',))).fetchall()
         assert not await(await conn.execute('SELECT * FROM rkb_v4.source_passage_metadata_v1(%s::uuid[])',
             ([doc['passages'][0]['passage_id']],))).fetchall()
+
+
+@pytest.mark.asyncio
+async def test_native_history_reconstructs_editorial_grants_and_body_after_edits(native):
+    await apply(native,imported())
+    await apply(native,await grant(native,2,1))
+    await apply(native,await edit(native,3,2))
+    async def valid():
+        return (await(await native['connection'].execute('SELECT rkb_v4.verify_source_story_origins_v3(ARRAY[%s::uuid])',(SOURCE,))).fetchone())[0]
+    async with native['connection'].transaction():assert await valid() is True
+    # Explicit test-owned corruption: these transactions are always rolled back.
+    for statement,arguments in [
+        ('UPDATE rkb_v4.story_editor_grants SET capability=\'manager\' WHERE story_id=%s',(STORY,)),
+        ('UPDATE rkb_v4.editorial_story_heads SET owner_id=%s WHERE story_id=%s',(EDITOR,STORY)),
+        ('UPDATE rkb_v4.editorial_variant_heads SET revision=1 WHERE variant_id=%s',(VARIANT,)),
+        ('UPDATE rkb_v4.source_catalog SET search_text=\'forged native projection\' WHERE source_id=%s',(SOURCE,)),
+    ]:
+        async with native['connection'].transaction(force_rollback=True):
+            await native['connection'].execute('ALTER TABLE rkb_v4.source_catalog DISABLE TRIGGER immutable_source_catalog')
+            await native['connection'].execute(statement,arguments)
+            assert await valid() is False
+    async with native['connection'].transaction():assert await valid() is True
