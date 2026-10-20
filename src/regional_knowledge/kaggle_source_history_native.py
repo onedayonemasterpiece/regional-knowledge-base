@@ -157,7 +157,7 @@ class NativeSourceHistoryObserver:
             if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1'):
                 await connection.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
             if getattr(self.database,'schema_revision',None)=='rkb-v4-sql001-009-v1':
-                await connection.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.editorial_story_heads,'
+                await connection.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
                     'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
                     'rkb_v4.editorial_story_receipts,rkb_v4.story_editor_grants,rkb_v4.editorial_story_search IN SHARE MODE')
             if digest(await inspect_acl(connection))!=args['acl_sha256']:

@@ -277,7 +277,7 @@ class NativeSourceHistoryVerifier:
                             if fields.get('schema_revision') in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1'):
                                 await cursor.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
                             if fields.get('schema_revision')=='rkb-v4-sql001-009-v1':
-                                await cursor.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.editorial_story_heads,'
+                                await cursor.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
                                     'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
                                     'rkb_v4.editorial_story_receipts,rkb_v4.story_editor_grants,rkb_v4.editorial_story_search IN SHARE MODE')
                             if _hash(await inspect_acl(connection))!=self.acl_hash:
@@ -441,7 +441,7 @@ class NativeSourceHistoryVerifier:
                             if fields.get('schema_revision') in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1'):
                                 await cursor.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
                             if fields.get('schema_revision')=='rkb-v4-sql001-009-v1':
-                                await cursor.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.editorial_story_heads,'
+                                await cursor.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
                                     'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
                                     'rkb_v4.editorial_story_receipts,rkb_v4.story_editor_grants,rkb_v4.editorial_story_search IN SHARE MODE')
                             if _hash(await inspect_acl(connection))!=self.acl_hash:

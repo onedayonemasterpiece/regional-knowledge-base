@@ -182,7 +182,7 @@ async def test_fresh9_history_requires_exact_manifest_editorial_origin_proof_and
     try:
         assert (await p.v.establish_genesis(p.b)).current()
         assert 'SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])' in p.pg.sql
-        assert any('LOCK TABLE rkb_v4.source_manifests,rkb_v4.editorial_story_heads' in sql for sql in p.pg.sql)
+        assert any('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads' in sql for sql in p.pg.sql)
         assert not any('verify_source_story_origins_v2(' in sql for sql in p.pg.sql)
         p.pg.origin_valid=False
         with pytest.raises(SpoolConflict,match='story_origin_uncovered'):await p.v.renew(p.b)

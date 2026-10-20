@@ -460,7 +460,7 @@ BEGIN
    OR (render->>'scale')::numeric<=0 OR (render->>'scale')::numeric>100 THEN RETURN false;END IF;
   FOREACH key IN ARRAY ARRAY['width','height','max_edge','jpeg_quality'] LOOP
    IF jsonb_typeof(render->key) IS DISTINCT FROM 'number' OR render->>key !~ '^[1-9][0-9]*$'
-    OR (render->>key)::bigint>CASE WHEN key='jpeg_quality' THEN 100 ELSE 20000 END THEN RETURN false;END IF;
+    OR (render->>key)::bigint>(CASE WHEN key='jpeg_quality' THEN 100 ELSE 20000 END) THEN RETURN false;END IF;
   END LOOP;
  END LOOP;
  IF jsonb_typeof(m->'regions') IS DISTINCT FROM 'array' OR jsonb_array_length(m->'regions') NOT BETWEEN 1 AND 800
@@ -723,6 +723,137 @@ REVOKE ALL ON FUNCTION rkb_v4.story_editor_role_v1(uuid,uuid),rkb_v4.editorial_s
  rkb_v4.check_source_import_v4(bytea,jsonb,jsonb,text),rkb_v4.apply_source_import_v4(bytea,jsonb,jsonb,text),
  rkb_v4.capture_editorial_receipt_v1(),rkb_v4.read_editorial_story_v1(uuid,bigint,text,bigint,integer,uuid) FROM PUBLIC;
 
+
+CREATE FUNCTION rkb_v4.verify_source_manifest_v1(wanted uuid,accepted jsonb,accepted_sha256 text)
+RETURNS boolean LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE m jsonb:=accepted->'source_manifest';item jsonb;author_text text;
+BEGIN
+ IF NOT rkb_v4.check_source_manifest_v1(accepted,wanted)
+  OR (SELECT count(*) FROM rkb_v4.source_manifests WHERE source_id=wanted)<>1
+  OR NOT EXISTS(SELECT 1 FROM rkb_v4.source_manifests z WHERE z.source_id=wanted AND z.source_revision=1
+    AND z.manifest=m AND z.payload_sha256=accepted_sha256
+    AND z.original_receipt=decode(m->>'original_receipt_b64','base64'))
+  OR (SELECT count(*) FROM rkb_v4.source_catalog WHERE source_id=wanted)<>1
+  OR (SELECT count(*) FROM rkb_v4.source_passage_provenance WHERE source_id=wanted)<>jsonb_array_length(m->'passages') THEN RETURN false;END IF;
+ SELECT string_agg(x,E'\n' ORDER BY ordinal) INTO author_text
+  FROM jsonb_array_elements_text(m->'metadata'->'authors') WITH ORDINALITY a(x,ordinal);
+ IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_catalog z WHERE z.source_id=wanted AND z.source_revision=1
+   AND z.metadata=m->'metadata' AND z.search_text=coalesce(m->'metadata'->>'title','')||E'\n'||coalesce(author_text,'')) THEN RETURN false;END IF;
+ FOR item IN SELECT value FROM jsonb_array_elements(m->'passages') LOOP
+  IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_passage_provenance z WHERE z.source_id=wanted AND z.source_revision=1
+   AND z.passage_id=(item->>'passage_id')::uuid AND z.data=item) THEN RETURN false;END IF;
+ END LOOP;
+ RETURN true;
+EXCEPTION WHEN data_exception THEN RETURN false;
+END $$;
+REVOKE ALL ON FUNCTION rkb_v4.verify_source_manifest_v1(uuid,jsonb,text) FROM PUBLIC;
+-- Reconstruct only bounded editorial heads from the exact accepted native log.
+-- No read of current grants can retroactively authorize an older saved edit.
+CREATE FUNCTION rkb_v4.verify_editorial_story_origins_v1(scope uuid[])
+RETURNS boolean LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+DECLARE head record;version record;c jsonb;doc jsonb;op jsonb;base jsonb;variant jsonb;
+ expected_data jsonb;snapshot jsonb;refs jsonb;grants jsonb;actual jsonb;default_ref jsonb;
+ variants jsonb;actor uuid;role text;wanted_variant uuid;wanted_revision bigint;
+ previous_revision bigint;previous_sequence bigint;variant_rows integer;projection_rows integer;seen integer:=0;
+BEGIN
+ IF scope IS NULL OR cardinality(scope)>10000 THEN RETURN false;END IF;
+ IF (SELECT count(*) FROM rkb_v4.editorial_story_heads WHERE source_id=ANY(scope))
+  <>(SELECT count(*) FROM rkb_v4.stories WHERE source_id=ANY(scope)) THEN RETURN false;END IF;
+ FOR head IN SELECT h.* FROM rkb_v4.editorial_story_heads h WHERE source_id=ANY(scope) ORDER BY story_id LIMIT 10001 LOOP
+  IF head.source_revision<>1 THEN RETURN false;END IF;
+  previous_revision:=0;previous_sequence:=0;variant_rows:=0;projection_rows:=0;
+  refs:='{}'::jsonb;grants:='{}'::jsonb;snapshot:=NULL;default_ref:=NULL;
+  FOR version IN SELECT v.*,r.operation_key,r.sequence,r.person_id,r.request_id,r.command_sha256,
+     a.command_bytes,a.command_sha256 actual_command_sha256,a.sequence actual_sequence,a.status
+   FROM rkb_v4.editorial_story_versions v LEFT JOIN rkb_v4.editorial_story_receipts r
+      ON r.story_id=v.story_id AND r.revision=v.revision
+   LEFT JOIN rkb_v4.applied_ops a ON a.operation_key=r.operation_key
+   WHERE v.story_id=head.story_id ORDER BY v.revision LIMIT 10001 LOOP
+   seen:=seen+1;
+   IF seen>10000 OR version.revision<>previous_revision+1 OR version.status IS DISTINCT FROM 'applied'
+    OR version.sequence IS NULL OR version.sequence<=previous_sequence OR version.sequence<>version.actual_sequence
+    OR version.command_sha256 IS DISTINCT FROM version.actual_command_sha256
+    OR version.command_sha256 IS DISTINCT FROM encode(sha256(version.command_bytes),'hex') THEN RETURN false;END IF;
+   c:=convert_from(version.command_bytes,'UTF8')::jsonb;
+   actor:=(c->>'person_id')::uuid;doc:=convert_from(decode(c->>'payload_b64','base64'),'UTF8')::jsonb;
+   IF version.actor_id<>actor OR version.person_id<>actor OR version.logical_time IS DISTINCT FROM c->>'logical_time'
+    OR version.operation_key IS DISTINCT FROM c->>'operation_key' OR version.request_id IS DISTINCT FROM c->>'request_id'
+    OR version.sequence<>(c->>'sequence')::bigint OR (c->'ids'->>'source_id')::uuid<>head.source_id THEN RETURN false;END IF;
+   IF version.revision=1 THEN
+    IF c->>'route' IS DISTINCT FROM 'source.import.v4' OR version.action<>'source_import' OR head.owner_id<>actor THEN RETURN false;END IF;
+    SELECT x INTO STRICT base FROM jsonb_array_elements(doc->'semantic'->'stories') x WHERE (x->>'story_id')::uuid=head.story_id;
+    variant:=base->'default_variant';wanted_variant:=(variant->>'variant_id')::uuid;wanted_revision:=1;
+    expected_data:=(variant-'embedding'-'blocks'-'input_tokens')||jsonb_build_object('blocks','[]'::jsonb,
+      'attributions','[]'::jsonb,'media_refs','[]'::jsonb,'channel',NULL,'state','drafting',
+      'approved_revision',NULL,'approval_fingerprint',NULL,'source_blocks',variant->'blocks');
+    refs:=jsonb_build_object(wanted_variant::text,1);
+    default_ref:=jsonb_build_object('variant_id',wanted_variant,'revision',1);
+    snapshot:=jsonb_build_object('default_variant_ref',default_ref,
+      'variants',jsonb_build_array(default_ref),'state','drafting');
+   ELSE
+    IF (c->'ids'->>'story_id')::uuid<>head.story_id OR (c->'ids'->>'actor_id')::uuid<>actor
+     OR (c->'expected_revisions'->>'story_revision')::bigint<>previous_revision
+     OR (c->'expected_revisions'->>'source_revision')::bigint<>head.source_revision THEN RETURN false;END IF;
+    role:=CASE WHEN actor=head.owner_id THEN 'manager' ELSE grants->actor::text->>'capability' END;
+    IF c->>'route'='story.edit.v1' THEN
+     IF version.action<>'upsert_variant' OR role IS NULL OR role NOT IN ('editor','publisher','manager') THEN RETURN false;END IF;
+     op:=doc->'operation';variant:=doc;wanted_variant:=(doc->>'resolved_variant_id')::uuid;
+     wanted_revision:=(c->'expected_revisions'->>'variant_revision')::bigint+1;
+     IF wanted_revision<>coalesce((refs->>wanted_variant::text)::bigint,0)+1 THEN RETURN false;END IF;
+     expected_data:=(op-ARRAY['op','expected_variant_revision'])||jsonb_build_object('variant_id',wanted_variant,
+       'revision',wanted_revision,'state','drafting','approved_revision',NULL,'approval_fingerprint',NULL);
+     refs:=refs||jsonb_build_object(wanted_variant::text,wanted_revision);
+     IF default_ref->>'variant_id'=wanted_variant::text THEN
+      default_ref:=jsonb_build_object('variant_id',wanted_variant,'revision',wanted_revision);
+     END IF;
+     SELECT coalesce(jsonb_agg(jsonb_build_object('variant_id',key,'revision',value) ORDER BY key),'[]'::jsonb)
+      INTO variants FROM jsonb_each(refs);
+     snapshot:=jsonb_build_object('default_variant_ref',default_ref,'variants',variants,'state','drafting');
+    ELSIF c->>'route'='story.access.v1' THEN
+     IF version.action<>'access_change' OR role IS DISTINCT FROM 'manager' THEN RETURN false;END IF;
+     IF doc->>'capability'='revoke' THEN grants:=grants-(doc->>'grantee_user_id');
+     ELSE grants:=grants||jsonb_build_object(doc->>'grantee_user_id',jsonb_build_object('capability',doc->>'capability',
+       'granted_by',actor,'story_revision',version.revision));END IF;
+    ELSE RETURN false;END IF;
+   END IF;
+   IF version.data IS DISTINCT FROM snapshot THEN RETURN false;END IF;
+   IF version.action IN ('source_import','upsert_variant') THEN
+    variant_rows:=variant_rows+1;
+    IF NOT EXISTS(SELECT 1 FROM rkb_v4.editorial_variant_versions v WHERE v.story_id=head.story_id
+      AND v.variant_id=wanted_variant AND v.revision=wanted_revision AND v.data=expected_data
+      AND v.body=expected_data->>'body' AND v.body_sha256=encode(sha256(convert_to(v.body,'UTF8')),'hex')
+      AND v.embedding OPERATOR(public.=) (variant->'embedding')::text::public.vector
+      AND v.input_tokens=(variant->>'input_tokens')::integer AND v.actor_id=actor AND v.logical_time=c->>'logical_time') THEN RETURN false;END IF;
+    IF default_ref->>'variant_id'=wanted_variant::text THEN
+     projection_rows:=projection_rows+1;
+     IF NOT EXISTS(SELECT 1 FROM rkb_v4.editorial_story_search p WHERE p.story_id=head.story_id
+       AND p.variant_id=wanted_variant AND p.variant_revision=wanted_revision
+       AND p.source_id=head.source_id AND p.source_revision=head.source_revision AND p.body=expected_data->>'body'
+       AND p.config=CASE expected_data->>'language' WHEN 'ru' THEN 'pg_catalog.russian'::regconfig
+        WHEN 'de' THEN 'pg_catalog.german'::regconfig ELSE 'pg_catalog.simple'::regconfig END
+       AND p.embedding OPERATOR(public.=) (variant->'embedding')::text::public.vector) THEN RETURN false;END IF;
+    END IF;
+   END IF;
+   previous_revision:=version.revision;previous_sequence:=version.sequence;
+  END LOOP;
+  IF head.revision<>previous_revision OR head.default_variant_id::text IS DISTINCT FROM default_ref->>'variant_id'
+   OR head.default_variant_revision IS DISTINCT FROM (default_ref->>'revision')::bigint
+   OR (SELECT count(*) FROM rkb_v4.editorial_variant_versions WHERE story_id=head.story_id)<>variant_rows
+   OR (SELECT count(*) FROM rkb_v4.editorial_story_search WHERE story_id=head.story_id)<>projection_rows
+   OR (SELECT count(*) FROM rkb_v4.editorial_story_receipts WHERE story_id=head.story_id)<>previous_revision THEN RETURN false;END IF;
+  SELECT coalesce(jsonb_object_agg(variant_id::text,revision),'{}'::jsonb) INTO actual
+   FROM rkb_v4.editorial_variant_heads WHERE story_id=head.story_id;
+  IF actual IS DISTINCT FROM refs THEN RETURN false;END IF;
+  SELECT coalesce(jsonb_object_agg(grantee_id::text,jsonb_build_object('capability',capability,
+    'granted_by',granted_by,'story_revision',story_revision)),'{}'::jsonb) INTO actual
+   FROM rkb_v4.story_editor_grants WHERE story_id=head.story_id;
+  IF actual IS DISTINCT FROM grants THEN RETURN false;END IF;
+ END LOOP;
+ RETURN true;
+EXCEPTION WHEN data_exception OR no_data_found OR too_many_rows THEN RETURN false;
+END $$;
+REVOKE ALL ON FUNCTION rkb_v4.verify_editorial_story_origins_v1(uuid[]) FROM PUBLIC;
+
 CREATE FUNCTION rkb_v4.verify_source_story_origins_v3(scope uuid[])
 RETURNS boolean LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE op record;c jsonb;doc jsonb;sem jsonb;source uuid;item jsonb;v jsonb;
@@ -737,6 +868,8 @@ BEGIN
   source:=(c->'ids'->>'source_id')::uuid;
   doc:=convert_from(decode(c->>'payload_b64','base64'),'UTF8')::jsonb;sem:=doc->'semantic';
   verified:=array_append(verified,source);
+  IF c->>'route'='source.import.v4' AND NOT rkb_v4.verify_source_manifest_v1(source,doc,
+    encode(sha256(decode(c->>'payload_b64','base64')),'hex')) THEN RETURN false;END IF;
   IF c->>'route'='source.import.v4' AND NOT EXISTS(SELECT 1 FROM rkb_v4.source_manifests m
    WHERE m.source_id=source AND m.source_revision=1 AND m.manifest=doc->'source_manifest'
     AND m.payload_sha256=encode(sha256(decode(c->>'payload_b64','base64')),'hex')
@@ -804,7 +937,8 @@ BEGIN
  END LOOP;
  RETURN NOT EXISTS(SELECT 1 FROM rkb_v4.source_regions WHERE source_id=ANY(scope) AND NOT(source_id=ANY(verified)))
    AND NOT EXISTS(SELECT 1 FROM rkb_v4.story_assertion_versions WHERE source_id=ANY(scope) AND NOT(source_id=ANY(verified)))
-   AND NOT EXISTS(SELECT 1 FROM rkb_v4.stories WHERE source_id=ANY(scope) AND NOT(source_id=ANY(verified)));
+   AND NOT EXISTS(SELECT 1 FROM rkb_v4.stories WHERE source_id=ANY(scope) AND NOT(source_id=ANY(verified)))
+   AND rkb_v4.verify_editorial_story_origins_v1(scope);
 EXCEPTION WHEN data_exception THEN RETURN false;
 END $$;
 
