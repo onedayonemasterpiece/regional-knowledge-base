@@ -258,6 +258,7 @@ class BgeWssTransport:
             self.loading.add_done_callback(lambda _: self.changed.set())
         outbound = asyncio.PriorityQueue(maxsize=4)
         order = 0
+        read_sent = None
 
         async def put(frame, priority=0):
             nonlocal order
@@ -267,11 +268,19 @@ class BgeWssTransport:
         async def writer():
             while True:
                 _, _, frame = await outbound.get()
-                if frame.get('type') == 'QUERY_RESULT' and (
-                        self.read_discard or self.read_frame is None
-                        or self._read_identity(frame) != self._read_identity(self.read_frame)):
+                if frame.get('type') == 'QUERY_RESULT' and frame.get('connection_generation') != generation:
                     continue
                 await send(frame)
+
+        async def queue_read_result():
+            nonlocal read_sent
+            result = self.read_pending
+            if result is not None and read_sent is not result:
+                # Once queued this immutable frame belongs to this session,
+                # independently of the next read consumer. Server finish_read
+                # still checks its original ticket/deadline/current authority.
+                read_sent = result
+                await put(result, priority=1)
 
         async def heartbeat():
             while True:
@@ -281,7 +290,6 @@ class BgeWssTransport:
         async def states():
             ready_sent = False
             result_sent = None
-            read_sent = None
             released_sent = attachment_release
             state_sent = attachment_state
             self.changed.set()
@@ -291,6 +299,9 @@ class BgeWssTransport:
                 self._failure(self.loading)
                 self._failure(self.encoding)
                 if self.shared_reads:
+                    # Preserve the completed result before advertising compute
+                    # release, which can immediately authorize the next read.
+                    await queue_read_result()
                     self._maybe_release()
                     if self.last_released is not None and self.last_released != released_sent:
                         await put({'type': 'RESOURCE_RELEASED', **self.last_released})
@@ -305,10 +316,6 @@ class BgeWssTransport:
                 if self.pending is not None and result_sent != (self.pending['job_id'], self.pending['claim']):
                     await put({'type': 'RESULT', **self.pending}, priority=1)
                     result_sent = (self.pending['job_id'], self.pending['claim'])
-                if (self.shared_reads and self.read_pending is not None
-                        and read_sent is not self.read_pending):
-                    await put(self.read_pending, priority=1)
-                    read_sent = self.read_pending
 
         async def reader():
             while True:
@@ -342,6 +349,7 @@ class BgeWssTransport:
                         if json.dumps(frame, sort_keys=True, allow_nan=False) != json.dumps(self.read_frame, sort_keys=True, allow_nan=False):
                             raise ValueError('replayed QUERY payload mismatch')
                         continue
+                    await queue_read_result()
                     self._start_read(frame)
                 elif kind == 'DISPATCH':
                     if (frame.get('space') != SPACE or frame.get('kind') not in ('query', 'document')
@@ -380,6 +388,8 @@ class BgeWssTransport:
                             raise ValueError('worker dispatch capacity exceeded')
                         self.waiting_job = frame
                     else:
+                        if self.shared_reads:
+                            await queue_read_result()
                         self._start(frame)
                 elif kind == 'RESULT_ACK':
                     if (self.pending is None or frame.get('job_id') != self.pending['job_id']

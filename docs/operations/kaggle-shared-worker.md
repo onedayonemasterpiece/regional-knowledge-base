@@ -56,6 +56,11 @@ document and native tasks drain. SQL cleanup belongs to the injected handler;
 the worker waits for that handler Task to finish before releasing its resource.
 
 QUERY_RESULT has no RESULT_ACK and is never replayed after a session changes.
+An already queued completed result keeps its original identity when a subsequent
+read is accepted on that same socket; replacing the current consumer cannot drop
+it. The server must still check the original ticket, deadline and current output
+authority. Completed read output is queued before its release can authorize new
+work; sender priority still favors control frames already in the bounded outbox.
 Bounded callback failures produce `unavailable/internal_error` with no exception
 text, evidence or retrieval mode. Deadline expiry similarly produces unavailable.
 Completed retrieval permits only hybrid mode; full strict result/evidence,
