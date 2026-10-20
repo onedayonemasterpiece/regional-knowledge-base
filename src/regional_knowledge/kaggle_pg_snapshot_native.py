@@ -6,7 +6,7 @@ binary/dependency revisions and private writable paths before any invocation.
 from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 import hashlib
 import json
 import math
@@ -14,9 +14,14 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import signal
+import secrets
 import stat
 import tarfile
 import psycopg
+
+from .kaggle_database_probe import NativeDatabaseProbe
+from .kaggle_apply import handover_writer
+from .kaggle_restored_database import VerifiedInitializedDatabase
 
 
 class SnapshotError(RuntimeError):
@@ -138,6 +143,7 @@ def inventory_tree(root,limits):
     for directory,dirs,files in os.walk(root,followlinks=False):
         for name in sorted(dirs+files):
             path=Path(directory)/name;info=path.lstat();relative=path.relative_to(root).as_posix()
+            if len(relative.encode())>1024:raise SnapshotError('snapshot_member_path_budget')
             if stat.S_ISLNK(info.st_mode) or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
                 raise SnapshotError('snapshot_nonregular_member')
             if len(records)>=limits.max_files:raise SnapshotError('snapshot_file_budget')
@@ -155,9 +161,15 @@ def inventory_tree(root,limits):
 
 def pack_tree(root,path,limits):
     records,used,digest=inventory_tree(root,limits)
+    class BoundedWriter:
+        def __init__(self,destination):self.destination,self.used=destination,0
+        def write(self,data):
+            self.used+=len(data)
+            if self.used>limits.max_archive_bytes:raise SnapshotError('snapshot_archive_byte_budget')
+            return self.destination.write(data)
     with open(path,'xb') as destination:
         os.chmod(path,0o600)
-        with tarfile.open(fileobj=destination,mode='w|') as archive:
+        with tarfile.open(fileobj=BoundedWriter(destination),mode='w|') as archive:
             for relative,_,_ in records:archive.add(root/relative,arcname=relative,recursive=False)
         destination.flush();os.fsync(destination.fileno())
     size,archive_hash=digest_file(path,limits.max_archive_bytes)
@@ -171,14 +183,16 @@ def unpack_tree(path,destination,manifest,limits):
         for member in archive:
             name=member.name;parts=PurePosixPath(name).parts
             if (not parts or PurePosixPath(name).is_absolute() or any(p in ('..','.') for p in parts)
-                    or '\\' in name or name in names or len(names)>=limits.max_files
+                    or len(name.encode())>1024 or '\\' in name or name in names or len(names)>=limits.max_files
                     or not (member.isdir() or member.isfile()) or member.size<0):
                 raise SnapshotError('snapshot_unsafe_archive_member')
+            if len(names)>=manifest.get('file_count',limits.max_files):raise SnapshotError('snapshot_file_count_differs')
             names.add(name);target=destination.joinpath(*parts)
             target.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
             if member.isdir():target.mkdir(mode=0o700,exist_ok=True);continue
             used+=member.size
-            if used>limits.max_unpacked_bytes:raise SnapshotError('snapshot_unpacked_byte_budget')
+            if used>min(limits.max_unpacked_bytes,manifest.get('unpacked_bytes',limits.max_unpacked_bytes)):
+                raise SnapshotError('snapshot_unpacked_byte_budget')
             source=archive.extractfile(member)
             with open(target,'xb') as output:
                 os.chmod(target,0o600);copied=0
@@ -222,3 +236,320 @@ class _CandidatePg:
             self.process.send_signal(signal.SIGINT)
             async with asyncio.timeout(30):await self.process.wait()
 
+
+
+@dataclass(eq=False)
+class _NativeSession:
+    candidate: object
+    manifest: dict
+    control: bytes
+    binding: object
+    executor: object
+    receipts: list
+
+
+class NativeSnapshotFactory:
+    """Private native phases; fixed accepted-command replay, no journal client."""
+    def __init__(self,*,tools,database,identity,registry,executor_factory,current,
+                 workspace_private_current,native_uid,native_gid,acquire=None,
+                 upload_ticket=None,
+                 limits=SnapshotLimits(),connect=psycopg.AsyncConnection.connect,
+                 spawn=asyncio.create_subprocess_exec,probe=None):
+        if (type(tools) is not PhysicalPgTools or not callable(executor_factory)
+                or not callable(current) or not callable(workspace_private_current)
+                or not isinstance(identity,tuple) or len(identity)!=3):
+            raise TypeError('fixed native restore deployment required')
+        self.tools,self.database,self.identity,self.registry=tools,database,identity,registry
+        self.executor_factory,self.current=executor_factory,current
+        self.workspace_private_current=workspace_private_current
+        self.native_uid,self.native_gid=native_uid,native_gid
+        self.acquire,self.limits,self.connect,self.spawn=acquire,limits,connect,spawn
+        self.upload_ticket=upload_ticket
+        self.probe=probe or NativeDatabaseProbe()
+        self._sessions=set();self._capabilities=set();self._owned_candidates=set()
+        self._operations={}
+        self._completed={};self._references={}
+
+    def _current(self,binding):
+        if not self.current(binding):raise SnapshotError('native_restore_binding_changed')
+
+    async def capture(self,binding,*,workspace,versions,expected_sequence):
+        """A scoped direct upload callback receives bytes, never bucket credentials."""
+        self._current(binding);validate_versions(versions)
+        if not callable(self.acquire) or not callable(self.upload_ticket):
+            raise SnapshotError('native_backup_scoped_transport_unavailable')
+        async with asyncio.timeout(self.limits.timeout_seconds):
+            await self.tools.verify(self._run)
+            catalog,fields=await self.probe(acquire=self.acquire)
+            if (sha(catalog)!=versions['catalog_sha256'] or fields['database_generation']!=self.database.database_generation
+                    or fields['applied_seq']!=expected_sequence
+                    or any(fields[k]!=versions[k] for k in ('schema_revision','function_revision','executor_revision'))):
+                raise SnapshotError('native_backup_current_prefix')
+            root=await asyncio.to_thread(self._workspace,workspace,self.limits.max_unpacked_bytes*2)
+            async with self.acquire() as connection:
+                async with connection.transaction():
+                    await connection.execute("SET LOCAL statement_timeout='2000ms'")
+                    cursor=await connection.execute('SELECT system_identifier::text FROM pg_control_system()')
+                    system_identifier=(await cursor.fetchone())[0]
+                    cursor=await connection.execute('SELECT current_setting(\'server_version_num\')::integer,'
+                        'writer_generation FROM rkb_v4.recovery_state WHERE singleton')
+                    if await cursor.fetchone()!=(versions['server_version_num'],self.database.writer_generation):
+                        raise SnapshotError('native_backup_version_or_writer')
+                    cursor=await connection.execute('SELECT datname FROM pg_database WHERE NOT datistemplate '
+                        'ORDER BY datname COLLATE "C" LIMIT 4')
+                    if {row[0] for row in await cursor.fetchall()}!={'postgres',self.database.dbname}:
+                        raise SnapshotError('native_backup_cluster_not_dedicated')
+                    prefix=await applied_prefix(connection,expected_sequence,self.limits)
+            await self._run(self.tools.pg_basebackup.path,'--pgdata',str(root/'base'),
+                '--wal-method=stream','--checkpoint=fast','--manifest-checksums=SHA256','--no-password',
+                '--host',self.database.socket,'--port',str(self.database.port),'--username','rkb_bootstrap',
+                timeout=self.limits.timeout_seconds)
+            await self._run(self.tools.pg_verifybackup.path,str(root/'base'),timeout=self.limits.timeout_seconds)
+            records,unpacked,inventory,size,digest=await asyncio.to_thread(pack_tree,root/'base',root/'base.tar',self.limits)
+            _,after=await self.probe(acquire=self.acquire)
+            self._current(binding)
+            if after['applied_seq']!=expected_sequence:raise SnapshotError('native_backup_source_advanced')
+            blob=await self.upload_ticket(root/'base.tar',size=size,sha256=digest)
+            if type(blob) is not BlobRef or (blob.size,blob.sha256)!=(size,digest):
+                raise SnapshotError('native_backup_upload_receipt')
+            return {'database_generation':self.database.database_generation,'writer_generation':self.database.writer_generation,
+                'applied_sequence':expected_sequence,'applied_prefix_sha256':prefix,'versions':dict(versions),'blob':asdict(blob),
+                'system_identifier':system_identifier,'file_count':len(records),'unpacked_bytes':unpacked,
+                'inventory_sha256':inventory,'backup_manifest_sha256':digest_file(root/'base/backup_manifest',self.limits.max_unpacked_bytes)[1],
+                'native_tools':{name:asdict(getattr(self.tools,name)) for name in ('pg_basebackup','pg_verifybackup','postgres')}}
+
+    async def prepare(self,binding,*,operation_key,**arguments):
+        """A lost prepare ACK never authorizes creating a second candidate."""
+        self._current(binding)
+        if not isinstance(operation_key,str) or not 1<=len(operation_key.encode())<=256:
+            raise SnapshotError('native_restore_operation_key_required')
+        request=sha(encode({'manifest':arguments.get('expected_manifest_sha256'),
+            'control':sha(arguments.get('control_bytes',b'')),'identity':self.identity}))
+        previous=self._operations.get(operation_key)
+        if previous is not None:
+            digest,session=previous
+            if digest!=request:raise SnapshotError('native_restore_operation_changed')
+            if session is None:raise SnapshotError('native_restore_prepare_unknown_reconcile_owned_workspace')
+            session.binding=binding
+            return session
+        if len(self._operations)>=2:raise SnapshotError('native_restore_operation_capacity')
+        self._operations[operation_key]=(request,None)
+        async with asyncio.timeout(self.limits.timeout_seconds):
+            session=await self._prepare(binding,**arguments)
+        self._operations[operation_key]=(request,session)
+        return session
+
+    async def _prepare(self,binding,*,manifest_bytes,expected_manifest_sha256,archive_path,
+                      control_bytes,expected_versions,workspace):
+        """Artifact bytes arrive through an existing exact scoped download ticket.
+
+        This API is internal to authenticated owned-worker control, never a
+        caller-facing tool or source of bucket/user credentials.
+        """
+        self._current(binding);validate_versions(expected_versions)
+        if len(manifest_bytes)>self.limits.max_control_bytes or len(control_bytes)>self.limits.max_control_bytes:
+            raise SnapshotError('native_restore_metadata_budget')
+        if sha(manifest_bytes)!=expected_manifest_sha256:raise SnapshotError('native_restore_manifest_hash')
+        m=json.loads(manifest_bytes)
+        if (encode(m)!=manifest_bytes or m.get('codec')!='rkb.pg-physical-base.v1'
+                or m.get('versions')!=expected_versions or m.get('database_generation')!=self.database.database_generation
+                or m.get('writer_generation')==self.database.writer_generation
+                or len(manifest_bytes)>self.limits.max_control_bytes
+                or len(control_bytes)>self.limits.max_control_bytes
+                or sha(control_bytes)!=m['source_control']['sha256']):
+            raise SnapshotError('native_restore_manifest_binding')
+        blob=BlobRef(**m['blob'])
+        for name in ('pg_basebackup','pg_verifybackup','postgres'):
+            actual=asdict(getattr(self.tools,name));original=m['native_tools'][name]
+            if any(actual[k]!=original.get(k) for k in ('size','sha256','version_output')):
+                raise SnapshotError('native_restore_stage0_inventory_differs')
+        if (blob.size>self.limits.max_archive_bytes or m['unpacked_bytes']>self.limits.max_unpacked_bytes
+                or m['file_count']>self.limits.max_files):raise SnapshotError('native_restore_artifact_budget')
+        if len(self._owned_candidates)>=2:raise SnapshotError('native_restore_candidate_capacity')
+        await self.tools.verify(self._run)
+        root=await asyncio.to_thread(self._workspace,workspace,m['unpacked_bytes'])
+        if self.database.socket!=str(root/'socket'):raise SnapshotError('native_restore_socket_binding')
+        if await asyncio.to_thread(digest_file,archive_path,self.limits.max_archive_bytes)!=(blob.size,blob.sha256):
+            raise SnapshotError('native_restore_archive_hash')
+        await asyncio.to_thread(unpack_tree,archive_path,root/'data',m,self.limits)
+        await asyncio.to_thread(self._own_workspace,root/'data',recursive=True)
+        await self._run(self.tools.pg_verifybackup.path,str(root/'data'),timeout=self.limits.timeout_seconds)
+        (root/'socket').mkdir(mode=0o700);self._own_workspace(root/'socket')
+        process=await self.spawn(self.tools.postgres.path,'-D',str(root/'data'),'-k',self.database.socket,
+            '-h','','-p',str(self.database.port),'-c','archive_mode=off','-c','archive_command=',
+            '-c','restore_command=','-c','shared_preload_libraries=','-c','session_preload_libraries=',
+            '-c','local_preload_libraries=','-c','max_connections=8','-c','shared_buffers=32MB',
+            '-c','work_mem=4MB','-c','maintenance_work_mem=16MB',stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL,
+            env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'},**self._identity())
+        candidate=_CandidatePg(process,self.database,self.connect);self._owned_candidates.add(candidate)
+        try:
+            async with asyncio.timeout(20):
+                while True:
+                    if process.returncode is not None:raise SnapshotError('native_restore_start_failed')
+                    try:
+                        async with candidate.acquire():pass
+                        break
+                    except psycopg.OperationalError:await asyncio.sleep(.1)
+            catalog,fields=await self.probe(acquire=candidate.acquire)
+            if (sha(catalog)!=expected_versions['catalog_sha256']
+                    or fields['database_generation']!=self.database.database_generation
+                    or fields['applied_seq']!=m['applied_sequence']):
+                raise SnapshotError('native_restore_internal_cursor')
+            async with candidate.acquire() as connection:
+                async with connection.transaction():
+                    await connection.execute("SET LOCAL statement_timeout='2000ms'")
+                    cursor=await connection.execute('SELECT system_identifier::text FROM pg_control_system()')
+                    if await cursor.fetchone()!=(m['system_identifier'],):raise SnapshotError('native_restore_system_identity')
+                    if await applied_prefix(connection,m['applied_sequence'],self.limits)!=m['applied_prefix_sha256']:
+                        raise SnapshotError('native_restore_applied_prefix')
+                    cursor=await connection.execute('SELECT writer_generation FROM rkb_v4.recovery_state WHERE singleton')
+                    if await cursor.fetchone()!=(m['writer_generation'],):raise SnapshotError('native_restore_original_writer')
+            original=replace(self.database,writer_generation=m['writer_generation'])
+            executor=self.executor_factory(acquire=candidate.acquire,registry=self.registry,database=original,
+                run_id=self.identity[0],launch_nonce=self.identity[1],runtime_incarnation=self.identity[2])
+            session=_NativeSession(candidate,m,control_bytes,binding,executor,[])
+            self._sessions.add(session);self._current(binding)
+            return session
+        except BaseException:
+            await candidate.aclose();self._owned_candidates.discard(candidate);raise
+
+    async def apply(self,session,frame):
+        if session not in self._sessions:raise SnapshotError('native_restore_session_unknown')
+        self._current(session.binding)
+        receipt=await session.executor(frame)
+        item=(receipt['sequence'],receipt['command_sha256'],receipt['outcome_sha256'])
+        expected=session.manifest['applied_sequence']+len(session.receipts)+1
+        if item[0]<expected:
+            if item not in session.receipts:raise SnapshotError('native_restore_duplicate_receipt_changed')
+        elif item[0]==expected:session.receipts.append(item)
+        else:raise SnapshotError('native_restore_receipt_order')
+        return receipt
+
+    async def finish(self,session,*,expected_tail,final_head,control_bytes,expected_catalog_sha256):
+        """Controller calls only after exact remote outcomes and old tail drain.
+
+        The current authenticated control binding is the authority; supplied
+        fields are compared with native locally retained receipts, not accepted
+        as standalone JSON permission.
+        """
+        expected_tail=tuple(tuple(item) for item in expected_tail)
+        if len(control_bytes)>self.limits.max_control_bytes:raise SnapshotError('native_restore_metadata_budget')
+        completed=self._completed.get(session)
+        if completed is not None:
+            if (completed.control!=control_bytes or completed.journal_head!=final_head
+                    or expected_tail!=tuple(session.receipts)):
+                raise SnapshotError('native_restore_finish_request_changed')
+            await self.verify_initialized(completed,self.database,self.identity)
+            return completed
+        if session not in self._sessions:raise SnapshotError('native_restore_session_unknown')
+        self._current(session.binding)
+        if tuple(expected_tail)!=tuple(session.receipts):raise SnapshotError('native_restore_tail_receipts_differ')
+        final_sequence=session.manifest['applied_sequence']+len(session.receipts)
+        control=json.loads(control_bytes)
+        if (encode(control)!=control_bytes or control.get('database_generation')!=self.database.database_generation
+                or control.get('sequence')!=final_sequence or control.get('journal_head')!=final_head
+                or control.get('catalog_sha256')!=expected_catalog_sha256):
+            raise SnapshotError('native_restore_final_control_binding')
+        async with session.candidate.acquire() as connection:
+            cursor=await connection.execute('SELECT applied_seq FROM rkb_v4.recovery_state WHERE singleton')
+            if await cursor.fetchone()!=(final_sequence,):raise SnapshotError('native_restore_final_cursor')
+            await connection.commit()
+            await handover_writer(connection,database_generation=self.database.database_generation,
+                expected_writer=session.manifest['writer_generation'],new_writer=self.database.writer_generation)
+        catalog,fields=await self.probe(acquire=session.candidate.acquire)
+        if (sha(catalog)!=expected_catalog_sha256 or fields['database_generation']!=self.database.database_generation
+                or fields['applied_seq']!=final_sequence
+                or fields['projection_seq']!=final_sequence or not fields['text_search_ready'] or not fields['dense_search_ready']
+                or any(fields[k]!=getattr(self.database,k) for k in ('schema_revision','function_revision','executor_revision'))):
+            raise SnapshotError('native_restore_final_readiness')
+        async with session.candidate.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute("SET LOCAL statement_timeout='2000ms'")
+                await self._sql_readiness(connection)
+        self._current(session.binding)
+        cap=VerifiedInitializedDatabase(self,session.candidate,self.database,self.identity,
+            {'sha256':sha(encode(session.manifest))},final_head,final_sequence,control_bytes,session.binding)
+        self._capabilities.add(cap);self._sessions.discard(session)
+        self._completed[session]=cap
+        return cap
+
+    def reference(self,cap):
+        if cap not in self._capabilities:raise SnapshotError('native_restore_capability_unknown')
+        for ref,value in self._references.items():
+            if value is cap:return ref
+        ref=secrets.token_urlsafe(24);self._references[ref]=cap
+        return ref
+
+    async def verify_reference(self,binding,reference):
+        self._current(binding)
+        cap=self._references.get(reference)
+        if cap is None:raise SnapshotError('native_restore_reference_unknown')
+        await self.verify_initialized(cap,self.database,self.identity)
+        return {'database':self.database.wire(),'identity':list(self.identity),
+            'applied_sequence':cap.applied_sequence,'catalog_sha256':json.loads(cap.control)['catalog_sha256']}
+
+    async def verify_initialized(self,cap,database,identity):
+        if (type(cap) is not VerifiedInitializedDatabase or cap not in self._capabilities
+                or cap.database!=database or cap.identity!=identity or cap._candidate.process.returncode is not None):
+            raise SnapshotError('native_restore_capability_unknown')
+        self._current(cap._binding)
+        catalog,fields=await self.probe(acquire=cap._candidate.acquire)
+        if (sha(catalog)!=json.loads(cap.control)['catalog_sha256'] or fields['database_generation']!=database.database_generation
+                or fields['applied_seq']!=cap.applied_sequence
+                or fields['projection_seq']!=cap.applied_sequence or not fields['text_search_ready'] or not fields['dense_search_ready']):
+            raise SnapshotError('native_restore_adoption_state_changed')
+        async with cap._candidate.acquire() as connection:
+            cursor=await connection.execute('SELECT writer_generation FROM rkb_v4.recovery_state WHERE singleton')
+            if await cursor.fetchone()!=(database.writer_generation,):raise SnapshotError('native_restore_adoption_writer_changed')
+        return database.connection(reader=True)
+    def _identity(self):
+        uid,gid=self.native_uid,self.native_gid
+        if type(uid) is not int or type(gid) is not int or min(uid,gid)<1:
+            raise SnapshotError('snapshot_stage0_native_identity_required')
+        if os.geteuid()==0:return dict(user=uid,group=gid,extra_groups=[])
+        if os.geteuid()!=uid or os.getegid()!=gid or not set(os.getgroups())<={gid}:
+            raise SnapshotError('snapshot_native_identity_mismatch')
+        return {}
+    def _own_workspace(self,path,*,recursive=False):
+        self._identity()
+        if os.geteuid()==0:
+            os.chown(path,self.native_uid,self.native_gid)
+            if recursive:
+                for directory,dirs,files in os.walk(path,followlinks=False):
+                    for name in dirs+files:os.chown(Path(directory)/name,self.native_uid,self.native_gid,follow_symlinks=False)
+    def _workspace(self,path,required):
+        if not self.workspace_private_current(path):
+            raise SnapshotError('snapshot_stage0_private_output_exclusion_required')
+        root=private_workspace(path,required);self._own_workspace(root)
+        return root
+    async def _run(self,*args,timeout=30):
+        process=await self.spawn(*args,stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,
+            env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'},**self._identity())
+        try:
+            async with asyncio.timeout(timeout):
+                output=bytearray()
+                while chunk:=await process.stdout.read(4096):
+                    output.extend(chunk)
+                    if len(output)>65536:raise SnapshotError('snapshot_native_output_bound')
+                if await process.wait()!=0:raise SnapshotError('snapshot_native_command_failed')
+                return output.decode('utf-8').strip()
+        finally:
+            if process.returncode is None:process.kill();await process.wait()
+    @staticmethod
+    async def _sql_readiness(connection):
+        cursor=await connection.execute('''WITH p AS (
+            SELECT p.embedding,p.source_id,(tsvector_to_array(p.lexemes))[1] token
+            FROM rkb_v4.passage_search p JOIN rkb_v4.active_revision a USING(source_id,revision)
+            JOIN rkb_v4.sources s USING(source_id) WHERE s.accepted AND NOT s.withdrawn
+            ORDER BY p.passage_id LIMIT 1)
+            SELECT EXISTS(SELECT 1 FROM rkb_v4.lexical_candidates_scoped(coalesce(p.token,'snapshot_probe'),200,ARRAY[p.source_id])),
+                EXISTS(SELECT 1 FROM rkb_v4.dense_candidates_scoped(p.embedding,200,ARRAY[p.source_id])) FROM p''')
+        row=await cursor.fetchone()
+        if row is not None and row!=(True,True):raise SnapshotError('snapshot_sql_dense_probe_failed')
+        # Empty eligible corpus is explicit; still execute both native branches.
+        if row is None:
+            await connection.execute("SELECT count(*) FROM rkb_v4.lexical_candidates('snapshot_probe',1)")
+            await connection.execute('SELECT count(*) FROM rkb_v4.dense_candidates('
+                'array_fill(1.0::real,ARRAY[1024])::public.vector,1)')

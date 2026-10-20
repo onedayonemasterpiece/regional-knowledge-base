@@ -21,3 +21,10 @@ class VerifiedInitializedDatabase:
         self._factory._capabilities.discard(self)
         await self._candidate.aclose()
         self._factory._owned_candidates.discard(self._candidate)
+        for reference,value in tuple(getattr(self._factory,'_references',{}).items()):
+            if value is self:del self._factory._references[reference]
+        for session,value in tuple(getattr(self._factory,'_completed',{}).items()):
+            if value is self:
+                del self._factory._completed[session]
+                for operation,(_,retained) in tuple(self._factory._operations.items()):
+                    if retained is session:del self._factory._operations[operation]
