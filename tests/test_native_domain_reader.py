@@ -80,7 +80,8 @@ async def test_current11_production_roles_source_case_editorial_geo_and_hybrid_r
         async def synthetic_vector(text):return [1.]+[0.]*1023
         found=await execute_query(Query(query='fictional council gate',**identity),acquire=acquire,
             tokenizer=PinnedTokenizer(count,REVISION,TOKENIZER_SHA256,SPACE),encode=synthetic_vector)
-        assert found.status=='ok' and found.mode=='hybrid' and len(found.evidence)==1
+        assert found.status=='degraded' and found.reason=='bounded_retrieval'
+        assert found.mode=='hybrid' and len(found.evidence)==1
         item=found.evidence[0]
         locator=PassageContinuation(database_generation=found.observed_database_generation,
             visibility_epoch=found.observed_visibility_epoch,source=item.dependencies.source_revisions[0],
