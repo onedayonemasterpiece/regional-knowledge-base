@@ -95,3 +95,15 @@ exact destination and request/turn/minimum-cursor/absolute deadline. It shares
 the same source pipeline, authority recheck, admission and final issuance guard;
 it creates no fake OAuth principal and transfers release ownership through the
 request-local output boundary. Missing final output capture remains unavailable.
+
+The configured target registers `story_get`, `story_search`, `story_history` and
+`story_variants` only when the same retained spool registry contains the exact
+v2/schema7 handler. Startup binds their actual callables into the native history
+route closure. MCP calls use the existing OAuth authority, read admission and
+request-local final HTTP issuance; gen6/source-only configurations expose no
+native Story tools. Joined tests exercise MCP get/history/variants through real
+synthetic OAuth/queue/spool owners, with only native receipt production mocked.
+Actual PG get/history/variants and hybrid body retrieval are separately verified
+by the synthetic native fixture; a complete real target import-to-MCP readback
+has not been performed here. Unsupported Story views, mutations, private
+variants, calendar/observation/entity/GEO/case operations remain explicit gaps.

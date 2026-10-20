@@ -162,3 +162,45 @@ async def test_explicit_main_selects_target_without_env_loader(service,monkeypat
         build_server(target_startup=service.startup,issuer='https://wrong.invalid')
     with pytest.raises(TypeError,match='canonical OAuth'):
         replace(service.config,participants=people)
+
+@pytest.mark.asyncio
+async def test_native_story_tools_require_installed_v2_and_share_current_source_output_boundary(target,monkeypatch):
+    from regional_knowledge.source_import_v2 import STORY_REVISIONS,source_import_v2_handler
+    from regional_knowledge.kaggle_protocol import StoryReadRequest,StoryReadResult
+    from test_kaggle_story_read import record,STORY
+    from regional_knowledge.kaggle_story_read import story_item
+    s=target
+    registry=HandlerRegistry([handler(),source_import_v2_handler(revisions=STORY_REVISIONS,
+        check_sha256='a'*64,apply_sha256='b'*64)])
+    spool=ControlSpool(s.queue,s.auth.p.registry,RecoveryJournal(ConditionalMemoryStore(),stream='native-story-mcp'),registry)
+    adapter=HistoryAdapter();adapter.available=True
+    config=TargetServiceConfig(s.auth.provider,s.auth.p.registry,s.queue,spool,adapter,'writer-1',
+        lambda **binding:binding['database_generation']=='synthetic-db')
+    startup=TargetServiceStartup(config)
+    monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.principal)
+    server=build_server(target_startup=startup)
+    assert {'story_search','story_get','story_history','story_variants'}<={tool.name for tool in server._tool_manager.list_tools()}
+    assert set(startup.routes)=={'source.search','source.fetch','source.import','source.withdraw',
+        'story.search','story.get','story.history','story.variants'}
+    async with startup.lifespan(server):
+        for name,view in (('story_get','get'),('story_history','history'),('story_variants','variants')):
+            request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
+                'app':SimpleNamespace(state=SimpleNamespace()),'state':{}})
+            context=SimpleNamespace(request_context=SimpleNamespace(request=request,request_id='native-story'))
+            task=asyncio.create_task(server.call_tool(name,{'story_id':STORY},context))
+            dispatched=await work(s);assert type(dispatched.query) is StoryReadRequest
+            row=record(view=view)
+            result=StoryReadResult(request_id=dispatched.query.request_id,connection_generation=s.generation,
+                turn_generation=dispatched.query.turn_generation,status='ok',evidence=(story_item(row),),record=row,
+                observed_data_seq=5,observed_projection_seq=5,observed_database_generation='synthetic-db',
+                observed_visibility_epoch=0)
+            assert await startup.admission.finish_read(s.run,s.token,s.generation,result)
+            output=await task
+            assert row['body'] in str(output) and row['body_sha256'] in str(output)
+            from regional_knowledge.read_issuance import _SCOPE_KEY
+            call=request.scope[_SCOPE_KEY][1]
+            assert call.gate is startup.gate
+            assert call.gated.result.record['default_variant_ref']==row['default_variant_ref']
+            call.release();await release(s,dispatched)
+        with pytest.raises(ToolError,match='target_domain_unavailable'):
+            await server.call_tool('story_operation',{})

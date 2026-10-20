@@ -176,6 +176,8 @@ class KnowledgeMCPServer(MCPServer):
 
     async def call_tool(self, name, arguments, context=None):
         allowed = {'search','fetch','knowledge_search','profile'}
+        if getattr(self,'_target_story_available',False):
+            allowed.update({'story_search','story_get','story_history','story_variants'})
         if getattr(self,'_target_import_available',False):
             allowed.update({'book_ingest','book_pages'})
         if getattr(self,'_target_source_profile',False) and name not in allowed:
@@ -421,6 +423,7 @@ def build_server(
 
     mcp._target_source_profile=selected=='kaggle_source'
     mcp._target_import_available = selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None
+    mcp._target_story_available = (selected=='kaggle_source' and target_startup.gate.story_supported())
     mcp._target_startup=target_startup
     mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
     worker_queue = getattr(backend, 'worker_queue', None)
@@ -476,7 +479,40 @@ def build_server(
     # Optional narrow function-call bundles for the client application's own Live agent.
     # The default read-only Live surface above remains unchanged.
     story_profiles = {"full", "story_reader", "story_contributor", "story_editor"}
-    if profile in story_profiles:
+    if profile in story_profiles and mcp._target_story_available:
+        @mcp.tool(name='story_get',title='Read saved source-bound narrative',
+            description='Exact saved model-authored basic Variant body and default reference, with current source-access recheck. '
+                        'Only compact/editorial views are supported; evidence/review/editing/private variants remain unavailable.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_story_get(story_id:str,revision:int|None=None,
+                view:str='compact',cursor:str|None=None,limit:Annotated[int,Field(ge=1,le=10)]=8,
+                assertion_id:str|None=None,relation_id:str|None=None)->dict[str,Any]:
+            return await backend.story_get(story_id,_principal(),revision=revision,view=view,cursor=cursor,
+                limit=limit,assertion_id=assertion_id,relation_id=relation_id)
+
+        @mcp.tool(name='story_search',title='Find saved source-bound narratives',
+            description='Bounded indexed hybrid search over actual saved basic narrative bodies; no summary/body fallback.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_story_search(query:str,filters:dict[str,str]|None=None,mode:str='hybrid',order:str='updated',
+                limit:Annotated[int,Field(ge=1,le=5)]=3,cursor:str|None=None)->EvidenceSearchOutput:
+            return await backend.story_search(query,_principal(),filters=filters,mode=mode,order=order,limit=limit,cursor=cursor)
+
+        @mcp.tool(name='story_history',title='Read accepted narrative authorship',
+            description='Bounded exact accepted source-import author/request/operation history with current source-access recheck.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_story_history(story_id:str,from_revision:int|None=None,to_revision:int|None=None,
+                limit:Annotated[int,Field(ge=1,le=10)]=10,cursor:str|None=None)->dict[str,Any]:
+            return await backend.story_history(story_id,_principal(),from_revision=from_revision,to_revision=to_revision,
+                limit=limit,cursor=cursor)
+
+        @mcp.tool(name='story_variants',title='Read saved basic narrative variant',
+            description='Exact shared basic Variant body/revision; alternate/private/editorial variants remain unavailable.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_story_variants(story_id:str,limit:Annotated[int,Field(ge=1,le=10)]=10,
+                cursor:str|None=None)->dict[str,Any]:
+            return await backend.story_variants(story_id,_principal(),limit=limit,cursor=cursor)
+
+    if profile in story_profiles and not mcp._target_story_available:
         if not hasattr(backend, "corpus"):
             if profile != "full":
                 raise RuntimeError("Story Registry requires the existing SQLite authority")
