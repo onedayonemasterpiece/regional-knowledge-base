@@ -129,6 +129,15 @@ bytes and 128 reconciliation hops. Head/manifest reads are bounded at 4/8 KiB;
 stream names at 512 UTF-8 bytes. Encoding/base64 overhead counts against byte
 limits. Hitting a traversal bound is UNKNOWN, not a partial recovery success.
 Limits are explicit configurable safety bounds, not provider quota measurements.
+Before base64/JSON encoding, payload and outcome lengths, aggregate identity and
+metadata UTF-8 sizes, and mapping cardinality are checked against those same
+configured byte budgets. Oversized mappings are rejected before traversal. Each
+encoded command is also checked while forming a batch, so fixed JSON overhead
+cannot accumulate beyond the segment budget. These preflights bound temporary
+encoding allocations to a finite multiple of the configured caps; the final
+canonical segment/outcome byte checks still apply and their bytes are unchanged.
+The writer generation and final encoded head must fit the existing 4 KiB head
+read budget before remote publication, preventing creation of an unreadable head.
 Operation bindings add immutable objects per command and duplicate envelope
 bytes in segments: measure and budget that cost before production use.
 

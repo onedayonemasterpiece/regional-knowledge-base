@@ -73,6 +73,50 @@ def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _reserve_encoding_bytes(remaining: int, size: int) -> int:
+    if size > remaining:
+        raise JournalLimit("input exceeds configured encoding byte budget")
+    return remaining - size
+
+
+def _reserve_text(remaining: int, value: str) -> int:
+    if not isinstance(value, str):
+        raise ValueError("journal identity and metadata must be strings")
+    # Reject large strings without allocating UTF-8. Encoding a surviving string
+    # allocates at most four times the remaining configured budget.
+    _reserve_encoding_bytes(remaining, len(value))
+    return _reserve_encoding_bytes(remaining, len(value.encode("utf-8")))
+
+
+def _reserve_integer(remaining: int, value: int) -> int:
+    if type(value) is not int or value < 1:
+        raise ValueError("sequence must be a positive integer")
+    # A cheap lower bound on decimal digits, without converting a huge integer.
+    return _reserve_encoding_bytes(remaining, (value.bit_length() - 1) // 4 + 1)
+
+
+def _preflight_command(command: ExactCommand, remaining: int) -> int:
+    """Charge an aggregate lower bound before any base64/JSON allocation."""
+    if not isinstance(command.payload, bytes):
+        raise ValueError("payload must preserve exact bytes")
+    remaining = _reserve_encoding_bytes(remaining, 4 * ((len(command.payload) + 2) // 3))
+    remaining = _reserve_integer(remaining, command.sequence)
+    for value in (command.operation_key, command.request_id, command.person_id,
+                  command.route, command.logical_time, command.schema_revision,
+                  command.function_revision, command.executor_revision, command.kind):
+        remaining = _reserve_text(remaining, value)
+    for mapping in (command.ids, command.expected_revisions):
+        if not isinstance(mapping, Mapping):
+            raise ValueError("IDs and revision preconditions must be mappings")
+        # Even empty JSON string pairs require five bytes ("":""). Check
+        # cardinality before traversing or copying a potentially huge mapping.
+        remaining = _reserve_encoding_bytes(remaining, 5 * len(mapping))
+        for key, value in mapping.items():
+            remaining = _reserve_text(remaining, key)
+            remaining = _reserve_text(remaining, value)
+    return remaining
+
+
 def _decode(data: bytes) -> dict[str, Any]:
     try:
         value = json.loads(data)
@@ -333,12 +377,29 @@ class RecoveryJournal:
     async def seal(self, commands: Sequence[ExactCommand], *,
                    predecessor: VerifiedHead | None, writer_generation: str) -> AcceptedSeal:
         """Seal an already formed bounded batch; never execute a domain command."""
-        if not writer_generation:
+        if not isinstance(writer_generation, str) or not writer_generation:
             raise ValueError("writer generation is required")
+        _reserve_text(4096, writer_generation)
         if not 1 <= len(commands) <= self.max_commands:
             raise JournalLimit("command count exceeds segment budget")
-        encoded = tuple(command.encode() for command in commands)
         previous = predecessor.reference if predecessor else None
+        remaining = self.max_segment_bytes
+        if previous is not None:
+            remaining = _reserve_text(remaining, previous.key)
+            remaining = _reserve_text(remaining, previous.sha256)
+            remaining = _reserve_integer(remaining, previous.length)
+            remaining = _reserve_integer(remaining, previous.last_sequence)
+        for command in commands:
+            remaining = _preflight_command(command, remaining)
+        encoded_items = []
+        encoded_bytes = 0
+        for command in commands:
+            data = command.encode()
+            encoded_bytes += len(data)
+            if encoded_bytes > self.max_segment_bytes:
+                raise JournalLimit("commands exceed segment byte budget")
+            encoded_items.append(data)
+        encoded = tuple(encoded_items)
         first = previous.last_sequence + 1 if previous else 1
         if [command.sequence for command in commands] != list(range(first, first + len(commands))):
             raise JournalConflict("segment must continue the exact predecessor")
@@ -359,6 +420,10 @@ class RecoveryJournal:
                         "segment": segment_ref.wire()})
         node_ref = self._ref(self.prefix + "/manifests/" + _hash(node), node,
                              commands[-1].sequence)
+        pointer = _encode({"codec": "rkb.head.v1", "stream": self.stream,
+                           "writer_generation": writer_generation, "manifest": node_ref.wire()})
+        if len(pointer) > 4096:
+            raise JournalLimit("head exceeds configured read byte budget")
         current = await self.head()
         if current != predecessor:
             return await self._published(node_ref)  # Exact duplicate or a fork; never overwrite.
@@ -369,8 +434,6 @@ class RecoveryJournal:
             await self._immutable(key, data, self.max_segment_bytes)
         await self._immutable(segment_ref.key, segment, self.max_segment_bytes)
         await self._immutable(node_ref.key, node, 8192)
-        pointer = _encode({"codec": "rkb.head.v1", "stream": self.stream,
-                           "writer_generation": writer_generation, "manifest": node_ref.wire()})
         try:
             swapped = await self.store.compare_and_swap(
                 self.head_key, pointer, expected_token=predecessor.token if predecessor else None,
@@ -397,10 +460,19 @@ class RecoveryJournal:
         The caller supplies canonical domain outcome bytes (IDs/revisions/body,
         status and applied cursor), never a freshly rerun model result.
         """
-        if (not database_generation or not isinstance(outcome, bytes)
+        if (not isinstance(database_generation, str) or not database_generation or not isinstance(outcome, bytes)
                 or not isinstance(writer_generation, str) or not writer_generation):
             raise ValueError("original database generation, exact bytes and writer generation are required")
-        command_hash = _hash(command.encode())
+        remaining = _reserve_encoding_bytes(self.max_outcome_bytes, 4 * ((len(outcome) + 2) // 3))
+        remaining = _reserve_text(remaining, database_generation)
+        remaining = _reserve_text(remaining, command.operation_key)
+        _reserve_text(remaining, self.stream)
+        _reserve_text(4096, writer_generation)
+        _preflight_command(command, self.max_segment_bytes)
+        encoded_command = command.encode()
+        if len(encoded_command) > self.max_segment_bytes:
+            raise JournalLimit("command exceeds segment byte budget")
+        command_hash = _hash(encoded_command)
         accepted = await self._published(seal.manifest)
         if accepted != seal or command_hash not in accepted.command_hashes:
             raise JournalConflict("outcome does not match an accepted command")

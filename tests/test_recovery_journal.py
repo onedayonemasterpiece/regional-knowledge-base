@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 
+import regional_knowledge.recovery_journal as journal_module
 from regional_knowledge.recovery_journal import (
     AcceptedSeal, ExactCommand, JournalConflict, JournalCorrupt, JournalLimit,
     JournalUnknown, RecoveryJournal, StaleWriter, StoredObject, StoreUnavailable,
@@ -404,3 +405,90 @@ async def test_outcome_cas_unknown_reconciles_exact_publication_only():
     store.read_failures.clear()
     receipt = await journal.record_outcome(accepted, **fields)
     assert receipt.outcome_sha256 == hashlib.sha256(fields["outcome"]).hexdigest()
+
+
+def forbid_encoding(monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("oversized input reached base64/JSON encoding")
+    monkeypatch.setattr(journal_module, "_encode", fail)
+    monkeypatch.setattr(journal_module.base64, "b64encode", fail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes", [
+    {"payload": b"x" * 2049},
+    {"operation_key": "x" * 2049},
+    {"ids": {"chosen": "x" * 2049}},
+    {"expected_revisions": {"x" * 2049: "revision"}},
+    {"person_id": "p" * 1100, "route": "r" * 1100},
+    {"route": "𐀀" * 600},
+])
+async def test_segment_preflight_rejects_payload_and_aggregate_metadata_before_encoding(monkeypatch, changes):
+    store, journal = fixture(max_segment_bytes=2048)
+    forbid_encoding(monkeypatch)
+    with pytest.raises(JournalLimit):
+        await seal(journal, [command(**changes)])
+    assert not store.objects
+
+
+@pytest.mark.asyncio
+async def test_segment_preflight_applies_to_whole_batch_before_any_encoding(monkeypatch):
+    store, journal = fixture(max_segment_bytes=2048)
+    forbid_encoding(monkeypatch)
+    with pytest.raises(JournalLimit):
+        await seal(journal, [command(payload=b"x" * 800), command(2, payload=b"x" * 800)])
+    assert not store.objects
+
+
+@pytest.mark.asyncio
+async def test_segment_preflight_rejects_mapping_cardinality_before_iteration(monkeypatch):
+    class OversizedMapping(dict):
+        def __len__(self):
+            return 2049
+
+        def items(self):
+            raise AssertionError("oversized mapping was traversed")
+
+    store, journal = fixture(max_segment_bytes=2048)
+    forbid_encoding(monkeypatch)
+    with pytest.raises(JournalLimit):
+        await seal(journal, [command(ids=OversizedMapping())])
+    assert not store.objects
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes", [
+    {"outcome": b"x" * 2049},
+    {"database_generation": "x" * 2049},
+    {"command": command(operation_key="x" * 2049)},
+    {"command": command(payload=b"x" * 2049)},
+    {"command": command(ids={"id": "x" * 2049})},
+])
+async def test_outcome_preflight_rejects_before_command_or_outcome_encoding(monkeypatch, changes):
+    store, journal = fixture(max_segment_bytes=2048, max_outcome_bytes=2048)
+    accepted = await seal(journal, [command()])
+    original_objects = dict(store.objects)
+    fields = dict(command=command(), outcome=b"committed", database_generation="db-1",
+                  writer_generation="writer-1")
+    fields.update(changes)
+    forbid_encoding(monkeypatch)
+    with pytest.raises(JournalLimit):
+        await journal.record_outcome(accepted, **fields)
+    assert store.objects == original_objects
+
+
+@pytest.mark.asyncio
+async def test_head_generation_preflight_and_final_cap_prevent_unreadable_publication(monkeypatch):
+    store, journal = fixture()
+    with monkeypatch.context() as guarded:
+        forbid_encoding(guarded)
+        with pytest.raises(JournalLimit):
+            await seal(journal, [command()], writer="w" * 4097)
+    assert not store.objects
+    # JSON escaping can exceed the final head cap even when UTF-8 fits.
+    with pytest.raises(JournalLimit, match="head"):
+        await seal(journal, [command()], writer="\x00" * 1000)
+    assert not store.objects
+    assert await journal.head() is None
+    await seal(journal, [command()])
+    assert await journal.head() is not None
