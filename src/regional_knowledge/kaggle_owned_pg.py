@@ -104,8 +104,10 @@ def ensure_private_runtime_root(*, native_uid=None, native_gid=None):
 def grant_native_code_access(root,pins,*,uid,gid):
     """Give only the owned native identity access to exact verified public code.
 
-    No recursion, model/credential access, owner changes, root chmod or new
-    group-write/world permissions. Descriptors reject symlink parent swaps.
+    Give read/search on code directories: PostgreSQL enumerates its native
+    library directory during startup. No recursion, model/credential access,
+    owner changes, root chmod or new group-write/world permissions.
+    Descriptors reject symlink parent swaps.
     """
     root=Path(root)
     if root.resolve(strict=True)!=root:raise BootstrapUnavailable('native_pg_permission_root_invalid')
@@ -133,10 +135,10 @@ def grant_native_code_access(root,pins,*,uid,gid):
                     if info.st_uid not in (os.geteuid(),uid):
                         raise BootstrapUnavailable('native_pg_permission_parent_unowned')
                     if os.geteuid()==0:
-                        mode=(stat.S_IMODE(info.st_mode)|0o010)&~0o020
+                        mode=(stat.S_IMODE(info.st_mode)|0o050)&~0o020
                         if info.st_gid!=gid:os.fchown(parent,-1,gid)
                         if mode!=stat.S_IMODE(info.st_mode):os.fchmod(parent,mode)
-                    elif not _can_access(info,uid,gid,1):
+                    elif not _can_access(info,uid,gid,5):
                         raise BootstrapUnavailable('native_pg_permission_parent_denied')
                 fd=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent)
                 try:
@@ -260,6 +262,8 @@ class OwnedPostgres:
             diagnostic_bytes=min(8192,len(data)),diagnostic_retained=retained)
         missing=re.search(rb'error while loading shared libraries: ([A-Za-z0-9_.+-]{1,128}):',bytes(data))
         if missing:metadata['missing_library']=missing.group(1).decode('ascii')
+        if re.search(rb'could not open directory "[^"\r\n]*": Permission denied',bytes(data)):
+            metadata['startup_reason']='directory_read_denied'
         _LOG.warning(json.dumps(metadata,sort_keys=True))
 
     def _identity(self):

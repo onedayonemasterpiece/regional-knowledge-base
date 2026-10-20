@@ -140,3 +140,22 @@ the run ID, fixed stage/state and seconds; source content, signed URLs and
 exception messages are excluded. A complete model stage is distinct from PG
 readiness or a successful public query. These events instrument future runs;
 they do not retroactively measure v88/v89 or establish a latency improvement.
+
+Actual v90 completed download (60.085 s), installation (21.330 s) and protected
+model/tokenizer loading (44.948 s, including its 4.758 s tokenizer guard), then
+reported `native_pg_start_failed`. PostgreSQL exited with code 1 and retained
+428 bytes of private startup diagnostics; no bootstrap observation arrived.
+
+A bounded Ubuntu 24.04 fixture used the exact 85 pinned Noble packages and
+PostgreSQL 17.11 binaries without a model or corpus. With production-style
+search-only code directory permissions, initdb succeeded and postgres failed
+while opening its native library directory. Giving the configured PG group read
+and search permission on verified code directories made startup and a native
+version query pass. All three owned fixture containers were removed; aggregate
+runtime was 25.439 s. This reproduces a concrete permission defect and validates
+its correction; actual Kaggle PG readiness after the correction remains unverified.
+
+The grant remains limited to explicit verified public-code parents and files.
+It adds no group write or world access, changes no file owner, and leaves the
+working root, model and private configuration permissions unchanged. Startup
+logging classifies directory-read denial with a fixed code and no path content.

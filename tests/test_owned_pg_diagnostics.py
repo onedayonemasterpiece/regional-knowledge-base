@@ -55,3 +55,14 @@ async def test_native_stderr_budget_kills_only_owned_child_and_drops_post_startu
     process.stderr=asyncio.StreamReader();process.stderr.feed_data(b'accepted private query');process.stderr.feed_eof()
     await owner._capture_stderr(process,buffer,startup_only=True)
     assert buffer==b'' and events==['kill']
+
+
+def test_directory_read_failure_is_classified_without_private_paths(tmp_path,caplog):
+    database=spec(fresh=True).database
+    object.__setattr__(database,'cluster',str(tmp_path/'owned'))
+    owner=OwnedPostgres(database)
+    owner._retain_failure('postgres',1,
+        b'FATAL:  could not open directory "/private-opaque-path/native/lib": Permission denied\n')
+    record=json.loads(caplog.records[-1].message)
+    assert record['startup_reason']=='directory_read_denied'
+    assert 'private-opaque-path' not in caplog.text and 'native/lib' not in caplog.text
