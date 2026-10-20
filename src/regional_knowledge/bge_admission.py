@@ -19,6 +19,8 @@ from .bge_queue import StaleAttachment
 from .kaggle_protocol import Query, QueryResult, PassageReadRequest, PassageReadResult, StoryReadRequest, StoryReadResult, encode_envelope
 from .kaggle_fact_contracts import FactReadRequest, FactReadResult
 from .kaggle_source_read import SourceReadRequest, SourceReadResult
+from .kaggle_case_contracts import CaseReadRequest, CaseReadResult
+from .kaggle_geo_contracts import GeoReadRequest, GeoReadResult
 from .read_authority import ReadAuthority, VerifiedReadAuthority
 from .participants import RequestAuthority
 
@@ -56,7 +58,7 @@ class ResourceClaim:
 @dataclass(frozen=True)
 class ChannelWork:
     resource: ResourceClaim
-    query: Query | PassageReadRequest | StoryReadRequest | FactReadRequest | SourceReadRequest | None = None
+    query: Query | PassageReadRequest | StoryReadRequest | FactReadRequest | SourceReadRequest | CaseReadRequest | GeoReadRequest | None = None
     document_payload: object | None = None
 
     @property
@@ -73,7 +75,7 @@ class ChannelWork:
 class _Read:
     ticket: ReadTicket
     authority: VerifiedReadAuthority
-    query: Query | PassageReadRequest | StoryReadRequest | FactReadRequest | SourceReadRequest
+    query: Query | PassageReadRequest | StoryReadRequest | FactReadRequest | SourceReadRequest | CaseReadRequest | GeoReadRequest
     dialog: str
     deadline: float
     timer: object
@@ -180,7 +182,7 @@ class SharedReadAdmission:
         if (not isinstance(deadline,(float,int)) or isinstance(deadline,bool)
                 or not math.isfinite(deadline) or not now<deadline<=now+2):
             raise ValueError('absolute remaining deadline must be at most two seconds')
-        if not isinstance(query,(Query,PassageReadRequest,StoryReadRequest,FactReadRequest,SourceReadRequest)) or not isinstance(authority,VerifiedReadAuthority):
+        if not isinstance(query,(Query,PassageReadRequest,StoryReadRequest,FactReadRequest,SourceReadRequest,CaseReadRequest,GeoReadRequest)) or not isinstance(authority,VerifiedReadAuthority):
             raise TypeError('typed query and verified authority required')
         if on_dispatch is not None and not callable(on_dispatch):
             raise TypeError('internal dispatch observer must be callable')
@@ -195,7 +197,7 @@ class SharedReadAdmission:
             raise PermissionError('query authority projection mismatch')
         if getattr(query,'compute_claim',None) is not None:
             raise PermissionError('caller cannot choose a compute claim')
-        await self.authority.require(authority,'public_search')
+        await self.authority.require(authority,'case_read' if type(query) is CaseReadRequest else 'public_search')
         self._active()
         if self.clock()>=deadline:raise AdmissionUnavailable('read deadline elapsed')
         if self._attachment is None or query.connection_generation!=self._attachment[1]:
@@ -445,7 +447,7 @@ class SharedReadAdmission:
                 selected_doc=person_docs[0] if person_docs and not person_reads else None
                 read=min(person_reads,key=lambda r:(self._dialog_turn.get((person,r.dialog),0),r.deadline,r.ticket.request_id)) if selected_doc is None and person_reads else None
             if read is not None:
-                try:await self.authority.require(read.authority,'public_search')
+                try:await self.authority.require(read.authority,'case_read' if type(read.query) is CaseReadRequest else 'public_search')
                 except PermissionError:
                     self._cancel((read.ticket.connection_generation,read.ticket.request_id));return None
                 if read.deadline<=self.clock() or (read.ticket.connection_generation,read.ticket.request_id) not in self._reads:return None
@@ -528,7 +530,7 @@ class SharedReadAdmission:
     async def finish_read(self, run_id, token, connection_generation, result):
         """Consumer delivery only. Source/withdrawal output gate remains separate."""
         self._active()
-        if not isinstance(result,(QueryResult,PassageReadResult,StoryReadResult,FactReadResult,SourceReadResult)):raise TypeError('typed query result required')
+        if not isinstance(result,(QueryResult,PassageReadResult,StoryReadResult,FactReadResult,SourceReadResult,CaseReadResult,GeoReadResult)):raise TypeError('typed query result required')
         encode_envelope(result)
         if isinstance(result,QueryResult) and result.status in {'ok','degraded'} and result.mode!='hybrid':
             raise ValueError('target reads require actual hybrid retrieval')
@@ -540,9 +542,9 @@ class SharedReadAdmission:
                 or read.ticket.turn_generation!=result.turn_generation
                 or read.dispatched is None
                 or read.deadline<=self.clock()):return False
-        if type(result) is not {Query:QueryResult,PassageReadRequest:PassageReadResult,StoryReadRequest:StoryReadResult,FactReadRequest:FactReadResult,SourceReadRequest:SourceReadResult}.get(type(read.query)):
+        if type(result) is not {Query:QueryResult,PassageReadRequest:PassageReadResult,StoryReadRequest:StoryReadResult,FactReadRequest:FactReadResult,SourceReadRequest:SourceReadResult,CaseReadRequest:CaseReadResult,GeoReadRequest:GeoReadResult}.get(type(read.query)):
             raise ValueError('read response operation type differs from admitted request')
-        try:await self.authority.require(read.authority,'public_search')
+        try:await self.authority.require(read.authority,'case_read' if type(read.query) is CaseReadRequest else 'public_search')
         except PermissionError:
             if self._reads.get(key) is read:self._cancel(key)
             return False

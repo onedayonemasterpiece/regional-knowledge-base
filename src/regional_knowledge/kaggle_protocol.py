@@ -398,9 +398,15 @@ def decode_envelope(data: bytes) -> Query | QueryResult | PassageReadRequest | P
                      parse_constant=_reject_constant)
     if not isinstance(raw, dict):
         raise ValueError("envelope must be an object")
-    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT", "STORY_READ_RESULT", "FACT_READ_RESULT", "SOURCE_READ_RESULT") else QUERY_MAX_BYTES
+    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT", "STORY_READ_RESULT", "FACT_READ_RESULT", "SOURCE_READ_RESULT", "CASE_READ_RESULT", "GEO_READ_RESULT") else QUERY_MAX_BYTES
     if len(data) > limit:
         raise ValueError("query_too_large" if raw.get("type") == "QUERY" else "control frame too large")
+    if raw.get('type') in ('CASE_READ','CASE_READ_RESULT'):
+        from .kaggle_case_contracts import CaseReadRequest,CaseReadResult
+        return (CaseReadRequest if raw['type']=='CASE_READ' else CaseReadResult).model_validate_json(data)
+    if raw.get('type') in ('GEO_READ','GEO_READ_RESULT'):
+        from .kaggle_geo_contracts import GeoReadRequest,GeoReadResult
+        return (GeoReadRequest if raw['type']=='GEO_READ' else GeoReadResult).model_validate_json(data)
     if raw.get('type') in ('SOURCE_READ','SOURCE_READ_RESULT'):
         from .kaggle_source_read import SourceReadRequest,SourceReadResult
         return (SourceReadRequest if raw['type']=='SOURCE_READ' else SourceReadResult).model_validate_json(data)
