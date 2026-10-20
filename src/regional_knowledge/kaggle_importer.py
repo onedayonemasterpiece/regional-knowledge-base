@@ -601,7 +601,7 @@ class KaggleSourceImporter:
                 proof=await self._native_proof(access,row,receipt,graph)
                 payload['codec']='rkb.source-import.v4'
                 payload['source_manifest']=build_source_manifest(metadata=StartMetadataInput.model_validate(metadata),
-                    receipt=receipt,proof=proof,graph=graph,semantic=semantic)
+                    receipt=receipt,proof=proof,graph=graph,semantic=semantic,passages=payload['passages'])
             entry = await self._stage_command(access, row, payload)
             row = await asyncio.to_thread(self._save, row, phase='accepted', frozen_sha256=entry.command_sha256)
         await self._check(access.authority, access.context, access.binding)

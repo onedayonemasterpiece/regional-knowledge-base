@@ -93,9 +93,9 @@ def _metadata(value):
             raise ValueError('ordered physical page range required')
 
 
-def validate_source_manifest(manifest, *, source_id, original, semantic):
+def validate_source_manifest(manifest, *, source_id, original, semantic, passages):
     """Check bounded, complete bindings; no model, transport, or authority."""
-    _keys(manifest, 'codec source_id source_revision original_receipt_b64 native_pages_proof_sha256 metadata pages regions')
+    _keys(manifest, 'codec source_id source_revision original_receipt_b64 native_pages_proof_sha256 metadata pages regions passages')
     if len(_json(manifest)) > MAX_MANIFEST_BYTES or manifest['codec'] != MANIFEST_CODEC:
         raise ValueError('bounded exact source manifest required')
     if _uuid(manifest['source_id']) != _uuid(source_id):
@@ -114,7 +114,7 @@ def validate_source_manifest(manifest, *, source_id, original, semantic):
         raise ValueError('canonical original receipt required')
     _keys(receipt, 'codec source_id ingestion_id request_id revision sha256 size key native_version format page_count parser_sha256 acquisition_sha256 native_verification_sha256')
     if (receipt['codec'] != 'rkb.original-receipt.v1' or receipt['source_id'] != source_id
-            or receipt['revision'] != 1 or receipt['format'] != 'pdf'):
+            or type(receipt['revision']) is not int or receipt['revision'] != 1 or receipt['format'] != 'pdf'):
         raise ValueError('exact native PDF receipt required')
     for key in ('source_id','ingestion_id','request_id'):
         _uuid(receipt[key])
@@ -172,10 +172,48 @@ def validate_source_manifest(manifest, *, source_id, original, semantic):
             _integer(region[key], 0, 2**31-1)
         if region['end_offset']-region['start_offset'] != len(exact['source_text']) or not exact['source_text'].strip():
             raise ValueError('exact Unicode native span required')
+    passage_map=manifest['passages'];accepted_passages={p['passage_id']:p for p in passages}
+    if type(passage_map) is not list or not 1<=len(passage_map)<=100 or len(passage_map)!=len(accepted_passages):
+        raise ValueError('complete source passage provenance required')
+    seen=set()
+    for passage in passage_map:
+        _keys(passage,'passage_id region_ids footnote_region_ids page_ids source_spans')
+        ident=_uuid(passage['passage_id'])
+        if ident in seen or ident not in accepted_passages:
+            raise ValueError('exact unique passage provenance required')
+        seen.add(ident)
+        for key,known,bound in (('region_ids',accepted,100),('footnote_region_ids',accepted,50),('page_ids',known_pages,20)):
+            refs=passage[key]
+            if (type(refs) is not list or len(refs)>bound or len(set(refs))!=len(refs)
+                    or any(ref not in known for ref in refs)):
+                raise ValueError('exact passage references required')
+        regions=passage['region_ids'];footnotes=passage['footnote_region_ids']
+        if (not regions or not passage['page_ids'] or set(regions).intersection(footnotes)
+                or {accepted[r]['page_id'] for r in regions+footnotes}!=set(passage['page_ids'])):
+            raise ValueError('complete source passage page/region mapping required')
+        spans=passage['source_spans'];parts=[];selected=[];latest={}
+        if type(spans) is not list or len(spans)>100:
+            raise ValueError('bounded source spans required')
+        for span in spans:
+            _keys(span,'region_id start end source_text_sha256')
+            region=accepted.get(span['region_id'])
+            if region is None or span['region_id'] not in regions or span['source_text_sha256']!=region['source_text_sha256']:
+                raise ValueError('exact source span region required')
+            _integer(span['start'],0,len(region['source_text']));_integer(span['end'],1,len(region['source_text']))
+            if span['start']>=span['end'] or latest.get(span['region_id'],0)>span['start']:
+                raise ValueError('ordered nonoverlapping source spans required')
+            latest[span['region_id']]=span['end'];selected.append(span['region_id'])
+            parts.append(region['source_text'][span['start']:span['end']].strip())
+        if spans and set(selected)!=set(regions):
+            raise ValueError('exact source span coverage required')
+        if not spans:parts=[accepted[r]['source_text'].strip() for r in regions if accepted[r]['source_text'].strip()]
+        parts.extend('[Footnote] '+accepted[r]['source_text'].strip() for r in footnotes if accepted[r]['source_text'].strip())
+        if '\n'.join(parts).strip()!=accepted_passages[ident]['body']:
+            raise ValueError('source passage must reconstruct from exact accepted regions')
     return manifest
 
 
-def build_source_manifest(*, metadata, receipt, proof, graph, semantic):
+def build_source_manifest(*, metadata, receipt, proof, graph, semantic, passages):
     """Resolve physical provenance from verified full native page receipts."""
     from .contracts import StartMetadataInput
     from .original_intake import NativePagesProof, VerifiedOriginalReceipt
@@ -200,6 +238,8 @@ def build_source_manifest(*, metadata, receipt, proof, graph, semantic):
                 or hashlib.sha256(_json([{k:b[k] for k in ('block_index','bbox','text')} for b in blocks])).hexdigest() != info['native_blocks_sha256']):
             raise ValueError('complete native page proof required')
         page = staged.pop(native['page_id'], None)
+        if page and page.physical_page_index!=native['physical_page_index']:
+            raise ValueError('staged physical page index differs')
         pages.append(dict(page_id=native['page_id'],physical_page_index=native['physical_page_index'],
             printed_page_number=page.printed_page_number if page else None,width=native['width'],height=native['height'],
             page_receipt_sha256=native['page_receipt_sha256'],image_sha256=native['image_sha256'],
@@ -221,5 +261,8 @@ def build_source_manifest(*, metadata, receipt, proof, graph, semantic):
     manifest=dict(codec=MANIFEST_CODEC,source_id=receipt.source_id,source_revision=1,
         original_receipt_b64=base64.b64encode(_json(receipt.wire())).decode(),native_pages_proof_sha256=proof.sha256,
         metadata={k:v for k,v in metadata.model_dump(mode='json').items() if k not in ('catalog_update','duplicate_policy')},
-        pages=sorted(pages,key=lambda p:p['physical_page_index']),regions=sorted(regions,key=lambda r:r['region_id']))
-    return validate_source_manifest(manifest,source_id=receipt.source_id,original=receipt.original,semantic=semantic)
+        pages=sorted(pages,key=lambda p:p['physical_page_index']),regions=sorted(regions,key=lambda r:r['region_id']),
+        passages=[dict(passage_id=str(c.chunk_id),region_ids=list(map(str,c.region_ids)),
+            footnote_region_ids=list(map(str,c.footnote_region_ids)),page_ids=list(map(str,c.page_ids)),
+            source_spans=[s.model_dump(mode='json') for s in c.source_spans]) for c in graph.chunks])
+    return validate_source_manifest(manifest,source_id=receipt.source_id,original=receipt.original,semantic=semantic,passages=passages)

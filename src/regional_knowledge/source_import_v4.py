@@ -26,7 +26,7 @@ def validate_import_v4_command(command):
     base['codec']='rkb.source-import.v2'
     validate_import_v3_payload(_json(base))
     validate_source_manifest(doc['source_manifest'],source_id=command.ids['source_id'],
-        original=doc['original'],semantic=doc['semantic'])
+        original=doc['original'],semantic=doc['semantic'],passages=doc['passages'])
     return doc
 
 

@@ -11,7 +11,7 @@ from regional_knowledge.source_import import _json
 from regional_knowledge.source_import_v4 import resolved_import_v4_command, validate_import_v4_command
 from regional_knowledge.source_manifest import build_source_manifest, validate_source_manifest
 from regional_knowledge.stage_graph import StagedGraph
-from test_source_import import SOURCE
+from test_source_import import SOURCE,PASSAGE
 from test_source_import_v2 import REGION, payload
 
 BBOX=dict(left=10,top=20,right=900,bottom=100)
@@ -40,7 +40,8 @@ def inputs():
     page_id=pages[1]['page_id'];doc['semantic']['regions'][0]['page_id']=page_id
     graph=StagedGraph(revision=1,pages=[dict(page_id=page_id,physical_page_index=1,printed_page_number='105',
         regions=[dict(region_key='body',region_id=REGION,page_id=page_id,kind='body',bbox=BBOX,
-            source_text=text,reading_order=0,column_id='right')])])
+            source_text=text,reading_order=0,column_id='right')])],chunks=[dict(chunk_key='body',chunk_id=PASSAGE,
+                title='Source text',region_ids=[REGION],page_ids=[page_id],text=text,normalized_text=text)])
     metadata=StartMetadataInput(title='Exact title; with delimiters',authors=['A; B','C, D'],publication_year=1910,
         language='simple',catalog=dict(publisher='Exact publisher',edition='2',identifiers=[{'ISBN':'synthetic'}]))
     doc['original']=receipt.original
@@ -50,7 +51,7 @@ def inputs():
 def manifest_payload():
     doc,metadata,receipt,proof,graph=inputs()
     doc['codec']='rkb.source-import.v4'
-    doc['source_manifest']=build_source_manifest(metadata=metadata,receipt=receipt,proof=proof,graph=graph,semantic=doc['semantic'])
+    doc['source_manifest']=build_source_manifest(metadata=metadata,receipt=receipt,proof=proof,graph=graph,semantic=doc['semantic'],passages=doc['passages'])
     return doc
 
 
@@ -77,7 +78,7 @@ def test_catalogue_and_exact_physical_unicode_provenance_survive_command_replay(
 
 
 @pytest.mark.parametrize('kind',['missing','source','receipt','page_gap','page_order','region_missing','span',
-    'bbox','nonfinite','bool_dimension','metadata','preview','component','codec'])
+    'bbox','nonfinite','bool_dimension','metadata','preview','component','codec','passage_map','passage_body'])
 def test_incomplete_forged_or_unbound_manifest_refuses_before_acceptance(kind):
     doc=manifest_payload();m=doc['source_manifest']
     if kind=='missing':del doc['source_manifest']
@@ -94,6 +95,8 @@ def test_incomplete_forged_or_unbound_manifest_refuses_before_acceptance(kind):
     if kind=='preview':m['pages'][0]['preview_render']['preview_only']=False
     if kind=='component':m['metadata']['catalog']['parent_id']=SOURCE
     if kind=='codec':doc['codec']='rkb.source-import.v2'
+    if kind=='passage_map':m['passages'][0]['region_ids']=[]
+    if kind=='passage_body':doc['passages'][0]['body']='unbound invented text'
     with pytest.raises(ValueError):command(doc)
 
 
@@ -115,4 +118,4 @@ def test_constructor_requires_complete_native_proof_not_model_geometry(kind):
         page['page_receipt_sha256']=hashlib.sha256(_json({k:v for k,v in page.items() if k!='page_receipt_sha256'})).hexdigest()
     proof=NativePagesProof(receipt.receipt_sha256,tuple(_json(p) for p in pages))
     with pytest.raises(ValueError):
-        build_source_manifest(metadata=metadata,receipt=receipt,proof=proof,graph=graph,semantic=doc['semantic'])
+        build_source_manifest(metadata=metadata,receipt=receipt,proof=proof,graph=graph,semantic=doc['semantic'],passages=doc['passages'])
