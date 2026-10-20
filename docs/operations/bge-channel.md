@@ -97,3 +97,7 @@ install this binding and require `runtime_verified`. Actual loaded artifacts,
 PostgreSQL probes, current withdrawal authorization and live acceptance remain
 separate evidence. `tests/test_bge_runtime_readiness.py` checks these binding and
 reconnect rules through the real queue and ASGI route.
+`tests/test_kaggle_query_roundtrip.py` also connects prepared READY through the
+same native loopback WSS route, shared admission, resident transport and actual
+disposable PostgreSQL query. Its artifact hashes/tokenizer/encoder are explicitly
+synthetic; it proves wire composition and frontier binding, not loaded artifacts.

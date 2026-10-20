@@ -17,6 +17,8 @@ import uvicorn
 
 from regional_knowledge.bge_channel import channel_route
 from regional_knowledge.bge_queue import BgeQueue
+from regional_knowledge.kaggle_bootstrap import CandidateReadiness, PreparedRuntime
+from regional_knowledge.kaggle_readiness import RUNTIME_HASHES, SearchRuntimeExpectation
 from regional_knowledge.kaggle_protocol import Query, QueryFilters, TrustedActorContext
 from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
 from test_bge_wss_worker import CONFIG, module
@@ -28,7 +30,8 @@ from test_read_authority import auth
 
 @PG
 @pytest.mark.asyncio
-async def test_actual_shared_worker_query_sql_roundtrip_and_separate_resource_release(env, auth, tmp_path):
+@pytest.mark.parametrize('prepared_runtime', [False, True])
+async def test_actual_shared_worker_query_sql_roundtrip_and_separate_resource_release(env, auth, tmp_path, prepared_runtime):
     await publish(env)
     queue = BgeQueue(tmp_path / 'roundtrip-control.sqlite')
     seed_text = 'synthetic durable queue seed, never a QUERY'
@@ -37,6 +40,23 @@ async def test_actual_shared_worker_query_sql_roundtrip_and_separate_resource_re
         run = db.execute('SELECT id FROM runs').fetchone()[0]
     token = (queue.path.parent / 'bge-worker-credentials' / run).read_text()
     nonce = queue.prepare_channel(run)
+    proof = None
+    if prepared_runtime:
+        # Synthetic artifact hashes exercise the real A/B wire composition, not
+        # actual loaded-model identity. Frontier values come from the real PG.
+        async with env['connection'].transaction():
+            row = await (await env['connection'].execute('''
+                SELECT s.database_generation,s.schema_revision,s.function_revision,s.executor_revision,
+                    s.applied_seq,f.projection_seq,f.visibility_epoch,f.text_ready,f.dense_ready
+                FROM rkb_v4.recovery_state s CROSS JOIN rkb_v4.read_frontier f
+                WHERE s.singleton AND f.singleton''')).fetchone()
+        fields = dict(zip(('database_generation', 'schema_revision', 'function_revision', 'executor_revision',
+            'applied_seq', 'projection_seq', 'visibility_epoch', 'text_search_ready', 'dense_search_ready'), row))
+        hashes = {key: 'a' * 64 for key in RUNTIME_HASHES}
+        proof = CandidateReadiness(hashes=hashes, **fields)
+        queue.expect_search_runtime(run, SearchRuntimeExpectation(hashes,
+            fields['database_generation'], fields['schema_revision'], fields['function_revision'],
+            fields['executor_revision'], fields['applied_seq']))
     queue.launch_claim(run)
     queue.launch_record(run, 'fixture-owner/stable-slug', provider_version=7)
     admission = queue.configure_shared_reads(auth.resolver)
@@ -109,14 +129,27 @@ async def test_actual_shared_worker_query_sql_roundtrip_and_separate_resource_re
     try:
         await until(lambda: server.started)
         transport = module('bge_wss_transport')
+        handler = KaggleWorkerQuery(acquire=env['acquire'], tokenizer=tokenizer())
+        preparations = []
+        async def prepare(encoder, **identity):
+            assert loads == ['resident-encoder-stub-loaded']
+            assert identity['run_id'] == run and identity['launch_nonce'] == nonce
+            preparations.append(identity)
+            return PreparedRuntime(handler, proof)
         worker = transport.BgeWssTransport(dict(CONFIG, run_id=run, token=token,
                 launch_nonce=nonce, shared_reads=True), load, lambda: {}, connector=connect,
-            query_handler=KaggleWorkerQuery(acquire=env['acquire'], tokenizer=tokenizer()),
+            **({'prepare_runtime': prepare} if prepared_runtime else {'query_handler': handler}),
             heartbeat_seconds=.02, maximum_seconds=8, stop=stop)
         worker_task = asyncio.create_task(worker.run())
         await asyncio.wait_for(channel_ready.wait(), 2)
         generation = next(frame['connection_generation'] for direction, frame in frames
                           if direction == 'controller' and frame['type'] == 'WELCOME')
+        if prepared_runtime:
+            assert len(preparations) == 1
+            ready_frame = next(frame for direction, frame in frames
+                if direction == 'worker' and frame['type'] == 'READY')
+            assert ready_frame['runtime_readiness'] == proof.to_wire()
+            assert queue.channel_status(run, token, generation)['runtime_verified']
         original = Query(request_id='actual-native-query', connection_generation=generation,
             turn_generation=9, query=query_text, filters=QueryFilters(source_ids=(SOURCE,), kinds=('source',)),
             min_data_seq=5, deadline_ms=2000,
