@@ -124,3 +124,37 @@ hook alone does not orchestrate that controller operation or prove production
 recovery. Unknown operations preserve their original identities and remain
 closed. Shutdown closes partial native candidates as well as an adopted pool;
 it does not overwrite or delete an accepted cluster to restart a failed restore.
+
+## Dev recovery startup
+
+An initialized source-service configuration may opt into `source_restore`, using
+`SourceRestoreConfig.wire()`: an exact existing snapshot manifest reference,
+stable operation key, exact native/model/tokenizer/schema versions, the final
+launch-config SHA, allowed storage origins and finite archive/time limits. The
+source service still reuses its existing queue, participant authority, S3 client,
+journal stream, handler registry and admission. No snapshot metadata creates a
+readiness capability. The notebook must independently opt into the native
+recovery owner described above.
+
+The server lifespan yields its WSS route before background restoration waits for
+native phases. The old persisted writer must already be retired and have no
+unresolved publication. A different executor cannot take shared admission until
+the existing `confirm_terminal` gate accepts a fresh, identity-bound authoritative
+provider terminal observation and its verified capability receipt. Heartbeat
+expiry, a Stop ACK or a new launch descriptor cannot clear that debt.
+
+`QueueWriterAuthority.begin_restore` records the exact plan, attachment identity
+and actual remote journal head in the same control database. Normal writer
+checks remain false. Recovery publications retain the existing durable I/O fence
+and are limited to that operation's recovery intent and exact outcome keys;
+accepted-command/head/index writes are refused. UNKNOWN publication must be
+resolved by native exact-byte readback. Fixed WSS phases verify the physical
+base, replay the original accepted command bytes and original semantic handlers,
+and verify the new writer/readiness. Independent Case/GEO commands do not create
+source heads. Writer activation requires the factory-retained controller proof,
+unchanged head and accepted current READY at the identical cursor. Public routing
+still waits for full WSS native history coverage after that activation.
+
+The configured snapshot must already exist. This restore composition does not
+create an initial backup for a deployment whose native snapshot owner was never
+enabled, and it does not silently choose or replace a published snapshot.

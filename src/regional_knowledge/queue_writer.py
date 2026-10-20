@@ -51,6 +51,9 @@ class QueueWriterAuthority:
               CREATE TABLE IF NOT EXISTS rkb_writer_generations(
                 writer_generation TEXT PRIMARY KEY,database_generation TEXT NOT NULL,run_id TEXT NOT NULL,
                 stream TEXT NOT NULL,revision INTEGER NOT NULL,retired INTEGER NOT NULL CHECK(retired IN (0,1)));
+              CREATE TABLE IF NOT EXISTS rkb_writer_restore_control(
+                id INTEGER PRIMARY KEY CHECK(id=1),plan_json TEXT NOT NULL,identity_json TEXT NOT NULL,
+                head_json TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('restoring','verified','active')));
               CREATE TRIGGER IF NOT EXISTS rkb_writer_control_fence BEFORE UPDATE OF current_run ON control
                 WHEN OLD.current_run IS NOT NEW.current_run AND EXISTS(
                     SELECT 1 FROM rkb_writer_control WHERE run_id=OLD.current_run AND publication_json IS NOT NULL)
@@ -124,10 +127,134 @@ class QueueWriterAuthority:
             raise StaleWriter('current shared resource baseline required')
         return run
 
+    def _restore_row(self,db):
+        return db.execute('SELECT * FROM rkb_writer_restore_control WHERE id=1').fetchone()
+
+    def _restore_runtime(self,db,binding=None,*,allow_active=False):
+        row=self._restore_row(db)
+        if row is None or row['state']=='active' and not allow_active:raise StaleWriter('recovery-only writer binding required')
+        run=db.execute('SELECT * FROM runs WHERE id=?',(self.run_id,)).fetchone()
+        runtime=self.queue._runtime_row(db,self.run_id)
+        control=db.execute('SELECT current_run FROM control WHERE id=1').fetchone()
+        identity=json.loads(row['identity_json']);plan=json.loads(row['plan_json'])
+        if (run is None or control[0]!=self.run_id or run['status'] not in ('starting','ready')
+                or not run['channel_active'] or run['attachment_conflict'] or self.queue._run_expired(run,self.queue.clock())
+                or [run['id'],run['launch_nonce'],run['runtime_incarnation']]!=identity or runtime is None):
+            raise StaleWriter('current pre-ready recovery attachment required')
+        expected=json.loads(runtime['expected_json'])
+        if (expected.get('database_generation')!=self.database_generation
+                or expected.get('hashes',{}).get('launch_config')!=plan['launch_config_sha256']):
+            raise StaleWriter('recovery launch expectation differs')
+        if binding is not None and (binding.run_id,binding.runtime_incarnation,binding.connection_generation,
+                binding.database_generation,binding.writer_generation)!=(self.run_id,identity[2],run['connection_generation'],
+                    self.database_generation,self.writer_generation):
+            raise StaleWriter('recovery attachment generation changed')
+        owner=db.execute('SELECT run_id,incarnation FROM bge_shared_admission WHERE id=1').fetchone()
+        if owner is None or tuple(owner)!=(self.run_id,identity[2]):raise StaleWriter('recovery shared baseline required')
+        return row
+
+    def recovery_current(self,binding):
+        try:
+            with self.queue.connect(write=False) as db:
+                self._binding(db,require_current=False);self._restore_runtime(db,binding)
+            return True
+        except Exception:return False
+
+    async def begin_restore(self,journal,binding,*,plan):
+        """Retire an already fenced old local writer; grant only recovery I/O.
+
+        plan is fixed typed startup metadata. It is no native database proof and
+        cannot activate ordinary writes. Remote head identity is read here.
+        """
+        if (not isinstance(journal,RecoveryJournal) or journal.stream!=self.stream
+                or journal.store.writer_guard is not self or self._storage(journal.store)!=self._store_identity):
+            raise TypeError('same existing recovery journal/store required')
+        from .kaggle_restore_startup import SourceRestoreConfig,PreReadyRecoveryBinding
+        if type(plan) is not SourceRestoreConfig or type(binding) is not PreReadyRecoveryBinding:
+            raise TypeError('typed exact restore plan and pre-ready attachment required')
+        encoded=json.dumps(plan.wire(),sort_keys=True,separators=(',',':'))
+        async with self._lock():
+            with self.queue.connect(write=False) as db:
+                prior=db.execute('SELECT * FROM rkb_writer_control WHERE id=1').fetchone()
+                restored=self._restore_row(db)
+                if restored is not None and prior is not None and prior['writer_generation']==self.writer_generation:
+                    self._binding(db,require_current=False);self._restore_runtime(db,binding,allow_active=True)
+                    if restored['plan_json']!=encoded:raise StaleWriter('retained recovery plan differs')
+                    return
+                if (prior is None or prior['active'] or prior['publication_json'] is not None
+                        or prior['run_id']==self.run_id or prior['database_generation']!=self.database_generation
+                        or prior['stream']!=self.stream or prior['storage_sha256']!=self._store_identity
+                        or db.execute('SELECT 1 FROM rkb_writer_generations WHERE writer_generation=?',
+                            (self.writer_generation,)).fetchone() is not None):
+                    raise StaleWriter('previous persisted writer must be retired and settled before recovery')
+                run=db.execute('SELECT * FROM runs WHERE id=?',(self.run_id,)).fetchone()
+                if run is None:raise StaleWriter('actual recovery run required')
+                identity=[run['id'],run['launch_nonce'],run['runtime_incarnation']]
+            head=await journal.head()
+            head_wire=None if head is None else dict(reference=head.reference.wire(),token=head.token)
+            with self.queue.connect() as db:
+                observed=db.execute('SELECT * FROM rkb_writer_control WHERE id=1').fetchone()
+                if dict(observed)!=dict(prior):raise StaleWriter('previous writer changed during recovery acquisition')
+                db.execute('DELETE FROM rkb_writer_restore_control')
+                db.execute('INSERT INTO rkb_writer_restore_control VALUES(1,?,?,?,?)',
+                    (encoded,json.dumps(identity),json.dumps(head_wire,sort_keys=True),'restoring'))
+                db.execute('UPDATE rkb_writer_control SET run_id=?,writer_generation=?,revision=revision+1,active=1 WHERE id=1',
+                    (self.run_id,self.writer_generation))
+                db.execute('INSERT INTO rkb_writer_generations VALUES(?,?,?,?,?,0)',
+                    (self.writer_generation,self.database_generation,self.run_id,self.stream,observed['revision']+1))
+                self._binding(db,require_current=False);self._restore_runtime(db,binding)
+        _LOG.info('target_writer state=recovery_only run_id=%s writer_generation=%s',self.run_id,self.writer_generation)
+
+    def _publication_binding(self,db,*,key=None):
+        row=self._binding(db,require_current=False)
+        restore=self._restore_row(db)
+        if restore is None or restore['state']=='active':
+            self._runtime(db);return row
+        self._restore_runtime(db)
+        if key is not None:
+            prefix='recovery/v1/'+hashlib.sha256(self.stream.encode()).hexdigest()+'/'
+            plan=json.loads(restore['plan_json'])
+            intent=prefix+'snapshots/recovery-intents/'+hashlib.sha256(plan['operation_key'].encode()).hexdigest()
+            outcome=key.startswith(prefix+'outcomes/') and len(key[len(prefix+'outcomes/'):])==64
+            pointer=key==prefix+'snapshots/current' and restore['state']=='verified'
+            if key!=intent and not outcome and not pointer:
+                raise StaleWriter('recovery-only owner cannot publish accepted commands or unrelated keys')
+        return row
+
+    async def activate_recovered(self,journal,proof,binding):
+        from .pg_snapshot_recovery import ControllerRecoveryProof,PhysicalSnapshotRecovery
+        if (type(proof) is not ControllerRecoveryProof or type(proof._factory) is not PhysicalSnapshotRecovery
+                or proof._factory.journal is not journal or proof not in proof._factory._proofs):
+            raise TypeError('retained native/controller recovery proof required')
+        await proof.verify_for(proof.database,*proof.identity)
+        if await journal.head()!=proof.journal_head:raise StaleWriter('recovered journal prefix changed')
+        async with self._lock():
+            with self.queue.connect() as db:
+                self._binding(db,require_current=False);restore=self._restore_runtime(db,binding,allow_active=True)
+                if (proof.database.database_generation!=self.database_generation
+                        or proof.database.writer_generation!=self.writer_generation
+                        or list(proof.identity)!=json.loads(restore['identity_json'])
+                        or proof.manifest.wire()!=json.loads(restore['plan_json'])['manifest']):
+                    raise StaleWriter('recovered proof differs from persisted operation')
+                current_head=None if proof.journal_head is None else dict(reference=proof.journal_head.reference.wire(),token=proof.journal_head.token)
+                if current_head!=json.loads(restore['head_json']):raise StaleWriter('recovery original head changed')
+                run=self._runtime(db)
+                runtime=self.queue._runtime_row(db,self.run_id)
+                observed=json.loads(runtime['observed_json'])
+                if observed['applied_seq']!=proof.applied_sequence or observed['projection_seq']!=proof.applied_sequence:
+                    raise StaleWriter('recovered READY cursor differs from native proof')
+                if db.execute('SELECT publication_json FROM rkb_writer_control WHERE id=1').fetchone()[0] is not None:
+                    raise JournalUnknown('recovery publication requires exact reconciliation')
+                db.execute("UPDATE rkb_writer_restore_control SET state='active' WHERE id=1")
+        _LOG.info('target_writer state=recovered_active run_id=%s writer_generation=%s',self.run_id,self.writer_generation)
+
     def current(self,*,database_generation,writer_generation):
         if (database_generation,writer_generation)!=(self.database_generation,self.writer_generation):return False
         try:
-            with self.queue.connect(write=False) as db:self._binding(db)
+            with self.queue.connect(write=False) as db:
+                self._binding(db)
+                restore=self._restore_row(db)
+                if restore is not None and restore['state']!='active':return False
             return True
         except Exception:return False
 
@@ -187,7 +314,7 @@ class QueueWriterAuthority:
         if generation!=self.writer_generation:raise StaleWriter('stale writer generation')
         async with self._lock():
             with self.queue.connect(write=False) as db:
-                row=self._binding(db)
+                row=self._publication_binding(db)
                 if row['publication_json'] is not None:raise JournalUnknown('writer publication requires exact reconciliation')
             yield
 
@@ -204,7 +331,7 @@ class QueueWriterAuthority:
                 nonce=secrets.token_hex(24),state='IN_FLIGHT')
             encoded=json.dumps(intent,sort_keys=True,separators=(',',':'))
             with self.queue.connect() as db:
-                row=self._binding(db)
+                row=self._publication_binding(db,key=key)
                 if row['publication_json'] is not None:raise JournalUnknown('writer publication requires exact reconciliation')
                 db.execute('UPDATE rkb_writer_control SET publication_json=? WHERE id=1',(encoded,))
             _LOG.info('target_writer_publication state=in_flight run_id=%s writer_generation=%s',self.run_id,self.writer_generation)

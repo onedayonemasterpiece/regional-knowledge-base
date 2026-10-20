@@ -26,7 +26,7 @@ from .queue_writer import QueueWriterAuthority
 
 def compose_source_service(*,queue,oauth_provider,participants,object_store,stream,registry,
                            history_adapter,run_id,database_generation,writer_generation,
-                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=()):
+                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=(),source_restore=None):
     """Reuse the actual owner objects; returns the real server.main input.
 
     object_store is the already configured S3ObjectStore authority/client, not
@@ -60,7 +60,7 @@ def compose_source_service(*,queue,oauth_provider,participants,object_store,stre
                 object_store=object_store,writer=writer)
         return TargetServiceStartup(TargetServiceConfig(oauth_provider,participants,queue,spool,history_adapter,
             writer_generation,writer.current,destination_ref=destination_ref,writer_owner=writer,
-            geo_manifest_operation_keys=geo_manifest_operation_keys,**import_options))
+            geo_manifest_operation_keys=geo_manifest_operation_keys,source_restore=source_restore,**import_options))
     except BaseException:
         if spool is not None:spool.close()
         if writer is not None:writer.close()
@@ -89,7 +89,7 @@ def configured_source_service():
         return result
     value=json.loads(data,object_pairs_hook=unique)
     fields={'codec','run_id','stream','database','command_handlers','catalog_sha256','acl_sha256','observer_sha256'}
-    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys'}
+    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys','source_restore'}
             or value['codec']!='rkb.source-service.v1'):
         raise ValueError('exact source owner configuration required')
     if 'geo_manifest_operation_keys' in value and type(value['geo_manifest_operation_keys']) is not list:
@@ -116,7 +116,11 @@ def configured_source_service():
     if 'source_import' in value:
         from .kaggle_import_composition import SourceImportOwners
         import_owners=SourceImportOwners.from_wire(value['source_import'])
+    restore=None
+    if 'source_restore' in value:
+        from .kaggle_restore_startup import SourceRestoreConfig
+        restore=SourceRestoreConfig.from_wire(value['source_restore'])
     return compose_source_service(queue=BgeQueue(queue_path),oauth_provider=provider,participants=people,
         object_store=object_store,stream=value['stream'],registry=registry,history_adapter=history,
         run_id=value['run_id'],database_generation=database.database_generation,writer_generation=database.writer_generation,
-        source_import=import_owners,geo_manifest_operation_keys=tuple(value.get('geo_manifest_operation_keys',())))
+        source_import=import_owners,geo_manifest_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),source_restore=restore)

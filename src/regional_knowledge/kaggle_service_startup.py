@@ -70,6 +70,7 @@ class TargetServiceConfig:
     import_parser_sha256: str | None = None
     import_launch_config_sha256: str | None = None
     geo_manifest_operation_keys: tuple[str,...] = ()
+    source_restore: object = None
 
     def __post_init__(self):
         if (not isinstance(self.oauth_provider,RegionalOAuthProvider)
@@ -105,6 +106,10 @@ class TargetServiceConfig:
         if (len({value is None for value in (self.import_originals,self.import_tokenizer,
                 self.import_parser_sha256,self.import_launch_config_sha256)}) != 1):
             raise TypeError('native originals and exact independent tokenizer must be supplied together')
+        if self.source_restore is not None:
+            from .kaggle_restore_startup import SourceRestoreConfig
+            if type(self.source_restore) is not SourceRestoreConfig or self.writer_owner is None:
+                raise TypeError('typed restore config and same persisted writer owner required')
         if self.import_originals is not None:
             from .original_intake_controller import OriginalIntakeController
             from .kaggle_import_tokenizer import HfImportTokenCounter
@@ -246,6 +251,11 @@ class TargetServiceStartup:
             from .kaggle_story_editorial_backend import KaggleStoryEditorial
             self.editorial=KaggleStoryEditorial(self,tokenizer=config.import_tokenizer)
 
+        self.restorer=None
+        if config.source_restore is not None:
+            from .kaggle_restore_startup import SourceRestoreCoordinator
+            self.restorer=SourceRestoreCoordinator(self,config.source_restore)
+
     def binding_current(self,binding):
         try:
             return (not self.closed and type(binding) is TargetReadBinding
@@ -273,6 +283,8 @@ class TargetServiceStartup:
         """Maintenance only; ready reads never wait for native/journal writes."""
         if not self.running or self.closed:return False
         try:
+            if self.restorer is not None and not self.restorer.complete:
+                await self.restorer.refresh()
             binding=await asyncio.to_thread(current_binding,self.config.queue)
             if self.config.writer_owner is not None:
                 await self.config.writer_owner.ensure_current(self.config.spool.journal)
@@ -304,7 +316,8 @@ class TargetServiceStartup:
             _LOG.warning('target_source_routing state=closed reason=%s',type(exc).__name__)
             return False
 
-    async def _maintain(self):
+    async def _maintain(self,*,initial=False):
+        if initial:await self.refresh()
         while True:
             await asyncio.sleep(self.config.refresh_seconds)
             await self.refresh()
@@ -314,8 +327,8 @@ class TargetServiceStartup:
         if self.running or self.closed:raise RuntimeError('one target service lifespan required')
         self.running=True
         try:
-            await self.refresh()
-            self._maintenance=asyncio.create_task(self._maintain(),name='rkb-source-history-maintenance')
+            if self.restorer is None:await self.refresh()
+            self._maintenance=asyncio.create_task(self._maintain(initial=self.restorer is not None),name='rkb-source-history-maintenance')
             yield self
         finally:
             self.running=False;self.coverage=None;self.gate.invalidate()
@@ -325,6 +338,7 @@ class TargetServiceStartup:
                 self._maintenance.cancel()
                 try:await self._maintenance
                 except asyncio.CancelledError:pass
+            if self.restorer is not None:await self.restorer.aclose()
             if self.editorial is not None:await self.editorial.aclose()
             try:await self.source_dispatch.aclose()
             finally:

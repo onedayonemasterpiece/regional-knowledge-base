@@ -157,9 +157,10 @@ class PhysicalSnapshotRecovery:
             for command,seal in tail:
                 self._authority(binding)
                 handler=self.registry.resolve(command);dep=handler.dependency
-                if (handler.transition is None and (dep is None or dep.scope_class!='public_source'
-                        or dep.scope_owner!='shared' or dep.resource_keys!=frozenset({'source_id'})
-                        or set(command.ids)!={'source_id'})):
+                # Same closed route/dependency classification as native history;
+                # independent Case/GEO commands keep their real resource IDs.
+                classified,installed,_=self.history._classify(command.encode(),seal.manifest)
+                if classified.encode()!=command.encode() or installed.fingerprint!=handler.fingerprint:
                     raise SnapshotError('snapshot_replay_scope_unsupported')
                 if await self.journal.verify_accepted(seal,command)!=sha(command.encode()):
                     raise SnapshotError('snapshot_exact_acceptance_changed')
@@ -180,7 +181,7 @@ class PhysicalSnapshotRecovery:
                     transitions.append({'sequence':command.sequence,'command_sha256':sha(command.encode()),
                         'handler_sha256':handler.fingerprint,'migration_id':handler.transition.migration_id,
                         'artifact_sha256':handler.transition.artifact_sha256})
-                else:
+                elif dep.scope_class=='public_source':
                     source=command.ids['source_id'];old=heads.get(source)
                     heads[source]=[source,command.sequence,sha(command.encode()),int(dep.restriction or old is not None and old[3]),0,0]
             if await self.journal.head()!=head:raise SnapshotError('snapshot_tail_changed_before_rollover')
