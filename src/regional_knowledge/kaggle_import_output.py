@@ -11,6 +11,7 @@ class ImportOutput:
 
 
 class OwnerImportOutputGate:
+    capability = 'import'
     def __init__(self, workflow):
         self.workflow = workflow
         self._tickets = {}
@@ -54,7 +55,7 @@ class OwnerImportOutputGate:
             with resolver._read() as db:
                 current = resolver._state(context.principal, context.route,
                     family_ref=authority.oauth_family_ref, connection=db)
-                self.workflow.participants.require(context, 'import', connection=db)
+                self.workflow.participants.require(context, self.capability, connection=db)
             return current.revision == authority.auth_revision
         except Exception:
             return False
@@ -63,3 +64,8 @@ class OwnerImportOutputGate:
         value = self._tickets.pop(ticket, None)
         if value is not None:
             self.workflow.read_authority.release(value[1])
+
+
+class StoryEditorialOutputGate(OwnerImportOutputGate):
+    """Own-operation status only; narrative output uses SourceReadGate."""
+    capability = 'public_search'

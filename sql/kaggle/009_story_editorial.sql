@@ -722,7 +722,9 @@ BEGIN
 END $$;
 CREATE FUNCTION rkb_v4.read_story_edit_context_v1(wanted uuid,actor uuid)
 RETURNS jsonb LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
- SELECT base||jsonb_build_object('view','edit_context','role',rkb_v4.story_editor_role_v1(wanted,actor))
+ SELECT base||jsonb_build_object('view','edit_context','role',rkb_v4.story_editor_role_v1(wanted,actor),
+   'variant_refs',(SELECT v.data->'variants' FROM rkb_v4.editorial_story_versions v JOIN rkb_v4.editorial_story_heads h
+      ON h.story_id=v.story_id AND h.revision=v.revision WHERE h.story_id=wanted))
  FROM (SELECT rkb_v4.read_editorial_story_v1(wanted,NULL,'get',0,1,NULL) base) r WHERE base IS NOT NULL
 $$;
 REVOKE ALL ON FUNCTION rkb_v4.read_story_edit_context_v1(uuid,uuid) FROM PUBLIC;

@@ -135,6 +135,19 @@ class _SourceBackend(KaggleSourceBackend):
     async def _ingestion_row(self, *, principal, ingestion_id):
         return await self._importer().owned_row(principal, ingestion_id)
 
+    async def story_edit(self,story_id,principal,*,expected_revision,operations,idempotency_key,reason=None):
+        from .story_contracts import UpsertVariant
+        if self.startup.editorial is None:raise ToolError('{"status":"unavailable","reason":"target_editorial_unavailable"}')
+        if len(operations)!=1 or type(operations[0]) is not UpsertVariant:
+            raise ToolError('{"status":"unavailable","reason":"unsupported_target_story_operation"}')
+        return await self.startup.editorial.mutate(principal,story_id=story_id,expected_revision=expected_revision,
+            idempotency_key=idempotency_key,operation=operations[0],reason=reason)
+
+    async def story_access(self,story_id,principal,*,expected_revision,grantee_user_id,capability,idempotency_key):
+        if self.startup.editorial is None:raise ToolError('{"status":"unavailable","reason":"target_editorial_unavailable"}')
+        return await self.startup.editorial.mutate(principal,story_id=story_id,expected_revision=expected_revision,
+            idempotency_key=idempotency_key,grantee_user_id=grantee_user_id,capability=capability)
+
     async def _search(self,*args,**kwargs):
         if not self.startup.reads_current():
             raise ToolError('{"status":"unavailable","reason":"source_history_unavailable"}')
@@ -180,6 +193,9 @@ class TargetServiceStartup:
             self.routes.update({'source.fact_read':self.backend.source_fact_read,
                 'source.calendar':self.backend.story_calendar,
                 'source.observations':self.backend.story_observation_search})
+        self.editorial=None
+        editorial_available=self.gate.editorial_supported() and config.import_tokenizer is not None
+        if editorial_available:self.routes.update({'story.edit':self.backend.story_edit,'story.access':self.backend.story_access})
         self.geo_gate=self.geo_backend=None
         if config.geo_manifest_operation_keys:
             from .geo_read_gate import GeoReadGate
@@ -223,6 +239,9 @@ class TargetServiceStartup:
             # Only bounded stage JSON uses this Dev downloader. Original PDFs
             # are acquired by the configured native controller.
             self.backend.file_downloader = ChatFileDownloader()
+        if editorial_available:
+            from .kaggle_story_editorial_backend import KaggleStoryEditorial
+            self.editorial=KaggleStoryEditorial(self,tokenizer=config.import_tokenizer)
 
     def binding_current(self,binding):
         try:
@@ -303,6 +322,7 @@ class TargetServiceStartup:
                 self._maintenance.cancel()
                 try:await self._maintenance
                 except asyncio.CancelledError:pass
+            if self.editorial is not None:await self.editorial.aclose()
             try:await self.source_dispatch.aclose()
             finally:
                 self.closed=True

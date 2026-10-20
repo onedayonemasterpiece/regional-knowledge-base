@@ -93,7 +93,7 @@ class EditorialReadResult(PassageReadResult):
               'source','finding_ids','view','entries','next_revision','next_variant_id'}
         if type(r) is not dict or r.get('view') not in ('get','history','variants','edit_context'):
             raise ValueError('exact shared Story record required')
-        if r['view']=='edit_context':keys|={'role'}
+        if r['view']=='edit_context':keys|={'role','variant_refs'}
         if set(r)!=keys or len(json.dumps(r,ensure_ascii=False,allow_nan=False).encode())>MAX_EDITORIAL_RECORD_BYTES:
             raise ValueError('bounded exact editorial record required')
         _uuid(r['story_id']);_revision(r['revision']);_revision(r['current_revision'])
@@ -137,7 +137,14 @@ class EditorialReadResult(PassageReadResult):
                 _uuid(entry['actor_id']);previous=entry['revision']
         if r['next_revision'] is not None:_revision(r['next_revision'])
         if r['next_variant_id'] is not None:_uuid(r['next_variant_id'])
-        if r['view']=='edit_context' and r['role'] is not None and r['role'] not in ROLES:raise ValueError('fixed current Story role required')
+        if r['view']=='edit_context':
+            if r['role'] is not None and r['role'] not in ROLES:raise ValueError('fixed current Story role required')
+            refs=r['variant_refs']
+            if type(refs) is not list or not 1<=len(refs)<=25 or len({x['variant_id'] for x in refs})!=len(refs) or ref not in refs:
+                raise ValueError('complete current shared Variant refs required')
+            for value in refs:
+                if type(value) is not dict or set(value)!={'variant_id','revision'}:raise ValueError('exact Variant reference required')
+                _uuid(value['variant_id']);_revision(value['revision'])
         return self
 
 

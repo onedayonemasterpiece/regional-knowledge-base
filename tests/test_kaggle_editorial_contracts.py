@@ -29,8 +29,8 @@ def test_imported_and_edited_exact_body_records_keep_version_and_block_semantics
     v=r['variant'];v.pop('source_blocks');v.update(revision=2,blocks=[dict(text='A block with exact source.',assertion_id=FINDING,assertion_revision=1,attribution=None)])
     r.update(revision=3,current_revision=3,default_variant_ref=dict(variant_id=v['variant_id'],revision=2))
     assert result(r).record['default_variant_ref']['revision']==2
-    r.update(view='edit_context',role='editor');assert result(r).record['role']=='editor'
-    r.pop('role');r.update(view='variants',entries=[{**v,'body_sha256':r['body_sha256']}],variant=None)
+    r.update(view='edit_context',role='editor',variant_refs=[r['default_variant_ref']]);assert result(r).record['role']=='editor'
+    r.pop('role');r.pop('variant_refs');r.update(view='variants',entries=[{**v,'body_sha256':r['body_sha256']}],variant=None)
     assert result(r).record['entries'][0]['body']==r['body']
 
 
@@ -43,7 +43,7 @@ def test_forged_editorial_output_fails_closed(change):
     if change=='audience':r['variant']['audience']='x'*501
     if change=='language':r['variant']['language']='x'*25
     if change=='revision':r['variant']['revision']=True
-    if change=='role':r.update(view='edit_context',role='owner-override')
+    if change=='role':r.update(view='edit_context',role='owner-override',variant_refs=[r['default_variant_ref']])
     with pytest.raises((ValueError,TypeError)):result(r)
 
 

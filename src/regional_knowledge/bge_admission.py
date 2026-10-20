@@ -114,6 +114,7 @@ class SharedReadAdmission:
         self._reads={}
         self._documents={}
         self._commands={}
+        self._editorial_documents=set()
         self._attachment=None
         self._state='unknown'
         self._work=None
@@ -252,6 +253,18 @@ class SharedReadAdmission:
         self._event.set()
         return actor
 
+    async def register_editorial_document(self,owner,job_id):
+        """One exact document job from the retained native Story workflow."""
+        self._active()
+        if owner is None or owner is not self.queue._story_editorial:
+            raise PermissionError('retained Story workflow required')
+        if len(self._editorial_documents|{job_id})>64:raise AdmissionUnavailable('bounded editorial documents required')
+        await owner.authorize_document(job_id)
+        self._editorial_documents.add(job_id);self._event.set()
+
+    def release_editorial_document(self,owner,job_id):
+        if owner is self.queue._story_editorial:self._editorial_documents.discard(job_id)
+
     def _observe_attachment(self, run, generation):
         attachment=(run['id'],generation,run['runtime_incarnation'])
         if self._attachment is not None and self._attachment[0]==run['id'] and generation<self._attachment[1]:
@@ -269,7 +282,8 @@ class SharedReadAdmission:
 
     async def _snapshot(self, run_id, token, generation, *, observe=True):
         run,owner,docs,resumed=await asyncio.to_thread(self.queue._admission_snapshot,run_id,token,generation,
-                                                    document_actors=tuple(self._documents),command_actors=tuple(self._commands))
+                                                    document_actors=tuple(self._documents),command_actors=tuple(self._commands),
+                                                    editorial_documents=tuple(self._editorial_documents))
         if owner['run_id'] is not None and (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation']):
             raise StaleAttachment('prior compute resource remains unknown')
         if observe:self._observe_attachment(run,generation)
@@ -418,6 +432,13 @@ class SharedReadAdmission:
                     context=self._commands.get(doc['actor'])
                     if context is not None and self.queue._source_commands is not None:
                         try:actor=await self.queue._source_commands.authorize_job(context,doc)
+                        except (PermissionError,ValueError,LookupError):actor=None
+                        if actor==doc['actor']:eligible.append(doc)
+                    continue
+                if doc['id'] in self._editorial_documents:
+                    owner=self.queue._story_editorial
+                    if owner is not None:
+                        try:actor=await owner.authorize_document(doc['id'])
                         except (PermissionError,ValueError,LookupError):actor=None
                         if actor==doc['actor']:eligible.append(doc)
                     continue

@@ -178,6 +178,7 @@ class KnowledgeMCPServer(MCPServer):
         allowed = {'search','fetch','knowledge_search','profile'}
         if getattr(self,'_target_story_available',False):
             allowed.update({'story_search','story_get','story_history','story_variants'})
+        if getattr(self,'_target_editorial_available',False):allowed.update({'story_edit','story_access'})
         if getattr(self,'_target_facts_available',False):
             allowed.update({'story_calendar','story_observation_search'})
         if getattr(self,'_target_import_available',False):
@@ -436,6 +437,7 @@ def build_server(
     mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
     mcp._target_catalog_available = (selected=='kaggle_source' and target_startup.gate.catalog_supported())
     mcp._target_cases_available = (selected=='kaggle_source' and getattr(target_startup,'cases_backend',None) is not None)
+    mcp._target_editorial_available = (selected=='kaggle_source' and getattr(target_startup,'editorial',None) is not None)
     mcp._target_geo_available = (selected=='kaggle_source' and getattr(target_startup,'geo_backend',None) is not None)
     mcp._target_startup=target_startup
     mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
@@ -582,6 +584,26 @@ def build_server(
         async def native_story_variants(story_id:str,limit:Annotated[int,Field(ge=1,le=10)]=10,
                 cursor:str|None=None)->dict[str,Any]:
             return await backend.story_variants(story_id,_principal(),limit=limit,cursor=cursor)
+
+    if profile in {'full','story_contributor','story_editor'} and mcp._target_editorial_available:
+        @mcp.tool(name='story_edit',title='Apply atomic editorial changes',
+            description='Revision-guarded native UpsertVariant with exact saved body. Currently one upsert_variant per operation; '
+                'current per-Story editor grant is required, approvals are cleared, and original replay never reruns the model.',
+            annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,destructive_hint=False,open_world_hint=False))
+        async def native_story_edit(story_id:str,expected_revision:Annotated[int,Field(ge=1)],
+                operations:Annotated[list[StoryOperation],Field(min_length=1,max_length=12)],
+                idempotency_key:Key,reason:str|None=None)->dict[str,Any]:
+            return await backend.story_edit(story_id,_principal(),expected_revision=expected_revision,operations=operations,
+                idempotency_key=idempotency_key,reason=reason)
+
+        @mcp.tool(name='story_access',title='Grant or revoke story capabilities',
+            description='Only the current native Story owner/manager may change an explicit per-Story grant. Source access stays independent.',
+            annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,destructive_hint=False,open_world_hint=False))
+        async def native_story_access(story_id:str,expected_revision:Annotated[int,Field(ge=1)],grantee_user_id:str,
+                capability:Literal['viewer','contributor','researcher','editor','publisher','manager','revoke'],
+                idempotency_key:Key)->dict[str,Any]:
+            return await backend.story_access(story_id,_principal(),expected_revision=expected_revision,grantee_user_id=grantee_user_id,
+                capability=capability,idempotency_key=idempotency_key)
 
     if profile in story_profiles and not mcp._target_story_available:
         if not hasattr(backend, "corpus"):
