@@ -13,6 +13,7 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 
 from .bge_contract import validate_vector
+from .kaggle_protocol import QueryFilters
 
 # Strong references only until encoder completion; no dispatch/retry/job semantics.
 _PENDING_ENCODERS: set[asyncio.Task] = set()
@@ -52,7 +53,8 @@ def vector_literal(values: Sequence[float]) -> str:
 async def fused_search(connection, query: str, *,
                        encode: Callable[[str], Awaitable[Sequence[float]]],
                        top_k: int = 3, candidate_budget: int = 100,
-                       timeout_seconds: float = 2.0) -> SearchResult:
+                       timeout_seconds: float = 2.0,
+                       filters: QueryFilters | None = None) -> SearchResult:
     """Execute on an exclusively checked-out idle async psycopg connection.
 
     Encoder adapter contract: cancellation discards this consumer; the adapter
@@ -72,6 +74,21 @@ async def fused_search(connection, query: str, *,
     if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
             or not 0 < timeout_seconds <= 2):
         raise ValueError("deadline must be within 2 seconds")
+    source_ids = None
+    if filters is not None:
+        if type(filters) is not QueryFilters:
+            raise ValueError("filters must be QueryFilters")
+        # Revalidate even constructed instances before inference or SQL.
+        filters = QueryFilters.model_validate(filters.model_dump())
+        if filters.kinds is not None and filters.kinds != ("source",):
+            raise ValueError("unsupported search kinds")
+        if filters.source_ids is not None:
+            try:
+                source_ids = [UUID(value) for value in filters.source_ids]
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise ValueError("source filters require UUIDs") from exc
+            if len(set(source_ids)) != len(source_ids):
+                raise ValueError("duplicate source UUIDs")
     if (connection.closed or connection.info.transaction_status != TransactionStatus.IDLE
             or connection.row_factory is not tuple_row):
         raise ValueError("connection must be open, idle and use tuple_row")
@@ -111,22 +128,36 @@ async def fused_search(connection, query: str, *,
                     await execute("SET LOCAL hnsw.iterative_scan = strict_order")
                     await execute("SET LOCAL hnsw.max_scan_tuples = 1000")
                     await execute("SET LOCAL hnsw.ef_search = 100")
-                    await execute("SELECT * FROM rkb_v4.lexical_candidates(%s, %s)",
-                                  (query, candidate_budget))
+                    if source_ids is None:
+                        await execute("SELECT * FROM rkb_v4.lexical_candidates(%s, %s)",
+                                      (query, candidate_budget))
+                    else:
+                        await execute("SELECT * FROM rkb_v4.lexical_candidates_scoped(%s, %s, %s::uuid[])",
+                                      (query, candidate_budget, source_ids))
                     lexical = await cursor.fetchall()
                     vector = vector_literal(await asyncio.shield(encoding))
-                    await execute("SELECT * FROM rkb_v4.dense_candidates(%s::public.vector, %s)",
-                                  (vector, candidate_budget))
+                    if source_ids is None:
+                        await execute("SELECT * FROM rkb_v4.dense_candidates(%s::public.vector, %s)",
+                                      (vector, candidate_budget))
+                    else:
+                        await execute("SELECT * FROM rkb_v4.dense_candidates_scoped(%s::public.vector, %s, %s::uuid[])",
+                                      (vector, candidate_budget, source_ids))
                     dense = await cursor.fetchall()
                     scores: dict[UUID, float] = defaultdict(float)
                     for branch in (lexical, dense):
                         for rank, (passage_id, _) in enumerate(branch, 1):
                             scores[passage_id] += 1 / (60 + rank)
                     ids = sorted(scores, key=lambda key: (-scores[key], str(key)))[:top_k]
-                    await execute("SELECT * FROM rkb_v4.hydrate(%s::uuid[])", (ids,))
+                    if source_ids is None:
+                        await execute("SELECT * FROM rkb_v4.hydrate(%s::uuid[])", (ids,))
+                    else:
+                        await execute("SELECT * FROM rkb_v4.hydrate_scoped(%s::uuid[], %s::uuid[])",
+                                      (ids, source_ids))
                     rows = await cursor.fetchall()
                     return SearchResult(tuple(SearchEvidence(str(r[0]), str(r[1]), *r[2:])
-                                              for r in rows))
+                                              for r in rows), limitation=(
+                        "bounded_candidate_fusion_unverified" if source_ids is not None
+                        else "bounded_ann_recall_unverified"))
     except QueryCanceled as exc:
         # The transaction context has rolled back before exposing this stable
         # public timeout. Other cancellations and SQL errors retain their type.

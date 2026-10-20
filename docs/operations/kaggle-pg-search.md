@@ -151,3 +151,41 @@ SQL/unit/real-driver run passed 15 tests, including the real locked-query
 rollback/settings/reuse checks. Evidence: `pg/timeout-race-tests.txt` in the
 managed task directory. This local Python 3.14 check does not imply a new remote
 Python 3.12/3.13 CI result.
+
+## Bounded source filters (compatible expansion)
+
+`fused_search(..., filters=QueryFilters(...))` now accepts 1–32 distinct UUID
+source IDs and the sole implemented kind `source`. Other kinds, invalid UUIDs,
+empty/oversized source lists and duplicate UUID identities fail before inference
+or SQL. This adapter validates UUID syntax in addition to the wire contract's
+identifier shape. An omitted filter, empty `QueryFilters`, or `kinds=('source',)`
+without source IDs retains the existing unscoped SQL path.
+
+Immutable migration `sql/kaggle/003_search_scope.sql` adds distinct invoker-rights
+functions; it does not change `001_search.sql` or existing function identities.
+Apply it through the ordered migration authority after `002`, before routing
+scoped requests to this executor. Missing scoped functions raise an execution
+error; the executor never silently retries without the requested scope.
+Lexical, dense and hydration SQL each independently constrain the selected
+source IDs and recheck accepted/non-withdrawn/active-revision eligibility.
+Only the bounded caller-provided source list crosses the SQL boundary; the
+application never enumerates corpus scope.
+
+Scoped dense retrieval materializes the eligible source subset, then computes
+exact cosine distance there. The source/revision index supports subset selection.
+The plain distance expression remains the ordering criterion; no distance
+threshold or score transform replaces it. Large selected books can still exceed
+the single existing total deadline (at most two seconds), producing a timeout.
+Unscoped retrieval keeps its existing HNSW path. Scoped results remain explicitly
+incomplete with `bounded_candidate_fusion_unverified`: exact scoped dense top-N
+does not establish full fused-search recall from bounded branch candidates.
+Unscoped results retain `bounded_ann_recall_unverified`.
+
+Validation on 2026-10-20: `tests/test_kaggle_search_scope.py` passed 12 tests using
+the existing guarded disposable PG17/pgvector fixture, including synthetic mixed
+accepted, withdrawn, unaccepted, inactive and out-of-scope sources; independent
+dense hits; current hydration withdrawal/acceptance/revision checks; and the real
+Python executor. Existing search tests passed separately with fixture opt-ins
+skipped. No model/provider call, corpus import or deployment was performed.
+This slice adds filtering only: public QUERY wiring, canonical person resolution,
+shared fair admission and the delayed-output authority gate remain separate work.
