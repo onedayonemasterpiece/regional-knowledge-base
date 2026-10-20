@@ -1,7 +1,9 @@
 """Current revocation projection of existing OAuth families, never another IAM.
 
-Only the existing OAuth mint/refresh/revocation path writes this table while
-holding its encrypted-state lock. Ready reads require an existing exact family
+The existing OAuth mint/refresh/revocation path writes this table while
+holding its encrypted-state lock. An explicit LOCAL reviewed owner-family
+projection migration may insert missing rows for exact currently issued owner
+authorizations under that same lock; it never mints/extends/re-enables authority. Ready reads require an existing exact family
 projection; they never create or extend it.
 """
 import hashlib
