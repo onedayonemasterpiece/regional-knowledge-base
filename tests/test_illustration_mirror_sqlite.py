@@ -20,7 +20,13 @@ class CropStore:
 
 
 @pytest.fixture
-def mirror_source(tmp_path):
+def mirror_source(tmp_path, monkeypatch):
+    # Synthetic crops must not depend on free space on the shared test host.
+    capacity = SimpleNamespace(free=4 * 1024**3)
+    monkeypatch.setattr(
+        "regional_knowledge.illustration_mirror.shutil",
+        SimpleNamespace(disk_usage=lambda path: capacity),
+    )
     backend = SQLiteBackend(
         corpus_path=tmp_path / "corpus.db",
         embedder=LexicalOnlyEmbedder(),
@@ -62,7 +68,7 @@ def mirror_source(tmp_path):
         backend.corpus.put(table, [{**defaults(table), **value}])
     return SimpleNamespace(
         backend=backend, owner=owner, document=document, page=page,
-        illustration=illustration,
+        illustration=illustration, capacity=capacity,
     )
 
 
@@ -143,5 +149,61 @@ async def test_sqlite_mirror_update_preserves_existing_fences(mirror_source, fen
             vibepublish_entry_ref="fixture-entry",
         )
         assert backend.corpus.one("rkb_illustrations", source.illustration) == before
+    finally:
+        await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_mirror_capacity_defers_only_new_puts(mirror_source):
+    source = mirror_source
+    backend = source.backend
+
+    class CountingVibe(Vibe):
+        put_calls = 0
+
+        async def put(self, *args):
+            self.put_calls += 1
+            return await super().put(*args)
+
+    client = CountingVibe(source.owner)
+    client.fail = False
+    worker = IllustrationMirror(backend, client)
+    original = backend.corpus.one("rkb_illustrations", source.illustration)
+    try:
+        source.capacity.free = 2 * 1024**3 - 1
+        assert await worker.tick() == 0
+        deferred = backend.corpus.one("rkb_illustrations", source.illustration)
+        assert deferred["mirror_error_type"] == "MirrorAdmissionDeferred"
+        for key in ("mirror_operation_id", "mirror_read_operation_id",
+                    "vibepublish_entry_ref", "provider_crop_sha256"):
+            assert not deferred[key]
+        assert deferred["crop_object_id"] == original["crop_object_id"]
+        assert await backend.object_store.get_bytes("fixture-crop") == b"private fixture crop"
+        assert client.put_calls == 0
+        assert not client.operations
+
+        # Exactly the reserve boundary admits a new PUT.
+        source.capacity.free = 2 * 1024**3
+        assert await worker.tick() == 0
+        admitted = backend.corpus.one("rkb_illustrations", source.illustration)
+        assert admitted["mirror_operation_id"]
+        assert client.put_calls == 1
+
+        # Falling below reserve cannot strand an already admitted operation.
+        source.capacity.free = 0
+        assert await IllustrationMirror(backend, client).tick() == 0
+        client.advance(0)
+        assert await IllustrationMirror(backend, client).tick() == 1
+        verified = backend.corpus.one("rkb_illustrations", source.illustration)
+        assert verified["mirror_operation_id"] == admitted["mirror_operation_id"]
+        assert verified["mirror_read_operation_id"]
+        assert verified["vibepublish_entry_ref"]
+        assert verified["provider_crop_sha256"] == hashlib.sha256(
+            b"provider-sanitized:private fixture crop"
+        ).hexdigest()
+        assert verified["mirror_error_type"] is None
+        assert verified["crop_object_id"] == original["crop_object_id"]
+        assert client.put_calls == 1
+        assert len(client.operations) == len(client.entries) == 1
     finally:
         await backend.aclose()
