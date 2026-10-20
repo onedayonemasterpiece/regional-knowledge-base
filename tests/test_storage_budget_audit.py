@@ -69,8 +69,19 @@ def test_connection_error_does_not_export_connection_details(audit, monkeypatch,
 
 
 def test_target_documents_and_navigation_exist():
-    prompt=ROOT/'docs/prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md'
-    text=prompt.read_text()
-    for number in range(1,11):assert f'D{number:02d}' in text
-    for name in ('mcp.md','ingestion.md','storage.md','architecture.md'):
-        assert prompt.name in (ROOT/'docs'/name).read_text()
+    prompt = ROOT / 'docs/prompts/rkb-scalable-kaggle-implementation-20261019.md'
+    text = prompt.read_text()
+    for name in ('mcp.md', 'ingestion.md', 'storage.md', 'architecture.md'):
+        assert prompt.name in (ROOT / 'docs' / name).read_text()
+
+    # The superseded SQLite/Supabase prompt must remain a navigable historical
+    # entry point, not the deployment target enforced by this guard.
+    retired = ROOT / 'docs/prompts/rkb-sqlite-supabase-ondemand-codex-v2-20261005.md'
+    retired_text = retired.read_text()
+    assert prompt.name in retired_text
+    assert '/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/' in retired_text
+
+    # The handoff and the operator's acceptance checklist must not drift.
+    acceptance = (ROOT / 'docs/testing/rkb-scalable-kaggle-acceptance-20261019.md').read_text()
+    handoff_gates = text.split('## 14.', 1)[1].split('\n## 15.', 1)[0].strip()
+    assert acceptance.split('## 14.', 1)[1].strip() == handoff_gates
