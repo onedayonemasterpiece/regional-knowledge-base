@@ -15,9 +15,41 @@ from test_bge_shared_worker import Peer,result
 from test_bge_wss_worker import CONFIG,module
 from test_kaggle_bootstrap import candidate
 from test_kaggle_target_runtime import spec
+from test_kaggle_native_bundle import fixture
 
 
 def database():return replace(spec().database,mode='VERIFIED_INITIALIZED',ownership_evidence='synthetic-private-restore')
+
+
+@pytest.mark.asyncio
+async def test_concrete_factory_binds_tools_to_retained_stage0_manifest(fixture,monkeypatch):
+    from regional_knowledge.kaggle_native_bundle import prepare_native_bundle
+    from regional_knowledge.kaggle_recovery_phases import build_recovery_worker
+    import regional_knowledge.kaggle_owned_pg as owned
+    import regional_knowledge.kaggle_pg_snapshot_native as native
+    names=('pg_basebackup','pg_verifybackup','postgres')
+    entries=[('usr/bin/'+n,'file',('synthetic-'+n).encode()) for n in names]
+    def executable(manifest):
+        for file in manifest['files']:file['executable']=True
+    root,pin,inventory,_=fixture(entries=entries,mutate=executable)
+    bundle=prepare_native_bundle(root,pin.manifest_name,pin.manifest_sha256,inventory=inventory)
+    verified=[]
+    monkeypatch.setattr(owned,'grant_native_code_access',lambda root,pins,**identity:verified.append((pins,identity)))
+    async def verify(tools,run):verified.append(tools)
+    monkeypatch.setattr(native.PhysicalPgTools,'verify',verify)
+    tools=dict(binaries={n:dict(path='usr/bin/'+n,version_output=n+' (PostgreSQL) 17.6') for n in names},
+        command_handlers=[dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64)])
+    args=dict(native_bundle=bundle,database=database(),identity=('r','n','i'),tools=tools,native_uid=1001,native_gid=1002,
+        current=lambda b:True,workspace_private_current=lambda p:True,upload=lambda *a,**k:None,
+        download=lambda *a:None,workspace=lambda *a:None)
+    worker=await build_recovery_worker(**args)
+    assert type(worker) is WorkerRecoveryPhases and worker.factory.native_gid==1002
+    assert worker.factory.tools.postgres.sha256==sha(b'synthetic-postgres')
+    assert worker.factory.tools.postgres.path==str(bundle.prefix/'usr/bin/postgres')
+    assert len(verified)==2
+    changed=dict(tools,binaries=tools['binaries']|{'postgres':dict(path='outside/postgres',version_output='arbitrary')})
+    with pytest.raises(SnapshotError,match='unverified'):await build_recovery_worker(**(args|{'tools':changed}))
+    with pytest.raises(SnapshotError,match='stage0_owner'):await build_recovery_worker(**(args|{'native_bundle':{'pins':'json'}}))
 
 
 async def work_for(s,bridge,phase='verify',args=None,key='same-operation'):

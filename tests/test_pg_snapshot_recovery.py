@@ -60,6 +60,16 @@ def test_inventory_refuses_live_state_links_and_budget(tmp_path):
     with pytest.raises(SnapshotError,match='byte_budget'):inventory_tree(root,replace(limits,max_unpacked_bytes=1))
 
 
+def test_private_native_workspace_excludes_notebook_outputs(tmp_path,monkeypatch):
+    with pytest.raises(SnapshotError,match='private_workspace_required'):
+        private_workspace('/kaggle/working/corpus',1)
+    monkeypatch.setattr(native,'PRIVATE_RUNTIME_ROOT',tmp_path)
+    candidate=tmp_path/'fresh-owned'
+    assert private_workspace(candidate,1)==candidate
+    assert candidate.stat().st_mode&0o777==0o700
+    with pytest.raises(FileExistsError):private_workspace(candidate,1)
+
+
 @pytest.mark.asyncio
 async def test_native_binary_exact_hash_and_actual_version_required(tmp_path):
     path=tmp_path/'pinned-native';path.write_bytes(b'synthetic binary bytes')

@@ -22,6 +22,7 @@ import psycopg
 from .kaggle_database_probe import NativeDatabaseProbe
 from .kaggle_apply import handover_writer
 from .kaggle_restored_database import VerifiedInitializedDatabase
+from .kaggle_owned_pg import PRIVATE_RUNTIME_ROOT
 
 
 class SnapshotError(RuntimeError):
@@ -129,8 +130,8 @@ class BlobRef:
 
 def private_workspace(path,required_bytes):
     root=Path(path)
-    if (not root.is_absolute() or not root.is_relative_to('/kaggle/working')
-            or root==Path('/kaggle/working') or '..' in root.parts
+    if (not root.is_absolute() or not root.is_relative_to(PRIVATE_RUNTIME_ROOT)
+            or root==PRIVATE_RUNTIME_ROOT or '..' in root.parts
             or root.parent.resolve(strict=True)!=root.parent):
         raise SnapshotError('snapshot_private_workspace_required')
     if shutil.disk_usage(root.parent).free<required_bytes:raise SnapshotError('snapshot_disk_budget')

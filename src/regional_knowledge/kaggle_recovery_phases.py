@@ -13,8 +13,53 @@ import secrets
 from .kaggle_pg_snapshot_native import SnapshotError, encode, sha
 
 MAX_PHASE_FRAME_BYTES = 4 * 1024 * 1024
-MAX_PHASE_RESULT_BYTES = 128 * 1024
+MAX_PHASE_RESULT_BYTES = 120 * 1024  # Reserve result envelope/claim identity bytes.
 PHASES = frozenset({'capture','prepare','apply','finish','verify'})
+
+
+async def build_recovery_worker(*,native_bundle,database,identity,tools,native_uid,native_gid,
+                                current,workspace_private_current,upload,download,workspace,
+                                acquire=None,limits=None):
+    """Construct the real native owner from the retained Stage0 verification.
+
+    tools declares each binary's bundle-relative path and exact --version output.
+    Hash/size/executable pins come from the verified native manifest. Transfer,
+    attachment and output-exclusion policies are retained deployment callbacks.
+    """
+    from pathlib import Path
+    from .kaggle_native_bundle import VerifiedNativeBundle
+    from .kaggle_owned_pg import grant_native_code_access
+    from .kaggle_pg_snapshot_native import NativeSnapshotFactory,NativeBinary,PhysicalPgTools,SnapshotLimits
+    from .kaggle_source_commands import fixed_registry,WorkerSourceExecutor
+    if (type(native_bundle) is not VerifiedNativeBundle
+            or not await asyncio.to_thread(native_bundle.current)
+            or not isinstance(tools,dict) or set(tools)!={'binaries','command_handlers'}
+            or not isinstance(tools['binaries'],dict)
+            or set(tools['binaries'])!={'pg_basebackup','pg_verifybackup','postgres'}
+            or any(not callable(c) for c in (current,workspace_private_current,upload,download,workspace))):
+        raise SnapshotError('recovery_stage0_owner_required')
+    pins={absolute:(size,digest,executable) for absolute,size,digest,executable in native_bundle.pins}
+    binaries={}
+    for name,value in tools['binaries'].items():
+        if not isinstance(value,dict) or set(value)!={'path','version_output'}:
+            raise SnapshotError('recovery_stage0_binary_declaration')
+        path=Path(value['path'])
+        if path.is_absolute() or '..' in path.parts or not path.parts:
+            raise SnapshotError('recovery_stage0_binary_path')
+        absolute=str(native_bundle.prefix/path)
+        pin=pins.get(absolute)
+        if pin is None or pin[2] is not True:
+            raise SnapshotError('recovery_stage0_binary_unverified')
+        binaries[name]=NativeBinary(absolute,pin[0],pin[1],value['version_output'])
+    await asyncio.to_thread(grant_native_code_access,native_bundle.root,native_bundle.pins,
+        uid=native_uid,gid=native_gid)
+    factory=NativeSnapshotFactory(tools=PhysicalPgTools(**binaries),database=database,identity=identity,
+        registry=fixed_registry(database,tools['command_handlers']),executor_factory=WorkerSourceExecutor,
+        current=current,workspace_private_current=workspace_private_current,native_uid=native_uid,
+        native_gid=native_gid,acquire=acquire,upload_ticket=upload,limits=limits or SnapshotLimits())
+    # Verify exact installed ELF revisions before any backup/restore operation.
+    await factory.tools.verify(factory._run)
+    return WorkerRecoveryPhases(factory=factory,download=download,workspace=workspace)
 
 
 def bounded(value, limit=MAX_PHASE_FRAME_BYTES):
@@ -119,6 +164,10 @@ class WorkerRecoveryPhases:
             manifest=unb64(args['manifest_b64']);control=unb64(args['control_b64'])
             if sha(manifest)!=args['manifest_ref']['sha256']:
                 raise SnapshotError('recovery_phase_manifest_reference')
+            import json
+            declared=json.loads(manifest)
+            if declared.get('blob')!=args['blob']:
+                raise SnapshotError('recovery_phase_blob_reference_changed')
             archive=self.download(BlobRef(**args['blob']),args['restore_operation'])
             if inspect.isawaitable(archive):archive=await archive
             session=await self.factory.prepare(binding,operation_key=args['restore_operation'],

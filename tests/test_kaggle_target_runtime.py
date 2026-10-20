@@ -25,9 +25,9 @@ def spec(*,fresh=False):
         ('initdb','postgres','pg_config','vector_library','vector_control','vector_sql')}
     database = OwnedDatabase(mode='NEW_EMPTY_GENERATION' if fresh else 'VERIFIED_INITIALIZED',
         database_generation='synthetic-db',writer_generation='writer-1',schema_revision='s1',
-        function_revision='f1',executor_revision='e1',socket='/kaggle/working/owned/socket',
+        function_revision='f1',executor_revision='e1',socket='/kaggle/temp/owned/socket',
         dbname='rkb',ownership_evidence='stage0-fixture',
-        **(dict(cluster='/kaggle/working/owned',uid=1000,gid=1000,native_paths=native) if fresh else {}))
+        **(dict(cluster='/kaggle/temp/owned',uid=1000,gid=1000,native_paths=native) if fresh else {}))
     receipt = None if fresh else dict(database=database.wire(),schema_sha256='a'*64,stage0_receipt='stage0-fixture')
     return TargetLaunchSpec(database,'/kaggle/working',(
         dict(name='model/tokenizer.json',size=3,sha256='b'*64,role='tokenizer'),
@@ -36,6 +36,14 @@ def spec(*,fresh=False):
         *(dict(name='native/'+name,size=1,sha256='e'*64,role='code') for name in native)),
         ('torch','transformers','tokenizers','huggingface-hub','psycopg','psycopg-pool','aiohttp','pydantic'),
         'f'*64,'a'*64,'stage0-fixture',receipt)
+
+
+def test_corpus_cluster_and_socket_cannot_enter_saved_notebook_outputs():
+    from dataclasses import replace
+    with pytest.raises(ValueError,match='private native PG endpoint'):
+        replace(spec().database,socket='/kaggle/working/corpus/socket')
+    with pytest.raises(ValueError,match='private native PG endpoint'):
+        replace(spec(fresh=True).database,cluster='/kaggle/working/corpus',socket='/kaggle/working/corpus/socket')
 
 
 def queue_run(tmp_path):

@@ -23,7 +23,10 @@ closure. They import native PG/typed helpers and no Participants, SQLite corpus,
 story registry, control spool, source-history verifier or S3 client. Native
 backup binaries need actual Stage0 path/size/hash/exact PG17-version pins and
 their installed dependencies. This does not claim a copied binary is portable.
-Stage0 must prove the workspace is private and excluded from automatic notebook
+Runtime state is restricted to `/kaggle/temp`, which Kaggle excludes from saved
+outputs; `/kaggle/working` is reserved for pinned code/model artifacts. The
+workspace must pass actual new-directory creation and free-space checks before
+any native backup/restore action. Stage0 must prove the workspace is private and excluded from automatic notebook
 publication; an arbitrary `/kaggle/working` directory is insufficient. Both
 private storage and workspace callbacks come from trusted existing authority,
 not JSON flags. Native UID/GID, disk, file, archive, unpacked, cursor, tail and

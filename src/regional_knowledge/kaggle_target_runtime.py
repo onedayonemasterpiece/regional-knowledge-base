@@ -151,7 +151,37 @@ class TargetRuntime:
                     or self.database.mode!='VERIFIED_INITIALIZED'):
                 raise BootstrapUnavailable('target_restore_worker_required')
         self.recovery_worker=recovery_worker
+        self._recovery_available=asyncio.Event()
+        if recovery_worker is not None:self._recovery_available.set()
         self.restored_database=restored_database
+
+    async def configure_recovery(self,encoder,*,run_id,launch_nonce,runtime_incarnation,
+                                 native_bundle,tools,native_uid,native_gid,current,
+                                 workspace_private_current,upload,download,workspace,limits=None):
+        """Trusted notebook composition after actual Stage0 and before prepare.
+
+        The verified native bundle belongs to the same verified artifact root;
+        callback objects retain attachment/transfer/private-output authority.
+        No launch receipt dictionary supplies those permissions.
+        """
+        if (self.closed or self.identity is not None or self.recovery_worker is not None
+                or self.restored_database is not None or self.database.mode!='VERIFIED_INITIALIZED'
+                or (run_id,launch_nonce)!=(self.config['run_id'],self.config['launch_nonce'])
+                or native_bundle.root!=encoder.artifacts.root):
+            raise BootstrapUnavailable('target_recovery_configuration_changed')
+        from .kaggle_recovery_phases import build_recovery_worker
+        worker=await build_recovery_worker(native_bundle=native_bundle,database=self.database,
+            identity=(run_id,launch_nonce,runtime_incarnation),tools=tools,native_uid=native_uid,
+            native_gid=native_gid,current=current,workspace_private_current=workspace_private_current,
+            upload=upload,download=download,workspace=workspace,limits=limits)
+        self.recovery_worker=worker;self._recovery_available.set()
+        return worker
+
+    async def recovery(self,frame):
+        """Register this handler before _load/prepare; same channel stays live."""
+        if self.closed:raise BootstrapUnavailable('target_runtime_closed')
+        await self._recovery_available.wait()
+        return await self.recovery_worker(frame)
 
     async def _owned_probe(self, *, acquire):
         # The native catalog hash and actual current writer binding have

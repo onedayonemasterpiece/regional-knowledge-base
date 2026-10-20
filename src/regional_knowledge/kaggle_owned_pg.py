@@ -24,6 +24,9 @@ from psycopg.rows import tuple_row
 from .kaggle_apply import initialize_database, Revisions
 from .kaggle_bootstrap import BootstrapUnavailable, _file_hash
 
+# Kaggle saves /kaggle/working outputs; /kaggle/temp is session-only.
+PRIVATE_RUNTIME_ROOT = Path('/kaggle/temp')
+
 SQL_ARTIFACTS = ('001_search.sql', '002_recovery.sql', '003_search_scope.sql',
                  '004_read_fences.sql', '005_source_withdraw.sql', '006_source_import.sql')
 READER_FUNCTIONS = ('lexical_candidates(text,integer)', 'dense_candidates(public.vector,integer)',
@@ -137,14 +140,14 @@ class OwnedDatabase:
         if (not isinstance(self.dbname,str) or not re.fullmatch('[a-z][a-z0-9_]{0,62}',self.dbname)
                 or type(self.port) is not int or not 1<=self.port<=65535
                 or not isinstance(self.socket,str) or len(self.socket.encode())>90
-                or not Path(self.socket).is_relative_to('/kaggle/working') or '..' in Path(self.socket).parts):
+                or not Path(self.socket).is_relative_to(PRIVATE_RUNTIME_ROOT) or Path(self.socket)==PRIVATE_RUNTIME_ROOT or '..' in Path(self.socket).parts):
             raise ValueError('explicit private native PG endpoint required')
         if self.mode == 'NEW_EMPTY_GENERATION':
             if (not isinstance(self.cluster,str) or not Path(self.cluster).is_absolute()
                     or '..' in Path(self.cluster).parts
-                    or not Path(self.cluster).is_relative_to('/kaggle/working')
+                    or not Path(self.cluster).is_relative_to(PRIVATE_RUNTIME_ROOT)
                     or Path(self.socket) != Path(self.cluster)/'socket'
-                    or Path(self.cluster) == Path('/kaggle/working')
+                    or Path(self.cluster) == PRIVATE_RUNTIME_ROOT
                     or any(type(v) is not int or v<1 for v in (self.uid,self.gid))
                     or not isinstance(self.native_paths,Mapping)
                     or set(self.native_paths) != {'initdb','postgres','pg_config','vector_library','vector_control','vector_sql'}
