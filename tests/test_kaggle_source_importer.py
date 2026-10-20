@@ -1,5 +1,6 @@
 """Real owner auth, control queue and MCP contracts; native original/model are synthetic."""
 import asyncio
+import hashlib
 from dataclasses import replace
 import json
 from types import MethodType, SimpleNamespace
@@ -24,6 +25,10 @@ from regional_knowledge.read_issuance import capture_read_output
 from regional_knowledge.recovery_journal import RecoveryJournal
 from regional_knowledge.source_import_v2 import STORY_REVISIONS, source_import_v2_handler
 from regional_knowledge.source_import_v3 import FACT_REVISIONS, source_import_v3_handler
+from regional_knowledge.source_import_v4 import source_import_v4_handler
+from regional_knowledge.story_editorial import EDITORIAL_REVISIONS
+from regional_knowledge.kaggle_domain_bindings import DOMAIN_REVISIONS,current_handler
+from regional_knowledge.original_intake import canonical
 from test_kaggle_public_backend import target
 from test_kaggle_service_startup import HistoryAdapter
 from test_participants import people
@@ -45,7 +50,7 @@ def options(*, research=False, ingestion_id=None, state='complete'):
 @pytest_asyncio.fixture
 async def intake(target, tmp_path, request):
     t=target
-    versions=FACT_REVISIONS if getattr(request,'param',7)==8 else STORY_REVISIONS
+    versions={7:STORY_REVISIONS,8:FACT_REVISIONS,9:EDITORIAL_REVISIONS,11:DOMAIN_REVISIONS}[getattr(request,'param',7)]
     with t.queue.connect() as db:
         db.execute('DELETE FROM jobs')
         row=db.execute('SELECT expected_json,observed_json FROM bge_runtime_expectations WHERE run_id=?',(t.run,)).fetchone()
@@ -56,8 +61,13 @@ async def intake(target, tmp_path, request):
         for raw in row:
             value=json.loads(raw);value.update(revision_values);values.append(json.dumps(value))
         db.execute('UPDATE bge_runtime_expectations SET expected_json=?,observed_json=? WHERE run_id=?',(*values,t.run))
-    builder=source_import_v3_handler if versions==FACT_REVISIONS else source_import_v2_handler
-    handler=builder(revisions=versions,check_sha256='a'*64,apply_sha256='b'*64)
+    if versions==DOMAIN_REVISIONS:
+        handler=current_handler('source.import.v4',check_sha256='a'*64,apply_sha256='b'*64)
+    elif versions==EDITORIAL_REVISIONS:
+        handler=source_import_v4_handler(check_sha256='a'*64,apply_sha256='b'*64)
+    else:
+        builder=source_import_v3_handler if versions==FACT_REVISIONS else source_import_v2_handler
+        handler=builder(revisions=versions,check_sha256='a'*64,apply_sha256='b'*64)
     spool=ControlSpool(t.queue,t.auth.p.registry,RecoveryJournal(ConditionalMemoryStore(),stream='synthetic-intake'),HandlerRegistry([handler]))
     originals=object.__new__(OriginalIntakeController)
     originals.queue,originals.spool,originals.participants=t.queue,spool,t.auth.p.registry
@@ -69,9 +79,17 @@ async def intake(target, tmp_path, request):
         self.receipts[ingestion_id]=receipt
         pages=[]
         for index in range(10):
-            pages.append(dict(page_id=str(uuid5(UUID(source_id),f'page:1:{index}')),physical_page_index=index,
-                original_sha256=receipt.sha256,parser_sha256=receipt.parser_sha256,page_receipt_sha256='5'*64,
-                native_blocks=[dict(block_index=0,bbox=BBOX,text=TEXT,original_length=len(TEXT),truncated=False)]))
+            block=dict(block_index=0,bbox=BBOX,text=TEXT,original_length=len(TEXT),truncated=False,
+                text_sha256=hashlib.sha256(TEXT.encode()).hexdigest())
+            page=dict(format='pdf',page_count=10,page_id=str(uuid5(UUID(source_id),f'page:1:{index}')),physical_page_index=index,
+                original_sha256=receipt.sha256,parser_sha256=receipt.parser_sha256,width=595.,height=842.,
+                image_size=len(b'synthetic-jpeg'),image_sha256=hashlib.sha256(b'synthetic-jpeg').hexdigest(),mime_type='image/jpeg',
+                native_text=TEXT,native_text_info=dict(complete=True,truncated=False,blocks_truncated=False,
+                    native_text_sha256=hashlib.sha256(TEXT.encode()).hexdigest(),native_blocks_sha256=hashlib.sha256(
+                        canonical([{k:block[k] for k in ('block_index','bbox','text')}])).hexdigest()),
+                native_blocks=[block],preview_render=dict(policy='rkb.pdf-preview.v1',width=724,height=1024,
+                    scale=1.216319,max_edge=1024,jpeg_quality=80,byte_limit=256*1024,preview_only=True))
+            page['page_receipt_sha256']=hashlib.sha256(canonical(page)).hexdigest();pages.append(page)
         self.proofs[ingestion_id]=NativePagesProof(receipt.receipt_sha256,
             tuple(json.dumps(page,sort_keys=True).encode() for page in pages))
         return OriginalIntakeStatus(ingestion_id,'verified',receipt)
@@ -99,10 +117,10 @@ async def intake(target, tmp_path, request):
     await startup.source_dispatch.aclose();spool.close()
 
 
-async def start(s):
+async def start(s,metadata=None):
     return await s.importer.book_ingest(command='start', principal=s.principal,
         file=ChatFile(file_id='synthetic-pdf',download_url='https://files.example.test/private.pdf?ticket=not-logged',
-            mime_type='application/pdf',file_name='synthetic.pdf'), payload={'title':'Synthetic source','language':'simple'},
+            mime_type='application/pdf',file_name='synthetic.pdf'), payload=metadata or {'title':'Synthetic source','language':'simple'},
         source_import=options())
 
 
@@ -117,8 +135,8 @@ def stage_payload(s, result, *, text=TEXT):
     return dict(pages=pages,chunks=chunks,story_candidates=[])
 
 
-async def staged(s):
-    result=await start(s)
+async def staged(s,metadata=None):
+    result=await start(s,metadata)
     payload=stage_payload(s,result)
     for begin in (0,8):
         await s.importer.book_ingest(command='stage',principal=s.principal,ingestion_id=result.ingestion_id,
@@ -136,7 +154,7 @@ def test_public_rights_requires_existing_verified_distribution_policy():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('intake',[7,8],indirect=True)
+@pytest.mark.parametrize('intake',[7,8,9,11],indirect=True)
 async def test_owner_only_ten_page_stage_is_provenance_bound_and_batched(intake):
     s=intake;result=await staged(s)
     ready=await s.importer.book_ingest(command='validate',principal=s.principal,ingestion_id=result.ingestion_id)
@@ -303,7 +321,11 @@ async def test_source_and_authored_story_activate_only_after_exact_remote_outcom
     assert story['default_variant']['body']==body and story['summary']!=body
     assert story['default_variant']['embedding']==[1.]+[0.]*1023
     assert value['original']==s.originals.receipts[result.ingestion_id].original
-    assert entry.command.route==('source.import.v3' if s.importer.import_revisions==FACT_REVISIONS else 'source.import.v2')
+    expected_route='source.import.v4' if s.importer.import_revisions in (EDITORIAL_REVISIONS,DOMAIN_REVISIONS) else 'source.import.v3' if s.importer.import_revisions==FACT_REVISIONS else 'source.import.v2'
+    assert entry.command.route==expected_route
+    if expected_route=='source.import.v4':
+        assert len(value['source_manifest']['pages'])==10 and len(value['source_manifest']['passages'])==10
+        assert value['source_manifest']['metadata']['title']=='Synthetic source'
     assert 'https://' not in entry.command.payload.decode() and 'download_url' not in entry.command.encode().decode()
     assert len(s.originals.calls)==1
     a=s.startup.admission;t=s.t
