@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 from types import MappingProxyType
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urljoin
 import urllib.request
 
 TRUSTED_ROOT = Path('/kaggle/working')
@@ -148,12 +148,37 @@ def _remaining(deadline):
 
 
 class _HTTPSRedirect(urllib.request.HTTPRedirectHandler):
+    def __init__(self,deadline=None):
+        self.deadline=deadline
+
     def redirect_request(self,req,fp,code,msg,headers,newurl):
+        if self.deadline is not None:_remaining(self.deadline)
         try:
             _https(newurl)
         except ValueError:
             raise Stage0Error('stage0_unsafe_redirect') from None
         return super().redirect_request(req,fp,code,msg,headers,newurl)
+
+    def http_error_302(self,req,fp,code,msg,headers):
+        location=headers.get('location') or headers.get('uri')
+        if location is None:return None
+        try:
+            newurl=urljoin(req.full_url,location)
+            redirected=self.redirect_request(req,fp,code,msg,headers,newurl)
+            if redirected is None:
+                raise Stage0Error('stage0_unsafe_redirect')
+            count=getattr(req,'_stage0_redirects',0)+1
+            if count>5:
+                raise Stage0Error('stage0_redirect_limit')
+            redirected._stage0_redirects=count
+        finally:
+            # urllib's default redirect handler drains fp.read() without a
+            # byte bound. Close this response; no redirect body is needed.
+            fp.close()
+        timeout=min(30,_remaining(self.deadline)) if self.deadline is not None else 30
+        return self.parent.open(redirected,timeout=timeout)
+
+    http_error_301=http_error_303=http_error_307=http_error_308=http_error_302
 
 
 def _inventory(prepared):
@@ -192,12 +217,13 @@ def _parent(root_fd,name,*,create):
         raise
 
 
-def _verify(parent,name,size,digest,deadline):
+def _verify(parent,name,size,digest,deadline,*,executable=False):
     try:fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent)
     except FileNotFoundError:return False
     try:
         observed=os.fstat(fd)
-        if not stat.S_ISREG(observed.st_mode) or observed.st_size!=size:
+        if (not stat.S_ISREG(observed.st_mode) or observed.st_size!=size
+                or executable and not observed.st_mode&stat.S_IXUSR):
             raise Stage0Error('stage0_existing_file_mismatch')
         actual=hashlib.sha256()
         count=0
@@ -220,7 +246,7 @@ def _download(root_fd,item,opener,deadline):
     fd=None
     try:
         leaf=item.name.split('/')[-1]
-        if _verify(parent,leaf,item.size,item.sha256,deadline):
+        if _verify(parent,leaf,item.size,item.sha256,deadline,executable=item.executable):
             return False
         fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=parent)
         request=urllib.request.Request(item.url,headers={'Accept-Encoding':'identity'},method='GET')
@@ -253,7 +279,7 @@ def _download(root_fd,item,opener,deadline):
         # link is an atomic no-overwrite publication in the held same directory.
         try:os.link(temporary,leaf,src_dir_fd=parent,dst_dir_fd=parent,follow_symlinks=False)
         except FileExistsError:
-            if not _verify(parent,leaf,item.size,item.sha256,deadline):raise
+            if not _verify(parent,leaf,item.size,item.sha256,deadline,executable=item.executable):raise
         os.fsync(parent)
         return True
     finally:
@@ -360,12 +386,13 @@ def prepare_stage0(prepared_model:dict,plan:dict)->dict:
                 try:parent=_parent(root_fd,item.name,create=False)
                 except FileNotFoundError:needed+=item.size;continue
                 try:
-                    if not _verify(parent,item.name.split('/')[-1],item.size,item.sha256,deadline):
+                    if not _verify(parent,item.name.split('/')[-1],item.size,item.sha256,deadline,
+                            executable=item.executable):
                         needed+=item.size
                 finally:os.close(parent)
             if shutil.disk_usage(root).free<needed:
                 raise Stage0Error('stage0_insufficient_disk')
-            opener=urllib.request.build_opener(_HTTPSRedirect(),urllib.request.ProxyHandler({}))
+            opener=urllib.request.build_opener(_HTTPSRedirect(deadline),urllib.request.ProxyHandler({}))
             downloaded=0;downloaded_files=0
             for item in spec.downloads:
                 if _download(root_fd,item,opener,deadline):

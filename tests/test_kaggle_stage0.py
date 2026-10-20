@@ -235,3 +235,27 @@ def test_deadline_covers_stream_and_removes_own_partial(sandbox,monkeypatch):
     with pytest.raises(Stage0Error,match='deadline_exceeded'):
         prepare_stage0(prepared(root,plan),plan.wire())
     assert not (root/'native/postgres').exists() and not list(root.rglob('.rkb-part-*'))
+
+
+def test_redirect_closes_without_unbounded_body_read_and_keeps_total_deadline(monkeypatch):
+    monkeypatch.setattr(stage0.time,'monotonic',lambda:9.)
+    handler=stage0._HTTPSRedirect(deadline=10.)
+    calls=[]
+    handler.parent=SimpleNamespace(open=lambda request,timeout:calls.append((request,timeout)))
+    class RedirectBody:
+        closed=False
+        def read(self,*a):raise AssertionError('redirect body was drained')
+        def close(self):self.closed=True
+    body=RedirectBody()
+    handler.http_error_302(urllib.request.Request('https://fixture.example/start'),body,302,'Found',
+        {'location':'/final'})
+    assert body.closed and len(calls)==1 and calls[0][1]==1.
+    assert calls[0][0].full_url=='https://fixture.example/final'
+
+
+def test_redirect_count_is_bounded():
+    handler=stage0._HTTPSRedirect()
+    request=urllib.request.Request('https://fixture.example/start');request._stage0_redirects=5
+    body=SimpleNamespace(close=lambda:None)
+    with pytest.raises(Stage0Error,match='redirect_limit'):
+        handler.http_error_302(request,body,302,'Found',{'location':'/final'})
