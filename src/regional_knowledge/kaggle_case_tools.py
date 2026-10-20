@@ -23,6 +23,7 @@ def register_case_tools(mcp,backend,principal):
         description='Typed create/revise/state/grant/add_evidence and operation_status on the native Case journal. '
             'Evidence requires exact retained original SHA, source revision, physical region/page IDs and literal quote. '
             'Shared changes require expected_revision. Reuse operation_key after a lost response; pending is not Saved. '
+            'Keep the returned case_id and operation_key for operation_status after raw control retention. '
             'Case grants do not grant a source original or private analysis.',
         annotations=ToolAnnotations(read_only_hint=False,open_world_hint=False))
     async def edit_tool(action:Literal['create','revise','state','grant','add_evidence','operation_status'],

@@ -68,6 +68,17 @@ source-command executor. `operation_status` resumes the same stored command and
 predecessor after an unknown result. Pending/accepted is not Saved; only a native
 applied outcome with a verified durable remote receipt produces `saved=true`.
 Current participant, Case and source checks remain active at final MCP issuance.
+After raw control-spool retention, supply both the returned `case_id` and exact
+`operation_key` to `operation_status`. The same bounded `CASE_READ` operation
+reads the actor-scoped native receipt. Recovery also requires the retained
+compact remote receipt and exact readback of the original command and remote
+outcome, matching the native result, current database generation and canonical
+actor. Native `native_only`, missing remote bytes or mismatches cannot produce
+Saved. This recovery path performs no enqueue, publication or replay effect.
+Current Case/source and participant revocations apply on readback and again at
+final output. The current native operation function exposes successful applied
+receipts only; rejected preconditions after raw retention remain unavailable
+rather than being inferred from missing native rows.
 This implementation and synthetic tests do not establish deployed, physical-phone
 or non-owner live acceptance.
 

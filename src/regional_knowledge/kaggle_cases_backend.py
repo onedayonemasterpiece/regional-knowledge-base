@@ -253,6 +253,82 @@ class KaggleCasesBackend:
                 saved=applied.status=='applied',result=json.loads(base64.b64decode(outcome['result_b64'],validate=True)))
         return result
 
+    async def _recover_operation(self,authority,context,binding,key,case_id):
+        """Read a collected intent; native-only or local-only evidence is not Saved.
+
+        The compact remote receipt outlives raw spool bytes. Re-read its exact
+        immutable journal objects and compare the native actor-scoped receipt;
+        never stage, seal, publish or enqueue an operation on this path.
+        """
+        from .control_spool import _database,_command
+        from .recovery_journal import RemoteOutcomeReceipt
+        if case_id is None:raise failure('case_id_required_after_control_retention','invalid_query')
+        case_id=exact_uuid(str(case_id));gated=None
+        def compact():
+            with self.spool._db() as db:
+                row=db.execute('SELECT command_sha256,receipt_bytes FROM rkb_control_receipts WHERE operation_key=?',(key,)).fetchone()
+                return (row[0],bytes(row[1])) if row is not None else None
+        try:
+            async with asyncio.timeout(2):
+                gated=await self._native(authority,binding,case_id=case_id,section='operation',operation_key=key)
+                native=gated.result.record
+                retained=await _database(compact)
+                if retained is None:raise failure('remote_outcome_unproved')
+                command_hash,receipt_bytes=retained
+                remote=RemoteOutcomeReceipt(**json.loads(receipt_bytes))
+                journal=self.spool.journal
+                if (canonical(remote.__dict__)!=receipt_bytes or remote.operation_key!=key
+                        or remote.command_sha256!=command_hash or native['command_sha256']!=command_hash
+                        or remote.key!=journal.prefix+'/outcomes/'+hashlib.sha256(key.encode()).hexdigest()
+                        or remote.database_generation!=binding.database_generation
+                        or type(remote.length) is not int or not 1<=remote.length<=journal.max_outcome_bytes):
+                    raise failure('remote_outcome_unproved')
+                original=await journal._read(journal.prefix+'/commands/'+hashlib.sha256(key.encode()).hexdigest(),journal.max_segment_bytes)
+                if original is None or hashlib.sha256(original.data).hexdigest()!=command_hash:
+                    raise failure('remote_outcome_unproved')
+                command=_command(original.data)
+                if (command.operation_key!=key or command.person_id!=authority.person_id
+                        or command.ids.get('case_id')!=case_id or not command.route.startswith('disagreement.')
+                        or native['sequence']!=command.sequence or native['request_id']!=command.request_id
+                        or native['state']!='applied' or native['outcome_durability']!='native_only'):
+                    raise failure('remote_outcome_unproved')
+                # Fixed historical command semantics and current route/actor
+                # authority, including private draft authorship, are rechecked.
+                await self._check(authority,context,binding,command)
+                stored=await journal._read(remote.key,journal.max_outcome_bytes)
+                if stored is None or len(stored.data)!=remote.length:raise failure('remote_outcome_unproved')
+                envelope=json.loads(stored.data)
+                outcome=base64.b64decode(envelope['outcome_b64'],validate=True)
+                expected=dict(codec='rkb.outcome.v1',stream=journal.stream,command_sha256=command_hash,
+                    sequence=command.sequence,operation_key=key,database_generation=binding.database_generation,
+                    outcome_b64=base64.b64encode(outcome).decode(),outcome_sha256=remote.outcome_sha256,outcome_length=len(outcome))
+                if canonical(expected)!=stored.data or hashlib.sha256(outcome).hexdigest()!=remote.outcome_sha256:
+                    raise failure('remote_outcome_unproved')
+                applied=json.loads(outcome)
+                result_bytes=base64.b64decode(applied['result_b64'],validate=True)
+                versions=(command.schema_revision,command.function_revision,command.executor_revision)
+                expected_applied=dict(codec='rkb.applied-outcome.v1',operation_key=key,command_sha256=command_hash,
+                    cursor=command.sequence,status='applied',ids=dict(command.ids),request_id=command.request_id,
+                    person_id=authority.person_id,route=command.route,logical_time=command.logical_time,
+                    before=list(versions),after=list(versions),handler_sha256=applied['handler_sha256'],
+                    result_b64=base64.b64encode(result_bytes).decode(),result_sha256=hashlib.sha256(result_bytes).hexdigest())
+                if (canonical(expected_applied)!=outcome
+                        or type(applied['handler_sha256']) is not str or len(applied['handler_sha256'])!=64
+                        or set(applied['handler_sha256'])-set('0123456789abcdef')
+                        or json.loads(result_bytes)!=native['result']):
+                    raise failure('remote_outcome_unproved')
+                gated=await self.gate.refresh(gated)
+                if gated.result.status!='ok':raise failure(gated.result.reason,gated.result.status)
+                output=dict(status='saved',reason=None,operation_key=key,case_id=case_id,
+                    object_id=command.ids['object_id'],sequence=command.sequence,command_sha256=command_hash,
+                    intent_remote_accepted=True,outcome_durability='DURABLE',saved=True,result=native['result'])
+                await self.output_gate.retain(output,authority,context,binding,command)
+                return output
+        except TimeoutError:raise failure('deadline_exceeded') from None
+        except (ValueError,TypeError,KeyError):raise failure('remote_outcome_unproved') from None
+        finally:
+            if gated is not None:self.gate.release(gated.ticket)
+
     async def _mutate(self,principal,action,operation_key,command=None,*,case_id=None,object_id=None,
                       case_revision=0,object_version=0,status_only=False):
         authority=context=binding=entry=gated=None;retained=False
@@ -266,7 +342,9 @@ class KaggleCasesBackend:
             binding=await asyncio.to_thread(current_binding,self.queue)
             key=self._key(authority.person_id,operation_key);entry=await self._entry(key)
             if entry is None:
-                if status_only:raise failure('operation_not_found','invalid_query')
+                if status_only:
+                    result=await self._recover_operation(authority,context,binding,key,case_id)
+                    retained=True;return result
                 if action not in _TYPES or type(command) is not _TYPES[action]:raise ValueError('exact Case command type required')
                 if case_id is None:
                     if action!='create':raise ValueError('existing Case UUID required')
@@ -304,6 +382,8 @@ class KaggleCasesBackend:
                         if gated is not None and not self.gate.issuance_current(gated.ticket):raise failure('prior_write_pending')
                         frozen,data,handler=self.spool._validate(resolved,binding.database_generation)
                         entry=await self.spool._write(self.spool._stage,frozen,data,handler,binding.database_generation)
+            if status_only and case_id is not None and entry.command.ids['case_id']!=exact_uuid(str(case_id)):
+                raise failure('operation_key_conflict','invalid_query')
             if not status_only:
                 original=validate_case_payload(entry.command.payload)
                 if (original['action']!=action or original['command']!=json.loads(command.model_dump_json())
@@ -340,7 +420,7 @@ class KaggleCasesBackend:
         return await self._read(principal,case_id=str(case_id),section=section,after_seq=after_seq,limit=limit,revision=revision)
 
     async def disagreement_edit(self,action,operation_key,principal,*,case_id=None,command=None,expected_revision=None):
-        if action=='operation_status':return await self._mutate(principal,action,operation_key,status_only=True)
+        if action=='operation_status':return await self._mutate(principal,action,operation_key,case_id=case_id,status_only=True)
         if (action=='create' and (case_id is not None or expected_revision is not None)
                 or action!='create' and case_id is None
                 or action in ('revise','state','grant') and expected_revision is None):
