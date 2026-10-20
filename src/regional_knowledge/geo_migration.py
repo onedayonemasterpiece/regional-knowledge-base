@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 Digest = Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
 Identity = Annotated[str, Field(min_length=1, max_length=512)]
 Short = Annotated[str, Field(min_length=1, max_length=200)]
+MAX_PLACE_PROVENANCE = 256
 
 
 def canonical(value):
@@ -111,7 +112,7 @@ class Place(Contract):
     canonical_label: Short
     exact_source_spelling: Short
     state: Literal['candidate','reviewed','unresolved']
-    provenance_keys: tuple[Identity, ...] = Field(min_length=1,max_length=64)
+    provenance_keys: tuple[Identity, ...] = Field(min_length=1,max_length=MAX_PLACE_PROVENANCE)
     metadata_names: tuple[Short, ...] = Field(default=(),max_length=20)
     historical_geometry: Literal['unresolved_with_owner'] = 'unresolved_with_owner'
     canonical_poi_ref: str | None = None
@@ -254,7 +255,7 @@ class GeoManifestItem(Contract):
     owner_person_id: str
     access: Literal['private_owner_only'] = 'private_owner_only'
     status: Literal['legacy_unanchored','left_with_owner','excluded_non_geo','blocked_missing_dependency']
-    dependencies: tuple[Identity, ...] = Field(default=(),max_length=64)
+    dependencies: tuple[Identity, ...] = Field(default=(),max_length=MAX_PLACE_PROVENANCE)
     payload: Payload
     _owner=field_validator('owner_person_id')(exact_uuid)
 

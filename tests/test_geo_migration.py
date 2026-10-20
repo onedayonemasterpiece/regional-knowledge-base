@@ -159,3 +159,29 @@ def test_manifest_rejects_source_text_fields_and_omitted_declared_dependencies_e
 def test_changed_legacy_geo_intent_proof_is_not_reused_as_an_accepted_locator():
     data=snapshot();data['mentions'][0]['evidence']=dict(data['mentions'][0]['evidence'],exact_quote='altered claim')
     with pytest.raises(GeoWhitelistError,match='source_or_owner_mismatch'):build_geo_whitelist(**data)
+
+
+def test_measured_144_mention_place_preserves_every_provenance_and_dependency():
+    # Actual GEO inventory has a 144-mention place. Preserve every locator.
+    data=snapshot()
+    first=data['mentions'][0]
+    data['mentions'] += [dict(first,id=uid(300+n)) for n in range(143)]
+    data['expected_counts']=data['expected_counts'].model_copy(update={'mentions':len(data['mentions'])})
+    manifest=build_geo_whitelist(**data).require_ready()
+    place=next(item for item in manifest.items if item.key=='place:'+uid(10))
+    expected={'provenance:'+row['id'] for row in data['mentions'] if row['entity_id']==uid(10)}
+    assert len(expected)==144
+    assert set(place.payload.provenance_keys)==set(place.dependencies)==expected
+    assert expected <= {item.key for item in manifest.items}
+    assert GeoMigrationManifest.from_wire(manifest.wire())==manifest
+    from regional_knowledge.geo_manifest_commands import plan_geo_manifest
+    assert plan_geo_manifest(manifest).manifest_id==manifest.sha256
+    assert b'SECRET OLD CHAPTER' not in canonical(manifest.wire())
+
+
+def test_large_geographic_provenance_refuses_instead_of_silently_clipping():
+    data=snapshot()
+    data['mentions'] += [dict(data['mentions'][0],id=uid(300+n)) for n in range(256)]
+    data['expected_counts']=data['expected_counts'].model_copy(update={'mentions':len(data['mentions'])})
+    with pytest.raises(GeoWhitelistError,match='geographic_provenance_bound'):
+        build_geo_whitelist(**data)
