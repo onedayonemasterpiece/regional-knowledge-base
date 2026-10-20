@@ -326,8 +326,6 @@ def channel_route(queue):
         except asyncio.CancelledError:
             pass
         except PermissionError as error:
-            # Imported lazily so the transport remains coupled only to queue API.
-            from .bge_queue import StaleAttachment
             logger.info(json.dumps({'event': 'bge_channel_rejected', 'run_id': run_id,
                                     'connection_generation': generation,
                                     'reason': 'stale_attachment' if isinstance(error, StaleAttachment) else 'revoked_run'}))
