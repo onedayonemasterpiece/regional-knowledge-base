@@ -94,6 +94,11 @@ def _denied():
 
 
 def _tool_result(value, previous):
+    from mcp.types import CallToolResult
+    if type(value) is CallToolResult:
+        # Page previews use the ordinary MCP text/image content contract. The
+        # retained gate owns this renderer and refreshes the whole result.
+        return value.model_dump(mode='json', by_alias=True, exclude_none=True)
     payload = value.model_dump(mode='json') if hasattr(value, 'model_dump') else dict(value)
     # The outer existing ReadTelemetry attaches the public trace after the
     # backend creates its render closure. Keep only that allowlisted diagnostic.

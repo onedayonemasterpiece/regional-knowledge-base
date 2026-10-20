@@ -65,6 +65,10 @@ class TargetServiceConfig:
     destination_ref: str = 'rkb-source-http-response'
     refresh_seconds: float = 5
     writer_owner: object = None
+    import_originals: object = None
+    import_tokenizer: object = None
+    import_parser_sha256: str | None = None
+    import_launch_config_sha256: str | None = None
 
     def __post_init__(self):
         if (not isinstance(self.oauth_provider,RegionalOAuthProvider)
@@ -92,9 +96,39 @@ class TargetServiceConfig:
                 or type(self.refresh_seconds) not in (int,float) or not math.isfinite(self.refresh_seconds)
                 or not 0<self.refresh_seconds<=10):
             raise ValueError('bounded destination and maintenance interval required')
+        if (len({value is None for value in (self.import_originals,self.import_tokenizer,
+                self.import_parser_sha256,self.import_launch_config_sha256)}) != 1):
+            raise TypeError('native originals and exact independent tokenizer must be supplied together')
+        if self.import_originals is not None:
+            from .original_intake_controller import OriginalIntakeController
+            from .kaggle_import_tokenizer import HfImportTokenCounter
+            import re
+            if (type(self.import_originals) is not OriginalIntakeController
+                    or type(self.import_tokenizer) is not HfImportTokenCounter
+                    or self.import_originals.queue is not self.queue
+                    or self.import_originals.spool is not self.spool
+                    or self.import_originals.participants is not self.participants):
+                raise TypeError('same existing native intake control owners required')
+            if any(type(value) is not str or re.fullmatch('[0-9a-f]{64}',value) is None
+                    for value in (self.import_parser_sha256,self.import_launch_config_sha256)):
+                raise ValueError('independent target intake parser/config pins required')
 
 
 class _SourceBackend(KaggleSourceBackend):
+    def _importer(self):
+        if self.startup.importer is None:
+            raise ToolError('{"status":"unavailable","reason":"target_importer_unavailable"}')
+        return self.startup.importer
+
+    async def book_ingest(self, **kwargs):
+        return await self._importer().book_ingest(**kwargs)
+
+    async def book_pages(self, **kwargs):
+        return await self._importer().book_pages(**kwargs)
+
+    async def _ingestion_row(self, *, principal, ingestion_id):
+        return await self._importer().owned_row(principal, ingestion_id)
+
     async def _search(self,*args,**kwargs):
         if not self.startup.reads_current():
             raise ToolError('{"status":"unavailable","reason":"source_history_unavailable"}')
@@ -144,6 +178,15 @@ class TargetServiceStartup:
             self.source_dispatch=bridge
         else:
             self.source_dispatch=AcceptedSourceDispatch(config.spool,binding_current=self.command_binding_current)
+        self.importer = None
+        if config.import_originals is not None:
+            from .kaggle_importer import KaggleSourceImporter
+            from .file_ingress import ChatFileDownloader
+            self.importer = KaggleSourceImporter(self, originals=config.import_originals,
+                tokenizer=config.import_tokenizer)
+            # Only bounded stage JSON uses this Dev downloader. Original PDFs
+            # are acquired by the configured native controller.
+            self.backend.file_downloader = ChatFileDownloader()
 
     def binding_current(self,binding):
         try:

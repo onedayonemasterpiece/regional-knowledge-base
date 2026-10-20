@@ -16,7 +16,7 @@ from mcp.server.auth.settings import (
     ClientRegistrationOptions,
     RevocationOptions,
 )
-from mcp.types import ImageContent, TextContent, ToolAnnotations
+from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from pydantic import AnyHttpUrl, Field
 
 from starlette.routing import Route
@@ -30,6 +30,7 @@ from .geo_resolution import GeoProposal
 from .local_e5 import LocalE5Embedder
 from .auth import JwtResourceVerifier
 from .backend import KnowledgeBackend
+from .kaggle_import_contracts import TargetSourceImportInput
 from .contracts import (
     BookFindOutput,
     BookIngestOutput,
@@ -122,6 +123,18 @@ async def _attach_story_extraction(
     return result.model_copy(update=update)
 
 
+def _book_page_tool_result(ingestion_id, batch):
+    manifest = {'ingestion_id': ingestion_id, 'next_cursor': batch.next_cursor,
+        'pages': [{'page_id': page.page_id, 'physical_page_index': page.physical_page_index,
+            'printed_page_number': page.printed_page_number, 'mime_type': page.mime_type,
+            'native_text': page.native_text, 'native_blocks': list(page.native_blocks),
+            'native_text_info': page.native_text_info} for page in batch.pages]}
+    content = [TextContent(type='text', text=json.dumps(manifest, ensure_ascii=False))]
+    for page in batch.pages:
+        content.append(Image(data=page.data, format=page.mime_type.removeprefix('image/')).to_image_content())
+    return CallToolResult(content=content)
+
+
 def _transport_security(resource_url: str | None = None) -> TransportSecuritySettings:
     resource = (
         resource_url
@@ -162,7 +175,10 @@ class KnowledgeMCPServer(MCPServer):
     """Advertise the public PKCE clients supported by our embedded provider."""
 
     async def call_tool(self, name, arguments, context=None):
-        if getattr(self,'_target_source_profile',False) and name not in {'search','fetch','knowledge_search','profile'}:
+        allowed = {'search','fetch','knowledge_search','profile'}
+        if getattr(self,'_target_import_available',False):
+            allowed.update({'book_ingest','book_pages'})
+        if getattr(self,'_target_source_profile',False) and name not in allowed:
             raise ToolError('{"status":"unavailable","reason":"target_domain_unavailable"}')
         from .read_issuance import capture_read_output, bind_request_output
         with capture_read_output() as calls:
@@ -313,6 +329,16 @@ def build_server(
     mcp = KnowledgeMCPServer(
         "Regional Knowledge Base",
         instructions=(
+            ("This configured target's fresh-source importer accepts PDF attachments up to 2 MiB and 32 pages, "
+             "in batches of at most 8 staged pages. HTML, DjVu, reprocess, catalog corrections and entity/POI mutations "
+             "are unavailable on this bounded path. Start requires source_import.public_rights with an explicit "
+             "verified public-distribution basis. Follow every book_pages continuation before using source text. "
+             "Stage exact observed native blocks or unique source spans with their actual bounding boxes; "
+             "source_import.research must contain the calling model's explicit state and reachable continuation. "
+             "Story candidates may supply a basic_variant with the actual authored body and complete evidence map; "
+             "a summary never becomes a narrative. A facts_only outcome or needs_context frontier is explicit model work. "
+             "Finalized source activation does not establish retrieval acceptance or exhaustive semantic coverage. "
+             if selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None else "") +
             "Search and retrieve sourced regional knowledge. Use search before fetch. "
             "When a user asks to add an attached PDF/DjVu book, start ingestion and carry "
             "it through book_pages, model review/stage, validate and finalize by following "
@@ -394,6 +420,7 @@ def build_server(
         embedded_provider.register_routes(mcp)
 
     mcp._target_source_profile=selected=='kaggle_source'
+    mcp._target_import_available = selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None
     mcp._target_startup=target_startup
     mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
     worker_queue = getattr(backend, 'worker_queue', None)
@@ -1006,6 +1033,7 @@ def build_server(
         poi_media_links: list[StagePoiMediaLinkInput] | None = None,
         entity_candidates: GraphBundle | None = None,
         story_candidates: Annotated[list[StageStoryCandidateInput], Field(max_length=12)] | None = None,
+        source_import: TargetSourceImportInput | None = None,
     ) -> BookIngestOutput:
         payload: dict[str, Any] | None = None
         if metadata is not None:
@@ -1066,6 +1094,13 @@ def build_server(
             file = None
         elif file is not None and command not in {'start', 'reprocess'}:
             raise ToolError('file_only_supported_for_start_reprocess_or_stage')
+        import_options = {}
+        if source_import is not None:
+            if selected != 'kaggle_source':
+                raise ToolError('source_import_requires_configured_target_importer')
+            import_options['source_import'] = source_import
+        if stage_file_sha and selected == 'kaggle_source':
+            import_options['stage_file_sha256'] = stage_file_sha
         result = await backend.book_ingest(
             command=command,
             principal=principal,
@@ -1074,8 +1109,9 @@ def build_server(
             cursor=cursor,
             payload=payload,
             document_id=document_id,
+            **import_options,
         )
-        if stage_file_sha:
+        if stage_file_sha and selected != 'kaggle_source':
             result = result.model_copy(update={'message': result.message + '; stage_file_sha256=' + stage_file_sha})
         return await _attach_story_extraction(backend, principal, result)
 
@@ -1159,29 +1195,7 @@ def build_server(
             cursor=cursor,
             batch_size=batch_size,
         )
-        manifest = {
-            "ingestion_id": ingestion_id,
-            "next_cursor": batch.next_cursor,
-            "pages": [
-                {
-                    "page_id": page.page_id,
-                    "physical_page_index": page.physical_page_index,
-                    "printed_page_number": page.printed_page_number,
-                    "mime_type": page.mime_type,
-                    "native_text": page.native_text,
-                    "native_blocks": list(page.native_blocks),
-                    "native_text_info": page.native_text_info,
-                }
-                for page in batch.pages
-            ],
-        }
-        result: list[TextContent | ImageContent] = [
-            TextContent(type="text", text=json.dumps(manifest, ensure_ascii=False))
-        ]
-        for page in batch.pages:
-            image_format = page.mime_type.removeprefix("image/")
-            result.append(Image(data=page.data, format=image_format).to_image_content())
-        return result
+        return _book_page_tool_result(ingestion_id, batch).content
 
     @mcp.tool(
         title="Manage document access",
