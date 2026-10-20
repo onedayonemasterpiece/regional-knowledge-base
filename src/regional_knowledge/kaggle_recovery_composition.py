@@ -167,7 +167,19 @@ class DeferredRecoveryRuntime:
             while self.instance is None:
                 if not self.current(binding):raise ValueError('recovery dispatch attachment changed')
                 await asyncio.sleep(.02)
-            return await self.instance.recovery(frame)
+            from .kaggle_pg_snapshot_native import SnapshotError
+            for _ in range(3):
+                try:return await self.instance.recovery(frame)
+                except SnapshotError as exc:
+                    if frame.get('phase')!='finish' or str(exc)!='native_restore_binding_changed':raise
+                    previous=frame['connection_generation']
+                    while self.generation is None or self.generation==previous:
+                        if self.closed:raise
+                        await asyncio.sleep(.02)
+                    # Keep the original resource/dispatch claim; renew only
+                    # the authenticated attachment's generation.
+                    frame=dict(frame,connection_generation=self.generation)
+            raise SnapshotError('native_restore_reconnect_budget')
 
     async def aclose(self):
         self.closed=True;self.generation=None

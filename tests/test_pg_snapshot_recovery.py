@@ -134,7 +134,7 @@ async def test_native_replay_exact_receipts_precede_rollover_and_adoption(monkey
     events=[];binding=object();writer=['old'];sequence=[0]
     class Connection:
         async def execute(self,sql,*args):
-            self.row=(sequence[0],) if 'applied_seq' in sql else (writer[0],)
+            self.row=(sequence[0],writer[0]) if 'applied_seq,writer_generation' in sql else (sequence[0],) if 'applied_seq' in sql else (writer[0],)
             return self
         async def fetchone(self):return self.row
         async def commit(self):pass

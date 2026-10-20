@@ -20,7 +20,7 @@ PHASES = frozenset({'capture','prepare','apply','finish','verify','source_histor
 
 async def build_recovery_worker(*,native_bundle,database,identity,tools,native_uid,native_gid,
                                 current,workspace_private_current,workspace,upload=None,download=None,
-                                ticket_channel=None,transfer=None,acquire=None,limits=None):
+                                ticket_channel=None,transfer=None,acquire=None,limits=None,model_pins=None):
     """Construct the real native owner from the retained Stage0 verification.
 
     tools declares each binary's bundle-relative path and exact --version output.
@@ -81,6 +81,12 @@ async def build_recovery_worker(*,native_bundle,database,identity,tools,native_u
         native_gid=native_gid,acquire=acquire,upload_ticket=upload,limits=limits or SnapshotLimits())
     # Verify exact installed ELF revisions before any backup/restore operation.
     from .kaggle_native_env import verified_native_environment
+    if model_pins is not None:
+        from .kaggle_pg_snapshot_native import _hash
+        if type(model_pins) is not dict or set(model_pins)!={'model_sha256','tokenizer_sha256'}:
+            raise SnapshotError('recovery_model_inventory_required')
+        for value in model_pins.values():_hash(value)
+        factory.model_pins=dict(model_pins)
     factory.native_env=await asyncio.to_thread(verified_native_environment,native_bundle)
     await factory.tools.verify(factory._run)
     return WorkerRecoveryPhases(factory=factory,download=download,workspace=workspace)
@@ -136,7 +142,8 @@ class WorkerRecoveryPhases:
                 or 'download_ticket' in frame and frame.get('phase')!='prepare' or frame['type']!='DISPATCH'
                 or frame['protocol_version']!=2 or frame['kind']!='recovery_phase'
                 or frame['phase'] not in PHASES-{'source_history'}-ORIGINAL_PHASES or type(frame['connection_generation']) is not int
-                or frame['connection_generation']<1 or frame['dispatch_generation']!=frame['connection_generation']
+                or frame['connection_generation']<1 or type(frame['dispatch_generation']) is not int
+                or not 1<=frame['dispatch_generation']<=frame['connection_generation']
                 or any(not isinstance(frame[k],str) or not 1<=len(frame[k].encode())<=256
                        for k in ('id','claim','compute_claim','operation_key'))
                 or tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))!=self.factory.identity
@@ -155,9 +162,10 @@ class WorkerRecoveryPhases:
             prior=self._requests.get(key)
             if prior is not None:
                 if prior!=request:raise SnapshotError('recovery_phase_operation_changed')
-                if key not in self._results:
+                if key in self._results:return self._results[key]
+                session=self._sessions.get(frame.get('arguments',{}).get('handle'))
+                if frame['phase']!='finish' or session not in self.factory._finish_intents:
                     raise SnapshotError('recovery_phase_unknown_requires_reconciliation')
-                return self._results[key]
             if len(self._requests)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
             self._requests[key]=request  # UNKNOWN is retained before effects.
             value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
