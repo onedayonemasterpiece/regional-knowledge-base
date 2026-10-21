@@ -16,6 +16,27 @@ from test_kaggle_target_runtime import spec
 
 
 @pytest.mark.asyncio
+async def test_api_restart_of_active_restore_recreates_capture_facade_without_pg_replay():
+    from regional_knowledge.kaggle_restore_startup import SourceRestoreCoordinator
+    coordinator=SourceRestoreCoordinator.__new__(SourceRestoreCoordinator)
+    binding=SimpleNamespace(database_generation='db',writer_generation='writer')
+    async def begin(*args,**kwargs):pass
+    coordinator.writer=SimpleNamespace(begin_restore=begin,current=lambda **kwargs:True)
+    coordinator.config=SimpleNamespace()
+    coordinator.journal=object();coordinator.complete=False
+    coordinator.dispatch=None;coordinator.physical=None
+    coordinator._observe=lambda:(binding,'nonce')
+    composed=[]
+    def compose(observed,nonce):
+        composed.append((observed,nonce));coordinator.dispatch=object();coordinator.physical=object()
+    coordinator._compose=compose
+    assert await coordinator.refresh()
+    assert coordinator.complete and coordinator.physical is not None and composed==[(binding,'nonce')]
+    assert await coordinator.refresh()
+    assert len(composed)==1
+
+
+@pytest.mark.asyncio
 async def test_production_owner_restores_before_ready_through_same_claim_and_ticket_owner(recovery_owner):
     e=recovery_owner;database=replace(spec().database,writer_generation='writer-2')
     registry=fixed_registry(database,[dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64)])
