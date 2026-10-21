@@ -38,7 +38,7 @@ class DatasetSeedConfig:
 
 
 def _put_control(grant, data):
-    limit=MAX_JOURNAL_CONTROL_BYTES if grant.name=='rkb-v1-journal-control-json.blob' else 1024*1024
+    limit=MAX_JOURNAL_CONTROL_BYTES if grant.name=='journal-control.json' else 1024*1024
     if len(data) > limit or (len(data), sha(data)) != (grant.size, grant.sha256):
         raise DatasetPublicationError('dataset_control_upload_bytes_changed')
     parsed = urlsplit(grant.url)
@@ -147,8 +147,8 @@ class SourceDatasetSeed:
                 # Only bounded recovery metadata is uploaded from Dev.
                 files = [archive]
                 journal_control=await self._journal_control()
-                for name, data in (('rkb-v1-base-manifest-json.blob', manifest),
-                        ('rkb-v1-source-control-json.blob', control), ('rkb-v1-journal-control-json.blob',journal_control)):
+                for name, data in (('base-manifest.json', manifest),
+                        ('source-control.json', control), ('journal-control.json',journal_control)):
                     grant, _expires = await self.tickets.reserve(binding, self.config.operation_key+':'+name,
                         name=name, size=len(data), sha256=sha(data))
                     await asyncio.to_thread(_put_control, grant, data)
