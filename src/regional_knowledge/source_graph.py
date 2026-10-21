@@ -151,11 +151,12 @@ def validate_graph_import_payload(payload,*,source_id,person_id):
 
 
 def resolved_graph_import_command(*,sequence,operation_key,request_id,person_id,logical_time,source_id,payload,revisions=None):
-    from .kaggle_domain_bindings import DOMAIN_REVISIONS
+    from .kaggle_domain_bindings import DOMAIN_REVISIONS,DOMAIN_V2_REVISIONS
     from .recovery_journal import ExactCommand
-    if revisions is not None and revisions!=DOMAIN_REVISIONS:raise ValueError('exact current source graph revisions required')
+    if revisions is not None and revisions not in (DOMAIN_REVISIONS,DOMAIN_V2_REVISIONS):raise ValueError('exact current source graph revisions required')
+    revisions=revisions or DOMAIN_REVISIONS
     raw=canonical(payload);validate_graph_import_payload(raw,source_id=source_id,person_id=person_id)
     return ExactCommand(sequence=sequence,operation_key=operation_key,request_id=request_id,person_id=person_id,
-        route='source.import.v4',logical_time=logical_time,schema_revision=DOMAIN_REVISIONS.schema,
-        function_revision=DOMAIN_REVISIONS.function,executor_revision=DOMAIN_REVISIONS.executor,
+        route='source.import.v4',logical_time=logical_time,schema_revision=revisions.schema,
+        function_revision=revisions.function,executor_revision=revisions.executor,
         ids={'source_id':source_id},expected_revisions={'absent_source':'true'},payload=raw)

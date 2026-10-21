@@ -9,6 +9,7 @@ from .kaggle_apply import Revisions,HandlerSpec,PgFunction,DependencySpec
 from .recovery_journal import ExactCommand
 
 DOMAIN_REVISIONS=Revisions('rkb-v4-sql001-011-v1','rkb-v4-source-story-cases-geo-v6','rkb-python-apply-v1')
+DOMAIN_V2_REVISIONS=Revisions('rkb-v4-sql001-012-v1','rkb-v4-source-story-cases-geo-v7','rkb-python-apply-v1')
 CURRENT_ROUTES=frozenset({'source.import.v4','source.withdraw.v1','story.edit.v1','story.access.v1',
     'disagreement.edit.v1','disagreement.access.v1','disagreement.draft.v1','disagreement.publish.v1',
     'geo.manifest.install.v1'})
@@ -23,7 +24,7 @@ def _view(command,revisions):
 
 def validate_current_command(command):
     if (type(command) is not ExactCommand or command.kind!='domain_command' or command.route not in CURRENT_ROUTES
-            or (command.schema_revision,command.function_revision,command.executor_revision)!=DOMAIN_REVISIONS.wire()):
+            or (command.schema_revision,command.function_revision,command.executor_revision) not in (DOMAIN_REVISIONS.wire(),DOMAIN_V2_REVISIONS.wire())):
         raise ValueError('explicit reviewed fresh11 command binding required')
     route=command.route
     if route=='source.import.v4':
@@ -50,7 +51,8 @@ def validate_current_command(command):
     return {'withdrawn':True}
 
 
-def current_handler(route,*,check_sha256,apply_sha256):
+def current_handler(route,*,check_sha256,apply_sha256,revisions=DOMAIN_REVISIONS):
+    if revisions not in (DOMAIN_REVISIONS,DOMAIN_V2_REVISIONS):raise ValueError('exact installed domain revisions required')
     if route not in CURRENT_ROUTES:raise ValueError('fixed current native domain route required')
     if route=='source.import.v4':
         from .source_import_v4 import source_import_v4_handler
@@ -65,12 +67,12 @@ def current_handler(route,*,check_sha256,apply_sha256):
         original=case_handler(route,check_sha256=check_sha256,apply_sha256=apply_sha256)
     elif route=='geo.manifest.install.v1':
         from .geo_manifest_commands import geo_manifest_handler
-        original=geo_manifest_handler(revisions=DOMAIN_REVISIONS,check_sha256=check_sha256,apply_sha256=apply_sha256)
+        original=geo_manifest_handler(revisions=revisions,check_sha256=check_sha256,apply_sha256=apply_sha256)
     else:
-        return HandlerSpec('domain_command',route,DOMAIN_REVISIONS,PgFunction('check_source_withdraw_v1',check_sha256),
+        return HandlerSpec('domain_command',route,revisions,PgFunction('check_source_withdraw_v1',check_sha256),
             PgFunction('apply_source_withdraw_v1',apply_sha256),frozenset({'eligibility_revision'}),
             dependency=DependencySpec(route,'public_source',frozenset({'source_id'}),'shared',True))
-    return replace(original,revisions=DOMAIN_REVISIONS)
+    return replace(original,revisions=revisions)
 
 
 def _new_at_current(command):
@@ -80,7 +82,7 @@ def _new_at_current(command):
 
 
 def resolved_current_import_v4_command(*,revisions=DOMAIN_REVISIONS,**arguments):
-    if revisions!=DOMAIN_REVISIONS:raise ValueError('exact installed domain revisions required')
+    if revisions not in (DOMAIN_REVISIONS,DOMAIN_V2_REVISIONS):raise ValueError('exact installed domain revisions required')
     from .source_graph import resolved_graph_import_command
     return resolved_graph_import_command(revisions=revisions,**arguments)
 

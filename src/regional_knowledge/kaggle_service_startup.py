@@ -73,6 +73,8 @@ class TargetServiceConfig:
     source_restore: object = None
     source_snapshot: object = None
     geo_bootstrap: object = None
+    geo_dependency_upgrade: object = None
+    dataset_seed: object = None
 
     def __post_init__(self):
         if (not isinstance(self.oauth_provider,RegionalOAuthProvider)
@@ -105,6 +107,10 @@ class TargetServiceConfig:
                 or any(type(key) is not str or not 1<=len(key.encode())<=256 for key in self.geo_manifest_operation_keys)
                 or len(self.geo_manifest_operation_keys)==1):
             raise ValueError('bounded exact GEO manifest operation keys required')
+        if self.geo_dependency_upgrade is not None:
+            from .kaggle_geo_upgrade import GeoUpgradePins
+            if type(self.geo_dependency_upgrade) is not GeoUpgradePins or self.geo_bootstrap is None:
+                raise ValueError('reviewed geographic upgrade requires the existing GEO owner')
         if (len({value is None for value in (self.import_originals,self.import_tokenizer,
                 self.import_parser_sha256,self.import_launch_config_sha256)}) != 1):
             raise TypeError('native originals and exact independent tokenizer must be supplied together')
@@ -276,7 +282,16 @@ class TargetServiceStartup:
         self.geo_installer=None
         if config.geo_bootstrap is not None:
             from .kaggle_geo_install import SourceGeoInstaller
-            self.geo_installer=SourceGeoInstaller(self,config.geo_bootstrap)
+            self.geo_installer=SourceGeoInstaller(self,config.geo_bootstrap,upgrade_pins=config.geo_dependency_upgrade)
+        self.dataset_seed=None
+        if config.dataset_seed is not None:
+            from .kaggle_dataset_seed import SourceDatasetSeed, DatasetSeedConfig
+            from .kaggle_dataset_publisher import KaggleDatasetPublisher, authenticated_service_api
+            if type(config.dataset_seed) is not DatasetSeedConfig:
+                raise TypeError('typed Dataset seed required')
+            api=authenticated_service_api()
+            self.dataset_seed=SourceDatasetSeed(self,config.dataset_seed,KaggleDatasetPublisher(api,
+                provider_ref=config.dataset_seed.provider_ref,owner=api.get_config_value(api.CONFIG_NAME_USER)))
 
     def binding_current(self,binding):
         try:
@@ -310,10 +325,15 @@ class TargetServiceStartup:
         if not self.gate.graph_supported():return True
         installer=getattr(self,'geo_installer',None)
         if installer is not None and not installer.current():return False
-        return bool(self.geo_gate is not None and self.geo_gate.installation_current(
-            self.binding,self.config.geo_manifest_operation_keys))
+        keys=installer.effective_keys if installer is not None else self.config.geo_manifest_operation_keys
+        return bool(self.geo_gate is not None and self.geo_gate.installation_current(self.binding,keys))
 
     async def refresh(self):
+        if self.dataset_seed is not None and self.dataset_seed.published():
+            # The one-time seed is finished. Do not keep polling S3 as a live
+            # journal while the controller prepares the Dataset restore.
+            self.coverage=None;self.gate.invalidate()
+            return False
         """Maintenance only; ready reads never wait for native/journal writes."""
         if not self.running or self.closed:return False
         try:
@@ -331,6 +351,9 @@ class TargetServiceStartup:
             if self.config.writer_owner is not None:
                 await self.config.writer_owner.ensure_current(self.config.spool.journal)
             if not self.binding_current(binding):raise PermissionError('current writer binding unavailable')
+            if self.geo_installer is not None and self.geo_installer.needs_native_upgrade(binding):
+                self.coverage=None;self.gate.invalidate();self.geo_installer.kick(binding)
+                return False
             if binding==self.binding and self.coverage is not None and self.coverage.current():
                 coverage=await self.history.extend(self.binding)
             else:
@@ -341,6 +364,12 @@ class TargetServiceStartup:
             if not coverage.current() or not self.binding_current(self.binding):
                 raise PermissionError('native history proof no longer current')
             self.coverage=coverage
+            if self.dataset_seed is not None:
+                await self.dataset_seed.capture_once(self.binding)
+                # Seed publication does not authorize an S3-backed importer.
+                # Keep new writes pending until Dataset cold restore is wired.
+                self.coverage=None;self.gate.invalidate()
+                return False
             if self.snapshot is not None:self.snapshot.kick(self.binding)
             if self.geo_gate is not None and (self.geo_gate._manifest is None
                     or self.geo_gate._manifest.database!=binding.database_generation):
@@ -361,7 +390,10 @@ class TargetServiceStartup:
             self.coverage=None;self.gate.invalidate();raise
         except Exception as exc:
             self.coverage=None;self.gate.invalidate()
-            _LOG.warning('target_source_routing state=closed reason=%s',type(exc).__name__)
+            code=exc.args[0] if len(exc.args)==1 and type(exc.args[0]) is str else ''
+            if not 1<=len(code)<=100 or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_' for c in code):
+                code='unavailable'
+            _LOG.warning('target_source_routing state=closed reason=%s code=%s',type(exc).__name__,code)
             return False
 
     async def _maintain(self,*,initial=False):

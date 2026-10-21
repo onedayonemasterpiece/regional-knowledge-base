@@ -105,7 +105,7 @@ def test_small_descriptor_roundtrip_rejects_unbounded_unknown_fields():
     with pytest.raises(ValueError):NativeBundleSpec.from_wire(dict(value.wire(),files=[]))
 
 
-@pytest.mark.parametrize('count',[134,144])
+@pytest.mark.parametrize('count',[134,144,native.MAX_PREPARED_FILES])
 def test_native_extraction_accepts_complete_prepared_source_inventory(fixture,count):
     root,spec,inventory,manifest=fixture()
     # Full generated notebook inventory includes code, SQL and model assets,
@@ -119,7 +119,7 @@ def test_native_extraction_accepts_complete_prepared_source_inventory(fixture,co
     cap=prepare_native_bundle(root,spec.manifest_name,spec.manifest_sha256,inventory=complete)
     assert cap.current() and len(cap.pins)==4
     overflow=complete+tuple(dict(name=f'extra-{n}',size=0,sha256=sha(b''),role='code')
-                            for n in range(145-count))
+                            for n in range(native.MAX_PREPARED_FILES+1-count))
     with pytest.raises(NativeBundleError,match='native_bundle_top_inventory_required'):
         prepare_native_bundle(root,spec.manifest_name,spec.manifest_sha256,inventory=overflow)
 

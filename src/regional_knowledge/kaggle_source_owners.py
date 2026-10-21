@@ -26,7 +26,7 @@ from .queue_writer import QueueWriterAuthority
 
 def compose_source_service(*,queue,oauth_provider,participants,object_store,stream,registry,
                            history_adapter,run_id,database_generation,writer_generation,
-                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=(),source_restore=None,source_snapshot=None,geo_bootstrap=None):
+                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=(),source_restore=None,source_snapshot=None,geo_bootstrap=None,geo_dependency_upgrade=None,dataset_seed=None):
     """Reuse the actual owner objects; returns the real server.main input.
 
     object_store is the already configured S3ObjectStore authority/client, not
@@ -60,7 +60,8 @@ def compose_source_service(*,queue,oauth_provider,participants,object_store,stre
                 object_store=object_store,writer=writer)
         return TargetServiceStartup(TargetServiceConfig(oauth_provider,participants,queue,spool,history_adapter,
             writer_generation,writer.current,destination_ref=destination_ref,writer_owner=writer,
-            geo_manifest_operation_keys=geo_manifest_operation_keys,source_restore=source_restore,source_snapshot=source_snapshot,geo_bootstrap=geo_bootstrap,**import_options))
+            geo_manifest_operation_keys=geo_manifest_operation_keys,source_restore=source_restore,source_snapshot=source_snapshot,geo_bootstrap=geo_bootstrap,
+            geo_dependency_upgrade=geo_dependency_upgrade,dataset_seed=dataset_seed,**import_options))
     except BaseException:
         if spool is not None:spool.close()
         if writer is not None:writer.close()
@@ -89,7 +90,7 @@ def configured_source_service():
         return result
     value=json.loads(data,object_pairs_hook=unique)
     fields={'codec','run_id','stream','database','command_handlers','catalog_sha256','acl_sha256','observer_sha256'}
-    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys','source_restore','source_snapshot','geo_bootstrap'}
+    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys','source_restore','source_snapshot','geo_bootstrap','geo_dependency_upgrade','dataset_seed'}
             or value['codec']!='rkb.source-service.v1'):
         raise ValueError('exact source owner configuration required')
     if 'geo_manifest_operation_keys' in value and type(value['geo_manifest_operation_keys']) is not list:
@@ -110,9 +111,14 @@ def configured_source_service():
     if type(object_store) is not S3ObjectStore:raise ValueError('existing configured native S3 authority required')
     database=OwnedDatabase(**value['database'])
     registry=fixed_registry(database,value['command_handlers'])
+    upgrade=None
+    if 'geo_dependency_upgrade' in value:
+        from .kaggle_geo_upgrade import GeoUpgradePins
+        upgrade=GeoUpgradePins.from_wire(value['geo_dependency_upgrade'])
     history=WssNativeHistoryProofAdapter(database=database,expected_catalog_sha256=value['catalog_sha256'],
         expected_acl_sha256=value['acl_sha256'],expected_observer_sha256=value['observer_sha256'],
-        geo_bootstrap_operation_keys=tuple(value.get('geo_manifest_operation_keys',())))
+        geo_bootstrap_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),
+        geo_upgrade_pins=upgrade if database.schema_revision=='rkb-v4-sql001-012-v1' else None)
     import_owners=None
     if 'source_import' in value:
         from .kaggle_import_composition import SourceImportOwners
@@ -129,7 +135,12 @@ def configured_source_service():
     if 'geo_bootstrap' in value:
         from .kaggle_geo_install import SourceGeoInstallConfig
         geo_bootstrap=SourceGeoInstallConfig.from_wire(value['geo_bootstrap'])
+    dataset_seed=None
+    if 'dataset_seed' in value:
+        from .kaggle_dataset_seed import DatasetSeedConfig
+        dataset_seed=DatasetSeedConfig.from_wire(value['dataset_seed'])
     return compose_source_service(queue=BgeQueue(queue_path),oauth_provider=provider,participants=people,
         object_store=object_store,stream=value['stream'],registry=registry,history_adapter=history,
         run_id=value['run_id'],database_generation=database.database_generation,writer_generation=database.writer_generation,
-        source_import=import_owners,geo_manifest_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),source_restore=restore,source_snapshot=snapshot,geo_bootstrap=geo_bootstrap)
+        source_import=import_owners,geo_manifest_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),source_restore=restore,source_snapshot=snapshot,geo_bootstrap=geo_bootstrap,
+        geo_dependency_upgrade=upgrade,dataset_seed=dataset_seed)

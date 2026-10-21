@@ -18,6 +18,10 @@ class BgeChannelStopped(RuntimeError):
     pass
 
 
+class BgePendingResultResync(ConnectionError):
+    """Reconnect the same runtime to reconcile its retained durable result."""
+
+
 def _channel_json(raw):
     def unique(pairs):
         result = {}
@@ -531,6 +535,12 @@ class BgeWssTransport:
                         continue
                     if self.job is not None:
                         if self.shared_reads:
+                            if self.pending is not None:
+                                # The peer may have expired the claim before its
+                                # ACK arrived. Keep the exact job/result and use
+                                # the existing bounded reconnect to replay it;
+                                # never execute or acknowledge different work.
+                                raise BgePendingResultResync('durable result still awaiting acknowledgment')
                             raise ValueError('durable result still awaiting acknowledgment')
                         # A lease can expire during a forward. Keep its permit until
                         # completion and hold at most one newly assigned job.

@@ -70,10 +70,15 @@ class SourceRestoreCoordinator:
         self.database=startup.config.history_adapter.database
         self.journal=startup.config.spool.journal
         self.queue=startup.config.queue
+        from .geo_manifest_commands import GEO_REVISIONS,GEO_V2_REVISIONS
+        pins=getattr(startup.config,'geo_dependency_upgrade',None)
+        ordered_upgrade=(pins is not None and pins.origin_catalog_sha256==self.config.versions['catalog_sha256']
+            and tuple(self.config.versions[key] for key in ('schema_revision','function_revision','executor_revision'))==GEO_REVISIONS.wire()
+            and tuple(getattr(self.database,key) for key in ('schema_revision','function_revision','executor_revision'))==GEO_V2_REVISIONS.wire())
         if (self.database.mode!='VERIFIED_INITIALIZED' or self.database.database_generation!=self.writer.database_generation
-                or self.config.versions['catalog_sha256']!=startup.history.catalog_hash
-                or any(self.config.versions[key]!=getattr(self.database,key) for key in
-                    ('schema_revision','function_revision','executor_revision'))
+                or not ordered_upgrade and (self.config.versions['catalog_sha256']!=startup.history.catalog_hash
+                    or any(self.config.versions[key]!=getattr(self.database,key) for key in
+                        ('schema_revision','function_revision','executor_revision')))
                 or not self.config.manifest.key.startswith(self.journal.prefix+'/snapshots/manifests/')):
             raise ValueError('restore versions/database/manifest must match exact source service')
         self.binding=None;self.dispatch=None;self.physical=None;self.proof=None;self.complete=False

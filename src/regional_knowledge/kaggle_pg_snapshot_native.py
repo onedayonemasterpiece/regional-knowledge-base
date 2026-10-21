@@ -291,7 +291,7 @@ class NativeSnapshotFactory:
     """Private native phases; fixed accepted-command replay, no journal client."""
     def __init__(self,*,tools,database,identity,registry,executor_factory,current,
                  workspace_private_current,native_uid,native_gid,acquire=None,
-                 upload_ticket=None,
+                 upload_ticket=None,prepare_transition=None,
                  limits=SnapshotLimits(),connect=psycopg.AsyncConnection.connect,
                  spawn=asyncio.create_subprocess_exec,probe=None):
         if (type(tools) is not PhysicalPgTools or not callable(executor_factory)
@@ -300,6 +300,10 @@ class NativeSnapshotFactory:
             raise TypeError('fixed native restore deployment required')
         self.tools,self.database,self.identity,self.registry=tools,database,identity,registry
         self.executor_factory,self.current=executor_factory,current
+        if prepare_transition is not None and not callable(prepare_transition):
+            raise TypeError('trusted installed transition preparation required')
+        self.prepare_transition=prepare_transition
+        self._custom_probe=probe is not None
         self.workspace_private_current=workspace_private_current
         self.native_uid,self.native_gid=native_uid,native_gid
         self.acquire,self.limits,self.connect,self.spawn=acquire,limits,connect,spawn
@@ -363,6 +367,47 @@ class NativeSnapshotFactory:
                 'system_identifier':system_identifier,'file_count':len(records),'unpacked_bytes':unpacked,
                 'inventory_sha256':inventory,'backup_manifest_sha256':digest_file(root/'base/backup_manifest',self.limits.max_unpacked_bytes)[1],
                 'native_tools':{name:asdict(getattr(self.tools,name)) for name in ('pg_basebackup','pg_verifybackup','postgres')}}
+
+    async def prepare_dataset_base(self, binding, *, operation_key, pin,
+                                   observed_dataset_ref, observed_dataset_version,
+                                   observed_notebook_version, observed_run_id,
+                                   expected_versions, workspace,
+                                   mount_root=Path('/kaggle/input')):
+        """Converge a version-attested Kaggle Dataset on the SAME native PG path.
+
+        This is callable only by the trusted already-attached restore owner.
+        The provider attestation must originate independently of the pin; a
+        dataset mount slug alone is NOT sufficient. No version evidence means
+        no filesystem read or PostgreSQL process side effects.
+        """
+        from .kaggle_dataset_base import DatasetBasePin, verify_mounted_dataset_base
+        self._current(binding)
+        self._versions(expected_versions)
+        if (type(pin) is not DatasetBasePin or pin.run_id != self.identity[0]
+                or pin.database_generation != self.database.database_generation
+                or observed_run_id != self.identity[0]):
+            raise SnapshotError('dataset_restore_runtime_binding')
+        verified=await _blocking(verify_mounted_dataset_base,pin,
+            observed_dataset_ref=observed_dataset_ref,
+            observed_dataset_version=observed_dataset_version,
+            observed_notebook_version=observed_notebook_version,
+            observed_run_id=observed_run_id,mount_root=mount_root)
+        try:
+            manifest=json.loads(verified.manifest_bytes)
+            if manifest['versions']!=expected_versions:
+                raise SnapshotError('dataset_restore_versions_mismatch')
+        except (ValueError,TypeError,KeyError):
+            raise SnapshotError('dataset_restore_versions_mismatch') from None
+        # Existing prepare() supplies UNKNOWN operation fencing and native
+        # pg_verifybackup/PG17+pgvector/system ID/accepted-prefix validation.
+        # It independently rehashes the archive bytes from this mounted path.
+        return await self.prepare(binding,operation_key=operation_key,
+            manifest_bytes=verified.manifest_bytes,
+            expected_manifest_sha256=pin.manifest.sha256,
+            archive_path=verified.archive_path,
+            control_bytes=verified.control_bytes,
+            expected_versions=expected_versions,
+            workspace=workspace)
 
     async def prepare(self,binding,*,operation_key,**arguments):
         """A lost prepare ACK never authorizes creating a second candidate."""
@@ -437,7 +482,10 @@ class NativeSnapshotFactory:
                         async with candidate.acquire():pass
                         break
                     except psycopg.OperationalError:await asyncio.sleep(.1)
-            catalog,fields=await self.probe(acquire=candidate.acquire)
+            base_probe=self.probe
+            if not self._custom_probe and expected_versions['schema_revision']!=self.database.schema_revision:
+                base_probe=native_probe_for_schema(expected_versions['schema_revision'])
+            catalog,fields=await base_probe(acquire=candidate.acquire)
             if (sha(catalog)!=expected_versions['catalog_sha256']
                     or fields['database_generation']!=self.database.database_generation
                     or fields['applied_seq']!=m['applied_sequence']):
@@ -452,8 +500,9 @@ class NativeSnapshotFactory:
                     cursor=await connection.execute('SELECT writer_generation FROM rkb_v4.recovery_state WHERE singleton')
                     if await cursor.fetchone()!=(m['writer_generation'],):raise SnapshotError('native_restore_original_writer')
             original=replace(self.database,writer_generation=m['writer_generation'])
+            options={} if self.prepare_transition is None else {'prepare_transition':self.prepare_transition}
             executor=self.executor_factory(acquire=candidate.acquire,registry=self.registry,database=original,
-                run_id=self.identity[0],launch_nonce=self.identity[1],runtime_incarnation=self.identity[2])
+                run_id=self.identity[0],launch_nonce=self.identity[1],runtime_incarnation=self.identity[2],**options)
             session=_NativeSession(candidate,m,control_bytes,binding,executor,[])
             self._sessions.add(session);self._current(binding)
             return session

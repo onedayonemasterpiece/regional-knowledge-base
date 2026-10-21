@@ -38,8 +38,10 @@ FACT_SQL_ARTIFACTS=STORY_SQL_ARTIFACTS+('008_source_facts.sql',)
 EDITORIAL_SQL_ARTIFACTS=FACT_SQL_ARTIFACTS+('009_story_editorial.sql',)
 CASE_SQL_ARTIFACTS=EDITORIAL_SQL_ARTIFACTS+('010_disagreement_cases.sql',)
 DOMAIN_SQL_ARTIFACTS=CASE_SQL_ARTIFACTS+('011_geo_identity_manifest.sql',)
+DOMAIN_V2_SQL_ARTIFACTS=DOMAIN_SQL_ARTIFACTS+('012_geo_dependency_bound.sql',)
 
 def sql_artifacts(schema_revision):
+    if schema_revision=='rkb-v4-sql001-012-v1':return DOMAIN_V2_SQL_ARTIFACTS
     if schema_revision=='rkb-v4-sql001-011-v1':return DOMAIN_SQL_ARTIFACTS
     if schema_revision=='rkb-v4-sql001-010-v1':return CASE_SQL_ARTIFACTS
     if schema_revision=='rkb-v4-sql001-009-v1':return EDITORIAL_SQL_ARTIFACTS
@@ -64,7 +66,7 @@ async def configure_native_roles(admin,*,selected_sql,dbname):
     """
     selected_sql=tuple(selected_sql)
     if selected_sql not in (SQL_ARTIFACTS,STORY_SQL_ARTIFACTS,FACT_SQL_ARTIFACTS,
-            EDITORIAL_SQL_ARTIFACTS,CASE_SQL_ARTIFACTS,DOMAIN_SQL_ARTIFACTS):
+            EDITORIAL_SQL_ARTIFACTS,CASE_SQL_ARTIFACTS,DOMAIN_SQL_ARTIFACTS,DOMAIN_V2_SQL_ARTIFACTS):
         raise ValueError('exact reviewed native SQL prefix required')
     if type(dbname) is not str or not re.fullmatch(r'[a-z][a-z0-9_]{0,62}',dbname):
         raise ValueError('exact owned native database name required')

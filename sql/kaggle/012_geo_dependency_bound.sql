@@ -184,9 +184,12 @@ DECLARE doc jsonb; s rkb_v4.recovery_state;
 BEGIN
  doc:=convert_from(p,'UTF8')::jsonb;
  SELECT * INTO STRICT s FROM rkb_v4.recovery_state WHERE singleton;
- RETURN ids='{}'::jsonb
-  AND expected=jsonb_build_object('schema','rkb-v4-sql001-011-v1',
+ RETURN ids ? 'manifest_id' AND ids-'manifest_id'='{}'::jsonb
+  AND jsonb_typeof(ids->'manifest_id')='string' AND ids->>'manifest_id' ~ '^[0-9a-f]{64}$'
+  AND expected-'installer_person_id'=jsonb_build_object('schema','rkb-v4-sql001-011-v1',
     'function','rkb-v4-source-story-cases-geo-v6','executor','rkb-python-apply-v1','migration','')
+  AND EXISTS(SELECT 1 FROM rkb_v4.geo_manifest_heads h WHERE h.manifest_id=ids->>'manifest_id'
+    AND h.state='staging' AND h.installer_person_id::text=expected->>'installer_person_id')
   AND s.schema_revision='rkb-v4-sql001-011-v1'
   AND s.function_revision='rkb-v4-source-story-cases-geo-v6'
   AND s.executor_revision='rkb-python-apply-v1' AND s.last_migration_id IS NULL

@@ -55,6 +55,7 @@ class SnapshotTicket:
     expires_at: float
     url: str = field(repr=False)
     headers: tuple[tuple[str, str], ...] = field(repr=False)
+    upload_kind: str = 's3'
 
     def __post_init__(self):
         origin(self.url)
@@ -76,23 +77,31 @@ class SnapshotTicket:
                     or pair[0].lower() in names):
                 raise SnapshotTransferError('snapshot_transfer_ticket_invalid')
             names.add(pair[0].lower())
-        expected = {'content-length', 'content-type', 'if-none-match'} if self.method == 'PUT' else {'if-match'}
+        if self.upload_kind not in ('s3', 'kaggle-dataset') or (self.method != 'PUT' and self.upload_kind != 's3'):
+            raise SnapshotTransferError('snapshot_transfer_upload_kind')
+        expected = ({'content-length', 'content-type'} if self.upload_kind == 'kaggle-dataset' else
+                    {'content-length', 'content-type', 'if-none-match'} if self.method == 'PUT' else {'if-match'})
         if names != expected:
             raise SnapshotTransferError('snapshot_transfer_headers_invalid')
         h = {k.lower(): v for k, v in self.headers}
         if self.method == 'PUT' and (h['content-length'] != str(self.size)
-                or h['content-type'] != 'application/octet-stream' or h['if-none-match'] != '*'):
+                or h['content-type'] != 'application/octet-stream'
+                or self.upload_kind == 's3' and h['if-none-match'] != '*'):
             raise SnapshotTransferError('snapshot_transfer_headers_invalid')
+        if self.upload_kind == 'kaggle-dataset' and origin(self.url) != 'https://storage.googleapis.com':
+            raise SnapshotTransferError('snapshot_transfer_dataset_origin')
 
     def wire(self):
-        return dict(method=self.method, operation_ref=self.operation_ref, key=self.key,
+        value = dict(method=self.method, operation_ref=self.operation_ref, key=self.key,
             size=self.size, sha256=self.sha256, expires_at=self.expires_at,
             url=self.url, headers=[list(pair) for pair in self.headers])
+        if self.upload_kind != 's3':value['upload_kind'] = self.upload_kind
+        return value
 
     @classmethod
     def from_wire(cls, value):
-        if (type(value) is not dict or set(value) != {'method', 'operation_ref', 'key', 'size',
-                'sha256', 'expires_at', 'url', 'headers'} or type(value['headers']) is not list
+        fields = {'method', 'operation_ref', 'key', 'size', 'sha256', 'expires_at', 'url', 'headers'}
+        if (type(value) is not dict or set(value) not in (fields, fields | {'upload_kind'}) or type(value['headers']) is not list
                 or any(type(pair) is not list for pair in value['headers'])):
             raise SnapshotTransferError('snapshot_transfer_ticket_invalid')
         return cls(**{**value, 'headers': tuple(tuple(pair) for pair in value['headers'])})
