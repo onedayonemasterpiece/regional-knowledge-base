@@ -673,6 +673,14 @@ class BgeWssTransport:
                             await asyncio.wait_for(self.stop.wait(), delay)
                         except TimeoutError:
                             pass
+        except Exception as error:
+            # Cleanup can wait for an already running native load/forward.
+            # Expose the failure before that drain, without exception text,
+            # frames, credentials or private result payloads.
+            print(json.dumps({'event':'worker_transport_failed',
+                'run_id':self.config['run_id'],
+                'error_type':type(error).__name__}),flush=True)
+            raise
         finally:
             # Thread cancellation is not forward completion. Drain any started
             # load/encode before relinquishing this worker's inference ownership.
