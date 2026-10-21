@@ -483,7 +483,8 @@ def channel_route(queue, *, read_telemetry=None):
             from .bge_queue import StaleAttachment as CurrentStaleAttachment
             logger.info(json.dumps({'event': 'bge_channel_rejected', 'run_id': run_id,
                                     'connection_generation': generation,
-                                    'reason': 'stale_attachment' if isinstance(error, CurrentStaleAttachment) else 'revoked_run'}))
+                                    'reason': 'stale_attachment' if isinstance(error, CurrentStaleAttachment) else 'revoked_run',
+                                    'error_type': type(error).__name__}))
             await socket.close(code=4409 if isinstance(error, CurrentStaleAttachment) else 4403)
         except (ValueError, KeyError, TypeError, UnicodeError, TimeoutError):
             logger.info(json.dumps({'event': 'bge_channel_rejected', 'run_id': run_id,

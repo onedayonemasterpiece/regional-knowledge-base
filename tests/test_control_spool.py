@@ -367,3 +367,14 @@ async def test_cancelled_local_write_drains_before_owner_can_close(env,monkeypat
     with pytest.raises(asyncio.CancelledError):await task
     assert (await e.spool.get(e.cmd.operation_key)).seal_state=='NOT_SENT'
     assert not e.store.objects
+
+
+@pytest.mark.asyncio
+async def test_recovered_job_settlement_requires_exact_remote_durability(env):
+    e=env
+    await accept(e)
+    await e.spool.record_apply(e.cmd.operation_key,receipt(e.cmd))
+    with pytest.raises(SpoolConflict,match='durable outcome'):
+        e.spool._settle_recovered_jobs(e.cmd.operation_key)
+    with e.q.connect(write=False) as db:
+        assert db.execute('select outcome_state from rkb_control_operations').fetchone()[0]=='NOT_SENT'

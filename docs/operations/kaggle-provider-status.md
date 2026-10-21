@@ -69,9 +69,11 @@ budget fail closed. Begin/end wall times must be finite and ordered, beginning
 after the stored heartbeat; monotonic time bounds collection. Retirement requires
 proof no older than 30 seconds and an unchanged run/version/nonce/incarnation,
 connection generation, channel state and heartbeat under the same transaction.
-Only a persisted already-expired historical row can be selected or retired.
-Stale READY/starting/draining and attachment-conflict rows remain on the existing
-live reconciliation path; elapsed lease time does not expand this adapter scope.
+Automatic historical diagnostics select only already-expired rows. An exact
+native proof may also retire current starting/READY/draining compute after its
+process terminates, provided publication is settled. This changes only compute
+reservation state; writer authority, job claims and local readiness status remain
+for ordinary maintenance to reconcile. Attachment conflicts still fail closed.
 
 This is provider-managed *saved-session termination*, not independent VM
 forensics or closure of other interactive/batch sessions at that notebook.
@@ -129,3 +131,12 @@ one-shot; an unknown Save response is reconciled for that same request, never
 blindly submitted again. Accepted data, writer fences and original historical
 outcomes remain intact. Automatic reconciliation observes current owners; a
 bounded historical sweep remains an explicit diagnostic operation.
+
+
+Physical restore reconciles retained local source jobs only after native tail
+replay, exact remote outcome persistence and final initialized-database verification.
+The original accepted bytes, actor, writer identity and attempt remain unchanged;
+the stored apply/outcome receipts settle the job before ordinary dispatch resumes.
+An unreconciled job must not be redispatched with its historical writer on the
+new executor. Native terminal logs diagnose channel closure; a generic
+`revoked_run` channel reason is not evidence that the bearer token was revoked.

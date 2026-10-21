@@ -501,3 +501,14 @@ def test_current_unknown_owner_still_fences_a_successor(env):
         candidate=q._new_run(db,now[0])
         db.execute('update control set successor=? where id=1',(candidate,))
     assert q.launch_claim(candidate,provider_ref=REF) is None
+
+
+def test_exact_native_terminal_can_retire_compute_without_rewriting_ready_or_writer(env):
+    q,now,rid,row=env
+    with q.connect() as db:
+        db.execute("update runs set status='ready' where id=?",(rid,))
+    proof=observe(API(row()),row,now)
+    assert proof is not None and q.retire_provider_reservation(proof)
+    current=row()
+    assert current['status']=='ready' and current['launch_state']=='terminal'
+    assert q.launch_claim(rid,provider_ref=REF) is None

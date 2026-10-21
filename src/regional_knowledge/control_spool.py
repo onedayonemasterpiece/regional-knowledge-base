@@ -712,6 +712,31 @@ class ControlSpool:
             if row['outcome_state']!='DURABLE':
                 db.execute('UPDATE rkb_control_spool_meta SET pending_count=pending_count-1,unknown_count=unknown_count-? WHERE id=1',(int(row['outcome_state']=='SENT_UNKNOWN'),))
 
+    def _settle_recovered_jobs(self,key):
+        """Only an exact locally recorded apply + remote durable outcome settles jobs.
+
+        Called after physical restore verification, while intake is excluded.
+        Original actor, accepted command, writer identity and attempt stay intact.
+        """
+        with self._db(write=True) as db:
+            row=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
+            if (row is None or row['seal_state']!='ACCEPTED' or row['apply_bytes'] is None
+                    or row['outcome_state']!='DURABLE' or row['remote_receipt_bytes'] is None):
+                raise SpoolConflict('verified recovered durable outcome required')
+            result=json.dumps(dict(command_sha256=row['command_sha256'],remote_outcome_durable=True),sort_keys=True)
+            settled=[]
+            for job in db.execute("select * from jobs where kind='source_command' and json_extract(identity,'$.operation_key')=?",(key,)).fetchall():
+                identity=json.loads(job['identity'])
+                if (job['actor']!=row['person_id'] or identity.get('command_sha256')!=row['command_sha256']
+                        or identity.get('database_generation')!=row['database_generation']
+                        or identity.get('sequence')!=row['sequence']):
+                    raise SpoolConflict('recovered job differs from original accepted command')
+                if job['state']=='done' and job['result']!=result:
+                    raise SpoolConflict('recovered job already has a different durable result')
+                db.execute("update jobs set state='done',result=?,updated=? where id=?",(result,self.clock(),job['id']))
+                settled.append(job['id'])
+            return settled
+
     async def publish_outcome(self,key,*,writer_generation):
         self._active()
         async with self._lock:
