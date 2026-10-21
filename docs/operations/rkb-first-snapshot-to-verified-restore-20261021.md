@@ -91,3 +91,23 @@ tests never call Kaggle, mutate the installed queue or make a live PG backup.
 create/reuse one cold demand; actual controlled Kaggle launch using current
 verified restore mode → snapshot + accepted tail → native PG/BGE/WSS ready →
 useful source-backed search result with lineage, no double push or lost Saved.
+
+## Stage0 signed-link lifetime before a new intent
+
+An immutable artifact hash does not keep its signed download URL alive. The
+installed native package and manifest links expired on 2026-10-20, so reusing
+the old target unchanged would fail before native restore. The controller-side
+`kaggle_stage0_urls` helper renews explicitly listed path-style S3 objects using
+an existing service client. Its `PinnedStage0Object` inventory fixes origin,
+bucket, key, artifact name, size and SHA256; it validates the entire old plan
+before signing, requests GET only and rejects changed destinations, malformed
+signatures or insufficient validity. Fresh links and unrelated URLs are reused.
+
+Use `renew_target_stage0_urls` **before** generating source or persisting runtime
+expectations for a new attempt. It preserves every other target field and all
+artifact/package pins. Already prepared expectations and UNKNOWN launches are
+immutable: never re-sign and overwrite their intent. Signed URLs stay in private
+runtime configuration, outside source, logs and receipts. The helper performs no
+download, credential discovery, queue mutation or Kaggle launch. Its integration
+into the controller lifecycle is a separate source change; helper tests alone
+do not establish automatic production renewal.
