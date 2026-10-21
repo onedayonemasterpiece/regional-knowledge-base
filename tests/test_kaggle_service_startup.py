@@ -104,7 +104,7 @@ async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,
     assert any(getattr(route,'path',None)=='/bge-worker/channel' for route in app.routes)
     async with startup.lifespan(server):
         assert not startup.reads_current()
-        with pytest.raises(ToolError,match='source_history_unavailable'):
+        with pytest.raises(ToolError,match='target_warming.*startup_ref'):
             await startup.backend.search('synthetic',s.target.principal)
         assert not startup.admission._reads
     assert startup.closed and not startup.reads_current()

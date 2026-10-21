@@ -263,7 +263,21 @@ class KaggleSourceBackend:
                     if type(authority) is not VerifiedReadAuthority or authority.destination!=destination:
                         raise PermissionError('adapter destination differs')
                     await measured('auth_ms',self.read_authority.require(authority,'public_search'))
-                binding = await measured('binding_ms',asyncio.to_thread(current_binding, self.worker_queue))
+                try:
+                    # The source-history/restore gate is checked only AFTER
+                    # actor authorization; a cold read must not bypass it.
+                    startup = getattr(self, 'startup', None)
+                    if startup is not None and not startup.reads_current():
+                        raise TargetUnavailable('source history not ready')
+                    binding = await measured('binding_ms',asyncio.to_thread(current_binding, self.worker_queue))
+                except TargetUnavailable:
+                    # An already-authorized caller records a durable demand;
+                    # the existing controller owns the only remote launch.
+                    demand = await measured('startup_demand_ms',
+                        asyncio.to_thread(self.worker_queue.request_startup))
+                    status,reason='pending','target_warming'
+                    raise ToolError(json.dumps({'status':status,'reason':reason,
+                        'startup_ref':demand['startup_ref']},separators=(',',':'))) from None
                 if story_cursor_generation is not None and story_cursor_generation!=binding.database_generation:
                     raise PublicQueryInvalid
                 try:

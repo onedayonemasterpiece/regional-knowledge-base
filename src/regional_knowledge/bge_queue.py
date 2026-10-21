@@ -145,6 +145,12 @@ class BgeQueue:
 
     @staticmethod
     def _run_expired(run, now):
+        # A submitted Kaggle launch has no proven terminal execution yet.
+        # Expiring its local lease would let a cold read allocate and push a
+        # second notebook version after a lost provider ACK. Keep the exact
+        # run as UNKNOWN until the existing controller reconciles it.
+        if run['status']=='starting' and run['launch_state'] in ('dispatching','dispatched'):
+            return False
         if run['status']=='failed' and now-run['heartbeat']<60:
             return False
         prepared=('bootstrap_finalized_at' in run.keys() and run['bootstrap_finalized_at'] is not None)
@@ -184,6 +190,19 @@ class BgeQueue:
                 db.execute('update control set successor=? where id=1',(successor,))
         if useful:db.execute('update runs set useful=? where id=?',(now,run_id))
         return run_id
+
+    def request_startup(self):
+        """Persist one cold-start demand for the existing Kaggle controller.
+
+        Callers must verify read authority first. This never calls Kaggle,
+        queues a QUERY, or allocates a replacement for an UNKNOWN launch.
+        Repeated/concurrent demands refer to the same controlled run.
+        """
+        now=self.clock()
+        with self.connect() as db:
+            run_id=self._ensure(db,now)
+            return {'status':'pending','run_id':run_id,
+                    'startup_ref':'rkb:startup:v1:'+run_id}
 
     def enqueue(self, actor, idempotency, texts, *, kind='query', identity=None):
         if kind not in ('query','document') or len(texts)!=1 or not isinstance(texts[0],str) or not texts[0].strip() or len(texts[0])>(16000 if kind=='query' else 40000):

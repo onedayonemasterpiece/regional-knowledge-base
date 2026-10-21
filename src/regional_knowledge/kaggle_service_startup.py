@@ -168,11 +168,6 @@ class _SourceBackend(KaggleSourceBackend):
         return await self.startup.editorial.mutate(principal,story_id=story_id,expected_revision=expected_revision,
             idempotency_key=idempotency_key,grantee_user_id=grantee_user_id,capability=capability)
 
-    async def _search(self,*args,**kwargs):
-        if not self.startup.reads_current():
-            raise ToolError('{"status":"unavailable","reason":"source_history_unavailable"}')
-        return await super()._search(*args,**kwargs)
-
 
 class TargetServiceStartup:
     """One configured queue/admission/spool; ownership lasts one server lifespan.
