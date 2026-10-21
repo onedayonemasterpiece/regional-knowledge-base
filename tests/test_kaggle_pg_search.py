@@ -314,7 +314,11 @@ async def test_server_timeout_race_classifies_only_own_expired_budget(
     # using a virtual loop clock; keep the strict exception-cause assertion.
     loop = asyncio.get_running_loop()
     real_time = loop.time
-    frozen = [None]
+    # The server-first scenario needs a virtual clock from the *start* of
+    # the search. Freezing only when lexical_candidates raises is too late
+    # under overloaded CI: an earlier yield may let the real 50 ms deadline
+    # fire first, before that branch is reached.
+    frozen = [real_time() if at_budget else None]
     monkeypatch.setattr(loop, "time",
                         lambda: real_time() if frozen[0] is None else frozen[0])
     deadline = [None]
