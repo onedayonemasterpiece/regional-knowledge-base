@@ -8,6 +8,8 @@
 
 ## Решение владельца и область
 
+Уточнения21.10: [owner alignment](rkb-owner-alignment-20261021.md), [аудит](../reports/rkb-requirements-code-audit-20261021.md). Один owner-only import, клиентское модельное чтение без обязательной повторной backend обработки, domain staging/tokenizer/document vectors в Kaggle. Числа и функции остаются; Case/illustration/DjVu parity не объявлены завершёнными. Go/Rust решение требует actual trace, а не обещания rewrite.
+
 Рабочая БД PostgreSQL **17** с закреплённым pgvector и BGE-M3 находится на Kaggle. E5 и Supabase в target отсутствуют. Существующий BGE baseline — 1024 FP32, pinned revision/tokenizer, final input≤512 tokens; coherent passages около 256 tokens. Скорость поиска приоритетна относительно экономии хранения при сохранении обязательных capacity/quality gates; факты и exact provenance не сокращаются ради quota. Даже около 0.5 s выигрыша полезны, но требуют измерения полного полезного пути.
 
 Миграция переносит **только geo**: layers/places, geometry/CRS/оси/единицы, transform/GCP, временные aliases, provenance и необходимые минимальные source refs. Негеографические facts, старые книги/chunks/vectors/receipts, stories, cases и drafts не копируются в новую БД; они создаются fresh через проверенный import/workflow. Старое состояние сохраняется отдельно как reference, без второй live write authority. GEO identity manifest со stable layer/place IDs, aliases и CRS готов до production book imports; bulk raster transfer допустим в phase 4. Stage 2 без manifest использует только isolated fixture.
@@ -21,9 +23,9 @@ Accepted active book text/bibliography и illustrations доступны все�
 | Existing DevCoveer MCP/ASGI/BgeQueue/controller | Verified identity, единый person/request/dialog lifecycle, fairness/admission, writer/connection authority, existing delivery. Raw spool 4h/512 MiB и компактное state до reconciliation. |
 | Один Kaggle writer | PG 17 domain store, BGE, source processing, ordered apply/receipts, serving и snapshots. |
 | Readers только по необходимости | Exact verified snapshot, BGE/search/proof; никаких независимых writes, scheduler или sender. |
-| Private Kaggle Dataset | Consistent PG physical base с indexes и verified manifest/version/cursor. |
-| Existing Yandex recovery storage | Immutable command/control/receipt tail, accepted payloads и одна latest verified daily base независимая от Kaggle. |
-| Existing integrations | VibePublish/Telegram archive/delivery, Regional Cartography, Street Story, Projects Hub/Мира; их ownership сохраняется. |
+| Private Kaggle Dataset | Основной постоянный versioned persistence: consistent PG physical base с indexes/manifest/cursor и поддержанным recovery continuation; restore/save через exact confirmed version. |
+| Yandex S3 | Weekly independent backup подтверждённой Dataset version; существующий online S3 tail рассматривается отдельно, не заменяет выбранный primary молча. |
+| Existing integrations | Telegram archive read/write — Telethon в Kaggle, без Vibe/Dev byte proxy. Regional Cartography, Street Story, PH/Mira и отдельно разрешённые социальные публикации сохраняют своё ownership. |
 
 Существуют два независимых интеллектуальных маршрута Dot → RKB и Mira → RKB. Ни один агент не удаляется; Mira не проходит через Dot. DevCoveer — тонкий auth/admission relay existing ASGI. Notebook открывает authenticated outbound WSS, public listener и открытый PostgreSQL не нужны. Ephemeral QUERY/QUERY_RESULT и durable DISPATCH/RESULT/ACK — разные классы одного transport и одной admission authority; HTTP polling и WSS не dispatch одновременно.
 
@@ -34,9 +36,9 @@ Accepted active book text/bibliography и illustrations доступны все�
 3. New submissions проверяют current writer/run/claim/connection generation. Уже принятые команды прежнего epoch остаются обязательными для replay.
 4. Canonical pointer, external effect и delivery проверяются внешней authority. Старый writer не выбирает late snapshot и не публикует поздний результат сам.
 5. Manifest содержит exact Dataset version/hash, PG minor/extensions/libs/platform/collation provider+version, schema/codec, internal cursor и required WAL. Keyed normalized text использует C collation; incompatible affected indexes исправляются до READY. Upload success не равен restore verification.
-6. Dev raw spool: default 4h/hard 512 MiB, проверяемые до cutover; compact UNKNOWN/request/receipt metadata живут до reconciliation. Local GC после remotely sealed payload + verified metadata не ждёт daily base.
+6. Dev raw spool: default 4h/hard 512 MiB, проверяемые до cutover; compact UNKNOWN/request/receipt metadata живут до reconciliation. Local GC после remotely sealed payload + verified metadata не ждёт weekly backup после доказанного внешнего покрытия.
 7. Remote-tail GC покрывает designated retained verified baselines и unfinished consumers. Yandex base и tail в одном Yandex не независимы друг от друга.
-8. Control checkpoint 15 min; changed PG base 4 h либо раньше при replay/byte pressure/planned handover; daily independent-from-Kaggle Yandex base. Без изменений full base не создаётся.
+8. Control checkpoint 15 min; changed PG base 4 h либо раньше при replay/byte pressure/planned handover; weekly independent-from-Kaggle Yandex backup; Dataset primary publication/continuation должны отдельно закрывать обещанный durable cursor. Без изменений full base не создаётся.
 9. Read-after-write использует min_data_seq; обычный reader сообщает data_as_of. Current withdraw/revoke и output scope проверяются до выдачи и delayed delivery.
 10. 30 min useful-idle не равен writer lease/Ping/task timeout. Reconnect сохраняет модель лишь в живой Kaggle session; после session end нужны новый run/restore/warmup.
 11. Actual SQL+dense query probes подтверждают serving readiness; counts/Pong/process health недостаточны.
@@ -56,13 +58,13 @@ Immutable revision projections готовятся заранее; activation м�
 
 Один resident PyTorch FP32 BGE process и native PG kernels выполняют тяжёлую работу; Python остаётся bootstrap/QUERY glue. Tokenizer backend определяется по фактическому pinned run. Нет per-request model load, spawn или compile. Общий CPU/RAM budget включает Torch threads, PG pool/parallel workers, import/proof и maintenance; transport/event loop не блокируются encode.
 
-Precompiled Go/Rust executable допустим с immutable bundle и проверенным architecture/ISA/libc/shared-library ABI, protocol/hash/source pins. Default остаётся Python glue и существующая authority. Go на DevCoveer может заменить transport/serialization component, Rust — дорогую функцию или компонент с воспроизводимой проблемой памяти/lifecycle. Память, deadlines, backpressure и control-loop isolation допускают native выбор для нового компонента без предварительного CPU hot loop; проверенный native reuse не требует полного Python дубля. Готовый fused RKB executor пока не подтверждён.
+Precompiled Go/Rust executable допустим с immutable bundle и проверенным architecture/ISA/libc/shared-library ABI, protocol/hash/source pins. Default остаётся Python glue и существующая authority. Go на DevCoveer может заменить transport/serialization component, Rust — дорогую функцию или компонент с воспроизводимой проблемой памяти/lifecycle. Память, deadlines, backpressure и control-loop isolation допускают native выбор для нового компонента без предварительного CPU hot loop; проверенный native reuse не требует полного Python дубля. Собственный Go/Rust fused executor не найден; текущий fused Python/native PG путь реализован, его численные live gates ещё не подтверждены.
 
 Native sidecar не является default; нет второго model/controller или дополнительного proxy, полный rewrite не нужен. Проверяется один узкий вариант с удалением заменяемого пути; полезная задержка, ресурсы или отказы должны улучшиться без регрессии quality, прав и recovery. Local IPC допустим, если суммарный выигрыш учитывает copies/serialization/backpressure, Python BGE child, дополнительный lifecycle и cold recovery. Обязательного процентного порога нет. ONNX/GPU/quantization — самостоятельный quality-gated track. Подробности и primary evidence: [runtime assessment](kaggle-regional-knowledge-service-assessment-20261019.md).
 
 ## Надёжность без лишних компонентов
 
-Reuse existing BgeQueue, controller, request/outbox и domain registries. Existing S3ObjectStore остаётся transport: immutable seal/continuous segment manifest/CAS ещё реализуются узко. Большой base идёт direct Kaggle→recovery object по scoped key+epoch+expiry, без long-lived delete/global credentials; presigned URL не заменяет внешний promotion fence. Один controller делает bounded sealed-tail compaction и refs CAS, не 86k retained objects/day.
+Reuse existing BgeQueue, controller, request/outbox и domain registries. NEW содержит части S3 immutable seal/manifest/CAS; сохранить их recovery invariants, но выбранный Dataset-primary adapter и ACK coverage проверить отдельно. Большой base идёт direct Kaggle→recovery object по scoped key+epoch+expiry, без long-lived delete/global credentials; presigned URL не заменяет внешний promotion fence. Один controller делает bounded sealed-tail compaction и refs CAS, не 86k retained objects/day.
 
 Canonical outcome содержит exact domain values/evidence; BGE floats/FTS/crops — derived dirty/rebuild, не блокируют canonical replay. Delivered artifact bytes/hash/receipt остаются exact. UNKNOWN ограничивается per provider/route с evidence-based operation resolve; не тормозит весь import.
 
