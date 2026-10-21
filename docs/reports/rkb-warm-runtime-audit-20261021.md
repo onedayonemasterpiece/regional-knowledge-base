@@ -40,11 +40,19 @@ BGE load. Под каждую пару (релиз, run) вручную созд
 
 ## 2. Ответ на главный вопрос: почему нет устойчивого тёплого PG/BGE
 
-Коротко: тёплый run технически поднимается (READY за 4–6 мин, reconnect работает), но **в main нет
-пути менять что-либо внутри живого run**, а restore/writer identity **привязана к одному
-конкретному run**. Поэтому каждая правка кода/SQL/конфига означает revoke → новый notebook → полный
-cold restore, а любая потеря run (reboot, retire) оставляет следующий run без возможности
-восстановиться.
+Коротко: тёплый run технически поднимается (READY за 4–6 мин, reconnect и API-only rollout Dev
+работают). Но в main нет пути применить **native SQL/handler** внутри живого run, а restore/writer
+identity **привязана к одному конкретному run**. Поэтому правка native-части означает revoke →
+новый notebook → полный cold restore, а любая потеря run (reboot, retire) оставляет следующий run
+без возможности восстановиться. Третья причина, обнаруженная во втором проходе (§7): даже живой
+READY run отдаёт чтения нестабильно, потому что их доступность завязана на 5-секундный цикл
+пере-верификации с Dev.
+
+> Поправка 22:30 по [follow-up dot](../prompts/claude-runtime-followup-20261021.md): API-only
+> rollout PR206 уже прошёл на живом v102 (та же incarnation, generation 3, без перезагрузки PG и
+> модели; квитанция оператора). v102 отозвали из-за дефекта native `dataset_verify` workspace, а не
+> только из-за релиза Dev. Формулировка «никакое изменение нельзя применить в живом контуре» из
+> первой версии была чрезмерной.
 
 ### P1. Нет in-run обновления SQL/handler (§5.4, первые две строки таблицы; DBG-1)
 
@@ -52,9 +60,10 @@ cold restore, а любая потеря run (reboot, retire) оставляет
   (`bge_channel.py:144-146`, `bge_kaggle_worker.py`). Видов вроде live SQL migration, stateless
   handler swap или maintenance bundle **нет**; `model_load_count` есть только в bootstrap readiness
   (`kaggle_bootstrap.py:251`).
-- Следствие на практике: v102 (READY, GEO1–20 выполнены) был отозван в 21:41:38 ради релиза
-  f2c6ad0 и нового restore-плана. Это **искусственный** cold restart: постановка прямо требует
-  применить SQL/совместимый handler в том же run (§5.4, методика п.3, DBG-1).
+- Следствие на практике: v102 (READY, GEO1–20 выполнены) отозван в 21:41:38. Причина —
+  native-дефект `dataset_verify`, который нельзя было исправить в живом run. По журналу: 30
+  закрытий чтений с `dataset_native_snapshot_readback_changed` за окно READY, см. §7 O2. Исправление
+  native-кода без нового notebook и есть отсутствующий путь (§5.4, методика п.3, DBG-1).
 - DBG-1 остаётся **NOT RUN**.
 
 ### P2. Restore/writer identity привязана к одному run и не переносится на successor (§5.4 «Идентичность», §6.3)
@@ -111,7 +120,7 @@ cold restore, а любая потеря run (reboot, retire) оставляет
 |---|---|
 | launch → HELLO | работает (v104: attach + bootstrap_environment через 10 s после push) |
 | restore → READY | работает только для run, под который вручную создан target (v97–99, v102); для successor закрыт (P2) |
-| reconnect / API-only restart | reconnect подтверждён (gen 3). API-only restart при живом READY run в окне аудита не наблюдался: v102 был отозван до restart MCP в 21:49 |
+| reconnect / API-only restart | reconnect подтверждён (gen 3). API-only rollout PR206 на живом v102 подтверждён операторской квитанцией (см. поправку в §2); сам я его не наблюдал |
 | checkpoint / native readback / Saved | target на Dataset v1; `rkb_dataset_recovery_store.latest_json=NULL`; Dataset2 promotion pending (согласуется с вводной). Readback-путь из PR #207 в работающий релиз не входит. Глубже не проверял |
 | совместимые SQL/handler обновления без потери PG/model | **не реализовано** (P1) |
 
@@ -146,9 +155,151 @@ run и `writer_generation` target'а. Иначе — известный `launch_
 5. P3: один redacted readback `ApiSaveKernelResponse` и нормализация сравнения `ref`.
 6. Dataset2: native verify и promotion (pending по вводной, в аудите не проверялось глубже).
 
+7. §7 O1–O4: развязать доступность чтений с фоновым обслуживанием и убрать durable-job'ы у
+   read-only наблюдений. Без этого даже тёплый run отдаёт чтения примерно 2/3 времени.
+
 ## 6. Один следующий шаг до работающего сервиса
 
 Слить PR #207 и этот guard в main, retire v104 через controller, создать **один** target под
-следующий run на Dataset v1 и после READY **не отзывать этот run**. Все последующие правки
-SQL/handler держать в очереди под P1 (live apply), а не выпускать новыми notebook-версиями. Это
-даст первый run, который живёт дольше одной правки, и честную метрику edit→apply→useful из §14.5.
+следующий run на Dataset v1 и после READY **не отзывать этот run**. Перед этим или вместе с этим
+сделать O1+O2 из §7: сбой promotion или продления не должен закрывать чтения. Иначе тёплый run
+снова будет выглядеть «сломанным» и его отзовут. Последующие правки SQL/handler держать в очереди
+под P1 (live apply), а не выпускать новыми notebook-версиями. Это даст первый run, который живёт
+дольше одной правки, и честную метрику edit→apply→useful из §14.5.
+
+## 7. Переусложнения и избыточные операции (второй проход, 22:26–22:40 UTC)
+
+Критерий отбора: операция повторяется часто, добавляет задержку или новую точку отказа и при этом
+не защищает ничего сверх того, что уже защищено fence/hash/версией. Проверки сохранности и
+авторизации сюда не относятся. Всё ниже измерено по журналу MCP-сервера и копии `queue.sqlite`
+(read-only), а не выведено только из кода.
+
+### O1. Готовые чтения зависят от 5-секундного цикла пере-верификации с Dev (P0, latency + fragility)
+
+- Цикл `kaggle_service_startup.py:_maintain` вызывает `refresh()` каждые `refresh_seconds=5`
+  (`:66`). Каждый тик последовательно: readback writer publication → `restorer.refresh()` →
+  `current_binding` (SQLite) → `writer.ensure_current(journal)` → `history.extend()`
+  (WSS open → страницы по 16 строк → close, плюс чтение checkpoint и prefetch remote outcomes из
+  журнала) → `dataset_checkpoints.refresh()` → GEO gate/installer (`:337-396`).
+- GEO/source чтения разрешены, только пока `_Coverage.current()`, а это deadline
+  `coverage_seconds=30` (`source_history_verifier.py:58-62`, `geo_read_gate.py:74-78`).
+- **Любое** исключение в любом шаге: `self.coverage=None; self.gate.invalidate()` (`:400-401`).
+  Следующий тик идёт уже в `history.restore()` (mode `full`, полная проверка всего applied
+  prefix), а не в `extend` (`:366-369`). Неудача делает следующую попытку тяжелее, то есть
+  получается положительная обратная связь.
+- `renew/extend` сначала **сбрасывает** coverage и только потом идёт в Kaggle
+  (`source_history_wss.py:183-185`). Даже успешное продление открывает окно закрытых чтений.
+- Измерено на живом v102 в окне READY 21:18–21:41: `state=closed` 3–7 раз в минуту, всего 97
+  тиков примерно из 276. Причины: `TimeoutError` 53, `dataset_native_snapshot_readback_changed`
+  30, `SpoolConflict` 11, `StaleWriter` 1, `DatasetPublicationError` 1.
+- Это противоречит контракту репозитория: «Ready reads do not wait for batch fill, fsync…»,
+  «Read-only search does not wait for a cloud journal write» (AGENTS.md).
+- Упрощение без потери гарантий: проверить native applied prefix один раз при attach/restore и
+  после собственных apply (результат apply уже несёт новый cursor). Gate чтения проверяет локально
+  monotonic cursor + binding/generation fence. Продление делать по событию (reconnect, смена
+  generation, write), а не по таймеру. Старую coverage заменять только при успехе.
+
+### O2. Promotion Dataset-checkpoint выполняется внутри цикла чтений (P0, fragility)
+
+- `dataset_checkpoints.refresh()` вызывается в том же `refresh()` (`kaggle_service_startup.py:372-374`).
+  При pending версии каждый тик делает `dataset_verify` через WSS и `store.promote()`. Несовпадение
+  readback бросает `JournalConflict` (`dataset_recovery_store.py:104`), и это **закрывает все
+  чтения**.
+- Измерено: 30 закрытий с этой причиной за окно READY v102 и 30 job'ов `dataset_verify`. По
+  follow-up именно этот дефект привёл к отзыву v102.
+- Упрощение: promotion — отдельная maintenance-задача со своим статусом `checkpoint_pending`.
+  Её сбой оставляет чтения на текущей проверенной базе. Fence на pointer CAS и readback-проверка
+  остаются как есть.
+
+### O3. Каждое read-only наблюдение — durable job с UNKNOWN-семантикой (P1, latency + fragility)
+
+- Шаги source_history (open/page/close) и `dataset_verify` создаются как durable `jobs` в
+  `queue.sqlite`: insert → claim → result, у каждого свои транзакции. `operation_key` включает
+  случайный nonce (`source_history_wss.py:168, 244`), поэтому каждая попытка — новый job без
+  дедупликации.
+- На run одновременно может быть claimed **один** durable job (`bge_queue.py:791`). Наблюдения
+  ждут за любым claimed job того же run, включая импорт.
+- Верификация на Dev ограничена 10 с после открытия (`phase_timeout`, `timeout_seconds=10`, `source_history_wss.py:188, 242`). При timeout ожидание отменяется, а job нет («a timeout preserves an unknown
+  operation», `kaggle_recovery_dispatch.py:5`). У v102 `open` от создания до done в среднем 156 с
+  (111 штук, суммарно 17 345 с), при 48 `close`. Kaggle исполнял open уже после того, как Dev
+  сдался, а около 63 native-сессий никто не закрыл.
+- Упрощение: read-only наблюдения у состояния без side effects проводить как эфемерный запрос
+  (как QUERY: deadline, generation, без durable row и UNKNOWN). Ещё лучше один вызов, который
+  возвращает весь диапазон receipts: ≤2048 строк × 11 полей влезают в recovery-frame 4 MiB
+  (`bge_channel.py:34`), вместо open + N страниц по 16 + close. Durable/UNKNOWN оставить для
+  мутаций (`prepare`, `capture`, apply).
+
+### O4. Вечные pending recovery job'ы мёртвых run'ов (P1, fragility + лишние cold starts)
+
+- В очереди 134 `recovery_phase` в состоянии `pending`. Они привязаны к шести уже мёртвым run'ам;
+  самый старый от 20.10 21:11 UTC. 131 из них — read-only `source_history` (128 open, 1 page, 1 close, 1 abort), 3 — мутирующие `prepare`/`capture`.
+  Исполнить их нельзя: actor `maintenance:<run>`, identity с nonce/incarnation мёртвого run
+  (`bge_queue.py:749`, `kaggle_recovery_dispatch.py:45-66`). Очистки нет.
+- Последствия:
+  - (а) `maintenance()` считает **любой** незавершённый job спросом и вызывает `_ensure()`, который
+    при пустом `current_run` создаёт новый run (`bge_queue.py:931`). Вместе с P2 это объясняет
+    автоматический push v104 после reboot.
+  - (б) Они занимают 134 из 256 мест общего admission cap (`bge_queue.py:309, 333`). Ещё около 120
+    таких сирот, и новые document/source job'ы получат `BGE queue full`.
+- Упрощение: read-only фазы run'а, который retired или terminal, закрывать как `abandoned`, не
+  исполнять и не считать спросом или ёмкостью. Мутирующие фазы остаются UNKNOWN, но тоже не
+  создают startup demand сами по себе. После O3 класс сирот исчезает.
+
+### O5. Повторяющиеся тяжёлые операции cold start (P2, latency)
+
+- Каждый cold start по target тянет 59 артефактов, `stage0.install_bytes=1 712 050 038`. За
+  вечер было 8 таких стартов, порядка 13 ГБ скачанного заново. Плюс отдельный `target.json` на
+  каждую пару (релиз, run), см. P2.
+- Проверить: упаковать wheels/native bundle в одну Kaggle Dataset/Model version на каждый
+  `dependency_sha256` и монтировать, а не скачивать. Это меняется только при изменении lock, по
+  §5.4 «dependencies готовить один раз по lock и fingerprint». До измерения экономию не заявлять.
+
+### O6. Шум вместо сигнала (P2, диагностика)
+
+- 14 087 из 15 170 строк журнала MCP за 21.10 (93 %) — `target_source_routing state=closed` раз в
+  5 с. `state=ready` пишется на INFO и в этом журнале не виден. Реальные переходы (attach, revoke,
+  restore fail) тонут.
+- Упрощение: логировать только смену состояния и причины с счётчиком повторов, как требует
+  §5.4 («краткая projection»). Каждый успешный push тоже пишется как UNKNOWN (P3), что
+  добавляет ложных сигналов.
+
+### O7. Одна сущность под несколькими идентификаторами (класс ошибок, P2)
+
+- Ложные несовпадения возникают там, где один и тот же неизменяемый объект сравнивается по разным
+  представлениям: `saved.ref` vs `owner/slug` (P3), PUT `gcs-generation:<N>` vs GET ETag
+  (замечание Кварца B к PR207), source run_id vs provider version label. Каждая такая пара даёт
+  ложный UNKNOWN или conflict при правильных данных.
+- Правило: на каждой границе одна каноническая identity (exact version + SHA/size), нормализуемая в
+  одном adapter. Сравнивать её, а не сырые строки провайдера.
+
+### O8. Дублированная логика верификации (P3, стоимость изменений)
+
+- `NativeSourceHistoryVerifier` (671 строка, 68 веток `SpoolConflict`) и
+  `WssSourceHistoryVerifier._verify_remote` (353 строки, 41 ветка) реализуют одну проверку двумя
+  копиями. Любое исправление семантики надо делать дважды. Используется ли базовый путь в
+  production, я не проверял.
+- Масштаб для ориентира: `src/regional_knowledge` — 53 200 строк в 195 модулях, из них `kaggle_*` —
+  17 619 строк в 78 модулях.
+
+### Что не трогать
+
+Fence на side effects и pointer CAS, exact version + SHA/size, writer generation, UNKNOWN для
+мутаций и provider effects, единственный controller, авторизация чтений. Предложения выше убирают
+**повторение** проверок и связывание независимых задач, а не сами проверки.
+
+### Порядок по эффекту на единицу работы
+
+1. O2 и часть O1: перехватывать сбои фоновых шагов (promotion, GEO installer, snapshot) внутри
+   своих задач, не обнулять coverage. Не сбрасывать coverage до успешного продления; после
+   транзиентного timeout продолжать `extend`, а не `full`. Небольшая правка
+   `kaggle_service_startup.refresh` и `source_history_wss._verify_remote` с фикстурными тестами.
+2. O4: не считать сирот спросом и ёмкостью; abandon read-only фаз у terminal/retired run.
+3. O3: однократное эфемерное наблюдение receipts вместо open/page/close durable job'ов.
+4. O1 полностью: продление по событию вместо таймера 5 с; O6 вместе с ним.
+5. O5, O7, O8 — после того, как тёплый run живёт стабильно.
+
+Изменений кода по §7 в этом проходе нет: правки затрагивают семантику read gate и требуют
+фикстурных тестов и согласования со Шкипером, который ведёт live-контур.
+
+Срез на 22:26 UTC: v104 всё ещё `starting/dispatched`, heartbeat не обновлялся 389 с, `ready_at`
+пуст, слот занят. Процессы те же (controller PID 1360 на f2c6ad0, второго controller нет).
