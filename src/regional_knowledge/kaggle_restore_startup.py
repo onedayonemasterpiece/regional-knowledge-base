@@ -157,7 +157,10 @@ class SourceRestoreCoordinator:
         if existing is not None:raise SnapshotError('restore_requires_same_retained_maintenance_owner')
         if self.config.dataset_checkpoint is not None:
             from .dataset_recovery_store import DatasetSnapshotTransport
-            tickets=None
+            from .kaggle_dataset_tickets import DatasetSnapshotTicketIssuer
+            tickets=DatasetSnapshotTicketIssuer(self.queue,self.journal.store.publisher,
+                current=self.current,writer_guard=self.writer)
+            tickets.download_checkpoint=self.config.dataset_checkpoint
             transport=DatasetSnapshotTransport(self.journal.store)
         else:
             tickets=SnapshotTicketIssuer(self.journal.store,current=self.current,

@@ -209,4 +209,4 @@ class DatasetSnapshotTransport:
 
     async def verify(self,blob):
         if not self.matches(blob):raise JournalConflict('dataset_snapshot_blob_changed')
-        # Archive bytes are independently verified by native prepare_dataset_base.
+        # Native scoped download and PG prepare independently verify archive bytes.

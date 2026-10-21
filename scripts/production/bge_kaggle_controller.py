@@ -330,8 +330,8 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                     preparation_step='write_private_notebook'
                     (folder/'main.py').write_text(source);(folder/'main.py').chmod(0o600)
                     metadata={'id':ref,'title':slug,'code_file':'main.py','language':'python','kernel_type':'script','is_private':True,'enable_gpu':False,'enable_tpu':False,'enable_internet':True,'dataset_sources':[],'competition_sources':[],'kernel_sources':[]}
-                    if target_spec is not None and target_spec.dataset_checkpoint is not None:
-                        metadata['dataset_sources']=[target_spec.dataset_checkpoint.source]
+                    # Dataset restore uses a version-qualified native download;
+                    # provider mount metadata does not attest its exact version.
                     if image is not None:
                         metadata.update(docker_image=image,docker_image_pinning_type='original')
                     preparation_step='write_private_metadata'
