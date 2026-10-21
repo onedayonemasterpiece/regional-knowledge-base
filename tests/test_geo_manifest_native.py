@@ -74,10 +74,11 @@ async def test_native_place_preserves_more_than_64_provenance_dependencies(nativ
     plan=plan_geo_manifest(manifest)
     resolved=plan.commands(first_sequence=1,operation_key='geo-many-provenance',
         request_id='geo-many-request',person_id=uid(1),logical_time='2026-10-21T17:30:00Z')
-    for failed_index,command in enumerate(resolved):
-        rejected=await apply(native,command)
-        if rejected.status=='rejected_precondition':break
-    else:pytest.fail('schema11 must reproduce the retained precondition rejection')
+    outcomes={};rejected=None
+    for command in resolved:
+        receipt=await apply(native,command);outcomes[command.operation_key]=receipt.status
+        if rejected is None and receipt.status=='rejected_precondition':rejected=receipt
+    assert rejected is not None, 'schema11 must reproduce the retained precondition rejection'
     artifact=(ROOT/'sql/kaggle/012_geo_dependency_bound.sql').read_bytes()
     connection=native['connection']
     async with connection.transaction():
@@ -90,14 +91,14 @@ async def test_native_place_preserves_more_than_64_provenance_dependencies(nativ
         check_sha256=(await pinned(connection,'check_geo_manifest_install_v2')).definition_sha256,
         apply_sha256=(await pinned(connection,'apply_geo_manifest_install_v2')).definition_sha256)
     native['registry']=HandlerRegistry([*native['registry'].handlers.values(),migration,upgraded])
-    repair=geo_dependency_repair_commands(resolved,rejected_sequence=command.sequence,artifact_sha256=artifact_sha)
+    repair=geo_dependency_repair_commands(resolved,settled_outcomes=outcomes,artifact_sha256=artifact_sha)
     for command in repair:
         assert (await apply(native,command)).status=='applied'
     async with connection.transaction():
         retained=await(await connection.execute('SELECT status,outcome_bytes FROM rkb_v4.applied_ops WHERE operation_key=%s',
             (rejected.operation_key,))).fetchone()
     assert retained[0]=='rejected_precondition' and bytes(retained[1])==rejected.outcome
-    duplicate=await apply(native,resolved[failed_index])
+    duplicate=await apply(native,next(c for c in resolved if c.operation_key==rejected.operation_key))
     assert duplicate.duplicate and duplicate.outcome==rejected.outcome
     stored=await(await native['connection'].execute(
         "SELECT data->'dependencies' FROM rkb_v4.geo_manifest_items WHERE manifest_id=%s AND item_key=%s",

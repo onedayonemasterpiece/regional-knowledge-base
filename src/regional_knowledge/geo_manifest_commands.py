@@ -195,12 +195,13 @@ def geo_dependency_transition_handler(*,artifact_sha256,check_sha256,apply_sha25
         MigrationTransition(GEO_DEPENDENCY_MIGRATION,artifact_sha256,None,GEO_V2_REVISIONS))
 
 
-def geo_dependency_repair_commands(originals,*,rejected_sequence,artifact_sha256):
-    """Resolve a repair from frozen inputs, after retiring only unsent reservations.
+def geo_dependency_repair_commands(originals,*,settled_outcomes,artifact_sha256):
+    """Resolve a repair after the original plan has real durable terminal outcomes.
 
     This function grants no authority and changes no queue/journal state. The
-    caller must prove the rejected outcome is durable and every later original
-    reservation was never sent before installing the returned continuation.
+    caller proves every supplied outcome is remotely durable. Original command
+    bytes, sequence numbers and outcomes stay untouched; only rejected batches
+    and their final activation need new commands after the migration.
     """
     _digest(artifact_sha256)
     originals=tuple(originals)
@@ -213,11 +214,18 @@ def geo_dependency_repair_commands(originals,*,rejected_sequence,artifact_sha256
     if (any(b.sequence!=a.sequence+1 for a,b in zip(originals,originals[1:]))
             or any(command.ids!=originals[0].ids or command.person_id!=originals[0].person_id for command in originals)):
         raise ValueError('same actor and contiguous original manifest required')
-    tail=tuple(command for command in originals if command.sequence>=rejected_sequence)
-    if not tail or tail[0].sequence!=rejected_sequence or json.loads(tail[0].payload)['action']!='batch':
-        raise ValueError('exact rejected GEO batch required')
-    failed=tail[0];prefix='geo-repair12:'+failed.ids['manifest_id']+':'
-    transition=replace(failed,sequence=rejected_sequence+1,operation_key=prefix+'migration',
+    if (set(settled_outcomes)!={c.operation_key for c in originals}
+            or any(value not in ('applied','rejected_precondition') for value in settled_outcomes.values())
+            or settled_outcomes[originals[0].operation_key]!='applied'):
+        raise ValueError('complete original terminal GEO outcomes required')
+    rejected=tuple(c for c in originals if settled_outcomes[c.operation_key]=='rejected_precondition')
+    if (not rejected or json.loads(originals[-1].payload)['action']!='activate'
+            or settled_outcomes[originals[-1].operation_key]!='rejected_precondition'
+            or not any(json.loads(c.payload)['action']=='batch' for c in rejected)
+            or any(json.loads(c.payload)['action'] not in ('batch','activate') for c in rejected)):
+        raise ValueError('exact rejected GEO batches and final activation required')
+    last=originals[-1];prefix='geo-repair12:'+last.ids['manifest_id']+':'
+    transition=replace(last,sequence=last.sequence+1,operation_key=prefix+'migration',
         kind='schema_transition',route='geo.dependencies.upgrade.v2',ids={},
         expected_revisions={'schema':GEO_REVISIONS.schema,'function':GEO_REVISIONS.function,
             'executor':GEO_REVISIONS.executor,'migration':''},
@@ -226,5 +234,15 @@ def geo_dependency_repair_commands(originals,*,rejected_sequence,artifact_sha256
     retries=tuple(replace(command,sequence=transition.sequence+offset,
         operation_key=prefix+str(command.sequence),schema_revision=GEO_V2_REVISIONS.schema,
         function_revision=GEO_V2_REVISIONS.function,executor_revision=GEO_V2_REVISIONS.executor)
-        for offset,command in enumerate(tail,start=1))
+        for offset,command in enumerate(rejected,start=1))
     return (transition,*retries)
+
+
+def geo_dependency_limit_rejection(command):
+    """Recognize the schema11/Python dependency-bound mismatch, never success."""
+    value=validate_geo_manifest_command(command)
+    if ((command.schema_revision,command.function_revision,command.executor_revision)!=GEO_REVISIONS.wire()
+            or value['action']!='batch'):
+        return False
+    return any(len(GeoManifestItem.from_wire(json.loads(_decode(entry['wire_b64'],64*1024))).dependencies)>64
+        for entry in value['items'])
