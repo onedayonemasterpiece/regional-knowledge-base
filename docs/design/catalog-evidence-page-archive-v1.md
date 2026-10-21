@@ -2,7 +2,7 @@
 
 **Retired entry point, 2026-10-20.** Give the coding agent the [single current implementation handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md). The complete previous text and its historical calculations/acceptance proposals remain at the [immutable a8cf version](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/design/catalog-evidence-page-archive-v1.md).
 
-This file is not a second rollout plan. The old Supabase split, dual E5/BGE storage, compulsory archive of every page and whole-source N-of-N scan gate are retired. The target uses one PostgreSQL/pgvector corpus on Kaggle, BGE-only, bounded on-demand proof rendering, one DevCoveer controller/WSS and VibePublish as sole uploader. Only GEO transfers; all non-GEO content is freshly imported. No old D01–D16 checklist independently controls the new rollout.
+This file is not a second rollout plan. The old Supabase split, dual E5/BGE storage, compulsory archive of every page and whole-source N-of-N scan gate are retired. The target uses one PostgreSQL/pgvector corpus on Kaggle, BGE-only, bounded on-demand proof rendering, one DevCoveer controller/WSS and direct Kaggle Telethon archive read/write, following the [owner alignment](../designs/rkb-owner-alignment-20261021.md); Telegram media availability uses the registered locator, not custom post-upload hashes. Only GEO transfers; all non-GEO content is freshly imported. No old D01–D16 checklist independently controls the new rollout.
 
 ## Bibliographic distinctions retained in the current product
 

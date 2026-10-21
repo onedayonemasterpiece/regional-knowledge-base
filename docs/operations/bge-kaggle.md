@@ -1,5 +1,7 @@
 # Эксплуатация Kaggle PG/BGE и прямого WSS
 
+Уточнение 21.10.2026: [owner alignment](../designs/rkb-owner-alignment-20261021.md). Dataset — основной versioned persistence, weekly Yandex — независимый backup; Telegram read/write — прямой Telethon без Vibe/Dev bytes. Один owner-only импорт. Ни query-, ни document-векторы не делают круг через Dev. Source/fixture/live статусы из [аудита](../reports/rkb-requirements-code-audit-20261021.md) не смешиваются.
+
 Обновлено 20.10.2026. Целевой runbook для [единого handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md). Это порядок проверки реализации, не отчёт о выполненном запуске.
 
 ## Startup и attachment
@@ -27,7 +29,7 @@ Controller не запускает kernels_push только из-за поте�
 
 SQL/function patch применяется к живому PG с expected revision, writer fence и PG migration lock. Ledger повторно читается под lock, transactional DDL и migration record фиксируются одним commit. Несовместимая v2 закрывает новое принятие domain commands под v1 и ждёт recorded outcomes всех прежних accepted/sealed v1 commands, включая undispatched queue и UNKNOWN в исходной DB generation. Schema transitions и accepted commands replay в исходном порядке; модельные решения не пересоздаются. Не нужен новый HTTP RPC service.
 
-Горячо заменяется только совместимый stateless read handler после import/self-test/drain; при плохом candidate/первом probe остаётся прежний handler, model context не заменяется. Executor mutations меняется через migration barrier. Transport/lifecycle/model context требуют честного controlled worker restart; если модель в этом процессе, warmup повторится. Dependencies/cache pinned, не переустанавливаются при SQL/app patch. После apply readback loaded hash, schema, useful result и restart/model-load/download counters обязателен; файл на диске не доказательство загрузки.
+Это требование к реализации: на аудированном NEW authenticated hot-handler activation ещё отсутствует, SQL replay её не заменяет. Горячо заменяется только совместимый stateless read handler после import/self-test/drain; при плохом candidate/первом probe остаётся прежний handler, model context не заменяется. Executor mutations меняется через migration barrier. Transport/lifecycle/model context требуют честного controlled worker restart; если модель в этом процессе, warmup повторится. Dependencies/cache pinned, не переустанавливаются при SQL/app patch. После apply readback loaded hash, schema, useful result и restart/model-load/download counters обязателен; файл на диске не доказательство загрузки.
 
 Dataset нужен для checkpoint/крупного артефакта. Редкая замена PG — finite maintenance окно внутри той же notebook session; live PGDATA не подменять. Verified base+tail и recovery pointer сохраняются отдельно от active routing. Два PG clusters/catch-up — только при измеренной необходимости и ёмкости, не обязательный debug framework. Реальный GEO/accepted/Saved никогда не disposable; test fixture имеет immutable classification и не получает product routing/grants.
 
@@ -51,13 +53,13 @@ Query-first/read permit действует в общей admission authority д�
 
 ## Что сохраняется до ACK
 
-Следующий ACK contract относится к mutations/durable jobs и явно принятым долгим requests. Raw DevCoveer spool: implementation defaults 4 часа/512 MiB с измерением до cutover. Early receipt pending. Final accepted/Saved требует remotely confirmed exact intent/payload в existing Yandex recovery storage; Saved также требует domain commit и remotely verified exact outcome/receipt. Ready groups ждут flush ≤1 секунды: это окно набора, не гарантированный cloud RTT. Ephemeral QUERY не ждёт fsync/remote journal или audit flush ни перед dispatch, ни перед result. Bounded async audit содержит refs/hashes/timings; overflow/loss виден отдельно и не означает потерю durable mutation. Read-result не называется Saved без отдельного durable save.
+Следующий ACK contract относится к mutations/durable jobs и явно принятым долгим requests. Raw DevCoveer spool: implementation defaults 4 часа/512 MiB с измерением до cutover. Early receipt pending. Final accepted/Saved требует доказанного внешнего покрытия exact intent/payload выбранным Dataset persistence/continuation; прежний online S3 tail не переутверждается молча под именем weekly backup; Saved также требует domain commit и remotely verified exact outcome/receipt. Ready groups ждут flush ≤1 секунды: это окно набора, не гарантированный cloud RTT. Ephemeral QUERY не ждёт fsync/remote journal или audit flush ни перед dispatch, ни перед result. Bounded async audit содержит refs/hashes/timings; overflow/loss виден отдельно и не означает потерю durable mutation. Read-result не называется Saved без отдельного durable save.
 
-Existing S3ObjectStore — put/get/delete transport, а seal/continuous manifest/CAS ещё реализуются и проверяются. Большие base bytes идут direct Kaggle→recovery object по scoped key/epoch/expiry без global/delete credentials; Dev 512 MiB spool их не пропускает. Presigned URL не отменяется сам при epoch change: old-writer upload остаётся orphan без promotion authority.
+NEW уже содержит часть S3 seal/continuous manifest/CAS; это проверяемый reusable recovery protocol, не свидетельство готового Dataset-primary adapter. Большие base bytes идут direct Kaggle→recovery object по scoped key/epoch/expiry без global/delete credentials; Dev 512 MiB spool их не пропускает. Presigned URL не отменяется сам при epoch change: old-writer upload остаётся orphan без promotion authority.
 
 Canonical replay не хеширует заново derived BGE floats/FTS/crops. Exact domain outcome сохраняется, projection dirty/rebuild и dense readiness идут отдельно; accepted BGE artifacts reuse. Уже delivered artifact bytes/hash/receipt не подменяются.
 
-Control checkpoint 15 min; changed PG base 4 h или раньше по replay/byte pressure/planned handover; daily independent-from-Kaggle Yandex base. Local raw GC после remote seal не ждёт old daily baseline; remote tail остаётся для designated recovery chains и unfinished consumers. UNKNOWN/request/receipt metadata не expires вместе с raw body.
+Control checkpoint 15 min; changed PG base 4 h или раньше по replay/byte pressure/planned handover; weekly independent-from-Kaggle Yandex backup подтверждённой Dataset version. Local raw GC после доказанного внешнего покрытия не ждёт old weekly baseline; remote tail остаётся для designated recovery chains и unfinished consumers. UNKNOWN/request/receipt metadata не expires вместе с raw body.
 
 ## Отчёт readiness и recovery
 

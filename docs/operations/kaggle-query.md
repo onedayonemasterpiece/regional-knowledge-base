@@ -24,7 +24,7 @@ attestation: deployment still must verify actual loaded tokenizer bytes/settings
 More than512tokens returns `invalid_query/token_limit_exceeded` before acquiring
 SQL or inference. Unsupported kinds and malformed/duplicate UUID scope return
 `invalid_query/invalid_filters` before tokenizer, SQL or encoder. This executor
-supports source passages only; it does not invent facts, Story bodies or proofs.
+initially supported source passages only. At audited main bb7f8ae4 the typed path also reads saved Story bodies and source facts through their versioned adapters. It does not invent them or generate proof during ordinary search; actual live parity/quality remains separate from source support.
 Tokenizer runtime failures return `unavailable/not_ready`; cancellation still
 propagates instead of terminating the worker with an unclassified callback error.
 
