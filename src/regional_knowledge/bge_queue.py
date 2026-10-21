@@ -25,6 +25,7 @@ HEARTBEAT_SECONDS = 120
 JOB_SECONDS = 180
 DONE_QUERY_RETENTION_SECONDS = 24 * 3600
 DONE_AUDIT_RETENTION_SECONDS = 24 * 3600
+MAX_STARTUP_FAILURES = 3  # Finite verified-not-sent/terminal retries per durable demand.
 
 # A notification is only a hint; committed SQLite rows remain authoritative.
 # Cross-process completions use the bounded reconciliation below.
@@ -88,6 +89,11 @@ class BgeQueue:
             # executescript ends its caller's transaction. Serialize additive
             # migrations explicitly, including concurrent first-time openers.
             db.execute('begin immediate')
+            control_columns={row['name'] for row in db.execute('pragma table_info(control)')}
+            for name,definition in (('startup_ref','text'),('startup_state','text'),
+                                    ('startup_failures','integer not null default 0')):
+                if name not in control_columns:
+                    db.execute(f'alter table control add column {name} {definition}')
             if 'diagnostics' not in {row['name'] for row in db.execute('pragma table_info(runs)')}:
                 db.execute("alter table runs add column diagnostics text not null default '{}'")
             if 'provider_version' not in {row['name'] for row in db.execute('pragma table_info(runs)')}:
@@ -109,7 +115,7 @@ class BgeQueue:
         try:
             with self.connect(write=False) as db:
                 db.execute('select id,status,token_hash,started,heartbeat,useful,ready_at,provider_ref,launch_state,diagnostics,provider_version,launch_nonce,runtime_incarnation,connection_generation,channel_active,attachment_conflict,bootstrap_finalized_at from runs limit 0')
-                if db.execute('select current_run,successor from control where id=1').fetchone() is None:
+                if db.execute('select current_run,successor,startup_ref,startup_state,startup_failures from control where id=1').fetchone() is None:
                     return False
                 db.execute('select id,actor,idempotency,kind,texts,identity,state,created,updated,run_id,claim,lease_until,result,attempt from jobs limit 0')
             return True
@@ -144,6 +150,12 @@ class BgeQueue:
         return run_id
 
     @staticmethod
+    def _provider_outcome_unknown(run):
+        # The local run lease is not proof that the remote notebook terminated.
+        return (run['launch_state'] in ('dispatching','dispatched')
+                and run['status'] in ('starting','ready','draining'))
+
+    @staticmethod
     def _run_expired(run, now):
         if run['status']=='failed' and now-run['heartbeat']<60:
             return False
@@ -161,7 +173,11 @@ class BgeQueue:
             # normal heartbeat lease; idle and maximum lifetimes still apply.
             if self._run_expired(run, now):
                 from .queue_writer import pending
-                if pending(db,run['id']):continue  # UNKNOWN publication is not released ownership.
+                # An elapsed lease must fail read/worker authorization, but
+                # cannot release remote capacity until exact provider terminal
+                # evidence is reconciled by the existing controller.
+                if self._provider_outcome_unknown(run) or pending(db,run['id']):
+                    continue
                 db.execute("update runs set status='expired' where id=?",(run['id'],))
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
                 db.execute('update control set current_run=null where current_run=?',(run['id'],))
@@ -171,6 +187,10 @@ class BgeQueue:
     def _ensure(self, db, now, *, useful=True):
         self._expire(db,now)
         control = db.execute('select * from control where id=1').fetchone()
+        if control['startup_state']=='blocked':
+            # Durable jobs may still be accepted/stored; they cannot bypass
+            # an exhausted cold-start budget by invoking _ensure indirectly.
+            return control['current_run']
         current = db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
         if current is None:
             # Reuse a warming successor if the previous serving worker was lost.
@@ -179,11 +199,78 @@ class BgeQueue:
             db.execute('update control set current_run=?,successor=null where id=1',(run_id,))
         else:
             run_id=current['id']
-            if current['status']=='ready' and now-current['started']>=ROTATE_SECONDS and not control['successor']:
+            if (current['status']=='ready' and not self._run_expired(current,now)
+                    and now-current['started']>=ROTATE_SECONDS and not control['successor']):
                 successor=self._new_run(db,now)
                 db.execute('update control set successor=? where id=1',(successor,))
         if useful:db.execute('update runs set useful=? where id=?',(now,run_id))
         return run_id
+
+    def request_startup(self):
+        """One persisted cold demand, independent of a particular run's TTL.
+
+        An authorized public caller creates this demand; controller maintenance
+        can resume it after restart without another user request. A run with
+        an uncertain remote outcome remains reserved, not replaced.
+        """
+        now=self.clock()
+        with self.connect() as db:
+            row=db.execute('select startup_ref,startup_state,current_run from control where id=1').fetchone()
+            if row['startup_state']=='blocked':
+                return {'status':'unavailable','reason':'startup_retry_exhausted',
+                    'run_id':row['current_run'],'startup_ref':row['startup_ref']}
+            run_id=self._ensure(db,now)
+            if row['startup_ref'] is None or row['startup_state']!='pending':
+                ref='rkb:startup:v1:'+str(uuid.uuid4())
+                db.execute("update control set startup_ref=?,startup_state='pending',startup_failures=0 where id=1",(ref,))
+            else:ref=row['startup_ref']
+            run=db.execute('select * from runs where id=?',(run_id,)).fetchone()
+            if run and self._provider_outcome_unknown(run) and self._run_expired(run,now):
+                # Retain its remote slot but do not present an indefinite
+                # warming promise when exact execution status is unavailable.
+                return {'status':'unavailable','reason':'provider_execution_unknown',
+                        'run_id':run_id,'startup_ref':ref}
+            return {'status':'pending','run_id':run_id,'startup_ref':ref}
+
+    def startup_status(self, startup_ref):
+        """Read only. A locator is NOT an access grant: caller reauths at MCP."""
+        if (type(startup_ref) is not str or not startup_ref.startswith('rkb:startup:v1:')
+                or len(startup_ref)!=len('rkb:startup:v1:')+36):
+            raise ValueError('invalid startup ref')
+        try:
+            if str(uuid.UUID(startup_ref.split(':')[-1]))!=startup_ref.split(':')[-1]:
+                raise ValueError('noncanonical startup ref')
+        except (ValueError,AttributeError):
+            raise ValueError('invalid startup ref') from None
+        with self.connect(write=False) as db:
+            row=db.execute('select startup_ref,startup_state,current_run from control where id=1').fetchone()
+            if row['startup_ref']!=startup_ref:
+                return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
+                        'status':'unavailable','reason':'startup_ref_stale'}
+            if row['startup_state']=='ready':
+                return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
+                        'status':'ready','reason':None}
+            if row['startup_state']=='blocked':
+                return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
+                        'status':'unavailable','reason':'startup_retry_exhausted'}
+            run=db.execute('select * from runs where id=?',(row['current_run'],)).fetchone()
+            if run and self._provider_outcome_unknown(run) and self._run_expired(run,self.clock()):
+                return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
+                        'status':'unavailable','reason':'provider_execution_unknown'}
+            return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
+                    'status':'pending','reason':'target_warming'}
+
+    def finish_startup(self, run_id):
+        """Mark ready only after current full history/PG/BGE proof on caller."""
+        with self.connect() as db:
+            control=db.execute('select current_run,startup_state from control where id=1').fetchone()
+            run=db.execute('select * from runs where id=?',(run_id,)).fetchone()
+            if (control['current_run']!=run_id or not run or run['status']!='ready'
+                    or self._run_expired(run,self.clock()) or not run['channel_active']):
+                return False
+            if control['startup_state']=='pending':
+                db.execute("update control set startup_state='ready',startup_failures=0 where id=1")
+            return True
 
     def enqueue(self, actor, idempotency, texts, *, kind='query', identity=None):
         if kind not in ('query','document') or len(texts)!=1 or not isinstance(texts[0],str) or not texts[0].strip() or len(texts[0])>(16000 if kind=='query' else 40000):
@@ -318,7 +405,17 @@ class BgeQueue:
             self._shared_owner(db)
             run=self._authorize(db,run_id,token,now)
             if self._run_expired(run,now):
-                raise RevokedRun('invalid or stale BGE worker')
+                # A lost WSS heartbeat alone does not kill a live notebook.
+                # Accept only the EXACT prior authenticated incarnation,
+                # while useful/maximum lifetimes and conflict fences still
+                # hold. Re-attachment must reprove the new read generation.
+                same_unresolved = (self._provider_outcome_unknown(run)
+                    and run['status']=='ready' and run['runtime_incarnation']==runtime_incarnation
+                    and run['launch_nonce']==launch_nonce and not run['attachment_conflict']
+                    and now<run['started']+MAX_LIFETIME
+                    and now<run['useful']+IDLE_SECONDS)
+                if not same_unresolved:
+                    raise RevokedRun('invalid or stale BGE worker')
             if (not isinstance(launch_nonce,str) or not run['launch_nonce']
                     or not secrets.compare_digest(run['launch_nonce'].encode(),launch_nonce.encode())):
                 raise StaleAttachment('invalid BGE launch nonce')
@@ -336,8 +433,13 @@ class BgeQueue:
                 ).fetchone():
                     raise AttachmentBusy('BGE HTTP assignment is still active')
                 generation=run['connection_generation']+1
-                db.execute('update runs set runtime_incarnation=?,connection_generation=?,channel_active=1 where id=?',
-                           (runtime_incarnation,generation,run_id))
+                # Authenticated exact-incarnation ATTACH is proof of the
+                # socket's present liveness (NOT proof of search readiness).
+                # Refresh its heartbeat atomically with the generation fence;
+                # otherwise receiver/dispatcher status() would reject every
+                # frame before the worker can submit new runtime proof.
+                db.execute('update runs set runtime_incarnation=?,connection_generation=?,channel_active=1,heartbeat=? where id=?',
+                           (runtime_incarnation,generation,now,run_id))
                 result={'connection_generation':generation,
                         'provider_version':str(run['provider_version']) if run['provider_version'] is not None else None}
         if conflict:
@@ -764,10 +866,11 @@ class BgeQueue:
     def _status(self, db, now):
         control=db.execute('select * from control where id=1').fetchone()
         run=db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
-        if run and self._run_expired(run,now):run=None
+        stale_remote=bool(run and self._run_expired(run,now) and self._provider_outcome_unknown(run))
+        if run and self._run_expired(run,now) and not stale_remote:run=None
         successor=db.execute('select * from runs where id=?',(control['successor'],)).fetchone()
         successor_starting=bool(successor and not self._run_expired(successor,now))
-        return {'state':run['status'] if run else 'stopped','space':SPACE,'queue_depth':db.execute("select count(*) from jobs where state!='done'").fetchone()[0],'successor_starting':successor_starting,'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
+        return {'state':'unknown' if stale_remote else run['status'] if run else 'stopped','space':SPACE,'queue_depth':db.execute("select count(*) from jobs where state!='done'").fetchone()[0],'successor_starting':successor_starting,'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
 
     def status(self):
         with self.connect(write=False) as db:
@@ -777,10 +880,15 @@ class BgeQueue:
         now=self.clock()
         with self.connect() as db:
             self._expire(db,now)
-            if db.execute("select 1 from jobs where state!='done'").fetchone():self._ensure(db,now,useful=False)
+            control=db.execute('select startup_state from control where id=1').fetchone()
+            if (control['startup_state']!='blocked' and
+                    (db.execute("select 1 from jobs where state!='done'").fetchone()
+                     or control['startup_state']=='pending')):
+                self._ensure(db,now,useful=False)
             control=db.execute('select * from control where id=1').fetchone()
             current=db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
-            if current and current['status']=='ready' and now-current['started']>=ROTATE_SECONDS and not control['successor']:
+            if (current and current['status']=='ready' and not self._run_expired(current,now)
+                    and now-current['started']>=ROTATE_SECONDS and not control['successor']):
                 db.execute('update control set successor=? where id=1',(self._new_run(db,now),))
             # Old workers drain only their already claimed job; no more claims.
             draining=db.execute("select id from runs where status='draining' and not exists(select 1 from jobs where jobs.run_id=runs.id and state='claimed')").fetchall()
@@ -800,6 +908,25 @@ class BgeQueue:
             )
             return [dict(row) for row in db.execute('select id,status,launch_state,provider_ref,provider_version from runs').fetchall()]
 
+    def needs_dispatched_terminal_probe(self, run_id):
+        """Only an exact owner with a lost ready connection needs terminal lookup.
+
+        This is a read-only controller hint. It does not assert provider death,
+        revoke credentials or authorize another push; the controller must
+        inspect the original exact-version native session independently.
+        """
+        with self.connect(write=False) as db:
+            # The standalone controller constructs BgeQueue BEFORE it has any
+            # shared-admission object. Only a read-only run identity is used
+            # here; this is not an actor admission / ready-query check.
+            run=db.execute('select * from runs where id=?',(run_id,)).fetchone()
+            if (run is None or run['launch_state']!='dispatched'
+                    or type(run['provider_version']) is not int):
+                return False
+            if run['status']=='starting':return True
+            return (run['status'] in ('ready','draining')
+                    and self._run_expired(run,self.clock()))
+
     def launch_claim(self, run_id, *, provider_ref=None):
         with self.connect() as db:
             row=db.execute('select * from runs where id=?',(run_id,)).fetchone()
@@ -814,12 +941,27 @@ class BgeQueue:
         if provider_version is not None and (type(provider_version) is not int or provider_version<1):
             raise ValueError('invalid Kaggle notebook version')
         with self.connect() as db:
-            row=db.execute('select provider_ref,provider_version from runs where id=?',(run_id,)).fetchone()
+            row=db.execute('select provider_ref,provider_version,status from runs where id=?',(run_id,)).fetchone()
             if row and ((row['provider_ref'] and row['provider_ref']!=provider_ref)
                     or (row['provider_version'] and provider_version and row['provider_version']!=provider_version)):
                 raise ValueError('Kaggle run identity changed')
             db.execute('update runs set provider_ref=?,provider_version=coalesce(provider_version,?),launch_state=?,status=case when ? then ? else status end where id=?',
                        (provider_ref,provider_version,'failed' if failed else 'dispatched',failed,'failed',run_id))
             if failed:
+                # Count a known failure once. Repeated failed receipts cannot
+                # re-arm the launch budget or start infinite 60-second loops.
+                if row and row['status']!='failed':
+                    control=db.execute('select current_run,startup_ref,startup_state from control where id=1').fetchone()
+                    outstanding=bool(db.execute("select 1 from jobs where state!='done' limit 1").fetchone())
+                    # A normal useful-idle shutdown is NOT fresh demand. Do
+                    # not resurrect an already satisfied startup merely
+                    # because its old worker later terminates.
+                    if (control['current_run']==run_id and control['startup_ref'] is not None
+                            and control['startup_state']!='blocked'
+                            and (control['startup_state']=='pending' or outstanding)):
+                        db.execute('''UPDATE control SET startup_failures=startup_failures+1,
+                            startup_state=CASE WHEN startup_failures+1>=? THEN 'blocked' ELSE 'pending' END
+                            WHERE current_run=? AND startup_ref IS NOT NULL''',
+                            (MAX_STARTUP_FAILURES,run_id))
                 db.execute('update runs set heartbeat=? where id=?',(self.clock(),run_id))
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run_id,))

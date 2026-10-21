@@ -168,11 +168,6 @@ class _SourceBackend(KaggleSourceBackend):
         return await self.startup.editorial.mutate(principal,story_id=story_id,expected_revision=expected_revision,
             idempotency_key=idempotency_key,grantee_user_id=grantee_user_id,capability=capability)
 
-    async def _search(self,*args,**kwargs):
-        if not self.startup.reads_current():
-            raise ToolError('{"status":"unavailable","reason":"source_history_unavailable"}')
-        return await super()._search(*args,**kwargs)
-
 
 class TargetServiceStartup:
     """One configured queue/admission/spool; ownership lasts one server lifespan.
@@ -348,6 +343,10 @@ class TargetServiceStartup:
                     self.geo_gate.invalidate()
                     _LOG.warning('target_geo_routing state=closed reason=%s',type(exc).__name__)
             if self.geo_installer is not None:self.geo_installer.kick(self.binding)
+            if self.reads_current():
+                # Mark the original demand complete only after the full
+                # verified history/read gate is current, never at BGE heartbeat.
+                self.config.queue.finish_startup(binding.run_id)
             _LOG.info('target_source_routing state=ready connection_generation=%s',binding.connection_generation)
             return True
         except asyncio.CancelledError:

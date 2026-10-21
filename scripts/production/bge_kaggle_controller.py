@@ -101,6 +101,38 @@ def reconcile_launch_due(api,queue,run,ref,probed,*,now):
     return reconcile_launch(api,queue,run,ref)
 
 
+def reconcile_dispatched_terminal(api, queue, run, ref):
+    """Observe the exact owned version; never infer death from lost heartbeat.
+
+    A READY worker can disappear after its last heartbeat. We retain that
+    run's remote ownership until this native version-qualified terminal check;
+    after terminal confirmation the durable cold demand can resume via the
+    existing queue maintenance, without another user search. Unknown source,
+    mismatched version or provider errors leave the original effect fenced.
+    """
+    if run.get('launch_state')!='dispatched' or not queue.needs_dispatched_terminal_probe(run['id']):
+        return None
+    version=run.get('provider_version')
+    if type(version) is not int or version < 1:
+        return None
+    if not reconcile_launch(api, queue, run, ref):
+        return 'unknown'
+    phase=provider_phase(version_status(api,ref,version))
+    logging.info(json.dumps({'event':'bge_exact_version_phase','run_id':run['id'],
+        'provider_version':version,'phase':phase}))
+    if phase in ('ERROR','FAILED','CANCELED','CANCELLED','COMPLETE'):
+        # Kaggle's version label is NOT the execution/session identity. A
+        # terminal-looking version response, even with matching source, does
+        # not prove this exact worker/its descendants stopped. Keep the
+        # UNKNOWN run and capacity fenced; request_startup/startup_status
+        # report provider_execution_unknown rather than blindly pushing.
+        logging.warning(json.dumps({'event':'bge_provider_version_terminal_unverified',
+            'run_id':run['id'],'provider_version':version,'phase':phase,
+            'remote_compute_terminal_proof':'unavailable'}))
+        return 'terminal_unverified'
+    return phase
+
+
 def target_sql_hashes(target, repository):
     """Pin exactly the migration prefix the native initializer will execute."""
     from regional_knowledge.kaggle_owned_pg import sql_artifacts, digest
@@ -209,15 +241,12 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                     # issue another save/version: reconcile the stable slug.
                     if reconcile_launch_due(api,queue,run,ref,probed,now=time.monotonic()) is False:
                         logging.warning(json.dumps({'event':'bge_launch_observation_mismatch','run_id':run_id,'provider_ref':ref}))
-                elif run['status']=='starting' and run['launch_state']=='dispatched' and time.monotonic()-probed.get(run_id,0)>30:
+                elif run['launch_state']=='dispatched' and time.monotonic()-probed.get(run_id,0)>30:
+                    # READY with lost WSS/heartbeat still owns its exact Kaggle
+                    # version. Reconcile before allowing the pending demand to
+                    # start a new run. Healthy READY only reads the local row.
                     probed[run_id]=time.monotonic()
-                    if run.get('provider_version') and not reconcile_launch(api,queue,run,ref):continue
-                    status=version_status(api,ref,run.get('provider_version'))
-                    phase=provider_phase(status)
-                    logging.info(json.dumps({'event':'bge_version_status_observed','run_id':run_id,'provider_version':run['provider_version'],'phase':phase}))
-                    if phase in ('ERROR','FAILED','CANCELED','CANCELLED','COMPLETE'):
-                        queue.launch_record(run_id,ref,failed=True)
-                        logging.warning(json.dumps({'event':'bge_startup_failed','run_id':run_id,'provider_status':str(phase)}))
+                    reconcile_dispatched_terminal(api,queue,run,ref)
                 elif run['status']=='expired' and run['launch_state']=='dispatched':
                     # Expired credential makes worker polling stop even when
                     # provider cancellation is unavailable in this SDK.

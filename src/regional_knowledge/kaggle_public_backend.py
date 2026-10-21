@@ -16,7 +16,7 @@ from uuid import UUID
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .contracts import EvidenceSearchOutput, FetchOutput, ReadTrace, SearchOutput, SearchResult, BookFindOutput
+from .contracts import EvidenceSearchOutput, FetchOutput, ReadTrace, SearchOutput, SearchResult, BookFindOutput, StartupStatus
 from .kaggle_protocol import Query, QueryFilters, TrustedActorContext, PassageContinuation, PassageReadRequest, StoryReadRequest
 from .kaggle_fact_contracts import FactReadRequest
 from .kaggle_source_graph_read import SourceGraphReadRequest
@@ -263,7 +263,35 @@ class KaggleSourceBackend:
                     if type(authority) is not VerifiedReadAuthority or authority.destination!=destination:
                         raise PermissionError('adapter destination differs')
                     await measured('auth_ms',self.read_authority.require(authority,'public_search'))
-                binding = await measured('binding_ms',asyncio.to_thread(current_binding, self.worker_queue))
+                try:
+                    # The source-history/restore gate is checked only AFTER
+                    # actor authorization; a cold read must not bypass it.
+                    startup = getattr(self, 'startup', None)
+                    if startup is not None and not startup.reads_current():
+                        raise TargetUnavailable('source history not ready')
+                    binding = await measured('binding_ms',asyncio.to_thread(current_binding, self.worker_queue))
+                except TargetUnavailable:
+                    # An already-authorized caller records a durable demand;
+                    # the existing controller owns the only remote launch.
+                    demand = await measured('startup_demand_ms',
+                        asyncio.to_thread(self.worker_queue.request_startup))
+                    if demand['status']=='unavailable':
+                        status,reason='unavailable',demand['reason']
+                        raise ToolError(json.dumps({'status':status,'reason':reason,
+                            'startup_ref':demand['startup_ref']},separators=(',',':'))) from None
+                    status,reason='pending','target_warming'
+                    if exact:
+                        # Exact fetch/catalogue/read DTOs do not have pending.
+                        # Do not silently substitute empty source content.
+                        raise ToolError(json.dumps({'status':'unavailable','reason':'target_warming',
+                            'startup_ref':demand['startup_ref']},separators=(',',':'))) from None
+                    startup_status=StartupStatus(startup_ref=demand['startup_ref'],
+                        status='pending',reason='target_warming')
+                    common=dict(status='pending',reason='target_warming',mode='lexical_degraded',
+                        retrieval_mode='lexical_only',main_state='starting',startup=startup_status,
+                        read_trace=ReadTrace(**attempt.correlation(),
+                            backend_elapsed_ms=(time.monotonic()-attempt.started)*1000))
+                    return EvidenceSearchOutput(evidence=[],**common) if evidence else SearchOutput(results=[],**common)
                 if story_cursor_generation is not None and story_cursor_generation!=binding.database_generation:
                     raise PublicQueryInvalid
                 try:
@@ -350,6 +378,32 @@ class KaggleSourceBackend:
                     self.read_authority.release(authority)
             if not retained:
                 terminal(status,reason)
+
+    async def startup_status(self, startup_ref, principal):
+        """MCP read-only continuation: freshly authorized, never auto-retries the query."""
+        if type(startup_ref) is not str:
+            raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
+        authority=None
+        try:
+            authority=await self.read_authority.resolve_oauth(principal.access_token,destination=self.destination)
+            await self.read_authority.require(authority,'public_search')
+            observed=await asyncio.to_thread(self.worker_queue.startup_status,startup_ref)
+            if observed['status']=='ready':
+                try:
+                    target=getattr(self,'startup',None)
+                    if target is not None and not target.reads_current():
+                        raise TargetUnavailable('source history unavailable')
+                    await asyncio.to_thread(current_binding,self.worker_queue)
+                except TargetUnavailable:
+                    observed.update(status='unavailable',reason='target_not_ready')
+            await self.read_authority.recheck(authority)
+            return StartupStatus.model_validate(observed)
+        except (ValueError,TypeError):
+            raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
+        except PermissionError:
+            raise ToolError('{"status":"denied","reason":"access_denied"}') from None
+        finally:
+            if authority is not None:self.read_authority.release(authority)
 
     async def search(self, query, principal, *, document_ids=None, main_job_id=None, aliases=None):
         if main_job_id or aliases:

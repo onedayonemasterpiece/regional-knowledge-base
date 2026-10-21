@@ -42,6 +42,7 @@ from .contracts import (
     Principal,
     ProfileOutput,
     SearchOutput,
+    StartupStatus,
     StageChunkInput,
     StagePageInput,
     StagePoiFactInput,
@@ -78,6 +79,11 @@ def _principal() -> Principal:
 
 def _require_hybrid_read(result):
     """Public search never substitutes lexical evidence for unavailable BGE."""
+    # Cold startup is an MCP response, not a fabricated QUERY_RESULT or hit.
+    if (result.status == 'pending' and result.startup is not None
+            and result.startup.protocol == 'rkb.startup.v1'
+            and result.main_state == 'starting'):
+        return result
     if (result.mode != "hybrid" or result.main_state != "ready"
             or result.retrieval_mode not in {"bge_lexical", "e5_bge_lexical"}):
         raise ToolError(json.dumps({"status": "unavailable", "reason": "hybrid_search_required",
@@ -191,6 +197,7 @@ class KnowledgeMCPServer(MCPServer):
             allowed.update({'geo_lookup','graph_fetch','poi_context'})
         if getattr(self,'_target_catalog_available',False):
             allowed.add('book_find')
+        if getattr(self,'_target_source_profile',False):allowed.add('startup_status')
         if getattr(self,'_target_source_profile',False) and name not in allowed:
             raise ToolError('{"status":"unavailable","reason":"target_domain_unavailable"}')
         from .read_issuance import capture_read_output, bind_request_output
@@ -983,13 +990,21 @@ def build_server(
     if profile.startswith("story_"):
         return mcp
 
+    if selected == 'kaggle_source':
+        @mcp.tool(name='startup_status',title='Check Regional Knowledge startup',
+            description='Check a versioned cold-start reference. Does not restart or replay search. Once ready, call knowledge_search/search again with your current access rights.',
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+        async def startup_status(startup_ref: str) -> StartupStatus:
+            return await backend.startup_status(startup_ref,_principal())
+
     if profile == "live":
         @mcp.tool(
             name="knowledge_search",
             title="Search regional knowledge",
             description=(
-                "Return a small ready-to-use evidence pack from accessible regional "
-                "books and journals in one low-latency call. Use for factual Live answers."
+                "Return a bounded evidence pack from accessible regional books and journals. "
+                "When Kaggle is cold, returns MCP pending and a versioned startup ref; "
+                "call startup_status, then issue a NEW search after ready."
             ),
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         )
@@ -1012,8 +1027,9 @@ def build_server(
     @mcp.tool(
         title="Search regional knowledge",
         description=(
-            "Search the user's accessible regional books and journals. "
-            "Returns citable result IDs and stable URLs. Use fetch for full evidence."
+            "Search accessible regional books and journals. Returns citable IDs and URLs. "
+            "When Kaggle is cold, returns pending with startup ref; check startup_status "
+            "and retry as a NEW read after ready. Use fetch for complete evidence."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )

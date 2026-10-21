@@ -104,8 +104,9 @@ async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,
     assert any(getattr(route,'path',None)=='/bge-worker/channel' for route in app.routes)
     async with startup.lifespan(server):
         assert not startup.reads_current()
-        with pytest.raises(ToolError,match='source_history_unavailable'):
-            await startup.backend.search('synthetic',s.target.principal)
+        pending=await startup.backend.search('synthetic',s.target.principal)
+        assert pending.status=='pending' and pending.startup.protocol=='rkb.startup.v1'
+        assert pending.results==[] and pending.main_state=='starting'
         assert not startup.admission._reads
     assert startup.closed and not startup.reads_current()
     assert startup.admission._fd is None and startup.config.spool._fd is None
@@ -135,7 +136,7 @@ async def test_full_and_live_source_calls_share_actual_admission_and_no_domain_f
     monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.target.principal)
     full=build_server(target_startup=startup)
     live=build_server(target_startup=startup,profile='live')
-    assert {tool.name for tool in live._tool_manager.list_tools()}=={'knowledge_search'}
+    assert {tool.name for tool in live._tool_manager.list_tools()}=={'knowledge_search','startup_status'}
     async with startup.lifespan(full):
         for server,name in ((full,'search'),(live,'knowledge_search')):
             request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
@@ -158,6 +159,52 @@ async def test_full_and_live_source_calls_share_actual_admission_and_no_domain_f
         for tool in ('book_find','graph_fetch','illustration_fetch','catalog','document_access'):
             with pytest.raises(ToolError,match='target_domain_unavailable'):
                 await full.call_tool(tool,{})
+
+
+@pytest.mark.asyncio
+async def test_mcp_cold_pending_status_and_new_live_read_after_ready(service,monkeypatch):
+    """MCP client gets a normal typed pending response, then polls and retries."""
+    import json
+    s=service;startup=s.startup
+    monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.target.principal)
+    live=build_server(target_startup=startup,profile='live')
+    request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
+        'app':SimpleNamespace(state=SimpleNamespace()),'state':{}})
+    context=SimpleNamespace(request_context=SimpleNamespace(request=request,request_id='pending-mcp-fixture'))
+    async with startup.lifespan(live):
+        cold=await live.call_tool('knowledge_search',{'query':'harbour'},context)
+        assert not cold.is_error
+        assert cold.structured_content['status']=='pending'
+        assert cold.structured_content['evidence']==[]
+        operation=cold.structured_content['startup']
+        assert operation['protocol']=='rkb.startup.v1'
+        ref=operation['startup_ref']
+        first=await live.call_tool('startup_status',{'startup_ref':ref},context)
+        assert not first.is_error and first.structured_content['status']=='pending'
+        s.adapter.available=True
+        assert await startup.refresh() and startup.reads_current()
+        second=await live.call_tool('startup_status',{'startup_ref':ref},context)
+        assert not second.is_error and second.structured_content['status']=='ready'
+
+        async def search_again():
+            return await live.call_tool('knowledge_search',{'query':'harbour'},context)
+        task=asyncio.create_task(search_again())
+        dispatched=await work(s.target)
+        result=QueryResult(request_id=dispatched.query.request_id,
+            connection_generation=s.target.generation,
+            turn_generation=dispatched.query.turn_generation,status='ok',mode='hybrid',
+            observed_data_seq=5,observed_projection_seq=5,
+            observed_database_generation='synthetic-db',
+            observed_visibility_epoch=0,evidence=(item(SOURCE),))
+        assert await startup.admission.finish_read(
+            s.target.run,s.target.token,s.target.generation,result)
+        fresh=await task
+        assert not fresh.is_error and fresh.structured_content['status']=='ok'
+        assert fresh.structured_content['evidence']
+        from regional_knowledge.read_issuance import _SCOPE_KEY
+        request.scope[_SCOPE_KEY][1].release()
+        request.scope.pop(_SCOPE_KEY,None)
+        await release(s.target,dispatched)
 
 
 @pytest.mark.asyncio

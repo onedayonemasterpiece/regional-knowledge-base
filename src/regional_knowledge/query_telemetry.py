@@ -18,13 +18,13 @@ from .kaggle_protocol import ReadIdentity
 _STAGES = frozenset({'tokenize_ms', 'acquire_ms', 'encode_ms', 'lexical_ms', 'dense_ms',
                      'hydrate_ms', 'search_ms', 'serialize_ms', 'total_ms', 'adapter_ms',
                      'admission_ms', 'transport_ms', 'output_gate_ms'})
-_STATUSES = frozenset({'ok', 'degraded', 'unavailable', 'cancelled', 'invalid_query', 'denied', 'error'})
+_STATUSES = frozenset({'ok', 'degraded', 'pending', 'unavailable', 'cancelled', 'invalid_query', 'denied', 'error'})
 _REASONS = frozenset({'dense_unavailable', 'projection_lag', 'deadline_exceeded', 'not_ready',
     'disconnected', 'caller_cancelled', 'consumer_cancelled', 'turn_replaced', 'query_too_large',
     'invalid_filters', 'invalid_input', 'token_limit_exceeded', 'access_denied', 'prior_write_pending',
     'context_gap', 'evidence_withdrawn', 'internal_error', 'bounded_retrieval', 'capacity_wait',
     'read_capacity', 'person_read_capacity', 'dialog_read_capacity', 'output_gate_denied',
-    'hybrid_search_required'})
+    'hybrid_search_required', 'target_warming'})
 _RUNTIME = ContextVar('rkb_read_runtime_diagnostics', default=None)
 _NATIVE = ContextVar('rkb_native_read_diagnostics', default=None)
 
