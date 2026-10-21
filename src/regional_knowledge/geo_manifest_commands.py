@@ -13,11 +13,13 @@ import json
 import re
 
 from .geo_migration import GeoManifestItem,GeoManifestHeader,GeoMigrationManifest,canonical,sha,normalized,exact_uuid
-from .kaggle_apply import DependencySpec,HandlerSpec,PgFunction,Revisions
+from .kaggle_apply import DependencySpec,HandlerSpec,MigrationTransition,PgFunction,Revisions
 from .recovery_journal import ExactCommand
 
 GEO_MANIFEST_INSTALL='geo.manifest.install.v1'
 GEO_REVISIONS=Revisions('rkb-v4-sql001-011-v1','rkb-v4-source-story-cases-geo-v6','rkb-python-apply-v1')
+GEO_V2_REVISIONS=Revisions('rkb-v4-sql001-012-v1','rkb-v4-source-story-cases-geo-v7','rkb-python-apply-v1')
+GEO_DEPENDENCY_MIGRATION='geo-dependencies-v2'
 GEO_PRECONDITIONS=frozenset({'manifest_state','manifest_index_sha256','installer_person_id'})
 MAX_GEO_PAYLOAD=704*1024
 MAX_GEO_BATCH=256*1024
@@ -113,7 +115,7 @@ def _validate_payload(raw,manifest_id,index_sha256):
 
 def validate_geo_manifest_command(command):
     if (type(command) is not ExactCommand or command.kind!='domain_command' or command.route!=GEO_MANIFEST_INSTALL or
-            (command.schema_revision,command.function_revision,command.executor_revision)!=GEO_REVISIONS.wire() or
+            (command.schema_revision,command.function_revision,command.executor_revision) not in (GEO_REVISIONS.wire(),GEO_V2_REVISIONS.wire()) or
             set(command.ids)!={'manifest_id'} or set(command.expected_revisions)!=GEO_PRECONDITIONS):
         raise ValueError('exact fresh11 geographic manifest command required')
     exact_uuid(command.person_id);_digest(command.ids['manifest_id'])
@@ -177,7 +179,17 @@ def plan_geo_manifest(manifest):
 
 
 def geo_manifest_handler(*,revisions,check_sha256,apply_sha256):
-    if revisions!=GEO_REVISIONS:raise ValueError('ordered fresh11 geographic revision barrier required')
+    if revisions not in (GEO_REVISIONS,GEO_V2_REVISIONS):raise ValueError('ordered geographic revision barrier required')
+    version='v2' if revisions==GEO_V2_REVISIONS else 'v1'
     return HandlerSpec('domain_command',GEO_MANIFEST_INSTALL,revisions,
-        PgFunction('check_geo_manifest_install_v1',check_sha256),PgFunction('apply_geo_manifest_install_v1',apply_sha256),
+        PgFunction('check_geo_manifest_install_'+version,check_sha256),PgFunction('apply_geo_manifest_install_'+version,apply_sha256),
         GEO_PRECONDITIONS,dependency=geo_manifest_dependency())
+
+
+def geo_dependency_transition_handler(*,artifact_sha256,check_sha256,apply_sha256):
+    """A trusted installed schema12 artifact, activated after the exact old tail."""
+    return HandlerSpec('schema_transition','geo.dependencies.upgrade.v2',GEO_REVISIONS,
+        PgFunction('check_geo_dependencies_v2_transition',check_sha256),
+        PgFunction('apply_geo_dependencies_v2_transition',apply_sha256),
+        frozenset({'schema','function','executor','migration'}),
+        MigrationTransition(GEO_DEPENDENCY_MIGRATION,artifact_sha256,None,GEO_V2_REVISIONS))
