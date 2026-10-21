@@ -336,9 +336,24 @@ class TargetStoryReconcile:
                     case_id=row.case_id, source_pass_state=row.intent.anchor_source.source_pass_state,
                     cross_book_complete=False, request_sha256=row.intent.request_sha256)
 
+
+    async def _require_completed_case_current(self, principal: Any, row: StoredIntent) -> None:
+        steps = _steps(row.intent.comparison)
+        if not row.done or not steps:
+            return
+        # A once-saved Case ID is not a standing permission to disclose it.
+        # The existing actor-scoped operation_status performs current Case
+        # authority and exact durable receipt checks after grants/revocation.
+        receipt = await self.cases.disagreement_edit("operation_status",
+            _effect_key(row.intent.operation_key, len(steps) - 1), principal, case_id=row.case_id)
+        if not _saved(receipt) or receipt.get("case_id") != row.case_id:
+            raise ReconcileError("case_receipt_not_current")
+
     async def apply(self, principal: Any, operation_key: str) -> dict[str, Any]:
         actor, row, source_ids = await self._current_intent(principal, operation_key, mutate=True)
         if row.done:
+            await self._require_completed_case_current(principal, row)
+            await self.authority.current(actor, source_ids=source_ids, mutate=True)
             return self._output(row)
         if row.intent.comparison.decision == "needs_context":
             # A recorded gap is a resumable frontier, not a completed comparison.
@@ -382,6 +397,8 @@ class TargetStoryReconcile:
 
     async def status(self, principal: Any, operation_key: str) -> dict[str, Any]:
         actor, row, source_ids = await self._current_intent(principal, operation_key, mutate=False)
+        if row.done:
+            await self._require_completed_case_current(principal, row)
         result = self._output(row)
         steps = _steps(row.intent.comparison)
         if row.attempted and not row.done and row.step_index < len(steps):
