@@ -556,11 +556,13 @@ class BgeWssTransport:
                 elif kind == 'RESULT_ACK':
                     if (self.pending is None or frame.get('job_id') != self.pending['job_id']
                             or frame.get('claim') != self.pending['claim']
-                            or frame.get('status') not in ('accepted', 'duplicate', 'stale','apply_received')):
+                            or frame.get('status') not in ('accepted', 'duplicate', 'stale','apply_received','checkpoint_pending')):
                         raise ValueError('result acknowledgment mismatch')
                     if frame['status']=='apply_received':
                         if self.job['kind']!='source_command':raise ValueError('unexpected apply receipt acknowledgment')
                         continue  # Durable local receipt only; retain until remote outcome.
+                    if frame['status']=='checkpoint_pending' and self.job['kind']!='source_command':
+                        raise ValueError('unexpected pending checkpoint acknowledgment')
                     self.acknowledged = (self.pending['job_id'], self.pending['claim'])
                     self.pending, self.job = None, None
                     if not self.shared_reads or (self.encoding is not None and self.encoding.done()):
@@ -578,7 +580,9 @@ class BgeWssTransport:
                         self.bootstrap_finalized=True
                         self._lifetime_timeout.reschedule(self._overall_deadline)
                 elif kind=='HEARTBEAT_ACK':
-                    # A stable authenticated session starts a fresh outage budget.
+                    # Bound consecutive outage attempts, not the sum of every
+                    # disconnect over an eleven-hour warmed runtime. A stable
+                    # authenticated control session earns a fresh retry budget.
                     if self._retry_clock()-connected_at>=30:
                         self._reconnect_attempt=0
                 else:

@@ -23,6 +23,57 @@ def database():return replace(spec().database,mode='VERIFIED_INITIALIZED',owners
 
 
 @pytest.mark.asyncio
+async def test_capture_refusal_preserves_native_owner_for_following_readback():
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=database();native.identity=('r','nonce','inc')
+    native._current=lambda binding:None
+    closed=[]
+    class Candidate:
+        async def aclose(self):closed.append(True)
+    candidate=Candidate();native._owned_candidates={candidate};native._capabilities=set()
+    async def capture(*args,**kwargs):raise ConnectionError('provider upload unavailable')
+    async def verify(*args):return {'resident_pg':'unchanged'}
+    native.capture=capture;native.verify_reference=verify
+    worker=WorkerRecoveryPhases(factory=native,download=lambda *_:None,workspace=lambda *_:None)
+    def frame(phase,args,key):
+        return dict(type='DISPATCH',protocol_version=2,connection_generation=1,id=key,claim='claim',
+            kind='recovery_phase',run_id='r',launch_nonce='nonce',runtime_incarnation='inc',
+            database_generation=native.database.database_generation,writer_generation=native.database.writer_generation,
+            phase=phase,operation_key=key,arguments=args,request_sha256=sha(encode(dict(phase=phase,arguments=args))),
+            compute_claim='slot',dispatch_generation=1)
+    failed=frame('capture',dict(versions={},expected_sequence=7),'capture')
+    result=await worker(failed)
+    assert result['value']==dict(status='rejected',reason='snapshot_capture_rejected')
+    assert await worker(failed)==result and not closed
+    assert (await worker(frame('verify',{'reference':'retained'},'readback')))['value']=={'resident_pg':'unchanged'}
+    assert native._owned_candidates=={candidate} and not closed
+
+
+@pytest.mark.asyncio
+async def test_exact_dataset_prepare_uses_attached_version_without_storage_ticket(state):
+    from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint,DatasetFile
+    s=state
+    part=lambda name:DatasetFile(name,10,'a'*64)
+    checkpoint=DatasetCheckpoint('fixture-owner','rkb-pg-checkpoint',3,database().database_generation,7,
+        part('base-manifest.json'),part('pg.blob'),part('source-control.json'),part('journal-control.json'))
+    bridge=RecoveryPhaseDispatch(s.q,database=database(),identity=(s.run,s.nonce,'incarnation-a'),
+        binding_current=lambda b:b is s,dataset_checkpoint=checkpoint)
+    task=None
+    try:
+        task,work,frame=await work_for(s,bridge,phase='prepare',args={'blob':{'unused':'no S3 download'}})
+        assert 'download_ticket' not in frame
+        assert frame['dataset_base']['dataset_version']==3
+        assert frame['dataset_base']['run_id']==s.run
+        assert frame['dataset_observation']['notebook_version']==frame['dataset_base']['notebook_version']
+        assert frame['dataset_observation']['dataset_ref']=='fixture-owner/rkb-pg-checkpoint'
+        await bridge.receive(response(s,frame,{'handle':'native-dataset'}),run_id=s.run,token=s.token,generation=s.generation)
+        assert await task=={'handle':'native-dataset'}
+    finally:
+        if task is not None and not task.done():task.cancel()
+        await bridge.aclose()
+
+
+@pytest.mark.asyncio
 async def test_concrete_factory_binds_tools_to_retained_stage0_manifest(fixture,monkeypatch):
     from regional_knowledge.kaggle_native_bundle import prepare_native_bundle
     from regional_knowledge.kaggle_recovery_phases import build_recovery_worker
@@ -573,30 +624,3 @@ async def test_ticket_issuance_requires_exact_capture_resource_and_urls_are_not_
         await bridge.receive(response(s,frame,{'native':'capture'}),run_id=s.run,token=s.token,generation=s.generation)
         assert await task=={'native':'capture'}
     finally:await bridge.aclose()
-
-
-@pytest.mark.asyncio
-async def test_capture_refusal_preserves_native_owner_for_following_readback():
-    native=object.__new__(NativeSnapshotFactory)
-    native.database=database();native.identity=('r','nonce','inc')
-    native._current=lambda binding:None
-    closed=[]
-    class Candidate:
-        async def aclose(self):closed.append(True)
-    candidate=Candidate();native._owned_candidates={candidate};native._capabilities=set()
-    async def capture(*args,**kwargs):raise ConnectionError('provider upload unavailable')
-    async def verify(*args):return {'resident_pg':'unchanged'}
-    native.capture=capture;native.verify_reference=verify
-    worker=WorkerRecoveryPhases(factory=native,download=lambda *_:None,workspace=lambda *_:None)
-    def frame(phase,args,key):
-        return dict(type='DISPATCH',protocol_version=2,connection_generation=1,id=key,claim='claim',
-            kind='recovery_phase',run_id='r',launch_nonce='nonce',runtime_incarnation='inc',
-            database_generation=native.database.database_generation,writer_generation=native.database.writer_generation,
-            phase=phase,operation_key=key,arguments=args,request_sha256=sha(encode(dict(phase=phase,arguments=args))),
-            compute_claim='slot',dispatch_generation=1)
-    failed=frame('capture',dict(versions={},expected_sequence=7),'capture')
-    result=await worker(failed)
-    assert result['value']==dict(status='rejected',reason='snapshot_capture_rejected')
-    assert await worker(failed)==result and not closed
-    assert (await worker(frame('verify',{'reference':'retained'},'readback')))['value']=={'resident_pg':'unchanged'}
-    assert native._owned_candidates=={candidate} and not closed

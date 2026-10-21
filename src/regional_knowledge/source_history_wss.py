@@ -87,9 +87,28 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
         command,handler,_=found[0]
         validate_geo_dependency_transition(command,artifact_sha256=pins.artifact_sha256)
         observed=observations.get(command.sequence);remote=remote_outcomes.get(command.sequence)
-        if observed is None or observed[0]!='applied' or remote is None:
+        if observed is None or observed[0]!='applied':
             raise SpoolConflict('geographic closure transition not remotely durable')
-        value=json.loads(base64.b64decode(json.loads(remote.data)['outcome_b64'],validate=True))
+        if remote is None:
+            from .dataset_recovery_store import DatasetRecoveryStore
+            store=self.spool.journal.store
+            if type(store) is not DatasetRecoveryStore:
+                raise SpoolConflict('geographic closure transition not remotely durable')
+            outcome_key=self.spool.journal.prefix+'/outcomes/'+_hash(command.operation_key.encode())
+            with store.queue.connect(write=False) as db:
+                row=db.execute('SELECT data FROM rkb_dataset_recovery_objects WHERE storage=? AND key=?',
+                    (store.storage_identity,outcome_key)).fetchone()
+            if row is None:raise SpoolConflict('geographic transition pending receipt missing')
+            envelope=json.loads(row['data'])
+            body=base64.b64decode(envelope['outcome_b64'],validate=True)
+            if ((envelope.get('operation_key'),envelope.get('command_sha256'),envelope.get('sequence'),
+                    envelope.get('database_generation'),_hash(body),len(body))!=(command.operation_key,
+                    _hash(command.encode()),command.sequence,self.database.database_generation,observed[1],observed[2])):
+                raise SpoolConflict('geographic transition pending receipt differs from native')
+            # This proves loaded closure for checkpoint capture only. The same
+            # operation stays in coverage.pending until Dataset promotion.
+            value=json.loads(body)
+        else:value=json.loads(base64.b64decode(json.loads(remote.data)['outcome_b64'],validate=True))
         if (value.get('before')!=list(GEO_REVISIONS.wire()) or value.get('after')!=list(GEO_V2_REVISIONS.wire())
                 or value.get('status')!='applied' or value.get('handler_sha256')!=handler.fingerprint
                 or handler.transition is None or handler.transition.target!=GEO_V2_REVISIONS):
@@ -210,8 +229,8 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     retained=list(known.values())
                     for offset in range(0,len(retained),4):
                         batch=retained[offset:offset+4]
-                        values=await asyncio.gather(*(j._read(j.prefix+'/outcomes/'+_hash(c.operation_key.encode()),
-                            j.max_outcome_bytes) for c,_,_ in batch),return_exceptions=True)
+                        values=await asyncio.gather(*(j.remote_outcome(c.operation_key)
+                            for c,_,_ in batch),return_exceptions=True)
                         for (c,_,_),remote in zip(batch,values):
                             if isinstance(remote,BaseException):raise remote
                             remote_bytes+=len(remote.data) if remote is not None else 0

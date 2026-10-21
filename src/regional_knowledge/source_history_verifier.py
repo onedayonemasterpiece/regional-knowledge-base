@@ -334,7 +334,7 @@ class NativeSourceHistoryVerifier:
                             for c,h,m in known.values():
                                 outcome=applied.get(c.sequence);durable=False
                                 if outcome is not None:
-                                    remote=await j._read(j.prefix+'/outcomes/'+_hash(c.operation_key.encode()),j.max_outcome_bytes)
+                                    remote=await j.remote_outcome(c.operation_key)
                                     if remote is not None:
                                         expected_outcome={'codec':'rkb.outcome.v1','stream':j.stream,
                                             'command_sha256':_hash(c.encode()),'sequence':c.sequence,'operation_key':c.operation_key,
@@ -614,7 +614,7 @@ class NativeSourceHistoryVerifier:
                             for command,handler,manifest in commands:
                                 outcome=applied.get(command.sequence); durable=False
                                 if outcome is not None:
-                                    remote=await j._read(j.prefix+'/outcomes/'+_hash(command.operation_key.encode()),j.max_outcome_bytes)
+                                    remote=await j.remote_outcome(command.operation_key)
                                     if remote is not None:
                                         expected={'codec':'rkb.outcome.v1','stream':j.stream,
                                             'command_sha256':_hash(command.encode()),'sequence':command.sequence,

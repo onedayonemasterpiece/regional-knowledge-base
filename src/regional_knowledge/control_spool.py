@@ -25,7 +25,7 @@ from .kaggle_apply import (
 from .participants import ParticipantError, Participants, RequestAuthority
 from .recovery_journal import (
     AcceptedSeal, ExactCommand, ObjectRef, RecoveryJournal, RemoteOutcomeReceipt,
-    VerifiedHead,
+    VerifiedHead, JournalUnknown,
 )
 
 SOURCE_WITHDRAW = 'source.withdraw.v1'
@@ -744,7 +744,9 @@ class ControlSpool:
                         or identity.get('sequence')!=row['sequence']):
                     raise SpoolConflict('recovered job differs from original accepted command')
                 if job['state']=='done' and job['result']!=result:
-                    raise SpoolConflict('recovered job already has a different durable result')
+                    pending_result=json.dumps(dict(command_sha256=row['command_sha256'],remote_outcome_durable=False),sort_keys=True)
+                    if job['result']!=pending_result:
+                        raise SpoolConflict('recovered job already has a different durable result')
                 db.execute("update jobs set state='done',result=?,updated=? where id=?",(result,self.clock(),job['id']))
                 settled.append(job['id'])
             return settled
@@ -755,9 +757,21 @@ class ControlSpool:
             entry=await self.get(key)
             if entry.remote_outcome is not None:return entry.remote_outcome
             await self._write(self._outcome_sent,key)
-            receipt=await self.journal.record_outcome(entry.accepted,command=entry.command,
-                database_generation=entry.database_generation,outcome=entry.apply_receipt.outcome,
-                writer_generation=writer_generation)
+            try:
+                receipt=await self.journal.record_outcome(entry.accepted,command=entry.command,
+                    database_generation=entry.database_generation,outcome=entry.apply_receipt.outcome,
+                    writer_generation=writer_generation)
+            except JournalUnknown as exc:
+                if exc.args==('outcome_pending_dataset_checkpoint',):
+                    from .dataset_recovery_store import DatasetRecoveryStore
+                    if type(self.journal.store) is DatasetRecoveryStore:
+                        def known_pending():
+                            with self._db(write=True) as db:
+                                changed=db.execute("UPDATE rkb_control_operations SET outcome_state='NOT_SENT',updated=? "
+                                    "WHERE operation_key=? AND outcome_state='SENT_UNKNOWN'",(self.clock(),key)).rowcount
+                                if changed:db.execute('UPDATE rkb_control_spool_meta SET unknown_count=unknown_count-1 WHERE id=1')
+                        await self._write(known_pending)
+                raise
             await self._write(self._durable,key,receipt)
             return receipt
 

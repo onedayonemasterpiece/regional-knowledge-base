@@ -106,6 +106,53 @@ class DatasetBaseReadback:
     archive_path: Path
 
 
+@dataclass(frozen=True)
+class DatasetCheckpoint:
+    """Immutable saved state selected before the next notebook is created."""
+    owner_slug: str
+    dataset_slug: str
+    dataset_version: int
+    database_generation: str
+    base_sequence: int
+    manifest: DatasetFile
+    archive: DatasetFile
+    control: DatasetFile
+    journal: DatasetFile
+
+    def __post_init__(self):
+        # Reuse the same file and Dataset validation, without guessing a future
+        # notebook version. Its real version is attached by the controller.
+        self.for_execution(run_id='validation', notebook_version=1)
+        if type(self.journal) is not DatasetFile or self.journal.size>64*MAX_CONTROL_BYTES:
+            raise DatasetBaseUnavailable('dataset_journal_pin_invalid')
+
+    @property
+    def source(self):
+        return f'{self.owner_slug}/{self.dataset_slug}/{self.dataset_version}'
+
+    def for_execution(self, *, run_id, notebook_version):
+        return DatasetBasePin(self.owner_slug,self.dataset_slug,self.dataset_version,
+            notebook_version,run_id,self.database_generation,self.base_sequence,
+            self.manifest,self.archive,self.control)
+
+    def wire(self):
+        return dict(owner_slug=self.owner_slug,dataset_slug=self.dataset_slug,dataset_version=self.dataset_version,
+            database_generation=self.database_generation,base_sequence=self.base_sequence,
+            **{key:getattr(self,key).wire() for key in ('manifest','archive','control','journal')})
+
+    @classmethod
+    def from_wire(cls,value):
+        if type(value) is not dict or set(value)!=set(cls.__dataclass_fields__):
+            raise DatasetBaseUnavailable('dataset_checkpoint_fields')
+        parts={}
+        for key in ('manifest','archive','control','journal'):
+            part=value[key]
+            if type(part) is not dict or set(part)!=set(DatasetFile.__dataclass_fields__):
+                raise DatasetBaseUnavailable('dataset_checkpoint_fields')
+            parts[key]=DatasetFile(**part)
+        return cls(**dict(value,**parts))
+
+
 def _unique(pairs):
     value={}
     for name,entry in pairs:
@@ -140,6 +187,27 @@ def _canonical_json(data):
         return record
     except (ValueError,TypeError):
         raise DatasetBaseUnavailable('dataset_manifest_noncanonical') from None
+
+
+def verify_mounted_journal(checkpoint, *, mount_root=Path('/kaggle/input')):
+    if type(checkpoint) is not DatasetCheckpoint:
+        raise DatasetBaseUnavailable('dataset_checkpoint_required')
+    mount_root=Path(mount_root);root=mount_root/checkpoint.dataset_slug
+    if (not mount_root.is_absolute() or mount_root.resolve(strict=True)!=mount_root
+            or root.resolve(strict=True)!=root):
+        raise DatasetBaseUnavailable('dataset_mount_untrusted')
+    root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        if os.fstat(root_fd).st_mode & 0o022:
+            raise DatasetBaseUnavailable('dataset_mount_writable')
+        fd=os.open(checkpoint.journal.name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=root_fd)
+        try:data=_read_exact(fd,checkpoint.journal,capture=True)
+        finally:os.close(fd)
+    finally:os.close(root_fd)
+    value=_canonical_json(data)
+    if value.get('codec')!='rkb.dataset-journal.v1' or type(value.get('objects')) is not list:
+        raise DatasetBaseUnavailable('dataset_journal_codec')
+    return checkpoint.journal.sha256
 
 
 def verify_mounted_dataset_base(pin:DatasetBasePin, *,

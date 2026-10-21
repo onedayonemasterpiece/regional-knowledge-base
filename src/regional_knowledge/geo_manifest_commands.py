@@ -215,7 +215,8 @@ def geo_dependency_repair_commands(originals,*,settled_outcomes,artifact_sha256)
     """Resolve a repair after the original plan has real durable terminal outcomes.
 
     This function grants no authority and changes no queue/journal state. The
-    caller proves every supplied outcome is remotely durable. Original command
+    caller proves every supplied outcome is native terminal. Dataset-backed
+    callers retain pending state until the work-cycle checkpoint is verified. Original command
     bytes, sequence numbers and outcomes stay untouched; only rejected batches
     and their final activation need new commands after the migration.
     """

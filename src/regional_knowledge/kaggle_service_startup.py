@@ -292,6 +292,12 @@ class TargetServiceStartup:
             api=authenticated_service_api()
             self.dataset_seed=SourceDatasetSeed(self,config.dataset_seed,KaggleDatasetPublisher(api,
                 provider_ref=config.dataset_seed.provider_ref,owner=api.get_config_value(api.CONFIG_NAME_USER)))
+        self.dataset_checkpoints=None
+        if getattr(config.source_restore,'dataset_checkpoint',None) is not None:
+            if self.dataset_seed is not None or self.snapshot is not None:
+                raise ValueError('Dataset primary must own the existing checkpoint path exclusively')
+            from .kaggle_dataset_checkpoint import SourceDatasetCheckpoints
+            self.dataset_checkpoints=SourceDatasetCheckpoints(self)
 
     def binding_current(self,binding):
         try:
@@ -364,6 +370,9 @@ class TargetServiceStartup:
             if not coverage.current() or not self.binding_current(self.binding):
                 raise PermissionError('native history proof no longer current')
             self.coverage=coverage
+            if self.dataset_checkpoints is not None:
+                if await self.dataset_checkpoints.refresh(self.binding):
+                    self.coverage=await self.history.extend(self.binding)
             if self.dataset_seed is not None:
                 await self.dataset_seed.capture_once(self.binding)
                 # Seed publication does not authorize an S3-backed importer.

@@ -1,0 +1,137 @@
+import base64
+from contextlib import asynccontextmanager
+import hashlib
+import json
+from types import SimpleNamespace as NS
+
+import pytest
+
+from regional_knowledge.dataset_recovery_store import DatasetRecoveryStore,DatasetSnapshotTransport
+from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint,DatasetFile
+from regional_knowledge.kaggle_pg_snapshot_native import BlobRef,encode,sha
+from regional_knowledge.recovery_journal import ObjectRef,JournalUnknown
+from test_kaggle_dataset_tickets import Queue
+from test_control_spool import env,accept,people,receipt
+
+
+def prepared(tmp_path):
+    queue=Queue(tmp_path/'queue.sqlite');prefix='recovery/v1/'+sha(b'stream')+'/'
+    original=b'original accepted command'
+    journal=encode(dict(codec='rkb.dataset-journal.v1',objects=[dict(key=prefix+'commands/one',
+        data_b64=base64.b64encode(original).decode(),token='native-original-token')]))
+    control=encode(dict(codec='rkb.source-base-control.v1',database_generation='db',sequence=7))
+    ckey=prefix+'source-base-control/'+sha(control)
+    manifest=encode(dict(database_generation='db',applied_sequence=7,
+        blob=dict(size=len(b'archive never read by Dev'),sha256=sha(b'archive never read by Dev')),
+        source_control=dict(key=ckey,sha256=sha(control),length=len(control))))
+    def pin(name,data):return DatasetFile(name,len(data),sha(data))
+    checkpoint=DatasetCheckpoint('fixture-owner','rkb-pg-checkpoint',1,'db',7,
+        pin('base-manifest.json',manifest),pin('pg.blob',b'archive never read by Dev'),
+        pin('source-control.json',control),pin('journal-control.json',journal))
+    mref=ObjectRef(prefix+'snapshots/manifests/'+sha(manifest),sha(manifest),len(manifest),7)
+    class Guard:
+        current=True
+        def bind_store(self,store):self.store=store
+        @asynccontextmanager
+        async def __call__(self,generation):
+            if not self.current or generation!='writer':raise PermissionError('stale writer')
+            yield
+    guard=Guard();reads=[]
+    class Publisher:
+        ref='fixture-owner/rkb-pg-checkpoint'
+        def read_control(self,file,*,version):
+            assert version==1 and file.name!='pg.blob'
+            reads.append(file.name)
+            return {'base-manifest.json':manifest,'source-control.json':control,'journal-control.json':journal}[file.name]
+    with queue.connect() as db:
+        db.execute('CREATE TABLE rkb_writer_control(id INTEGER PRIMARY KEY,storage_sha256 TEXT)')
+        db.execute("INSERT INTO rkb_writer_control VALUES(1,'original-s3-authority')")
+        db.execute('CREATE TABLE rkb_dataset_seed(operation_key TEXT PRIMARY KEY,provider_ref TEXT,state TEXT,package_json TEXT,version INTEGER)')
+        db.execute('INSERT INTO rkb_dataset_seed VALUES(?,?,?,?,?)',('seed',Publisher.ref,'published',
+            json.dumps(dict(manifest_sha256=sha(manifest),database_generation='db',base_sequence=7)),1))
+    store=DatasetRecoveryStore(queue,checkpoint=checkpoint,manifest_ref=mref,publisher=Publisher(),writer_guard=guard,stream='stream')
+    return NS(store=store,q=queue,guard=guard,prefix=prefix,checkpoint=checkpoint,ref=mref,reads=reads,publisher=Publisher())
+
+
+@pytest.mark.asyncio
+async def test_dataset_metadata_restores_original_objects_and_stages_new_bytes_pending(tmp_path):
+    p=prepared(tmp_path);store=p.store
+    assert sorted(p.reads)==['base-manifest.json','journal-control.json','source-control.json']
+    old=await store.read(p.prefix+'commands/one',max_bytes=100)
+    assert old.data==b'original accepted command' and old.token=='native-original-token'
+    assert store.remote_durable(p.prefix+'commands/one',old.data)
+    assert store.allows_storage_transition('original-s3-authority')
+    assert not store.allows_storage_transition('another-authority')
+    key=p.prefix+'outcomes/one'
+    assert await store.compare_and_swap(key,b'new outcome',expected_token=None,writer_generation='writer')
+    new=await store.read(key,max_bytes=100)
+    assert new.token.startswith('pending:') and not store.remote_durable(key,new.data)
+    assert not await store.compare_and_swap(key,b'overwrite',expected_token=None,writer_generation='writer')
+    assert await store.compare_and_swap(key,b'reconciled',expected_token=new.token,writer_generation='writer')
+    # An API-only restart retains the locally pending continuation.
+    again=DatasetRecoveryStore(p.q,checkpoint=p.checkpoint,manifest_ref=p.ref,publisher=p.publisher,writer_guard=p.guard,stream='stream')
+    assert (await again.read(key,max_bytes=100)).data==b'reconciled'
+    assert len(p.reads)==3
+    p.guard.current=False
+    with pytest.raises(PermissionError):
+        await store.compare_and_swap(key,b'stale',expected_token=new.token,writer_generation='writer')
+
+
+@pytest.mark.asyncio
+async def test_local_outcome_does_not_become_remote_receipt_until_checkpoint_covers_bytes(env):
+    e=env;seal=await accept(e);native=receipt(e.cmd)
+    e.store.remote_durable=lambda key,data:False
+    with pytest.raises(JournalUnknown,match='outcome_pending_dataset_checkpoint'):
+        await e.journal.record_outcome(seal,command=e.cmd,database_generation='db-source',
+            outcome=native.outcome,writer_generation='writer-1')
+    assert await e.journal.remote_outcome(e.cmd.operation_key) is None
+    e.store.remote_durable=lambda key,data:True
+    remote=await e.journal.record_outcome(seal,command=e.cmd,database_generation='db-source',
+        outcome=native.outcome,writer_generation='writer-1')
+    assert remote.command_sha256==sha(e.cmd.encode())
+    assert (await e.journal.remote_outcome(e.cmd.operation_key)) is not None
+
+
+@pytest.mark.asyncio
+async def test_dataset_transport_requires_exact_archive_pin(tmp_path):
+    p=prepared(tmp_path);pin=p.checkpoint.archive;transport=DatasetSnapshotTransport(p.store)
+    blob=BlobRef('dataset-blobs/operation/'+pin.name,pin.size,pin.sha256,'native-etag')
+    await transport.verify(blob)
+    assert not transport.matches(BlobRef(blob.key,blob.size+1,blob.sha256,blob.native_version))
+
+
+@pytest.mark.asyncio
+async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and_lost_ack_is_idempotent(tmp_path):
+    from dataclasses import replace
+    from regional_knowledge.recovery_journal import JournalConflict
+    p=prepared(tmp_path);store=p.store;key=p.prefix+'outcomes/new'
+    assert await store.compare_and_swap(key,b'captured',expected_token=None,writer_generation='writer')
+    captured=await store.read(key,max_bytes=100)
+    journal=store.export_control()
+    control=encode(dict(codec='rkb.source-base-control.v1',database_generation='db',sequence=8))
+    manifest=encode(dict(database_generation='db',applied_sequence=8,
+        blob=dict(size=p.checkpoint.archive.size,sha256=p.checkpoint.archive.sha256),
+        source_control=dict(key=p.prefix+'source-base-control/'+sha(control),sha256=sha(control),length=len(control))))
+    ref=ObjectRef(p.prefix+'snapshots/manifests/'+sha(manifest),sha(manifest),len(manifest),8)
+    checkpoint=replace(p.checkpoint,dataset_version=2,base_sequence=8,
+        manifest=DatasetFile('base-manifest.json',len(manifest),sha(manifest)),
+        control=DatasetFile('source-control.json',len(control),sha(control)),
+        journal=DatasetFile('journal-control.json',len(journal),sha(journal)))
+    original=p.publisher.read_control
+    class Published:
+        ref=p.publisher.ref
+        def read_control(self,file,*,version):
+            assert version==2
+            return {'journal-control.json':journal,'base-manifest.json':manifest,'source-control.json':control}[file.name]
+    store.publisher=Published()
+    expected=dict(dataset_ref=Published.ref,dataset_version=2,base_sequence=8,
+        archive_sha256=checkpoint.archive.sha256,archive_size=checkpoint.archive.size)
+    with pytest.raises(JournalConflict,match='native_snapshot_readback_changed'):
+        store.promote(checkpoint,dict(expected,archive_sha256='0'*64),manifest_ref=ref)
+    assert not store.remote_durable(key,b'captured') and store.latest_checkpoint.dataset_version==1
+    store.promote(checkpoint,expected,manifest_ref=ref)
+    assert store.remote_durable(key,b'captured') and store.latest_checkpoint==checkpoint
+    assert await store.compare_and_swap(key,b'after checkpoint',expected_token=captured.token,writer_generation='writer')
+    store.promote(checkpoint,expected,manifest_ref=ref)  # Lost promotion ACK.
+    assert not store.remote_durable(key,b'after checkpoint')
+    assert not store.remote_durable(key,b'captured')

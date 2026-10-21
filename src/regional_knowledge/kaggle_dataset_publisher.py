@@ -135,6 +135,61 @@ class KaggleDatasetPublisher:
             raise DatasetPublicationError('dataset_private_version_unproven')
         return version
 
+    def read_control(self, file, *, version):
+        """Read only the fixed bounded checkpoint metadata; never a PG archive."""
+        from kagglesdk.datasets.types.dataset_api_service import ApiDownloadDatasetRequest
+        if (file.name not in {'base-manifest.json','source-control.json',
+                'journal-control.json'} or file.size>64*1024**2
+                or type(version) is not int or version<1):
+            raise DatasetPublicationError('dataset_control_read_scope')
+        request=ApiDownloadDatasetRequest()
+        request.owner_slug,request.dataset_slug=self.owner,self.slug
+        request.file_name,request.dataset_version_number,request.raw=file.name,version,True
+        response=None
+        try:
+            with self.api.build_kaggle_client() as client:
+                response=client.datasets.dataset_api_client.download_dataset(request)
+                if response.status_code!=200:
+                    raise DatasetPublicationError('dataset_control_read_unavailable')
+                data=bytearray()
+                for chunk in response.iter_content(chunk_size=65536):
+                    data.extend(chunk)
+                    if len(data)>file.size:
+                        raise DatasetPublicationError('dataset_control_read_bytes_changed')
+            if len(data)!=file.size or hashlib.sha256(data).hexdigest()!=file.sha256:
+                raise DatasetPublicationError('dataset_control_read_bytes_changed')
+            return bytes(data)
+        except DatasetPublicationError:
+            raise
+        except Exception:
+            raise DatasetPublicationError('dataset_control_read_unavailable') from None
+        finally:
+            if response is not None:response.close()
+
+    def snapshot_download_link(self,file,*,version):
+        """Resolve a native-only download capability; consume no archive body."""
+        from kagglesdk.datasets.types.dataset_api_service import ApiDownloadDatasetRequest
+        if (not file.name.startswith('pg-') or not file.name.endswith('.blob')
+                or type(version) is not int or version<1):
+            raise DatasetPublicationError('dataset_archive_read_scope')
+        request=ApiDownloadDatasetRequest()
+        request.owner_slug,request.dataset_slug=self.owner,self.slug
+        request.file_name,request.dataset_version_number,request.raw=file.name,version,True
+        response=None
+        try:
+            with self.api.build_kaggle_client() as client:
+                # Official SDK uses stream=True for HttpRedirect/FileDownload.
+                response=client.datasets.dataset_api_client.download_dataset(request)
+                if (response.status_code!=200 or int(response.headers.get('Content-Length','-1'))!=file.size
+                        or origin(response.url)!='https://storage.googleapis.com'
+                        or not response.headers.get('ETag')):
+                    raise DatasetPublicationError('dataset_archive_link_unverified')
+                return response.url,response.headers['ETag']
+        except DatasetPublicationError:raise
+        except Exception:raise DatasetPublicationError('dataset_archive_link_unavailable') from None
+        finally:
+            if response is not None:response.close()
+
     def reconcile(self, *, files, operation, expected_version):
         description = self._description(files, operation)
         if self.observe() != expected_version:

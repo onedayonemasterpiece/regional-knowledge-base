@@ -392,6 +392,10 @@ class NativeSnapshotFactory:
             observed_dataset_version=observed_dataset_version,
             observed_notebook_version=observed_notebook_version,
             observed_run_id=observed_run_id,mount_root=mount_root)
+        checkpoint=getattr(self,'dataset_checkpoint',None)
+        if checkpoint is not None:
+            from .kaggle_dataset_base import verify_mounted_journal
+            await _blocking(verify_mounted_journal,checkpoint,mount_root=mount_root)
         try:
             manifest=json.loads(verified.manifest_bytes)
             if manifest['versions']!=expected_versions:

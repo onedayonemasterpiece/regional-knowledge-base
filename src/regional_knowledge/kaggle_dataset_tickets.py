@@ -77,3 +77,18 @@ class DatasetSnapshotTicketIssuer:
         if row is None or (row['name'], row['size'], row['sha256']) != (parts[2], blob.size, blob.sha256):
             raise DatasetPublicationError('dataset_capture_blob_changed')
         return DatasetUpload(**json.loads(row['grant_json']))
+
+    async def issue_download(self,binding,operation_key,ref):
+        from .kaggle_dataset_base import DatasetCheckpoint
+        checkpoint=getattr(self,'download_checkpoint',None)
+        if (type(checkpoint) is not DatasetCheckpoint or not self.current(binding)
+                or (ref.key.rsplit('/',1)[-1],ref.size,ref.sha256)!=(
+                    checkpoint.archive.name,checkpoint.archive.size,checkpoint.archive.sha256)):
+            raise DatasetPublicationError('dataset_download_checkpoint_binding')
+        generation=getattr(binding,'writer_generation',None) or self.guard.writer_generation
+        async with self.guard(generation):
+            url,etag=await asyncio.to_thread(self.publisher.snapshot_download_link,
+                checkpoint.archive,version=checkpoint.dataset_version)
+            if not self.current(binding):raise DatasetPublicationError('dataset_capture_writer_changed')
+            return SnapshotTicket('GET',hashlib.sha256(operation_key.encode()).hexdigest(),ref.key,
+                ref.size,ref.sha256,self.clock()+600,url,(('If-Match',etag),))

@@ -19,6 +19,7 @@ class SourceRestoreConfig:
     allowed_origins: tuple[str,...]
     max_archive_bytes: int = 8*1024**3
     seconds: int = 900
+    dataset_checkpoint: object = None
 
     def __post_init__(self):
         from .native_snapshot_transfer import origin
@@ -38,17 +39,30 @@ class SourceRestoreConfig:
                 or type(self.seconds) is not int or not 1<=self.seconds<=900):
             raise ValueError('exact bounded existing snapshot restore configuration required')
         object.__setattr__(self,'versions',MappingProxyType(dict(self.versions)))
+        if self.dataset_checkpoint is not None:
+            from .kaggle_dataset_base import DatasetCheckpoint
+            if (type(self.dataset_checkpoint) is not DatasetCheckpoint
+                    or self.dataset_checkpoint.manifest.sha256!=self.manifest.sha256
+                    or self.dataset_checkpoint.manifest.size!=self.manifest.length
+                    or self.dataset_checkpoint.base_sequence!=self.manifest.last_sequence):
+                raise ValueError('Dataset checkpoint must pin exact restore manifest')
 
     def wire(self):
         return dict(manifest=self.manifest.wire(),operation_key=self.operation_key,versions=dict(self.versions),
             launch_config_sha256=self.launch_config_sha256,allowed_origins=list(self.allowed_origins),
-            max_archive_bytes=self.max_archive_bytes,seconds=self.seconds)
+            max_archive_bytes=self.max_archive_bytes,seconds=self.seconds,
+            **(dict(dataset_checkpoint=self.dataset_checkpoint.wire()) if self.dataset_checkpoint is not None else {}))
 
     @classmethod
     def from_wire(cls,value):
-        if type(value) is not dict or set(value)!=set(cls.__dataclass_fields__) or type(value['allowed_origins']) is not list:
+        required=set(cls.__dataclass_fields__)-{'dataset_checkpoint'}
+        if type(value) is not dict or not required<=set(value) or set(value)-required-{'dataset_checkpoint'} or type(value['allowed_origins']) is not list:
             raise ValueError('exact source restore configuration fields required')
-        return cls(**dict(value,manifest=ObjectRef(**value['manifest']),allowed_origins=tuple(value['allowed_origins'])))
+        options=dict(value,manifest=ObjectRef(**value['manifest']),allowed_origins=tuple(value['allowed_origins']))
+        if options.get('dataset_checkpoint') is not None:
+            from .kaggle_dataset_base import DatasetCheckpoint
+            options['dataset_checkpoint']=DatasetCheckpoint.from_wire(options['dataset_checkpoint'])
+        return cls(**options)
 
 
 @dataclass(frozen=True)
@@ -116,6 +130,11 @@ class SourceRestoreCoordinator:
     def _storage_current(self):
         from .native_snapshot_transfer import origin
         store=self.journal.store
+        if self.config.dataset_checkpoint is not None:
+            from .dataset_recovery_store import DatasetRecoveryStore
+            return (not self.startup.closed and type(store) is DatasetRecoveryStore
+                and store.checkpoint==self.config.dataset_checkpoint and store.writer_guard is self.writer
+                and self.writer._storage(store)==self.writer._store_identity)
         try:
             return (not self.startup.closed and store.writer_guard is self.writer
                 and self.writer._storage(store)==self.writer._store_identity
@@ -136,12 +155,19 @@ class SourceRestoreCoordinator:
         identity=(binding.run_id,nonce,binding.runtime_incarnation)
         existing=getattr(self.queue,'_recovery_phases',None)
         if existing is not None:raise SnapshotError('restore_requires_same_retained_maintenance_owner')
-        tickets=SnapshotTicketIssuer(self.journal.store,current=self.current,
-            allowed_origins=frozenset(self.config.allowed_origins),max_single_bytes=self.config.max_archive_bytes,
-            ttl_seconds=min(600,self.config.seconds))
+        if self.config.dataset_checkpoint is not None:
+            from .dataset_recovery_store import DatasetSnapshotTransport
+            tickets=None
+            transport=DatasetSnapshotTransport(self.journal.store)
+        else:
+            tickets=SnapshotTicketIssuer(self.journal.store,current=self.current,
+                allowed_origins=frozenset(self.config.allowed_origins),max_single_bytes=self.config.max_archive_bytes,
+                ttl_seconds=min(600,self.config.seconds))
+            transport=S3SnapshotTransport(self.journal.store)
         self.dispatch=RecoveryPhaseDispatch(self.queue,database=self.database,identity=identity,
-            binding_current=self.current,timeout_seconds=self.config.seconds,snapshot_tickets=tickets)
-        self.physical=PhysicalSnapshotRecovery(self.journal,S3SnapshotTransport(self.journal.store),
+            binding_current=self.current,timeout_seconds=self.config.seconds,snapshot_tickets=tickets,
+            dataset_checkpoint=self.config.dataset_checkpoint)
+        self.physical=PhysicalSnapshotRecovery(self.journal,transport,
             WssSnapshotPhases(self.dispatch,operation_key=self.config.operation_key),registry=self.startup.config.spool.registry,
             history_verifier=self.startup.history,maintenance_guard=self._maintenance,current=self.current,
             private_storage_current=self._storage_current,
@@ -156,7 +182,8 @@ class SourceRestoreCoordinator:
             # writes may have advanced since then: never replay the old base.
             # Startup still performs full native history verification next.
             self.binding=binding
-            if self.dispatch is None and getattr(self.startup,'dataset_seed',None) is not None:
+            if self.dispatch is None and (getattr(self.startup,'dataset_seed',None) is not None
+                    or self.config.dataset_checkpoint is not None):
                 # API-only restart retains native PG/model; rebuild only this
                 # process's maintenance facade for subsequent checkpoint capture.
                 self._compose(binding,nonce)

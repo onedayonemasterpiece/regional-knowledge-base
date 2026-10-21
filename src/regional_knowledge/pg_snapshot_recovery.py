@@ -180,8 +180,15 @@ class PhysicalSnapshotRecovery:
                 if ((receipt.database_generation,receipt.operation_key,receipt.sequence,receipt.command_sha256)
                         !=(database.database_generation,command.operation_key,command.sequence,sha(command.encode()))):
                     raise SnapshotError('snapshot_native_replay_receipt_changed')
-                remote=await self.journal.record_outcome(seal,command=command,database_generation=database.database_generation,
-                    outcome=receipt.outcome,writer_generation=database.writer_generation)
+                try:
+                    remote=await self.journal.record_outcome(seal,command=command,database_generation=database.database_generation,
+                        outcome=receipt.outcome,writer_generation=database.writer_generation)
+                except Exception as exc:
+                    from .dataset_recovery_store import DatasetRecoveryStore
+                    from .recovery_journal import JournalUnknown
+                    if (type(self.journal.store) is not DatasetRecoveryStore or type(exc) is not JournalUnknown
+                            or exc.args!=('outcome_pending_dataset_checkpoint',)):raise
+                    remote=None  # Replayed locally; still pending until the next Dataset.
                 replayed.append((receipt,remote))
                 receipts.append((receipt.sequence,receipt.command_sha256,receipt.outcome_sha256))
                 if handler.transition is not None:
@@ -216,6 +223,7 @@ class PhysicalSnapshotRecovery:
                                         (receipt.operation_key,)).fetchone()
                 if retained is None:continue  # Compact history need not be recreated.
                 await spool.record_apply(receipt.operation_key,receipt)
+                if remote is None:continue
                 await spool._write(spool._durable,receipt.operation_key,remote)
                 jobs=await spool._write(spool._settle_recovered_jobs,receipt.operation_key)
                 for job_id in jobs:spool.queue._notify_result(job_id)
@@ -309,7 +317,9 @@ class PhysicalSnapshotRecovery:
                     or not 0<m['file_count']<=self.limits.max_files
                     or not 0<m['unpacked_bytes']<=self.limits.max_unpacked_bytes):raise ValueError
             blob=BlobRef(**m['blob'])
-            if blob.size>self.limits.max_archive_bytes or not blob.key.startswith(self.journal.prefix+'/snapshots/blobs/'):
+            from .dataset_recovery_store import DatasetSnapshotTransport
+            dataset_blob=(type(self.transport) is DatasetSnapshotTransport and self.transport.matches(blob))
+            if blob.size>self.limits.max_archive_bytes or not (blob.key.startswith(self.journal.prefix+'/snapshots/blobs/') or dataset_blob):
                 raise ValueError
             for key in ('applied_prefix_sha256','inventory_sha256','backup_manifest_sha256'):_hash(m[key])
             boundary=self.journal._parse_ref(m['journal_head']) if m['journal_head'] is not None else None

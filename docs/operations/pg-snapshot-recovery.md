@@ -1,5 +1,33 @@
 # Physical source snapshot and recovery boundary
 
+Current Dataset path (2026-10-21): an explicit `dataset_checkpoint` in both the
+native launch and source restore configurations selects one immutable private
+Kaggle Dataset version. The controller attaches `owner/slug/version`; native
+prepare verifies mounted manifest, source control, journal and PG archive bytes
+before the existing physical restore and ordered accepted-tail replay. The
+original generation and outcomes remain intact. The historical S3 path below
+remains a legacy recovery adapter; it is not the Dataset working journal.
+
+`DatasetRecoveryStore` retains pending control bytes in the existing private
+queue between checkpoints. A committed native command can release its worker
+assignment with `checkpoint_pending` and `remote_outcome_durable=false`; this is
+not Saved. `SourceDatasetCheckpoints` reuses native capture and the existing
+publisher after 30 seconds of a quiet completed work cycle, every 900 seconds
+while dirty, on an explicit planned-stop request, or in the final ten minutes
+of the owned run lifetime. No Dataset version is requested by individual pages,
+queries or SQL commands. A capture requires the exact accepted/native prefix.
+
+Publication intent and its package survive API restart. A fresh native download
+verifies the published archive bytes before local promotion. Only byte-identical
+outcomes in that version receive persistence receipts; later writes stay pending.
+Lost readback or promotion ACK resumes the same published version. The next
+notebook must select the latest verified checkpoint explicitly; a mounted input
+is never assumed to update in place. API shutdown or provider cancellation alone
+does not establish a saved checkpoint. Weekly backup is independent and deferred.
+
+The remaining historical sections describe the original implementation and its
+dated evidence, rather than acceptance of the current Dataset path.
+
 Implementation baseline: `4e4b5d0`, with source prefix extension/genesis codec
 compatibility in `071bf0b` and native-safe helpers in `b4b96f6`. This is code and
 synthetic fault/composition evidence. No agent-created production backup,

@@ -161,6 +161,26 @@ async def test_local_apply_is_pending_until_remote_outcome_then_exact_ack(accept
 
 
 @pytest.mark.asyncio
+async def test_checkpoint_pending_releases_assignment_without_saved_and_promotes_same_job_after_remote_receipt(accepted):
+    from regional_knowledge.control_spool import SpoolConflict
+    e=accepted;s=e.s;job,work,frame=await dispatch(e)
+    await release(e,work)
+    await e.spool.record_apply(e.command.operation_key,native_receipt(e.command,e.handler))
+    status=s.q._complete_source_command(e.bridge,s.run,s.token,s.generation,job,frame['claim'],
+        (await e.spool.get(e.command.operation_key)).command_sha256,remote_outcome_durable=False)
+    assert status=='checkpoint_pending'
+    pending=s.q.result(s.auth.p.owner.subject,job)
+    assert pending['state']=='done' and pending['result']['remote_outcome_durable'] is False
+    with pytest.raises(SpoolConflict,match='durable outcome'):
+        e.spool._settle_recovered_jobs(e.command.operation_key)
+    await e.spool.publish_outcome(e.command.operation_key,writer_generation='writer-1')
+    assert e.spool._settle_recovered_jobs(e.command.operation_key)==[job]
+    saved=s.q.result(s.auth.p.owner.subject,job)
+    assert saved['result']['remote_outcome_durable'] is True
+    assert saved['result']['command_sha256']==pending['result']['command_sha256']
+
+
+@pytest.mark.asyncio
 async def test_concurrent_channel_pollers_reserve_one_remote_publication(accepted):
     e=accepted;s=e.s;job,work,frame=await dispatch(e)
     await release(e,work)
@@ -211,7 +231,8 @@ async def test_source_receipt_rejects_forged_resource_and_exact_outcome(accepted
 
 
 @pytest.mark.asyncio
-async def test_worker_reconnect_retains_exact_native_receipt_and_never_reencodes(monkeypatch):
+@pytest.mark.parametrize('final_status',['accepted','checkpoint_pending'])
+async def test_worker_reconnect_retains_exact_native_receipt_and_never_reencodes(monkeypatch,final_status):
     transport=module('bge_wss_transport');peer=Peer();stop=asyncio.Event();calls=[]
     monkeypatch.setattr(transport.random,'uniform',lambda *_:.001)
     async def read(frame,*,encode):return result(frame)
@@ -239,7 +260,7 @@ async def test_worker_reconnect_retains_exact_native_receipt_and_never_reencodes
         replay=await peer.wait('SOURCE_COMMAND_RESULT',generation=2)
         assert {k:v for k,v in replay.items() if k!='connection_generation'}=={k:v for k,v in first.items() if k!='connection_generation'}
         await peer.put(frame,generation=2)
-        await peer.put(dict(type='RESULT_ACK',job_id='source-job',claim='source-claim',status='accepted'),generation=2)
+        await peer.put(dict(type='RESULT_ACK',job_id='source-job',claim='source-claim',status=final_status),generation=2)
         await asyncio.sleep(.02)
         assert calls==['a'*64] and worker.pending is None
     finally:
