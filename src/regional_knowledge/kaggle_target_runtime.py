@@ -170,6 +170,7 @@ class TargetRuntime:
         self.prepared = None
         self.source_history_observer=None
         self.original_intake_handler=None
+        self.read_handler_slot=None  # Same model/pool retained across compatible patch.
         self.identity = None
         self.closed = False
         if restored_database is not None:
@@ -304,10 +305,20 @@ class TargetRuntime:
         if self.database.schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
             from dataclasses import replace
             handler=replace(handler,source_provenance=True)
+        from .kaggle_warm_read import ReadHandlerCompatibility,ReadHandlerSlot
+        self.read_handler_slot=ReadHandlerSlot(handler,
+            loaded_sha256=readiness.hashes['code'],
+            compatibility=ReadHandlerCompatibility(
+                database_generation=readiness.database_generation,
+                schema_revision=readiness.schema_revision,
+                function_revision=readiness.function_revision,
+                executor_revision=readiness.executor_revision,
+                model_sha256=readiness.hashes['model'],
+                dependency_sha256=readiness.hashes['dependency']))
         async def invoke(frame, *, encode):
             from .query_telemetry import ReadRuntime, bind_read_runtime
             with bind_read_runtime(ReadRuntime(run_id,runtime_incarnation)):
-                return await handler(frame,encode=encode)
+                return await self.read_handler_slot(frame,encode=encode)
         source_handler=None;history_handler=None
         if self.target.get('command_handlers'):
             from .kaggle_source_commands import fixed_registry,WorkerSourceExecutor
@@ -359,6 +370,7 @@ class TargetRuntime:
         if self.closed:
             return
         self.closed = True
+        if self.read_handler_slot is not None:self.read_handler_slot.close()
         try:
             try:
                 try:

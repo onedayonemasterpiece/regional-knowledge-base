@@ -65,6 +65,17 @@ def generate(queue,run,target):
 def test_generated_target_persists_final_hash_outside_source_and_is_stable(tmp_path):
     queue,run=queue_run(tmp_path)
     source=generate(queue,run,spec())
+    # Shipping the patch boundary in the exact notebook source inventory is
+    # essential: a local-only module otherwise fails after Kaggle ATTACH.
+    from regional_knowledge.kaggle_target_launch import source_bundle
+    import base64
+    _,shipped,entries=source_bundle(ROOT)
+    relative='regional_knowledge/kaggle_warm_read.py'
+    assert relative in shipped
+    raw=base64.b64decode(shipped[relative],validate=True)
+    assert raw==(ROOT/'src'/relative).read_bytes()
+    assert any(e['name'].endswith('/'+relative) and e['size']==len(raw)
+               and e['sha256']==hashlib.sha256(raw).hexdigest() for e in entries)
     assert source==generate(queue,run,spec())
     assert 'main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)' in source
     assert 'pip install' not in source
@@ -174,7 +185,7 @@ async def test_controller_intent_includes_the_selected_native_story_migration(tm
 
 
 @pytest.mark.asyncio
-async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg():
+async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg(tmp_path):
     events=[];loop=asyncio.get_running_loop()
     target=spec()
     config=dict(CONFIG,target_runtime=dict(target.wire(),sql_root='/unused'))
@@ -204,6 +215,20 @@ async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg():
     prepared=await runtime.prepare(SimpleNamespace(artifacts=None),**args)
     assert await runtime.prepare(None,**args) is prepared
     assert await prepared.query_handler({},encode=None)=={'ok':True}
+    # A verified compatible handler is applied to this SAME bound invocation.
+    # BGE/PG/pool preparation must not run a second time.
+    from test_kaggle_warm_read import staged_module,good_probe,good_stage
+    root,path,digest=staged_module(tmp_path)
+    slot=runtime.read_handler_slot
+    initial=slot.receipt()['loaded_sha256']
+    assert initial==candidate().hashes['code']
+    await slot.stage(path=path,trusted_root=root,expected_sha256=digest,
+        compatibility=slot._compatibility,constructor={'marker':'new'},self_test=good_stage)
+    loaded=await slot.activate(staged_sha256=digest,expected_loaded_sha256=initial,
+        probe=good_probe)
+    assert loaded['loaded_sha256']==digest and loaded['generation']==1
+    assert await prepared.query_handler({},encode=None)=={'version':'new','frame':{}}
+    assert events.count('owned')==1 and events.count('open')==1
     assert prepared.read_event_drain({'request_id':'none','connection_generation':1,'turn_generation':0})==[]
     await runtime.aclose();await runtime.aclose()
     assert events==['owned','pool','open','pool-close','pg-close']
