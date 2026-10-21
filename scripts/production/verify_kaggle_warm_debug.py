@@ -135,32 +135,47 @@ async def run_acceptance(client, wire_plan, *, trace=None):
     readbacks are checked again independently through probe().
     """
     plan=plan_from_wire(wire_plan);steps=[];started=time.monotonic()
+    deadline=started+plan['timeout_seconds']
+    def within_budget():
+        if time.monotonic()>=deadline:raise TimeoutError('scenario_deadline_exceeded')
     trace={} if trace is None else trace
     trace.update(operation_key=plan['operation_key'],completed_steps=steps,effects=[],pending_effect=None)
     async def effect(method, step, **options):
+        within_budget()
         key=plan['operation_key']+':'+step;trace['pending_effect']=key
         receipt=await getattr(client,method)(operation_key=key,**options)
+        within_budget()
         require(type(receipt) is dict and receipt.get('status') in ('applied','rejected'),
                 'maintenance_outcome_unknown')
         trace['effects'].append({'operation_key':key,'status':receipt['status']})
         trace['pending_effect']=None
         return receipt
     async def check(label, baseline, loaded, generation, sql):
+        within_budget()
         observed=probe_from_wire(await client.probe());trace['last_probe']=observed
+        within_budget()
         same_context(baseline,observed)
         require(observed['loaded_sha256']==loaded and observed['handler_generation']==generation,
                 'loaded_handler_readback_changed')
         require(observed['sql_definition_sha256']==sql, 'native_sql_definition_readback_changed')
+        within_budget()
+        query_deadline=time.monotonic()+2
         async with asyncio.timeout(2):
-            read=useful(await client.query(plan['query']),plan,baseline)
+            result=await client.query(plan['query'])
+        within_budget()
+        if time.monotonic()>=query_deadline:raise TimeoutError('useful_query_deadline_exceeded')
+        read=useful(result,plan,baseline)
         final=probe_from_wire(await client.probe())
+        within_budget()
         trace['last_probe']=final
         require(final==observed,'runtime_changed_during_useful_read')
         steps.append(dict(step=label,elapsed_ms=round((time.monotonic()-started)*1000,3),
                           loaded_sha256=loaded,handler_generation=generation,**read))
         return final
     async with asyncio.timeout(plan['timeout_seconds']):
+        within_budget()
         baseline=probe_from_wire(await client.probe());initial=baseline['loaded_sha256']
+        within_budget()
         trace['baseline']=baseline
         require(all(baseline['identity'][k]==v for k,v in plan['expected_identity'].items()),
                 'selected_runtime_mismatch')
@@ -190,6 +205,7 @@ async def run_acceptance(client, wire_plan, *, trace=None):
         require(receipt['status']=='applied' and receipt.get('artifact_sha256')==plan['sql_rollback']['sha256'],
                 'sql_rollback_not_confirmed')
         final=await check('sql_rolled_back',baseline,initial,generation,sql)
+    within_budget()
     return {'status':'passed','scope':baseline['scope'],'operation_key':plan['operation_key'],
             'identity':baseline['identity'],'counter_deltas':{k:final['counters'][k]-baseline['counters'][k]
                 for k in COUNTERS},'steps':steps,'live_acceptance':baseline['scope']=='live'}

@@ -72,3 +72,9 @@ identity/counter drift, false apply/rollback ACK, missing evidence, SQL readback
 mismatch, lost ACK and the absolute deadline. The fixture cannot declare a live
 PASS. Run it with `PYTHONPATH=src:tests pytest -q
 tests/test_kaggle_warm_acceptance.py tests/test_kaggle_warm_read.py`.
+
+The acceptance driver also checks monotonic deadlines after every callback, before
+each effect and before reporting PASS. A blocked event loop or suppressed cancellation
+cannot convert an over-budget query or scenario into success. An effect that returns
+after the scenario deadline retains its pending operation key for reconciliation;
+the driver does not retry it or start a rollback.

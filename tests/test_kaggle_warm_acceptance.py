@@ -273,3 +273,62 @@ def test_plan_rejects_duplicate_fields_and_signed_url_artifact(tmp_path):
         harness.private_plan(path)
     with pytest.raises(harness.AcceptanceFailed,match='artifact_binding_invalid'):
         harness.artifact({'id':'https://fixture.invalid/object?signature=private','sha256':'a'*64})
+
+
+@pytest.mark.asyncio
+async def test_blocked_query_over_two_seconds_cannot_pass(tmp_path,monkeypatch):
+    client=OfflineClient(tmp_path/'private');now=[0.0]
+    monkeypatch.setattr(harness,'time',type('Clock',(),{'monotonic':staticmethod(lambda:now[0])}))
+    original=client.query
+    async def blocked(query):
+        now[0]+=2.1  # No await: event-loop timers cannot intervene.
+        return await original(query)
+    client.query=blocked
+    try:
+        with pytest.raises(TimeoutError,match='useful_query_deadline'):
+            await harness.run_acceptance(client,client.plan)
+        assert client.actions==[]
+    finally:await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase',['initial_probe','effect','final_probe'])
+async def test_blocked_callback_exceeding_scenario_budget_never_passes_or_retries(tmp_path,monkeypatch,phase):
+    client=OfflineClient(tmp_path/'private');now=[0.0];trace={}
+    monkeypatch.setattr(harness,'time',type('Clock',(),{'monotonic':staticmethod(lambda:now[0])}))
+    original_probe=client.probe;original_sql=client.apply_sql_artifact;calls=[0]
+    async def probe():
+        calls[0]+=1
+        result=await original_probe()
+        # Initial probe + two probes for each of the six successful checks.
+        if phase=='initial_probe' or (phase=='final_probe' and calls[0]==13):now[0]+=11
+        return result
+    async def sql(**kwargs):
+        result=await original_sql(**kwargs)
+        if phase=='effect':now[0]+=11
+        return result
+    client.probe=probe;client.apply_sql_artifact=sql
+    try:
+        with pytest.raises(TimeoutError,match='scenario_deadline'):
+            await harness.run_acceptance(client,client.plan,trace=trace)
+        if phase=='initial_probe':assert client.actions==[]
+        elif phase=='effect':
+            assert [x[0] for x in client.actions]==['sql']
+            assert trace['pending_effect']=='offline-warm-case:sql' and trace['effects']==[]
+        else:assert len(client.actions)==5
+    finally:await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_suppressed_scenario_cancellation_cannot_pass_or_apply(tmp_path):
+    client=OfflineClient(tmp_path/'private');original=client.query
+    async def suppress(query):
+        try:await asyncio.sleep(3)
+        except asyncio.CancelledError:pass
+        return await original(query)
+    client.query=suppress
+    try:
+        with pytest.raises(TimeoutError):
+            await harness.run_acceptance(client,dict(client.plan,timeout_seconds=1))
+        assert client.actions==[]
+    finally:await client.aclose()
