@@ -171,7 +171,8 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                     if story:
                         await execute('SELECT schema_revision FROM rkb_v4.recovery_state WHERE singleton')
                         semantic=await cursor.fetchone()
-                        editorial=semantic in [('rkb-v4-sql001-009-v1',),('rkb-v4-sql001-011-v1',)]
+                        editorial=semantic in [('rkb-v4-sql001-009-v1',),('rkb-v4-sql001-011-v1',),
+                            ('rkb-v4-sql001-014-v1',)]
                     async def timed_encode():
                         began = loop.time()
                         try:

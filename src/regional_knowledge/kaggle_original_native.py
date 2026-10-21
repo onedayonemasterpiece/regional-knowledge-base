@@ -53,7 +53,7 @@ class OriginalIntakeConfig:
 
 
 class NativeOriginalIntake:
-    def __init__(self,*,config,database,identity,workspace,current,downloader=None,parser=None,transfer=None):
+    def __init__(self,*,config,database,identity,workspace,current,downloader=None,parser=None,transfer=None,telegram_downloader=None):
         if type(config) is not OriginalIntakeConfig or not callable(current):raise TypeError('retained original owner required')
         root=Path(workspace)
         if not root.is_absolute() or not root.is_relative_to(PRIVATE_ROOT) or root.resolve(strict=True)!=root or root.stat().st_mode&0o077:
@@ -71,13 +71,28 @@ class NativeOriginalIntake:
         self.config,self.database,self.identity,self.root,self.current=config,database,identity,root,current
         from .file_ingress import ChatFileDownloader
         self.downloader=downloader or ChatFileDownloader()
+        from .telegram_original import NativeTelegramOriginalDownloader
+        if telegram_downloader is not None and type(telegram_downloader) is not NativeTelegramOriginalDownloader:
+            raise OriginalIntakeError('original_telegram_binding_required')
+        self.telegram_downloader=telegram_downloader
         self.parser=parser or self._parse
         self.transfer=transfer or NativeSnapshotTransfer(allowed_origins=frozenset(config.allowed_origins),max_bytes=max(config.max_bytes,256*1024),timeout_seconds=config.seconds)
         self.generation=None;self.closed=False;self._records={};self._requests={};self._results={};self._lock=asyncio.Lock()
+        self._prebinding_retry=set();self.telegram_channel=None
 
     def attached(self,generation):self.generation=generation
     def detached(self,generation):
         if self.generation==generation:self.generation=None
+
+    async def bind_telegram_downloader(self,downloader,*,identity,generation):
+        from .telegram_original import NativeTelegramOriginalDownloader
+        async with self._lock:
+            if (type(downloader) is not NativeTelegramOriginalDownloader or identity!=self.identity
+                    or self.closed or generation!=self.generation or generation is None
+                    or not self.current((identity[0],identity[2],generation))
+                    or self.telegram_downloader is not None and self.telegram_downloader is not downloader):
+                raise OriginalIntakeError('original_telegram_binding_changed')
+            self.telegram_downloader=downloader
 
     def _parser_script(self,pin):
         # Allowlist comes only from code bytes and pinned installed packages,
@@ -156,8 +171,9 @@ class NativeOriginalIntake:
         async with self._lock:
             if key in self._requests:
                 if self._requests[key]!=request:raise OriginalIntakeError('original_operation_changed')
-                if key not in self._results:raise OriginalIntakeError('original_operation_unknown_reconcile')
-                return self._results[key]
+                if key in self._results:return self._results[key]
+                if key not in self._prebinding_retry:raise OriginalIntakeError('original_operation_unknown_reconcile')
+                self._prebinding_retry.remove(key)
             if len(self._requests)>=4096:raise OriginalIntakeError('original_retention_bound')
             self._requests[key]=request
             _LOG.info('native_original_phase state=start run_id=%s phase=%s operation_sha256=%s',self.identity[0],frame['phase'],digest(key.encode()))
@@ -168,7 +184,9 @@ class NativeOriginalIntake:
             except Exception:value={'error':'original_intake_unavailable'}
             result=dict(phase=frame['phase'],request_sha256=request,value=value)
             if len(canonical(result))>120*1024:raise OriginalIntakeError('original_result_bound')
-            self._results[key]=result
+            if value.get('error')=='original_telegram_binding_required':
+                self._prebinding_retry.add(key)  # Retain exact fingerprint, no native effect occurred.
+            else:self._results[key]=result
             _LOG.info('native_original_phase state=%s run_id=%s phase=%s operation_sha256=%s',
                 'unavailable' if 'error' in value else 'complete',self.identity[0],frame['phase'],digest(key.encode()))
             return result
@@ -183,11 +201,21 @@ class NativeOriginalIntake:
         phase,args,private=frame['phase'],frame['arguments'],frame.get('original_transfer')
         if phase=='original_acquire':
             restore=type(args) is dict and set(args)=={'spec','restore_receipt','restore_nonce'}
-            if (type(args) is not dict or set(args) not in ({'spec'},{'spec','restore_receipt','restore_nonce'})
-                    or type(private) is not dict or set(private)!=({'ticket'} if restore else {'download_url'})):
+            telegram=type(args) is dict and set(args)=={'spec','telegram_locator'}
+            if (type(args) is not dict or set(args) not in ({'spec'},{'spec','telegram_locator'},{'spec','restore_receipt','restore_nonce'})
+                    or (private is not None if telegram else
+                        type(private) is not dict or set(private)!=({'ticket'} if restore else {'download_url'}))):
                 raise OriginalIntakeError('original_acquire_contract')
             spec=OriginalIntakeSpec.from_wire(args['spec'])
             if spec.max_bytes>self.config.max_bytes or len(self._records)>=32:raise OriginalIntakeError('original_capacity_bound')
+            locator=None
+            if telegram:
+                from .telegram_original import TelegramOriginalLocator
+                locator=TelegramOriginalLocator.from_wire(args['telegram_locator'])
+                if (spec.file_id,spec.expected_sha256,spec.expected_size)!=(locator.file_id,locator.sha256,locator.size):
+                    raise OriginalIntakeError('original_telegram_spec_changed')
+                if self.telegram_downloader is None:
+                    raise OriginalIntakeError('original_telegram_binding_required')
             folder=self.root/secrets.token_hex(24);folder.mkdir(mode=0o700)
             acquired=False
             try:
@@ -211,6 +239,10 @@ class NativeOriginalIntake:
                     actual_hash,actual_size=await _blocking(sha256_file,restored)
                     if (actual_hash,actual_size)!=(prior.sha256,prior.size):raise OriginalIntakeError('original_restore_bytes_mismatch')
                     downloaded=DownloadedFile(restored,actual_hash,actual_size)
+                elif telegram:
+                    downloaded=await self.telegram_downloader.download(locator,folder,max_bytes=spec.max_bytes,
+                        current=lambda:not self.closed and self.generation==frame['connection_generation']
+                            and self.current((frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])))
                 else:downloaded=await self.downloader.download(private['download_url'],folder,max_bytes=spec.max_bytes)
                 with downloaded.path.open('rb') as stream:header=stream.read(16)
                 if header.startswith(b'%PDF-'):
@@ -302,5 +334,6 @@ class NativeOriginalIntake:
         raise OriginalIntakeError('original_phase_unsupported')
 
     async def aclose(self):
+        if self.telegram_channel is not None:await self.telegram_channel.aclose()
         self.closed=True
         async with self._lock:await _blocking(shutil.rmtree,self.root)

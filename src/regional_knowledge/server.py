@@ -31,6 +31,7 @@ from .local_e5 import LocalE5Embedder
 from .auth import JwtResourceVerifier
 from .backend import KnowledgeBackend
 from .kaggle_import_contracts import TargetSourceImportInput
+from .contracts import TelegramOriginalInput
 from .contracts import (
     BookFindOutput,
     BookIngestOutput,
@@ -1213,7 +1214,10 @@ def build_server(
         entity_candidates: GraphBundle | None = None,
         story_candidates: Annotated[list[StageStoryCandidateInput], Field(max_length=12)] | None = None,
         source_import: TargetSourceImportInput | None = None,
+        telegram_original: TelegramOriginalInput | None = None,
     ) -> BookIngestOutput:
+        if telegram_original is not None and (selected != 'kaggle_source' or command != 'start' or file is not None):
+            raise ToolError('telegram_original_requires_target_start_without_attachment')
         payload: dict[str, Any] | None = None
         if metadata is not None:
             if metadata.source_import is not None:
@@ -1287,6 +1291,8 @@ def build_server(
             import_options['source_import'] = source_import
         if stage_file_sha and selected == 'kaggle_source':
             import_options['stage_file_sha256'] = stage_file_sha
+        if telegram_original is not None:
+            file = telegram_original.locator()
         result = await backend.book_ingest(
             command=command,
             principal=principal,

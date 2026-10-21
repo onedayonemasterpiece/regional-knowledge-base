@@ -1,4 +1,4 @@
-"""Explicit additive native metadata contracts for reviewed fresh9..11.
+"""Explicit additive native metadata contracts for reviewed fresh9..11 and explicit14.
 
 These constants are deployment code; no SQL/request can extend this inventory.
 """
@@ -20,3 +20,64 @@ TABLES_11=frozenset(['geo_lookup_names', 'geo_manifest_heads', 'geo_manifest_ite
 FUNCTIONS_11={'rkb_v4.apply_geo_manifest_install_v1(bytea,jsonb,jsonb,text)': ('bytea', False), 'rkb_v4.apply_source_import_graph_v1(bytea,jsonb,jsonb,text)': ('bytea', False), 'rkb_v4.capture_geo_manifest_receipt_v1()': ('trigger', False), 'rkb_v4.capture_source_graph_receipt_v1()': ('trigger', False), 'rkb_v4.check_geo_manifest_install_v1(bytea,jsonb,jsonb,text)': ('boolean', False), 'rkb_v4.check_source_graph_evidence_v1(jsonb,jsonb)': ('boolean', False), 'rkb_v4.check_source_graph_v1(jsonb,uuid)': ('boolean', False), 'rkb_v4.check_source_import_graph_v1(bytea,jsonb,jsonb,text)': ('boolean', False), 'rkb_v4.project_source_graph_v1(uuid,jsonb,text)': ('void', False), 'rkb_v4.read_geo_identity_v1(uuid,uuid,text,text,text,integer,uuid,integer)': ('record', True), 'rkb_v4.read_geo_members_v1(uuid,uuid,text,text,integer)': ('record', True), 'rkb_v4.read_source_graph_v1(uuid,uuid,text,uuid,text,integer)': ('record', True), 'rkb_v4.source_graph_endpoint_kind_v1(jsonb,uuid)': ('text', False), 'rkb_v4.validate_geo_manifest_head_v1()': ('trigger', False), 'rkb_v4.verify_source_graph_origins_v1(uuid[])': ('boolean', False)}
 
 TRIGGERS_11=frozenset([('applied_ops', 'capture_geo_manifest_receipt'), ('applied_ops', 'capture_source_graph_receipt'), ('geo_lookup_names', 'immutable_geo_name'), ('geo_manifest_heads', 'immutable_geo_head'), ('geo_manifest_items', 'immutable_geo_item'), ('geo_manifest_receipts', 'immutable_geo_receipt'), ('geo_poi_links', 'immutable_geo_poi_link'), ('source_entity_aliases', 'immutable_source_graph'), ('source_entity_finding_links', 'immutable_source_graph'), ('source_entity_ids', 'immutable_source_graph'), ('source_entity_mentions', 'immutable_source_graph'), ('source_entity_references', 'immutable_source_graph'), ('source_entity_relations', 'immutable_source_graph'), ('source_entity_representations', 'immutable_source_graph'), ('source_graph_documents', 'immutable_source_graph'), ('source_graph_receipts', 'immutable_source_graph'), ('source_poi_hypotheses', 'immutable_source_graph')])
+
+# This explicit profile is additive. Old SQL001..011 profiles and their origin
+# verifiers retain their exact semantics; a future schema is not auto-approved.
+IMAGE_SOURCE_SCHEMA = 'rkb-v4-sql001-014-v1'
+FUNCTIONS_12 = {
+    'rkb_v4.check_geo_manifest_install_v2(bytea,jsonb,jsonb,text)': ('boolean', False),
+    'rkb_v4.apply_geo_manifest_install_v2(bytea,jsonb,jsonb,text)': ('bytea', False),
+    'rkb_v4.check_geo_dependencies_v2_transition(bytea,jsonb,jsonb,text)': ('boolean', False),
+    'rkb_v4.apply_geo_dependencies_v2_transition(bytea,jsonb,jsonb,text)': ('bytea', False),
+}
+TABLES_13 = frozenset({'source_stage_sessions', 'source_stage_batches',
+    'source_stage_pages', 'source_stage_candidates'})
+FUNCTIONS_13 = {
+    'rkb_v4.check_source_stage_v1(bytea,jsonb,jsonb,text)': ('boolean', False),
+    'rkb_v4.apply_source_stage_v1(bytea,jsonb,jsonb,text)': ('bytea', False),
+    'rkb_v4.check_source_stage_seal_v1(bytea,jsonb,jsonb,text)': ('boolean', False),
+    'rkb_v4.apply_source_stage_seal_v1(bytea,jsonb,jsonb,text)': ('bytea', False),
+}
+TRIGGERS_13 = frozenset({('source_stage_sessions', 'immutable_source_stage_session'),
+    ('source_stage_batches', 'immutable_source_stage_batch'),
+    ('source_stage_pages', 'immutable_source_stage_page'),
+    ('source_stage_candidates', 'immutable_source_stage_candidate')})
+TABLES_14 = frozenset({'source_activation_candidates', 'source_activation_vectors',
+    'source_activation_materialized', 'source_image_origins'})
+FUNCTIONS_14 = {
+    'rkb_v4.source_activation_knowledge_v1(jsonb)': ('jsonb', False),
+    'rkb_v4.verify_source_stage_chain_v1(uuid,uuid,integer,text)': ('boolean', False),
+    'rkb_v4.verify_source_open_stage_chain_v1(uuid,uuid,integer,text)': ('boolean', False),
+    'rkb_v4.check_source_stage_v2(bytea,jsonb,jsonb,text)': ('boolean', False),
+    'rkb_v4.apply_source_stage_v2(bytea,jsonb,jsonb,text)': ('bytea', False),
+    'rkb_v4.check_source_stage_seal_v2(bytea,jsonb,jsonb,text)': ('boolean', False),
+    'rkb_v4.apply_source_stage_seal_v2(bytea,jsonb,jsonb,text)': ('bytea', False),
+    'rkb_v4.check_source_activation_base_v1(bytea,jsonb,jsonb,text)': ('boolean', False),
+    'rkb_v4.check_source_activation_semantic_v1(bytea,jsonb,jsonb,text)': ('boolean', False),
+    'rkb_v4.check_source_image_passages_v1(jsonb)': ('boolean', False),
+    'rkb_v4.check_source_image_graph_evidence_v1(jsonb,jsonb)': ('boolean', False),
+    'rkb_v4.check_source_image_graph_v1(jsonb,uuid,integer)': ('boolean', False),
+    'rkb_v4.source_stage_latest_page_v1(uuid,uuid)': ('jsonb', False),
+    'rkb_v4.check_source_image_manifest_v1(jsonb,uuid)': ('boolean', False),
+    'rkb_v4.prepare_source_activation_v1(uuid,uuid,integer,text,text,bytea,text,text)': ('text', False),
+    'rkb_v4.source_activation_input_v1(uuid,integer)': ('jsonb', False),
+    'rkb_v4.install_source_activation_vector_v1(uuid,text,integer,public.vector,text,text)': ('text', False),
+    'rkb_v4.check_source_materialize_v1(bytea,jsonb,jsonb,text)': ('boolean', False),
+    'rkb_v4.apply_source_materialize_v1(bytea,jsonb,jsonb,text)': ('bytea', False),
+    'rkb_v4.project_source_graph_v2(uuid,jsonb,text)': ('void', False),
+    'rkb_v4.source_activation_doc_v1(uuid)': ('jsonb', False),
+    'rkb_v4.check_source_activate_v1(bytea,jsonb,jsonb,text)': ('boolean', False),
+    'rkb_v4.apply_source_activate_v1(bytea,jsonb,jsonb,text)': ('bytea', False),
+    'rkb_v4.capture_source_image_receipt_v1()': ('trigger', False),
+    'rkb_v4.read_source_activation_input_v1(uuid,text,integer)': ('record', True),
+    'rkb_v4.verify_source_image_manifest_v1(uuid,jsonb,text)': ('boolean', False),
+    'rkb_v4.verify_source_image_origins_v1(uuid[])': ('boolean', False),
+    'rkb_v4.verify_source_story_origins_v4(uuid[])': ('boolean', False),
+    'rkb_v4.verify_source_graph_origins_v2(uuid[])': ('boolean', False),
+    'rkb_v4.verify_editorial_story_origins_v2(uuid[])': ('boolean', False),
+}
+TRIGGERS_14 = frozenset({('source_activation_candidates', 'immutable_source_activation_candidate'),
+    ('source_activation_vectors', 'immutable_source_activation_vector'),
+    ('source_activation_materialized', 'immutable_source_activation_materialized'),
+    ('source_image_origins', 'immutable_source_image_origin'),
+    ('applied_ops', 'capture_source_image_receipt')})
