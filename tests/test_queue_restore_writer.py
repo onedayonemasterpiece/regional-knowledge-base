@@ -30,6 +30,14 @@ async def recovery_owner(owner):
     q.clock=lambda:1002.
     observed=TerminalObservation(identity,'complete',1001.,execution_binding_verified=True)
     assert (await e.a.confirm_terminal(identity,capabilities,observed,max_age_seconds=10)).ok
+    # The actual execution-qualified native receipt, unlike a Kaggle
+    # version-only status, atomically releases old provider ownership.
+    with q.connect(write=False) as db:
+        terminal=db.execute('select status,launch_state from runs where id=?',(e.run,)).fetchone()
+        assert tuple(terminal)==('expired','terminal')
+    from regional_knowledge.bge_queue import StaleAttachment
+    with pytest.raises(StaleAttachment,match='terminal'):
+        q.launch_record(e.run,old['provider_ref'],provider_version=old['provider_version'])
     with q.connect() as db:
         run=q._new_run(db,q.clock());db.execute('UPDATE control SET current_run=? WHERE id=1',(run,))
     nonce=q.prepare_channel(run)

@@ -795,9 +795,13 @@ class BgeQueue:
             result=validate_terminal(expected,capabilities,observed,last_heartbeat_at=run['heartbeat'],
                                      now=self.clock(),max_age_seconds=max_age_seconds)
             if not result.ok:return result
-            # A native exact terminal gates the old run before the next owned
-            # baseline; an old still-authenticated socket cannot revive it.
-            db.execute("update runs set status='expired',channel_active=0 where id=?",(run['id'],))
+            # The capability+execution-bound terminal proof is the ONLY
+            # authority to release the old notebook's provider reservation.
+            # Persist it in launch_state in the SAME transaction before any
+            # subsequent launch_claim scans historical runs. Mere heartbeat,
+            # Kaggle version status, or local timeout never sets this state.
+            db.execute("update runs set status='expired',channel_active=0,launch_state='terminal' where id=?",
+                       (run['id'],))
             db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
             db.execute('update control set current_run=null where current_run=?',(run['id'],))
             db.execute('update control set successor=null where successor=?',(run['id'],))
@@ -983,7 +987,9 @@ class BgeQueue:
         if provider_version is not None and (type(provider_version) is not int or provider_version<1):
             raise ValueError('invalid Kaggle notebook version')
         with self.connect() as db:
-            row=db.execute('select provider_ref,provider_version,status from runs where id=?',(run_id,)).fetchone()
+            row=db.execute('select provider_ref,provider_version,status,launch_state from runs where id=?',(run_id,)).fetchone()
+            if row and row['launch_state']=='terminal':
+                raise StaleAttachment('execution-qualified terminal run cannot be relaunched')
             if row and ((row['provider_ref'] and row['provider_ref']!=provider_ref)
                     or (row['provider_version'] and provider_version and row['provider_version']!=provider_version)):
                 raise ValueError('Kaggle run identity changed')
