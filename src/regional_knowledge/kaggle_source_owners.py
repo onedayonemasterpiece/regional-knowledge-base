@@ -47,8 +47,18 @@ def compose_source_service(*,queue,oauth_provider,participants,object_store,stre
             admission=queue.configure_shared_reads(authority)
         writer=QueueWriterAuthority(queue,run_id=run_id,database_generation=database_generation,
             writer_generation=writer_generation,stream=stream)
-        store=S3ConditionalRecoveryStore(client=object_store.client,bucket=object_store.bucket,
-            prefix='recovery/v1/'+hashlib.sha256(stream.encode()).hexdigest()+'/',writer_guard=writer)
+        if source_restore is not None and source_restore.dataset_checkpoint is not None:
+            from .dataset_recovery_store import DatasetRecoveryStore
+            from .kaggle_dataset_publisher import KaggleDatasetPublisher,authenticated_service_api
+            checkpoint=source_restore.dataset_checkpoint
+            api=authenticated_service_api()
+            publisher=KaggleDatasetPublisher(api,provider_ref=checkpoint.owner_slug+'/'+checkpoint.dataset_slug,
+                owner=api.get_config_value(api.CONFIG_NAME_USER))
+            store=DatasetRecoveryStore(queue,checkpoint=checkpoint,manifest_ref=source_restore.manifest,
+                publisher=publisher,writer_guard=writer,stream=stream)
+        else:
+            store=S3ConditionalRecoveryStore(client=object_store.client,bucket=object_store.bucket,
+                prefix='recovery/v1/'+hashlib.sha256(stream.encode()).hexdigest()+'/',writer_guard=writer)
         journal=RecoveryJournal(store,stream=stream)
         spool=ControlSpool(queue,participants,journal,registry)
         import_options={}

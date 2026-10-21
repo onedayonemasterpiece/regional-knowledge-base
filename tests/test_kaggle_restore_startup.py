@@ -38,7 +38,8 @@ async def test_api_restart_of_active_restore_recreates_capture_facade_without_pg
 
 
 @pytest.mark.asyncio
-async def test_production_owner_restores_before_ready_through_same_claim_and_ticket_owner(recovery_owner):
+@pytest.mark.parametrize('dataset_input',[False,True])
+async def test_production_owner_restores_before_ready_through_same_claim_and_ticket_owner(recovery_owner,dataset_input,monkeypatch):
     e=recovery_owner;database=replace(spec().database,writer_generation='writer-2')
     registry=fixed_registry(database,[dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64)])
     routes=['source.fetch','source.import','source.search','source.withdraw']
@@ -54,6 +55,31 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
     mkey=e.j.prefix+'/snapshots/manifests/'+sha(manifest)
     e.old.c.objects.update({ckey:(control,'"native-control"'),blob_key:(blob,'"native-blob"'),mkey:(manifest,'"native-manifest"')})
     plan=replace(e.plan,manifest=ObjectRef(mkey,sha(manifest),len(manifest),0))
+    if dataset_input:
+        import base64
+        import json
+        from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint,DatasetFile
+        journal=encode(dict(codec='rkb.dataset-journal.v1',objects=[dict(key=k,token=v[1],
+            data_b64=base64.b64encode(v[0]).decode()) for k,v in e.old.c.objects.items()
+            if k.startswith(e.j.prefix+'/') and '/snapshots/' not in k]))
+        def pin(name,data):return DatasetFile(name,len(data),sha(data))
+        checkpoint=DatasetCheckpoint('fixture-owner','rkb-base',1,'synthetic-db',0,
+            pin('base-manifest.json',manifest),pin(blob_key.rsplit('/',1)[-1],blob),
+            pin('source-control.json',control),pin('journal-control.json',journal))
+        class Publisher:
+            ref='fixture-owner/rkb-base'
+            def __init__(self,*args,**kwargs):pass
+            def read_control(self,file,*,version):
+                assert version==1 and file.name!=checkpoint.archive.name
+                return {'base-manifest.json':manifest,'source-control.json':control,'journal-control.json':journal}[file.name]
+        monkeypatch.setattr('regional_knowledge.kaggle_dataset_publisher.authenticated_service_api',
+            lambda:SimpleNamespace(CONFIG_NAME_USER='user',get_config_value=lambda _: 'fixture-owner'))
+        monkeypatch.setattr('regional_knowledge.kaggle_dataset_publisher.KaggleDatasetPublisher',Publisher)
+        with e.q.connect() as db:
+            db.execute('CREATE TABLE rkb_dataset_seed(operation_key TEXT PRIMARY KEY,provider_ref TEXT,state TEXT,package_json TEXT,version INTEGER)')
+            db.execute('INSERT INTO rkb_dataset_seed VALUES(?,?,?,?,?)',('seed',Publisher.ref,'published',
+                json.dumps(dict(manifest_sha256=sha(manifest),database_generation='synthetic-db',base_sequence=0)),1))
+        plan=replace(plan,dataset_checkpoint=checkpoint)
     signatures=[]
     def sign(method,**kwargs):
         signatures.append((method,kwargs))
@@ -78,7 +104,11 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
                 assert not startup.reads_current()
                 if phase=='prepare':
                     assert e.q.status()['state']=='starting'
-                    assert frame['download_ticket']['headers']==[['If-Match','"native-blob"']]
+                    if dataset_input:
+                        assert 'download_ticket' not in frame
+                        assert frame['dataset_base']['dataset_version']==1
+                        assert frame['dataset_observation']['run_id']==e.run
+                    else:assert frame['download_ticket']['headers']==[['If-Match','"native-blob"']]
                     assert frame['arguments']['manifest_b64'] and frame['writer_generation']=='writer-2'
                     value={'handle':'native-retained-session'}
                 elif phase=='finish':
@@ -102,7 +132,8 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
                     resource_kind='document',resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
             assert await task
         assert phases==['prepare','finish','verify','verify','verify']
-        assert signatures and startup.config.writer_owner.current(database_generation='synthetic-db',writer_generation='writer-2')
+        assert bool(signatures)==(not dataset_input)
+        assert startup.config.writer_owner.current(database_generation='synthetic-db',writer_generation='writer-2')
         assert not startup.reads_current()  # Full native source history remains a separate mandatory gate.
         from regional_knowledge.kaggle_public_backend import current_binding
         assert startup.restorer.dispatch.current(current_binding(e.q))
@@ -116,9 +147,12 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
         assert await startup.config.spool.journal.verify_accepted(accepted,later)==sha(later.encode())
         advanced=dict(ready,applied_seq=1,projection_seq=1)
         assert e.q.accept_search_runtime(e.run,e.token,e.generation,advanced).ok
+        if dataset_input:await startup.restorer.dispatch.aclose()  # Previous API owner is gone.
         restarted=SourceRestoreCoordinator(startup,plan)
-        assert await restarted.refresh() and restarted.complete and restarted.dispatch is None
+        assert await restarted.refresh() and restarted.complete
+        assert (restarted.dispatch is not None)==dataset_input
         assert phases==['prepare','finish','verify','verify','verify']
+        await restarted.aclose()
     finally:
         if not task.done():task.cancel()
         await asyncio.gather(task,return_exceptions=True)

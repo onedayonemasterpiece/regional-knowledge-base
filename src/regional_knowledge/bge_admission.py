@@ -420,7 +420,7 @@ class SharedReadAdmission:
     def durable_result_settled(self, job_id, claim, status):
         """Internal queue.complete reconciliation, separate from actual compute."""
         self._active()
-        if status not in {'accepted','duplicate','stale'}:raise ValueError('invalid durable settlement status')
+        if status not in {'accepted','duplicate','stale','checkpoint_pending'}:raise ValueError('invalid durable settlement status')
         if self._document_result==(job_id,claim):
             self._document_result=None;self._event.set()
             return True

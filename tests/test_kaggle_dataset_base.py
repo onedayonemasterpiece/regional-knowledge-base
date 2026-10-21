@@ -6,7 +6,25 @@ import pytest
 
 from regional_knowledge.kaggle_dataset_base import (
     DatasetFile,DatasetBasePin,DatasetBaseUnavailable,verify_mounted_dataset_base,
+    DatasetCheckpoint,verify_mounted_journal,
 )
+
+
+def test_checkpoint_pins_actual_next_execution_and_native_journal_bytes(tmp_path):
+    mount,root,pin=fixture(tmp_path,sequence=7)
+    data=canonical(dict(codec='rkb.dataset-journal.v1',objects=[]))
+    path=root/'journal-control.json';path.write_bytes(data);path.chmod(0o400)
+    journal=DatasetFile(path.name,len(data),hashlib.sha256(data).hexdigest())
+    checkpoint=DatasetCheckpoint(pin.owner_slug,pin.dataset_slug,pin.dataset_version,
+        pin.database_generation,pin.base_sequence,pin.manifest,pin.archive,pin.control,journal)
+    assert DatasetCheckpoint.from_wire(checkpoint.wire())==checkpoint
+    executed=checkpoint.for_execution(run_id='actual-next-run',notebook_version=88)
+    assert executed.run_id=='actual-next-run' and executed.notebook_version==88
+    assert checkpoint.source==pin.ref+'/'+str(pin.dataset_version)
+    assert verify_mounted_journal(checkpoint,mount_root=mount)==journal.sha256
+    path.chmod(0o600);path.write_bytes(data.replace(b'[]',b'{}'));path.chmod(0o400)
+    with pytest.raises(DatasetBaseUnavailable,match='file_hash_differs'):
+        verify_mounted_journal(checkpoint,mount_root=mount)
 
 
 def canonical(value):

@@ -121,7 +121,8 @@ class SourceGeoInstaller:
         outcomes={}
         for command in commands:
             entry=await self.spool.get(command.operation_key)
-            if entry.command_bytes!=command.encode() or entry.outcome_state!='DURABLE' or entry.apply_receipt is None:
+            if (entry.command_bytes!=command.encode() or entry.apply_receipt is None
+                    or entry.outcome_state!='DURABLE' and not self._locally_applied_checkpoint_pending(entry)):
                 return False
             outcomes[command.operation_key]=entry.apply_receipt.status
         repair=geo_dependency_repair_commands(commands,settled_outcomes=outcomes,
@@ -145,7 +146,8 @@ class SourceGeoInstaller:
                 entry=await self.spool.get(command.operation_key)
             if not native_ready:continue  # Frozen pending commands, never dispatched to the old worker.
             if entry.apply_state=='REJECTED_PRECONDITION':raise SpoolConflict('geographic repair native precondition rejected')
-            if entry.apply_state!='APPLIED' or entry.outcome_state!='DURABLE':
+            if entry.apply_state!='APPLIED' or (entry.outcome_state!='DURABLE'
+                    and not self._locally_applied_checkpoint_pending(entry)):
                 await self.startup.source_dispatch.enqueue(context,command.operation_key,
                     writer_generation=self.startup.config.writer_generation)
                 return False
@@ -292,6 +294,12 @@ class SourceGeoInstaller:
                 'WHERE sequence>=? AND sequence<? ORDER BY sequence',
                 (metadata['first_sequence'],metadata['first_sequence']+len(self.keys)))]
 
+    def _locally_applied_checkpoint_pending(self,entry):
+        from .dataset_recovery_store import DatasetRecoveryStore
+        return (type(self.spool.journal.store) is DatasetRecoveryStore
+            and entry.accepted is not None and entry.apply_receipt is not None
+            and entry.apply_state in ('APPLIED','REJECTED_PRECONDITION') and entry.outcome_state=='NOT_SENT')
+
     def _source_ready(self,binding):
         return self.startup.binding==binding and self.startup.reads_current()
 
@@ -363,7 +371,8 @@ class SourceGeoInstaller:
                     if type(exc) is not SpoolError:raise
                     return False
                 if entry.command.encode()!=command.encode():raise SpoolConflict('retained GEO command bytes changed')
-                if entry.apply_state=='REJECTED_PRECONDITION' and entry.outcome_state=='DURABLE':
+                if entry.apply_state=='REJECTED_PRECONDITION' and (entry.outcome_state=='DURABLE'
+                        or self._locally_applied_checkpoint_pending(entry)):
                     if (geo_dependency_limit_rejection(command)
                             or dependency_repair_required and json.loads(command.payload)['action']=='activate'):
                         # Keep the exact rejection. Complete the original ordered
@@ -384,7 +393,8 @@ class SourceGeoInstaller:
                         await self.spool.seal(context,command.operation_key,
                             writer_generation=self.startup.config.writer_generation)
                     entry=await self.spool.get(command.operation_key)
-                if entry.apply_state!='APPLIED' or entry.outcome_state!='DURABLE':
+                if entry.apply_state!='APPLIED' or (entry.outcome_state!='DURABLE'
+                        and not self._locally_applied_checkpoint_pending(entry)):
                     await self.startup.source_dispatch.enqueue(context,command.operation_key,
                         writer_generation=self.startup.config.writer_generation)
                     _LOG.info('geo_bootstrap state=pending phase=%s command_sha256=%s',command.sequence,entry.command_sha256)

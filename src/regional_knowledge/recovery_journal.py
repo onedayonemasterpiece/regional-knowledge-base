@@ -260,6 +260,14 @@ class RecoveryJournal:
             raise JournalCorrupt("immutable object missing or hash/length mismatch")
         return value.data
 
+    async def remote_outcome(self, operation_key):
+        key=self.prefix+'/outcomes/'+_hash(operation_key.encode())
+        value=await self._read(key,self.max_outcome_bytes)
+        covered=getattr(self.store,'remote_durable',None)
+        if value is not None and covered is not None and not covered(key,value.data):
+            return None
+        return value
+
     async def _immutable(self, key: str, data: bytes, limit: int) -> None:
         if len(data) > limit:
             raise JournalLimit("object exceeds configured byte budget")
@@ -741,5 +749,8 @@ class RecoveryJournal:
             raise JournalUnknown("outcome publication is unproved")
         if value.data != data:
             raise JournalConflict("outcome key already has different exact bytes")
+        covered=getattr(self.store,'remote_durable',None)
+        if covered is not None and not covered(key,data):
+            raise JournalUnknown('outcome_pending_dataset_checkpoint')
         return RemoteOutcomeReceipt(command.operation_key, command_hash, _hash(outcome),
                                     key, len(data), database_generation)

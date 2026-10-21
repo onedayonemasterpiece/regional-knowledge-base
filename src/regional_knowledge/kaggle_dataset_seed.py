@@ -16,7 +16,7 @@ from .kaggle_dataset_tickets import DatasetSnapshotTicketIssuer
 from .kaggle_pg_snapshot_native import BlobRef, SnapshotError, encode, sha, validate_versions
 
 _LOG = logging.getLogger(__name__)
-MAX_JOURNAL_CONTROL_BYTES = 16 * 1024 * 1024
+MAX_JOURNAL_CONTROL_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -78,6 +78,16 @@ class SourceDatasetSeed:
             row=db.execute('SELECT state FROM rkb_dataset_seed WHERE operation_key=?', (self.config.operation_key,)).fetchone()
         return row is not None and row['state']=='published'
 
+    def _prefix_ready(self,proof):
+        return (proof is not None and proof.current() and not proof.pending
+            and proof.accepted_sequence==proof.applied_sequence
+            and proof.accepted_sequence==self.startup.config.spool._source_covered_sequence)
+
+    def _control(self,physical,proof):return physical._control(proof)
+
+    async def _capture(self,physical,bridge,binding,sequence):
+        return await physical.native.capture(binding,versions=dict(self.config.versions),expected_sequence=sequence)
+
     async def _journal_control(self):
         """One-time bounded legacy recovery metadata, excluding physical blobs."""
         store=self.startup.config.spool.journal.store
@@ -124,13 +134,10 @@ class SourceDatasetSeed:
             bridge.snapshot_tickets = self.tickets
             async with self.startup.config.spool._lock:
                 proof = self.startup.history._coverage
-                if (proof is None or not proof.current() or proof.pending
-                        or proof.accepted_sequence != proof.applied_sequence
-                        or proof.accepted_sequence != self.startup.config.spool._source_covered_sequence):
+                if not self._prefix_ready(proof):
                     raise SnapshotError('dataset_seed_requires_drained_prefix')
-                control = physical._control(proof)
-                descriptor = await physical.native.capture(binding, versions=dict(self.config.versions),
-                    expected_sequence=proof.applied_sequence)
+                control = self._control(physical,proof)
+                descriptor = await self._capture(physical,bridge,binding,proof.applied_sequence)
                 if (descriptor['database_generation'] != proof.database_generation
                         or descriptor['writer_generation'] != self.startup.config.writer_generation
                         or descriptor['applied_sequence'] != proof.applied_sequence

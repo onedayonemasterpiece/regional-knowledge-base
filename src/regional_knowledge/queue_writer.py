@@ -69,6 +69,8 @@ class QueueWriterAuthority:
                   UPDATE rkb_writer_control SET active=0,revision=revision+1 WHERE run_id=OLD.current_run; END;''')
 
     def _storage(self,store):
+        from .dataset_recovery_store import DatasetRecoveryStore
+        if type(store) is DatasetRecoveryStore:return store.storage_identity
         endpoint=_text(getattr(store.client.meta,'endpoint_url',None),2048)
         return hashlib.sha256(json.dumps([endpoint,store.bucket,store.prefix],separators=(',',':')).encode()).hexdigest()
 
@@ -78,7 +80,10 @@ class QueueWriterAuthority:
             raise StaleWriter('writer cannot change existing storage authority')
         with self.queue.connect(write=False) as db:
             row=db.execute('SELECT storage_sha256 FROM rkb_writer_control WHERE id=1').fetchone()
-            if row is not None and row[0]!=identity:raise StaleWriter('persisted storage authority differs')
+            if row is not None and row[0]!=identity:
+                from .dataset_recovery_store import DatasetRecoveryStore
+                if type(store) is not DatasetRecoveryStore or not store.allows_storage_transition(row[0]):
+                    raise StaleWriter('persisted storage authority differs')
         self._store_identity=identity
 
     @asynccontextmanager
@@ -181,9 +186,12 @@ class QueueWriterAuthority:
                     self._binding(db,require_current=False);self._restore_runtime(db,binding,allow_active=True)
                     if restored['plan_json']!=encoded:raise StaleWriter('retained recovery plan differs')
                     return
+                from .dataset_recovery_store import DatasetRecoveryStore
+                transition=(type(journal.store) is DatasetRecoveryStore and prior is not None
+                    and journal.store.allows_storage_transition(prior['storage_sha256']))
                 if (prior is None or prior['active'] or prior['publication_json'] is not None
                         or prior['run_id']==self.run_id or prior['database_generation']!=self.database_generation
-                        or prior['stream']!=self.stream or prior['storage_sha256']!=self._store_identity
+                        or prior['stream']!=self.stream or prior['storage_sha256']!=self._store_identity and not transition
                         or db.execute('SELECT 1 FROM rkb_writer_generations WHERE writer_generation=?',
                             (self.writer_generation,)).fetchone() is not None):
                     raise StaleWriter('previous persisted writer must be retired and settled before recovery')
@@ -198,8 +206,8 @@ class QueueWriterAuthority:
                 db.execute('DELETE FROM rkb_writer_restore_control')
                 db.execute('INSERT INTO rkb_writer_restore_control VALUES(1,?,?,?,?)',
                     (encoded,json.dumps(identity),json.dumps(head_wire,sort_keys=True),'restoring'))
-                db.execute('UPDATE rkb_writer_control SET run_id=?,writer_generation=?,revision=revision+1,active=1 WHERE id=1',
-                    (self.run_id,self.writer_generation))
+                db.execute('UPDATE rkb_writer_control SET run_id=?,writer_generation=?,storage_sha256=?,revision=revision+1,active=1 WHERE id=1',
+                    (self.run_id,self.writer_generation,self._store_identity))
                 db.execute('INSERT INTO rkb_writer_generations VALUES(?,?,?,?,?,0)',
                     (self.writer_generation,self.database_generation,self.run_id,self.stream,observed['revision']+1))
                 self._binding(db,require_current=False);self._restore_runtime(db,binding)
@@ -278,7 +286,8 @@ class QueueWriterAuthority:
         if not isinstance(journal,RecoveryJournal) or journal.stream!=self.stream:
             raise TypeError('exact existing journal stream required')
         from .recovery_s3 import S3ConditionalRecoveryStore
-        if (type(journal.store) is not S3ConditionalRecoveryStore or journal.store.writer_guard is not self
+        from .dataset_recovery_store import DatasetRecoveryStore
+        if (type(journal.store) not in (S3ConditionalRecoveryStore,DatasetRecoveryStore) or journal.store.writer_guard is not self
                 or self._storage(journal.store)!=self._store_identity):
             raise TypeError('same existing native recovery storage authority required')
         async with self._lock():
@@ -367,7 +376,8 @@ class QueueWriterAuthority:
     async def reconcile(self,store,*,exact_data=None):
         """Clear UNKNOWN only after native exact-byte readback, never by a bool."""
         from .recovery_s3 import S3ConditionalRecoveryStore
-        if type(store) is not S3ConditionalRecoveryStore or store.writer_guard is not self:
+        from .dataset_recovery_store import DatasetRecoveryStore
+        if type(store) not in (S3ConditionalRecoveryStore,DatasetRecoveryStore) or store.writer_guard is not self:
             raise TypeError('same configured native recovery store required')
         if self._storage(store)!=self._store_identity:raise StaleWriter('reconciliation storage authority changed')
         async with self._lock():
@@ -377,6 +387,8 @@ class QueueWriterAuthority:
             intent=json.loads(raw)
             value=await store.read(intent['key'],max_bytes=intent['data_length'])
             if (value is None or hashlib.sha256(value.data).hexdigest()!=intent['data_sha256']) and exact_data is not None:
+                if type(store) is DatasetRecoveryStore:
+                    raise StaleWriter('Dataset pending state cannot reconcile an old cloud effect')
                 if (type(exact_data) is not bytes or len(exact_data)!=intent['data_length']
                         or hashlib.sha256(exact_data).hexdigest()!=intent['data_sha256']):
                     raise ValueError('only original exact unknown publication bytes may retry')

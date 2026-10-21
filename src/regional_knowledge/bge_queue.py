@@ -350,7 +350,7 @@ class BgeQueue:
             if job is None or job['state'] not in ('claimed','done'):raise LookupError('exact source assignment absent')
             return dict(run),dict(job)
 
-    def _complete_source_command(self,owner,run_id,token,generation,job_id,claim,command_hash):
+    def _complete_source_command(self,owner,run_id,token,generation,job_id,claim,command_hash,*,remote_outcome_durable=True):
         if owner is None or owner is not self._source_commands:raise PermissionError('canonical source dispatch required')
         with self.connect() as db:
             run=self._authorize(db,run_id,token,self.clock());self._dispatch_authorize(run,generation)
@@ -358,14 +358,15 @@ class BgeQueue:
             job=db.execute("select * from jobs where id=? and kind='source_command'",(job_id,)).fetchone()
             if not job or job['run_id']!=run_id or job['claim']!=claim:raise StaleClaim('source assignment changed')
             if json.loads(job['identity'])['command_sha256']!=command_hash:raise ValueError('source completion hash mismatch')
-            result=json.dumps(dict(command_sha256=command_hash,remote_outcome_durable=True),sort_keys=True)
+            if type(remote_outcome_durable) is not bool:raise ValueError('explicit outcome persistence state required')
+            result=json.dumps(dict(command_sha256=command_hash,remote_outcome_durable=remote_outcome_durable),sort_keys=True)
             if job['state']=='done':
                 if job['result']!=result:raise ValueError('source result changed')
                 return 'duplicate'
             if job['state']!='claimed':raise StaleClaim('source assignment is no longer claimed')
             db.execute("update jobs set state='done',result=?,updated=? where id=?",(result,self.clock(),job_id))
         self._notify_result(job_id)
-        return 'accepted'
+        return 'accepted' if remote_outcome_durable else 'checkpoint_pending'
 
     def document_pending(self):
         with self.connect(write=False) as db:

@@ -19,7 +19,7 @@ _LOG=logging.getLogger(__name__)
 
 
 class RecoveryPhaseDispatch:
-    def __init__(self,queue,*,database,identity,binding_current,timeout_seconds=900,snapshot_tickets=None):
+    def __init__(self,queue,*,database,identity,binding_current,timeout_seconds=900,snapshot_tickets=None,dataset_checkpoint=None):
         if (queue._shared_reads is None or getattr(queue,'_recovery_phases',None) is not None
                 or not callable(binding_current) or not isinstance(identity,tuple) or len(identity)!=3
                 or type(timeout_seconds) not in (int,float) or not 0<timeout_seconds<=900):
@@ -27,6 +27,7 @@ class RecoveryPhaseDispatch:
         self.queue,self.database,self.identity=queue,database,identity
         self.binding_current,self.timeout=binding_current,timeout_seconds
         self.snapshot_tickets=snapshot_tickets
+        self.dataset_checkpoint=dataset_checkpoint
         self._bindings={};self.closed=False
         queue._recovery_phases=self
 
@@ -94,7 +95,13 @@ class RecoveryPhaseDispatch:
                 raise StaleClaim('recovery assignment changed')
             identity=json.loads(job['identity'])
             payload=dict(id=job_id,claim=job['claim'],kind='recovery_phase',**identity)
-        if identity['phase'] in ('prepare','drill_prepare','read_handler_stage'):
+        if identity['phase'] in ('prepare','drill_prepare','read_handler_stage','dataset_verify'):
+            if identity['phase']=='prepare' and self.dataset_checkpoint is not None:
+                pin=self.dataset_checkpoint.for_execution(run_id=run_id,notebook_version=run['provider_version'])
+                payload['dataset_base']=pin.wire()
+                payload['dataset_observation']=dict(dataset_ref=pin.ref,dataset_version=pin.dataset_version,
+                    notebook_version=run['provider_version'],run_id=run_id)
+                return payload
             if self.snapshot_tickets is None:
                 raise PermissionError('current signed artifact transfer owner required')
             from .kaggle_pg_snapshot_native import BlobRef

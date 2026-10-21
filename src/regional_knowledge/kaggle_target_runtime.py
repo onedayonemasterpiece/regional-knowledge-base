@@ -39,10 +39,17 @@ class TargetLaunchSpec:
     bootstrap_seconds: int = 900
     original_intake: object = None
     recovery: object = None
+    dataset_checkpoint: object = None
 
     def __post_init__(self):
         if type(self.database) is not OwnedDatabase:
             raise TypeError('typed owned database required')
+        if self.dataset_checkpoint is not None:
+            from .kaggle_dataset_base import DatasetCheckpoint
+            if (type(self.dataset_checkpoint) is not DatasetCheckpoint
+                    or self.database.mode!='VERIFIED_INITIALIZED'
+                    or self.dataset_checkpoint.database_generation!=self.database.database_generation):
+                raise ValueError('exact Dataset checkpoint for this restored generation required')
         root = Path(self.artifact_root)
         if (not root.is_absolute() or '..' in root.parts or root != Path('/kaggle/working')
                 or not 1 <= len(self.artifacts) <= 96):
@@ -159,7 +166,8 @@ class TargetLaunchSpec:
             native_bundle=self.native_bundle.wire() if self.native_bundle is not None else None,
             bootstrap_only=self.bootstrap_only,bootstrap_seconds=self.bootstrap_seconds,
             original_intake=self.original_intake.wire() if self.original_intake is not None else None,
-            **(dict(recovery=self.recovery.wire()) if self.recovery is not None else {}))
+            **(dict(recovery=self.recovery.wire()) if self.recovery is not None else {}),
+            **(dict(dataset_checkpoint=self.dataset_checkpoint.wire()) if self.dataset_checkpoint is not None else {}))
 
 
 class TargetRuntime:
@@ -274,7 +282,8 @@ class TargetRuntime:
             upload=upload,download=download,workspace=workspace,limits=limits,
             ticket_channel=ticket_channel,transfer=transfer,acquire=acquire,model_pins=model_pins,
             **({'sql_root':self.target['sql_root']} if any(e.get('route')=='geo.dependencies.upgrade.v2'
-                for e in self.target['command_handlers']) else {}))
+                for e in self.target['command_handlers']) else {}),
+            **({'dataset_checkpoint':self.target['dataset_checkpoint']} if self.target.get('dataset_checkpoint') is not None else {}))
         self.recovery_worker=worker
         self._bind_read_handler_maintenance()
         self._recovery_available.set()

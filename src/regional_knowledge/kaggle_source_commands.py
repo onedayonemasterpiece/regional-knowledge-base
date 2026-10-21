@@ -365,7 +365,16 @@ class AcceptedSourceDispatch:
         if entry.apply_receipt is None:return None
         try:
             await self.spool.publish_outcome(identity['operation_key'],writer_generation=identity['writer_generation'])
-        except (JournalUnknown,StoreUnavailable,TimeoutError):
+        except (JournalUnknown,StoreUnavailable,TimeoutError) as exc:
+            from .dataset_recovery_store import DatasetRecoveryStore
+            if (type(self.spool.journal.store) is DatasetRecoveryStore
+                    and type(exc) is JournalUnknown and exc.args==('outcome_pending_dataset_checkpoint',)):
+                result=await asyncio.to_thread(self.queue._complete_source_command,self,run_id,token,generation,
+                    job['id'],job['claim'],entry.command_sha256,remote_outcome_durable=False)
+                self.queue.shared_reads.durable_result_settled(job['id'],job['claim'],result)
+                _LOG.info('source_outcome_checkpoint_pending command_sha256=%s sequence=%s remote_outcome_durable=false',
+                    entry.command_sha256,entry.command.sequence)
+                return dict(job_id=job['id'],claim=job['claim'],status=result)
             failures=self._retry.get(job['id'],(0,0))[1]+1
             self._retry[job['id']]=(now+min(30,2**min(failures,5)),failures)
             _LOG.info('source_outcome_pending command_sha256=%s sequence=%s retry=%s',entry.command_sha256,entry.command.sequence,failures)

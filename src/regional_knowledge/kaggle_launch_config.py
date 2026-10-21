@@ -23,10 +23,14 @@ def _object(pairs):
 
 
 def target_launch_from_wire(value):
-    required={field.name for field in fields(TargetLaunchSpec)}-{'recovery'}
-    if type(value) is not dict or not required<=set(value) or set(value)-required-{'recovery'}:
+    optional={'recovery','dataset_checkpoint'}
+    required={field.name for field in fields(TargetLaunchSpec)}-optional
+    if type(value) is not dict or not required<=set(value) or set(value)-required-optional:
         raise ValueError('exact target launch configuration fields required')
     options=dict(value)
+    if options.get('dataset_checkpoint') is not None:
+        from .kaggle_dataset_base import DatasetCheckpoint
+        options['dataset_checkpoint']=DatasetCheckpoint.from_wire(options['dataset_checkpoint'])
     if options.get('recovery') is not None:
         from .kaggle_recovery_composition import SnapshotRecoveryConfig
         options['recovery']=SnapshotRecoveryConfig.from_wire(options['recovery'])
