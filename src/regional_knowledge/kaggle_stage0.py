@@ -28,7 +28,7 @@ MAX_FILES = 128
 # Fresh11's measured source/domain closure plus PDF runtime has130 entries.
 # Download and wheel budgets remain128; only the complete prepared inventory
 # includes the additional immutable generated source files.
-MAX_PREPARED_FILES = 144
+MAX_PREPARED_FILES = 160
 MAX_FILE_BYTES = 16 * 1024**3
 MAX_TOTAL_BYTES = 64 * 1024**3
 CHUNK_BYTES = 1024 * 1024

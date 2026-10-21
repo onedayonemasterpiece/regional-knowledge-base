@@ -378,13 +378,18 @@ class TargetRuntime:
         source_handler=None;history_handler=None
         if self.target.get('command_handlers'):
             from .kaggle_source_commands import fixed_registry,WorkerSourceExecutor
+            transition_prepare=None
+            if any(e.get('route')=='geo.dependencies.upgrade.v2' for e in self.target['command_handlers']):
+                transition_prepare=getattr(getattr(self.recovery_worker,'factory',None),'prepare_transition',None)
+                if not callable(transition_prepare):
+                    raise BootstrapUnavailable('target_ordered_migration_owner_required')
             self.writer_pool=self.pool_factory(kwargs={**self.database.connection(),'user':'rkb_writer'},
                 min_size=1,max_size=1,open=False,timeout=2,max_waiting=1)
             await self.writer_pool.open(wait=True,timeout=10)
             source_handler=WorkerSourceExecutor(acquire=self.writer_pool.connection,
                 registry=fixed_registry(self.database,self.target['command_handlers']),database=self.database,
                 run_id=run_id,launch_nonce=launch_nonce,runtime_incarnation=runtime_incarnation,
-                prepare_transition=(self.recovery_worker.factory.prepare_transition if self.recovery_worker is not None else None))
+                prepare_transition=transition_prepare)
             from contextlib import asynccontextmanager
             from .kaggle_source_history_native import NativeSourceHistoryObserver
             @asynccontextmanager

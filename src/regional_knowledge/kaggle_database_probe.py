@@ -225,7 +225,7 @@ class NativeDatabaseProbe:
                                         rows[key] = payload
                                         add(section,key,payload)
                                 observed[section] = rows
-                            self._validate_catalog(observed)
+                            self._validate_catalog(observed,self.schema_revision)
                             await budget()
                             await control.execute('SELECT public.vector_dims(array_fill(0.0::real,ARRAY[1024])::public.vector)')
                             if await control.fetchone() != (1024,):
@@ -271,7 +271,8 @@ class NativeDatabaseProbe:
         except Exception:
             raise DatabaseProbeUnavailable('database_probe_failed') from None
 
-    def _validate_catalog(self,observed):
+    @staticmethod
+    def _validate_catalog(observed,schema_revision=None):
         stories=bool(STORY_TABLES.intersection(observed['tables']))
         tables=TABLES|STORY_TABLES if stories else TABLES
         functions=FUNCTIONS|STORY_FUNCTIONS if stories else FUNCTIONS
@@ -287,7 +288,7 @@ class NativeDatabaseProbe:
                 tables=tables|known_tables;functions=functions|known_functions.keys()
                 required_triggers=required_triggers|known_triggers
                 extra_functions.update(known_functions)
-        if self.schema_revision=='rkb-v4-sql001-012-v1':
+        if schema_revision=='rkb-v4-sql001-012-v1':
             upgrades={
                 'rkb_v4.check_geo_manifest_install_v2(bytea,jsonb,jsonb,text)':('boolean',False),
                 'rkb_v4.apply_geo_manifest_install_v2(bytea,jsonb,jsonb,text)':('bytea',False),
