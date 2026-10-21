@@ -26,6 +26,60 @@ CONFIG = {'run_id': 'fixture-run', 'token': 'synthetic-worker-token',
           'channel': 'wss://fixture.example/bge-worker/channel', 'launch_nonce': 'fixture-nonce'}
 
 
+@pytest.mark.asyncio
+async def test_stable_heartbeat_renews_outage_budget_without_reloading_encoder(monkeypatch):
+    transport=module('bge_wss_transport')
+    monkeypatch.setattr(transport.random,'uniform',lambda *args:.0001)
+    stop=asyncio.Event();clock=[0.];attempts=[];sessions=[];loads=[]
+    @asynccontextmanager
+    async def connect():
+        attempts.append(len(attempts)+1)
+        if len(attempts) not in (10,19):
+            raise ConnectionError('temporary API unavailability')
+        generation=len(sessions)+1;sessions.append(generation)
+        incoming=asyncio.Queue()
+        class Socket:
+            async def send(self,raw):
+                frame=json.loads(raw);kind=frame['type']
+                if kind=='ATTACH':reply=dict(type='WELCOME',provider_version='85')
+                elif kind=='READY':reply=dict(type='READY_ACK',status='ready',provider_version='85')
+                elif kind=='HEARTBEAT':
+                    clock[0]+=31
+                    reply=dict(type='HEARTBEAT_ACK',provider_version='85')
+                else:raise AssertionError(kind)
+                await incoming.put(json.dumps(dict(protocol_version=2,connection_generation=generation,**reply)))
+                if kind=='HEARTBEAT':
+                    if generation==1:await incoming.put(ConnectionError('later independent API restart'))
+                    else:asyncio.get_running_loop().call_later(.01,stop.set)
+            async def receive(self):
+                value=await incoming.get()
+                if isinstance(value,Exception):raise value
+                return value
+        yield Socket()
+    def load():loads.append('encoder');return lambda text:[1.]+[0.]*1023
+    worker=transport.BgeWssTransport(CONFIG,load,lambda:{},connector=connect,
+        heartbeat_seconds=.01,maximum_seconds=3,stop=stop)
+    worker._retry_clock=lambda:clock[0]
+    await worker.run()
+    assert len(attempts)==19 and sessions==[1,2] and loads==['encoder']
+
+
+@pytest.mark.asyncio
+async def test_unhealthy_connections_still_exhaust_bounded_outage_budget(monkeypatch):
+    transport=module('bge_wss_transport')
+    monkeypatch.setattr(transport.random,'uniform',lambda *args:.0001)
+    attempts=[]
+    @asynccontextmanager
+    async def connect():
+        attempts.append(1)
+        raise ConnectionError('API stays unavailable')
+        yield
+    worker=transport.BgeWssTransport(CONFIG,lambda:None,lambda:{},connector=connect,maximum_seconds=3)
+    with pytest.raises(transport.BgeChannelStopped,match='reconnect exhausted'):
+        await worker.run()
+    assert len(attempts)==10
+
+
 class Wire:
     def __init__(self, stop, *, lose_ack=False, wrong_claim=False, replay_dispatch=False):
         self.stop, self.lose_ack, self.wrong_claim = stop, lose_ack, wrong_claim

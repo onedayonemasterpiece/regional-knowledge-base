@@ -54,7 +54,7 @@ class DatasetUpload:
                 or not self.token or len(self.token) > 8192):
             raise DatasetPublicationError('dataset_blob_identity_invalid')
         # Grants come from the authenticated Kaggle SDK, never a caller URL.
-        if origin(self.url) != 'https://storage.googleapis.com':
+        if origin(self.url) not in {'https://storage.googleapis.com','https://www.googleapis.com'}:
             raise DatasetPublicationError('dataset_blob_origin_invalid')
 
     @property

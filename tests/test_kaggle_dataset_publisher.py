@@ -110,6 +110,12 @@ def test_no_effect_for_foreign_owner_or_invalid_blob():
         DatasetUpload('base.tar', 1, 'a' * 64, 'token', 'https://attacker.example/upload')
 
 
+def test_real_kaggle_json_upload_origin_is_supported():
+    value=DatasetUpload('pg.blob',56_422_400,'a'*64,'opaque-token',
+        'https://www.googleapis.com/upload/storage/v1/b/owned/o?upload_id=opaque')
+    assert value.size==56_422_400
+
+
 def test_403_requires_independent_owned_inventory_absence():
     api, p, files = setup()
     def denied(request):

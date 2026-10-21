@@ -182,7 +182,7 @@ class WorkerRecoveryPhases:
                     raise SnapshotError('recovery_phase_unknown_requires_reconciliation')
             if len(self._requests)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
             self._requests[key]=request  # UNKNOWN is retained before effects.
-            if frame['phase'] in ('read_handler_stage','read_handler_activate','read_handler_rollback'):
+            if frame['phase'] in ('read_handler_stage','read_handler_activate','read_handler_rollback','capture'):
                 # Expected candidate/transfer/probe refusal is the outcome of
                 # THIS durable maintenance operation, not a fatal worker
                 # transport failure. BgeWssTransport._failure would otherwise
@@ -192,7 +192,8 @@ class WorkerRecoveryPhases:
                 try:
                     value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
                 except Exception:
-                    value={'status':'rejected','reason':'read_handler_maintenance_rejected'}
+                    reason='snapshot_capture_rejected' if frame['phase']=='capture' else 'read_handler_maintenance_rejected'
+                    value={'status':'rejected','reason':reason}
             else:
                 value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
             bounded(value,MAX_PHASE_RESULT_BYTES)

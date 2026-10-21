@@ -395,7 +395,14 @@ def channel_route(queue, *, read_telemetry=None):
                         if recovery_dispatch is None or shared is None:
                             raise ValueError('snapshot_transfer_unavailable')
                         for key in ('request_id','job_id','claim','operation_key'):_identifier(frame[key])
-                        ticket=await recovery_dispatch.issue_upload(frame,run_id=run_id,token=token,generation=generation)
+                        from .kaggle_dataset_publisher import DatasetPublicationError
+                        try:
+                            ticket=await recovery_dispatch.issue_upload(frame,run_id=run_id,token=token,generation=generation)
+                        except DatasetPublicationError:
+                            # This grant failed before delivery. End only the
+                            # capture request; keep the authenticated PG/model
+                            # owner available for diagnosis and recovery.
+                            ticket={'error':'snapshot_upload_grant_unavailable'}
                         await send('SNAPSHOT_UPLOAD_TICKET',request_id=frame['request_id'],ticket=ticket)
                     elif frame['type']=='RECOVERY_PHASE_RESULT':
                         recovery_dispatch=getattr(queue,'_recovery_phases',None)

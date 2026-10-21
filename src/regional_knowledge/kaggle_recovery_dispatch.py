@@ -179,6 +179,8 @@ class WssSnapshotPhases:
         # Content-derived stable subkeys survive lost receipts/reconnects.
         key=sha(encode({'operation':self.operation,'phase':phase,'arguments':args}))
         result=await self.dispatch.request(binding,phase,args,operation_key=key)
+        if phase=='capture' and result=={'status':'rejected','reason':'snapshot_capture_rejected'}:
+            raise SnapshotError('snapshot_capture_rejected')
         if phase in ('read_handler_stage','read_handler_activate','read_handler_rollback'):
             if result=={'status':'rejected','reason':'read_handler_maintenance_rejected'}:
                 # Failure is durably acknowledged, not a worker/PG/BGE crash.
