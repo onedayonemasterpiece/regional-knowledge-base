@@ -112,6 +112,31 @@ async def test_expired_execution_generation_before_final_http_issuance_suppresse
 
 
 @pytest.mark.asyncio
+async def test_handler_finishes_but_final_http_refresh_crosses_absolute_deadline(service):
+    s=service;receiver,app,payload,headers,link,req=await _receiver(s)
+    # The handler completes within its own timeout, but the ASGI final
+    # issuance can be delayed. The original absolute deadline must STILL
+    # fence the buffered HTTP body, independently of the source gate TTL.
+    payload['deadline_monotonic']=time.monotonic()+0.6
+    original=s.target.gate.refresh
+    async def late(gated):
+        await asyncio.sleep(max(0,payload['deadline_monotonic']-time.monotonic())+.08)
+        return await original(gated)
+    s.target.gate.refresh=late
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app,client=('127.0.0.1',9001)),
+                                 base_url='http://127.0.0.1') as client:
+        task=asyncio.create_task(client.post(PATH,json=payload,headers=headers))
+        dispatched=await work(s.target)
+        await settle(s.target,dispatched)
+        response=await task
+        value=response.json()
+        assert value['codec']==CODEC and value['request_id']==req['request_id']
+        assert value['context_gap'] and value['evidence']==[]
+        assert value['mode'] is None and not s.target.auth.resolver._contexts
+        await release(s.target,dispatched)
+
+
+@pytest.mark.asyncio
 async def test_denied_unsigned_or_forged_expert_caller_never_dispatches(service):
     s=service;reader,app,payload,headers,link,req=await _receiver(s)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app,client=('192.0.2.1',9040)),

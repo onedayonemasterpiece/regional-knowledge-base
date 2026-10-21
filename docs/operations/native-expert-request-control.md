@@ -138,7 +138,9 @@ The ASGI response is bound to one retained native search result. Before
 the final HTTP body, `ReadIssuanceMiddleware` refreshes source/participant
 permissions and a bounded read-only SQLite `issuance_current` check for
 request state, execution generation/token, service credential and current
-Slack destination policy. A revoked account, superseded lease, removed
+Slack destination policy. The same original absolute `deadline_monotonic` is
+rechecked during final issuance **after** the route's async timeout scope;
+a delayed middleware refresh cannot issue stale evidence. A revoked account, superseded lease, removed
 channel or unavailable source yields empty evidence; there is no
 unprotected secondary serialization path. The control DB final check has
 a 2-ms SQLite busy timeout and fails closed.

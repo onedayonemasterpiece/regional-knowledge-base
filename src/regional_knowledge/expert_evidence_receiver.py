@@ -143,9 +143,13 @@ class ExpertEvidenceReceiver:
                         destination=destination,limit=3))
                     if len(calls)!=1:
                         raise RuntimeError('retained source provenance required')
-                    current=lambda:self.control.issuance_current(
-                        credential,context.request_id,context.turn_generation,
-                        value['execution_token'],origin)
+                    # The ASGI issuance middleware runs after the handler's
+                    # timeout_at scope. The original absolute deadline must
+                    # still be current when buffered evidence is emitted.
+                    current=lambda:(time.monotonic()<context.deadline_monotonic
+                        and self.control.issuance_current(
+                            credential,context.request_id,context.turn_generation,
+                            value['execution_token'],origin))
                     calls[0].gate=_RequestFence(calls[0].gate,current)
                     bind_json_output(request,calls,context.request_id,
                         lambda output:_render(output,context),
