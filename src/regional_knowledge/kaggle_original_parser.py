@@ -26,7 +26,12 @@ def parse(path,action,index=0,*,cursor=None):
             raise ValueError('original_djvu_decoder_required')
         import runpy
         inspector=runpy.run_path(str(Path(__file__).with_name('kaggle_djvu_inspect.py')))
-        inventory=inspector['inspect_djvu'](path)
+        try:inventory=inspector['inspect_djvu'](path)
+        except inspector['DjvuStructureError']:
+            # Bad magic/length/directory/page geometry is a permanent bad
+            # original, not an infinite transient parser retry. Never leak
+            # its untrusted bytes or messages to owner-facing responses.
+            raise ValueError('original_djvu_invalid') from None
         return dict(format='djvu',page_count=inventory.page_count)
     import pymupdf as fitz
     with fitz.open(path) as document:
@@ -106,7 +111,7 @@ def main():
     except Exception as exc:
         code=str(exc) if isinstance(exc,ValueError) and str(exc) in {
             'original_pdf_invalid','original_page_geometry_invalid','original_render_byte_bound',
-            'original_djvu_decoder_required'} else 'original_pdf_parser_unavailable'
+            'original_djvu_decoder_required','original_djvu_invalid'} else 'original_pdf_parser_unavailable'
         os.write(1,json.dumps(dict(error=code,terminal=code not in {
             'original_pdf_parser_unavailable','original_djvu_decoder_required'})).encode())
         raise SystemExit(1)

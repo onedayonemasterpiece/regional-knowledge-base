@@ -124,3 +124,21 @@ def test_inspect_never_claims_djvu_image_pixel_decoder(tmp_path):
         parse(path, "page", 0)
     with pytest.raises(ValueError, match="original_djvu_decoder_required"):
         parse(path, "text", 0)
+
+
+@pytest.mark.parametrize("corrupt", ["empty_page", "truncated", "directory"])
+def test_malformed_djvu_is_terminal_invalid_not_an_endless_pending_decoder(corrupt, tmp_path):
+    raw = _large_djvu()
+    if corrupt == "empty_page":
+        raw = b"AT&TFORM" + (4).to_bytes(4, "big") + b"DJVU"
+    elif corrupt == "truncated":
+        raw = raw[:-71]
+    else:
+        broken = bytearray(raw)
+        first = broken.index(b"DIRM") + 8 + 3
+        broken[first + 2] ^= 0x80
+        raw = bytes(broken)
+    path = tmp_path / "corrupt.djvu"
+    path.write_bytes(raw)
+    with pytest.raises(ValueError, match="original_djvu_invalid"):
+        parse(path, "inspect")

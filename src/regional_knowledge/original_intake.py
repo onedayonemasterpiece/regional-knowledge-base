@@ -14,7 +14,7 @@ def digest(value):return hashlib.sha256(value).hexdigest()
 
 class OriginalIntakeError(ValueError):pass
 
-TERMINAL_REJECTIONS=frozenset({'original_djvu_pinned_parser_required','original_format_unsupported',
+TERMINAL_REJECTIONS=frozenset({'original_djvu_pinned_parser_required','original_djvu_invalid','original_format_unsupported',
     'original_expected_bytes_mismatch','original_page_count_limit','original_pdf_invalid',
     'original_page_geometry_invalid','original_render_byte_bound'})
 

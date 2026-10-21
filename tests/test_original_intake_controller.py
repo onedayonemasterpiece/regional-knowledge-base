@@ -143,10 +143,21 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
             data=b'AT&TFORM'+b'\0'*4+b'DJVU';path=folder/'native.djvu';path.write_bytes(data)
             return SimpleNamespace(path=path,sha256=digest(data),size_bytes=len(data))
         n.handler.downloader.download=djvu
+        from regional_knowledge.kaggle_original_parser import parse as pinned_parser
+        from regional_knowledge.original_intake import OriginalIntakeRejected
+        async def actual_djvu_inspection(path,action,index=0,*,cursor=None):
+            # The real Python -I parser wrapper translates its static terminal
+            # child code into OriginalIntakeRejected on this trust boundary.
+            try:return pinned_parser(path,action,index,cursor=cursor)
+            except ValueError as exc:
+                if str(exc)=='original_djvu_invalid':
+                    raise OriginalIntakeRejected('original_djvu_invalid') from None
+                raise
+        n.handler.parser=actual_djvu_inspection
         unsupported=str(uuid5(UUID(INGEST),'djvu-intake'))
         rejected=await controller.begin(e.auth.p.admin,operation_id='unsupported-djvu',source_id=str(uuid5(UUID(SOURCE),'djvu')),
             ingestion_id=unsupported,file=file,max_bytes=len(PDF))
-        assert rejected.state=='rejected' and rejected.reason=='original_djvu_pinned_parser_required'
+        assert rejected.state=='rejected' and rejected.reason=='original_djvu_invalid'
         assert (await controller.status(e.auth.p.admin,unsupported)).state=='rejected'
         assert await controller.verified(e.auth.p.admin,unsupported) is None
         assert dev_body_reads and all('/pages/' in key for key in dev_body_reads)
