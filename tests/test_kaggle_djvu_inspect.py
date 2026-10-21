@@ -97,3 +97,26 @@ def test_actual_owner_djvu_inventory_when_explicitly_mounted():
     assert found.directory_entries == 153
     assert found.byte_length > 2*1024*1024
     assert sum(p.text_chunks for p in found.pages) == 0
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFOs")
+def test_fifo_is_refused_with_nonblocking_open_and_bounded_deadline(tmp_path):
+    """A hostile FIFO must not hang at open() before structural bounds run."""
+    import subprocess
+    import sys
+
+    fifo = tmp_path / "blocking.djvu"
+    os.mkfifo(fifo)
+    program = (
+        "import sys\n"
+        "from regional_knowledge.kaggle_djvu_inspect import inspect_djvu, DjvuStructureError\n"
+        "try:\n"
+        "    inspect_djvu(sys.argv[1])\n"
+        "except DjvuStructureError:\n"
+        "    sys.exit(0)\n"
+    )
+    # Do not hang pytest if the guarded O_NONBLOCK ever regresses.
+    completed = subprocess.run(
+        [sys.executable, "-c", program, str(fifo)],
+        capture_output=True, text=True, timeout=3)
+    assert completed.returncode == 0, completed.stderr

@@ -118,7 +118,7 @@ def inspect_djvu(path: str | os.PathLike, *, max_bytes=MAX_DJVU_ORIGINAL_BYTES,
     if (type(max_bytes) is not int or not 16 <= max_bytes <= MAX_DJVU_ORIGINAL_BYTES
             or type(max_pages) is not int or not 1 <= max_pages <= MAX_DJVU_PAGES):
         raise DjvuStructureError('djvu_inspection_budget_invalid')
-    fd = os.open(Path(path), os.O_RDONLY | os.O_CLOEXEC | getattr(os, 'O_NOFOLLOW', 0))
+    fd = os.open(Path(path), os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
     try:
         info = os.fstat(fd)
         size = info.st_size
