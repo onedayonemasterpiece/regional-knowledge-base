@@ -19,13 +19,27 @@ RUN_CONFIG = {}  # Replaced in the private generated notebook, never committed.
 REVISION = '5617a9f61b028005a4858fdac845db406aefb181'
 SPACE = 'bge-m3:5617a9f:t211-tr5161:cls-l2-512:q1-d1:v1'
 _MODEL_LOAD_COUNT = 0
+# These are ACTUAL completed Stage0 invocation measurements. An absent
+# observation is UNKNOWN, never evidence of zero installs/downloads.
+_RKB_STAGE0_COUNTERS = None
+_RKB_STAGE0_ATTEMPTS = 0
 
 def load_encoder():
+    global _RKB_STAGE0_COUNTERS, _RKB_STAGE0_ATTEMPTS
     prepared = RUN_CONFIG.get('prepared_model')
     artifacts = None
     if RUN_CONFIG.get('stage0') is not None:
         from regional_knowledge.kaggle_stage0 import prepare_stage0
-        prepare_stage0(prepared,RUN_CONFIG['stage0'],run_id=RUN_CONFIG['run_id'])
+        _RKB_STAGE0_ATTEMPTS += 1
+        receipt = prepare_stage0(prepared,RUN_CONFIG['stage0'],run_id=RUN_CONFIG['run_id'])
+        if (type(receipt) is not dict or type(receipt.get('downloaded_bytes')) is not int
+                or receipt['downloaded_bytes'] < 0 or type(receipt.get('installed')) is not bool):
+            raise ValueError('stage0_runtime_counters_missing')
+        previous=_RKB_STAGE0_COUNTERS or {'downloaded_bytes':0,'install_count':0}
+        _RKB_STAGE0_COUNTERS=dict(
+            invocation_count=_RKB_STAGE0_ATTEMPTS,
+            downloaded_bytes=previous['downloaded_bytes']+receipt['downloaded_bytes'],
+            install_count=previous['install_count']+int(receipt['installed']))
     if prepared is not None:
         from regional_knowledge.kaggle_bootstrap import PreparedArtifact, verify_artifacts, ResidentEncoder
         from regional_knowledge.kaggle_readiness import ArtifactRequirement

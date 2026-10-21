@@ -157,11 +157,19 @@ async def test_exact_run_read_handler_status_uses_retained_slot_without_pg_or_bg
         await request('not-prepared')
     slot=ReadHandlerSlot(old,loaded_sha256='a'*64,compatibility=context())
     worker.read_handler_slot=slot
+    inspected=[]
+    async def live_probe(binding):
+        inspected.append(binding)
+        return dict(status='ready',pg_system_identifier='7420331119',
+            resident_model_load_count=1,process_model_load_count=1)
+    worker.read_handler_runtime_observer=live_probe
     result=await request('fresh-before')
-    assert result['value']==slot.receipt()
+    assert {k:v for k,v in result['value'].items() if k!='owned_runtime'}==slot.receipt()
     assert result['value']['loaded_sha256']=='a'*64
     assert result['value']['loaded_kind']=='verified_bundle'
     assert result['value']['generation']==0
+    assert result['value']['owned_runtime']['pg_system_identifier']=='7420331119'
+    assert inspected==[('r','inc',2)]
     with pytest.raises(SnapshotError,match='read_handler_status_arguments'):
         await request('forged-param',{'module_path':'/private/code.py'})
     root,path,digest=staged_module(tmp_path)
@@ -173,7 +181,16 @@ async def test_exact_run_read_handler_status_uses_retained_slot_without_pg_or_bg
     assert changed['value']['loaded_sha256']==digest
     assert changed['value']['loaded_kind']=='module'
     assert changed['value']['generation']==1
-    assert len(observed)==4
+    assert changed['value']['owned_runtime']['resident_model_load_count']==1
+    assert len(inspected)==2 and len(observed)==6  # before + after live PG check
+    # Failed PG readback is an unavailable status, not fabricated "0 loads"
+    # or a fatal worker exception closing the warmed encoder.
+    async def denied(_):raise PermissionError('private SQL error')
+    worker.read_handler_runtime_observer=denied
+    missing=await request('fresh-pg-denied')
+    assert missing['value']['owned_runtime']==dict(
+        status='unavailable',reason='runtime_readback_unavailable')
+    assert missing['value']['loaded_sha256']==digest
     # This source-only operation touched neither PG nor model/asset owner.
     await worker.aclose()
 

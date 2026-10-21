@@ -132,6 +132,7 @@ class WorkerRecoveryPhases:
         # pathname, module bytes or resource reference enters this WSS phase.
         self.read_handler_slot=None
         self.read_handler_control=None
+        self.read_handler_runtime_observer=None
 
     async def wait_initialized(self,database,run_id,launch_nonce,runtime_incarnation):
         if database!=self.factory.database or (run_id,launch_nonce,runtime_incarnation)!=self.factory.identity:
@@ -221,7 +222,19 @@ class WorkerRecoveryPhases:
             if type(self.read_handler_slot) is not ReadHandlerSlot:
                 raise SnapshotError('read_handler_status_unavailable')
             # This is always a fresh, no-mutation loaded-version receipt.
-            return self.read_handler_slot.receipt()
+            receipt=self.read_handler_slot.receipt()
+            observer=self.read_handler_runtime_observer
+            if observer is not None:
+                try:
+                    observed=await observer(binding)
+                except Exception:
+                    # A readback must not kill the warmed worker when its
+                    # bounded PG observation is unavailable. Never turn a
+                    # missing counter or SQL exception into fabricated zero.
+                    observed={'status':'unavailable','reason':'runtime_readback_unavailable'}
+                receipt['owned_runtime']=observed
+                self.factory._current(binding)  # No stale generation post I/O.
+            return receipt
         if phase in ('read_handler_stage','read_handler_activate','read_handler_rollback'):
             from .kaggle_warm_maintenance import WarmHandlerMaintenance
             if type(self.read_handler_control) is not WarmHandlerMaintenance:
