@@ -1,6 +1,7 @@
 """Exact dataset pin/input verification only. No provider, PG or model effects."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import pytest
 
@@ -191,6 +192,31 @@ def test_unsafe_symlink_and_writable_files_are_rejected(tmp_path):
     archive.chmod(0o666)
     with pytest.raises(DatasetBaseUnavailable,match='file_identity_differs'):
         verify(mount,pin)
+
+
+@pytest.mark.parametrize('readonly',[False,True])
+def test_effective_readonly_mount_with_permissive_modes(tmp_path,monkeypatch,readonly):
+    from types import SimpleNamespace
+    from regional_knowledge import kaggle_dataset_base as module
+    mount,root,pin=fixture(tmp_path,sequence=7)
+    data=canonical(dict(codec='rkb.dataset-journal.v1',objects=[]))
+    path=root/'journal-control.json';path.write_bytes(data)
+    journal=DatasetFile(path.name,len(data),hashlib.sha256(data).hexdigest())
+    checkpoint=DatasetCheckpoint(pin.owner_slug,pin.dataset_slug,pin.dataset_version,
+        pin.database_generation,pin.base_sequence,pin.manifest,pin.archive,pin.control,journal)
+    root.chmod(0o777)
+    for entry in root.iterdir():entry.chmod(0o666)
+    monkeypatch.setattr(module.os,'fstatvfs',lambda fd:SimpleNamespace(f_flag=os.ST_RDONLY if readonly else 0))
+    if not readonly:
+        with pytest.raises(DatasetBaseUnavailable,match='dataset_mount_writable'):verify(mount,pin)
+        with pytest.raises(DatasetBaseUnavailable,match='dataset_mount_writable'):
+            verify_mounted_journal(checkpoint,mount_root=mount)
+        return
+    assert verify(mount,pin).archive_path==root/'postgres.tar'
+    assert verify_mounted_journal(checkpoint,mount_root=mount)==journal.sha256
+    archive=root/'postgres.tar'
+    original=archive.read_bytes();archive.write_bytes(bytes([original[0]^1])+original[1:])
+    with pytest.raises(DatasetBaseUnavailable,match='dataset_file_hash_differs'):verify(mount,pin)
 
 
 @pytest.mark.parametrize('name',['../book','subdir/base.tar','/absolute','', '..'])

@@ -164,7 +164,7 @@ def _unique(pairs):
 def _read_exact(fd,file:DatasetFile,*,capture=False):
     info=os.fstat(fd)
     if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1
-            or info.st_mode & 0o022 or info.st_size!=file.size):
+            or _writable_by_others(fd,info) or info.st_size!=file.size):
         raise DatasetBaseUnavailable('dataset_file_identity_differs')
     digest=hashlib.sha256();used=0;parts=[]
     while used < file.size:
@@ -176,6 +176,13 @@ def _read_exact(fd,file:DatasetFile,*,capture=False):
         raise DatasetBaseUnavailable('dataset_file_length_differs')
     if digest.hexdigest()!=file.sha256:raise DatasetBaseUnavailable('dataset_file_hash_differs')
     return b''.join(parts) if capture else None
+
+
+def _writable_by_others(fd,info):
+    # Kaggle input mounts can preserve permissive source mode bits while the
+    # kernel enforces a read-only filesystem. Check the opened object's mount,
+    # rather than treating those bits alone as effective write permission.
+    return bool(info.st_mode & 0o022 and not os.fstatvfs(fd).f_flag & os.ST_RDONLY)
 
 
 def _canonical_json(data):
@@ -198,7 +205,7 @@ def verify_mounted_journal(checkpoint, *, mount_root=Path('/kaggle/input')):
         raise DatasetBaseUnavailable('dataset_mount_untrusted')
     root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     try:
-        if os.fstat(root_fd).st_mode & 0o022:
+        if _writable_by_others(root_fd,os.fstat(root_fd)):
             raise DatasetBaseUnavailable('dataset_mount_writable')
         fd=os.open(checkpoint.journal.name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=root_fd)
         try:data=_read_exact(fd,checkpoint.journal,capture=True)
@@ -238,7 +245,7 @@ def verify_mounted_dataset_base(pin:DatasetBasePin, *,
     except OSError:raise DatasetBaseUnavailable('dataset_mount_unreadable') from None
     try:
         metadata=os.fstat(root_fd)
-        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_mode & 0o022:
+        if not stat.S_ISDIR(metadata.st_mode) or _writable_by_others(root_fd,metadata):
             raise DatasetBaseUnavailable('dataset_mount_writable')
         results={}
         for kind,file in (('manifest',pin.manifest),('control',pin.control),('archive',pin.archive)):
