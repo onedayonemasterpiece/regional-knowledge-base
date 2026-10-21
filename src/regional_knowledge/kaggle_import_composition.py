@@ -52,7 +52,7 @@ class SourceImportOwners:
                 return False
         originals=OriginalIntakeController(queue=queue,spool=spool,participants=participants,
             object_store=object_store,binding_current=current,current_binding=lambda:current_binding(queue),
-            allowed_origins=frozenset(self.allowed_origins),max_bytes=2*1024*1024)
+            allowed_origins=frozenset(self.allowed_origins),max_bytes=128*1024*1024)
         return dict(import_originals=originals,
             import_tokenizer=HfImportTokenCounter(self.tokenizer_directory,process=self.tokenizer_process),
             import_parser_sha256=self.parser_sha256,import_launch_config_sha256=self.launch_config_sha256)

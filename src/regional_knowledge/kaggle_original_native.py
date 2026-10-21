@@ -60,7 +60,9 @@ class NativeOriginalIntake:
             raise OriginalIntakeError('original_private_workspace_required')
         actual={k:importlib.metadata.version(k) for k,_ in config.parser_packages}
         if actual!=dict(config.parser_packages):raise OriginalIntakeError('original_parser_dependency_mismatch')
-        self.parser_sha256=digest(canonical(dict(packages=actual,code=digest(Path(__file__).with_name('kaggle_original_parser.py').read_bytes()))))
+        self.parser_sha256=digest(canonical(dict(packages=actual,
+            code=digest(Path(__file__).with_name('kaggle_original_parser.py').read_bytes()),
+            djvu_inspector_sha256=digest(Path(__file__).with_name('kaggle_djvu_inspect.py').read_bytes()))))
         self.config,self.database,self.identity,self.root,self.current=config,database,identity,root,current
         from .file_ingress import ChatFileDownloader
         self.downloader=downloader or ChatFileDownloader()
@@ -91,6 +93,8 @@ class NativeOriginalIntake:
                 from .original_intake import TERMINAL_REJECTIONS
                 if value.get('terminal') is True and value.get('error') in TERMINAL_REJECTIONS:
                     raise OriginalIntakeRejected(value['error'])
+                if value.get('error')=='original_djvu_decoder_required' and value.get('terminal') is False:
+                    raise OriginalIntakeError('original_djvu_decoder_required')
                 raise OriginalIntakeError('original_parser_unavailable')
             return value
         finally:
@@ -180,20 +184,25 @@ class NativeOriginalIntake:
                     downloaded=DownloadedFile(restored,actual_hash,actual_size)
                 else:downloaded=await self.downloader.download(private['download_url'],folder,max_bytes=spec.max_bytes)
                 with downloaded.path.open('rb') as stream:header=stream.read(16)
-                if not header.startswith(b'%PDF-'):
-                    raise OriginalIntakeRejected('original_djvu_pinned_parser_required' if header.startswith(b'AT&TFORM') else 'original_format_unsupported')
+                if header.startswith(b'%PDF-'):
+                    detected_format='pdf'
+                elif header.startswith(b'AT&TFORM') and header[12:16] in (b'DJVM',b'DJVU'):
+                    detected_format='djvu'
+                else:
+                    raise OriginalIntakeRejected('original_format_unsupported')
                 if ((spec.expected_sha256 is not None and spec.expected_sha256!=downloaded.sha256)
                         or (spec.expected_size is not None and spec.expected_size!=downloaded.size_bytes)):
                     raise OriginalIntakeRejected('original_expected_bytes_mismatch')
                 info=await self.parser(downloaded.path,'inspect')
-                if info.get('format')!='pdf' or type(info.get('page_count')) is not int or info['page_count']<1:
+                if (info.get('format')!=detected_format or type(info.get('page_count')) is not int
+                        or not 1<=info['page_count']<=2500):
                     raise OriginalIntakeError('original_parser_invalid')
                 if info['page_count']>spec.max_pages:raise OriginalIntakeRejected('original_page_count_limit')
                 if prior is not None and (info['format'],info['page_count'])!=(prior.format,prior.page_count):
                     raise OriginalIntakeError('original_restore_parser_mismatch')
                 handle=secrets.token_hex(24)
                 value=dict(handle=handle,spec=spec.wire(),sha256=downloaded.sha256,size=downloaded.size_bytes,
-                    format='pdf',page_count=info['page_count'],parser_sha256=self.parser_sha256)
+                    format=detected_format,page_count=info['page_count'],parser_sha256=self.parser_sha256)
                 value['acquisition_sha256']=digest(canonical(value))
                 if prior is not None:
                     value['acquisition_sha256']=prior.acquisition_sha256

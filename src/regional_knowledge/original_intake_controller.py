@@ -87,7 +87,8 @@ class OriginalIntakeController:
         if 'error' in value:
             code=value.get('error')
             if value.get('terminal') is True and code in TERMINAL_REJECTIONS:raise OriginalIntakeRejected(code)
-            if code=='original_retained_bytes_unavailable':raise OriginalIntakeError(code)
+            if code in ('original_retained_bytes_unavailable','original_djvu_decoder_required'):
+                raise OriginalIntakeError(code)
             raise OriginalIntakeError('original_native_receipt_unavailable')
         return value
 
