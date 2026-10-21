@@ -162,6 +162,14 @@ class FakeExistingCaseBackend:
         self.effects = {}
         self.attempts = []
         self.lost_first_create_reply = False
+        self.case_access = True
+        self.case_reads = []
+
+    async def disagreement_get(self, case_id, principal, *, section="case", limit=1):
+        self.case_reads.append((case_id, principal, section))
+        if not self.case_access or principal != ACTOR:
+            raise PermissionError("revoked Case access")
+        return dict(status="ok", case_id=case_id, case_role=2)
 
     async def disagreement_edit(self, action, operation_key, principal, *,
                                 case_id=None, command=None, expected_revision=None):
@@ -524,3 +532,66 @@ async def test_status_reports_durable_case_rejected_without_mutating_parent_curs
     assert store.rows[(ACTOR,parent)] is before and not before.rejected
     recorded = await adapter.apply(ACTOR,parent)
     assert recorded["status"] == "rejected" and store.rows[(ACTOR,parent)].rejected
+
+
+@pytest.mark.asyncio
+async def test_case_acl_recheck_before_stage_of_existing_case_even_when_sources_public(environment):
+    a, b, c, authority, sources, store, cases, adapter = environment
+    cases.case_access = False
+    with pytest.raises(PermissionError, match="revoked Case access"):
+        await adapter.stage(ACTOR, comparison(c,b,key="existing-revoked",action="add_evidence"))
+    assert store.rows == {} and not cases.attempts
+
+
+@pytest.mark.asyncio
+async def test_case_acl_recheck_for_duplicate_stage_and_intermediate_status_after_revoke(environment):
+    a, b, _, authority, sources, store, cases, adapter = environment
+    value = comparison(a,b)
+    parent = (await adapter.stage(ACTOR,value))["operation_key"]
+    progressed = await adapter.apply(ACTOR,parent)  # one CREATE applied, evidence not yet
+    assert progressed["status"] == "pending" and progressed["case_id"] == CASE
+    assert not store.rows[(ACTOR,parent)].attempted
+    assert store.rows[(ACTOR,parent)].step_index == 1
+    cases.case_access = False
+    with pytest.raises(PermissionError,match="revoked Case access"):
+        await adapter.stage(ACTOR,value)  # duplicate key cannot re-issue saved Case ID
+    with pytest.raises(PermissionError,match="revoked Case access"):
+        await adapter.status(ACTOR,parent)  # before the next Case step was attempted
+    assert len(cases.effects) == 1 and store.stages == 1
+
+
+@pytest.mark.asyncio
+async def test_case_revoked_during_advance_finish_prevents_release_without_second_effect(environment):
+    a, b, c, authority, sources, store, cases, adapter = environment
+    parent=(await adapter.stage(ACTOR,comparison(c,b,key="finish-race",action="add_evidence")))["operation_key"]
+    original_finish=store.finish
+    async def revoke_on_finish(actor,key,version):
+        outcome=await original_finish(actor,key,version)
+        cases.case_access=False
+        return outcome
+    store.finish=revoke_on_finish
+    with pytest.raises(PermissionError,match="revoked Case access"):
+        await adapter.apply(ACTOR,parent)
+    assert store.rows[(ACTOR,parent)].done and len(cases.effects)==1
+    assert cases.attempts[0][0] == "add_evidence"
+    with pytest.raises(PermissionError):
+        await adapter.status(ACTOR,parent)
+    cases.case_access=True
+    fresh=TargetStoryReconcile(sources=sources,authority=authority,store=store,cases=cases)
+    output=await fresh.status(ACTOR,parent)
+    assert output["operation_key"]==parent and output["case_id"]==CASE
+    assert len(cases.effects)==1
+
+
+@pytest.mark.asyncio
+async def test_case_get_unproven_response_blocks_cached_case_output(environment):
+    a, b, _, authority, sources, store, cases, adapter=environment
+    parent=(await adapter.stage(ACTOR,comparison(a,b)))["operation_key"]
+    await adapter.apply(ACTOR,parent)
+    async def wrong_case(case_id,principal,*,section="case",limit=1):
+        return dict(status="ok",case_id=A)
+    cases.disagreement_get=wrong_case
+    with pytest.raises(ReconcileError,match="case_acl_unavailable"):
+        await adapter.status(ACTOR,parent)
+    with pytest.raises(ReconcileError,match="case_acl_unavailable"):
+        await adapter.stage(ACTOR,comparison(a,b))

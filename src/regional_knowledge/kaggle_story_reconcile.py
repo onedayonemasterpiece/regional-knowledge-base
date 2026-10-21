@@ -189,6 +189,8 @@ class ReconcileStore(Protocol):
 
 
 class ExistingCaseBackend(Protocol):
+    async def disagreement_get(self, case_id: str, principal: Any, *,
+                               section: str = "case", limit: int = 1) -> dict[str, Any]: ...
     async def disagreement_edit(self, action: str, operation_key: str, principal: Any, *,
                                 case_id: str | None = None, command: Any = None,
                                 expected_revision: int | None = None) -> dict[str, Any]: ...
@@ -276,8 +278,19 @@ class TargetStoryReconcile:
                  store: ReconcileStore, cases: ExistingCaseBackend):
         self.sources, self.authority, self.store, self.cases = sources, authority, store, cases
 
+    async def _case_current(self, principal: Any, case_id: str | None) -> None:
+        if case_id is None:
+            return
+        # The canonical target Case reader enforces current person/Case ACL;
+        # source permission alone does not authorize a stored Case pointer.
+        # Ignore its output (no child renderer replacing parent operation_key).
+        response = await self.cases.disagreement_get(case_id, principal, section="case", limit=1)
+        if (type(response) is not dict or response.get("status") != "ok"
+                or response.get("case_id") != case_id):
+            raise ReconcileError("case_acl_unavailable")
+
     async def next(self, principal: Any, *, after: str | None = None, limit: int = 3) -> dict[str, Any]:
-        if type(limit) is not int or not 1 <= limit <= 8 or (after is not None and (type(after) is not str or len(after) > 300)):
+        if type(limit) is not int or not 1 <= limit <= 8 or (after is not None and (type(after) is not str or len(after) > 1024)):
             raise ReconcileError("bounded_next_required")
         actor = await self.authority.resolve(principal, source_ids=(), mutate=False)
         page = await self.sources.next_sources(actor.person_id, after=after, limit=limit)
@@ -320,12 +333,17 @@ class TargetStoryReconcile:
         key = "story-reconcile:" + _digest([actor.person_id, left.frontier_id, comparison.comparison_key])
         intent = ReconcileIntent(actor.person_id, key, _digest(comparison.model_dump(mode="json")),
                                  left, right, comparison)
+        selected = str(comparison.case_plan.case_id) if comparison.case_plan.case_id is not None else None
+        await self._case_current(principal, selected)
         await self.authority.current(actor, source_ids=source_ids, mutate=True)
         stored = await self.store.stage(intent)
         if stored.intent.actor_id != actor.person_id or stored.intent.operation_key != key:
             raise ReconcileError("reconciliation_storage_mismatch")
         if stored.intent.request_sha256 != intent.request_sha256:
             raise ReconcileError("operation_key_conflict")
+        # Duplicate STAGE may replay a Case ID saved *after* original staging.
+        await self._case_current(principal, stored.case_id or selected)
+        await self.authority.current(actor, source_ids=source_ids, mutate=True)
         return self._output(stored)
 
     async def _current_intent(self, principal: Any, operation_key: str, *, mutate: bool):
@@ -342,6 +360,10 @@ class TargetStoryReconcile:
         if (current_left.frontier_id != row.intent.anchor_source.frontier_id
                 or current_right.frontier_id != row.intent.peer_source.frontier_id):
             raise ReconcileError("source_frontier_changed")
+        await self.authority.current(actor, source_ids=source_ids, mutate=mutate)
+        selected = (row.case_id or (str(comparison.case_plan.case_id)
+                    if comparison.case_plan.case_id is not None else None))
+        await self._case_current(principal, selected)
         await self.authority.current(actor, source_ids=source_ids, mutate=mutate)
         return actor, row, source_ids
 
@@ -387,7 +409,10 @@ class TargetStoryReconcile:
         steps = _steps(row.intent.comparison)
         if row.step_index == len(steps):
             await self.authority.current(actor, source_ids=source_ids, mutate=True)
-            return self._output(await self.store.finish(actor.person_id, operation_key, row.version))
+            row = await self.store.finish(actor.person_id, operation_key, row.version)
+            await self._case_current(principal, row.case_id)
+            await self.authority.current(actor, source_ids=source_ids, mutate=True)
+            return self._output(row)
         action, command = steps[row.step_index]
         if not row.attempted:
             row = await self.store.begin(actor.person_id, operation_key, row.version)
@@ -420,9 +445,12 @@ class TargetStoryReconcile:
             raise ReconcileError("case_id_mismatch")
         await self.authority.current(actor, source_ids=source_ids, mutate=True)
         row = await self.store.advance(actor.person_id, operation_key, row.version, row.step_index + 1, confirmed)
+        await self._case_current(principal, row.case_id)
+        await self.authority.current(actor, source_ids=source_ids, mutate=True)
         if row.step_index == len(steps):
-            await self.authority.current(actor, source_ids=source_ids, mutate=True)
             row = await self.store.finish(actor.person_id, operation_key, row.version)
+            await self._case_current(principal, row.case_id)
+            await self.authority.current(actor, source_ids=source_ids, mutate=True)
         return self._output(row)
 
     async def status(self, principal: Any, operation_key: str) -> dict[str, Any]:
@@ -445,5 +473,8 @@ class TargetStoryReconcile:
             except TimeoutError:
                 result["case_receipt_verified"] = False
             # Read-only status never advances the reconciliation cursor.
+        await self._case_current(principal, row.case_id or (
+            str(row.intent.comparison.case_plan.case_id)
+            if row.intent.comparison.case_plan.case_id is not None else None))
         await self.authority.current(actor, source_ids=source_ids, mutate=False)
         return result

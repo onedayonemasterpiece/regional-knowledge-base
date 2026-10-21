@@ -356,3 +356,23 @@ async def test_parameterized_keyset_does_not_inject_sql_and_cursor_is_canonical(
     assert "OR TRUE" not in NEXT_SQL
     assert db.used_params[0] == MIN_UUID and db.used_params[1] == ""
     assert len(json.dumps(page.items[0].proofs[0].__dict__)) < 2048
+
+
+@pytest.mark.asyncio
+async def test_parent_next_accepts_long_valid_source_reader_cursor_without_truncation():
+    from regional_knowledge.kaggle_story_reconcile import TargetStoryReconcile, ReconcileActor
+
+    records = [row(key="a" * 128,index=1),row(key="z" * 128,index=2)]
+    source,db,auth,spool,state,verified = reader(records)
+    class PrincipalAuthority:
+        async def resolve(self,principal,*,source_ids,mutate):
+            return ReconcileActor(principal)
+        async def current(self,actor,*,source_ids,mutate):
+            return None
+    parent=TargetStoryReconcile(sources=source,authority=PrincipalAuthority(),
+                                store=object(),cases=object())
+    first=await parent.next(ACTOR,limit=1)
+    assert len(first["next_cursor"])>300
+    second=await parent.next(ACTOR,after=first["next_cursor"],limit=1)
+    assert second["next_cursor"] is None
+    assert second["items"][0]["assertions"][0]["assertion_id"] != first["items"][0]["assertions"][0]["assertion_id"]
