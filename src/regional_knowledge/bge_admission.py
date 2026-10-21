@@ -299,6 +299,19 @@ class SharedReadAdmission:
                                                     editorial_documents=tuple(self._editorial_documents))
         if owner['run_id'] is not None and (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation']):
             raise StaleAttachment('prior compute resource remains unknown')
+        if (observe and self._work is not None and self._sent
+                and self._work.resource.run_id!=run_id):
+            prior=self._work.resource
+            # The standalone provider reconciler may have retired the old
+            # resource while this RAM controller stayed alive. Only its durable
+            # exact-incarnation native receipt can release the sent compute
+            # debt. No extra receipt read occurs on ordinary same-run queries.
+            retired=await asyncio.to_thread(self.queue.provider_reservation_retired,
+                                           prior.run_id,prior.runtime_incarnation)
+            if retired:
+                self._work=None;self._sent=False;self._state='unknown'
+                self._last_release=None;self._document_result=None
+                self._changed_slot()
         if observe:self._observe_attachment(run,generation)
         return run,owner,docs,resumed
 

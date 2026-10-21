@@ -109,6 +109,12 @@ class BgeQueue:
             ):
                 if name not in columns:
                     db.execute(f'alter table runs add column {name} {definition}')
+            db.execute("""create table if not exists bge_provider_terminal_receipts(
+                run_id text primary key,receipt_json text not null)""")
+            db.execute("""create table if not exists bge_provider_reconciliation(
+                id integer primary key check(id=1),cursor integer not null,
+                next_cycle real not null)""")
+            db.execute('insert or ignore into bge_provider_reconciliation values(1,0,0)')
         self.path.chmod(0o600)
 
     def _schema_current(self):
@@ -116,6 +122,9 @@ class BgeQueue:
             with self.connect(write=False) as db:
                 db.execute('select id,status,token_hash,started,heartbeat,useful,ready_at,provider_ref,launch_state,diagnostics,provider_version,launch_nonce,runtime_incarnation,connection_generation,channel_active,attachment_conflict,bootstrap_finalized_at from runs limit 0')
                 if db.execute('select current_run,successor,startup_ref,startup_state,startup_failures from control where id=1').fetchone() is None:
+                    return False
+                db.execute('select run_id,receipt_json from bge_provider_terminal_receipts limit 0')
+                if db.execute('select cursor,next_cycle from bge_provider_reconciliation where id=1').fetchone() is None:
                     return False
                 db.execute('select id,actor,idempotency,kind,texts,identity,state,created,updated,run_id,claim,lease_until,result,attempt from jobs limit 0')
             return True
@@ -183,6 +192,7 @@ class BgeQueue:
                 db.execute('update control set current_run=null where current_run=?',(run['id'],))
                 db.execute('update control set successor=null where successor=?',(run['id'],))
         db.execute("update jobs set state='pending',run_id=null,claim=null where state='claimed' and lease_until<=?",(now,))
+        self._finalize_provider_terminal_pointers(db)
 
     def _ensure(self, db, now, *, useful=True):
         self._expire(db,now)
@@ -930,6 +940,95 @@ class BgeQueue:
                 (now-DONE_AUDIT_RETENTION_SECONDS,),
             )
             return [dict(row) for row in db.execute('select id,status,launch_state,provider_ref,provider_version from runs').fetchall()]
+
+    def provider_reconciliation_page(self, *, limit=2):
+        """Durable keyset cursor: one unknown row cannot starve old reservations.
+
+        Cursor advances only after an attempted observation; crash repeats the
+        same read safely. An exhausted cycle backs off for 30 seconds. This is
+        reconciliation in the existing controller, not a dispatcher.
+        """
+        if type(limit) is not int or not 1<=limit<=8:raise ValueError('bounded history page required')
+        with self.connect() as db:
+            state=db.execute('select * from bge_provider_reconciliation where id=1').fetchone()
+            if self.clock()<state['next_cycle']:return []
+            rows=db.execute("""select rowid as _cursor,* from runs where rowid>?
+                and launch_state in ('dispatching','dispatched') order by rowid limit ?""",
+                (state['cursor'],limit)).fetchall()
+            if not rows:
+                db.execute('update bge_provider_reconciliation set cursor=0,next_cycle=? where id=1',
+                           (self.clock()+30,))
+            return [dict(r) for r in rows]
+
+    def provider_reservation_retired(self, run_id, incarnation):
+        """Indexed receipt read only when admission changes runtime attachments."""
+        with self.connect(write=False) as db:
+            row=db.execute("""select r.launch_state,t.receipt_json from runs r
+                join bge_provider_terminal_receipts t on t.run_id=r.id where r.id=?""",(run_id,)).fetchone()
+            if row is None or row['launch_state']!='terminal':return False
+            identity=json.loads(row['receipt_json'])['identity']
+            return identity['id']==run_id and identity['runtime_incarnation']==incarnation
+
+    def advance_provider_reconciliation(self, cursor):
+        if type(cursor) is not int or cursor<1:raise ValueError('valid history cursor required')
+        with self.connect() as db:
+            db.execute('update bge_provider_reconciliation set cursor=max(cursor,?) where id=1',(cursor,))
+
+    def retire_provider_reservation(self, proof):
+        """Internal adapter result only; never an operator termination boolean.
+
+        Retires compute ownership, not domain effects. Accepted commands,
+        publication intents, claims, results and durable demand remain intact.
+        A never-attached version needs no invented runtime incarnation.
+        """
+        from .kaggle_provider_terminal import validate_proof, _NativeTerminalProof, _OBSERVED
+        if type(proof) is not _NativeTerminalProof or proof._seal is not _OBSERVED:
+            raise TypeError('native observed proof required')
+        with self.connect() as db:
+            run=db.execute('select * from runs where id=?',(proof.snapshot['id'],)).fetchone()
+            if run is None:return False
+            encoded=json.dumps(proof.receipt(),sort_keys=True,separators=(',',':'))
+            previous=db.execute('select receipt_json from bge_provider_terminal_receipts where run_id=?',
+                                (run['id'],)).fetchone()
+            if previous is not None:
+                matched=run['launch_state']=='terminal' and previous['receipt_json']==encoded
+                if matched:self._finalize_provider_terminal_pointers(db)
+                return matched
+            if (not validate_proof(proof,run,self.clock()) or run['attachment_conflict']
+                    or run['status']!='expired'):return False
+            # CAS identity/freshness was read under this same write transaction.
+            # A later heartbeat/reconnect or changed version invalidates proof.
+            db.execute('insert into bge_provider_terminal_receipts values(?,?)',(run['id'],encoded))
+            db.execute("update runs set channel_active=0,launch_state='terminal' where id=?",
+                       (run['id'],))
+            table=db.execute("select 1 from sqlite_master where type='table' and name='bge_shared_admission'").fetchone()
+            if table:
+                db.execute("""update bge_shared_admission set run_id=null,incarnation=null
+                    where id=1 and run_id=? and incarnation is ?""",
+                    (run['id'],run['runtime_incarnation']))
+            self._finalize_provider_terminal_pointers(db)
+            return True
+
+    def _finalize_provider_terminal_pointers(self, db):
+        """Revisit at most current/successor after legitimate domain settlement.
+
+        Compute closure cannot settle claims or publications. When the existing
+        lease/recovery machinery clears those guards, durable demand may advance
+        without resubmitting the provider read or replaying an accepted effect.
+        """
+        from .queue_writer import pending
+        pointers=db.execute('select current_run,successor from control where id=1').fetchone()
+        for run_id in set(pointers):
+            if run_id is None:continue
+            closed=db.execute("""select 1 from runs r join bge_provider_terminal_receipts t
+                on t.run_id=r.id where r.id=? and r.status='expired' and r.launch_state='terminal'""",
+                (run_id,)).fetchone()
+            if not closed or pending(db,run_id):continue
+            claimed=db.execute("""select 1 from jobs where run_id=? and state='claimed'
+                and kind in ('source_command','recovery_phase') limit 1""",(run_id,)).fetchone()
+            if claimed:continue
+            db.execute('update control set current_run=null where current_run=?',(run_id,))
+            db.execute('update control set successor=null where successor=?',(run_id,))
 
     def needs_dispatched_terminal_probe(self, run_id):
         """Only an exact owner with a lost ready connection needs terminal lookup.
