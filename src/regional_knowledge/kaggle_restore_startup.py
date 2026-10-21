@@ -155,7 +155,12 @@ class SourceRestoreCoordinator:
             # Exact persisted activation already completed. Ordinary accepted
             # writes may have advanced since then: never replay the old base.
             # Startup still performs full native history verification next.
-            self.binding=binding;self.complete=True
+            self.binding=binding
+            if self.dispatch is None and getattr(self.startup,'dataset_seed',None) is not None:
+                # API-only restart retains native PG/model; rebuild only this
+                # process's maintenance facade for subsequent checkpoint capture.
+                self._compose(binding,nonce)
+            self.complete=True
             return True
         if self.dispatch is None:self._compose(binding,nonce)
         if self.binding is not None and self.binding.runtime_incarnation!=binding.runtime_incarnation:
