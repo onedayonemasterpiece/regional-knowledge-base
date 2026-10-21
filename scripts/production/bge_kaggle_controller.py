@@ -121,10 +121,15 @@ def reconcile_dispatched_terminal(api, queue, run, ref):
     logging.info(json.dumps({'event':'bge_exact_version_phase','run_id':run['id'],
         'provider_version':version,'phase':phase}))
     if phase in ('ERROR','FAILED','CANCELED','CANCELLED','COMPLETE'):
-        queue.launch_record(run['id'],ref,failed=True,provider_version=version)
-        logging.warning(json.dumps({'event':'bge_provider_terminal_reconciled',
+        # Kaggle's version label is NOT the execution/session identity. A
+        # terminal-looking version response, even with matching source, does
+        # not prove this exact worker/its descendants stopped. Keep the
+        # UNKNOWN run and capacity fenced; request_startup/startup_status
+        # report provider_execution_unknown rather than blindly pushing.
+        logging.warning(json.dumps({'event':'bge_provider_version_terminal_unverified',
             'run_id':run['id'],'provider_version':version,'phase':phase,
-            'remote_compute_terminal_proof':'provider_version_status_only'}))
+            'remote_compute_terminal_proof':'unavailable'}))
+        return 'terminal_unverified'
     return phase
 
 

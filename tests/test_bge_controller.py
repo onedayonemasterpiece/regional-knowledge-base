@@ -52,8 +52,8 @@ def test_unknown_save_binds_source_run_and_version_without_second_push(monkeypat
 
 
 
-def test_ready_lost_heartbeat_reconciles_exact_terminal_before_restarting_cold_demand(monkeypatch,tmp_path):
-    """Confirmed provider terminal frees capacity; unconfirmed does not."""
+def test_ready_lost_heartbeat_version_terminal_never_releases_execution_without_proof(monkeypatch,tmp_path):
+    """Even COMPLETE on the pinned notebook version is not session death proof."""
     from regional_knowledge.bge_queue import BgeQueue
     module=controller()
     now=[1000.]
@@ -85,15 +85,15 @@ def test_ready_lost_heartbeat_reconciles_exact_terminal_before_restarting_cold_d
     assert queue.request_startup()['run_id']==run_id
     assert len(queue.maintenance())==1
     phase[0]='COMPLETE'
-    assert module.reconcile_dispatched_terminal(None,queue,row,ref)=='COMPLETE'
+    assert module.reconcile_dispatched_terminal(None,queue,row,ref)=='terminal_unverified'
     with queue.connect(write=False) as db:
-        assert db.execute('select status from runs where id=?',(run_id,)).fetchone()[0]=='failed'
+        assert db.execute('select status from runs where id=?',(run_id,)).fetchone()[0]=='ready'
         assert db.execute('select startup_state from control where id=1').fetchone()[0]=='pending'
-    now[0]+=61
-    new=[x for x in queue.maintenance() if x['status']=='starting']
-    assert len(new)==1 and new[0]['id']!=run_id
+    now[0]+=361
     assert queue.request_startup()['startup_ref']==demand['startup_ref']
-    assert queue.startup_status(demand['startup_ref'])['status']=='pending'
+    assert queue.request_startup()['status']=='unavailable'
+    assert queue.startup_status(demand['startup_ref'])['reason']=='provider_execution_unknown'
+    assert len(queue.maintenance())==1
 
 
 def test_ready_lost_heartbeat_mismatched_version_keeps_unknown_capacity(monkeypatch,tmp_path):
@@ -115,6 +115,27 @@ def test_ready_lost_heartbeat_mismatched_version_keeps_unknown_capacity(monkeypa
     assert module.reconcile_dispatched_terminal(None,queue,row,'fixture-owner/stable-slug')=='unknown'
     assert queue.status()['state']=='unknown'
     assert queue.request_startup()['run_id']==rid
+    assert len(queue.maintenance())==1
+
+
+def test_old_ready_run_terminal_does_not_resurrect_completed_idle_demand(tmp_path):
+    from regional_knowledge.bge_queue import BgeQueue
+    now=[1000.]
+    queue=BgeQueue(tmp_path/'idle-terminal.sqlite',clock=lambda:now[0])
+    demand=queue.request_startup()
+    run_id=demand['run_id'];ref='fixture-owner/stable-slug'
+    token=queue.launch_claim(run_id,provider_ref=ref)
+    queue.launch_record(run_id,ref,provider_version=7)
+    queue.heartbeat(run_id,token,ready=True)
+    with queue.connect() as db:
+        db.execute("update control set startup_state='ready' where id=1")
+    # Simulate a separately execution-attested terminal outcome: this public
+    # launch_record path is NOT called for version-only status observations.
+    queue.launch_record(run_id,ref,failed=True,provider_version=7)
+    with queue.connect(write=False) as db:
+        assert db.execute('select startup_state from control where id=1').fetchone()[0]=='ready'
+    now[0]+=61
+    assert not any(x['status']=='starting' for x in queue.maintenance())
     assert len(queue.maintenance())==1
 
 

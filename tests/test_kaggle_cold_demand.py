@@ -64,6 +64,40 @@ def test_expired_ready_run_fences_remote_owner_until_terminal_reconciliation(tmp
         assert db.execute('select successor from control where id=1').fetchone()[0] is None
 
 
+def test_known_not_sent_failures_have_finite_budget_and_honest_unavailable(tmp_path):
+    from regional_knowledge.bge_queue import MAX_STARTUP_FAILURES
+    now=[1000.]
+    queue=BgeQueue(tmp_path/'finite-retry.sqlite',clock=lambda:now[0])
+    initial=queue.request_startup()
+    current=initial['run_id']
+    for number in range(MAX_STARTUP_FAILURES):
+        assert queue.launch_claim(current,provider_ref='owner/stable-slug') is not None
+        queue.launch_record(current,'owner/stable-slug',failed=True)
+        # Duplicate failure receipts must not double-count.
+        queue.launch_record(current,'owner/stable-slug',failed=True)
+        with queue.connect(write=False) as db:
+            state=db.execute('select startup_state,startup_failures from control where id=1').fetchone()
+        assert state['startup_failures']==number+1
+        if number<MAX_STARTUP_FAILURES-1:
+            assert state['startup_state']=='pending'
+            now[0]+=61
+            active=[row for row in queue.maintenance() if row['status']=='starting']
+            assert len(active)==1 and active[0]['id']!=current
+            current=active[0]['id']
+        else:
+            assert state['startup_state']=='blocked'
+    assert queue.startup_status(initial['startup_ref'])['status']=='unavailable'
+    assert queue.startup_status(initial['startup_ref'])['reason']=='startup_retry_exhausted'
+    assert queue.request_startup()['status']=='unavailable'
+    # A separate already-authorized document producer may append work, but
+    # must NOT create an unbounded replacement run through queue._ensure.
+    queued=queue.enqueue('actor','post-block',['some text'],kind='document')
+    assert queue.result('actor',queued)['state']=='pending'
+    now[0]+=3600
+    assert len(queue.maintenance())==MAX_STARTUP_FAILURES
+    assert not any(x['status']=='starting' for x in queue.maintenance())
+
+
 def test_cold_demand_survives_controller_down_and_known_prelaunch_failure(tmp_path):
     now = [1000.0]
     queue = BgeQueue(tmp_path / 'late-controller.sqlite', clock=lambda: now[0])

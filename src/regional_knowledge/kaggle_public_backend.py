@@ -275,6 +275,10 @@ class KaggleSourceBackend:
                     # the existing controller owns the only remote launch.
                     demand = await measured('startup_demand_ms',
                         asyncio.to_thread(self.worker_queue.request_startup))
+                    if demand['status']=='unavailable':
+                        status,reason='unavailable',demand['reason']
+                        raise ToolError(json.dumps({'status':status,'reason':reason,
+                            'startup_ref':demand['startup_ref']},separators=(',',':'))) from None
                     status,reason='pending','target_warming'
                     if exact:
                         # Exact fetch/catalogue/read DTOs do not have pending.
