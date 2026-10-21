@@ -30,6 +30,7 @@ class DjvuPage:
     height: int
     compressed_bytes: int
     text_chunks: int
+    orientation_degrees: int = 0  # INFO flags, counter-clockwise; do not guess preview geometry
 
 
 @dataclass(frozen=True)
@@ -99,12 +100,17 @@ def _page(fd, start, size, index):
             height = int.from_bytes(_exact(fd, offset+2, 2), 'big')
             if not 1 <= width <= 20000 or not 1 <= height <= 20000:
                 raise DjvuStructureError('djvu_page_geometry_invalid')
-            info = (width, height)
+            # DjVuInfo flags[0:3] encode page orientation:
+            # 6=90 CCW, 2=180, 5=270 CCW; other bit patterns are unrotated.
+            # Do not infer orientation from image dimensions alone.
+            flags = _exact(fd, offset + 9, 1)[0] & 0x7
+            info = (width, height, {6: 90, 2: 180, 5: 270}.get(flags, 0))
         elif tag in (b'TXTa', b'TXTz'):
             text_chunks += 1
     if info is None:
         raise DjvuStructureError('djvu_page_info_missing')
-    return DjvuPage(index, *info, compressed_bytes=size, text_chunks=text_chunks)
+    return DjvuPage(index, info[0], info[1], compressed_bytes=size,
+                    text_chunks=text_chunks, orientation_degrees=info[2])
 
 
 def inspect_djvu(path: str | os.PathLike, *, max_bytes=MAX_DJVU_ORIGINAL_BYTES,
