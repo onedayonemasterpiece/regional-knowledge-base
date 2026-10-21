@@ -53,8 +53,13 @@ class OriginalIntakeConfig:
 
 
 class NativeOriginalIntake:
-    def __init__(self,*,config,database,identity,workspace,current,downloader=None,parser=None,transfer=None):
+    def __init__(self,*,config,database,identity,workspace,current,downloader=None,parser=None,transfer=None,decoder_bundle=None):
         if type(config) is not OriginalIntakeConfig or not callable(current):raise TypeError('retained original owner required')
+        if decoder_bundle is not None:
+            from .kaggle_native_bundle import VerifiedNativeBundle
+            if type(decoder_bundle) is not VerifiedNativeBundle or not decoder_bundle.current():
+                raise OriginalIntakeError('original_djvu_verified_decoder_required')
+        self.decoder_bundle=decoder_bundle
         root=Path(workspace)
         if not root.is_absolute() or not root.is_relative_to(PRIVATE_ROOT) or root.resolve(strict=True)!=root or root.stat().st_mode&0o077:
             raise OriginalIntakeError('original_private_workspace_required')
@@ -276,9 +281,71 @@ class NativeOriginalIntake:
                 raise OriginalIntakeError('original_page_cursor_invalid')
             if record['verified'] is None:raise OriginalIntakeError('original_archive_verification_required')
             index=args['index']
+            if record['format']=='djvu' and (
+                    self.decoder_bundle is None or not self.decoder_bundle.current()):
+                # Archive admission is independent of decoder installation;
+                # a missing verified decoder may never fabricate ImageContent.
+                raise OriginalIntakeError('original_djvu_decoder_required')
             if index not in record['pages']:
-                result=await self._parse_selected(record['path'],'page',index,
-                    parser_sha256=record['parser_sha256'])
+                if record['format']=='djvu':
+                    from .kaggle_djvu_inspect import inspect_djvu
+                    from .kaggle_djvu_pixels import render_verified_djvu_page,DjvuPixelsUnavailable
+                    from .file_ingress import sha256_file
+                    # A retained path is not proof that its bytes still match
+                    # the verified original after archival; verify locally in
+                    # Kaggle before native decode, never via Dev roundtrip.
+                    actual=await _blocking(sha256_file,record['path'])
+                    if actual!=(record['sha256'],record['size']):
+                        raise OriginalIntakeError('original_retained_bytes_changed')
+                    inventory=await _blocking(inspect_djvu,record['path'])
+                    if (inventory.page_count!=record['page_count']
+                            or inventory.byte_length!=record['size']):
+                        raise OriginalIntakeError('original_djvu_inventory_changed')
+                    try:
+                        result=await render_verified_djvu_page(
+                            bundle=self.decoder_bundle,original_path=record['path'],
+                            original_bytes=record['size'],inventory=inventory,index=index)
+                    except DjvuPixelsUnavailable:
+                        raise OriginalIntakeError('original_djvu_decoder_required') from None
+                    if (type(result) is not dict
+                            or type(result.get('native_text_info')) is not dict
+                            or type(result.get('preview_render')) is not dict):
+                        raise OriginalIntakeError('original_djvu_render_provenance_invalid')
+                    info=result['native_text_info'];preview=result['preview_render']
+                    if (result.get('format')!='djvu'
+                            or result.get('physical_page_index')!=index
+                            or result.get('page_count')!=record['page_count']
+                            or (result.get('width'),result.get('height'))!=(
+                                inventory.pages[index].width,inventory.pages[index].height)
+                            or result.get('native_cursor')!=dict(block=0,offset=0,text=0)
+                            or result.get('next_native') is not None
+                            or result.get('native_text')!=''
+                            or result.get('native_blocks')!=[]
+                            or info.get('complete') is not True
+                            or info.get('native_text_sha256')!=digest(b'')
+                            or info.get('native_blocks_sha256')!=digest(canonical([]))
+                            or preview.get('policy')!='rkb.djvu-preview.v1'
+                            or preview.get('preview_only') is not True):
+                        # A decoder can yield pixels, but cannot reidentify
+                        # the physical page or forge a textual transcription.
+                        raise OriginalIntakeError('original_djvu_render_provenance_invalid')
+                    # Keep the B2 structural parser SHA in all archived
+                    # original/page receipts. Render software has a separate
+                    # immutable page-level pin inside the existing
+                    # preview_render field, preserved by NativePagesProof.
+                    sources=('kaggle_djvu_pixels.py','kaggle_djvu_elf.py',
+                        'kaggle_djvu_decoder_child.py','kaggle_djvu_inspect.py')
+                    software=digest(canonical(dict(codec='rkb.djvu-render-software.v1',
+                        files=[dict(name=name,sha256=digest(Path(__file__).with_name(name).read_bytes()))
+                               for name in sources])))
+                    rendered=dict(result['preview_render'],
+                        decoder_manifest_sha256=self.decoder_bundle.manifest_sha256,
+                        render_software_sha256=software)
+                    result['preview_render']=rendered
+                    result['native_text_info']['preview_render']=rendered
+                else:
+                    result=await self._parse_selected(record['path'],'page',index,
+                        parser_sha256=record['parser_sha256'])
                 image=base64.b64decode(result.pop('image_b64'),validate=True)
                 if not 1<=len(image)<=256*1024 or digest(image)!=result['image_sha256']:
                     raise OriginalIntakeError('original_page_render_invalid')
