@@ -19,6 +19,10 @@ After `TargetRuntime.prepare` has completed, the same `WorkerRecoveryPhases` hol
 
 The corresponding fixtures exercise direct worker-side exact run binding, absence before preparation, refusal of unexpected module-path arguments, distinct polls before/after a real in-process activation, end-to-end durable admission, and actual ASGI/WebSocket DISPATCH→RECOVERY_PHASE_RESULT→ACK. They make **no Kaggle provider calls**.
 
+**Two reviewed lifecycle fixes:** candidate download, stage or useful probe rejection now settles as a fixed, secret-free `RECOVERY_PHASE_RESULT` with `value={status:rejected,reason:read_handler_maintenance_rejected}` and receives the usual `RESULT_ACK`. The Dev maintenance caller converts that successful transport receipt to a bounded `SnapshotError`, but the notebook `BgeWssTransport._encode` does **not** raise/close the model or PG owner. Retrying the same operation key returns the identical retained rejection, never a second side effect. Unauthorized attachment errors *before* phase dispatch still fail closed at the transport boundary. The test uses real `BgeWssTransport._encode` and follows the rejection with a fresh healthy worker readback.
+
+The warm slot registration is also order-independent: a single `TargetRuntime._bind_read_handler_maintenance` method is invoked both after `prepare` and after `configure_recovery`. `NEW_EMPTY_GENERATION` runs `prepare→configure_recovery`, whereas a restored owned database runs `configure_recovery→wait_initialized→prepare`. Both connect the same actual slot/PG/model once; no new model load, WSS endpoint, or code-upload mechanism. The regression exercises the **generated empty snapshot entrypoint** and the real method against a retained synthetic native worker.
+
 ## Bounded verification
 
 `PYTHONPATH=src:tests pytest -q tests/test_kaggle_warm_read.py tests/test_kaggle_target_runtime.py tests/test_kaggle_launch_envelope.py`
@@ -72,6 +76,10 @@ operator must submit a **new authorized useful QUERY** in that same run for
 product acceptance. A later functional failure can invoke the same durable
 `rollback_read_handler`; an incompatible dependency/model/PG context
 requires a controlled worker restart instead of forced activation.
+
+An expected stage/probe rejection returns a typed **rejected maintenance receipt**, not an uncaught task exception that shuts down the warm model-owning worker. The native phase traps errors only for `read_handler_stage/activate/rollback` after authentic run/connection verification and persists the fixed `{status:rejected,reason:read_handler_maintenance_rejected}` result under the original operation key. The original `BgeWssTransport._encode` then sends a normal `RECOVERY_PHASE_RESULT` and receives `RESULT_ACK`; it does not call `close_runtime` for a bad candidate. The Dev caller raises the fixed `SnapshotError` **after** that durable ACK, with no arbitrary error text. Cancellation and an invalid transport/attachment *before* phase execution still fail closed. A repeated rejected operation returns its saved rejection rather than downloading/re-running the candidate; the previous handler and PG/BGE remain usable, including for a fresh loaded SHA readback. This is verified through actual `BgeWssTransport._encode` plus acknowledged WSS maintenance fixtures.
+
+A single `TargetRuntime._bind_read_handler_maintenance` installs this control regardless of actual startup order. Under `NEW_EMPTY_GENERATION` the generated notebook executes `prepare → configure_recovery` so the control binds **after** preparation; for `VERIFIED_INITIALIZED` it executes `configure_recovery → wait_initialized → prepare` so it binds **after** the native PG proof. Repeated binding is idempotent and neither path recreates the resident PG pool or BGE. Both the actual `TargetRuntime` ordering and the generated fresh notebook composition are exercised by tests.
 
 A lost stage/activation ACK is **not permission to issue a new patch key**
 or restart Kaggle: the same operation is retained/cached; request a fresh

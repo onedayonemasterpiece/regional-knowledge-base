@@ -178,7 +178,13 @@ class WssSnapshotPhases:
     async def _call(self,binding,phase,args):
         # Content-derived stable subkeys survive lost receipts/reconnects.
         key=sha(encode({'operation':self.operation,'phase':phase,'arguments':args}))
-        return await self.dispatch.request(binding,phase,args,operation_key=key)
+        result=await self.dispatch.request(binding,phase,args,operation_key=key)
+        if phase in ('read_handler_stage','read_handler_activate','read_handler_rollback'):
+            if result=={'status':'rejected','reason':'read_handler_maintenance_rejected'}:
+                # Failure is durably acknowledged, not a worker/PG/BGE crash.
+                # Retry requires a fresh decision after loaded-SHA readback.
+                raise SnapshotError('read_handler_maintenance_rejected')
+        return result
 
     async def capture(self,binding,**args):return await self._call(binding,'capture',args)
 

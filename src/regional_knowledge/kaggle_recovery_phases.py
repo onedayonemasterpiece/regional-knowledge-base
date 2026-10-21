@@ -175,7 +175,19 @@ class WorkerRecoveryPhases:
                     raise SnapshotError('recovery_phase_unknown_requires_reconciliation')
             if len(self._requests)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
             self._requests[key]=request  # UNKNOWN is retained before effects.
-            value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
+            if frame['phase'] in ('read_handler_stage','read_handler_activate','read_handler_rollback'):
+                # Expected candidate/transfer/probe refusal is the outcome of
+                # THIS durable maintenance operation, not a fatal worker
+                # transport failure. BgeWssTransport._failure would otherwise
+                # close the live model/PG runtime even after a safe rollback.
+                # Only a fixed, secret-free result crosses the WSS boundary;
+                # CancelledError/BaseException still propagates normally.
+                try:
+                    value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
+                except Exception:
+                    value={'status':'rejected','reason':'read_handler_maintenance_rejected'}
+            else:
+                value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
             bounded(value,MAX_PHASE_RESULT_BYTES)
             result={'phase':frame['phase'],'request_sha256':request,'value':value}
             self._results[key]=result

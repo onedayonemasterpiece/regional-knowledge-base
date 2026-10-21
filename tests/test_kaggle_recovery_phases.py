@@ -260,7 +260,7 @@ async def test_live_admission_wss_reviewed_blob_stage_and_reconcile_readback(sta
         workspace=workpath,constructor={'marker':'new'},self_test=good_stage,
         probe=good_probe,current=lambda frame:None)
 
-    async def deliver(task):
+    async def deliver(task,*,rejected=False):
         for _ in range(100):
             work=await s.a.next_channel_work(s.run,s.token,s.generation)
             if work:break
@@ -282,8 +282,13 @@ async def test_live_admission_wss_reviewed_blob_stage_and_reconcile_readback(sta
         settled=await bridge.receive(response(s,frame,actual['value']),
             run_id=s.run,token=s.token,generation=s.generation)
         assert settled['status']=='accepted'
-        result=await task
-        assert result==actual['value']
+        if rejected:
+            assert actual['value']==dict(status='rejected',reason='read_handler_maintenance_rejected')
+            with pytest.raises(SnapshotError,match='read_handler_maintenance_rejected'):
+                await task
+        else:
+            result=await task
+            assert result==actual['value']
         resource=work.resource
         await s.a.resource_released(s.run,s.token,s.generation,
             runtime_incarnation=resource.runtime_incarnation,resource_kind='document',
@@ -316,9 +321,93 @@ async def test_live_admission_wss_reviewed_blob_stage_and_reconcile_readback(sta
         assert cached['phase']=='read_handler_stage'
         assert cached['value']['staged_sha256']==digest
         assert len(signed)==1 and len(transfer)==1
+        # A rejected competing activation is ACKed as a durable *operation*
+        # failure. It must not escape _encode, kill the model-owning runtime,
+        # replace an already active handler, or silently stage a second file.
+        failure=asyncio.create_task(control.activate_read_handler(s,
+            staged_sha256='c'*64,expected_loaded_sha256='b'*64,
+            expected_generation=0))
+        await deliver(failure,rejected=True)
+        assert slot.receipt()['loaded_sha256']==digest
+        assert slot.receipt()['generation']==1
+        assert len(transfer)==1
     finally:
         await bridge.aclose()
         await worker.aclose()
+
+
+
+
+@pytest.mark.asyncio
+async def test_failed_warm_candidate_has_normal_rejected_receipt_and_existing_model_keeps_serving(tmp_path):
+    from regional_knowledge.kaggle_warm_maintenance import WarmHandlerMaintenance,WarmHandlerPatchApproval
+    from regional_knowledge.kaggle_warm_read import ReadHandlerSlot
+    from test_kaggle_warm_read import old,context,staged_module,good_probe
+    from regional_knowledge.kaggle_pg_snapshot_native import BlobRef
+    from hashlib import sha256
+    _,source,digest=staged_module(tmp_path)
+    root=tmp_path/'owned';root.mkdir(mode=0o700)
+    blob=BlobRef('rkb/snapshots/blobs/approved/'+digest,source.stat().st_size,digest,'"etag"')
+    transfers=[]
+    def workspace(key,phase):
+        return root/(sha256(key.encode()).hexdigest()+'-'+phase)
+    async def download(item,key,*,ticket,transfer_operation):
+        transfers.append((item,key))
+        output=workspace(key,'download')
+        output.write_bytes(source.read_bytes());output.chmod(0o600)
+        return output
+    async def rejecting_selftest(candidate):
+        assert (await candidate({'test':True},encode=None))['version']=='new'
+        raise ValueError('private rejected candidate details')
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=database();native.identity=('r','n','i')
+    native._current=lambda b:None
+    native._owned_candidates=set();native._capabilities=set()
+    worker=WorkerRecoveryPhases(factory=native,download=download,workspace=workspace)
+    slot=ReadHandlerSlot(old,loaded_sha256='a'*64,compatibility=context())
+    worker.read_handler_slot=slot
+    worker.read_handler_control=WarmHandlerMaintenance(slot=slot,download=download,
+        workspace=workspace,constructor={'marker':'new'},
+        self_test=rejecting_selftest,probe=good_probe,current=lambda _:None)
+    def frame(phase,key,args,ticket=None):
+        wire=dict(type='DISPATCH',protocol_version=2,connection_generation=1,id='job-'+key,
+            claim='claim',kind='recovery_phase',run_id='r',launch_nonce='n',
+            runtime_incarnation='i',database_generation=native.database.database_generation,
+            writer_generation=native.database.writer_generation,phase=phase,operation_key=key,
+            arguments=args,request_sha256=sha(encode({'phase':phase,'arguments':args})),
+            compute_claim='resource',dispatch_generation=1)
+        if ticket is not None:wire['download_ticket']=ticket
+        return wire
+    args=dict(artifact=WarmHandlerPatchApproval(blob,'a'*40).wire(),
+        expected_loaded_sha256='a'*64,expected_generation=0)
+    failed=frame('read_handler_stage','reject-me',args,{'scoped':'GET'})
+    first=await worker(failed)
+    assert first['phase']=='read_handler_stage'
+    assert first['value']==dict(status='rejected',reason='read_handler_maintenance_rejected')
+    assert await worker(failed)==first
+    assert len(transfers)==1
+    assert 'private' not in str(first)
+    # Exercise the actual BgeWssTransport._encode path which previously
+    # propagated the failed candidate into _failure()/close_runtime.
+    from test_bge_wss_worker import module,CONFIG
+    transport=module('bge_wss_transport')
+    async def useful_query(frame,*,encode):return {'status':'ok'}
+    executor=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),
+        lambda:lambda text:[1.]+[0.]*1023,lambda:{},
+        query_handler=useful_query,recovery_handler=worker)
+    rejected_again=dict(failed,id='job-transport',operation_key='transport-rejected')
+    executor.encoding=asyncio.create_task(executor._encode(rejected_again))
+    await executor.encoding
+    executor._failure(executor.encoding)  # Must not raise and kill the worker.
+    assert executor.pending['receipt']['value']==dict(
+        status='rejected',reason='read_handler_maintenance_rejected')
+    assert executor.pending['job_id']=='job-transport'
+    # Ordinary worker work remains alive after the rejected patch.
+    report=await worker(frame('read_handler_status','after',{}))
+    assert report['value']['loaded_sha256']=='a'*64
+    assert report['value']['generation']==0
+    assert (await slot({'still':True},encode=None))['version']=='old'
+    await worker.aclose()
 
 
 @pytest.mark.asyncio
