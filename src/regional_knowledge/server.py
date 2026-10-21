@@ -257,6 +257,7 @@ def build_server(
     target_startup=None,
     projects_hub_receiver=None,
     expert_evidence_receiver=None,
+    expert_slack_ingress=None,
 ) -> MCPServer:
     selected=backend_profile or os.getenv('RKB_BACKEND_PROFILE','').strip() or (
         'kaggle_source' if target_startup is not None else 'legacy')
@@ -481,6 +482,14 @@ def build_server(
                 or expert_evidence_receiver.control.spool is not target_startup.config.spool):
             raise RuntimeError('expert evidence receiver requires exact existing target owners')
         mcp.custom_route(EXPERT_PATH, methods=['POST'])(expert_evidence_receiver.__call__)
+
+    if expert_slack_ingress is not None:
+        from .expert_slack_ingress import ExpertSlackIngress, PATH as SLACK_PATH
+        if (selected != 'kaggle_source' or type(expert_slack_ingress) is not ExpertSlackIngress
+                or expert_slack_ingress.control.spool is not target_startup.config.spool
+                or expert_slack_ingress.control.people is not target_startup.config.participants):
+            raise RuntimeError('Slack ingress requires exact existing target control owners')
+        mcp.custom_route(SLACK_PATH, methods=['POST'])(expert_slack_ingress.__call__)
 
     @mcp.custom_route("/fast-tier/health", methods=["GET"])
     async def fast_tier_health(request: Request):

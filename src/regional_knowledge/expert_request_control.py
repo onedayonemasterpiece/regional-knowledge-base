@@ -55,10 +55,9 @@ class VerifiedSlackMessage:
 _SIGNED = object()
 
 
-def verified_slack_event(raw: bytes, headers: dict, signing_secret: str, *,
-                         app_id: str, team_id: str, bot_user_id: str,
-                         now: float | None = None) -> VerifiedSlackMessage | None:
-    """Reuse PR151's exact Slack HMAC/replay boundary; unsupported events omit."""
+def verified_slack_payload(raw: bytes, headers: dict, signing_secret: str, *,
+                           now: float | None = None) -> dict:
+    """Verify exact Slack bytes before parsing *any* event/challenge type."""
     now = time.time() if now is None else now
     if (type(raw) is not bytes or not 1 <= len(raw) <= 262144
             or type(signing_secret) is not str or not signing_secret
@@ -79,6 +78,14 @@ def verified_slack_event(raw: bytes, headers: dict, signing_secret: str, *,
         body = json.loads(raw)
     except (ValueError, UnicodeDecodeError):
         _fail('invalid_signed_body')
+    if type(body) is not dict:
+        _fail('invalid_signed_body')
+    return body
+
+
+def _verified_slack_observation(body: dict, *, app_id: str, team_id: str,
+                                bot_user_id: str) -> VerifiedSlackMessage | None:
+    """Only call on output of verified_slack_payload, never on caller JSON."""
     if (type(body) is not dict or body.get('api_app_id') != app_id
             or body.get('team_id') != team_id):
         _fail('slack_event_scope_mismatch')
@@ -108,6 +115,15 @@ def verified_slack_event(raw: bytes, headers: dict, signing_secret: str, *,
     return VerifiedSlackMessage(app_id, team_id, event['user'], event['channel'],
                                 channel_type, thread, event['ts'],
                                 body['event_id'], event['text'], _SIGNED)
+
+
+def verified_slack_event(raw: bytes, headers: dict, signing_secret: str, *,
+                         app_id: str, team_id: str, bot_user_id: str,
+                         now: float | None = None) -> VerifiedSlackMessage | None:
+    """Only signed/replay-checked bytes can create a trusted observation."""
+    return _verified_slack_observation(
+        verified_slack_payload(raw, headers, signing_secret, now=now),
+        app_id=app_id,team_id=team_id,bot_user_id=bot_user_id)
 
 
 @dataclass(frozen=True)

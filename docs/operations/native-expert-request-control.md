@@ -171,3 +171,32 @@ revocation tests on the installed product, recovery after loss of Dev
 local disk and Kaggle Dataset coverage, and successful real-user expert
 workflow. Do not mark CAS-F10 PASS or merge a full cutover solely from
 green fixture tests.
+
+## Opt-in signed Slack Events API (source-only)
+
+`src/regional_knowledge/expert_slack_ingress.py` defines `POST /internal/rkb/expert-slack-events`.
+The route exists only when `build_server(expert_slack_ingress=...)` receives an instance
+that owns the **same** configured target Participants and ControlSpool; default deployments
+do not enable it. The exact original Slack HTTP body is bounded to 256 KiB and checked
+against the `v0` signing secret and 300-second timestamp window before JSON decoding.
+Signed URL challenges are returned without creating requests. Signed bot/self events
+are ignored. Human events use the existing verified Slack account, channel allowlist,
+current grants and idempotent event identity in `TargetExpertRequestControl`.
+
+**Slack 200 is not a local SQLite receipt.** For a first event, local `received`
+must return **HTTP 503 + Retry-After** until the original exact request has been
+sealed remotely through the **existing single RecoveryJournal writer**. A replay
+after verified external acceptance returns 200 without duplicate work. No request
+ID, user text or secret is returned. A malformed/forged/unverified event fails closed.
+Signed URL challenge is a separate stateless handshake, not an accepted request.
+
+**Do not activate this route yet:** Slack retries are finite and the source-only
+endpoint does not itself schedule, seal, send or reconcile work. The already-existing
+ControlSpool writer must be wired to durably accept pending event intents promptly
+before provider retries end; inventing a second writer or sealing directly inside
+the HTTP callback would violate the existing recovery/UNKNOWN contract. Real Slack
+delivery/echo, PG evidence and product acceptance are still NOT RUN.
+
+`tests/test_expert_slack_ingress.py` exercises signed HTTP challenges, initial 503,
+remote-accepted retry 200, duplicate/tampered events, revocation, forged HMAC,
+wrong app/team and disabled-by-default route, all on synthetic fixtures.
