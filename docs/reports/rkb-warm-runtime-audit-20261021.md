@@ -382,3 +382,41 @@ skipped**. CI зелёный: PR207 на `7017f19`, PR208 на `23e1ab4`. Зам
 
 Шаги 2–3 — это и есть отсутствующая автоматизация P2. Их стоит превратить в одну типизированную
 операцию контроллера, а не повторять вручную.
+
+## 9. Живой прогон v105 (23:15–23:33 UTC)
+
+Владелец изменил правила разрешений, после чего прогон выполнен.
+
+| Шаг | Факт |
+|---|---|
+| main | PR207 → `f8d1d01`, PR208 → **`b71f85d`**. f2c6ad0 — предок (`merge-base --is-ancestor`) |
+| Релиз | `releases/b71f85d…/source` (`git archive` + `.rkb-release-sha`). Бэкап drop-in'ов, env и очереди — в retained artifact `regional-knowledge-base/20261021T231622Z-warm-run-v105-20261021` |
+| Retire v104 | Код нового релиза при остановленном controller: exact-session proof `phase=ERROR`, contract `kaggle-2.2.4-sdk-0.1.37-exact-session-persisted-stream-v1`. **Без ручной правки статуса** — первая живая проверка `0ad811e` |
+| Successor | `maintenance()` создал run R (`67e5ca0c`). Новая writer generation, nonce и ожидание записаны тем же `worker_source` релиза; `launch_config_sha256` прочитан из `bge_runtime_expectations`. Скрипты лежат в том же artifact |
+| Push | v105 в 23:23:00. Guard `c8af603` пропустил легитимный запуск. Ложный `save_kernel unknown` (P3) повторился, версия найдена reconciliation |
+| Attach/restore | HELLO через ~40 с после push. `begin_restore` перевёл writer на v105 (`active=1`, revision 21). Restore Dataset1 через Dataset-тикет прошёл: `7017f19` (Кварц B) подтверждён вживую |
+| READY | **+390 с** (23:27:35). Restore `active`, startup demand `ready` |
+| Dataset2 | До деплоя `latest=None`, `seed v2=published`. После READY `dataset_verify` прошёл с первого раза: **`latest=(version 2, base_sequence 20)`, `seed v2=verified`**. GEO1–20 сохранены в Dataset |
+| Чтения | После READY (5+ мин): `target_source_routing state=closed` — **0** (на v102 было 3–7 в минуту). source_history open/close 35/35 (на v102 111/48), p50 0,8 с, максимум 2,4 с |
+
+### Что выявил прогон
+
+- **GEO-чтения закрыты по построению данных, не инфраструктуры.** Из 20 настроенных
+  `geo_manifest_operation_keys` четыре — `REJECTED_PRECONDITION` (батчи seq 5–7 и `activate`
+  seq 20, logical time 20.10 21:10, причина в outcome не записана). `GeoReadGate.establish`
+  требует, чтобы каждый ключ был `APPLIED`, поэтому `SourceGateDenied` идёт с 21:18 и на v102.
+  Нужен versioned repair GEO-манифеста (`geo_read_gate.py:129`) — решение владельца GEO-переноса.
+- **O3 подтверждён количественно:** около 106 durable job'ов за 4,4 мин тёплой работы (примерно
+  1400 в час) только на пере-верификацию истории.
+- **P3 подтверждён ещё раз:** `kaggle_save_receipt_invalid` на успешном push v105.
+- Продуктовый поиск не проверялся. Штатный `verify_product_mcp.py` минтит owner OAuth-токены и
+  пишет контрольные материалы, а книг в target PG пока нет.
+- `regional-knowledge-e5.service` (retired) продолжает auto-restart; не трогал.
+
+### Следующие шаги
+
+1. Не отзывать v105. Править native SQL/handler через `read_handler_*` или новый SQL apply path.
+2. Versioned repair GEO-манифеста, затем GEO read readiness.
+3. P2: оформить retire + successor-минтинг (скрипты из artifact) как типизированную операцию
+   контроллера.
+4. O3 (одно эфемерное наблюдение receipts), P3 (нормализация `ref`), E5-юнит.
