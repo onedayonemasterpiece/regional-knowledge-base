@@ -34,6 +34,8 @@ class PgConnection:
 
 def prepared_runtime(monkeypatch):
     statements=[]
+    # A real generated Kaggle worker always defines this process-local flag.
+    monkeypatch.setattr(sys.modules['__main__'],'_RKB_STAGE0_INCOMPLETE',False,raising=False)
     class Owner:
         def __init__(self,database):
             self.spec=database;self.process=SimpleNamespace(pid=1331,returncode=None)
@@ -192,6 +194,54 @@ async def test_actual_stage0_metrics_and_pg_model_identity_survive_readback(monk
     assert after['resident_model_context_ref']==before['resident_model_context_ref']
 
 
+
+
+
+
+def test_success_failed_partial_success_keeps_stage0_incomplete_sticky(monkeypatch):
+    """A later success must not hide earlier uncounted install/download effects."""
+    from test_bge_wss_worker import module
+    import regional_knowledge.kaggle_stage0 as stage0
+    worker=module('bge_kaggle_worker')
+    worker.RUN_CONFIG=dict(stage0={'fixture':'only'},prepared_model=None,run_id='synthetic')
+    model=lambda text:[1.]+[0.]*1023
+    monkeypatch.setattr(worker,'_load_model',lambda artifacts:model)
+    sequence=[dict(downloaded_bytes=4096,installed=True),
+              ValueError('partial Stage0 transfer failed'),
+              dict(downloaded_bytes=256,installed=False)]
+    def stage(*a,**k):
+        result=sequence.pop(0)
+        if isinstance(result,Exception):raise result
+        return result
+    monkeypatch.setattr(stage0,'prepare_stage0',stage)
+    assert worker.load_encoder() is model
+    assert worker._RKB_STAGE0_COUNTERS['invocation_count']==1
+    with pytest.raises(ValueError,match='partial Stage0'):
+        worker.load_encoder()
+    assert worker._RKB_STAGE0_ATTEMPTS==2
+    assert worker._RKB_STAGE0_INCOMPLETE is True
+    assert worker.load_encoder() is model
+    assert worker._RKB_STAGE0_ATTEMPTS==3
+    # There were TWO completed calls, not three. The failed second call may
+    # have caused unmeasured effects so even a later success cannot restore
+    # measurement authority without a new process.
+    assert worker._RKB_STAGE0_COUNTERS==dict(invocation_count=2,
+        install_count=1,downloaded_bytes=4352)
+    assert worker._RKB_STAGE0_INCOMPLETE is True
+
+
+@pytest.mark.asyncio
+async def test_stage0_sticky_incomplete_denies_readback_even_when_totals_match(monkeypatch):
+    runtime,_=prepared_runtime(monkeypatch)
+    runtime.config['stage0']={'configured':True}
+    main=sys.modules['__main__']
+    monkeypatch.setattr(main,'_MODEL_LOAD_COUNT',1,raising=False)
+    monkeypatch.setattr(main,'_RKB_STAGE0_COUNTERS',
+        dict(invocation_count=3,install_count=1,downloaded_bytes=4096),raising=False)
+    monkeypatch.setattr(main,'_RKB_STAGE0_ATTEMPTS',3,raising=False)
+    monkeypatch.setattr(main,'_RKB_STAGE0_INCOMPLETE',True,raising=False)
+    assert await runtime._read_owned_runtime()==dict(
+        status='unavailable',reason='stage0_runtime_counters_unavailable')
 
 
 def test_generated_worker_partial_stage0_failure_retains_incomplete_attempt_marker(monkeypatch):

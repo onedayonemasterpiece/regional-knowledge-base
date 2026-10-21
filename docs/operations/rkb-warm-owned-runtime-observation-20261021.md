@@ -53,14 +53,20 @@ The callback obtains the following **actual owned observations**:
   cached bytes from downloaded bytes, and an actual offline pip install
   from a no-op. The generated worker records the counters only upon
   successful Stage0 return. The independent generated-worker
-  `_RKB_STAGE0_ATTEMPTS` is incremented **before** each call. Readback
-  requires `invocation_count == _RKB_STAGE0_ATTEMPTS`, even after a
-  previous successful invocation: a failed or still-running later Stage0
-  attempt may have transferred/installed files without yielding a final
-  receipt and must return unavailable rather than reusing old totals.
-  This equality and the counter snapshot are checked **again after the
-  awaitable PG identity probe**; a newly begun Stage0 attempt during PG I/O
-  invalidates the entire Stage0 observation. No separate download/install
+  `_RKB_STAGE0_ATTEMPTS` is incremented **before** each call, while
+  `invocation_count` counts only actual successfully completed calls.
+  Any failed or cancelled call (including invalid missing measurements)
+  sets a **sticky** `_RKB_STAGE0_INCOMPLETE=True` for this worker lifetime.
+  The flag cannot be cleared by later successful calls, because an earlier
+  partially applied download/install may have unmeasured side effects.
+  Readback requires `incomplete is False`, a real positive attempt count,
+  and `completed_invocation_count == _RKB_STAGE0_ATTEMPTS`; otherwise it
+  returns fixed `stage0_runtime_counters_unavailable`. This rejects the
+  sequence success #1 → partial failure #2 → success #3 instead of falsely
+  treating #3 as proof all earlier effects were measured. Both counters
+  and the sticky flag are checked **again after the awaitable PG identity
+  probe**; a newly begun Stage0 attempt during PG I/O invalidates the
+  entire observation. No separate download/install
   or reconnect loop is started by readback. Missing, malformed or uninitialized counters
   return `stage0_runtime_counters_unavailable`, **never zero**. Generated
   `compose_target` intentionally **removes `stage0` from `target_runtime`**:

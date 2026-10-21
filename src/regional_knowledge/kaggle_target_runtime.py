@@ -235,7 +235,8 @@ class TargetRuntime:
         if self.config.get('stage0') is not None:
             observed=getattr(main,'_RKB_STAGE0_COUNTERS',None)
             attempts=getattr(main,'_RKB_STAGE0_ATTEMPTS',None)
-            if (type(observed) is not dict
+            incomplete=getattr(main,'_RKB_STAGE0_INCOMPLETE',None)
+            if (incomplete is not False or type(observed) is not dict
                     or set(observed)!={'invocation_count','install_count','downloaded_bytes'}
                     or any(type(value) is not int or value<0 or value>=2**63
                         for value in observed.values())
@@ -276,7 +277,8 @@ class TargetRuntime:
         # another invocation while the connection was in flight. Do not
         # re-label the old snapshot as complete or merge mixed-time counters.
         if stage0 is not None and (
-                getattr(main,'_RKB_STAGE0_ATTEMPTS',None)!=attempts
+                getattr(main,'_RKB_STAGE0_INCOMPLETE',None) is not False
+                or getattr(main,'_RKB_STAGE0_ATTEMPTS',None)!=attempts
                 or getattr(main,'_RKB_STAGE0_COUNTERS',None)!=stage0):
             return {'status':'unavailable','reason':'stage0_runtime_counters_unavailable'}
         process=getattr(self.owner,'process',None)
