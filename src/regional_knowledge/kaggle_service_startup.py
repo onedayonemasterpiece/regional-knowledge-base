@@ -371,8 +371,14 @@ class TargetServiceStartup:
                 raise PermissionError('native history proof no longer current')
             self.coverage=coverage
             if self.dataset_checkpoints is not None:
-                if await self.dataset_checkpoints.refresh(self.binding):
-                    self.coverage=await self.history.extend(self.binding)
+                from .kaggle_dataset_checkpoint import CheckpointPending
+                try:
+                    if await self.dataset_checkpoints.refresh(self.binding):
+                        self.coverage=await self.history.extend(self.binding)
+                except CheckpointPending as exc:
+                    # The pointer did not move and the verified prefix is
+                    # unchanged: keep reads on the current base, retry later.
+                    _LOG.warning('target_dataset_checkpoint state=pending reason=%s',exc.args[0])
             if self.dataset_seed is not None:
                 await self.dataset_seed.capture_once(self.binding)
                 # Seed publication does not authorize an S3-backed importer.

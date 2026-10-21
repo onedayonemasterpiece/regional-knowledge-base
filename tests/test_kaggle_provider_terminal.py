@@ -512,3 +512,37 @@ def test_exact_native_terminal_can_retire_compute_without_rewriting_ready_or_wri
     current=row()
     assert current['status']=='ready' and current['launch_state']=='terminal'
     assert q.launch_claim(rid,provider_ref=REF) is None
+
+
+def test_lease_expired_current_owner_is_retired_only_by_exact_terminal_proof(env):
+    """A dead 'starting' owner no longer needs a manual status edit to be retired."""
+    q, now, rid, row = env
+    module = controller(); module._LEASE_TERMINAL_PROBED.clear()
+    with q.connect() as db:
+        db.execute("update runs set status='starting',started=0,useful=? where id=?", (now[0], rid))
+        db.execute('update control set current_run=? where id=1', (rid,))
+    api = API(row()); api.phase = 'RUNNING'
+    # Provider still running: UNKNOWN, capacity stays owned, probes are throttled.
+    assert module.reconcile_provider_history(api, q, current_only=True) == 0
+    probes = len(api.calls)
+    assert probes and module.reconcile_provider_history(api, q, current_only=True) == 0
+    assert len(api.calls) == probes
+    assert rid in q.provider_owned_run_ids()
+    module._LEASE_TERMINAL_PROBED.clear(); api.phase = 'ERROR'
+    assert module.reconcile_provider_history(api, q, current_only=True) == 1
+    with q.connect(write=False) as db:
+        assert db.execute('select launch_state from runs where id=?', (rid,)).fetchone()[0] == 'terminal'
+    q.maintenance()  # the existing pointer finalization releases the slot
+    with q.connect(write=False) as db:
+        assert db.execute('select status from runs where id=?', (rid,)).fetchone()[0] == 'expired'
+    assert rid not in q.provider_owned_run_ids()
+
+
+def test_live_current_owner_with_fresh_lease_is_not_probed(env):
+    q, now, rid, row = env
+    module = controller(); module._LEASE_TERMINAL_PROBED.clear()
+    with q.connect() as db:
+        db.execute("update runs set status='ready',started=?,heartbeat=?,useful=? where id=?", (now[0], now[0], now[0], rid))
+        db.execute('update control set current_run=? where id=1', (rid,))
+    api = API(row())
+    assert module.reconcile_provider_history(api, q, current_only=True) == 0 and not api.calls

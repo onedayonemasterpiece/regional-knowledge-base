@@ -33,7 +33,7 @@ def provider_error_facts(error):
     return result
 
 _PREPARATION_STEPS=frozenset({'not_started','create_private_folder',
-    'verify_empty_journal_intent','compose_notebook_source',
+    'verify_empty_journal_intent','verify_writer_binding','compose_notebook_source',
     'write_private_notebook','write_private_metadata','provider_submission'})
 
 
@@ -149,6 +149,27 @@ def reconcile_dispatched_terminal(api, queue, run, ref):
     return phase
 
 
+_LEASE_TERMINAL_PROBED={}
+LEASE_TERMINAL_PROBE_SECONDS=30
+
+
+def lease_terminal_probe_due(queue, run, *, now=None):
+    """An owned run whose lease elapsed may be retired only by exact proof.
+
+    _expire keeps a dispatched run's status while its provider outcome is
+    unknown, so status alone would never request that proof and every dead
+    run would need a manual retire. Probe at most every 30 s per run.
+    """
+    if run['status']=='expired':return True
+    if run['status'] not in ('starting','ready','draining') or not queue._run_expired(run,queue.clock()):
+        return False
+    now=time.monotonic() if now is None else now
+    previous=_LEASE_TERMINAL_PROBED.get(run['id'])
+    if previous is not None and now-previous<LEASE_TERMINAL_PROBE_SECONDS:return False
+    _LEASE_TERMINAL_PROBED[run['id']]=now
+    return True
+
+
 def reconcile_provider_history(api, queue, *, limit=2, current_only=False):
     """One bounded resumable page; unknown submissions never hold up known rows.
 
@@ -169,7 +190,7 @@ def reconcile_provider_history(api, queue, *, limit=2, current_only=False):
     for run in runs:
         try:
             if (type(run['provider_version']) is int and run['provider_ref']
-                    and run['status']=='expired'):
+                    and (run['status']=='expired' if not current_only else lease_terminal_probe_due(queue,run))):
                 proof=observe_version_terminal(api,run,clock=queue.clock)
                 if proof is not None and queue.retire_provider_reservation(proof):
                     retired+=1
@@ -185,6 +206,21 @@ def reconcile_provider_history(api, queue, *, limit=2, current_only=False):
         finally:
             if not current_only:queue.advance_provider_reconciliation(run['_cursor'])
     return retired
+
+
+def require_writer_binding(queue, run_id, writer_generation):
+    """Known not-sent refusal when the target writer was already used by another run.
+
+    The service moves rkb_writer_control to the new run only after its attach
+    (begin_restore), so before push it still names the previous run. A fresh
+    restore target therefore carries a writer generation nobody has used yet;
+    one recorded for another run can never begin recovery on this run.
+    """
+    with queue.connect(write=False) as db:
+        used=db.execute('SELECT 1 FROM rkb_writer_generations WHERE writer_generation=? AND run_id!=?',
+            (writer_generation,run_id)).fetchone()
+    if used is not None:
+        raise ValueError('restore writer generation belongs to another run')
 
 
 def target_sql_hashes(target, repository):
@@ -281,6 +317,13 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                         asyncio.run(persist_empty_intent(queue,run_id,target_spec,launch_nonce=nonce,
                             recovery_journal=recovery_journal,
                             sql_hashes=target_sql_hashes(target_spec,Path(__file__).resolve().parents[2])))
+                    if target_spec is not None and target_spec.database.mode=='VERIFIED_INITIALIZED':
+                        # A restore target pins one writer generation minted for
+                        # one run. A successor created by later demand (reboot,
+                        # retire) cannot adopt a generation already used by that
+                        # run; pushing would only burn a Kaggle session.
+                        preparation_step='verify_writer_binding'
+                        require_writer_binding(queue,run_id,target_spec.database.writer_generation)
                     preparation_step='compose_notebook_source'
                     source=worker_source(template,queue,run_id,token,broker,
                                          transport=os.getenv('RKB_BGE_TRANSPORT','http'),target=target_spec,provider_image=image)

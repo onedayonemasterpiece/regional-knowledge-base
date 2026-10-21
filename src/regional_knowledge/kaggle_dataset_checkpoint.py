@@ -16,6 +16,14 @@ from .recovery_journal import ObjectRef
 _LOG=logging.getLogger(__name__)
 
 
+class CheckpointPending(Exception):
+    """Capture/verify/promotion stopped before the pointer moved.
+
+    Nothing in the spool or the verified read prefix changed, so the current
+    read coverage stays valid; the checkpoint retries on a later refresh.
+    """
+
+
 class _WorkCycleCapture(SourceDatasetSeed):
     async def _prepare_prefix(self,proof):
         if proof is None:return
@@ -107,6 +115,31 @@ class SourceDatasetCheckpoints:
             **{key:getattr(database,key) for key in ('schema_revision','function_revision','executor_revision')})
         return result
 
+    async def _capture_verify(self,binding,operation,latest):
+        startup=self.startup;spool=startup.config.spool;queue=startup.config.queue
+        batch=_WorkCycleCapture(startup,DatasetSeedConfig(self.store.publisher.ref,operation,self._versions()),
+            self.store.publisher)
+        version=await batch.capture_once(binding)
+        with queue.connect(write=False) as db:
+            row=db.execute('SELECT package_json FROM rkb_dataset_seed WHERE operation_key=?',(operation,)).fetchone()
+        package=json.loads(row['package_json']);files={f['name']:DatasetFile(f['name'],f['size'],f['sha256'])
+            for f in package['files']}
+        archives=[f for f in files.values() if f.name.startswith('pg-') and f.name.endswith('.blob')]
+        if len(archives)!=1:raise SnapshotError('dataset_checkpoint_archive_ambiguous')
+        checkpoint=DatasetCheckpoint(latest.owner_slug,latest.dataset_slug,version,package['database_generation'],
+            package['base_sequence'],files['base-manifest.json'],archives[0],files['source-control.json'],
+            files['journal-control.json'])
+        batch.tickets.download_checkpoint=checkpoint
+        bridge=startup.restorer.dispatch;bridge.snapshot_tickets=batch.tickets
+        archive=checkpoint.archive;operation_ref=archive.name.removeprefix('pg-').removesuffix('.blob')
+        blob=BlobRef('dataset-blobs/'+operation_ref+'/'+archive.name,archive.size,archive.sha256,
+            'kaggle-dataset:'+str(version))
+        observed=await bridge.request(binding,'dataset_verify',dict(checkpoint=checkpoint.wire(),blob=blob.__dict__),
+            operation_key=sha(encode([operation,'readback',secrets.token_hex(24)])))
+        manifest_ref=ObjectRef(spool.journal.prefix+'/snapshots/manifests/'+checkpoint.manifest.sha256,
+            checkpoint.manifest.sha256,checkpoint.manifest.size,checkpoint.base_sequence)
+        return checkpoint,observed,manifest_ref,version
+
     async def refresh(self,binding,*,planned_stop=False):
         startup=self.startup;spool=startup.config.spool;queue=startup.config.queue
         latest=self.store.latest_checkpoint;proof=startup.history._coverage
@@ -140,28 +173,13 @@ class SourceDatasetCheckpoints:
             operation='dataset-checkpoint:'+sha(encode([self.store.publisher.ref,latest.dataset_version,
                 latest.database_generation,proof.applied_sequence]))
         else:operation=retained['operation_key']
-        batch=_WorkCycleCapture(startup,DatasetSeedConfig(self.store.publisher.ref,operation,self._versions()),
-            self.store.publisher)
-        version=await batch.capture_once(binding)
-        with queue.connect(write=False) as db:
-            row=db.execute('SELECT package_json FROM rkb_dataset_seed WHERE operation_key=?',(operation,)).fetchone()
-        package=json.loads(row['package_json']);files={f['name']:DatasetFile(f['name'],f['size'],f['sha256'])
-            for f in package['files']}
-        archives=[f for f in files.values() if f.name.startswith('pg-') and f.name.endswith('.blob')]
-        if len(archives)!=1:raise SnapshotError('dataset_checkpoint_archive_ambiguous')
-        checkpoint=DatasetCheckpoint(latest.owner_slug,latest.dataset_slug,version,package['database_generation'],
-            package['base_sequence'],files['base-manifest.json'],archives[0],files['source-control.json'],
-            files['journal-control.json'])
-        batch.tickets.download_checkpoint=checkpoint
-        bridge=startup.restorer.dispatch;bridge.snapshot_tickets=batch.tickets
-        archive=checkpoint.archive;operation_ref=archive.name.removeprefix('pg-').removesuffix('.blob')
-        blob=BlobRef('dataset-blobs/'+operation_ref+'/'+archive.name,archive.size,archive.sha256,
-            'kaggle-dataset:'+str(version))
-        observed=await bridge.request(binding,'dataset_verify',dict(checkpoint=checkpoint.wire(),blob=blob.__dict__),
-            operation_key=sha(encode([operation,'readback',secrets.token_hex(24)])))
-        manifest_ref=ObjectRef(spool.journal.prefix+'/snapshots/manifests/'+checkpoint.manifest.sha256,
-            checkpoint.manifest.sha256,checkpoint.manifest.size,checkpoint.base_sequence)
-        await asyncio.to_thread(self.store.promote,checkpoint,observed,manifest_ref=manifest_ref)
+        try:
+            checkpoint,observed,manifest_ref,version=await self._capture_verify(binding,operation,latest)
+            await asyncio.to_thread(self.store.promote,checkpoint,observed,manifest_ref=manifest_ref)
+        except asyncio.CancelledError:raise
+        except Exception as exc:
+            raise CheckpointPending(type(exc).__name__,
+                exc.args[0] if len(exc.args)==1 and type(exc.args[0]) is str else '') from exc
         with queue.connect(write=False) as db:
             keys=[r[0] for r in db.execute("SELECT operation_key FROM rkb_control_operations WHERE sequence<=? "
                 "AND seal_state='ACCEPTED' AND apply_state IN ('APPLIED','REJECTED_PRECONDITION') "

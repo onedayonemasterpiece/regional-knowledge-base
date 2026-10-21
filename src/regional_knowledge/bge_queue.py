@@ -32,6 +32,11 @@ MAX_STARTUP_FAILURES = 3  # Finite verified-not-sent/terminal retries per durabl
 _WAITERS = {}
 _WAITERS_LOCK = threading.Lock()
 RECONCILE_SECONDS = 0.25
+# Unfinished work that a live or future run can still execute. A recovery phase
+# is bound to its own run's actor, so once that run is expired/failed the row is
+# retained evidence only: it is neither startup demand nor admission capacity.
+LIVE_JOBS = ("state!='done' and not (kind='recovery_phase' and actor in "
+             "(select 'maintenance:'||id from runs where status in ('expired','failed')))")
 _LOG = logging.getLogger(__name__)
 
 
@@ -306,7 +311,7 @@ class BgeQueue:
                     raise ValueError('idempotency payload mismatch')
                 if previous['state']!='done':self._ensure(db,now)
                 return previous['id']
-            if db.execute("select count(*) from jobs where state!='done'").fetchone()[0]>=256:
+            if db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0]>=256:
                 raise RuntimeError('BGE queue full')
             self._ensure(db,now);job_id=str(uuid.uuid4())
             db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)',
@@ -330,7 +335,7 @@ class BgeQueue:
                 if prior['kind']!='source_command' or prior['identity']!=encoded:
                     raise ValueError('source operation has different exact dispatch binding')
                 return prior['id']
-            if db.execute("select count(*) from jobs where state!='done'").fetchone()[0]>=256:
+            if db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0]>=256:
                 raise RuntimeError('BGE queue full')
             self._ensure(db,now);job_id=str(uuid.uuid4())
             db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)',
@@ -914,7 +919,7 @@ class BgeQueue:
         blocked=control['startup_state']=='blocked'
         return {'state':'blocked' if blocked else 'unknown' if stale_remote or owner_blocker else run['status'] if run else 'stopped',
             'reason':'startup_retry_exhausted' if blocked else 'provider_execution_unknown' if stale_remote or owner_blocker else None,
-            'space':SPACE,'queue_depth':db.execute("select count(*) from jobs where state!='done'").fetchone()[0],
+            'space':SPACE,'queue_depth':db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0],
             'successor_starting':successor_starting,
             'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
 
@@ -928,7 +933,7 @@ class BgeQueue:
             self._expire(db,now)
             control=db.execute('select startup_state from control where id=1').fetchone()
             if (control['startup_state']!='blocked' and
-                    (db.execute("select 1 from jobs where state!='done'").fetchone()
+                    (db.execute('select 1 from jobs where '+LIVE_JOBS).fetchone()
                      or control['startup_state']=='pending')):
                 self._ensure(db,now,useful=False)
             control=db.execute('select * from control where id=1').fetchone()
@@ -1132,7 +1137,7 @@ class BgeQueue:
                 # re-arm the launch budget or start infinite 60-second loops.
                 if row and row['status']!='failed':
                     control=db.execute('select current_run,startup_ref,startup_state from control where id=1').fetchone()
-                    outstanding=bool(db.execute("select 1 from jobs where state!='done' limit 1").fetchone())
+                    outstanding=bool(db.execute('select 1 from jobs where '+LIVE_JOBS+' limit 1').fetchone())
                     # A normal useful-idle shutdown is NOT fresh demand. Do
                     # not resurrect an already satisfied startup merely
                     # because its old worker later terminates.

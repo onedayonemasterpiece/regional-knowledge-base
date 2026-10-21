@@ -183,7 +183,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                 s.invalidate_source_history();self._coverage=None
                 raise SpoolConflict('retained exact native source prefix unavailable')
             s.invalidate_source_history();self._coverage=None;version=s._source_version
-            session=None
+            session=None;committing=False
             try:
                 async with asyncio.timeout(self.cloud_prepare_seconds) as phase_timeout:
                     if not self.binding_current(binding) or not self._routes_current() or self._registry_hash()!=self.registry_hash:
@@ -331,6 +331,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     session=None
                     self.spool._native_history_unsettled=False
                     phase_timeout.reschedule(asyncio.get_running_loop().time()+self.cloud_prepare_seconds)
+                    committing=True
                     if publish_genesis:
                         await j._fenced_exact(checkpoint_key,self._checkpoint(key[3]),expected_token=None,
                             writer_generation=self.writer_generation)
@@ -348,6 +349,18 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     self._coverage=coverage;s._source_anchor=coverage;s._source_head=head.reference if head else None
                     s._source_covered_sequence=accepted;s._source_version=object()
                     return coverage
+            except (TimeoutError,SpoolConflict) as exc:
+                # Missing new evidence (timeout, unavailable observation) does
+                # not revoke an unexpired proof of an unchanged prefix; it still
+                # expires at its own deadline. Contradictions keep closing reads.
+                if (mode=='full' or committing or previous is None
+                        or type(exc) is SpoolConflict and exc.args!=('native source history observation unavailable',)
+                        or s._source_version is not version or s._source_anchor is not None or s._writing
+                        or previous.deadline<=self.clock() or not self.binding_current(binding)):
+                    raise
+                self._coverage=previous;s._source_anchor=previous
+                _LOG.warning('source_history_renewal_deferred mode=%s reason=%s',mode,type(exc).__name__)
+                return previous
             finally:
                 if session is not None:
                     await self._abort_session(binding,session)

@@ -275,3 +275,41 @@ def test_unknown_launch_source_reconciliation_is_bounded_without_changing_origin
     monkeypatch.setattr(module,'notebook_snapshot',lambda api,ref:{'run_id':run_id,'version':92})
     assert module.reconcile_launch_due(None,queue,run,ref,probed,now=160) is True
     assert next(r for r in queue.maintenance() if r['id']==run_id)['provider_version']==92
+
+
+def test_restore_launch_refuses_writer_generation_used_by_another_run(tmp_path):
+    """Fresh targets launch before the writer moves; reused generations are refused."""
+    import pytest
+    from regional_knowledge.bge_queue import BgeQueue
+    module=controller();q=BgeQueue(tmp_path/'writer-binding.sqlite',clock=lambda:1000.)
+    with q.connect() as db:
+        db.execute('CREATE TABLE rkb_writer_generations(writer_generation TEXT,database_generation TEXT,run_id TEXT,stream TEXT,revision INTEGER,retired INTEGER)')
+        db.execute("INSERT INTO rkb_writer_generations VALUES('writer-old','db','retired-run','s',19,1)")
+    # Legitimate launch: rkb_writer_control still names the previous run.
+    module.require_writer_binding(q,'successor-run','writer-new')
+    module.require_writer_binding(q,'retired-run','writer-old')
+    with pytest.raises(ValueError):module.require_writer_binding(q,'successor-run','writer-old')
+    report=module.provider_boundary_report(ValueError('x'),'successor-run','launch_preparation','verify_writer_binding')
+    assert report['submission_state']=='not_sent' and report['preparation_step']=='verify_writer_binding'
+
+
+
+def test_dead_run_recovery_phases_are_not_startup_demand_or_capacity(tmp_path):
+    """Run-bound recovery phases of an expired run stay as evidence only."""
+    from regional_knowledge.bge_queue import BgeQueue
+    q=BgeQueue(tmp_path/'orphans.sqlite',clock=lambda:1000.)
+    dead=q.request_startup()['run_id']
+    with q.connect() as db:
+        for n in range(256):
+            db.execute("insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)",
+                (f'orphan-{n}','maintenance:'+dead,f'recovery:{n}','recovery_phase','[]','{}','pending',900.,900.))
+        db.execute("update runs set status='expired' where id=?",(dead,))
+        db.execute("update control set current_run=null,successor=null,startup_ref=null,startup_state=null where id=1")
+    assert not any(row['id']!=dead and row['status']=='starting' for row in q.maintenance())
+    with q.connect(write=False) as db:
+        assert db.execute('select count(*) from runs').fetchone()[0]==1
+    # Real new work is still admitted despite 256 retained dead-run phases,
+    # and it is the only thing that creates a new cold run.
+    assert q.enqueue('actor','doc-1',['text'],kind='document')
+    with q.connect(write=False) as db:
+        assert db.execute("select count(*) from runs where status='starting'").fetchone()[0]==1
