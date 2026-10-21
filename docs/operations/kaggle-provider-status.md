@@ -102,14 +102,13 @@ A surviving shared-admission process releases sent RAM debt on an attachment
 change only after an indexed read of the exact old incarnation's persisted native
 terminal receipt. Same-run reads do not acquire a new receipt check or writer lock.
 
-The existing controller visits at most two history rows per iteration through a
-durable SQLite rowid cursor. UNKNOWN/unmapped rows are skipped, not cleared;
-failures cannot starve later known versions. Exhausted cycles back off 30 seconds.
-A crash before cursor advancement repeats a read; a committed terminal receipt
-is idempotent across retries/restarts. The main loop no longer duplicates the
-history observer with latest-source terminal probes. Healthy successor admission
-and the stable-slug no-duplicate-push fence are unchanged. The separate historical
-status predicate work is not included here.
+The automatic controller observes at most two current owners per iteration.
+Detached launch history is not probed automatically and does not gate launch.
+An explicit bounded historical diagnostic sweep can still use the durable SQLite
+rowid cursor: UNKNOWN/unmapped rows are retained, exhausted cycles back off for
+30 seconds, and a crash repeats only a safe read. Native terminal receipts stay
+idempotent across retries. Healthy nominated successor admission and one-shot
+claiming of the current request remain in place.
 
 Validation is synthetic: native request selectors/response modes, invalid bodies,
 freshness/CAS, 101 mixed historical rows, cross-process RAM-debt reconciliation,
@@ -118,3 +117,15 @@ claim-lease requeue/pointer liveness, actual loopback HTTP slow-drip/redirect
 responses, unresolved accepted seq1/source_history preservation and existing
 queue/admission regressions. No live provider, model, runtime database, Stop,
 launch, rollout or product acceptance is implied.
+
+
+## Development launch scope (owner clarification 2026-10-21)
+
+Archived run history is diagnostic. Old UNKNOWN rows alone do not block a new
+ordinary development launch and need no exception registry. Only the current
+request, current/successor owner, shared compute owner and active writer/publication
+retain launch authority. Claiming the current pending request is atomic and
+one-shot; an unknown Save response is reconciled for that same request, never
+blindly submitted again. Accepted data, writer fences and original historical
+outcomes remain intact. Automatic reconciliation observes current owners; a
+bounded historical sweep remains an explicit diagnostic operation.

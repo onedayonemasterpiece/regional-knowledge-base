@@ -6,47 +6,24 @@ from uuid import uuid4
 
 
 
-def test_old_unknown_provider_slug_fences_new_launch_even_after_control_reassignment(tmp_path):
-    """A migrated/legacy orphan UNKNOWN remains owner of the stable notebook slug.
-
-    A new run can be locally allocated after control-pointer loss or prior
-    migration, but must not perform a second provider push while the prior
-    exact execution outcome remains unknown.
-    """
+def test_archived_unknown_does_not_block_one_current_request(tmp_path):
     from regional_knowledge.bge_queue import BgeQueue
-    now=[1000.]
-    q=BgeQueue(tmp_path/'unknown-orphan.sqlite',clock=lambda:now[0])
-    before=q.request_startup()['run_id']
-    ref='owner/rkb-bge-m3-cpu'
-    assert q.launch_claim(before,provider_ref=ref) is not None
+    q=BgeQueue(tmp_path/'unknown-orphan.sqlite',clock=lambda:1000.)
+    before=q.request_startup()['run_id'];ref='owner/rkb-bge-m3-cpu'
+    assert q.launch_claim(before,provider_ref=ref)
     with q.connect() as db:
+        db.execute("update runs set status='expired' where id=?",(before,))
         db.execute('update control set current_run=null,successor=null where id=1')
-    second=next(row['id'] for row in q.maintenance()
-                if row['id']!=before and row['status']=='starting')
-    assert q.launch_claim(second,provider_ref=ref) is None
-    # The legacy optional-ref API must not silently skip a *known* old ref.
-    # Absence of a new ref is uncertainty, never proof of a different owner.
-    assert q.launch_claim(second) is None
-    with q.connect(write=False) as db:
-        original=db.execute('select launch_state from runs where id=?',(before,)).fetchone()[0]
-        replacement=db.execute('select launch_state from runs where id=?',(second,)).fetchone()[0]
-    assert original=='dispatching' and replacement=='pending'
-    assert q.launch_claim(second,provider_ref=ref) is None
-
-    # Even with a version number and stale READY heartbeat this run still
-    # has an unknown session outcome; no new save to the same stable slug.
-    q.launch_record(before,ref,provider_version=9)
-    token=(q.path.parent/'bge-worker-credentials'/before).read_text()
-    q.heartbeat(before,token,ready=True)
-    now[0]+=121
+    second=next(row['id'] for row in q.maintenance() if row['id']!=before and row['status']=='starting')
+    assert q.launch_claim(second,provider_ref=ref)
     assert q.launch_claim(second,provider_ref=ref) is None
     with q.connect(write=False) as db:
-        assert db.execute('select launch_state from runs where id=?',(second,)).fetchone()[0]=='pending'
+        assert db.execute('select launch_state from runs where id=?',(before,)).fetchone()[0]=='dispatching'
+        assert db.execute('select count(*) from runs').fetchone()[0]==2
 
 
-
-def test_unlinked_ready_run_cannot_be_silently_overwritten(tmp_path):
-    """Only the nominated warming successor may share the stable slug."""
+def test_current_shared_compute_owner_cannot_be_silently_overwritten(tmp_path):
+    """A real shared compute owner retains authority despite a missing pointer."""
     from regional_knowledge.bge_queue import BgeQueue
     q=BgeQueue(tmp_path/'unlinked-ready.sqlite',clock=lambda:1000.)
     run=q.request_startup()['run_id'];ref='owner/rkb-bge-m3-cpu'
@@ -54,6 +31,8 @@ def test_unlinked_ready_run_cannot_be_silently_overwritten(tmp_path):
     q.launch_record(run,ref,provider_version=7)
     q.heartbeat(run,token,ready=True)
     with q.connect() as db:
+        db.execute('create table bge_shared_admission(id integer primary key,run_id text,incarnation text)')
+        db.execute('insert into bge_shared_admission values(1,?,?)',(run,'fixture-incarnation'))
         db.execute('update control set current_run=null,successor=null where id=1')
     second=next(x['id'] for x in q.maintenance() if x['status']=='starting')
     assert q.launch_claim(second,provider_ref=ref) is None

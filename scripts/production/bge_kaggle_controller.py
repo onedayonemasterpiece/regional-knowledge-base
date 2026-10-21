@@ -149,7 +149,7 @@ def reconcile_dispatched_terminal(api, queue, run, ref):
     return phase
 
 
-def reconcile_provider_history(api, queue, *, limit=2):
+def reconcile_provider_history(api, queue, *, limit=2, current_only=False):
     """One bounded resumable page; unknown submissions never hold up known rows.
 
     The native adapter performs no writes. Only its sealed exact-session proof
@@ -157,7 +157,16 @@ def reconcile_provider_history(api, queue, *, limit=2):
     """
     from regional_knowledge.kaggle_provider_terminal import observe_version_terminal
     retired=0
-    for run in queue.provider_reconciliation_page(limit=limit):
+    if current_only:
+        if type(limit) is not int or not 1<=limit<=8:raise ValueError('bounded owner page required')
+        owners=sorted(queue.provider_owned_run_ids())
+        with queue.connect(write=False) as db:
+            marks=','.join('?' for _ in owners)
+            runs=[dict(r) for r in db.execute(
+                f"select rowid as _cursor,* from runs where id in ({marks}) and launch_state in ('dispatching','dispatched') limit ?",
+                (*owners,limit))] if owners else []
+    else:runs=queue.provider_reconciliation_page(limit=limit)
+    for run in runs:
         try:
             if (type(run['provider_version']) is int and run['provider_ref']
                     and run['status']=='expired'):
@@ -174,7 +183,7 @@ def reconcile_provider_history(api, queue, *, limit=2):
             logging.warning(json.dumps({'event':'bge_provider_reconciliation_failed',
                 'run_id':run['id'],'error_type':type(error).__name__}))
         finally:
-            queue.advance_provider_reconciliation(run['_cursor'])
+            if not current_only:queue.advance_provider_reconciliation(run['_cursor'])
     return retired
 
 
@@ -249,9 +258,11 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
     state=queue.path.parent/'bge-launches';state.mkdir(mode=0o700,exist_ok=True)
     probed={}
     while True:
-        reconcile_provider_history(api,queue)
+        reconcile_provider_history(api,queue,current_only=True)
         runs=queue.maintenance()
+        owners=queue.provider_owned_run_ids()
         for run in runs:
+            if run['id'] not in owners:continue
             run_id=run['id'];ref=notebook_ref(run,state);slug=ref.rsplit('/',1)[-1]
             boundary='observation'
             preparation_step='not_started'  # Fixed, low-cardinality diagnostic only.
