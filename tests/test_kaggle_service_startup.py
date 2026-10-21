@@ -278,3 +278,28 @@ def test_geo_optin_rejects_unbounded_or_ambiguous_operation_key_configuration(se
 def test_geo_optin_cannot_fall_back_to_non_geo_runtime(service):
     with pytest.raises(ValueError,match='fresh11 GEO handler'):
         TargetServiceStartup(replace(service.config,geo_manifest_operation_keys=('open','activate')))
+
+
+@pytest.mark.asyncio
+async def test_normal_maintenance_reconciles_publication_before_native_history(service):
+    s=service;startup=s.startup;s.adapter.available=True
+    events=[];unknown=[True];original=startup.history.restore
+    async def ensure(journal):
+        assert journal is s.config.spool.journal;events.append('ensure')
+    async def reconcile(store):
+        assert store is s.config.spool.journal.store;events.append('reconcile');unknown[0]=False
+    async def history(binding):
+        events.append('history')
+        if unknown[0]:raise OSError('synthetic lost publication ACK remains unresolved')
+        return await original(binding)
+    # A spy on the existing owner seam; the fixture's queue/read authority and
+    # native-history behavior remain the same. No runtime authority is minted.
+    object.__setattr__(s.config,'writer_owner',SimpleNamespace(run_id='owned-fixture-run',ensure_current=ensure,reconcile=reconcile))
+    with s.config.queue.connect() as db:
+        db.execute('create table rkb_writer_control(run_id text,writer_generation text,publication_json text)')
+        db.execute('insert into rkb_writer_control values(?,?,?)',('owned-fixture-run','writer-1','unknown-native-ack'))
+    startup.history.restore=history;startup.running=True
+    try:
+        assert await startup.refresh()
+        assert events==['reconcile','ensure','history'] and startup.reads_current()
+    finally:startup.running=False

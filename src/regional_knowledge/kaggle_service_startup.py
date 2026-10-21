@@ -317,6 +317,14 @@ class TargetServiceStartup:
         """Maintenance only; ready reads never wait for native/journal writes."""
         if not self.running or self.closed:return False
         try:
+            owner=self.config.writer_owner
+            if owner is not None:
+                # Read back an owned UNKNOWN publication even if its worker
+                # disconnected, before restore/current-runtime checks reject it.
+                with self.config.queue.connect(write=False) as db:
+                    pending=db.execute('SELECT 1 FROM rkb_writer_control WHERE run_id=? AND writer_generation=? AND publication_json IS NOT NULL',
+                        (owner.run_id,self.config.writer_generation)).fetchone()
+                if pending:await owner.reconcile(self.config.spool.journal.store)
             if self.restorer is not None and not self.restorer.complete:
                 await self.restorer.refresh()
             binding=await asyncio.to_thread(current_binding,self.config.queue)
