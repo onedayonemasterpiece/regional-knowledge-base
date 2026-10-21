@@ -144,6 +144,10 @@ def test_real_generated_restore_entrypoint_waits_native_capability_and_refuses_w
             else:
                 result=await preparing
                 assert result.query_handler is not None
+                # This fixture injects a synthetic native Worker rather than
+                # the exact WorkerRecoveryPhases class. Its purpose is native
+                # proof-before-pool; the fresh generated composition and
+                # TargetRuntime tests cover the real warm hookup order.
                 assert events.index('native-finish')<events.index('verify-capability')<events.index('pool-created')
             await kwargs['close_runtime']()
             assert not runtime.current((run,'incarnation',2))
@@ -204,17 +208,45 @@ def test_generated_fresh_snapshot_owner_configures_after_pg_without_model_reload
     monkeypatch.setattr('regional_knowledge.kaggle_owned_pg.ensure_private_runtime_root',lambda **kw:tmp_path)
     monkeypatch.setattr('regional_knowledge.kaggle_native_bundle.prepare_native_bundle',lambda *a,**kw:SimpleNamespace(root=encoder.artifacts.root))
     prepared=object()
+    from regional_knowledge.kaggle_recovery_phases import WorkerRecoveryPhases
+    from regional_knowledge.kaggle_warm_read import ReadHandlerSlot,ReadHandlerCompatibility
+    from regional_knowledge.kaggle_warm_maintenance import WarmHandlerMaintenance
+    from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
+    from test_kaggle_worker_query import pinned
+    retained_factory=SimpleNamespace(_current=lambda binding:None)
     class Runtime:
-        def __init__(self,config,**kwargs):self.recovery_worker=None
+        def __init__(self,config,**kwargs):
+            self.recovery_worker=None;self.read_handler_slot=ReadHandlerSlot(
+                KaggleWorkerQuery(acquire=lambda:None,tokenizer=pinned(),
+                    source_provenance=True),
+                loaded_sha256='a'*64,
+                compatibility=ReadHandlerCompatibility('db','schema','function',
+                    'executor','b'*64,'c'*64))
+            self.prepared=None
         async def prepare(self,actual,**kwargs):
-            assert actual is encoder;events.append('prepare-owned-PG-A');return prepared
+            assert actual is encoder;events.append('prepare-owned-PG-A')
+            self.prepared=prepared
+            TargetRuntime._bind_read_handler_maintenance(self)
+            assert self.recovery_worker is None
+            return prepared
+        async def _owned_probe(self,*,acquire):
+            return None
         async def configure_recovery(self,actual,**kwargs):
             assert actual is encoder and events==['prepare-owned-PG-A']
             events.append('same-model-capture-owner')
-            self.recovery_worker=SimpleNamespace(factory='actual-retained-factory-A',download='scoped-download')
+            worker=object.__new__(WorkerRecoveryPhases)
+            worker.factory=retained_factory
+            worker.read_handler_slot=None;worker.read_handler_control=None
+            worker.download=lambda *a,**k:None
+            worker.workspace=lambda *a,**k:None
+            self.recovery_worker=worker
+            TargetRuntime._bind_read_handler_maintenance(self)
+            assert worker.read_handler_slot is self.read_handler_slot
+            assert type(worker.read_handler_control) is WarmHandlerMaintenance
         async def aclose(self):events.append('close')
     def drill(serving,**kwargs):
-        assert serving=='actual-retained-factory-A';events.append('isolated-drill-owner-B');return object()
+        assert serving is retained_factory
+        events.append('isolated-drill-owner-B');return object()
     monkeypatch.setattr('regional_knowledge.kaggle_target_runtime.TargetRuntime',Runtime)
     monkeypatch.setattr('regional_knowledge.kaggle_snapshot_drill.EmptySnapshotDrill',drill)
     def main(**kwargs):
@@ -222,6 +254,7 @@ def test_generated_fresh_snapshot_owner_configures_after_pg_without_model_reload
         async def execute():
             assert await kwargs['prepare_runtime'](encoder,run_id=run,launch_nonce=nonce,runtime_incarnation='inc') is prepared
             assert owner.instance.recovery_worker.drill is not None
+            assert type(owner.instance.recovery_worker.read_handler_control) is WarmHandlerMaintenance
             await kwargs['close_runtime']()
         asyncio.run(execute())
     namespace.update(main=main,__name__='__main__')

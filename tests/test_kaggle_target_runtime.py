@@ -70,12 +70,13 @@ def test_generated_target_persists_final_hash_outside_source_and_is_stable(tmp_p
     from regional_knowledge.kaggle_target_launch import source_bundle
     import base64
     _,shipped,entries=source_bundle(ROOT)
-    relative='regional_knowledge/kaggle_warm_read.py'
-    assert relative in shipped
-    raw=base64.b64decode(shipped[relative],validate=True)
-    assert raw==(ROOT/'src'/relative).read_bytes()
-    assert any(e['name'].endswith('/'+relative) and e['size']==len(raw)
-               and e['sha256']==hashlib.sha256(raw).hexdigest() for e in entries)
+    for relative in ('regional_knowledge/kaggle_warm_read.py',
+                     'regional_knowledge/kaggle_warm_maintenance.py'):
+        assert relative in shipped
+        raw=base64.b64decode(shipped[relative],validate=True)
+        assert raw==(ROOT/'src'/relative).read_bytes()
+        assert any(e['name'].endswith('/'+relative) and e['size']==len(raw)
+                   and e['sha256']==hashlib.sha256(raw).hexdigest() for e in entries)
     assert source==generate(queue,run,spec())
     assert 'main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)' in source
     assert 'pip install' not in source
@@ -232,6 +233,76 @@ async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg(tmp
     assert prepared.read_event_drain({'request_id':'none','connection_generation':1,'turn_generation':0})==[]
     await runtime.aclose();await runtime.aclose()
     assert events==['owned','pool','open','pool-close','pg-close']
+
+
+
+
+@pytest.mark.asyncio
+async def test_new_empty_prepare_before_configure_recovery_binds_same_warm_maintenance(monkeypatch,tmp_path):
+    """Real NEW_EMPTY TargetRuntime order: prepare → native recovery hookup.
+
+    No fake warm attachment from previous order is inherited; no second
+    model/PG preparation is allowed when the existing Stage0 worker arrives.
+    """
+    from regional_knowledge.kaggle_recovery_phases import WorkerRecoveryPhases
+    from regional_knowledge.kaggle_warm_maintenance import WarmHandlerMaintenance
+    from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
+    from test_kaggle_worker_query import pinned
+    events=[]
+    launch=spec(fresh=True)
+    config=dict(CONFIG,target_runtime=dict(launch.wire(),sql_root='/unused'))
+    class Owner:
+        def __init__(self,_):pass
+        async def start_empty(self,**options):events.append('initdb-once')
+        async def aclose(self):events.append('owned-close')
+    class Pool:
+        def __init__(self,**kwargs):events.append('pool-created')
+        async def open(self,**kwargs):events.append('pool-open')
+        async def close(self,**kwargs):events.append('pool-close')
+        def connection(self):pass
+    async def prepare(encoder,**kw):
+        events.append('prepared-once')
+        return PreparedRuntime(KaggleWorkerQuery(acquire=kw['acquire'],
+            tokenizer=pinned(),telemetry=kw['telemetry']),candidate())
+    runtime=TargetRuntime(config,executed_source='/fixture',
+        owner_factory=Owner,pool_factory=Pool,prepare=prepare)
+    encoder=SimpleNamespace(artifacts=SimpleNamespace(root=tmp_path,
+        role_hash=lambda roles:'f'*64))
+    identity=dict(run_id=CONFIG['run_id'],launch_nonce=CONFIG['launch_nonce'],
+                  runtime_incarnation='incarnation')
+    original=await runtime.prepare(encoder,**identity)
+    slot=runtime.read_handler_slot
+    assert slot is not None and slot._pinned is not None
+    assert runtime.recovery_worker is None
+
+    async def fake_build(**kwargs):
+        assert kwargs['identity']==tuple(identity.values())
+        events.append('recovery-worker-attached')
+        worker=object.__new__(WorkerRecoveryPhases)
+        worker.read_handler_slot=None;worker.read_handler_control=None
+        worker.download=lambda *args,**kw:None
+        worker.workspace=lambda *args,**kw:None
+        worker.factory=SimpleNamespace(_current=lambda b:None)
+        async def close():events.append('recovery-close')
+        worker.aclose=close
+        return worker
+    monkeypatch.setattr('regional_knowledge.kaggle_recovery_phases.build_recovery_worker',fake_build)
+    worker=await runtime.configure_recovery(encoder,**identity,
+        native_bundle=SimpleNamespace(root=tmp_path),tools={},
+        native_uid=1000,native_gid=1000,current=lambda _:True,
+        workspace_private_current=lambda _:True,workspace=lambda *a:None)
+    assert worker is runtime.recovery_worker
+    assert worker.read_handler_slot is slot
+    assert type(worker.read_handler_control) is WarmHandlerMaintenance
+    assert worker.read_handler_control.slot is slot
+    assert runtime.prepared is original
+    assert (await runtime.prepare(encoder,**identity)) is original
+    runtime._bind_read_handler_maintenance()
+    assert worker.read_handler_control.slot is slot
+    assert events==['initdb-once','pool-created','pool-open','prepared-once',
+                    'recovery-worker-attached']
+    await runtime.aclose()
+    assert events[-3:]==['pool-close','recovery-close','owned-close']
 
 
 @pytest.mark.asyncio

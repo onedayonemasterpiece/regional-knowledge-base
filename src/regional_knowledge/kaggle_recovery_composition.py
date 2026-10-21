@@ -89,7 +89,7 @@ class DeferredRecoveryRuntime:
         import hashlib
         from pathlib import Path
         if (self.closed or self.workspace_root is None or type(operation) is not str
-                or not 1<=len(operation.encode())<=256 or phase not in ('restore','download','capture','drill_restore')):
+                or not 1<=len(operation.encode())<=256 or phase not in ('restore','download','capture','drill_restore','read_handler')):
             raise ValueError('owned recovery workspace required')
         if phase=='drill_restore':
             from .kaggle_snapshot_drill import drill_database

@@ -198,6 +198,47 @@ class TargetRuntime:
         if recovery_worker is not None:self._recovery_available.set()
         self.restored_database=restored_database
 
+    def _bind_read_handler_maintenance(self):
+        """Bind the one owned PG/BGE read slot, regardless of preparation order.
+
+        NEW_EMPTY_GENERATION prepares the useful runtime BEFORE attaching
+        native recovery; VERIFIED_INITIALIZED attaches recovery BEFORE native
+        PG restore/prepare. Both must register the exact same maintenance
+        control only after a prepared read slot exists.
+        """
+        worker=self.recovery_worker
+        slot=self.read_handler_slot
+        if worker is None or slot is None or self.prepared is None:
+            return
+        from .kaggle_recovery_phases import WorkerRecoveryPhases
+        if type(worker) is not WorkerRecoveryPhases:
+            return
+        worker.read_handler_slot=slot
+        if worker.read_handler_control is not None or slot._pinned is None:
+            return
+        from .kaggle_warm_maintenance import WarmHandlerMaintenance
+        from .kaggle_warm_read import WarmHandlerRejected
+        async def candidate_self_test(candidate):
+            frame=dict(type='QUERY',request_id='rkb-warm-internal-selftest',
+                connection_generation=1,turn_generation=1)
+            def forbidden_encoder(_):
+                raise WarmHandlerRejected('read_handler_stage_encoder_used')
+            observed=await candidate(frame,encode=forbidden_encoder)
+            if type(observed) is not dict or observed.get('status')!='invalid_query':
+                raise WarmHandlerRejected('read_handler_self_test_failed')
+        async def candidate_probe(candidate):
+            # The current native PG/catalog/writer stays valid without a
+            # second model/PG creation; a useful authorized QUERY is a separate
+            # live acceptance step rather than a stage-time fake user read.
+            await self._owned_probe(acquire=candidate.acquire)
+            await candidate_self_test(candidate)
+        worker.read_handler_control=WarmHandlerMaintenance(
+            slot=slot,download=worker.download,workspace=worker.workspace,
+            constructor=dict(slot._pinned),
+            self_test=candidate_self_test,probe=candidate_probe,
+            current=lambda frame:worker.factory._current((
+                frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])))
+
     async def configure_recovery(self,encoder,*,run_id,launch_nonce,runtime_incarnation,
                                  native_bundle,tools,native_uid,native_gid,current,
                                  workspace_private_current,workspace,upload=None,download=None,
@@ -232,7 +273,9 @@ class TargetRuntime:
             native_gid=native_gid,current=current,workspace_private_current=workspace_private_current,
             upload=upload,download=download,workspace=workspace,limits=limits,
             ticket_channel=ticket_channel,transfer=transfer,acquire=acquire,model_pins=model_pins)
-        self.recovery_worker=worker;self._recovery_available.set()
+        self.recovery_worker=worker
+        self._bind_read_handler_maintenance()
+        self._recovery_available.set()
         return worker
 
     async def recovery(self,frame):
@@ -375,6 +418,7 @@ class TargetRuntime:
         from .query_telemetry import drain_native_read_events
         self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler,original_handler,
             read_event_drain=lambda frame:drain_native_read_events(read_events,frame))
+        self._bind_read_handler_maintenance()
         return self.prepared
 
     async def aclose(self):

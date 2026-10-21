@@ -129,6 +129,287 @@ async def test_worker_caches_exact_known_result_but_retains_unknown_before_effec
     assert calls==['known','effect']
 
 
+
+
+@pytest.mark.asyncio
+async def test_exact_run_read_handler_status_uses_retained_slot_without_pg_or_bge_effects(tmp_path):
+    """Worker readback is a fresh WSS maintenance phase, never code-upload RPC."""
+    from regional_knowledge.kaggle_warm_read import ReadHandlerSlot
+    from test_kaggle_warm_read import old,context,staged_module,good_probe,good_stage
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=database();native.identity=('r','nonce','inc')
+    native._owned_candidates=set();native._capabilities=set()
+    observed=[]
+    native._current=lambda binding:observed.append(binding)
+    worker=WorkerRecoveryPhases(factory=native,download=lambda *_:pytest.fail('download'),
+        workspace=lambda *_:pytest.fail('workspace'))
+    async def request(key,arguments=None):
+        args=arguments if arguments is not None else {}
+        frame=dict(type='DISPATCH',protocol_version=2,connection_generation=2,id='job-'+key,
+            claim='claim',kind='recovery_phase',run_id='r',launch_nonce='nonce',
+            runtime_incarnation='inc',database_generation=native.database.database_generation,
+            writer_generation=native.database.writer_generation,phase='read_handler_status',
+            operation_key=key,arguments=args,request_sha256=sha(encode({
+                'phase':'read_handler_status','arguments':args})),
+            compute_claim='retained-slot',dispatch_generation=2)
+        return await worker(frame)
+    with pytest.raises(SnapshotError,match='read_handler_status_unavailable'):
+        await request('not-prepared')
+    slot=ReadHandlerSlot(old,loaded_sha256='a'*64,compatibility=context())
+    worker.read_handler_slot=slot
+    result=await request('fresh-before')
+    assert result['value']==slot.receipt()
+    assert result['value']['loaded_sha256']=='a'*64
+    assert result['value']['loaded_kind']=='verified_bundle'
+    assert result['value']['generation']==0
+    with pytest.raises(SnapshotError,match='read_handler_status_arguments'):
+        await request('forged-param',{'module_path':'/private/code.py'})
+    root,path,digest=staged_module(tmp_path)
+    await slot.stage(path=path,trusted_root=root,expected_sha256=digest,
+        compatibility=context(),constructor={'marker':'new'},self_test=good_stage)
+    await slot.activate(staged_sha256=digest,expected_loaded_sha256='a'*64,
+        probe=good_probe)
+    changed=await request('fresh-after')
+    assert changed['value']['loaded_sha256']==digest
+    assert changed['value']['loaded_kind']=='module'
+    assert changed['value']['generation']==1
+    assert len(observed)==4
+    # This source-only operation touched neither PG nor model/asset owner.
+    await worker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_readback_dispatch_uses_real_durable_owner_and_new_operation_per_poll(state):
+    s=state
+    bridge=RecoveryPhaseDispatch(s.q,database=database(),identity=(s.run,s.nonce,'incarnation-a'),
+        binding_current=lambda binding:binding is s)
+    phase=WssSnapshotPhases(bridge,operation_key='trusted-owner-readback')
+    async def one_round(observed):
+        task=asyncio.create_task(phase.read_handler_status(s))
+        for _ in range(100):
+            work=await s.a.next_channel_work(s.run,s.token,s.generation)
+            if work:break
+            await asyncio.sleep(.001)
+        else:pytest.fail('WSS readback not scheduled')
+        s.a.mark_work_sent(work)
+        frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
+            **dict(work.document_payload),compute_claim=work.compute_claim,
+            dispatch_generation=work.dispatch_generation)
+        assert frame['phase']=='read_handler_status' and frame['arguments']=={}
+        assert frame['kind']=='recovery_phase'
+        assert not any(k in frame for k in ('path','python','constructor','source'))
+        settled=await bridge.receive(response(s,frame,observed),run_id=s.run,
+            token=s.token,generation=s.generation)
+        assert settled['status']=='accepted'
+        out=await task
+        assert out==observed
+        res=work.resource
+        await s.a.resource_released(s.run,s.token,s.generation,
+            runtime_incarnation=res.runtime_incarnation,resource_kind='document',
+            resource_id=res.resource_id,compute_claim=res.compute_claim,
+            dispatch_generation=res.dispatch_generation)
+        return frame['operation_key']
+    try:
+        key1=await one_round({'loaded_sha256':'a'*64,'generation':0})
+        key2=await one_round({'loaded_sha256':'b'*64,'generation':1})
+        assert key1!=key2  # stale cached first reply is not a live readback
+    finally:await bridge.aclose()
+
+
+
+@pytest.mark.asyncio
+async def test_live_admission_wss_reviewed_blob_stage_and_reconcile_readback(state,tmp_path):
+    """Same durable compute claim transports a pinned artifact, never Python bytes."""
+    from regional_knowledge.kaggle_warm_maintenance import WarmHandlerMaintenance,WarmHandlerPatchApproval
+    from regional_knowledge.kaggle_warm_read import ReadHandlerSlot
+    from test_kaggle_warm_read import old,context,staged_module,good_probe,good_stage
+    from types import SimpleNamespace
+    from regional_knowledge.kaggle_pg_snapshot_native import BlobRef
+    import hashlib
+    s=state
+    _,source,digest=staged_module(tmp_path)
+    blob=BlobRef('rkb/snapshots/blobs/owner/'+digest,source.stat().st_size,digest,'"etag"')
+    approval=WarmHandlerPatchApproval(blob,'a'*40)
+    signed=[]
+    class Tickets:
+        async def issue_download(self,binding,key,item):
+            signed.append((binding,key,item))
+            return SimpleNamespace(wire=lambda:dict(scope='existing-signed-GET'))
+    bridge=RecoveryPhaseDispatch(s.q,database=database(),identity=(s.run,s.nonce,'incarnation-a'),
+        binding_current=lambda b:b is s,snapshot_tickets=Tickets())
+    control=WssSnapshotPhases(bridge,operation_key='trusted-warm-review')
+    root=tmp_path/'owned';root.mkdir(mode=0o700)
+    def workpath(key,phase):
+        return root/(hashlib.sha256(key.encode()).hexdigest()+'-'+phase)
+    transfer=[]
+    async def download(item,key,*,ticket,transfer_operation):
+        assert item==blob and transfer_operation==key
+        assert ticket==dict(scope='existing-signed-GET')
+        target=workpath(key,'download')
+        target.write_bytes(source.read_bytes());target.chmod(0o600)
+        transfer.append(item)
+        return target
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=database();native.identity=(s.run,s.nonce,'incarnation-a')
+    native._current=lambda binding:None
+    native._owned_candidates=set();native._capabilities=set()
+    worker=WorkerRecoveryPhases(factory=native,download=download,workspace=workpath)
+    slot=ReadHandlerSlot(old,loaded_sha256='b'*64,compatibility=context())
+    worker.read_handler_slot=slot
+    worker.read_handler_control=WarmHandlerMaintenance(slot=slot,download=download,
+        workspace=workpath,constructor={'marker':'new'},self_test=good_stage,
+        probe=good_probe,current=lambda frame:None)
+
+    async def deliver(task,*,rejected=False):
+        for _ in range(100):
+            work=await s.a.next_channel_work(s.run,s.token,s.generation)
+            if work:break
+            await asyncio.sleep(.001)
+        else:pytest.fail('signed warm maintenance DISPATCH missing')
+        s.a.mark_work_sent(work)
+        # next_channel_work already runs the exact maintenance dispatch
+        # and issues the scoped GET ticket once; a second dispatch_payload
+        # call would unnecessarily request a second signing operation.
+        frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
+            **dict(work.document_payload),compute_claim=work.compute_claim,
+            dispatch_generation=work.dispatch_generation)
+        assert 'source' not in frame and 'module_path' not in frame
+        actual=await worker(frame)
+        # Lost WSS ACK/reconnect: the SAME persisted operation is served
+        # from its exact retained result. It never downloads or activates a
+        # second time; a changed claim or source needs independent status.
+        assert await worker(frame)==actual
+        settled=await bridge.receive(response(s,frame,actual['value']),
+            run_id=s.run,token=s.token,generation=s.generation)
+        assert settled['status']=='accepted'
+        if rejected:
+            assert actual['value']==dict(status='rejected',reason='read_handler_maintenance_rejected')
+            with pytest.raises(SnapshotError,match='read_handler_maintenance_rejected'):
+                await task
+        else:
+            result=await task
+            assert result==actual['value']
+        resource=work.resource
+        await s.a.resource_released(s.run,s.token,s.generation,
+            runtime_incarnation=resource.runtime_incarnation,resource_kind='document',
+            resource_id=resource.resource_id,compute_claim=resource.compute_claim,
+            dispatch_generation=resource.dispatch_generation)
+        return frame
+
+    try:
+        staged=asyncio.create_task(control.stage_read_handler(s,approval,
+            expected_loaded_sha256='b'*64,expected_generation=0))
+        frame=await deliver(staged)
+        assert frame['phase']=='read_handler_stage'
+        assert frame['download_ticket']==dict(scope='existing-signed-GET')
+        assert signed and signed[0][2]==blob and len(transfer)==1
+        assert slot.receipt()['staged_sha256']==digest
+        applied=asyncio.create_task(control.activate_read_handler(s,staged_sha256=digest,
+            expected_loaded_sha256='b'*64,expected_generation=0))
+        phase=await deliver(applied)
+        assert phase['phase']=='read_handler_activate'
+        assert 'download_ticket' not in phase
+        status=asyncio.create_task(control.read_handler_status(s))
+        await deliver(status)
+        assert slot.receipt()['loaded_sha256']==digest and slot.receipt()['generation']==1
+        assert len(signed)==1 and len(transfer)==1
+        # A presigned GET may be renewed after reconnect. Transient ticket
+        # bytes are deliberately excluded from the operation identity, so
+        # an exact completed stage replays its pinned RESULT without a new
+        # transfer or executing code again, even if the ticket has changed.
+        cached=await worker(dict(frame,download_ticket={'renewed':'unused'}))
+        assert cached['phase']=='read_handler_stage'
+        assert cached['value']['staged_sha256']==digest
+        assert len(signed)==1 and len(transfer)==1
+        # A rejected competing activation is ACKed as a durable *operation*
+        # failure. It must not escape _encode, kill the model-owning runtime,
+        # replace an already active handler, or silently stage a second file.
+        failure=asyncio.create_task(control.activate_read_handler(s,
+            staged_sha256='c'*64,expected_loaded_sha256='b'*64,
+            expected_generation=0))
+        await deliver(failure,rejected=True)
+        assert slot.receipt()['loaded_sha256']==digest
+        assert slot.receipt()['generation']==1
+        assert len(transfer)==1
+    finally:
+        await bridge.aclose()
+        await worker.aclose()
+
+
+
+
+@pytest.mark.asyncio
+async def test_failed_warm_candidate_has_normal_rejected_receipt_and_existing_model_keeps_serving(tmp_path):
+    from regional_knowledge.kaggle_warm_maintenance import WarmHandlerMaintenance,WarmHandlerPatchApproval
+    from regional_knowledge.kaggle_warm_read import ReadHandlerSlot
+    from test_kaggle_warm_read import old,context,staged_module,good_probe
+    from regional_knowledge.kaggle_pg_snapshot_native import BlobRef
+    from hashlib import sha256
+    _,source,digest=staged_module(tmp_path)
+    root=tmp_path/'owned';root.mkdir(mode=0o700)
+    blob=BlobRef('rkb/snapshots/blobs/approved/'+digest,source.stat().st_size,digest,'"etag"')
+    transfers=[]
+    def workspace(key,phase):
+        return root/(sha256(key.encode()).hexdigest()+'-'+phase)
+    async def download(item,key,*,ticket,transfer_operation):
+        transfers.append((item,key))
+        output=workspace(key,'download')
+        output.write_bytes(source.read_bytes());output.chmod(0o600)
+        return output
+    async def rejecting_selftest(candidate):
+        assert (await candidate({'test':True},encode=None))['version']=='new'
+        raise ValueError('private rejected candidate details')
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=database();native.identity=('r','n','i')
+    native._current=lambda b:None
+    native._owned_candidates=set();native._capabilities=set()
+    worker=WorkerRecoveryPhases(factory=native,download=download,workspace=workspace)
+    slot=ReadHandlerSlot(old,loaded_sha256='a'*64,compatibility=context())
+    worker.read_handler_slot=slot
+    worker.read_handler_control=WarmHandlerMaintenance(slot=slot,download=download,
+        workspace=workspace,constructor={'marker':'new'},
+        self_test=rejecting_selftest,probe=good_probe,current=lambda _:None)
+    def frame(phase,key,args,ticket=None):
+        wire=dict(type='DISPATCH',protocol_version=2,connection_generation=1,id='job-'+key,
+            claim='claim',kind='recovery_phase',run_id='r',launch_nonce='n',
+            runtime_incarnation='i',database_generation=native.database.database_generation,
+            writer_generation=native.database.writer_generation,phase=phase,operation_key=key,
+            arguments=args,request_sha256=sha(encode({'phase':phase,'arguments':args})),
+            compute_claim='resource',dispatch_generation=1)
+        if ticket is not None:wire['download_ticket']=ticket
+        return wire
+    args=dict(artifact=WarmHandlerPatchApproval(blob,'a'*40).wire(),
+        expected_loaded_sha256='a'*64,expected_generation=0)
+    failed=frame('read_handler_stage','reject-me',args,{'scoped':'GET'})
+    first=await worker(failed)
+    assert first['phase']=='read_handler_stage'
+    assert first['value']==dict(status='rejected',reason='read_handler_maintenance_rejected')
+    assert await worker(failed)==first
+    assert len(transfers)==1
+    assert 'private' not in str(first)
+    # Exercise the actual BgeWssTransport._encode path which previously
+    # propagated the failed candidate into _failure()/close_runtime.
+    from test_bge_wss_worker import module,CONFIG
+    transport=module('bge_wss_transport')
+    async def useful_query(frame,*,encode):return {'status':'ok'}
+    executor=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),
+        lambda:lambda text:[1.]+[0.]*1023,lambda:{},
+        query_handler=useful_query,recovery_handler=worker)
+    rejected_again=dict(failed,id='job-transport',operation_key='transport-rejected')
+    executor.encoding=asyncio.create_task(executor._encode(rejected_again))
+    await executor.encoding
+    executor._failure(executor.encoding)  # Must not raise and kill the worker.
+    assert executor.pending['receipt']['value']==dict(
+        status='rejected',reason='read_handler_maintenance_rejected')
+    assert executor.pending['job_id']=='job-transport'
+    # Ordinary worker work remains alive after the rejected patch.
+    report=await worker(frame('read_handler_status','after',{}))
+    assert report['value']['loaded_sha256']=='a'*64
+    assert report['value']['generation']==0
+    assert (await slot({'still':True},encode=None))['version']=='old'
+    await worker.aclose()
+
+
 @pytest.mark.asyncio
 async def test_preparation_can_wait_for_recovery_while_same_channel_executes_phase(monkeypatch):
     transport=module('bge_wss_transport');p=Peer();stop=asyncio.Event();restored=asyncio.Event();calls=[]
@@ -190,6 +471,44 @@ def test_actual_asgi_runs_maintenance_before_ready_and_persists_receipt(peer):
             async def result():return await retained['task']
             assert p.client.portal.call(result)=={'verified':True}
             assert p.q.result(p.auth.p.owner.subject,p.document)['state']=='pending'
+        finally:p.client.portal.call(retained['bridge'].aclose)
+
+
+
+
+def test_actual_asgi_read_handler_loaded_sha_through_held_maintenance_claim(peer):
+    """Real WSS frames carry loaded-version receipt, no patch source or paths."""
+    from test_bge_shared_channel import connect,attach,send,receive_expected,release
+    p=peer;retained={}
+    with connect(p) as socket:
+        generation=attach(p,socket)
+        async def configure():
+            bridge=RecoveryPhaseDispatch(p.q,database=database(),
+                identity=(p.run,p.nonce,'synthetic-incarnation'),
+                binding_current=lambda binding:binding is p)
+            retained['bridge']=bridge
+            maintenance=WssSnapshotPhases(bridge,operation_key='readback-owner')
+            retained['task']=asyncio.create_task(maintenance.read_handler_status(p))
+        p.client.portal.call(configure)
+        try:
+            send(socket,generation,'RESOURCE_STATE',state='idle')
+            frame=receive_expected(socket,'DISPATCH')
+            assert frame['kind']=='recovery_phase'
+            assert frame['phase']=='read_handler_status'
+            assert frame['arguments']=={}
+            assert 'module_path' not in frame and 'constructor' not in frame
+            receipt=dict(loaded_sha256='f'*64,loaded_kind='verified_bundle',generation=0)
+            release(socket,generation,frame)
+            send(socket,generation,'RECOVERY_PHASE_RESULT',
+                job_id=frame['id'],claim=frame['claim'],
+                receipt=dict(phase='read_handler_status',
+                    request_sha256=frame['request_sha256'],value=receipt),
+                **{key:frame[key] for key in (
+                    'run_id','launch_nonce','runtime_incarnation',
+                    'compute_claim','dispatch_generation')})
+            assert receive_expected(socket,'RESULT_ACK')['status']=='accepted'
+            async def output():return await retained['task']
+            assert p.client.portal.call(output)==receipt
         finally:p.client.portal.call(retained['bridge'].aclose)
 
 

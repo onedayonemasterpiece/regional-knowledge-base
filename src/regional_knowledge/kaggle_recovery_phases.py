@@ -16,7 +16,8 @@ MAX_PHASE_FRAME_BYTES = 4 * 1024 * 1024
 MAX_PHASE_RESULT_BYTES = 120 * 1024  # Reserve result envelope/claim identity bytes.
 from .original_intake import PHASES as ORIGINAL_PHASES
 from .kaggle_snapshot_drill import DRILL_PHASES
-PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history'})|ORIGINAL_PHASES|DRILL_PHASES
+PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history',
+    'read_handler_status','read_handler_stage','read_handler_activate','read_handler_rollback'})|ORIGINAL_PHASES|DRILL_PHASES
 
 
 async def build_recovery_worker(*,native_bundle,database,identity,tools,native_uid,native_gid,
@@ -127,6 +128,10 @@ class WorkerRecoveryPhases:
         self.factory,self.download,self.workspace=factory,download,workspace
         self._sessions={};self._results={};self._requests={};self._lock=asyncio.Lock()
         self._ready=asyncio.Event();self._initialized=None;self.drill=None
+        # Assigned only by the already prepared TargetRuntime. No uploaded
+        # pathname, module bytes or resource reference enters this WSS phase.
+        self.read_handler_slot=None
+        self.read_handler_control=None
 
     async def wait_initialized(self,database,run_id,launch_nonce,runtime_incarnation):
         if database!=self.factory.database or (run_id,launch_nonce,runtime_incarnation)!=self.factory.identity:
@@ -140,7 +145,7 @@ class WorkerRecoveryPhases:
             'launch_nonce','runtime_incarnation','database_generation','writer_generation','phase',
             'operation_key','request_sha256','arguments','compute_claim','dispatch_generation'}
         if (not isinstance(frame,dict) or set(frame)-{'download_ticket'}!=fields
-                or 'download_ticket' in frame and frame.get('phase') not in ('prepare','drill_prepare') or frame['type']!='DISPATCH'
+                or 'download_ticket' in frame and frame.get('phase') not in ('prepare','drill_prepare','read_handler_stage') or frame['type']!='DISPATCH'
                 or frame['protocol_version']!=2 or frame['kind']!='recovery_phase'
                 or frame['phase'] not in PHASES-{'source_history'}-ORIGINAL_PHASES or type(frame['connection_generation']) is not int
                 or frame['connection_generation']<1 or type(frame['dispatch_generation']) is not int
@@ -170,7 +175,19 @@ class WorkerRecoveryPhases:
                     raise SnapshotError('recovery_phase_unknown_requires_reconciliation')
             if len(self._requests)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
             self._requests[key]=request  # UNKNOWN is retained before effects.
-            value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
+            if frame['phase'] in ('read_handler_stage','read_handler_activate','read_handler_rollback'):
+                # Expected candidate/transfer/probe refusal is the outcome of
+                # THIS durable maintenance operation, not a fatal worker
+                # transport failure. BgeWssTransport._failure would otherwise
+                # close the live model/PG runtime even after a safe rollback.
+                # Only a fixed, secret-free result crosses the WSS boundary;
+                # CancelledError/BaseException still propagates normally.
+                try:
+                    value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
+                except Exception:
+                    value={'status':'rejected','reason':'read_handler_maintenance_rejected'}
+            else:
+                value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
             bounded(value,MAX_PHASE_RESULT_BYTES)
             result={'phase':frame['phase'],'request_sha256':request,'value':value}
             self._results[key]=result
@@ -197,6 +214,19 @@ class WorkerRecoveryPhases:
         if phase in DRILL_PHASES:
             if self.drill is None:raise SnapshotError('drill_fixed_owner_unavailable')
             return await self.drill(phase,args,key,binding,frame)
+        if phase=='read_handler_status':
+            from .kaggle_warm_read import ReadHandlerSlot
+            if args:
+                raise SnapshotError('read_handler_status_arguments')
+            if type(self.read_handler_slot) is not ReadHandlerSlot:
+                raise SnapshotError('read_handler_status_unavailable')
+            # This is always a fresh, no-mutation loaded-version receipt.
+            return self.read_handler_slot.receipt()
+        if phase in ('read_handler_stage','read_handler_activate','read_handler_rollback'):
+            from .kaggle_warm_maintenance import WarmHandlerMaintenance
+            if type(self.read_handler_control) is not WarmHandlerMaintenance:
+                raise SnapshotError('read_handler_maintenance_not_configured')
+            return await self.read_handler_control(phase,args,key,frame)
         expected={'capture':{'versions','expected_sequence'},
             'prepare':{'manifest_b64','manifest_ref','blob','control_b64','expected_versions','database','identity','restore_operation'},
             'apply':{'handle','command_b64','accepted','handler_sha256','original_pg_writer'},
