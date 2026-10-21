@@ -22,7 +22,9 @@ class DatasetSnapshotTicketIssuer:
 
     async def issue_upload(self, binding, operation_key, *, size, sha256):
         ref = hashlib.sha256(operation_key.encode()).hexdigest()
-        grant, expires = await self.reserve(binding, operation_key, name='pg-' + ref + '.tar', size=size, sha256=sha256)
+        # Like my-data-hub checkpoint_provider_file_name: Kaggle expands
+        # archive-looking names. The native tar bytes stay opaque in Dataset.
+        grant, expires = await self.reserve(binding, operation_key, name='pg-' + ref + '.blob', size=size, sha256=sha256)
         return SnapshotTicket('PUT', ref, 'dataset-blobs/' + ref + '/' + grant.name, size, sha256,
             expires, grant.url, (('Content-Length', str(size)), ('Content-Type', 'application/octet-stream')),
             upload_kind='kaggle-dataset')

@@ -33,6 +33,7 @@ async def test_nonempty_native_checkpoint_publishes_archive_without_dev_proxy(tm
         assert kwargs['expected_sequence'] == 7
         # Native capture uploads the archive. Only its byte receipt returns.
         ticket = await bridge.snapshot_tickets.issue_upload(binding, 'native-capture-seven', size=99999, sha256='d'*64)
+        assert ticket.key.endswith('.blob') and not ticket.key.endswith('.tar')
         return dict(database_generation='db', writer_generation='writer', applied_sequence=7,
             versions=versions, blob=dict(key=ticket.key, size=ticket.size, sha256=ticket.sha256, native_version='native-etag'))
     physical = NS(_control=lambda p:control, native=NS(capture=capture))
@@ -46,7 +47,7 @@ async def test_nonempty_native_checkpoint_publishes_archive_without_dev_proxy(tm
     seed._journal_control=journal_control
     controls = []
     def put(grant, data):
-        assert grant.size < 2048 and grant.name in ('base-manifest.json', 'source-control.json','journal-control.json')
+        assert grant.size < 2048 and grant.name in ('rkb-v1-base-manifest-json.blob', 'rkb-v1-source-control-json.blob','rkb-v1-journal-control-json.blob')
         assert len(data) == grant.size and sha(data) == grant.sha256
         controls.append(grant.name)
     monkeypatch.setattr('regional_knowledge.kaggle_dataset_seed._put_control', put)
@@ -59,7 +60,7 @@ async def test_nonempty_native_checkpoint_publishes_archive_without_dev_proxy(tm
     api.create_dataset = create
     assert await seed.capture_once(binding) == 1
     assert await seed.capture_once(binding) == 1
-    assert len(captures) == 1 and sorted(controls) == ['base-manifest.json', 'journal-control.json','source-control.json']
+    assert len(captures) == 1 and sorted(controls) == ['rkb-v1-base-manifest-json.blob', 'rkb-v1-journal-control-json.blob','rkb-v1-source-control-json.blob']
     assert api.mutations.count('create') == 1
     with queue.connect(write=False) as db:
         row = db.execute('SELECT * FROM rkb_dataset_seed').fetchone()
