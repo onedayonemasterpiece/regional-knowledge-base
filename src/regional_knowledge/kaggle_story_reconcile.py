@@ -45,13 +45,13 @@ def _uuid(value: str) -> str:
 
 
 class ExactInput(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid")
 
 
 class AssertionLink(ExactInput):
     source_id: UUID
-    source_revision: int = Field(ge=1)
-    eligibility_revision: int = Field(ge=1)
+    source_revision: int = Field(ge=1, strict=True)
+    eligibility_revision: int = Field(ge=1, strict=True)
     assertion_id: UUID
 
 
@@ -75,11 +75,11 @@ class CasePlan(ExactInput):
 
 
 class Comparison(ExactInput):
-    comparison_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+    comparison_key: str = Field(min_length=1, max_length=128, strict=True, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
     anchor: AssertionLink
     peer: AssertionLink
     decision: Literal["conflict", "compatible", "needs_context"]
-    rationale: str = Field(min_length=1, max_length=8000)
+    rationale: str = Field(min_length=1, max_length=8000, strict=True)
     case_plan: CasePlan
 
     @model_validator(mode="after")
