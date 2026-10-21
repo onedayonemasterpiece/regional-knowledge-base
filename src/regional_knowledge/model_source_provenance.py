@@ -128,7 +128,10 @@ def build_model_source_provenance(*, receipt, graph):
         iids = [str(i) for i in chunk.illustration_ids]
         if (not pids or not rids or any(p not in page_map for p in pids)
                 or any(r not in regions or regions[r]['page_id'] not in pids for r in rids)
-                or any(i not in figures or figures[i]['page_id'] not in pids for i in iids)
+                # A passage may cite an accepted figure on a different page.
+                # Figures themselves are already bound to this source's exact
+                # physical page, region identity and original revision above.
+                or any(i not in figures for i in iids)
                 # A figure-only page has no printed text. Use exact labelled
                 # model description/caption as indexed material, not invented
                 # transcription; material() still rejects fully empty input.

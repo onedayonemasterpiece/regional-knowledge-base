@@ -141,3 +141,42 @@ def test_exif_nonidentity_cannot_silently_shift_source_bbox_before_crop(orientat
             figure=figure, source_page_bytes=raw,
             source_raster_sha256=sha256(raw).hexdigest(),
             source_page_id=pid, original_sha256='f' * 64)
+
+@pytest.mark.asyncio
+async def test_cross_page_text_and_figure_are_linked_without_invented_page_coverage():
+    """A text passage on page B may cite a source-verified figure on page A."""
+    from regional_knowledge.search_material import graph_material
+    original, graph = make_scan(2, with_illustration=True)
+    figure = graph.illustrations[0]
+    text_chunk = graph.chunks[1]
+    assert str(figure.page_id) != str(text_chunk.page_ids[0])
+    text_chunk.illustration_ids = [figure.illustration_id]
+    provenance, digest = build_model_source_provenance(receipt=original, graph=graph)
+    assert provenance['chunks'][1]['illustration_ids'] == [str(figure.illustration_id)]
+    assert provenance['chunks'][1]['page_ids'] == [str(text_chunk.page_ids[0])]
+    text, _ = graph_material(graph, text_chunk)
+    assert text_chunk.text in text
+    assert '[Model observation; not printed source text]' in text
+    manifest, manifest_hash = await build_model_manifest(
+        original=original, graph=graph, metadata=META, tokenizer_counts=counter)
+    row = next(p for p in manifest['passages'] if p['passage_id'] == str(text_chunk.chunk_id))
+    assert row['illustration_ids'] == [str(figure.illustration_id)]
+    assert row['page_ids'] == [str(text_chunk.page_ids[0])]
+    assert any(x['illustration_id'] == str(figure.illustration_id)
+               and x['page_id'] == str(figure.page_id) for x in manifest['illustrations'])
+    assert len(digest) == len(manifest_hash) == 64
+
+
+@pytest.mark.parametrize('foreign', [False, True])
+def test_cross_page_relation_denies_unknown_or_foreign_source_figure(foreign):
+    from uuid import uuid4
+    receipt, graph = make_scan(2, with_illustration=True)
+    chunk = graph.chunks[1]
+    if foreign:
+        _, outside = make_scan(1, with_illustration=True)
+        graph.illustrations.append(outside.illustrations[0])
+        chunk.illustration_ids = [outside.illustrations[0].illustration_id]
+    else:
+        chunk.illustration_ids = [uuid4()]
+    with pytest.raises(ValueError, match='figure|illustration'):
+        build_model_source_provenance(receipt=receipt, graph=graph)
