@@ -1,0 +1,57 @@
+name: rkb-native-vector-prototype
+
+on:
+  push:
+    branches:
+      - chatgpt/rkb-linza-rust-vector-proto-20261022
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-prototype:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Prepare synthetic output directory
+        run: mkdir -p native/vector_literal/out
+      - name: Pin official Rust toolchain (no third-party crates)
+        shell: bash
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal
+          rustc +1.85.1 --version | tee native/vector_literal/out/rustc-version.txt
+          python --version | tee native/vector_literal/out/python-version.txt
+      - name: Compile isolated cdylib, offline Cargo
+        shell: bash
+        run: |
+          timeout 180s cargo +1.85.1 build --release --locked --offline --manifest-path native/vector_literal/Cargo.toml
+          sha256sum native/vector_literal/target/release/librkb_vector_literal.so | tee native/vector_literal/out/binary.sha256
+          timeout 45s cargo +1.85.1 test --release --locked --offline --manifest-path native/vector_literal/Cargo.toml
+      - name: Strict parity and error suite FIRST
+        shell: bash
+        run: |
+          timeout 90s python -m unittest discover -s tests -p test_native_vector_literal_parity.py -v 2>&1 | tee native/vector_literal/out/parity.log
+      - name: Bounded small smoke before substantive measurement
+        shell: bash
+        run: |
+          for variant in a b c; do
+            timeout 35s python scripts/benchmarks/native_vector_literal.py --mode "$variant" --iterations 30 --output "native/vector_literal/out/smoke-$variant.json"
+          done
+      - name: Bounded A/B/C benchmark (synthetic, no PG/BGE)
+        shell: bash
+        run: |
+          for variant in a b c; do
+            timeout 90s python scripts/benchmarks/native_vector_literal.py --mode "$variant" --iterations 1200 --output "native/vector_literal/out/bench-$variant.json"
+          done
+      - name: Keep reports, source pin and binary SHA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rkb-native-vector-benchmark
+          path: native/vector_literal/out/
+          if-no-files-found: warn
+          retention-days: 14
