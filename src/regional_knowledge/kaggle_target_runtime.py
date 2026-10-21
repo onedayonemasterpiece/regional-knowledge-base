@@ -68,7 +68,18 @@ class TargetLaunchSpec:
             raise ValueError('independent Stage0 dependency/schema pins required')
         if self.database.mode == 'VERIFIED_INITIALIZED':
             receipt = self.initialized_receipt
-            if (not isinstance(receipt,dict) or receipt.get('database') != self.database.wire()
+            if receipt is None:
+                # A NEW Kaggle process cannot already hold a native receipt
+                # for its not-yet-restored PG cluster. Explicit recovery mode
+                # registers the scoped WSS owner first and waits for the
+                # non-forgeable VerifiedInitializedDatabase capability before
+                # creating a reader pool/returning READY. A locally constructed
+                # placeholder initialized_receipt must never be invented.
+                from .kaggle_recovery_composition import SnapshotRecoveryConfig
+                if (type(self.recovery) is not SnapshotRecoveryConfig
+                        or self.recovery.drill_empty or self.bootstrap_only):
+                    raise ValueError('initialized target without receipt requires exact native restore owner')
+            elif (not isinstance(receipt,dict) or receipt.get('database') != self.database.wire()
                     or receipt.get('schema_sha256') != self.schema_sha256
                     or receipt.get('stage0_receipt') != self.stage0_receipt):
                 raise ValueError('exact independently verified initialized binding required')

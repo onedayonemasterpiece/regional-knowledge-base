@@ -45,9 +45,14 @@ launch Kaggle, create a queue run, open PostgreSQL or authorize readiness.
   descriptor has no `NEW_EMPTY_GENERATION` cluster/uid/gid/native_paths.
 - `TargetLaunchSpec.bootstrap_only=false`,
   `SnapshotRecoveryConfig.drill_empty=false`, exact native bundle + Stage0 +
-  dependency/schema SHA + command handler closure. Its
-  `initialized_receipt` binds the *same* DB wire/stage0/schema, but is only
-  launch metadata, **not** a live PG capability.
+  dependency/schema SHA + command handler closure. In a COLD restore the
+  target sets `initialized_receipt=None` **only with the explicit typed
+  recovery owner**; the new process cannot possess a PG initialization receipt
+  before performing native restore. Existing genuinely initialized releases
+  may retain an independently sourced matching receipt. The required actual
+  `VerifiedInitializedDatabase` capability is created only by successful
+  native prepare/finish/verify and rechecked before PG pool/readiness; no
+  caller-supplied metadata can substitute for that live capability.
 - DevCoveer source service: `source_snapshot=None`,
   `source_restore=SourceRestoreConfig(manifest=<exact verified ObjectRef>,
   operation_key=<stable original restore key>,
