@@ -157,7 +157,12 @@ def pinned_djvu_elf_closure(bundle):
                  'djvu_elf_dependency_ambiguous')
         path,sha,execute=sorted(candidates,key=lambda v:str(v[0]))[0]
         shared_interp,dependencies,soname=_read_elf(path)
-        _require(shared_interp is None and (soname is None or soname==name),
+        # glibc's libc.so.6 is also executable and legitimately contains
+        # PT_INTERP. Accept only the EXACT already-verified root interpreter
+        # for that one dependency; another program/loader is not authorized.
+        trusted_interp=(shared_interp is None or
+            (name=='libc.so.6' and shared_interp==interp))
+        _require(trusted_interp and (soname is None or soname==name),
                  'djvu_elf_dependency_identity_invalid')
         closure.add(name)
         paths.add(path.parent)

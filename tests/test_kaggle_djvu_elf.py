@@ -43,7 +43,8 @@ def elf(*,needed=(),soname=None,interp=None,rpath=False):
     return bytes(data)
 
 
-def _bundle(native_fixture, *,omit=(),invalid_interp=False,extra_rpath=False):
+def _bundle(native_fixture, *,omit=(),invalid_interp=False,extra_rpath=False,
+            libc_foreign_interp=False):
     blobs={
         "usr/bin/ddjvu":elf(
             needed=("libdjvulibre.so.21","libc.so.6"),interp=
@@ -52,7 +53,12 @@ def _bundle(native_fixture, *,omit=(),invalid_interp=False,extra_rpath=False):
         "usr/lib/x86_64-linux-gnu/libdjvulibre.so.21":elf(
             needed=("libjpeg.so.8","libc.so.6"),soname="libdjvulibre.so.21",
             rpath=extra_rpath),
-        "usr/lib/x86_64-linux-gnu/libc.so.6":elf(soname="libc.so.6"),
+        "usr/lib/x86_64-linux-gnu/libc.so.6":elf(
+            soname="libc.so.6",
+            # Actual glibc2.39 libc is also executable and carries PT_INTERP.
+            # Its interpreter must be the SAME pinned loader as ddjvu.
+            interp="/lib64/ld-linux-x86-64.so.2" if not libc_foreign_interp
+                   else "/untrusted/other-loader"),
         "usr/lib/x86_64-linux-gnu/libjpeg.so.8":elf(
             needed=("libc.so.6",),soname="libjpeg.so.8"),
     }
@@ -87,9 +93,11 @@ def test_missing_pinned_dependency_or_interpreter_never_falls_back_to_host(nativ
         pinned_djvu_elf_closure(cap)
 
 
-@pytest.mark.parametrize("case",["interp","rpath","corrupt"])
+@pytest.mark.parametrize("case",["interp","rpath","corrupt","foreign_libc_interp"])
 def test_forbidden_interpreter_rpath_and_non_elf_are_not_decoder_proof(native_fixture,case):
-    cap=_bundle(native_fixture,invalid_interp=case=="interp",extra_rpath=case=="rpath")
+    cap=_bundle(native_fixture,invalid_interp=case=="interp",
+                extra_rpath=case=="rpath",
+                libc_foreign_interp=case=="foreign_libc_interp")
     if case=="corrupt":
         executable=cap.prefix/"usr/bin/ddjvu"
         executable.chmod(0o700)
