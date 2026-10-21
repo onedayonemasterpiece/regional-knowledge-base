@@ -257,7 +257,7 @@ class WorkerRecoveryPhases:
             if ((ticket.key,ticket.size,ticket.sha256)!=(blob.key,checkpoint.archive.size,checkpoint.archive.sha256)
                     or blob.key.rsplit('/',1)[-1]!=checkpoint.archive.name):
                 raise SnapshotError('dataset_verify_archive_changed')
-            path=await transfer.download(ticket,self.workspace(key,'dataset-verify'),operation_key=key)
+            path=await transfer.download(ticket,self.workspace(key,'download'),operation_key=key)
             try:
                 self.factory._current(binding)
                 return dict(dataset_ref=checkpoint.owner_slug+'/'+checkpoint.dataset_slug,

@@ -23,6 +23,44 @@ def database():return replace(spec().database,mode='VERIFIED_INITIALIZED',owners
 
 
 @pytest.mark.asyncio
+async def test_dataset_readback_uses_actual_deferred_workspace_resolver(tmp_path,monkeypatch):
+    from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint,DatasetFile
+    from regional_knowledge.kaggle_recovery_composition import DeferredRecoveryRuntime
+    from regional_knowledge.native_snapshot_transfer import NativeSnapshotTransfer,SnapshotTicket
+    from test_kaggle_generated_restore import recovery
+    db=database();key='checkpoint-2-readback';body=b'archive';digest=sha(body)
+    part=lambda name:DatasetFile(name,7,'a'*64)
+    base=DatasetCheckpoint('fixture-owner','rkb-checkpoints',1,db.database_generation,7,
+        part('base-manifest.json'),DatasetFile('pg-fixture.blob',len(body),digest),
+        part('source-control.json'),part('journal-control.json'))
+    next_pin=replace(base,dataset_version=2,base_sequence=20)
+    owner=DeferredRecoveryRuntime(dict(target_runtime=dict(recovery=recovery().wire(),
+        database=dict(mode='VERIFIED_INITIALIZED'))),executed_source='/fixture')
+    owner.workspace_root=tmp_path
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=db;native.identity=('r','nonce','inc');native._current=lambda binding:None
+    native.dataset_checkpoint=base
+    native.dataset_transfer=NativeSnapshotTransfer(allowed_origins=frozenset({'https://storage.fixture.invalid'}),
+        max_bytes=1024,clock=lambda:1)
+    downloaded=[]
+    async def download(transfer,ticket,path,*,operation_key):
+        transfer._check(ticket,'GET',operation_key)
+        assert path.parent==tmp_path and path.name==sha(key.encode())+'-download'
+        path.mkdir();result=path/'archive.blob';result.write_bytes(body);downloaded.append(result)
+        return result
+    monkeypatch.setattr(NativeSnapshotTransfer,'download',download)
+    worker=WorkerRecoveryPhases(factory=native,download=lambda *_:None,workspace=owner._workspace)
+    blob=dict(key='datasets/2/pg-fixture.blob',size=len(body),sha256=digest,native_version='fixture')
+    ticket=SnapshotTicket('GET',sha(key.encode()),blob['key'],len(body),digest,100,
+        'https://storage.fixture.invalid/archive',(('If-Match','fixture'),))
+    result=await worker._execute('dataset_verify',dict(checkpoint=next_pin.wire(),blob=blob),key,
+        ('r','inc',1),dict(download_ticket=ticket.wire()))
+    assert result['dataset_version']==2 and result['base_sequence']==20
+    assert len(downloaded)==1 and not downloaded[0].exists()
+    assert downloaded[0].parent in owner._paths
+
+
+@pytest.mark.asyncio
 async def test_failed_prepare_releases_initialization_waiter_without_readiness():
     native=object.__new__(NativeSnapshotFactory)
     native.database=database();native.identity=('r','nonce','inc')
