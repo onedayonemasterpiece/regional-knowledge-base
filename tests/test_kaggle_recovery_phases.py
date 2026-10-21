@@ -129,6 +129,93 @@ async def test_worker_caches_exact_known_result_but_retains_unknown_before_effec
     assert calls==['known','effect']
 
 
+
+
+@pytest.mark.asyncio
+async def test_exact_run_read_handler_status_uses_retained_slot_without_pg_or_bge_effects(tmp_path):
+    """Worker readback is a fresh WSS maintenance phase, never code-upload RPC."""
+    from regional_knowledge.kaggle_warm_read import ReadHandlerSlot
+    from test_kaggle_warm_read import old,context,staged_module,good_probe,good_stage
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=database();native.identity=('r','nonce','inc')
+    native._owned_candidates=set();native._capabilities=set()
+    observed=[]
+    native._current=lambda binding:observed.append(binding)
+    worker=WorkerRecoveryPhases(factory=native,download=lambda *_:pytest.fail('download'),
+        workspace=lambda *_:pytest.fail('workspace'))
+    async def request(key,arguments=None):
+        args=arguments if arguments is not None else {}
+        frame=dict(type='DISPATCH',protocol_version=2,connection_generation=2,id='job-'+key,
+            claim='claim',kind='recovery_phase',run_id='r',launch_nonce='nonce',
+            runtime_incarnation='inc',database_generation=native.database.database_generation,
+            writer_generation=native.database.writer_generation,phase='read_handler_status',
+            operation_key=key,arguments=args,request_sha256=sha(encode({
+                'phase':'read_handler_status','arguments':args})),
+            compute_claim='retained-slot',dispatch_generation=2)
+        return await worker(frame)
+    with pytest.raises(SnapshotError,match='read_handler_status_unavailable'):
+        await request('not-prepared')
+    slot=ReadHandlerSlot(old,loaded_sha256='a'*64,compatibility=context())
+    worker.read_handler_slot=slot
+    result=await request('fresh-before')
+    assert result['value']==slot.receipt()
+    assert result['value']['loaded_sha256']=='a'*64
+    assert result['value']['loaded_kind']=='verified_bundle'
+    assert result['value']['generation']==0
+    with pytest.raises(SnapshotError,match='read_handler_status_arguments'):
+        await request('forged-param',{'module_path':'/private/code.py'})
+    root,path,digest=staged_module(tmp_path)
+    await slot.stage(path=path,trusted_root=root,expected_sha256=digest,
+        compatibility=context(),constructor={'marker':'new'},self_test=good_stage)
+    await slot.activate(staged_sha256=digest,expected_loaded_sha256='a'*64,
+        probe=good_probe)
+    changed=await request('fresh-after')
+    assert changed['value']['loaded_sha256']==digest
+    assert changed['value']['loaded_kind']=='module'
+    assert changed['value']['generation']==1
+    assert len(observed)==4
+    # This source-only operation touched neither PG nor model/asset owner.
+    await worker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_readback_dispatch_uses_real_durable_owner_and_new_operation_per_poll(state):
+    s=state
+    bridge=RecoveryPhaseDispatch(s.q,database=database(),identity=(s.run,s.nonce,'incarnation-a'),
+        binding_current=lambda binding:binding is s)
+    phase=WssSnapshotPhases(bridge,operation_key='trusted-owner-readback')
+    async def one_round(observed):
+        task=asyncio.create_task(phase.read_handler_status(s))
+        for _ in range(100):
+            work=await s.a.next_channel_work(s.run,s.token,s.generation)
+            if work:break
+            await asyncio.sleep(.001)
+        else:pytest.fail('WSS readback not scheduled')
+        s.a.mark_work_sent(work)
+        frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
+            **dict(work.document_payload),compute_claim=work.compute_claim,
+            dispatch_generation=work.dispatch_generation)
+        assert frame['phase']=='read_handler_status' and frame['arguments']=={}
+        assert frame['kind']=='recovery_phase'
+        assert not any(k in frame for k in ('path','python','constructor','source'))
+        settled=await bridge.receive(response(s,frame,observed),run_id=s.run,
+            token=s.token,generation=s.generation)
+        assert settled['status']=='accepted'
+        out=await task
+        assert out==observed
+        res=work.resource
+        await s.a.resource_released(s.run,s.token,s.generation,
+            runtime_incarnation=res.runtime_incarnation,resource_kind='document',
+            resource_id=res.resource_id,compute_claim=res.compute_claim,
+            dispatch_generation=res.dispatch_generation)
+        return frame['operation_key']
+    try:
+        key1=await one_round({'loaded_sha256':'a'*64,'generation':0})
+        key2=await one_round({'loaded_sha256':'b'*64,'generation':1})
+        assert key1!=key2  # stale cached first reply is not a live readback
+    finally:await bridge.aclose()
+
+
 @pytest.mark.asyncio
 async def test_preparation_can_wait_for_recovery_while_same_channel_executes_phase(monkeypatch):
     transport=module('bge_wss_transport');p=Peer();stop=asyncio.Event();restored=asyncio.Event();calls=[]
@@ -190,6 +277,44 @@ def test_actual_asgi_runs_maintenance_before_ready_and_persists_receipt(peer):
             async def result():return await retained['task']
             assert p.client.portal.call(result)=={'verified':True}
             assert p.q.result(p.auth.p.owner.subject,p.document)['state']=='pending'
+        finally:p.client.portal.call(retained['bridge'].aclose)
+
+
+
+
+def test_actual_asgi_read_handler_loaded_sha_through_held_maintenance_claim(peer):
+    """Real WSS frames carry loaded-version receipt, no patch source or paths."""
+    from test_bge_shared_channel import connect,attach,send,receive_expected,release
+    p=peer;retained={}
+    with connect(p) as socket:
+        generation=attach(p,socket)
+        async def configure():
+            bridge=RecoveryPhaseDispatch(p.q,database=database(),
+                identity=(p.run,p.nonce,'synthetic-incarnation'),
+                binding_current=lambda binding:binding is p)
+            retained['bridge']=bridge
+            maintenance=WssSnapshotPhases(bridge,operation_key='readback-owner')
+            retained['task']=asyncio.create_task(maintenance.read_handler_status(p))
+        p.client.portal.call(configure)
+        try:
+            send(socket,generation,'RESOURCE_STATE',state='idle')
+            frame=receive_expected(socket,'DISPATCH')
+            assert frame['kind']=='recovery_phase'
+            assert frame['phase']=='read_handler_status'
+            assert frame['arguments']=={}
+            assert 'module_path' not in frame and 'constructor' not in frame
+            receipt=dict(loaded_sha256='f'*64,loaded_kind='verified_bundle',generation=0)
+            release(socket,generation,frame)
+            send(socket,generation,'RECOVERY_PHASE_RESULT',
+                job_id=frame['id'],claim=frame['claim'],
+                receipt=dict(phase='read_handler_status',
+                    request_sha256=frame['request_sha256'],value=receipt),
+                **{key:frame[key] for key in (
+                    'run_id','launch_nonce','runtime_incarnation',
+                    'compute_claim','dispatch_generation')})
+            assert receive_expected(socket,'RESULT_ACK')['status']=='accepted'
+            async def output():return await retained['task']
+            assert p.client.portal.call(output)==receipt
         finally:p.client.portal.call(retained['bridge'].aclose)
 
 

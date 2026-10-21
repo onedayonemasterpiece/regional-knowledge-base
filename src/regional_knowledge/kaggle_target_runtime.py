@@ -375,6 +375,11 @@ class TargetRuntime:
         from .query_telemetry import drain_native_read_events
         self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler,original_handler,
             read_event_drain=lambda frame:drain_native_read_events(read_events,frame))
+        if self.recovery_worker is not None:
+            # Expose only the existing in-memory read slot to the already
+            # authenticated retained maintenance worker. Never a module path,
+            # caller-supplied object or PG/model handle on the WSS wire.
+            self.recovery_worker.read_handler_slot=self.read_handler_slot
         return self.prepared
 
     async def aclose(self):

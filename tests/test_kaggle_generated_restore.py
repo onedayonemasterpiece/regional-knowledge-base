@@ -144,6 +144,8 @@ def test_real_generated_restore_entrypoint_waits_native_capability_and_refuses_w
             else:
                 result=await preparing
                 assert result.query_handler is not None
+                assert runtime.instance.recovery_worker.read_handler_slot is runtime.instance.read_handler_slot
+                assert runtime.instance.recovery_worker.read_handler_slot.receipt()['generation']==0
                 assert events.index('native-finish')<events.index('verify-capability')<events.index('pool-created')
             await kwargs['close_runtime']()
             assert not runtime.current((run,'incarnation',2))

@@ -186,3 +186,13 @@ class WssSnapshotPhases:
         import secrets
         return await self.dispatch.request(binding,'verify',{'reference':reference},
             operation_key=sha(encode([self.operation,'verify',secrets.token_hex(24)])))
+
+    async def read_handler_status(self,binding):
+        """Fresh loaded-code readback on the same run-authenticated WSS permit.
+
+        This only reads the existing slot's SHA/context/generation; it never
+        accepts a path, Python body, constructor or public caller identity.
+        """
+        import secrets
+        return await self.dispatch.request(binding,'read_handler_status',{},
+            operation_key=sha(encode([self.operation,'read_handler_status',secrets.token_hex(24)])))

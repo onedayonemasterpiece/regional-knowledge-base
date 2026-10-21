@@ -16,7 +16,7 @@ MAX_PHASE_FRAME_BYTES = 4 * 1024 * 1024
 MAX_PHASE_RESULT_BYTES = 120 * 1024  # Reserve result envelope/claim identity bytes.
 from .original_intake import PHASES as ORIGINAL_PHASES
 from .kaggle_snapshot_drill import DRILL_PHASES
-PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history'})|ORIGINAL_PHASES|DRILL_PHASES
+PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history','read_handler_status'})|ORIGINAL_PHASES|DRILL_PHASES
 
 
 async def build_recovery_worker(*,native_bundle,database,identity,tools,native_uid,native_gid,
@@ -127,6 +127,9 @@ class WorkerRecoveryPhases:
         self.factory,self.download,self.workspace=factory,download,workspace
         self._sessions={};self._results={};self._requests={};self._lock=asyncio.Lock()
         self._ready=asyncio.Event();self._initialized=None;self.drill=None
+        # Assigned only by the already prepared TargetRuntime. No uploaded
+        # pathname, module bytes or resource reference enters this WSS phase.
+        self.read_handler_slot=None
 
     async def wait_initialized(self,database,run_id,launch_nonce,runtime_incarnation):
         if database!=self.factory.database or (run_id,launch_nonce,runtime_incarnation)!=self.factory.identity:
@@ -197,6 +200,16 @@ class WorkerRecoveryPhases:
         if phase in DRILL_PHASES:
             if self.drill is None:raise SnapshotError('drill_fixed_owner_unavailable')
             return await self.drill(phase,args,key,binding,frame)
+        if phase=='read_handler_status':
+            from .kaggle_warm_read import ReadHandlerSlot
+            if args:
+                raise SnapshotError('read_handler_status_arguments')
+            if type(self.read_handler_slot) is not ReadHandlerSlot:
+                raise SnapshotError('read_handler_status_unavailable')
+            # The same authenticated compute permit + current generation as
+            # every other maintenance phase. Read-only receipt, no Python
+            # loading, PG operation, BGE model reload or WSS code upload.
+            return self.read_handler_slot.receipt()
         expected={'capture':{'versions','expected_sequence'},
             'prepare':{'manifest_b64','manifest_ref','blob','control_b64','expected_versions','database','identity','restore_operation'},
             'apply':{'handle','command_b64','accepted','handler_sha256','original_pg_writer'},
