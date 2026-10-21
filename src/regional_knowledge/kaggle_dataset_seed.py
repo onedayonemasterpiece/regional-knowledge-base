@@ -16,6 +16,7 @@ from .kaggle_dataset_tickets import DatasetSnapshotTicketIssuer
 from .kaggle_pg_snapshot_native import BlobRef, SnapshotError, encode, sha, validate_versions
 
 _LOG = logging.getLogger(__name__)
+MAX_JOURNAL_CONTROL_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,8 @@ class DatasetSeedConfig:
 
 
 def _put_control(grant, data):
-    if len(data) > 1024 * 1024 or (len(data), sha(data)) != (grant.size, grant.sha256):
+    limit=MAX_JOURNAL_CONTROL_BYTES if grant.name=='rkb-v1-journal-control-json.blob' else 1024*1024
+    if len(data) > limit or (len(data), sha(data)) != (grant.size, grant.sha256):
         raise DatasetPublicationError('dataset_control_upload_bytes_changed')
     parsed = urlsplit(grant.url)
     connection = http.client.HTTPSConnection(parsed.hostname, timeout=30)
@@ -98,9 +100,11 @@ class SourceDatasetSeed:
             obj=await store.read(key,max_bytes=1024*1024)
             if obj is None:raise SnapshotError('dataset_seed_journal_object_missing')
             used+=len(obj.data)
-            if used>512*1024:raise SnapshotError('dataset_seed_journal_control_budget')
+            if used>12*1024*1024:raise SnapshotError('dataset_seed_journal_control_budget')
             records.append(dict(key=key,token=obj.token,data_b64=base64.b64encode(obj.data).decode()))
-        return encode(dict(codec='rkb.dataset-journal.v1',objects=records))
+        data=encode(dict(codec='rkb.dataset-journal.v1',objects=records))
+        if len(data)>MAX_JOURNAL_CONTROL_BYTES:raise SnapshotError('dataset_seed_journal_control_budget')
+        return data
 
     async def capture_once(self, binding):
         with self.queue.connect(write=False) as db:

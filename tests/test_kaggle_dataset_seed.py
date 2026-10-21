@@ -81,3 +81,25 @@ async def test_pending_prefix_cannot_be_replaced_by_empty_seed(tmp_path):
     seed = SourceDatasetSeed(startup, config, NS())
     with pytest.raises(SnapshotError, match='drained_prefix'):
         await seed.capture_once(NS())
+
+
+@pytest.mark.asyncio
+async def test_existing_geo_journal_window_excludes_archive_and_fits_control_budget():
+    from regional_knowledge.recovery_journal import StoredObject
+    import json
+    read=[]
+    class Store:
+        bucket='fixture';prefix='recovery/fixed/'
+        def __init__(self):self.client=self
+        def list_objects_v2(self,**kwargs):
+            return dict(Contents=[dict(Key=self.prefix+'commands/'+str(i),Size=90000) for i in range(43)]+
+                [dict(Key=self.prefix+'snapshots/blobs/pg',Size=8*1024**3)],IsTruncated=False)
+        async def read(self,key,**kwargs):
+            assert '/snapshots/' not in key
+            read.append(key)
+            return StoredObject(b'x'*90000,'native-provider-version')
+    seed=SourceDatasetSeed.__new__(SourceDatasetSeed)
+    seed.startup=NS(config=NS(spool=NS(journal=NS(store=Store()))))
+    raw=await seed._journal_control()
+    assert 4*1024**2<len(raw)<16*1024**2
+    assert len(json.loads(raw)['objects'])==len(read)==43
