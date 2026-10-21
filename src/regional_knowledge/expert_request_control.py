@@ -350,8 +350,22 @@ class TargetExpertRequestControl:
                     or json.loads(row['origin'])!=origin):
                 return False
             self._destination_allowed(origin)
+            # Recheck the verified Slack person/link and current capabilities
+            # in this SAME bounded read-only SQLite snapshot immediately before
+            # ASGI sends the buffered evidence. An async SourceReadGate refresh
+            # can have finished *before* a concurrent unlink/grant revocation.
+            current=self.people.resolve_external(
+                provider='slack',tenant=origin['team_id'],provider_subject=origin['user_id'],
+                principal_factory=lambda person:Principal(
+                    subject=person,client_id='rkb-trusted-slack',issuer='slack',access_token=''),
+                connection=db)
+            if (current.principal.subject!=row['person_id']
+                    or current.link_id!=row['link_id']
+                    or current.link_revision!=row['link_revision']
+                    or self.people.require(current,'public_search',connection=db)!=row['person_id']):
+                return False
             return True
-        except (sqlite3.Error,ValueError,TypeError,RequestControlError,OverflowError):
+        except (sqlite3.Error,ValueError,TypeError,ParticipantError,RequestControlError,OverflowError):
             return False
         finally:
             if db is not None:db.close()

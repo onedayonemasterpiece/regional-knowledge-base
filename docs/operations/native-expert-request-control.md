@@ -138,7 +138,11 @@ The ASGI response is bound to one retained native search result. Before
 the final HTTP body, `ReadIssuanceMiddleware` refreshes source/participant
 permissions and a bounded read-only SQLite `issuance_current` check for
 request state, execution generation/token, service credential and current
-Slack destination policy. The same original absolute `deadline_monotonic` is
+Slack destination policy **plus a fresh verified Participants external link,
+original person/link revision and current public_search grant in the same
+read-only transaction**. This second identity check prevents an unlink or
+grant revocation committed after the asynchronous SourceReadGate snapshot but
+before the final synchronous send. The same original absolute `deadline_monotonic` is
 rechecked during final issuance **after** the route's async timeout scope;
 a delayed middleware refresh cannot issue stale evidence. A revoked account, superseded lease, removed
 channel or unavailable source yields empty evidence; there is no

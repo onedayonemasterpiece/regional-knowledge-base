@@ -10,7 +10,7 @@ from starlette.routing import Route
 
 from regional_knowledge.expert_evidence_receiver import ExpertEvidenceReceiver,PATH,CODEC
 from regional_knowledge.read_issuance import ReadIssuanceMiddleware
-from regional_knowledge.participant_contracts import AccountUnlink
+from regional_knowledge.participant_contracts import AccountUnlink,ParticipantGrant
 from regional_knowledge.server import build_server
 from test_expert_request_control import _prepare, _observation
 from test_participants import change
@@ -83,6 +83,43 @@ async def test_lost_identity_before_final_http_issuance_suppresses_evidence(serv
         data=(await task).json()
         assert data['codec']==CODEC and data['context_gap'] is True
         assert data['evidence']==[] and data['mode'] is None
+        assert not s.target.auth.resolver._contexts
+        await release(s.target,issued)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('revocation',['incorrect_link','public_search_grant'])
+async def test_revocation_after_async_identity_snapshot_before_final_sync_fence(service,revocation):
+    s=service;receiver,app,payload,headers,link,req=await _receiver(s)
+    refreshed=[False]
+    original=s.target.gate.refresh
+    async def commit_revocation_after_snapshot(gated):
+        # SourceReadGate.refresh has just completed its asynchronous identity
+        # snapshot. Revoke BEFORE the final synchronous issuance_current; the
+        # source ticket is still valid and therefore cannot cause a false PASS.
+        fresh=await original(gated)
+        if not refreshed[0]:
+            refreshed[0]=True
+            if revocation=='incorrect_link':
+                change(s.target.auth.p,AccountUnlink(
+                    link_id=link.link_id,expected_link_revision=2,
+                    reason='Synthetic invalid account binding',incorrect_binding=True))
+            else:
+                change(s.target.auth.p,ParticipantGrant(
+                    capability='public_search',granted=False,
+                    reason='Synthetic grant revoked after identity read'))
+        return fresh
+    s.target.gate.refresh=commit_revocation_after_snapshot
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app,client=('127.0.0.1',9001)),
+                                 base_url='http://127.0.0.1') as client:
+        task=asyncio.create_task(client.post(PATH,json=payload,headers=headers))
+        issued=await work(s.target)
+        await settle(s.target,issued)
+        response=await task
+        data=response.json()
+        assert refreshed[0]
+        assert data['codec']==CODEC and data['request_id']==req['request_id']
+        assert data['context_gap'] and data['mode'] is None and data['evidence']==[]
         assert not s.target.auth.resolver._contexts
         await release(s.target,issued)
 
