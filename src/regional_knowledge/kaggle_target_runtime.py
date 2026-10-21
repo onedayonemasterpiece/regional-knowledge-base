@@ -234,11 +234,17 @@ class TargetRuntime:
         # hides a configured Stage0 and could falsely report "not_configured".
         if self.config.get('stage0') is not None:
             observed=getattr(main,'_RKB_STAGE0_COUNTERS',None)
+            attempts=getattr(main,'_RKB_STAGE0_ATTEMPTS',None)
             if (type(observed) is not dict
                     or set(observed)!={'invocation_count','install_count','downloaded_bytes'}
                     or any(type(value) is not int or value<0 or value>=2**63
                         for value in observed.values())
+                    or type(attempts) is not int or not 1<=attempts<2**63
                     or observed['invocation_count']<1
+                    # A failed or still-running Stage0 invocation could have
+                    # downloaded/installed bytes but never returned a final
+                    # receipt. Previous complete totals must not pass.
+                    or observed['invocation_count']!=attempts
                     or observed['install_count']>observed['invocation_count']):
                 return {'status':'unavailable','reason':'stage0_runtime_counters_unavailable'}
             # Count ONLY the actual completed Stage0 calls and transferred
@@ -266,6 +272,13 @@ class TargetRuntime:
             # Do not send native connection errors, URLs, identities or SQL
             # diagnostics on a WSS receipt. Missing readback != model reload.
             return {'status':'unavailable','reason':'owned_pg_observation_unavailable'}
+        # PG observation is awaitable: Stage0 may have started or finished
+        # another invocation while the connection was in flight. Do not
+        # re-label the old snapshot as complete or merge mixed-time counters.
+        if stage0 is not None and (
+                getattr(main,'_RKB_STAGE0_ATTEMPTS',None)!=attempts
+                or getattr(main,'_RKB_STAGE0_COUNTERS',None)!=stage0):
+            return {'status':'unavailable','reason':'stage0_runtime_counters_unavailable'}
         process=getattr(self.owner,'process',None)
         if self.restored_database is not None:
             process=getattr(self.restored_database._candidate,'process',None)

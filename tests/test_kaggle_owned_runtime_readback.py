@@ -127,6 +127,7 @@ async def test_generated_notebook_stage0_location_drives_actual_counter_gate(mon
     assert denied==dict(status='unavailable',reason='stage0_runtime_counters_unavailable')
     actual=dict(invocation_count=1,install_count=1,downloaded_bytes=123456)
     monkeypatch.setattr(sys.modules['__main__'],'_RKB_STAGE0_COUNTERS',actual,raising=False)
+    monkeypatch.setattr(sys.modules['__main__'],'_RKB_STAGE0_ATTEMPTS',1,raising=False)
     ready=await runtime._read_owned_runtime()
     assert ready['status']=='ready'
     assert ready['stage0_actual_counters']==actual
@@ -177,6 +178,7 @@ async def test_actual_stage0_metrics_and_pg_model_identity_survive_readback(monk
     monkeypatch.setattr(sys.modules['__main__'],'_MODEL_LOAD_COUNT',1,raising=False)
     expected=dict(invocation_count=1,downloaded_bytes=65536,install_count=1)
     monkeypatch.setattr(sys.modules['__main__'],'_RKB_STAGE0_COUNTERS',expected,raising=False)
+    monkeypatch.setattr(sys.modules['__main__'],'_RKB_STAGE0_ATTEMPTS',1,raising=False)
     before=await runtime._read_owned_runtime()
     assert before['status']=='ready'
     assert before['stage0_actual_counters']==expected
@@ -190,12 +192,81 @@ async def test_actual_stage0_metrics_and_pg_model_identity_survive_readback(monk
     assert after['resident_model_context_ref']==before['resident_model_context_ref']
 
 
+
+
+def test_generated_worker_partial_stage0_failure_retains_incomplete_attempt_marker(monkeypatch):
+    from test_bge_wss_worker import module
+    import regional_knowledge.kaggle_stage0 as stage0
+    worker=module('bge_kaggle_worker')
+    worker.RUN_CONFIG=dict(stage0={'fixture':'only'},prepared_model=None,run_id='synthetic')
+    model=lambda text:[1.]+[0.]*1023
+    monkeypatch.setattr(worker,'_load_model',lambda artifacts:model)
+    calls=[0]
+    def stage(*args,**kwargs):
+        calls[0]+=1
+        if calls[0]==1:
+            return dict(downloaded_bytes=4096,installed=True)
+        raise ValueError('synthetic failed partial install')
+    monkeypatch.setattr(stage0,'prepare_stage0',stage)
+    assert worker.load_encoder() is model
+    before=dict(worker._RKB_STAGE0_COUNTERS)
+    with pytest.raises(ValueError,match='failed partial install'):
+        worker.load_encoder()
+    assert worker._RKB_STAGE0_COUNTERS==before
+    assert worker._RKB_STAGE0_ATTEMPTS==2
+    assert before['invocation_count']==1
+
+
+@pytest.mark.asyncio
+async def test_previous_stage0_totals_cannot_pass_after_unfinished_new_attempt(monkeypatch):
+    runtime,_=prepared_runtime(monkeypatch)
+    runtime.config['stage0']={'configured':True}
+    monkeypatch.setattr(sys.modules['__main__'],'_MODEL_LOAD_COUNT',1,raising=False)
+    monkeypatch.setattr(sys.modules['__main__'],'_RKB_STAGE0_COUNTERS',
+        dict(invocation_count=1,install_count=1,downloaded_bytes=4096),raising=False)
+    # Actual loader has already begun another attempt, with unknown side
+    # effects and no completed receipt. No old counters may be reported ready.
+    monkeypatch.setattr(sys.modules['__main__'],'_RKB_STAGE0_ATTEMPTS',2,raising=False)
+    result=await runtime._read_owned_runtime()
+    assert result==dict(status='unavailable',reason='stage0_runtime_counters_unavailable')
+
+
+
+
+@pytest.mark.asyncio
+async def test_stage0_attempt_started_during_pg_probe_invalidates_snapshot(monkeypatch):
+    runtime,_=prepared_runtime(monkeypatch)
+    runtime.config['stage0']={'configured':True}
+    main=sys.modules['__main__']
+    monkeypatch.setattr(main,'_MODEL_LOAD_COUNT',1,raising=False)
+    monkeypatch.setattr(main,'_RKB_STAGE0_COUNTERS',
+        dict(invocation_count=1,install_count=1,downloaded_bytes=4096),raising=False)
+    monkeypatch.setattr(main,'_RKB_STAGE0_ATTEMPTS',1,raising=False)
+    class ConcurrentStageConnection(PgConnection):
+        async def execute(self,query,*args):
+            if 'pg_control_system()' in query:
+                # Simulate a second Stage0 attempt beginning while the read
+                # awaits PG. The previous successful counters are now stale.
+                monkeypatch.setattr(main,'_RKB_STAGE0_ATTEMPTS',2,raising=False)
+            return await super().execute(query,*args)
+    async def connect(**kwargs):
+        return ConcurrentStageConnection([])
+    runtime.owner.connect=connect
+    observed=await runtime._read_owned_runtime()
+    assert observed==dict(status='unavailable',
+                          reason='stage0_runtime_counters_unavailable')
+    # This was only a diagnostic probe; native PG remains retained.
+    assert runtime.read_handler_slot.receipt()['loaded_sha256']=='a'*64
+    assert not runtime.closed
+
+
 @pytest.mark.asyncio
 async def test_missing_or_fabricated_stage0_metrics_fail_closed(monkeypatch):
     runtime,_=prepared_runtime(monkeypatch)
     runtime.config['stage0']={'configured':True}
     assert runtime.target.get('stage0') is None
     monkeypatch.setattr(sys.modules['__main__'],'_MODEL_LOAD_COUNT',1,raising=False)
+    monkeypatch.setattr(sys.modules['__main__'],'_RKB_STAGE0_ATTEMPTS',1,raising=False)
     monkeypatch.delattr(sys.modules['__main__'],'_RKB_STAGE0_COUNTERS',raising=False)
     missing=await runtime._read_owned_runtime()
     assert missing==dict(status='unavailable',reason='stage0_runtime_counters_unavailable')

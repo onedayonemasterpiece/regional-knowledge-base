@@ -52,8 +52,16 @@ The callback obtains the following **actual owned observations**:
   `install_count`. Its real prepare call already differentiates verified
   cached bytes from downloaded bytes, and an actual offline pip install
   from a no-op. The generated worker records the counters only upon
-  successful Stage0 return. No separate download/install or reconnect loop
-  is started by readback. Missing, malformed or uninitialized counters
+  successful Stage0 return. The independent generated-worker
+  `_RKB_STAGE0_ATTEMPTS` is incremented **before** each call. Readback
+  requires `invocation_count == _RKB_STAGE0_ATTEMPTS`, even after a
+  previous successful invocation: a failed or still-running later Stage0
+  attempt may have transferred/installed files without yielding a final
+  receipt and must return unavailable rather than reusing old totals.
+  This equality and the counter snapshot are checked **again after the
+  awaitable PG identity probe**; a newly begun Stage0 attempt during PG I/O
+  invalidates the entire Stage0 observation. No separate download/install
+  or reconnect loop is started by readback. Missing, malformed or uninitialized counters
   return `stage0_runtime_counters_unavailable`, **never zero**. Generated
   `compose_target` intentionally **removes `stage0` from `target_runtime`**:
   only the top-level field controls the encoder's Stage0 lifecycle. This
