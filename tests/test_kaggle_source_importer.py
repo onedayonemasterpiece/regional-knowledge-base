@@ -208,7 +208,7 @@ async def test_personal_nonowner_and_html_are_rejected_before_native_acquire(int
         access_token=s.t.auth.tokens.access_token)
     with pytest.raises(ToolError,match='access_denied'):
         await s.importer.book_ingest(command='start',principal=other,source_import=options())
-    with pytest.raises(ToolError,match='target_pdf_only'):
+    with pytest.raises(ToolError,match='target_pdf_or_djvu_only'):
         await s.importer.book_ingest(command='start',principal=s.principal,
             file=ChatFile(file_id='html',download_url='https://example.test/article',mime_type='text/html'),source_import=options())
     assert not s.originals.calls

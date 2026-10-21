@@ -14,7 +14,7 @@ def digest(value):return hashlib.sha256(value).hexdigest()
 
 class OriginalIntakeError(ValueError):pass
 
-TERMINAL_REJECTIONS=frozenset({'original_djvu_pinned_parser_required','original_format_unsupported',
+TERMINAL_REJECTIONS=frozenset({'original_djvu_pinned_parser_required','original_djvu_invalid','original_format_unsupported',
     'original_expected_bytes_mismatch','original_page_count_limit','original_pdf_invalid',
     'original_page_geometry_invalid','original_render_byte_bound'})
 
@@ -51,7 +51,7 @@ class OriginalIntakeSpec:
     max_bytes:int=128*1024*1024
     expected_sha256:str|None=None
     expected_size:int|None=None
-    max_pages:int=32
+    max_pages:int=2500
 
     def __post_init__(self):
         for value in (self.source_id,self.ingestion_id,self.request_id):uuid_value(value)
@@ -63,7 +63,7 @@ class OriginalIntakeSpec:
         if self.expected_sha256 is not None:hash_value(self.expected_sha256)
         if self.expected_size is not None and (type(self.expected_size) is not int or not 1<=self.expected_size<=self.max_bytes):
             raise OriginalIntakeError('original_bounds_invalid')
-        if type(self.max_pages) is not int or not 1<=self.max_pages<=32:raise OriginalIntakeError('original_page_bound')
+        if type(self.max_pages) is not int or not 1<=self.max_pages<=2500:raise OriginalIntakeError('original_page_bound')
 
     def wire(self):return asdict(self)
     @classmethod

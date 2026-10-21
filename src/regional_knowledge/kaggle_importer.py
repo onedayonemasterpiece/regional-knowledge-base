@@ -38,8 +38,8 @@ from .story_contracts import StageStoryCandidateInput
 from .stage_graph import StagedGraph, compile_model_stage, merge_stage, validate_graph
 
 _LOG = logging.getLogger(__name__)
-MAX_BYTES = 2 * 1024 * 1024
-MAX_PAGES = 32
+MAX_BYTES = 128 * 1024 * 1024
+MAX_PAGES = 2500
 MAX_PASSAGES = 32
 MAX_BODY_BYTES = 65536
 MAX_CONTROL_BYTES = 8 * 1024 * 1024
@@ -210,8 +210,12 @@ class KaggleSourceImporter:
         if (type(receipt) is not VerifiedOriginalReceipt or VerifiedOriginalReceipt.from_wire(receipt.wire()) != receipt
                 or receipt.source_id != row['source_id'] or receipt.ingestion_id != row['ingestion_id']
                 or receipt.request_id != str(uuid5(UUID(row['ingestion_id']), 'original:source-original:'+row['ingestion_id']))
-                or receipt.parser_sha256 != self.parser_sha256
-                or receipt.format != 'pdf' or receipt.size > MAX_BYTES or receipt.page_count > MAX_PAGES):
+                # Actor-verified, archived PDF receipts may retain a
+                # historical parser hash. Native restore/page dispatch
+                # independently permits only the exact old PDF executable;
+                # unknown DjVu parser hashes are never accepted.
+                or (receipt.parser_sha256 != self.parser_sha256 and receipt.format != 'pdf')
+                or receipt.format not in ('pdf','djvu') or receipt.size > MAX_BYTES or receipt.page_count > MAX_PAGES):
             raise failure('verified_small_original_required')
         return receipt
 
@@ -222,10 +226,11 @@ class KaggleSourceImporter:
 
     async def _start(self, access, *, file, metadata, source_import):
         if file is None or source_import is None or source_import.public_rights is None:
-            raise failure('attached_pdf_and_explicit_public_rights_required', status='invalid_query')
+            raise failure('attached_source_and_explicit_public_rights_required', status='invalid_query')
         mime = (file.mime_type or '').lower().split(';', 1)[0]
-        if mime not in {'application/pdf', 'application/x-pdf'}:
-            raise failure('target_pdf_only')
+        if mime not in {'application/pdf', 'application/x-pdf','image/vnd.djvu','image/x.djvu',
+                'application/x-djvu','application/vnd.djvu','application/octet-stream'}:
+            raise failure('target_pdf_or_djvu_only')
         if not metadata.get('title') or metadata.get('duplicate_policy', 'reuse') != 'reuse' or metadata.get('catalog_update'):
             raise failure('new_small_source_metadata_required', status='invalid_query')
         catalog = metadata.get('catalog') or {}

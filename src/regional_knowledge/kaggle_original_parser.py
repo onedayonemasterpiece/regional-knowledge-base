@@ -14,6 +14,25 @@ def _hash(value):return hashlib.sha256(value).hexdigest()
 
 
 def parse(path,action,index=0,*,cursor=None):
+    # Inspect the actual file signature, not extension or caller-provided MIME.
+    # This runs as a python -I child: a relative package import cannot be used.
+    fd=os.open(path,os.O_RDONLY|os.O_NONBLOCK|getattr(os,'O_NOFOLLOW',0))
+    try:header=os.pread(fd,16,0)
+    finally:os.close(fd)
+    if header.startswith(b'AT&TFORM') and header[12:16] in (b'DJVM',b'DJVU'):
+        if action != 'inspect':
+            # Metadata is NOT a render capability. A pinned DjVu decoder and
+            # exact page-byte receipt are still required for book_pages.
+            raise ValueError('original_djvu_decoder_required')
+        import runpy
+        inspector=runpy.run_path(str(Path(__file__).with_name('kaggle_djvu_inspect.py')))
+        try:inventory=inspector['inspect_djvu'](path)
+        except inspector['DjvuStructureError']:
+            # Bad magic/length/directory/page geometry is a permanent bad
+            # original, not an infinite transient parser retry. Never leak
+            # its untrusted bytes or messages to owner-facing responses.
+            raise ValueError('original_djvu_invalid') from None
+        return dict(format='djvu',page_count=inventory.page_count)
     import pymupdf as fitz
     with fitz.open(path) as document:
         total=int(document.page_count)
@@ -91,8 +110,10 @@ def main():
         sys.stdout.buffer.write(data);sys.stdout.buffer.flush()
     except Exception as exc:
         code=str(exc) if isinstance(exc,ValueError) and str(exc) in {
-            'original_pdf_invalid','original_page_geometry_invalid','original_render_byte_bound'} else 'original_pdf_parser_unavailable'
-        os.write(1,json.dumps(dict(error=code,terminal=code!='original_pdf_parser_unavailable')).encode())
+            'original_pdf_invalid','original_page_geometry_invalid','original_render_byte_bound',
+            'original_djvu_decoder_required','original_djvu_invalid'} else 'original_pdf_parser_unavailable'
+        os.write(1,json.dumps(dict(error=code,terminal=code not in {
+            'original_pdf_parser_unavailable','original_djvu_decoder_required'})).encode())
         raise SystemExit(1)
 
 if __name__=='__main__':main()

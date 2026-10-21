@@ -60,7 +60,14 @@ class NativeOriginalIntake:
             raise OriginalIntakeError('original_private_workspace_required')
         actual={k:importlib.metadata.version(k) for k,_ in config.parser_packages}
         if actual!=dict(config.parser_packages):raise OriginalIntakeError('original_parser_dependency_mismatch')
-        self.parser_sha256=digest(canonical(dict(packages=actual,code=digest(Path(__file__).with_name('kaggle_original_parser.py').read_bytes()))))
+        # Historical PDF receipts retain the exact old parser bytes and pin.
+        # Never relabel accepted original/page receipts after installing DjVu.
+        legacy_code=digest(Path(__file__).with_name('kaggle_original_parser_pdf_v1.py').read_bytes())
+        self.legacy_parser_sha256=digest(canonical(dict(packages=actual,code=legacy_code)))
+        self.parser_sha256=digest(canonical(dict(packages=actual,
+            code=digest(Path(__file__).with_name('kaggle_original_parser.py').read_bytes()),
+            djvu_inspector_sha256=digest(Path(__file__).with_name('kaggle_djvu_inspect.py').read_bytes()),
+            legacy_pdf_parser_sha256=legacy_code)))
         self.config,self.database,self.identity,self.root,self.current=config,database,identity,root,current
         from .file_ingress import ChatFileDownloader
         self.downloader=downloader or ChatFileDownloader()
@@ -72,9 +79,31 @@ class NativeOriginalIntake:
     def detached(self,generation):
         if self.generation==generation:self.generation=None
 
-    async def _parse(self,path,action,index=0,*,cursor=None):
+    def _parser_script(self,pin):
+        # Allowlist comes only from code bytes and pinned installed packages,
+        # not from a received claim or a filename supplied by a client.
+        if pin==self.parser_sha256:
+            return Path(__file__).with_name('kaggle_original_parser.py')
+        if pin==self.legacy_parser_sha256:
+            return Path(__file__).with_name('kaggle_original_parser_pdf_v1.py')
+        raise OriginalIntakeError('original_parser_pin_unavailable')
+
+    async def _parse_selected(self,path,action,index=0,*,cursor=None,parser_sha256):
+        self._parser_script(parser_sha256)
+        # Injected test parser follows the same pin admission; the native
+        # production child executes the immutable script matching the receipt.
+        if (getattr(self.parser,'__self__',None) is self
+                and getattr(self.parser,'__func__',None) is type(self)._parse):
+            return await self._parse(path,action,index,cursor=cursor,parser_sha256=parser_sha256)
+        # Inspect/first-page peers historically take positional args only;
+        # preserve their exact call form when no continuation is requested.
+        if cursor is None:return await self.parser(path,action,index)
+        return await self.parser(path,action,index,cursor=cursor)
+
+    async def _parse(self,path,action,index=0,*,cursor=None,parser_sha256=None):
         cursor=cursor or dict(block=0,offset=0,text=0)
-        child=await asyncio.create_subprocess_exec(sys.executable,'-I',str(Path(__file__).with_name('kaggle_original_parser.py')),
+        script=self._parser_script(self.parser_sha256 if parser_sha256 is None else parser_sha256)
+        child=await asyncio.create_subprocess_exec(sys.executable,'-I',str(script),
             action,str(path),str(index),*(str(cursor[k]) for k in ('block','offset','text')),
             stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,
             env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
@@ -91,6 +120,8 @@ class NativeOriginalIntake:
                 from .original_intake import TERMINAL_REJECTIONS
                 if value.get('terminal') is True and value.get('error') in TERMINAL_REJECTIONS:
                     raise OriginalIntakeRejected(value['error'])
+                if value.get('error')=='original_djvu_decoder_required' and value.get('terminal') is False:
+                    raise OriginalIntakeError('original_djvu_decoder_required')
                 raise OriginalIntakeError('original_parser_unavailable')
             return value
         finally:
@@ -168,7 +199,9 @@ class NativeOriginalIntake:
                     ticket=SnapshotTicket.from_wire(private['ticket'])
                     if ((prior.source_id,prior.ingestion_id,prior.request_id,prior.revision)!=(
                             spec.source_id,spec.ingestion_id,spec.request_id,spec.revision)
-                            or prior.parser_sha256!=self.parser_sha256 or prior.size>spec.max_bytes
+                            or prior.parser_sha256 not in (self.parser_sha256,self.legacy_parser_sha256)
+                            or (prior.parser_sha256==self.legacy_parser_sha256 and prior.format!='pdf')
+                            or prior.size>spec.max_bytes
                             or type(args['restore_nonce']) is not str or len(args['restore_nonce'])!=48
                             or (ticket.key,ticket.size,ticket.sha256)!=(prior.key,prior.size,prior.sha256)
                             or {k.lower():v for k,v in ticket.headers}.get('if-match')!=prior.native_version):
@@ -180,26 +213,32 @@ class NativeOriginalIntake:
                     downloaded=DownloadedFile(restored,actual_hash,actual_size)
                 else:downloaded=await self.downloader.download(private['download_url'],folder,max_bytes=spec.max_bytes)
                 with downloaded.path.open('rb') as stream:header=stream.read(16)
-                if not header.startswith(b'%PDF-'):
-                    raise OriginalIntakeRejected('original_djvu_pinned_parser_required' if header.startswith(b'AT&TFORM') else 'original_format_unsupported')
+                if header.startswith(b'%PDF-'):
+                    detected_format='pdf'
+                elif header.startswith(b'AT&TFORM') and header[12:16] in (b'DJVM',b'DJVU'):
+                    detected_format='djvu'
+                else:
+                    raise OriginalIntakeRejected('original_format_unsupported')
                 if ((spec.expected_sha256 is not None and spec.expected_sha256!=downloaded.sha256)
                         or (spec.expected_size is not None and spec.expected_size!=downloaded.size_bytes)):
                     raise OriginalIntakeRejected('original_expected_bytes_mismatch')
-                info=await self.parser(downloaded.path,'inspect')
-                if info.get('format')!='pdf' or type(info.get('page_count')) is not int or info['page_count']<1:
+                selected_pin=prior.parser_sha256 if prior is not None else self.parser_sha256
+                info=await self._parse_selected(downloaded.path,'inspect',parser_sha256=selected_pin)
+                if (info.get('format')!=detected_format or type(info.get('page_count')) is not int
+                        or not 1<=info['page_count']<=2500):
                     raise OriginalIntakeError('original_parser_invalid')
                 if info['page_count']>spec.max_pages:raise OriginalIntakeRejected('original_page_count_limit')
                 if prior is not None and (info['format'],info['page_count'])!=(prior.format,prior.page_count):
                     raise OriginalIntakeError('original_restore_parser_mismatch')
                 handle=secrets.token_hex(24)
                 value=dict(handle=handle,spec=spec.wire(),sha256=downloaded.sha256,size=downloaded.size_bytes,
-                    format='pdf',page_count=info['page_count'],parser_sha256=self.parser_sha256)
+                    format=detected_format,page_count=info['page_count'],parser_sha256=selected_pin)
                 value['acquisition_sha256']=digest(canonical(value))
                 if prior is not None:
                     value['acquisition_sha256']=prior.acquisition_sha256
                     value['restored_from_receipt_sha256']=prior.receipt_sha256
                     value['native_restore_sha256']=digest(canonical(dict(original=prior.receipt_sha256,
-                        sha256=downloaded.sha256,size=downloaded.size_bytes,parser_sha256=self.parser_sha256)))
+                        sha256=downloaded.sha256,size=downloaded.size_bytes,parser_sha256=selected_pin)))
                 self._records[handle]=dict(value,path=downloaded.path,pages={},verified=prior.wire() if prior is not None else None)
                 acquired=True
                 return value
@@ -224,7 +263,7 @@ class NativeOriginalIntake:
             try:await self.transfer.download(ticket,path,operation_key=frame['operation_key'])
             finally:path.unlink(missing_ok=True)
             value=dict(key=ticket.key,native_version={k.lower():v for k,v in ticket.headers}['if-match'],size=ticket.size,sha256=ticket.sha256,
-                acquisition_sha256=record['acquisition_sha256'],parser_sha256=self.parser_sha256)
+                acquisition_sha256=record['acquisition_sha256'],parser_sha256=record['parser_sha256'])
             value['native_verification_sha256']=digest(canonical(value));artifact['verified']=value
             return value
         if phase=='original_pages':
@@ -238,21 +277,23 @@ class NativeOriginalIntake:
             if record['verified'] is None:raise OriginalIntakeError('original_archive_verification_required')
             index=args['index']
             if index not in record['pages']:
-                result=await self.parser(record['path'],'page',index)
+                result=await self._parse_selected(record['path'],'page',index,
+                    parser_sha256=record['parser_sha256'])
                 image=base64.b64decode(result.pop('image_b64'),validate=True)
                 if not 1<=len(image)<=256*1024 or digest(image)!=result['image_sha256']:
                     raise OriginalIntakeError('original_page_render_invalid')
                 page_path=record['path'].parent/f'page-{index}.jpg'
                 with page_path.open('xb') as stream:stream.write(image)
                 result.update(page_id=str(uuid5(UUID(record['spec']['source_id']),f'page:1:{index}')),
-                    original_sha256=record['sha256'],parser_sha256=self.parser_sha256,image_size=len(image),
+                    original_sha256=record['sha256'],parser_sha256=record['parser_sha256'],image_size=len(image),
                     mime_type='image/jpeg')
                 result['page_receipt_sha256']=digest(canonical(result))
                 record['pages'][index]=dict(result=result,path=page_path,sha256=digest(image),size=len(image),verified=None,
                     chunks={canonical(dict(block=0,offset=0,text=0)).decode():result})
             artifact=record['pages'][index];key=canonical(cursor).decode()
             if key not in artifact['chunks']:
-                result=await self.parser(record['path'],'text',index,cursor=cursor)
+                result=await self._parse_selected(record['path'],'text',index,cursor=cursor,
+                    parser_sha256=record['parser_sha256'])
                 for name in ('page_id','original_sha256','parser_sha256','image_size','image_sha256','mime_type','preview_render'):
                     result[name]=artifact['result'][name]
                 result['native_text_info']['preview_render']=artifact['result']['preview_render']
