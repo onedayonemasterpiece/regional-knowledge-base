@@ -7,17 +7,19 @@ whole manifest SHA before activating its immutable IDs.
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass,replace
 import hashlib
 import json
 import re
 
 from .geo_migration import GeoManifestItem,GeoManifestHeader,GeoMigrationManifest,canonical,sha,normalized,exact_uuid
-from .kaggle_apply import DependencySpec,HandlerSpec,PgFunction,Revisions
+from .kaggle_apply import DependencySpec,HandlerSpec,MigrationTransition,PgFunction,Revisions
 from .recovery_journal import ExactCommand
 
 GEO_MANIFEST_INSTALL='geo.manifest.install.v1'
 GEO_REVISIONS=Revisions('rkb-v4-sql001-011-v1','rkb-v4-source-story-cases-geo-v6','rkb-python-apply-v1')
+GEO_V2_REVISIONS=Revisions('rkb-v4-sql001-012-v1','rkb-v4-source-story-cases-geo-v7','rkb-python-apply-v1')
+GEO_DEPENDENCY_MIGRATION='geo-dependencies-v2'
 GEO_PRECONDITIONS=frozenset({'manifest_state','manifest_index_sha256','installer_person_id'})
 MAX_GEO_PAYLOAD=704*1024
 MAX_GEO_BATCH=256*1024
@@ -113,7 +115,7 @@ def _validate_payload(raw,manifest_id,index_sha256):
 
 def validate_geo_manifest_command(command):
     if (type(command) is not ExactCommand or command.kind!='domain_command' or command.route!=GEO_MANIFEST_INSTALL or
-            (command.schema_revision,command.function_revision,command.executor_revision)!=GEO_REVISIONS.wire() or
+            (command.schema_revision,command.function_revision,command.executor_revision) not in (GEO_REVISIONS.wire(),GEO_V2_REVISIONS.wire()) or
             set(command.ids)!={'manifest_id'} or set(command.expected_revisions)!=GEO_PRECONDITIONS):
         raise ValueError('exact fresh11 geographic manifest command required')
     exact_uuid(command.person_id);_digest(command.ids['manifest_id'])
@@ -177,7 +179,70 @@ def plan_geo_manifest(manifest):
 
 
 def geo_manifest_handler(*,revisions,check_sha256,apply_sha256):
-    if revisions!=GEO_REVISIONS:raise ValueError('ordered fresh11 geographic revision barrier required')
+    if revisions not in (GEO_REVISIONS,GEO_V2_REVISIONS):raise ValueError('ordered geographic revision barrier required')
+    version='v2' if revisions==GEO_V2_REVISIONS else 'v1'
     return HandlerSpec('domain_command',GEO_MANIFEST_INSTALL,revisions,
-        PgFunction('check_geo_manifest_install_v1',check_sha256),PgFunction('apply_geo_manifest_install_v1',apply_sha256),
+        PgFunction('check_geo_manifest_install_'+version,check_sha256),PgFunction('apply_geo_manifest_install_'+version,apply_sha256),
         GEO_PRECONDITIONS,dependency=geo_manifest_dependency())
+
+
+def geo_dependency_transition_handler(*,artifact_sha256,check_sha256,apply_sha256):
+    """A trusted installed schema12 artifact, activated after the exact old tail."""
+    return HandlerSpec('schema_transition','geo.dependencies.upgrade.v2',GEO_REVISIONS,
+        PgFunction('check_geo_dependencies_v2_transition',check_sha256),
+        PgFunction('apply_geo_dependencies_v2_transition',apply_sha256),
+        frozenset({'schema','function','executor','migration'}),
+        MigrationTransition(GEO_DEPENDENCY_MIGRATION,artifact_sha256,None,GEO_V2_REVISIONS))
+
+
+def geo_dependency_repair_commands(originals,*,settled_outcomes,artifact_sha256):
+    """Resolve a repair after the original plan has real durable terminal outcomes.
+
+    This function grants no authority and changes no queue/journal state. The
+    caller proves every supplied outcome is remotely durable. Original command
+    bytes, sequence numbers and outcomes stay untouched; only rejected batches
+    and their final activation need new commands after the migration.
+    """
+    _digest(artifact_sha256)
+    originals=tuple(originals)
+    if not originals or len(originals)>4096:
+        raise ValueError('bounded original GEO plan required')
+    for command in originals:
+        validate_geo_manifest_command(command)
+        if (command.schema_revision,command.function_revision,command.executor_revision)!=GEO_REVISIONS.wire():
+            raise ValueError('original schema11 GEO plan required')
+    if (any(b.sequence!=a.sequence+1 for a,b in zip(originals,originals[1:]))
+            or any(command.ids!=originals[0].ids or command.person_id!=originals[0].person_id for command in originals)):
+        raise ValueError('same actor and contiguous original manifest required')
+    if (set(settled_outcomes)!={c.operation_key for c in originals}
+            or any(value not in ('applied','rejected_precondition') for value in settled_outcomes.values())
+            or settled_outcomes[originals[0].operation_key]!='applied'):
+        raise ValueError('complete original terminal GEO outcomes required')
+    rejected=tuple(c for c in originals if settled_outcomes[c.operation_key]=='rejected_precondition')
+    if (not rejected or json.loads(originals[-1].payload)['action']!='activate'
+            or settled_outcomes[originals[-1].operation_key]!='rejected_precondition'
+            or not any(json.loads(c.payload)['action']=='batch' for c in rejected)
+            or any(json.loads(c.payload)['action'] not in ('batch','activate') for c in rejected)):
+        raise ValueError('exact rejected GEO batches and final activation required')
+    last=originals[-1];prefix='geo-repair12:'+last.ids['manifest_id']+':'
+    transition=replace(last,sequence=last.sequence+1,operation_key=prefix+'migration',
+        kind='schema_transition',route='geo.dependencies.upgrade.v2',ids={},
+        expected_revisions={'schema':GEO_REVISIONS.schema,'function':GEO_REVISIONS.function,
+            'executor':GEO_REVISIONS.executor,'migration':''},
+        payload=canonical({'migration_id':GEO_DEPENDENCY_MIGRATION,
+            'artifact_sha256':artifact_sha256,'predecessor':None}))
+    retries=tuple(replace(command,sequence=transition.sequence+offset,
+        operation_key=prefix+str(command.sequence),schema_revision=GEO_V2_REVISIONS.schema,
+        function_revision=GEO_V2_REVISIONS.function,executor_revision=GEO_V2_REVISIONS.executor)
+        for offset,command in enumerate(rejected,start=1))
+    return (transition,*retries)
+
+
+def geo_dependency_limit_rejection(command):
+    """Recognize the schema11/Python dependency-bound mismatch, never success."""
+    value=validate_geo_manifest_command(command)
+    if ((command.schema_revision,command.function_revision,command.executor_revision)!=GEO_REVISIONS.wire()
+            or value['action']!='batch'):
+        return False
+    return any(len(GeoManifestItem.from_wire(json.loads(_decode(entry['wire_b64'],64*1024))).dependencies)>64
+        for entry in value['items'])

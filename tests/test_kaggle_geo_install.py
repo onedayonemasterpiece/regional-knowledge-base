@@ -34,8 +34,10 @@ from test_control_spool import receipt
 from test_queue_writer import owner
 
 
-def populate(corpus):
+def populate(corpus,*,extra_mentions=0):
     data=snapshot()
+    data['mentions'].extend(dict(data['mentions'][0],id=uid(1000+n)) for n in range(extra_mentions))
+    data['expected_counts']=data['expected_counts'].model_copy(update={'mentions':2+extra_mentions})
     for key,table in [('entities','rkb_entities'),('mentions','rkb_entity_mentions'),('aliases','rkb_entity_aliases'),
             ('relations','rkb_entity_relations'),('source_metadata','rkb_documents'),('page_metadata','rkb_pages'),
             ('region_metadata','rkb_regions'),('chunk_metadata','rkb_chunks')]:
@@ -63,8 +65,8 @@ def coverage(startup,accepted=0,applied=0):
 
 
 @pytest_asyncio.fixture
-async def installation(target,tmp_path):
-    t=target;data,manifest=populate(t.auth.p.registry.corpus)
+async def installation(target,tmp_path,request):
+    t=target;data,manifest=populate(t.auth.p.registry.corpus,extra_mentions=getattr(request,'param',0))
     directory=tmp_path/'private';directory.mkdir(mode=0o700)
     path=directory/'manifest.json';path.write_bytes(canonical(manifest.wire())+b'\n');path.chmod(0o600)
     config=SourceGeoInstallConfig(str(path),manifest.sha256,str(t.auth.p.registry.corpus.path))
@@ -95,6 +97,45 @@ async def installation(target,tmp_path):
     owner=SourceGeoInstaller(startup,config);startup.geo_installer=owner
     yield SimpleNamespace(t=t,data=data,manifest=manifest,owner=owner,startup=startup,spool=spool,config=config,keys=keys)
     await owner.aclose();await startup.source_dispatch.aclose();spool.close()
+
+
+@pytest.mark.asyncio
+async def test_unrelated_precondition_rejection_still_stops_original_plan(installation):
+    s=installation;s.startup.snapshot.verified=True
+    for index,key in enumerate(s.keys[:2]):
+        assert not await s.owner.advance(s.startup.binding)
+        entry=await s.spool.get(key)
+        await s.spool.record_apply(key,receipt(entry.command,
+            status='applied' if index==0 else 'rejected_precondition',database=s.startup.binding.database_generation))
+        await s.spool.publish_outcome(key,writer_generation='writer-1')
+    with pytest.raises(SpoolConflict,match='GEO native precondition rejected'):
+        await s.owner.advance(s.startup.binding)
+    assert (await s.spool.get(s.keys[-1])).accepted is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('installation',[81],indirect=True)
+async def test_dependency_rejection_keeps_receipt_and_completes_original_plan_without_import_success(installation):
+    from regional_knowledge.geo_manifest_commands import geo_dependency_limit_rejection
+    s=installation;s.startup.snapshot.verified=True
+    rejected={};seen_rejection=False
+    for key in s.keys:
+        assert not await s.owner.advance(s.startup.binding)
+        entry=await s.spool.get(key)
+        assert entry.accepted is not None
+        reject=geo_dependency_limit_rejection(entry.command) or seen_rejection and json.loads(entry.command.payload)['action']=='activate'
+        status='rejected_precondition' if reject else 'applied'
+        await s.spool.record_apply(key,receipt(entry.command,status=status,database=s.startup.binding.database_generation))
+        await s.spool.publish_outcome(key,writer_generation='writer-1')
+        if reject:
+            seen_rejection=True;rejected[key]=(await s.spool.get(key)).apply_receipt.outcome
+    assert rejected
+    assert not await s.owner.advance(s.startup.binding)
+    assert not s.owner.complete and not TargetServiceStartup.imports_current(s.startup)
+    for key,outcome in rejected.items():
+        entry=await s.spool.get(key)
+        assert entry.apply_state=='REJECTED_PRECONDITION' and entry.outcome_state=='DURABLE'
+        assert entry.apply_receipt.outcome==outcome
 
 
 @pytest.mark.asyncio

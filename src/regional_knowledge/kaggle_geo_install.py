@@ -12,7 +12,7 @@ import stat
 from .control_spool import SpoolError,SpoolConflict,_database
 from .geo_inventory import GeoInventoryObservation,geo_watermark
 from .geo_migration import GeoMigrationManifest,canonical
-from .geo_manifest_commands import plan_geo_manifest
+from .geo_manifest_commands import plan_geo_manifest,geo_dependency_limit_rejection
 
 _LOG=logging.getLogger(__name__)
 
@@ -285,13 +285,21 @@ class SourceGeoInstaller:
                 if await asyncio.to_thread(self._metadata) is None:raise
             context=self._context()
             commands=await self._reserve(binding,context,source_current=source_current)
+            dependency_repair_required=False
             for command in commands:
                 try:entry=await self.spool.get(command.operation_key)
                 except SpoolError as exc:
                     if type(exc) is not SpoolError:raise
                     return False
                 if entry.command.encode()!=command.encode():raise SpoolConflict('retained GEO command bytes changed')
-                if entry.apply_state=='REJECTED_PRECONDITION':raise SpoolConflict('GEO native precondition rejected')
+                if entry.apply_state=='REJECTED_PRECONDITION' and entry.outcome_state=='DURABLE':
+                    if (geo_dependency_limit_rejection(command)
+                            or dependency_repair_required and json.loads(command.payload)['action']=='activate'):
+                        # Keep the exact rejection. Complete the original ordered
+                        # plan before the versioned repair; never fabricate apply.
+                        dependency_repair_required=True
+                        continue
+                    raise SpoolConflict('GEO native precondition rejected')
                 if entry.accepted is None:
                     if not source_current or not self.inventory.current(self.expected_watermark):return False
                     if entry.seal_state=='NOT_SENT':
@@ -311,6 +319,10 @@ class SourceGeoInstaller:
                     _LOG.info('geo_bootstrap state=pending phase=%s command_sha256=%s',command.sequence,entry.command_sha256)
                     self.complete=False
                     return False
+            if dependency_repair_required:
+                self.complete=False
+                _LOG.warning('geo_bootstrap state=repair_required reason=schema11_dependency_limit manifest_sha256=%s',self.plan.manifest_id)
+                return False
             if not source_current or not self.startup.geo_gate.installation_current(binding,self.keys):return False
             # A fresh relevant-source snapshot after remote outcomes and native
             # activation is required; initial file/ACK alone cannot open imports.

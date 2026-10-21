@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from regional_knowledge.geo_manifest_commands import GEO_REVISIONS,geo_manifest_handler,plan_geo_manifest
+from regional_knowledge.geo_manifest_commands import (GEO_REVISIONS,GEO_V2_REVISIONS,
+    geo_dependency_repair_commands,geo_dependency_transition_handler,geo_manifest_handler,plan_geo_manifest)
 from regional_knowledge.geo_migration import canonical,sha
 from regional_knowledge.geo_whitelist import build_geo_whitelist
 from regional_knowledge.kaggle_apply import HandlerRegistry,initialize_database
@@ -58,6 +59,51 @@ def commands():
     plan=plan_geo_manifest(manifest)
     return manifest,plan.commands(first_sequence=1,operation_key='geo-fixture',request_id='geo-request',
         person_id=uid(1),logical_time='2026-10-20T18:00:00Z')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('extra_mentions',[81,255])
+async def test_native_place_preserves_more_than_64_provenance_dependencies(native,extra_mentions):
+    data=snapshot()
+    template=data['mentions'][0]
+    data['mentions'].extend(dict(template,id=uid(1000+n)) for n in range(extra_mentions))
+    data['expected_counts']=data['expected_counts'].model_copy(update={'mentions':2+extra_mentions})
+    manifest=build_geo_whitelist(**data).require_ready()
+    place=next(item for item in manifest.items if item.key=='place:'+uid(10))
+    assert len(place.dependencies)==extra_mentions+1
+    plan=plan_geo_manifest(manifest)
+    resolved=plan.commands(first_sequence=1,operation_key='geo-many-provenance',
+        request_id='geo-many-request',person_id=uid(1),logical_time='2026-10-21T17:30:00Z')
+    outcomes={};rejected=None
+    for command in resolved:
+        receipt=await apply(native,command);outcomes[command.operation_key]=receipt.status
+        if rejected is None and receipt.status=='rejected_precondition':rejected=receipt
+    assert rejected is not None, 'schema11 must reproduce the retained precondition rejection'
+    artifact=(ROOT/'sql/kaggle/012_geo_dependency_bound.sql').read_bytes()
+    connection=native['connection']
+    async with connection.transaction():
+        await connection.execute(artifact.decode(),prepare=False)
+    artifact_sha=hashlib.sha256(artifact).hexdigest()
+    migration=geo_dependency_transition_handler(artifact_sha256=artifact_sha,
+        check_sha256=(await pinned(connection,'check_geo_dependencies_v2_transition')).definition_sha256,
+        apply_sha256=(await pinned(connection,'apply_geo_dependencies_v2_transition')).definition_sha256)
+    upgraded=geo_manifest_handler(revisions=GEO_V2_REVISIONS,
+        check_sha256=(await pinned(connection,'check_geo_manifest_install_v2')).definition_sha256,
+        apply_sha256=(await pinned(connection,'apply_geo_manifest_install_v2')).definition_sha256)
+    native['registry']=HandlerRegistry([*native['registry'].handlers.values(),migration,upgraded])
+    repair=geo_dependency_repair_commands(resolved,settled_outcomes=outcomes,artifact_sha256=artifact_sha)
+    for command in repair:
+        assert (await apply(native,command)).status=='applied'
+    async with connection.transaction():
+        retained=await(await connection.execute('SELECT status,outcome_bytes FROM rkb_v4.applied_ops WHERE operation_key=%s',
+            (rejected.operation_key,))).fetchone()
+    assert retained[0]=='rejected_precondition' and bytes(retained[1])==rejected.outcome
+    duplicate=await apply(native,next(c for c in resolved if c.operation_key==rejected.operation_key))
+    assert duplicate.duplicate and duplicate.outcome==rejected.outcome
+    stored=await(await native['connection'].execute(
+        "SELECT data->'dependencies' FROM rkb_v4.geo_manifest_items WHERE manifest_id=%s AND item_key=%s",
+        (manifest.sha256,place.key))).fetchone()
+    assert set(stored[0])==set(place.dependencies)
 
 
 @pytest.mark.asyncio
