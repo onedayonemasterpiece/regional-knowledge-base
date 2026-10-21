@@ -60,6 +60,24 @@ async def recovery_owner(owner):
     writer.close()
 
 
+
+
+@pytest.mark.asyncio
+async def test_execution_proven_old_terminal_allows_honest_pending_for_new_run(recovery_owner):
+    """Only native exact terminal, not TTL/version-only, releases the fence."""
+    e=recovery_owner  # Uses real SharedReadAdmission.confirm_terminal.
+    with e.q.connect(write=False) as db:
+        prior=db.execute("select status,launch_state from runs where id=?",(e.old.run,)).fetchone()
+        assert tuple(prior)==('expired','terminal')
+    # The new run was created after exact provider terminal proof. It is now
+    # entitled to warm, but its PG/accepted-tail restore is NOT ready yet.
+    demand=e.q.request_startup()
+    assert demand['run_id']==e.run
+    assert demand['status']=='pending'
+    assert e.q.startup_status(demand['startup_ref'])['reason']=='target_warming'
+    assert e.q.status()['state']=='starting'
+
+
 @pytest.mark.asyncio
 async def test_recovery_only_writer_fences_old_generation_and_acceptance_until_native_ready_proof(recovery_owner):
     e=recovery_owner

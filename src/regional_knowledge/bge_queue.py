@@ -233,9 +233,10 @@ class BgeQueue:
                 db.execute("update control set startup_ref=?,startup_state='pending',startup_failures=0 where id=1",(ref,))
             else:ref=row['startup_ref']
             run=db.execute('select * from runs where id=?',(run_id,)).fetchone()
-            if run and self._provider_outcome_unknown(run) and self._run_expired(run,now):
-                # Retain its remote slot but do not present an indefinite
-                # warming promise when exact execution status is unavailable.
+            if ((run and self._provider_outcome_unknown(run) and self._run_expired(run,now))
+                    or self._historical_provider_blocker(db,run_id,run['provider_ref'] if run else None,now)):
+                # Same historical provider ownership as launch_claim. Never
+                # promise warming when a detached old UNKNOWN prevents push.
                 return {'status':'unavailable','reason':'provider_execution_unknown',
                         'run_id':run_id,'startup_ref':ref}
             return {'status':'pending','run_id':run_id,'startup_ref':ref}
@@ -262,7 +263,10 @@ class BgeQueue:
                 return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
                         'status':'unavailable','reason':'startup_retry_exhausted'}
             run=db.execute('select * from runs where id=?',(row['current_run'],)).fetchone()
-            if run and self._provider_outcome_unknown(run) and self._run_expired(run,self.clock()):
+            now=self.clock()
+            if ((run and self._provider_outcome_unknown(run) and self._run_expired(run,now))
+                    or self._historical_provider_blocker(db,row['current_run'],
+                        run['provider_ref'] if run else None,now)):
                 return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
                         'status':'unavailable','reason':'provider_execution_unknown'}
             return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
@@ -885,12 +889,15 @@ class BgeQueue:
         control=db.execute('select * from control where id=1').fetchone()
         run=db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
         stale_remote=bool(run and self._run_expired(run,now) and self._provider_outcome_unknown(run))
+        historical_blocker=bool(control['startup_state']=='pending'
+            and self._historical_provider_blocker(db,control['current_run'],
+                run['provider_ref'] if run else None,now))
         if run and self._run_expired(run,now) and not stale_remote:run=None
         successor=db.execute('select * from runs where id=?',(control['successor'],)).fetchone()
         successor_starting=bool(successor and not self._run_expired(successor,now))
         blocked=control['startup_state']=='blocked'
-        return {'state':'unknown' if stale_remote else 'blocked' if blocked else run['status'] if run else 'stopped',
-            'reason':'startup_retry_exhausted' if blocked else None,
+        return {'state':'blocked' if blocked else 'unknown' if stale_remote or historical_blocker else run['status'] if run else 'stopped',
+            'reason':'startup_retry_exhausted' if blocked else 'provider_execution_unknown' if stale_remote or historical_blocker else None,
             'space':SPACE,'queue_depth':db.execute("select count(*) from jobs where state!='done'").fetchone()[0],
             'successor_starting':successor_starting,
             'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
@@ -950,6 +957,29 @@ class BgeQueue:
             return (run['status'] in ('ready','draining')
                     and self._run_expired(run,self.clock()))
 
+    def _historical_provider_blocker(self, db, run_id, provider_ref, now):
+        """Same provider-capacity reservation fence for claims and cold status.
+
+        In particular an unversioned historical UNKNOWN stays reserved even
+        if a migration detached it from control.current_run. An unspecified
+        new ref cannot establish that its slot is independent. This helper
+        makes no provider call, allocation, or state transition.
+        """
+        control=db.execute('select current_run,successor from control where id=1').fetchone()
+        for prior in db.execute("select * from runs where id!=? and launch_state in ('dispatching','dispatched')",
+                                (run_id,)).fetchall():
+            if provider_ref is not None and prior['provider_ref'] not in (None,provider_ref):
+                continue
+            intentional_warm=(provider_ref is not None
+                and prior['provider_ref']==provider_ref
+                and prior['launch_state']=='dispatched'
+                and prior['status']=='ready'
+                and not self._run_expired(prior,now)
+                and control['current_run']==prior['id']
+                and control['successor']==run_id)
+            if not intentional_warm:return True
+        return False
+
     def launch_claim(self, run_id, *, provider_ref=None):
         with self.connect() as db:
             row=db.execute('select * from runs where id=?',(run_id,)).fetchone()
@@ -960,23 +990,8 @@ class BgeQueue:
             # Known healthy READY/DRAINING permits intentional warm rotation;
             # no unknown or expired incarnation may be overwritten by a push.
             # This transaction is the single provider-claim serialization.
-            control=db.execute('select current_run,successor from control where id=1').fetchone()
-            for prior in db.execute("select * from runs where id!=? and launch_state in ('dispatching','dispatched')",
-                                    (run_id,)).fetchall():
-                # An omitted new provider_ref is NOT proof of a different
-                # slug. Legacy callers lacking that optional argument must
-                # never bypass a known older UNKNOWN execution.
-                if provider_ref is not None and prior['provider_ref'] not in (None,provider_ref):
-                    continue
-                intentional_warm=(provider_ref is not None
-                    and prior['provider_ref']==provider_ref
-                    and prior['launch_state']=='dispatched'
-                    and prior['status']=='ready'
-                    and not self._run_expired(prior,self.clock())
-                    and control['current_run']==prior['id']
-                    and control['successor']==run_id)
-                if not intentional_warm:
-                    return None
+            if self._historical_provider_blocker(db,run_id,provider_ref,self.clock()):
+                return None
             # Claim once. An ambiguous provider response is reconciled by its
             # stable notebook slug, never retried as an unknown second launch.
             db.execute("update runs set launch_state='dispatching',provider_ref=coalesce(provider_ref,?) where id=?",(provider_ref,run_id))
