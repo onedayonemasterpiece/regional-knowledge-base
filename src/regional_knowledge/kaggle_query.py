@@ -16,6 +16,7 @@ from .kaggle_protocol import (
     QueryResult, SourceDependency, PassageReadRequest, PassageReadResult, encode_envelope,
 )
 from .kaggle_search import SearchEvidence, fused_search, vector_literal
+from .kaggle_acceptance_contracts import AcceptanceReadRequest, AcceptanceReadResult, BranchRanks
 
 
 class DenseUnavailable(RuntimeError):
@@ -58,7 +59,8 @@ def _identity(query):
 
 
 def _unavailable(query, reason, observed, *, invalid=False):
-    return QueryResult(**_identity(query), status="invalid_query" if invalid else "unavailable",
+    result_type = AcceptanceReadResult if type(query) is AcceptanceReadRequest else QueryResult
+    return result_type(**_identity(query), status="invalid_query" if invalid else "unavailable",
                        mode=None, reason=reason, observed_data_seq=observed.get("data"),
                        observed_projection_seq=observed.get("projection"),
                        observed_visibility_epoch=observed.get("visibility"),
@@ -125,8 +127,11 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
     Callbacks must not block the event loop; shared encode retains its permit
     until the actual forward finishes even when this consumer is cancelled.
     """
-    if type(query) is not Query or type(tokenizer) is not PinnedTokenizer:
+    if type(query) not in (Query, AcceptanceReadRequest) or type(tokenizer) is not PinnedTokenizer:
         raise TypeError("validated Query and pinned tokenizer adapter required")
+    if type(query) is AcceptanceReadRequest:
+        # Private fixture scope must also survive constructed/model_copy inputs.
+        type(query).model_validate(query.model_dump())
     loop = asyncio.get_running_loop()
     started = loop.time()
     deadline = started + min(query.deadline_ms, 2000) / 1000
@@ -165,6 +170,19 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
 
                     async def guard(cursor, execute):
                         await _frontier(cursor, execute, query, observed)
+                        if type(query) is AcceptanceReadRequest:
+                            # Verify BOTH accepted fixture revisions even when
+                            # neither branch returns a hit. A changed source is
+                            # unavailable, never a benchmark zero-hit result.
+                            await execute('''SELECT a.source_id,a.revision,v.eligibility_revision
+                                FROM rkb_v4.active_revision a JOIN rkb_v4.source_visibility v USING(source_id)
+                                JOIN rkb_v4.sources s USING(source_id)
+                                WHERE a.source_id=ANY(%s::uuid[]) AND s.accepted AND NOT s.withdrawn''',
+                                ([UUID(s.source_id) for s in query.fixture_sources],))
+                            current=tuple(SourceDependency(source_id=str(s),content_revision=r,eligibility_revision=e)
+                                for s,r,e in await cursor.fetchall())
+                            if len(current)!=2 or set(current)!=set(query.fixture_sources):
+                                raise ReadUnavailable('evidence_withdrawn')
 
                     async def finish(cursor, execute, searched):
                         ids = [UUID(hit.source_id) for hit in searched.evidence]
@@ -180,8 +198,11 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
                             raise ReadUnavailable("not_ready")
 
                     mark = loop.time()
-                    searched = await fused_search(connection, query.query, encode=checked_encode,
-                        top_k=query.evidence_limit, filters=query.filters,
+                    acceptance = type(query) is AcceptanceReadRequest
+                    if acceptance:
+                        from .kaggle_search import acceptance_search
+                    searched = await (acceptance_search if acceptance else fused_search)(connection, query.query, encode=checked_encode,
+                        **({} if acceptance else {'top_k':query.evidence_limit}), filters=query.filters,
                         timeout_seconds=max(.000001, deadline - loop.time()),
                         snapshot_guard=guard, snapshot_finish=finish, stage_timings=stages)
                     stages["search_ms"] = (loop.time() - mark) * 1000
@@ -200,7 +221,9 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
                                           database_generation=observed["database"], text_budget=per_item)
                         budget -= len(entry.text)
                         evidence.append(entry)
-                    result = QueryResult(**_identity(query), status="degraded", mode="hybrid",
+                    result = (AcceptanceReadResult if acceptance else QueryResult)(**_identity(query), status="degraded", mode="hybrid",
+                        **({'ranks':BranchRanks(bge=searched.branch_ranks[0],lexical=searched.branch_ranks[1],
+                            fusion=searched.branch_ranks[2])} if acceptance else {}),
                         reason="bounded_retrieval", evidence=tuple(evidence), observed_data_seq=observed["data"],
                         observed_projection_seq=observed["projection"], observed_visibility_epoch=observed["visibility"],
                         observed_database_generation=observed["database"])

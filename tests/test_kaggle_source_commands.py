@@ -328,3 +328,100 @@ async def test_worker_exact_passage_wire_never_encodes():
         assert answer['reason']=='evidence_withdrawn' and 'mode' not in answer
         assert calls==['PASSAGE_READ']
         await peer.wait('RESOURCE_RELEASED')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('unsettled',[False,True])
+async def test_queued_source_waits_for_history_but_public_read_progresses(accepted,unsettled):
+    from test_bge_admission import begin,answer,release as release_read
+    e=accepted;s=e.s
+    job=await e.bridge.enqueue(s.auth.p.admin,e.command.operation_key,writer_generation='writer-1')
+    e.spool._native_history_unsettled=unsettled
+    if not unsettled:await e.spool._lock.acquire()
+    ticket=None
+    try:
+        assert e.bridge.maintenance_blocks_dispatch()
+        assert await s.a.next_channel_work(s.run,s.token,s.generation) is None
+        with s.q.connect(write=False) as db:
+            assert db.execute('SELECT state FROM jobs WHERE id=?',(job,)).fetchone()[0]=='pending'
+        ticket=await begin(s,'independent-public-read')
+        work=await s.a.next_channel_work(s.run,s.token,s.generation)
+        assert work.query is not None and work.query.request_id=='independent-public-read'
+        s.a.mark_work_sent(work)
+        assert await s.a.finish_read(s.run,s.token,s.generation,answer(work))
+        assert (await ticket.result).status=='ok'
+        await release_read(s,work)
+        assert await s.a.next_channel_work(s.run,s.token,s.generation) is None
+    finally:
+        if not unsettled:e.spool._lock.release()
+        e.spool._native_history_unsettled=False
+        if ticket is not None and not ticket.result.done():s.a.cancel_read(ticket)
+    work=await s.a.next_channel_work(s.run,s.token,s.generation)
+    assert work.document_payload['id']==job
+    s.a.discard_unsent(work)
+
+
+@pytest.mark.asyncio
+async def test_history_fence_rechecked_after_source_authorization_await(accepted,monkeypatch):
+    e=accepted;s=e.s
+    job=await e.bridge.enqueue(s.auth.p.admin,e.command.operation_key,writer_generation='writer-1')
+    original=e.bridge.authorize_job
+    async def authorize(context,row):
+        actor=await original(context,row)
+        e.spool._native_history_unsettled=True
+        return actor
+    monkeypatch.setattr(e.bridge,'authorize_job',authorize)
+    assert await s.a.next_channel_work(s.run,s.token,s.generation) is None
+    assert s.a.status()['state']=='idle' and s.a.status()['resource'] is None
+    with s.q.connect(write=False) as db:
+        assert db.execute('SELECT state FROM jobs WHERE id=?',(job,)).fetchone()[0]=='pending'
+    e.spool._native_history_unsettled=False
+    monkeypatch.setattr(e.bridge,'authorize_job',original)
+    work=await s.a.next_channel_work(s.run,s.token,s.generation)
+    assert work.document_payload['id']==job
+    s.a.discard_unsent(work)
+
+
+@pytest.mark.asyncio
+async def test_history_cleanup_phase_keeps_same_slot_while_source_is_fenced(accepted):
+    from regional_knowledge.kaggle_recovery_dispatch import RecoveryPhaseDispatch
+    from test_kaggle_recovery_phases import work_for,response as phase_response
+    e=accepted;s=e.s
+    job=await e.bridge.enqueue(s.auth.p.admin,e.command.operation_key,writer_generation='writer-1')
+    e.spool._native_history_unsettled=True
+    maintenance=RecoveryPhaseDispatch(s.q,database=SimpleNamespace(database_generation='synthetic-db',writer_generation='writer-1'),
+        identity=(s.run,s.nonce,'incarnation-a'),binding_current=lambda b:b is s,timeout_seconds=2)
+    await e.spool._lock.acquire()
+    try:
+        waiting,work,frame=await work_for(s,maintenance,phase='source_history',
+            args={'action':'abort','session':'exact-retained-session'},key='history-abort')
+        assert frame['kind']=='recovery_phase' and frame['phase']=='source_history'
+        assert work.resource.resource_kind=='document'
+        with s.q.connect(write=False) as db:
+            assert db.execute('SELECT state FROM jobs WHERE id=?',(job,)).fetchone()[0]=='pending'
+        result=phase_response(s,frame,{'aborted':True})
+        ack=await maintenance.receive(result,run_id=s.run,token=s.token,generation=s.generation)
+        assert ack['status']=='accepted' and await waiting=={'aborted':True}
+        await release(e,work)
+        assert await s.a.next_channel_work(s.run,s.token,s.generation) is None
+    finally:
+        e.spool._lock.release();e.spool._native_history_unsettled=False
+        await maintenance.aclose()
+    work=await s.a.next_channel_work(s.run,s.token,s.generation)
+    assert work.document_payload['id']==job
+    s.a.discard_unsent(work)
+
+
+def test_native_apply_diagnostic_keeps_sqlstate_and_excludes_private_message(caplog):
+    import logging,time
+    import psycopg
+    from regional_knowledge.kaggle_apply import _log_pg_failure
+    from test_kaggle_apply import item
+    secret='synthetic-private-query https://private.invalid/ticket?token=forbidden'
+    error=psycopg.errors.LockNotAvailable(secret)
+    command=replace(item(),payload=canonical({'body':secret}))
+    with caplog.at_level(logging.WARNING,logger='regional_knowledge.kaggle_apply'):
+        _log_pg_failure(error,command=command,stage='writer_state',started=time.monotonic())
+    assert 'sqlstate=55P03' in caplog.text and 'stage=writer_state' in caplog.text
+    assert secret not in caplog.text and 'private.invalid' not in caplog.text
+    assert digest(command.encode()) in caplog.text

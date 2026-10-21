@@ -28,6 +28,7 @@ grants, missing owner/references and bounded-budget violations stop preparation.
 | `rkb_participant_events` | `person_id,revision,actor_id,action,payload,created_at` |
 | `rkb_participant_operations` | `actor_id,operation_key,person_id,request_hash,result` |
 | `rkb_request_oauth_grants` | `id,person_id,client_id,resource,credential_id,credential_epoch,expires_at,enabled,issuer` |
+| `rkb_oauth_owner_projection_migrations` | `plan_sha256,receipt_json`; exact bounded owner-family migration receipts only |
 
 Missing infrastructure tables become empty through existing constructors; no
 profile, capability, account link or request grant is fabricated. A historical
@@ -37,6 +38,12 @@ rows and audit bytes stay disabled/expired and unchanged. Credentials and servic
 principal epochs/audit remain in the same encrypted OAuth store, outside this
 export. Local authority backup/recovery remains the existing auth-file/SQLite
 procedure: this projection adds no remote auth checkpoint or new durability claim.
+Owner-family migration receipts retain their exact canonical bytes and counts;
+the candidate reconstructs the fixed immutable/retained audit triggers from
+trusted application code. It never copies source trigger SQL or accepts arbitrary
+JSON bodies as receipts. Unknown `rkb_oauth_*` tables require explicit review.
+An authority candidate prepared before a later family migration is stale and
+must be regenerated at the final coordinated writer boundary.
 
 The existing `SQLiteCorpus` constructor creates empty content/FTS/GEO table
 shells. They contain no old documents, chunks, vectors, stories, variants, private
@@ -69,16 +76,21 @@ after independently confirmed cutover; it does not authorize deletion here.
 
 Enabling target `PersonalPolicy` correctly rejects an old access token whose
 family lacks `rkb_request_oauth_grants`. Ready reads do not create grants. The
-supported continuity path is the client's **normal OAuth refresh** against the
+normal continuity path is the client's **normal OAuth refresh** against the
 same `/token`, issuer, resource and registered client, after the reviewed target
-configuration points at the new authority database. Never ask the owner to hand
+configuration points at the new authority database. The separately reviewed
+[local existing-owner-family projection](oauth-owner-family-projection.md) can
+also restore an unchanged live access token without refresh, by projecting only
+its independently verified existing issued family. It creates no token, person
+or capability, and leaves unknown-issuer families unprojected. Never ask the owner to hand
 an agent broad credentials or clone/decrypt/rewrite cipher state for migration.
 
 `load_refresh_token` and `exchange_refresh_token` use the existing encrypted-store
 lock and current family/credential/replay validation. `_mint_family` keeps the
 original owner subject and family, and `request_grants.save` writes the exact
 issuer/client/resource and optional credential epoch to the projected database.
-Only after normal successful token rotation should the client retry the read.
+After a verified existing-family projection or normal successful token rotation,
+the client can retry the read.
 The endpoint's registered client authentication must remain unchanged; the
 installed MCP endpoint requires `client_id` in the form even for Basic clients.
 Expired, revoked or consumed refresh tokens must not be resurrected; a client

@@ -233,6 +233,9 @@ class AcceptedSourceDispatch:
         self._publications={}
         self.queue._source_commands=self
 
+    def maintenance_blocks_dispatch(self):
+        return bool(self.spool._lock.locked() or getattr(self.spool,'_native_history_unsettled',False))
+
     async def enqueue(self,context,key,*,writer_generation):
         entry=await self.spool.get(key)
         actor=await self.spool.authorize_command(context,entry.command)

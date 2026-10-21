@@ -52,6 +52,7 @@ class SearchResult:
     evidence: tuple[SearchEvidence, ...]
     incomplete: bool = True
     limitation: str = "bounded_ann_recall_unverified"
+    branch_ranks: tuple[tuple[str, ...], ...] | None = None
 
 
 def vector_literal(values: Sequence[float]) -> str:
@@ -69,6 +70,32 @@ async def fused_search(connection, query: str, *,
                        filters: QueryFilters | None = None,
                        snapshot_guard=None, snapshot_finish=None,
                        stage_timings: dict[str, float] | None = None) -> SearchResult:
+    return await _search(connection, query, encode=encode, top_k=top_k,
+        candidate_budget=candidate_budget, timeout_seconds=timeout_seconds,
+        filters=filters, snapshot_guard=snapshot_guard, snapshot_finish=snapshot_finish,
+        stage_timings=stage_timings, observe=False)
+
+
+async def acceptance_search(connection, query: str, *, encode, filters,
+                            timeout_seconds, snapshot_guard, snapshot_finish, stage_timings=None):
+    """Internal measurement only; controller fixture authorization is upstream.
+
+    Fixed source scope, candidate budget100, RRF60, HNSW settings and one encode
+    match normal source retrieval. Hydrate the entire <=30 rank union in the
+    same transaction before exposing any rank to the current output gate.
+    """
+    if (type(filters) is not QueryFilters or filters.kinds != ('source',)
+            or filters.source_ids is None or len(filters.source_ids) != 2):
+        raise ValueError('exact two-source fixture required')
+    return await _search(connection, query, encode=encode, top_k=3,
+        candidate_budget=100, timeout_seconds=timeout_seconds, filters=filters,
+        snapshot_guard=snapshot_guard, snapshot_finish=snapshot_finish,
+        stage_timings=stage_timings, observe=True)
+
+
+async def _search(connection, query, *, encode, top_k, candidate_budget,
+                  timeout_seconds, filters, snapshot_guard, snapshot_finish,
+                  stage_timings, observe):
     """Execute on an exclusively checked-out idle async psycopg connection.
 
     Encoder adapter contract: cancellation discards this consumer; the adapter
@@ -192,7 +219,11 @@ async def fused_search(connection, query: str, *,
                     for branch in (lexical, dense):
                         for rank, (passage_id, _) in enumerate(branch, 1):
                             scores[passage_id] += 1 / (60 + rank)
-                    ids = sorted(scores, key=lambda key: (-scores[key], str(key)))[:top_k]
+                    fused_ids = sorted(scores, key=lambda key: (-scores[key], str(key)))[:10 if observe else top_k]
+                    ranks = (tuple(str(row[0]) for row in dense[:10]),
+                             tuple(str(row[0]) for row in lexical[:10]),
+                             tuple(str(value) for value in fused_ids)) if observe else None
+                    ids = list(dict.fromkeys(UUID(value) for branch in ranks for value in branch)) if observe else fused_ids
                     began = loop.time()
                     if story:
                         await execute("SELECT * FROM rkb_v4.editorial_hydrate_v1(%s::uuid[],%s::uuid[])" if editorial else
@@ -203,13 +234,15 @@ async def fused_search(connection, query: str, *,
                         await execute("SELECT * FROM rkb_v4.hydrate_scoped(%s::uuid[], %s::uuid[])",
                                       (ids, source_ids))
                     rows = await cursor.fetchall()
+                    if observe and (len(rows) != len(ids) or {row[0] for row in rows} != set(ids)):
+                        raise ValueError('acceptance rank hydration incomplete')
                     if stage_timings is not None:
                         stage_timings["hydrate_ms"] = (loop.time() - began) * 1000
                     result = SearchResult(tuple(StorySearchEvidence(r[1]) if story else
                                               SearchEvidence(str(r[0]), str(r[1]), *r[2:])
                                               for r in rows if not story or r[1] is not None), limitation=(
                         "bounded_candidate_fusion_unverified" if source_ids is not None
-                        else "bounded_ann_recall_unverified"))
+                        else "bounded_ann_recall_unverified"), branch_ranks=ranks)
                     if snapshot_finish is not None:
                         await snapshot_finish(cursor, execute, result)
                     return result

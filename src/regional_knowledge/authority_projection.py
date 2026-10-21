@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import time
 from uuid import UUID
@@ -27,6 +28,7 @@ COLUMNS = {
     'rkb_participant_operations': ('actor_id', 'operation_key', 'person_id', 'request_hash', 'result'),
     'rkb_request_oauth_grants': ('id', 'person_id', 'client_id', 'resource', 'credential_id',
         'credential_epoch', 'expires_at', 'enabled', 'issuer'),
+    'rkb_oauth_owner_projection_migrations': ('plan_sha256', 'receipt_json'),
 }
 USER_COLUMNS = ('table_name', 'row_key', 'document_id', 'revision', 'payload')
 
@@ -62,6 +64,30 @@ def _validate(rows, owner):
             raise ValueError('identity observation reference missing')
         if row['used_by'] is not None and row['used_by'] not in links:
             raise ValueError('identity observation use reference missing')
+    for row in rows['rkb_oauth_owner_projection_migrations']:
+        receipt=json.loads(row['receipt_json'])
+        fields={'codec','plan_sha256','applied_at','projected_families','preserved_existing',
+            'rejected','issued_tokens','changed_participant_grants','state_or_key_modified'}
+        reasons={'non_owner_family','unknown_issued_metadata','issued_scope_or_issuer_differs',
+            'mixed_family_metadata','registered_client_unknown'}
+        if (type(receipt) is not dict or set(receipt)!=fields
+                or not re.fullmatch('[0-9a-f]{64}',row['plan_sha256'])
+                or receipt['plan_sha256']!=row['plan_sha256']
+                or receipt['codec']!='rkb.owner-issued-family-projection-receipt.v1'
+                or type(receipt['applied_at']) is not str or not 1<=len(receipt['applied_at'])<=64
+                or any(type(receipt[k]) is not int or not 0<=receipt[k]<=256
+                    for k in ('projected_families','preserved_existing'))
+                or receipt['projected_families']+receipt['preserved_existing']>256
+                or type(receipt['rejected']) is not dict or set(receipt['rejected'])-reasons
+                or any(type(v) is not int or not 0<=v<=256 for v in receipt['rejected'].values())
+                or type(receipt['issued_tokens']) is not int or receipt['issued_tokens']!=0
+                or type(receipt['changed_participant_grants']) is not int or receipt['changed_participant_grants']!=0
+                or receipt['state_or_key_modified'] is not False
+                or json.dumps(receipt,sort_keys=True,separators=(',',':'),allow_nan=False)!=row['receipt_json']):
+            raise ValueError('exact owner projection migration receipt required')
+        from datetime import datetime
+        if datetime.fromisoformat(receipt['applied_at']).tzinfo is None:
+            raise ValueError('dated owner projection migration receipt required')
 
 
 def export_authority(source: Path, destination: Path, *, owner_subject: str,
@@ -95,7 +121,7 @@ def export_authority(source: Path, destination: Path, *, owner_subject: str,
         db.set_progress_handler(lambda: int(time.monotonic() - started > 10), 1000)
         db.execute('BEGIN')
         tables = {r['name'] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        unexpected = {t for t in tables if t.startswith(('rkb_participant_', 'rkb_external_', 'rkb_identity_', 'rkb_request_'))} - set(COLUMNS)
+        unexpected = {t for t in tables if t.startswith(('rkb_participant_', 'rkb_external_', 'rkb_identity_', 'rkb_request_', 'rkb_oauth_'))} - set(COLUMNS)
         if unexpected:
             raise ValueError('unknown authority table requires explicit review')
         if 'corpus_rows' not in tables:
@@ -147,6 +173,10 @@ def export_authority(source: Path, destination: Path, *, owner_subject: str,
         PersonalPolicy(Participants(corpus, owner))
         with corpus.connect() as target:
             target.execute('BEGIN IMMEDIATE')
+            # Reconstruct only the fixed native receipt protection. Never copy
+            # source sqlite_master/trigger SQL into the candidate authority.
+            from .oauth_family_projection import owner_projection_receipt_schema
+            owner_projection_receipt_schema(target)
             for table, values in rows.items():
                 columns = USER_COLUMNS if table == 'corpus_rows' else COLUMNS[table]
                 target.executemany(f'INSERT INTO {table}({",".join(columns)}) '
