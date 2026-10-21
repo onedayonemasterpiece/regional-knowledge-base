@@ -24,7 +24,14 @@ class TestNativeVectorLiteral(unittest.TestCase):
         expected = self.original(values)
         self.assertEqual(expected, a_untouched_double(self.original, values))
         self.assertEqual(expected, b_python_single(self.original, values))
-        self.assertEqual(expected, self.native(values))
+        got = self.native(values)
+        if expected != got:
+            left, right = expected[1:-1].split(","), got[1:-1].split(",")
+            for i, (a, b) in enumerate(zip(left, right)):
+                if a != b:
+                    self.fail(f"float parity at index={i}, input={values[i]!r}, "
+                              f"Python={a!r}, Rust={b!r}")
+            self.fail(f"float parity length mismatch Python={len(left)}, Rust={len(right)}")
 
     def assert_same_error(self, values):
         with self.assertRaises(Exception) as reference:
