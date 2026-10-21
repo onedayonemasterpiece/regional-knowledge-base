@@ -24,6 +24,9 @@ def test_old_unknown_provider_slug_fences_new_launch_even_after_control_reassign
     second=next(row['id'] for row in q.maintenance()
                 if row['id']!=before and row['status']=='starting')
     assert q.launch_claim(second,provider_ref=ref) is None
+    # The legacy optional-ref API must not silently skip a *known* old ref.
+    # Absence of a new ref is uncertainty, never proof of a different owner.
+    assert q.launch_claim(second) is None
     with q.connect(write=False) as db:
         original=db.execute('select launch_state from runs where id=?',(before,)).fetchone()[0]
         replacement=db.execute('select launch_state from runs where id=?',(second,)).fetchone()[0]

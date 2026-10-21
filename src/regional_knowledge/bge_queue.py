@@ -959,9 +959,14 @@ class BgeQueue:
             control=db.execute('select current_run,successor from control where id=1').fetchone()
             for prior in db.execute("select * from runs where id!=? and launch_state in ('dispatching','dispatched')",
                                     (run_id,)).fetchall():
-                if prior['provider_ref'] not in (None,provider_ref):
+                # An omitted new provider_ref is NOT proof of a different
+                # slug. Legacy callers lacking that optional argument must
+                # never bypass a known older UNKNOWN execution.
+                if provider_ref is not None and prior['provider_ref'] not in (None,provider_ref):
                     continue
-                intentional_warm=(prior['launch_state']=='dispatched'
+                intentional_warm=(provider_ref is not None
+                    and prior['provider_ref']==provider_ref
+                    and prior['launch_state']=='dispatched'
                     and prior['status']=='ready'
                     and not self._run_expired(prior,self.clock())
                     and control['current_run']==prior['id']
