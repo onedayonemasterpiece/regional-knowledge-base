@@ -287,6 +287,38 @@ def test_geo_window_cannot_expand_ordinary_source_or_unlisted_operation_budget(e
 
 
 @pytest.mark.asyncio
+async def test_seven_command_cloud_preparation_finishes_before_short_native_lease(env):
+    p=pair(env)
+    try:
+        await p.v.establish_genesis(p.b)
+        for sequence in range(1,8):
+            command=replace(env.cmd,sequence=sequence,operation_key='cloud-prefix:'+str(sequence))
+            seal=await accept(env,cmd=command,predecessor=await env.journal.head())
+            outcome=receipt(command)
+            p.pg.receipts.append((sequence,command.operation_key,digest(command.encode()),env.registry.resolve(command).fingerprint,
+                seal.manifest.sha256,outcome.status,outcome.outcome_sha256,digest(outcome.outcome),len(outcome.outcome),
+                'db-source',digest(command.encode())))
+            await env.journal.record_outcome(seal,command=command,database_generation='db-source',
+                outcome=outcome.outcome,writer_generation='writer-1')
+        p.pg.applied_seq=7
+        original=env.journal._read;active=0;peak=0
+        async def slow_cloud(*args,**kwargs):
+            nonlocal active,peak
+            assert not p.n._sessions, 'network I/O must not retain the native history transaction'
+            active+=1;peak=max(peak,active)
+            try:
+                await asyncio.sleep(.006)
+                return await original(*args,**kwargs)
+            finally:active-=1
+        env.journal._read=slow_cloud
+        p.v.timeout_seconds=.03;p.v.cloud_prepare_seconds=.5
+        proof=await p.v.restore(p.b)
+        assert proof.current() and proof.applied_sequence==7
+        assert peak==4 and not p.n._sessions
+    finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
 async def test_history_page_timeout_drains_native_abort_before_unlock(env):
     """A timed-out PAGE cannot release writes while its native SHARE tx lives."""
     p=pair(env);p.v.timeout_seconds=.03

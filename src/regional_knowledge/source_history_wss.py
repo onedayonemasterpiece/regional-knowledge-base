@@ -42,8 +42,11 @@ class WssNativeHistoryProofAdapter:
 
 
 class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
-    def __init__(self,*args,database,observer_sha256,geo_bootstrap_operation_keys=(),**kwargs):
+    def __init__(self,*args,database,observer_sha256,geo_bootstrap_operation_keys=(),cloud_prepare_seconds=60,**kwargs):
         super().__init__(*args,**kwargs)
+        if type(cloud_prepare_seconds) not in (int,float) or not 0<cloud_prepare_seconds<=60:
+            raise ValueError('bounded cloud history preparation required')
+        self.cloud_prepare_seconds=cloud_prepare_seconds
         self.database,self.observer_hash=database,observer_sha256
         if (type(geo_bootstrap_operation_keys) is not tuple or len(geo_bootstrap_operation_keys)>256
                 or len(set(geo_bootstrap_operation_keys))!=len(geo_bootstrap_operation_keys)
@@ -126,7 +129,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
             s.invalidate_source_history();self._coverage=None;version=s._source_version
             session=None
             try:
-                async with asyncio.timeout(self.timeout_seconds):
+                async with asyncio.timeout(self.cloud_prepare_seconds) as phase_timeout:
                     if not self.binding_current(binding) or not self._routes_current() or self._registry_hash()!=self.registry_hash:
                         raise SpoolConflict('source route or handler closure changed')
                     if mode!='full' and await self._head_unchanged(previous.head):head=previous.head
@@ -161,6 +164,26 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     if len(known)>self.max_commands or len({c.operation_key for c,_,_ in known.values()})!=len(known):
                         raise SpoolConflict('source pending history bound or identity differs')
                     pending_earlier=sorted(seq for seq in known if mode!='full' and seq<=previous.applied_sequence)
+                    # Cloud ancestry and outcome bytes are prepared BEFORE a
+                    # native transaction opens. Keep at most four reads in flight
+                    # and retain the original aggregate history byte limits.
+                    checkpoint_key=self._checkpoint_key(key[3])
+                    checkpoint=await j._read(checkpoint_key,8192)
+                    remote_outcomes={};remote_bytes=0
+                    retained=list(known.values())
+                    for offset in range(0,len(retained),4):
+                        batch=retained[offset:offset+4]
+                        values=await asyncio.gather(*(j._read(j.prefix+'/outcomes/'+_hash(c.operation_key.encode()),
+                            j.max_outcome_bytes) for c,_,_ in batch),return_exceptions=True)
+                        for (c,_,_),remote in zip(batch,values):
+                            if isinstance(remote,BaseException):raise remote
+                            remote_bytes+=len(remote.data) if remote is not None else 0
+                            if remote_bytes>2*(self.max_history_bytes+GEO_BOOTSTRAP_HISTORY_BYTES):
+                                raise SpoolConflict('remote source outcome prefetch budget exceeded')
+                            remote_outcomes[c.sequence]=remote
+                    if not await self._head_unchanged(head) or s._writing or s._source_version is not version or not self.binding_current(binding):
+                        raise SpoolConflict('source prefix changed during cloud preparation')
+                    phase_timeout.reschedule(asyncio.get_running_loop().time()+self.timeout_seconds)
                     nonce=secrets.token_hex(24)
                     self.spool._native_history_unsettled=True
                     opened=await self._phase(binding,dict(action='open',mode=mode,nonce=nonce,
@@ -177,7 +200,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                                 'acl_sha256':self.acl_hash,'registry_sha256':self.registry_hash,
                                 'observer_sha256':self.observer_hash}.items())):
                         raise SpoolConflict('native source observation binding differs')
-                    checkpoint_key=self._checkpoint_key(key[3]);remote=await j._read(checkpoint_key,8192)
+                    remote=checkpoint;publish_genesis=False
                     if remote is None:
                         # Only the actual pre-attachment empty-generation intent
                         # permits first genesis, alongside empty native+remote facts.
@@ -189,8 +212,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                         if not genesis and (intent.get('database',{}).get('database_generation')!=key[3]
                                 or intent.get('database',{}).get('writer_generation')!=self.writer_generation):
                             raise SpoolConflict('empty generation intent differs')
-                        await j._fenced_exact(checkpoint_key,self._checkpoint(key[3]),expected_token=None,
-                            writer_generation=self.writer_generation)
+                        publish_genesis=True
                     else:self._verify_genesis(remote.data,key[3])
                     expected=set(range(1,applied+1)) if mode=='full' else set(range(previous.applied_sequence+1,applied+1))|set(pending_earlier)
                     if mode=='renew':expected=set()
@@ -221,7 +243,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     for c,h,m in known.values():
                         outcome=observations.get(c.sequence);durable=False
                         if outcome is not None:
-                            remote=await j._read(j.prefix+'/outcomes/'+_hash(c.operation_key.encode()),j.max_outcome_bytes)
+                            remote=remote_outcomes[c.sequence]
                             if remote is not None:
                                 value=json.loads(remote.data)
                                 try:body=base64.b64decode(value['outcome_b64'],validate=True)
@@ -239,17 +261,23 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                         changes[source]=SourceChange(source,c.sequence,_hash(c.encode()),bool(h.dependency.restriction or old and old.restriction),
                             bool(not durable or old and old.pending),False)
                     if mode=='renew':pending=list(previous.pending)
-                    if not await self._head_unchanged(head) or s._writing or s._source_version is not version or not self.binding_current(binding):
+                    if s._writing or s._source_version is not version or not self.binding_current(binding):
                         raise SpoolConflict('source prefix changed during native verification')
                     closed=await self._phase(binding,dict(action='close',session=session,nonce=nonce,
                         origin_ids=sorted(set(origins))))
                     if (closed.get('nonce')!=nonce or closed.get('applied_sequence')!=applied
                             or type(closed.get('prefix')) is not str or not 1<=len(closed['prefix'])<=256
-                            or not await self._head_unchanged(head) or s._writing or s._source_version is not version
+                            or s._writing or s._source_version is not version
                             or not self.binding_current(binding)):
                         raise SpoolConflict('native source completion changed')
                     session=None
                     self.spool._native_history_unsettled=False
+                    phase_timeout.reschedule(asyncio.get_running_loop().time()+self.cloud_prepare_seconds)
+                    if publish_genesis:
+                        await j._fenced_exact(checkpoint_key,self._checkpoint(key[3]),expected_token=None,
+                            writer_generation=self.writer_generation)
+                    if not await self._head_unchanged(head) or s._writing or s._source_version is not version or not self.binding_current(binding):
+                        raise SpoolConflict('source prefix changed at native completion')
                     if mode=='full':await s._write(s._replace_source_heads,tuple(changes.values()))
                     elif changes:await s._write(self._merge_source_heads,tuple(changes.values()))
                     from .case_history import project_cases
