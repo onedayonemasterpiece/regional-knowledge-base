@@ -388,3 +388,25 @@ async def test_owner_revoked_after_remote_case_save_before_cursor_update_recover
     recovered = await adapter.apply(ACTOR, key)
     assert recovered["step_index"] == 1 and recovered["case_id"] == CASE
     assert len(cases.effects) == 1, "identical operation_key reconciles, never creates a second Case"
+
+
+@pytest.mark.asyncio
+async def test_needs_context_persists_gap_without_completing_cross_book_or_calling_case(environment):
+    a, b, _, authority, sources, store, cases, adapter = environment
+    original = comparison(a, b, action="none", key="pending-source-gap")
+    pending = original.model_copy(update={"decision": "needs_context"})
+    staged = await adapter.stage(ACTOR, pending)
+    assert staged["status"] == "needs_context"
+    operation = staged["operation_key"]
+    after_apply = await adapter.apply(ACTOR, operation)
+    assert after_apply["status"] == "needs_context"
+    assert after_apply["reason"] == "model_requires_additional_source_context"
+    assert not store.rows[(ACTOR, operation)].done
+    assert not store.rows[(ACTOR, operation)].attempted
+    assert cases.effects == {}
+    fresh = TargetStoryReconcile(sources=sources, authority=authority, store=store, cases=cases)
+    assert (await fresh.status(ACTOR, operation))["status"] == "needs_context"
+    # New model evidence is a new proposal; original pending gap is immutable.
+    new = comparison(a, b, key="resumed-with-exact-evidence", action="create")
+    later = await fresh.stage(ACTOR, new)
+    assert later["status"] == "staged" and later["operation_key"] != operation
