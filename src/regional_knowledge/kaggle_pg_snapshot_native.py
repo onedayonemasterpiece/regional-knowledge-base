@@ -364,6 +364,47 @@ class NativeSnapshotFactory:
                 'inventory_sha256':inventory,'backup_manifest_sha256':digest_file(root/'base/backup_manifest',self.limits.max_unpacked_bytes)[1],
                 'native_tools':{name:asdict(getattr(self.tools,name)) for name in ('pg_basebackup','pg_verifybackup','postgres')}}
 
+    async def prepare_dataset_base(self, binding, *, operation_key, pin,
+                                   observed_dataset_ref, observed_dataset_version,
+                                   observed_notebook_version, observed_run_id,
+                                   expected_versions, workspace,
+                                   mount_root=Path('/kaggle/input')):
+        """Converge a version-attested Kaggle Dataset on the SAME native PG path.
+
+        This is callable only by the trusted already-attached restore owner.
+        The provider attestation must originate independently of the pin; a
+        dataset mount slug alone is NOT sufficient. No version evidence means
+        no filesystem read or PostgreSQL process side effects.
+        """
+        from .kaggle_dataset_base import DatasetBasePin, verify_mounted_dataset_base
+        self._current(binding)
+        self._versions(expected_versions)
+        if (type(pin) is not DatasetBasePin or pin.run_id != self.identity[0]
+                or pin.database_generation != self.database.database_generation
+                or observed_run_id != self.identity[0]):
+            raise SnapshotError('dataset_restore_runtime_binding')
+        verified=await _blocking(verify_mounted_dataset_base,pin,
+            observed_dataset_ref=observed_dataset_ref,
+            observed_dataset_version=observed_dataset_version,
+            observed_notebook_version=observed_notebook_version,
+            observed_run_id=observed_run_id,mount_root=mount_root)
+        try:
+            manifest=json.loads(verified.manifest_bytes)
+            if manifest['versions']!=expected_versions:
+                raise SnapshotError('dataset_restore_versions_mismatch')
+        except (ValueError,TypeError,KeyError):
+            raise SnapshotError('dataset_restore_versions_mismatch') from None
+        # Existing prepare() supplies UNKNOWN operation fencing and native
+        # pg_verifybackup/PG17+pgvector/system ID/accepted-prefix validation.
+        # It independently rehashes the archive bytes from this mounted path.
+        return await self.prepare(binding,operation_key=operation_key,
+            manifest_bytes=verified.manifest_bytes,
+            expected_manifest_sha256=pin.manifest.sha256,
+            archive_path=verified.archive_path,
+            control_bytes=verified.control_bytes,
+            expected_versions=expected_versions,
+            workspace=workspace)
+
     async def prepare(self,binding,*,operation_key,**arguments):
         """A lost prepare ACK never authorizes creating a second candidate."""
         self._current(binding)

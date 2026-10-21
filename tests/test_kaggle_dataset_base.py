@@ -30,7 +30,8 @@ def fixture(tmp_path, *, database_generation='source-db', sequence=0):
         database_generation=database_generation,writer_generation='old-writer',
         applied_sequence=sequence,journal_head=None,
         versions=dict(catalog_sha256='a'*64,server_version_num=170011,
-            pgvector_version='0.8.2'),source_control=dict(
+            pgvector_version='0.8.2',model_sha256='d'*64,tokenizer_sha256='e'*64,
+            schema_revision='s1',function_revision='f1',executor_revision='e1'),source_control=dict(
                 sha256=control_sha,length=len(control),key='rkb/base-control'),
         blob=dict(key='rkb/snapshots/blobs/blob',size=len(archive),sha256=ar_sha,
                   native_version='fixture-blob-version')))
@@ -52,6 +53,73 @@ def verify(mount,pin,**updates):
             observed_run_id=pin.run_id,mount_root=mount)
     kw.update(updates)
     return verify_mounted_dataset_base(pin,**kw)
+
+
+
+
+@pytest.mark.asyncio
+async def test_dataset_attestation_flows_into_existing_native_pg_prepare(tmp_path):
+    """Same native factory path receives exact verified bytes, not a PG clone."""
+    from types import SimpleNamespace
+    from regional_knowledge.kaggle_pg_snapshot_native import NativeSnapshotFactory,SnapshotLimits
+    mount,root,pin=fixture(tmp_path)
+    checked=verify(mount,pin)
+    versions=json.loads(checked.manifest_bytes)['versions']
+    calls=[]
+    factory=object.__new__(NativeSnapshotFactory)
+    factory.current=lambda binding: binding==('run-identity','incarnation',3)
+    factory.database=SimpleNamespace(database_generation='source-db')
+    factory.identity=('run-identity','nonce','incarnation')
+    factory.model_pins={'model_sha256':'d'*64,'tokenizer_sha256':'e'*64}
+    factory.limits=SnapshotLimits(timeout_seconds=5)
+    async def native_prepare(binding,*,operation_key,**kwargs):
+        calls.append((binding,operation_key,kwargs))
+        return 'NATIVE_PREPARE_SEAM_ONLY'
+    factory.prepare=native_prepare
+
+    params=dict(operation_key='dataset-base-restore-1',pin=pin,
+        observed_dataset_ref=pin.ref,observed_dataset_version=pin.dataset_version,
+        observed_notebook_version=pin.notebook_version,observed_run_id=pin.run_id,
+        expected_versions=versions,workspace='/private-native-existing',
+        mount_root=mount)
+    binding=('run-identity','incarnation',3)
+    result=await factory.prepare_dataset_base(binding,**params)
+    assert result=='NATIVE_PREPARE_SEAM_ONLY' and len(calls)==1
+    actual,operation,arguments=calls[0]
+    assert actual==binding and operation=='dataset-base-restore-1'
+    assert arguments['archive_path']==root/'postgres.tar'
+    assert arguments['manifest_bytes']==checked.manifest_bytes
+    assert arguments['control_bytes']==checked.control_bytes
+    assert arguments['expected_manifest_sha256']==pin.manifest.sha256
+    assert arguments['expected_versions']==versions
+    assert arguments['workspace']=='/private-native-existing'
+
+    calls.clear()
+    from regional_knowledge.kaggle_dataset_base import DatasetBaseUnavailable
+    with pytest.raises(DatasetBaseUnavailable,match='dataset_version_or_run_unverified'):
+        await factory.prepare_dataset_base(binding,**dict(params,observed_dataset_version=20))
+    with pytest.raises(DatasetBaseUnavailable,match='dataset_version_or_run_unverified'):
+        await factory.prepare_dataset_base(binding,**dict(params,observed_notebook_version=None))
+    assert calls==[], 'native PostgreSQL prepare must not start after invalid mount proof'
+
+    from regional_knowledge.kaggle_pg_snapshot_native import SnapshotError
+    with pytest.raises(SnapshotError,match='resident_model_tokenizer_changed'):
+        await factory.prepare_dataset_base(binding,**dict(params,
+            expected_versions=dict(versions,model_sha256='f'*64)))
+    assert calls==[]
+
+
+def test_generated_target_source_inventory_contains_dataset_verifier():
+    from regional_knowledge.kaggle_target_launch import MODULES,source_bundle
+    import base64
+    root=Path(__file__).resolve().parents[1]
+    assert 'kaggle_dataset_base' in MODULES
+    _,files,entries=source_bundle(root)
+    path='regional_knowledge/kaggle_dataset_base.py'
+    data=base64.b64decode(files[path],validate=True)
+    assert data==(root/'src'/path).read_bytes()
+    assert any(e['name'].endswith(path) and e['sha256']==hashlib.sha256(data).hexdigest()
+               for e in entries)
 
 
 def test_exact_dataset_version_and_three_files_readback(tmp_path):
