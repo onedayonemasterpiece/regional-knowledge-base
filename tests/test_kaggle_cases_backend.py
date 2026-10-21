@@ -386,8 +386,18 @@ async def test_collected_operation_status_reopens_queue_and_proves_remote_saved_
         assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]==0
         assert db.execute('SELECT count(*) FROM rkb_control_receipts').fetchone()[0]==1
         assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
-    with pytest.raises(Exception,match='case_id_required_after_control_retention'):
-        await value.disagreement_edit('operation_status',c.operation_key,principal)
+    # The owner/client never saw case_id when the create response was lost.
+    # The actual raw control operation has been collected: recovery must use
+    # the same native PG outcome and the compact durable receipt, not the spool.
+    with capture_read_output() as calls:
+        recovered_without_id=await value.disagreement_edit('operation_status',c.operation_key,principal)
+        assert recovered_without_id==recovered
+        assert recovered_without_id['result']['case_id']==c.ids['case_id']
+        assert len(calls)==1
+        calls[0].release()
+    with env.q.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]==0
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
 
 
 @pytest.mark.asyncio
@@ -420,6 +430,85 @@ async def test_collected_operation_recovery_never_infers_saved_from_unknown_or_w
         assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]==0
 
 
+def test_collected_noncreate_retry_compares_cas_revision_and_draft_id_before_replay():
+    # These envelopes are immutable accepted commands from the same native
+    # constructors used for PG apply; the raw control row has been collected.
+    # A matching payload does not excuse mismatched expected CAS versions/IDs.
+    from uuid import UUID
+    from regional_knowledge.disagreement_contracts import CaseRevise,PersonalDraft
+    from test_disagreement_native import command as case_command,CASE,OBJECT
+    revise=CaseRevise(question='Which date is correct?',context='Exact original context.',
+        classification='candidate discrepancy',rationale='Synthetic reason.',reason='Review date.')
+    historical=case_command('revise',revise,case_revision=1)
+    key=historical.operation_key
+    check=KaggleCasesBackend._verify_collected_retry
+    check(historical,key,'revise',revise,CASE,OBJECT,1,0)
+    with pytest.raises(Exception,match='operation_key_conflict'):
+        check(historical,key,'revise',revise,CASE,OBJECT,2,0)
+    with pytest.raises(Exception,match='operation_key_conflict'):
+        check(historical,key,'revise',revise,CASE,'00000000-0000-0000-0000-000000000099',1,0)
+    draft=PersonalDraft(text='Original private source-based argument.',based_on_seq=1,
+        evidence_ids=[],position_ids=[])
+    saved=case_command('draft_save',draft,object_version=1)
+    key=saved.operation_key
+    check(saved,key,'draft_save',draft,CASE,OBJECT,0,1)
+    with pytest.raises(Exception,match='operation_key_conflict'):
+        check(saved,key,'draft_save',draft,CASE,'00000000-0000-0000-0000-000000000099',0,1)
+    with pytest.raises(Exception,match='operation_key_conflict'):
+        check(saved,key,'draft_save',draft,CASE,OBJECT,0,2)
+    assert UUID(CASE) != UUID(OBJECT)  # Explicitly distinct case and private draft identities.
+
+
+@pytest.mark.asyncio
+async def test_repeat_create_after_raw_gc_returns_exact_saved_case_without_new_effect(env,auth,monkeypatch):
+    # The caller retries the original CREATE because the first response was lost.
+    # The raw operation has really been deleted, leaving only compact receipt,
+    # sealed remote command/outcome and native PG receipt.
+    value,principal,c,native=await collected_operation(env,auth,monkeypatch)
+    before=env.store.version
+    with capture_read_output() as calls:
+        recovered=await value.disagreement_edit('create','collected-create',principal,command=create())
+        assert recovered['status']=='saved' and recovered['saved']
+        assert recovered['result']==native['result']
+        assert recovered['case_id']==c.ids['case_id']
+        assert len(calls)==1
+        calls[0].release()
+    assert env.store.version==before  # No second remote intent/outcome write.
+    with env.q.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]==0
+        assert db.execute('SELECT count(*) FROM rkb_control_receipts').fetchone()[0]==1
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+    # Reusing the same idempotency key with different model-authored input
+    # must not return the prior success as though it were the new request.
+    mismatched=create().model_copy(update={'question':'Different synthetic event?'})
+    with capture_read_output() as calls:
+        with pytest.raises(Exception,match='operation_key_conflict'):
+            await value.disagreement_edit('create','collected-create',principal,command=mismatched)
+        assert not calls
+    assert env.store.version==before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fault',['native_only','missing_remote','wrong_key'])
+async def test_collected_create_without_case_id_never_infers_saved_from_unproven_outcome(env,auth,monkeypatch,fault):
+    import hashlib
+    value,principal,c,_=await collected_operation(env,auth,monkeypatch,remote=fault!='native_only')
+    key=c.operation_key
+    if fault=='missing_remote':
+        remote_key=env.journal.prefix+'/outcomes/'+hashlib.sha256(key.encode()).hexdigest()
+        del env.store.objects[remote_key]
+    if fault=='wrong_key':key='not-the-original-create-operation'
+    before=env.store.version
+    with capture_read_output() as calls:
+        with pytest.raises(Exception):
+            await value.disagreement_edit('operation_status',key,principal)
+        assert not calls
+    assert env.store.version==before
+    with env.q.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]==0
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+
+
 @pytest.mark.asyncio
 async def test_collected_receipt_is_not_recoverable_by_global_owner_as_other_actor(env,auth,monkeypatch):
     from test_read_authority import issue
@@ -430,6 +519,10 @@ async def test_collected_receipt_is_not_recoverable_by_global_owner_as_other_act
         with pytest.raises(Exception,match='access_denied'):
             await value.disagreement_edit('operation_status',c.operation_key,
                 SimpleNamespace(access_token=owner_tokens.access_token),case_id=c.ids['case_id'])
+        # Omitting case_id must not turn a global owner into the actual creator.
+        with pytest.raises(Exception,match='access_denied'):
+            await value.disagreement_edit('operation_status',c.operation_key,
+                SimpleNamespace(access_token=owner_tokens.access_token))
         assert not calls
     assert env.store.version==version
 
