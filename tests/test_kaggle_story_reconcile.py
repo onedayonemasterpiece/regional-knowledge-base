@@ -410,3 +410,30 @@ async def test_needs_context_persists_gap_without_completing_cross_book_or_calli
     new = comparison(a, b, key="resumed-with-exact-evidence", action="create")
     later = await fresh.stage(ACTOR, new)
     assert later["status"] == "staged" and later["operation_key"] != operation
+
+
+@pytest.mark.parametrize("case_status", ["revoked", "unproved"])
+@pytest.mark.asyncio
+async def test_completed_case_receipt_is_rechecked_after_later_case_permission_change(environment, case_status):
+    a, b, _, authority, sources, store, cases, adapter = environment
+    operation = (await adapter.stage(ACTOR, comparison(a, b)))["operation_key"]
+    for _ in range(3):
+        outcome = await adapter.apply(ACTOR, operation)
+    assert outcome["status"] == "completed" and outcome["case_id"] == CASE
+    effects_before = len(cases.effects)
+    original = cases.disagreement_edit
+
+    async def case_revoked_or_unproved(action, key, principal, **kwargs):
+        if action == "operation_status":
+            if case_status == "revoked":
+                raise PermissionError("current Case scope revoked")
+            return {"status": "pending", "saved": False}
+        return await original(action, key, principal, **kwargs)
+
+    cases.disagreement_edit = case_revoked_or_unproved
+    error = PermissionError if case_status == "revoked" else ReconcileError
+    with pytest.raises(error):
+        await adapter.status(ACTOR, operation)
+    with pytest.raises(error):
+        await adapter.apply(ACTOR, operation)
+    assert len(cases.effects) == effects_before, "no Case write or new receipt on repeat"
