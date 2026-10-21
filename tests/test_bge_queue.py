@@ -73,6 +73,61 @@ def test_worker_diagnostics_do_not_preserve_arbitrary_private_fields(tmp_path):
     with queue.connect() as db:
         assert json.loads(db.execute('select diagnostics from runs where id=?',(run,)).fetchone()[0])=={'rss_kib':1024}
 
+
+def test_legacy_document_demand_without_startup_ref_cannot_retry_forever(tmp_path):
+    """Source regression for observed active controller not_sent ValueErrors."""
+    from regional_knowledge.bge_queue import MAX_STARTUP_FAILURES
+    now=[1000.]
+    queue=BgeQueue(tmp_path/'legacy-controller.sqlite',clock=lambda:now[0])
+    job=queue.enqueue('indexer','owned-document',['synthetic passage'],kind='document')
+    with queue.connect(write=False) as db:
+        assert tuple(db.execute('select startup_ref,startup_state from control where id=1').fetchone())==(None,None)
+    run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
+    for index in range(MAX_STARTUP_FAILURES):
+        assert queue.launch_claim(run,provider_ref='owner/stable-slug') is not None
+        queue.launch_record(run,'owner/stable-slug',failed=True)  # exact known NOT SENT
+        queue.launch_record(run,'owner/stable-slug',failed=True)  # replay is inert
+        with queue.connect(write=False) as db:
+            control=db.execute('select startup_ref,startup_state,startup_failures from control where id=1').fetchone()
+        assert control['startup_failures']==index+1
+        assert control['startup_ref'] is None
+        if index<MAX_STARTUP_FAILURES-1:
+            assert control['startup_state'] is None
+            now[0]+=61
+            ready=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
+            assert ready!=run
+            run=ready
+        else:
+            assert control['startup_state']=='blocked'
+    assert queue.status()['state']=='blocked'
+    assert queue.result('indexer',job)['state']=='pending'
+    queue.enqueue('indexer','second',['another safe passage'],kind='document')
+    now[0]+=600
+    assert len(queue.maintenance())==MAX_STARTUP_FAILURES
+    assert not any(x['status']=='starting' for x in queue.maintenance())
+
+
+def test_authorized_cold_search_cannot_reset_legacy_failure_budget(tmp_path):
+    from regional_knowledge.bge_queue import MAX_STARTUP_FAILURES
+    now=[1000.]
+    queue=BgeQueue(tmp_path/'legacy-search.sqlite',clock=lambda:now[0])
+    queue.enqueue('indexer','owned-document',['synthetic passage'],kind='document')
+    run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
+    for _ in range(MAX_STARTUP_FAILURES-1):
+        assert queue.launch_claim(run,provider_ref='owner/stable-slug') is not None
+        queue.launch_record(run,'owner/stable-slug',failed=True)
+        now[0]+=61
+        run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
+    first=queue.request_startup()
+    assert first['status']=='pending' and first['startup_ref']
+    with queue.connect(write=False) as db:
+        assert db.execute('select startup_failures from control where id=1').fetchone()[0]==MAX_STARTUP_FAILURES-1
+    queue.launch_claim(run,provider_ref='owner/stable-slug')
+    queue.launch_record(run,'owner/stable-slug',failed=True)
+    assert queue.request_startup()['status']=='unavailable'
+    assert queue.startup_status(first['startup_ref'])['reason']=='startup_retry_exhausted'
+
+
 def test_startup_failure_cooldown_preserves_jobs_and_does_not_relaunch_ambiguously(tmp_path):
     now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
     job=queue.enqueue('actor','one',['query']);run,token=run_details(queue)
