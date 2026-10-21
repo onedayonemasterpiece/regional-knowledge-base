@@ -253,6 +253,7 @@ class ExecuteQueryBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 self.query = "synthetic"
                 self.deadline_ms = 2000
                 self.min_data_seq = 0
+                self.evidence_limit = 3
                 self.filters = SimpleNamespace(kinds=None, source_ids=None)
 
         class PinnedTokenizer:
