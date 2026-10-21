@@ -344,3 +344,47 @@ async def test_case_pending_is_not_saved_and_status_is_read_only(environment):
     assert read["case_receipt_verified"] is False
     assert read["step_index"] == 0 and store.rows[(ACTOR, operation)].step_index == 0
     assert pending.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_canonical_json_input_parses_uuid_but_rejects_coerced_revisions(environment):
+    from pydantic import ValidationError
+
+    a, b, _, authority, sources, store, cases, adapter = environment
+    model = comparison(a, b)
+    # The public MCP receives decoded JSON objects, not Python UUID instances.
+    wire = model.model_dump(mode="json")
+    typed = Comparison.model_validate(wire)
+    assert typed.model_dump(mode="json") == wire
+    assert (await adapter.stage(ACTOR, typed))["status"] == "staged"
+    wire["anchor"]["source_revision"] = "1"
+    with pytest.raises(ValidationError):
+        Comparison.model_validate(wire)
+    wire["anchor"]["source_revision"] = 1
+    wire["extra_authority"] = ACTOR
+    with pytest.raises(ValidationError):
+        Comparison.model_validate(wire)
+
+
+@pytest.mark.asyncio
+async def test_owner_revoked_after_remote_case_save_before_cursor_update_recovers_same_effect(environment):
+    a, b, _, authority, sources, store, cases, adapter = environment
+    key = (await adapter.stage(ACTOR, comparison(a, b)))["operation_key"]
+    original = cases.disagreement_edit
+
+    async def save_then_revoke(action, operation_key, principal, **kwargs):
+        result = await original(action, operation_key, principal, **kwargs)
+        if action == "create":
+            authority.revoked = True
+        return result
+
+    cases.disagreement_edit = save_then_revoke
+    with pytest.raises(PermissionError):
+        await adapter.apply(ACTOR, key)
+    assert store.rows[(ACTOR, key)].step_index == 0
+    assert len(cases.effects) == 1, "Case effect happened but did not bypass current access"
+    authority.revoked = False
+    cases.disagreement_edit = original
+    recovered = await adapter.apply(ACTOR, key)
+    assert recovered["step_index"] == 1 and recovered["case_id"] == CASE
+    assert len(cases.effects) == 1, "identical operation_key reconciles, never creates a second Case"
