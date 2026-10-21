@@ -104,6 +104,7 @@ def assemble_model_manifest(*, original, graph, metadata, passage_inputs):
             embedding_input_sha256=row['embedding_input_sha256'],
             input_tokens=row['input_tokens'],
             page_ids=chunk['page_ids'], region_ids=chunk['region_ids'],
+            footnote_region_ids=chunk['footnote_region_ids'],
             source_spans=chunk['source_spans'],
             illustration_ids=chunk['illustration_ids'],
         ))

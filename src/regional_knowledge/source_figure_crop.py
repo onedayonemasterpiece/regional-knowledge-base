@@ -14,7 +14,7 @@ from hashlib import sha256
 from io import BytesIO
 import math
 
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, UnidentifiedImageError
 
 DEFAULT_MAX_SOURCE_PIXELS = 12_000_000
 DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024
@@ -70,11 +70,13 @@ def crop_verified_source_figure(
                 raise ValueError('source rendition exceeds figure budget')
             if page.format not in ('JPEG','PNG','WEBP'):
                 raise ValueError('source rendition image format unsupported')
-            image = ImageOps.exif_transpose(page).convert('RGB')
-            # Rotation in the page EXIF should be normalized before coordinate
-            # binding upstream; an unexpected EXIF flip is not authorized here.
-            if image.size != (width, height):
-                raise ValueError('source rendition orientation mismatch')
+            # bbox is in reviewed source pixel coordinates. EXIF 2/3/4
+            # changes pixel orientation without changing image dimensions;
+            # this codec must not silently normalize it after verification.
+            # A new reviewed-frame receipt must be created upstream instead.
+            if page.getexif().get(274, 1) != 1:
+                raise ValueError('source rendition EXIF orientation requires upstream normalization')
+            image = page.convert('RGB')
             bounds = (
                 math.floor(bbox['left'] * width / 1000),
                 math.floor(bbox['top'] * height / 1000),

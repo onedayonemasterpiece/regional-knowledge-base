@@ -106,13 +106,17 @@ def build_model_source_provenance(*, receipt, graph):
             captions.append(str(ref))
         if figure.visual_description is not None and figure.visual_description_provenance != 'model_observation':
             raise ValueError('visual description is not printed source text')
+        rotation = getattr(figure, 'display_rotation_degrees', 0)
+        if type(rotation) is not int or rotation not in (0, 90, 180, 270):
+            raise ValueError('invalid original-linked figure presentation rotation')
         figures[iid] = dict(illustration_id=iid, page_id=page_id,
                             source_region_id=str(figure.source_region_id),
                             caption_region_ids=captions,
                             visual_description=figure.visual_description,
                             visual_description_provenance=('model_observation'
                                 if figure.visual_description is not None else None),
-                            bbox=src['bbox'])
+                            bbox=src['bbox'],
+                            display_rotation_degrees=rotation)
     chunks = {}
     page_index = {str(p.page_id): p.physical_page_index for p in graph.pages}
     for chunk in graph.chunks:
@@ -124,8 +128,11 @@ def build_model_source_provenance(*, receipt, graph):
         iids = [str(i) for i in chunk.illustration_ids]
         if (not pids or not rids or any(p not in page_map for p in pids)
                 or any(r not in regions or regions[r]['page_id'] not in pids for r in rids)
-                or any(i not in figures for i in iids)
-                or not chunk.text.strip()):
+                or any(i not in figures or figures[i]['page_id'] not in pids for i in iids)
+                # A figure-only page has no printed text. Use exact labelled
+                # model description/caption as indexed material, not invented
+                # transcription; material() still rejects fully empty input.
+                or (not chunk.text.strip() and not iids)):
             raise ValueError('chunk must bind reviewed source regions and linked figures')
         spans=[]
         reconstructed=[]
@@ -141,8 +148,11 @@ def build_model_source_provenance(*, receipt, graph):
         if not spans:
             reconstructed = [regions[r]['source_text'].strip() for r in rids
                              if regions[r]['source_text'].strip()]
-        for footnote_id in getattr(chunk, 'footnote_region_ids', []):
-            footnote = regions.get(str(footnote_id))
+        footnote_ids = [str(fid) for fid in getattr(chunk, 'footnote_region_ids', [])]
+        if len(footnote_ids) != len(set(footnote_ids)) or set(footnote_ids).intersection(rids):
+            raise ValueError('chunk footnote references must be unique and separate')
+        for footnote_id in footnote_ids:
+            footnote = regions.get(footnote_id)
             if (footnote is None or footnote['kind'] != 'footnote'
                     or footnote['page_id'] not in pids):
                 raise ValueError('chunk footnote must bind reviewed source')
@@ -150,7 +160,8 @@ def build_model_source_provenance(*, receipt, graph):
         if '\n'.join(reconstructed).strip() != chunk.text.strip():
             raise ValueError('chunk text differs from model-reviewed source spans')
         chunks[key] = dict(chunk_id=key, page_ids=pids,
-                           region_ids=rids, illustration_ids=iids,source_spans=spans,
+                           region_ids=rids, footnote_region_ids=footnote_ids,
+                           illustration_ids=iids, source_spans=spans,
                            source_body_sha256=_sha(chunk.text.encode()))
     ordered_chunks=sorted(chunks.values(), key=lambda v:(
         min(page_index[p] for p in v['page_ids']), v['chunk_id']))
