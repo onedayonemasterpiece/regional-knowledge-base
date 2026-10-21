@@ -188,11 +188,18 @@ def reconcile_provider_history(api, queue, *, limit=2, current_only=False):
 
 
 def require_writer_binding(queue, run_id, writer_generation):
-    """Known not-sent refusal unless the restore writer belongs to this run."""
+    """Known not-sent refusal when the target writer was already used by another run.
+
+    The service moves rkb_writer_control to the new run only after its attach
+    (begin_restore), so before push it still names the previous run. A fresh
+    restore target therefore carries a writer generation nobody has used yet;
+    one recorded for another run can never begin recovery on this run.
+    """
     with queue.connect(write=False) as db:
-        row=db.execute('SELECT run_id,writer_generation FROM rkb_writer_control WHERE id=1').fetchone()
-    if row is None or tuple(row)!=(run_id,writer_generation):
-        raise ValueError('restore writer binding belongs to another run')
+        used=db.execute('SELECT 1 FROM rkb_writer_generations WHERE writer_generation=? AND run_id!=?',
+            (writer_generation,run_id)).fetchone()
+    if used is not None:
+        raise ValueError('restore writer generation belongs to another run')
 
 
 def target_sql_hashes(target, repository):
@@ -292,8 +299,8 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                     if target_spec is not None and target_spec.database.mode=='VERIFIED_INITIALIZED':
                         # A restore target pins one writer generation minted for
                         # one run. A successor created by later demand (reboot,
-                        # retire) cannot adopt it, so pushing would only burn a
-                        # Kaggle session that waits for an impossible restore.
+                        # retire) cannot adopt a generation already used by that
+                        # run; pushing would only burn a Kaggle session.
                         preparation_step='verify_writer_binding'
                         require_writer_binding(queue,run_id,target_spec.database.writer_generation)
                     preparation_step='compose_notebook_source'
