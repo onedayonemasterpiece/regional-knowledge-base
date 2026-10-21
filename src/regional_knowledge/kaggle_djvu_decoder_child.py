@@ -14,17 +14,20 @@ import sys
 
 
 def main(argv: list[str]) -> None:
-    if len(argv)!=5:
+    if len(argv)!=7:
         raise SystemExit(2)
-    executable,original,index_text,edge_text=argv[1:]
+    loader,executable,original,index_text,edge_text,library_path=argv[1:]
     try:
         index=int(index_text)
         edge=int(edge_text)
     except ValueError:
         raise SystemExit(2) from None
-    if (not os.path.isabs(executable) or not os.path.isabs(original)
-            or not Path(executable).name=='ddjvu'
-            or not 0<=index<2500 or edge not in (1600,1280)):
+    libdirs=library_path.split(':')
+    if (not os.path.isabs(loader) or Path(loader).name!='ld-linux-x86-64.so.2'
+            or not os.path.isabs(executable) or Path(executable).name!='ddjvu'
+            or not os.path.isabs(original) or not 0<=index<2500
+            or edge not in (1600,1280) or not 1<=len(libdirs)<=6
+            or any(not os.path.isabs(p) or '..' in Path(p).parts for p in libdirs)):
         raise SystemExit(2)
     # Soft and hard ceilings survive execve: the native decoder cannot bypass
     # the trusted parent simply by allocating or forking. Never allow core dumps
@@ -36,9 +39,13 @@ def main(argv: list[str]) -> None:
     resource.setrlimit(resource.RLIMIT_CORE,(0,0))
     env={key:value for key,value in os.environ.items()
          if key in ('PATH','LANG','LC_ALL','LD_LIBRARY_PATH')}
-    args=(executable,'-format=ppm',f'-page={index+1}',
+    env['LD_LIBRARY_PATH']=library_path
+    # Invoke the hashed loader itself with an explicit hashed-library search
+    # path and no ambient ld.so.cache; the parent has walked DT_NEEDED.
+    args=(loader,'--inhibit-cache','--library-path',library_path,
+          executable,'-format=ppm',f'-page={index+1}',
           f'-size={edge}x{edge}',original,'-')
-    os.execve(executable,args,env)
+    os.execve(loader,args,env)
 
 
 if __name__=='__main__':

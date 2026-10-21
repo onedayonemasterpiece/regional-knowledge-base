@@ -24,7 +24,7 @@ def archive(tmp_path,monkeypatch):
 
 
 @pytest.fixture
-def bundle(native_fixture):
+def bundle(native_fixture,monkeypatch):
     executable=b"""#!/usr/bin/python3
 import sys
 args=sys.argv[1:]
@@ -35,18 +35,44 @@ if page not in (1,2):sys.exit(4)
 color=bytes([240,0,0] if page==1 else [0,0,240])
 sys.stdout.buffer.write(b"P6\\n2 2\\n255\\n"+color*4)
 """+b"\n# "+b"x"*1500+b"\n"
+    # A SCRIPT fake loader tests stdout/selected-page plumbing only.
+    # The independent synthetic-ELF suite exercises the *real* closure
+    # verifier; no fake script is accepted as verified DjVuLibre.
+    loader=b"""#!/usr/bin/python3
+import os,sys
+arguments=sys.argv[1:]
+if len(arguments)!=9 or arguments[:2]!=["--inhibit-cache","--library-path"]:
+    sys.exit(5)
+os.execv(arguments[3],arguments[3:])
+"""+b"\n# "+b"x"*256+b"\n"
     lib=b"pinned synthetic library"*100
     value=native_fixture(
         entries=[("usr/bin/ddjvu","file",executable),
+                 ("usr/bin/ld-linux-x86-64.so.2","file",loader),
                  ("usr/lib/x86_64-linux-gnu/libdjvulibre.so.21","file",lib)],
         files=[
             dict(path="usr/bin/ddjvu",size=len(executable),sha256=sha256(executable).hexdigest(),
                  package="fixture",member="usr/bin/ddjvu",executable=True),
+            dict(path="usr/bin/ld-linux-x86-64.so.2",size=len(loader),sha256=sha256(loader).hexdigest(),
+                 package="fixture",member="usr/bin/ld-linux-x86-64.so.2",executable=True),
             dict(path="usr/lib/x86_64-linux-gnu/libdjvulibre.so.21",size=len(lib),
                  sha256=sha256(lib).hexdigest(),package="fixture",
                  member="usr/lib/x86_64-linux-gnu/libdjvulibre.so.21",executable=False),
         ])
-    return prepare(value)
+    cap=prepare(value)
+    real=pixels._verified_decoder
+    def synthetic_proof(candidate):
+        # Explicitly fake ONLY closure verification for this subprocess/PPM
+        # test. The trusted positive ELF fixtures live in test_kaggle_djvu_elf.
+        if candidate is cap and cap.current():
+            prefix=cap.prefix
+            libs=str(prefix/"usr/lib/x86_64-linux-gnu")
+            env={"PATH":"/usr/bin:/bin","LANG":"C","LC_ALL":"C",
+                 "LD_LIBRARY_PATH":libs}
+            return str(prefix/"usr/bin/ddjvu"),str(prefix/"usr/bin/ld-linux-x86-64.so.2"),libs,env
+        return real(candidate)
+    monkeypatch.setattr(pixels,"_verified_decoder",synthetic_proof)
+    return cap
 
 
 def test_strict_ppm_parses_only_bounded_actual_rgb_bytes():
@@ -135,7 +161,7 @@ async def test_source_or_decoder_tamper_and_foreign_page_refuse_before_send(bund
     first=next(Path(pathstr) for pathstr,_,_,execute in bundle.pins if execute)
     first.chmod(0o700)
     first.write_bytes(b"tampered executable")
-    with pytest.raises(pixels.DjvuPixelsUnavailable,match="bundle_not_verified"):
+    with pytest.raises(pixels.DjvuPixelsUnavailable,match="bundle_not_verified|elf_closure_unverified"):
         await pixels.render_verified_djvu_page(bundle=bundle,original_path=path,
             original_bytes=path.stat().st_size,inventory=inv,index=0)
 
@@ -144,7 +170,7 @@ async def test_source_or_decoder_tamper_and_foreign_page_refuse_before_send(bund
 async def test_no_unknown_decoder_fallback_and_unread_native_layer(bundle,archive,monkeypatch):
     path,inv=archive
     monkeypatch.setattr(pixels,"_jpeg",lambda rgb,w,h:(b"\xff\xd8ok\xff\xd9",82))
-    with pytest.raises(pixels.DjvuPixelsUnavailable,match="bundle_not_verified"):
+    with pytest.raises(pixels.DjvuPixelsUnavailable,match="bundle_not_verified|elf_closure_unverified"):
         await pixels.render_verified_djvu_page(bundle=object(),original_path=path,
             original_bytes=path.stat().st_size,inventory=inv,index=0)
     foreign=deepcopy(inv)

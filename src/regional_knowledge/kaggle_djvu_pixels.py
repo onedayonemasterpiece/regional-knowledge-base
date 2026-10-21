@@ -41,24 +41,17 @@ def _json(value) -> bytes:
 
 
 def _verified_decoder(bundle: VerifiedNativeBundle):
-    if type(bundle) is not VerifiedNativeBundle or not bundle.current():
-        raise DjvuPixelsUnavailable('djvu_decoder_bundle_not_verified')
-    executable = bundle.prefix/'usr/bin/ddjvu'
-    pinned = [entry for entry in bundle.pins if entry[0] == str(executable)]
-    if len(pinned)!=1 or not pinned[0][3] or pinned[0][1]<1024:
-        raise DjvuPixelsUnavailable('djvu_decoder_binary_not_in_verified_bundle')
-    # A standalone binary without the corresponding verified library closure
-    # is not a supported decoder; never use ambient host libraries as proof.
-    required = bundle.prefix/'usr/lib/x86_64-linux-gnu'
-    if not any(Path(p).parent==required and not runnable for p,_,_,runnable in bundle.pins):
-        raise DjvuPixelsUnavailable('djvu_decoder_library_closure_missing')
+    # VerifiedNativeBundle.current() verifies file hashes; this separate
+    # static-ELF audit must verify the interpreter AND transitive DT_NEEDED
+    # closure. A random pinned .so in the directory is not DjVuLibre proof.
+    from .kaggle_djvu_elf import pinned_djvu_elf_closure, ElfClosureError
     try:
-        env = verified_native_environment(bundle)
+        binary,loader,library_path=pinned_djvu_elf_closure(bundle)
+        env=verified_native_environment(bundle)
     except Exception:
-        raise DjvuPixelsUnavailable('djvu_decoder_library_closure_unavailable') from None
-    if not env.get('LD_LIBRARY_PATH','').startswith(str(required)):
-        raise DjvuPixelsUnavailable('djvu_decoder_library_closure_unavailable')
-    return str(executable),env
+        raise DjvuPixelsUnavailable('djvu_elf_closure_unverified') from None
+    env['LD_LIBRARY_PATH']=library_path
+    return binary,loader,library_path,env
 
 
 def _read_ppm(raw: bytes, *, edge: int):
@@ -119,13 +112,17 @@ def _source_stat(path: Path, *, expected_bytes: int):
         os.close(fd)
 
 
-async def _decode_single(binary: str, environment: dict, original: Path,
+async def _decode_single(binary: str, loader: str, library_path: str,
+                         environment: dict, original: Path,
                          index: int, edge: int) -> bytes:
     # A signed-inventory Python child sets hard CPU/AS/FD/core limits BEFORE
     # execve of the pinned decoder. Its command always selects one page.
     # In contrast, raw ddjvu without -page may decode an entire book.
     child=Path(__file__).with_name('kaggle_djvu_decoder_child.py')
-    command=(sys.executable,'-I',str(child),binary,str(original),str(index),str(edge))
+    # Fixed static ELF closure is encoded in the loader and library path.
+    # The child executes that exact verified loader, not ambient PT_INTERP.
+    command=(sys.executable,'-I',str(child),loader,binary,str(original),
+             str(index),str(edge),library_path)
     proc=None
     try:
         proc=await asyncio.create_subprocess_exec(*command,stdout=asyncio.subprocess.PIPE,
@@ -152,7 +149,19 @@ async def _decode_single(binary: str, environment: dict, original: Path,
         if proc is not None and proc.returncode is None:
             try:proc.kill()
             except ProcessLookupError:pass
-            await proc.wait()
+            # asyncio's subprocess wait can otherwise remain pending after
+            # SIGKILL while a full stdout pipe is paused. Close the pipe
+            # transport first, then bound the final reap independently from
+            # the main 25s processing timeout. Never wait without a deadline.
+            transport=getattr(proc,'_transport',None)
+            pipe=transport.get_pipe_transport(1) if transport is not None else None
+            if pipe is not None:pipe.close()
+            try:
+                async with asyncio.timeout(2):
+                    await proc.wait()
+            except TimeoutError:
+                if transport is not None:transport.close()
+                raise DjvuPixelsUnavailable('djvu_decoder_cleanup_timeout') from None
 
 
 def _jpeg(rgb: bytes, width: int, height: int):
@@ -183,14 +192,19 @@ async def render_verified_djvu_page(*, bundle: VerifiedNativeBundle,
     if inventory.pages[index].text_chunks:
         # An unread embedded native layer may not be silently called complete.
         raise DjvuPixelsUnavailable('djvu_embedded_text_layer_requires_decoder')
+    # INFO orientation changes the meaning of the normalized source bbox.
+    # Until the renderer owns and verifies the complete transform, never hand
+    # callers an unrotated geometry/scale as though it were the source page.
+    if inventory.pages[index].orientation_degrees != 0:
+        raise DjvuPixelsUnavailable('djvu_orientation_transform_not_ready')
     path=Path(original_path)
     before=_source_stat(path,expected_bytes=original_bytes)
     if inventory.byte_length!=original_bytes:
         raise DjvuPixelsUnavailable('djvu_inventory_original_size_mismatch')
-    binary,env=_verified_decoder(bundle)
+    binary,loader,library_path,env=_verified_decoder(bundle)
     output=None
     for edge in (1600,1280):
-        raw=await _decode_single(binary,env,path,index,edge)
+        raw=await _decode_single(binary,loader,library_path,env,path,index,edge)
         width,height,rgb=_read_ppm(raw,edge=edge)
         try:
             jpeg,quality=_jpeg(rgb,width,height)
