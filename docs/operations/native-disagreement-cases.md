@@ -53,6 +53,25 @@ embedding. Its whole native record is bounded to96KiB; pages contain at most20
 records and return continuation positions. No source dependency is invented for
 an empty private Case.
 
+Native Case contribution source bytes remain immutable and the record's
+`attribution.link_id`/`link_revision` bind the original expert identity. The
+existing DevCoveer `Participants` identity store already records
+`attribution_review_required` on `AccountUnlink(incorrect_binding=True)`;
+ordinary account revocation does **not** assert that historical authorship was
+wrong. When an authorized `disagreement_get(section=contributions)` produces a
+bounded page (≤20), the target read renderer queries only those existing exact
+identity links, adds a **computed** `attribution_review_required` flag per item
+and keeps the signed native payload unchanged. The final MCP output renderer
+re-reads that flag after its normal read-gate refresh; it does not present a
+stale pre-unlink response to a reader whose own authority was revoked. An
+unresolvable/mismatched historic link withholds the Case response instead of
+presenting a falsely clean attribution. This is read-only presentation over
+existing control policy, **not** a new PostgreSQL table, a rewrite of the
+original contribution, a second IAM or a human-reading confirmation. A
+correction flag requests attribution review; it does not identify the new real
+author automatically. Unit/native-fixture and final-output-gate checks do not
+establish real non-owner or live Telegram/Slack acceptance.
+
 The current output gate compares native Case role/ACL/event/source scope against
 a compact projection of exact verified successful journal commands. Draft access
 also requires the exact author and current personal-conclusion capability. The

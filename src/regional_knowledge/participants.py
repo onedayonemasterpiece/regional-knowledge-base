@@ -330,6 +330,40 @@ class Participants:
         self._authority(connection,context)
         return context
 
+    def historical_attribution_review(self, references):
+        """Current review flags for bounded, already-validated native Case links.
+
+        This is a read-only policy projection, not an alteration of the original
+        signed contribution, actor binding, or PostgreSQL source record. Only an
+        owner-marked incorrect binding requires review; a normal unlink does not.
+        """
+        if type(references) is not tuple or len(references)>20:
+            fail('invalid_attribution_references')
+        seen=set()
+        for ref in references:
+            if (type(ref) is not tuple or len(ref)!=3 or type(ref[2]) is not int
+                    or ref[2]<1 or any(type(v) is not str for v in ref[:2])):
+                fail('invalid_attribution_references')
+            try:canonical=(str(UUID(ref[0]))==ref[0] and str(UUID(ref[1]))==ref[1])
+            except ValueError:canonical=False
+            if not canonical:fail('invalid_attribution_references')
+            seen.add(ref)
+        if not seen:return {}
+        links=sorted({link_id for _,link_id,_ in seen})
+        with self.corpus.connect() as db:
+            db.execute('BEGIN')
+            rows=db.execute('SELECT id,person_id,revision,attribution_review_required '
+                'FROM rkb_external_identities WHERE id IN ('+','.join('?' for _ in links)+')',links).fetchall()
+            index={row['id']:row for row in rows}
+            flags={}
+            for person_id,link_id,revision in seen:
+                record=index.get(link_id)
+                if (record is None or record['person_id']!=person_id
+                        or record['revision']<revision):
+                    fail('attribution_link_unavailable')
+                flags[(person_id,link_id,revision)]=bool(record['attribution_review_required'])
+            return flags
+
     def attribution(self, db, context):
         """Immutable assignment snapshot, not a scientific or human verdict."""
         actor = self._authority(db, context)

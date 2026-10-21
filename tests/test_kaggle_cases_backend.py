@@ -81,6 +81,95 @@ async def test_read_retains_current_gate_until_actual_public_output_and_checks_r
         outputs[0].release()
 
 
+@pytest.mark.parametrize('incorrect_binding',[False,True])
+@pytest.mark.asyncio
+async def test_case_contribution_review_projection_follows_owner_unlink_without_changing_native_record(
+        env,auth,monkeypatch,incorrect_binding):
+    """The PG record stays immutable; only the current owner review marker changes."""
+    from regional_knowledge.disagreement_contracts import ContributionAdd
+    from regional_knowledge.participant_contracts import AccountUnlink
+    from test_participants import bind,change
+    from test_case_read_gate import result,header
+    from test_disagreement_native import OBJECT
+
+    value,principal,_=await backend(env,auth,monkeypatch)
+    linked=bind(auth.p)
+    actor=auth.p.other.subject
+    contribution=ContributionAdd(kind='opinion',original_text='Exact sourced synthetic observation.')
+    native_attribution=dict(person_id=actor,recorded_by=actor,route='expert',
+        link_id=linked.link_id,link_revision=linked.link_revision,human_reading_confirmed=False)
+    native_payload=dict(contribution.model_dump(mode='json'),attribution=native_attribution,
+        human_reading_confirmed=False,withdrawn=False)
+    native_item=dict(contribution_id=OBJECT,version=1,actor_id=actor,recorded_by=actor,
+        event_seq=1,payload=native_payload,logical_time='2026-10-21T10:00:00Z')
+    source=header()
+    source.update(section='contributions',items=[native_item],has_more=False,next_after_seq=None)
+    native=result(source)
+    assert value._render_case(native)['items'][0]['attribution_review_required'] is False
+    change(auth.p,AccountUnlink(link_id=linked.link_id,expected_link_revision=2,
+        reason='Synthetic link correction',incorrect_binding=incorrect_binding))
+    output=value._render_case(native)
+    assert output['items'][0]['attribution_review_required'] is incorrect_binding
+    assert output['items'][0]['payload']==native_payload
+    assert native.record==source
+    # Source identity and immutable native evidence have not been rewritten.
+    with auth.p.corpus.connect() as db:
+        row=db.execute('SELECT attribution_review_required FROM rkb_external_identities WHERE id=?',
+                       (linked.link_id,)).fetchone()
+        assert bool(row[0]) is incorrect_binding
+
+
+@pytest.mark.asyncio
+async def test_case_contribution_review_is_recomputed_at_final_output_gate(env,auth,monkeypatch):
+    """An account correction after native read must be visible at MCP issuance."""
+    from regional_knowledge.disagreement_contracts import ContributionAdd
+    from regional_knowledge.participant_contracts import AccountUnlink,ParticipantUpsert
+    from test_participants import bind,change
+    from test_case_read_gate import request,result,header
+    from test_disagreement_native import OBJECT
+
+    value,principal,binding=await backend(env,auth,monkeypatch)
+    # The reader owns the Case, but this contribution belongs to another
+    # verified participant. Changing the author's link must not invalidate
+    # the reader's own OAuth context or leave a stale attribution label.
+    auth.p.registry.change(auth.p.admin,auth.p.stranger.subject,0,
+        ParticipantUpsert(name='Independent synthetic contributor',reason='Test policy projection'),
+        'create-independent-contributor')
+    expert=bind(auth.p,person=auth.p.stranger.subject,user='U222')
+    actor=auth.p.stranger.subject
+    source=header()
+    source.update(section='contributions',items=[dict(
+        contribution_id=OBJECT,version=1,actor_id=actor,recorded_by=actor,
+        event_seq=1,logical_time='2026-10-21T10:00:00Z',
+        payload=dict(ContributionAdd(kind='opinion',original_text='Immutable expert contribution.').model_dump(mode='json'),
+            withdrawn=False,human_reading_confirmed=False,
+            attribution=dict(person_id=actor,recorded_by=actor,route='expert',
+                link_id=expert.link_id,link_revision=expert.link_revision,human_reading_confirmed=False)))],
+        has_more=False,next_after_seq=None)
+    immutable=result(source)
+    before_bytes=immutable.record_b64
+
+    async def native(authority,binding,**selector):
+        permit=await value.gate.dispatch(authority,request(section='contributions'),binding)
+        return await value.gate.finish(permit,immutable)
+    monkeypatch.setattr(value,'_native',native)
+
+    with capture_read_output() as outputs:
+        before=await value.disagreement_get(CASE,principal,section='contributions')
+        assert before['items'][0]['attribution_review_required'] is False
+        assert len(outputs)==1
+        call=outputs[0]
+        # Same native result stays issued to the same user; policy changes now.
+        change(auth.p,AccountUnlink(link_id=expert.link_id,expected_link_revision=2,
+            reason='Wrong attribution on old link',incorrect_binding=True),person=actor)
+        call.gated=await call.gate.refresh(call.gated)
+        assert call.gate.issuance_current(call.gated.ticket)
+        final=call.render(call.gated.result)
+        assert final['items'][0]['attribution_review_required'] is True
+        assert call.gated.result.record_b64==before_bytes
+        call.release()
+
+
 @pytest.mark.asyncio
 async def test_operation_output_fence_closes_on_control_write_even_after_async_refresh(env,auth,monkeypatch):
     value,principal,b=await backend(env,auth,monkeypatch)

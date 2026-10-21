@@ -205,6 +205,34 @@ def test_assignment_snapshot_and_late_unlink(people):
     expect("identity_unverified",p.registry.require,expert,"public_search")
 
 
+def test_historical_attribution_review_is_bounded_and_never_rewrites_owner_records(people):
+    p=people
+    from uuid import uuid4
+    expert=bind(p)
+    key=(p.other.subject,expert.link_id,expert.link_revision)
+    assert p.registry.historical_attribution_review((key,))=={key:False}
+    # A routine unlink is not a correction of past authorship.
+    change(p,AccountUnlink(link_id=expert.link_id,expected_link_revision=2,
+        reason='Routine account deactivation',incorrect_binding=False))
+    assert p.registry.historical_attribution_review((key,))=={key:False}
+    corrected=bind(p,user='U222')
+    other=(p.other.subject,corrected.link_id,corrected.link_revision)
+    change(p,AccountUnlink(link_id=corrected.link_id,expected_link_revision=2,
+        reason='Incorrect historical attribution',incorrect_binding=True))
+    assert p.registry.historical_attribution_review((key,other))=={key:False,other:True}
+    expect('attribution_link_unavailable',p.registry.historical_attribution_review,
+           ((p.owner.subject,corrected.link_id,corrected.link_revision),))
+    expect('attribution_link_unavailable',p.registry.historical_attribution_review,
+           ((p.other.subject,str(uuid4()),corrected.link_revision),))
+    expect('invalid_attribution_references',p.registry.historical_attribution_review,
+           tuple([key]*21))
+    expect('invalid_attribution_references',p.registry.historical_attribution_review,
+           ((p.other.subject,'forged-link',1),))
+    # An external identity row and its record of the correction stay put.
+    assert any(row['id']==corrected.link_id and row['attribution_review_required']
+        for row in p.registry.get(p.admin,p.other.subject)['accounts'])
+
+
 def test_disabled_canonical_user_and_unknown_capability_fail_closed(people):
     p=people
     expect("capability_denied",p.registry.require,p.admin,"unknown-typo")
