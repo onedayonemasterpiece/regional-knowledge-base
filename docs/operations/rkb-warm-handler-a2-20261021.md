@@ -27,3 +27,48 @@ The separate `tests/test_kaggle_source_bundle.py` subprocess isolation suite use
 4. **Dataset/PG persistence:** independently demonstrate exact Kaggle Dataset base restore, native PostgreSQL readiness, compatible replay tail and weekly independent Yandex backup. This is a separate A3 acceptance, **not** delivered by the warm read handler.
 
 No Kaggle launch, stop, native PostgreSQL cluster, BGE local installation, remote mutation or deployment is performed by this source patch.
+
+## Same-run acceptance driver
+
+`scripts/production/verify_kaggle_warm_debug.py` runs one finite scenario over an
+existing trusted maintenance client. It pins the selected run/incarnation,
+database/model/dependency identity and initial handler/SQL definition hashes.
+It checks useful native evidence after the SQL patch, handler activation,
+rejected candidate, handler rollback and SQL rollback. Independent probes before
+and after each useful read must show the same PG instance/model context and no
+increase in notebook starts, worker/PG restarts, dependency installs, model loads
+or model-download bytes. Loaded handler hashes/generations and native SQL
+definition readback must match, rather than merely accepting an apply ACK.
+
+The private plan names exact artifact IDs/hashes and stable per-step operation
+keys; it contains no actor, credentials, signed URL or raw SQL. UNKNOWN/timeout
+halts the driver without retry or blind rollback. The existing maintenance owner
+retains canonical effect receipts; the local report preserves completed steps
+and any pending effect key without copying query/evidence text. Reconcile that
+original key before continuing; do not change the key to rerun a partial case.
+
+The executable command is:
+
+```sh
+PYTHONPATH=src python scripts/production/verify_kaggle_warm_debug.py \
+  --client-factory trusted_existing_owner_adapter:factory \
+  --plan /absolute/private/warm-plan.json \
+  --report /home/dev/artifacts/PROJECT/MANAGED_TASK/warm-report.json
+```
+
+The factory is an operator-supplied adapter to the existing authenticated WSS
+maintenance owner, **not an implemented transport or a new public endpoint**.
+Its callbacks are `probe`, `query`, `apply_sql_artifact` (with exact predecessor
+definition SHA), `update_read_handler` and `rollback_read_handler` (with expected
+loaded SHA). Quartz owns that adapter/dispatch and its live binding; this driver
+does not implement or claim them. The real first-restored-run command therefore
+requires that reviewed factory and a plan derived from its native readbacks.
+
+`tests/test_kaggle_warm_acceptance.py` exercises the real `ReadHandlerSlot`,
+actual small synthetic SQLite SQL/view changes, failed activation rollback and
+the CLI. This is explicitly **offline SQLite/model-stub evidence, not PostgreSQL,
+BGE inference, provider access or live Kaggle acceptance**. Negative cases cover
+identity/counter drift, false apply/rollback ACK, missing evidence, SQL readback
+mismatch, lost ACK and the absolute deadline. The fixture cannot declare a live
+PASS. Run it with `PYTHONPATH=src:tests pytest -q
+tests/test_kaggle_warm_acceptance.py tests/test_kaggle_warm_read.py`.
