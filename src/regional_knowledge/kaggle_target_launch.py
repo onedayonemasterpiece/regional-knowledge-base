@@ -45,6 +45,24 @@ def source_bundle(repository):
     return relative,encoded,entries
 
 
+async def preview_target_history(target, recovery_journal):
+    """Read-only controller preflight using the SAME exact recovery authority.
+
+    It cannot initiate a notebook, create local SQLite rows, promote a
+    snapshot, or classify an initialized PG runtime as ready. A nonempty
+    accepted head only proves that NEW_EMPTY cannot safely run again;
+    verified restore still needs independent exact manifest/receipt proof.
+    """
+    if type(target) is not TargetLaunchSpec or not isinstance(recovery_journal,RecoveryJournal):
+        raise TypeError('typed target and existing real RecoveryJournal required')
+    head=await recovery_journal.head()  # UNKNOWN does not mean empty.
+    sequence=head.reference.last_sequence if head is not None else 0
+    mode=target.database.mode
+    status=('restore_required' if head is not None else 'empty_genesis_permitted') \
+        if mode=='NEW_EMPTY_GENERATION' else 'verify_restore_contract'
+    return dict(status=status,target_mode=mode,accepted_head_sequence=sequence,can_push=False)
+
+
 async def persist_empty_intent(queue, run_id, target, *, launch_nonce, recovery_journal, sql_hashes):
     """Only an actual read from the injected existing remote authority proves empty.
 
@@ -55,8 +73,8 @@ async def persist_empty_intent(queue, run_id, target, *, launch_nonce, recovery_
         raise ValueError('explicit empty-generation initialization required')
     if not isinstance(recovery_journal,RecoveryJournal):
         raise TypeError('existing real RecoveryJournal required')
-    head = await recovery_journal.head()  # UNKNOWN and any history fail closed.
-    if head is not None:
+    preflight=await preview_target_history(target,recovery_journal)
+    if preflight['status']!='empty_genesis_permitted':
         raise ValueError('accepted history requires verified restore; initialization refused')
     intent = dict(codec='rkb.empty-generation.v1',run_id=run_id,launch_nonce=launch_nonce,
         database=target.database.wire(),journal_stream=recovery_journal.stream,journal_head=None,
