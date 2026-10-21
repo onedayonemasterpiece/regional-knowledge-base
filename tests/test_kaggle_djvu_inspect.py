@@ -24,12 +24,24 @@ def _page(index: int, *, odd=False):
     return _form(b"DJVU", info + body)
 
 
-def fixture(page_count=2, *, dictionaries=1, odd=False):
-    directory = _chunk(b"DIRM", bytes([0x81]) + (page_count + dictionaries).to_bytes(2, "big") + b"marker")
-    return b"AT&T" + _form(
-        b"DJVM", directory + b"".join(_form(b"DJVI", _chunk(b"INCL", b"token")) for _ in range(dictionaries))
-        + b"".join(_page(i, odd=odd and i == page_count - 1) for i in range(page_count)), pad=False)
-
+def fixture(page_count=2, *, dictionaries=1, odd=False, order=None):
+    components = ([_form(b"DJVI", _chunk(b"INCL", b"token")) for _ in range(dictionaries)]
+                  + [_page(i, odd=odd and i == page_count - 1) for i in range(page_count)])
+    count = len(components)
+    placeholder = _chunk(b"DIRM", bytes([0x81]) + count.to_bytes(2, "big")
+                         + b"\0"*(4*count) + b"bzz-placeholder")
+    offset = 16 + len(placeholder)
+    offsets = []
+    for component in components:
+        offsets.append(offset)
+        offset += len(component)
+    if order is not None:
+        offsets = [offsets[i] for i in order]
+    directory = _chunk(b"DIRM", bytes([0x81]) + count.to_bytes(2, "big")
+                       + b"".join(value.to_bytes(4,"big") for value in offsets)
+                       + b"bzz-placeholder")
+    assert len(directory) == len(placeholder)
+    return b"AT&T" + _form(b"DJVM", directory + b"".join(components), pad=False)
 
 def _save(tmp_path, data):
     path = tmp_path / "input.djvu"
@@ -120,3 +132,30 @@ def test_fifo_is_refused_with_nonblocking_open_and_bounded_deadline(tmp_path):
         [sys.executable, "-c", program, str(fifo)],
         capture_output=True, text=True, timeout=3)
     assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize("change", ["missing_table", "duplicate_offset", "wrong_offset", "reversed_directory"])
+def test_bundled_dirm_offsets_must_bind_exact_embedded_form_order(tmp_path, change):
+    raw = bytearray(fixture(3, dictionaries=1))
+    at = raw.index(b"DIRM")
+    first_offset = at + 8 + 3
+    if change == "missing_table":
+        # A directory count without corresponding file offsets is not complete.
+        raw[first_offset - 1] = 0xff
+    elif change == "duplicate_offset":
+        raw[first_offset + 4:first_offset + 8] = raw[first_offset:first_offset + 4]
+    elif change == "wrong_offset":
+        raw[first_offset + 3] ^= 2
+    elif change == "reversed_directory":
+        first = bytes(raw[first_offset:first_offset + 4])
+        last = bytes(raw[first_offset + 12:first_offset + 16])
+        raw[first_offset:first_offset + 4] = last
+        raw[first_offset + 12:first_offset + 16] = first
+    with pytest.raises(DjvuStructureError, match="directory|offsets|page"):
+        inspect_djvu(_save(tmp_path, raw))
+
+
+def test_directory_order_page_indices_are_exact_not_physical_heuristic(tmp_path):
+    found=inspect_djvu(_save(tmp_path,fixture(3,dictionaries=2)))
+    assert [page.index for page in found.pages] == [0,1,2]
+    assert [page.width for page in found.pages] == [700,701,702]

@@ -137,30 +137,53 @@ def inspect_djvu(path: str | os.PathLike, *, max_bytes=MAX_DJVU_ORIGINAL_BYTES,
             pages = []
             dictionaries = 0
             directory_entries = None
+            directory_offsets = None
+            component_offsets = []
+            first = True
             for tag, start, section_size in _chunks(fd, 16, size, MAX_DJVU_SHAPES):
+                if first and tag != b'DIRM':
+                    raise DjvuStructureError('djvu_directory_first_required')
+                first = False
                 if tag == b'DIRM':
                     if directory_entries is not None or section_size < 3:
                         raise DjvuStructureError('djvu_directory_invalid')
                     prefix = _exact(fd, start, 3)
-                    if prefix[0] & 0x80 == 0:
-                        raise DjvuStructureError('djvu_embedded_directory_required')
+                    if prefix[0] != 0x81:
+                        raise DjvuStructureError('djvu_bundled_directory_v1_required')
                     directory_entries = int.from_bytes(prefix[1:3], 'big')
                     if not 1 <= directory_entries <= MAX_DJVU_SHAPES:
                         raise DjvuStructureError('djvu_directory_count_invalid')
+                    # DIRM v1 has exactly one uncompressed BE32 offset for
+                    # each component file; remaining BZZ-encoded names/flags
+                    # require a pinned DjVu decoder and are not asserted here.
+                    if section_size < 3 + 4 * directory_entries + 1:
+                        raise DjvuStructureError('djvu_directory_offsets_truncated')
+                    directory_offsets = [int.from_bytes(_exact(fd, start + 3 + 4*i, 4), 'big')
+                                         for i in range(directory_entries)]
+                    # Without decoding BZZ page flags we support the strict
+                    # ascending subset only: never assign a *physical* FORM
+                    # index to a different *directory* page by guessing.
+                    if directory_offsets != sorted(set(directory_offsets)):
+                        raise DjvuStructureError('djvu_directory_order_requires_decoder')
                 elif tag == b'FORM':
                     if section_size < 4:
                         raise DjvuStructureError('djvu_child_form_invalid')
                     subkind = _exact(fd, start, 4)
+                    if subkind in (b'DJVU', b'DJVI'):
+                        component_offsets.append(start - 8)
                     if subkind == b'DJVU':
                         if len(pages) >= max_pages:
                             raise DjvuStructureError('djvu_page_count_bound')
                         pages.append(_page(fd, start, section_size, len(pages)))
                     elif subkind == b'DJVI':
                         dictionaries += 1
-                    else:
+                    elif subkind != b'THUM':
                         raise DjvuStructureError('djvu_child_form_unsupported')
+                elif tag != b'NAVM':
+                    raise DjvuStructureError('djvu_top_chunk_unsupported')
             if (directory_entries is None or not pages
-                    or directory_entries != len(pages) + dictionaries):
+                    or directory_entries != len(pages) + dictionaries
+                    or directory_offsets != component_offsets):
                 raise DjvuStructureError('djvu_page_directory_mismatch')
             inventory = DjvuInventory(len(pages), dictionaries,
                                       directory_entries, size, tuple(pages))
