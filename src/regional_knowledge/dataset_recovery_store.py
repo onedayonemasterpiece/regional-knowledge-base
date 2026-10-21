@@ -185,6 +185,12 @@ class DatasetRecoveryStore:
         async with self.writer_guard(writer_generation):
             return self._put(key,data,expected_token)
 
+    def pending_outcomes(self):
+        with self.queue.connect(write=False) as db:
+            return db.execute('SELECT 1 FROM rkb_dataset_recovery_objects WHERE storage=? '
+                'AND covered_version IS NULL AND key LIKE ? LIMIT 1',
+                (self.storage_identity,self.prefix+'outcomes/%')).fetchone() is not None
+
     def remote_durable(self,key,data):
         with self.queue.connect(write=False) as db:
             row=db.execute('SELECT data,covered_version FROM rkb_dataset_recovery_objects WHERE storage=? AND key=?',

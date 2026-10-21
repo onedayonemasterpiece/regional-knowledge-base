@@ -124,7 +124,9 @@ class SourceDatasetCheckpoints:
                 run=db.execute('SELECT started FROM runs WHERE id=?',(run_id,)).fetchone()
                 planned_stop=planned_stop or (run is not None and queue.clock()-run['started']>=MAX_LIFETIME-600)
         if retained is None:
-            if proof is None or proof.applied_sequence<=latest.base_sequence:
+            late_outcomes=self.store.pending_outcomes()
+            if (proof is None or proof.applied_sequence<latest.base_sequence
+                    or proof.applied_sequence==latest.base_sequence and not late_outcomes):
                 self.dirty_since=None;return False
             if self.dirty_since is None:self.dirty_since=self.clock()
             if self.last_sequence!=proof.applied_sequence:
@@ -164,14 +166,22 @@ class SourceDatasetCheckpoints:
             keys=[r[0] for r in db.execute("SELECT operation_key FROM rkb_control_operations WHERE sequence<=? "
                 "AND seal_state='ACCEPTED' AND apply_state IN ('APPLIED','REJECTED_PRECONDITION') "
                 "AND outcome_state<>'DURABLE' ORDER BY sequence",(checkpoint.base_sequence,))]
+        unsettled=0
         for key in keys:
-            await spool.publish_outcome(key,writer_generation=startup.config.writer_generation)
+            from .recovery_journal import JournalUnknown
+            try:
+                await spool.publish_outcome(key,writer_generation=startup.config.writer_generation)
+            except JournalUnknown as exc:
+                if exc.args!=('outcome_pending_dataset_checkpoint',):raise
+                # A legacy checkpoint may predate outcome materialization. Its
+                # publication is real, but these bytes need the NEXT version.
+                unsettled+=1;continue
             jobs=await spool._write(spool._settle_recovered_jobs,key)
             for job in jobs:queue._notify_result(job)
         with queue.connect() as db:
             db.execute("UPDATE rkb_dataset_seed SET state='verified' WHERE operation_key=? AND version=?",
                 (operation,version))
         self.dirty_since=None
-        _LOG.info('dataset_checkpoint_verified provider_ref=%s version=%s base_sequence=%s settled=%s',
-            self.store.publisher.ref,version,checkpoint.base_sequence,len(keys))
+        _LOG.info('dataset_checkpoint_verified provider_ref=%s version=%s base_sequence=%s settled=%s pending_next_checkpoint=%s',
+            self.store.publisher.ref,version,checkpoint.base_sequence,len(keys)-unsettled,unsettled)
         return True
