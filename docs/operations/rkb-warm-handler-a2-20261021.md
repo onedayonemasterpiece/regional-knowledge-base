@@ -27,11 +27,78 @@ Tests include source-file digest mismatch, symlink/nested-directory refusal, no 
 
 The separate `tests/test_kaggle_source_bundle.py` subprocess isolation suite uses `sys.executable -I` to exclude user-installed packages. On this DevCoveer host `/usr/bin/python3 -I` lacks third-party `pydantic` and `psycopg`, so three independent baseline isolation tests abort on those imports, not on warm-handler content. Do not claim that suite passed on this host; repeat in the pinned project/CI interpreter.
 
+
+## Authenticated same-run stage → activate → readback → rollback
+
+The **existing** `RecoveryPhaseDispatch/WssSnapshotPhases` now exposes the
+bounded maintenance phases `read_handler_stage`,
+`read_handler_activate`, `read_handler_rollback` and the previous
+`read_handler_status`. These use the existing durable `recovery_phase`
+document compute permit, exact current run/nonce/incarnation/WSS generation,
+original idempotent operation key, source maintenance owner and durable
+RESULT_ACK. There is **no new launcher, public MCP code upload, arbitrary
+Python/SQL RPC, control-socket uploader or second scheduler**.
+
+A trusted deployment/code-review operator selects an exact immutable source
+artifact and its reviewed Git SHA. `WarmHandlerPatchApproval` validates their
+canonical metadata but is *not itself cryptographic proof of Git review*;
+approval **must** be established by the trusted controller/operator before it
+calls `stage_read_handler`. Only `BlobRef` key/size/SHA/ETag and Git commit
+identifier cross the WSS maintenance envelope. The existing scoped
+`SnapshotTicketIssuer` issues a conditional, short-lived HTTPS GET for that
+immutable restricted S3 blob. The existing `NativeSnapshotTransfer` checks
+the ticket operation, allowed origin, ETag, exact size and SHA before
+returning its exclusive `/kaggle/temp` file. There is no source text on
+the WebSocket; the worker is capped to **512 KiB** for this patch class.
+
+After the download, the worker **rechecks the exact WSS binding and loaded
+generation**. It atomically moves the verified file inside a fresh private
+0700 subdirectory; `ReadHandlerSlot.stage` opens O_NOFOLLOW, hashes its own
+descriptor bytes, compiles those same bytes, constructs the candidate with
+the already retained PG acquire/tokenizer/telemetry/source-provenance
+references and executes a bounded invalid-query contract self-test.
+Unsupported context, changed run, misplaced artifact and arbitrary local
+path/constructor fields fail closed. No model weights or PostgreSQL process
+are created by stage.
+
+Activate rechecks the original loaded SHA and generation, drains active
+read callbacks, switches one pointer, and probes the live native PostgreSQL
+catalog/writer binding using the same pool, followed by the finite
+invalid-query callback contract. Probe failure or WSS-generation revocation
+**restores the old handler before reopening reads**. A fresh
+`read_handler_status` then reads the actual new module SHA, generation,
+database/model/dependency/revision pins and switching state, and the
+operator must submit a **new authorized useful QUERY** in that same run for
+product acceptance. A later functional failure can invoke the same durable
+`rollback_read_handler`; an incompatible dependency/model/PG context
+requires a controlled worker restart instead of forced activation.
+
+A lost stage/activation ACK is **not permission to issue a new patch key**
+or restart Kaggle: the same operation is retained/cached; request a fresh
+readback, reconcile SHA/generation, then retry only its original operation
+when the existing safe reconciliation contract allows it. Presigned GET
+URLs may be renewed for the same immutable object without replaying code.
+
+**Source validation:** the test suite exercises the actual durable admission
+and WSS DISPATCH → signed GET ticket → worker stage → activate → fresh
+readback → RESULT_ACK, no duplicate transfer on repeated operation,
+oversized/forged artifact refusal, staleness after a slow download, and
+automatic rollback when WSS generation changes during the activation
+probe. Both `kaggle_warm_read.py` and
+`kaggle_warm_maintenance.py` are included in the exact generated notebook
+source bundle and hashes.
+
+**Not yet live:** no actually warmed Kaggle worker/PG/model-load counters,
+signed artifact approval record, actual provider network transfer, new
+authorized useful query after activation, or production rollback has been
+run or verified here. All source tests are fixtures; a source-only PR is not
+product acceptance. The running RKB recovery remains owned by Шкипер.
+
 ## Required before live application / product sign-off
 
-1. **Artifact transport + authority:** bind one exact approved code-artifact digest and version to an existing controller's authenticated maintenance operation, using an already supported scoped byte-transfer path. Merely publishing a file to Kaggle is not activation. Do not let a public `search`/MCP caller choose Python source, constructor or local path.
-2. **Mutation receipt/reconcile:** extend the existing maintenance owner with an exact staged-code operation ID/generation/dependency fingerprint and retained prior handler for lost-ACK reconciliation/rollback. The existing read-only WSS status phase does **not** authorize changing code. Do not create a parallel controller or arbitrary remote shell. Keep durable mutation replay/SQL migration outside this stateless switch.
-3. **Live post-activation evidence:** invoke the now source-implemented loaded-version status phase against the actual warmed Kaggle run, verify loaded module digest/generation and an actual authorized `QUERY` after activation, and compare model load count/download bytes and exact PostgreSQL/model fingerprints before/after. A failed candidate or first probe must leave previous serving behavior and accepted commands intact.
+1. **Independent approval + authentic transfer:** the trusted deployment owner must attest the reviewed commit+blob SHA and keep source approval out of any public RPC. Exercise the scoped signed GET against the actual provider and verify no external module body/path crosses the WSS control frame.
+2. **Mutation receipt/reconcile:** verify exact retained operation/capability identity in the real model-owning worker with a lost WSS ACK and status readback, without new provider push; preserved durable accepted-command original replay remains independent of this stateless patch.
+3. **Live post-activation evidence:** check loaded module SHA/generation and an actual authorized useful QUERY against source-backed PG, and compare BGE load count/download bytes and PostgreSQL/model fingerprints before/after. Source-only catalog probe and invalid-query self-test do not establish useful-result acceptance.
 4. **Dataset/PG persistence:** independently demonstrate exact Kaggle Dataset base restore, native PostgreSQL readiness, compatible replay tail and weekly independent Yandex backup. This is a separate A3 acceptance, **not** delivered by the warm read handler.
 
 No Kaggle launch, stop, native PostgreSQL cluster, BGE local installation, remote mutation or deployment is performed by this source patch.

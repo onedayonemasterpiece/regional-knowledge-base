@@ -70,12 +70,13 @@ def test_generated_target_persists_final_hash_outside_source_and_is_stable(tmp_p
     from regional_knowledge.kaggle_target_launch import source_bundle
     import base64
     _,shipped,entries=source_bundle(ROOT)
-    relative='regional_knowledge/kaggle_warm_read.py'
-    assert relative in shipped
-    raw=base64.b64decode(shipped[relative],validate=True)
-    assert raw==(ROOT/'src'/relative).read_bytes()
-    assert any(e['name'].endswith('/'+relative) and e['size']==len(raw)
-               and e['sha256']==hashlib.sha256(raw).hexdigest() for e in entries)
+    for relative in ('regional_knowledge/kaggle_warm_read.py',
+                     'regional_knowledge/kaggle_warm_maintenance.py'):
+        assert relative in shipped
+        raw=base64.b64decode(shipped[relative],validate=True)
+        assert raw==(ROOT/'src'/relative).read_bytes()
+        assert any(e['name'].endswith('/'+relative) and e['size']==len(raw)
+                   and e['sha256']==hashlib.sha256(raw).hexdigest() for e in entries)
     assert source==generate(queue,run,spec())
     assert 'main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)' in source
     assert 'pip install' not in source

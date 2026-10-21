@@ -94,10 +94,21 @@ class RecoveryPhaseDispatch:
                 raise StaleClaim('recovery assignment changed')
             identity=json.loads(job['identity'])
             payload=dict(id=job_id,claim=job['claim'],kind='recovery_phase',**identity)
-        if identity['phase'] in ('prepare','drill_prepare') and self.snapshot_tickets is not None:
+        if identity['phase'] in ('prepare','drill_prepare','read_handler_stage'):
+            if self.snapshot_tickets is None:
+                raise PermissionError('current signed artifact transfer owner required')
             from .kaggle_pg_snapshot_native import BlobRef
-            ticket=await self.snapshot_tickets.issue_download(self._bindings[job_id],identity['operation_key'],
-                BlobRef(**identity['arguments']['blob']))
+            if identity['phase']=='read_handler_stage':
+                from .kaggle_warm_maintenance import WarmHandlerPatchApproval
+                from .kaggle_warm_read import MAX_MODULE_BYTES
+                approval=WarmHandlerPatchApproval.from_wire(identity['arguments']['artifact'])
+                if not 1<=approval.blob.size<=MAX_MODULE_BYTES:
+                    raise SnapshotError('read_handler_artifact_budget')
+                artifact=approval.blob
+            else:
+                artifact=BlobRef(**identity['arguments']['blob'])
+            ticket=await self.snapshot_tickets.issue_download(self._bindings[job_id],
+                identity['operation_key'],artifact)
             payload['download_ticket']=ticket.wire()
         from .original_intake import PHASES as ORIGINAL_PHASES
         if identity['phase'] in ORIGINAL_PHASES:
@@ -188,11 +199,24 @@ class WssSnapshotPhases:
             operation_key=sha(encode([self.operation,'verify',secrets.token_hex(24)])))
 
     async def read_handler_status(self,binding):
-        """Fresh loaded-code readback on the same run-authenticated WSS permit.
-
-        This only reads the existing slot's SHA/context/generation; it never
-        accepts a path, Python body, constructor or public caller identity.
-        """
+        """Fresh loaded-code readback on the same run-authenticated WSS permit."""
         import secrets
         return await self.dispatch.request(binding,'read_handler_status',{},
             operation_key=sha(encode([self.operation,'read_handler_status',secrets.token_hex(24)])))
+
+    async def stage_read_handler(self,binding,approval,*,expected_loaded_sha256,expected_generation):
+        """Stage only a trusted-owner reviewed immutable blob, never Python wire bytes."""
+        from .kaggle_warm_maintenance import WarmHandlerPatchApproval
+        from .kaggle_warm_read import MAX_MODULE_BYTES
+        if type(approval) is not WarmHandlerPatchApproval or approval.blob.size>MAX_MODULE_BYTES:
+            raise SnapshotError('reviewed_read_handler_artifact_required')
+        return await self._call(binding,'read_handler_stage',dict(artifact=approval.wire(),
+            expected_loaded_sha256=expected_loaded_sha256,expected_generation=expected_generation))
+
+    async def activate_read_handler(self,binding,*,staged_sha256,expected_loaded_sha256,expected_generation):
+        return await self._call(binding,'read_handler_activate',dict(staged_sha256=staged_sha256,
+            expected_loaded_sha256=expected_loaded_sha256,expected_generation=expected_generation))
+
+    async def rollback_read_handler(self,binding,*,expected_loaded_sha256,expected_generation):
+        return await self._call(binding,'read_handler_rollback',dict(
+            expected_loaded_sha256=expected_loaded_sha256,expected_generation=expected_generation))

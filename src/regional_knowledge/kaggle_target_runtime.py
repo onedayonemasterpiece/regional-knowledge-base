@@ -376,10 +376,38 @@ class TargetRuntime:
         self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler,original_handler,
             read_event_drain=lambda frame:drain_native_read_events(read_events,frame))
         if self.recovery_worker is not None:
-            # Expose only the existing in-memory read slot to the already
-            # authenticated retained maintenance worker. Never a module path,
-            # caller-supplied object or PG/model handle on the WSS wire.
+            # The same already authenticated run owns any maintenance phase.
             self.recovery_worker.read_handler_slot=self.read_handler_slot
+            from .kaggle_recovery_phases import WorkerRecoveryPhases
+            if (type(self.recovery_worker) is WorkerRecoveryPhases
+                    and self.read_handler_slot._pinned is not None):
+                from .kaggle_warm_maintenance import WarmHandlerMaintenance
+                from .kaggle_warm_read import WarmHandlerRejected
+                async def candidate_self_test(candidate):
+                    # The candidate must implement the QUERY invalid-envelope
+                    # contract without executing a model/PG/user read. This is
+                    # a bounded smoke test, NOT a useful-evidence assertion.
+                    frame=dict(type='QUERY',request_id='rkb-warm-internal-selftest',
+                        connection_generation=1,turn_generation=1)
+                    def forbidden_encoder(_):
+                        raise WarmHandlerRejected('read_handler_stage_encoder_used')
+                    observed=await candidate(frame,encode=forbidden_encoder)
+                    if (type(observed) is not dict or observed.get('status')!='invalid_query'):
+                        raise WarmHandlerRejected('read_handler_self_test_failed')
+                async def candidate_probe(candidate):
+                    # The installed native PostgreSQL/corpus/writer is still
+                    # current. Neither BGE model nor dependencies are loaded
+                    # again; the first useful authorized QUERY is checked
+                    # separately by the external acceptance caller.
+                    await self._owned_probe(acquire=candidate.acquire)
+                    await candidate_self_test(candidate)
+                self.recovery_worker.read_handler_control=WarmHandlerMaintenance(
+                    slot=self.read_handler_slot,download=self.recovery_worker.download,
+                    workspace=self.recovery_worker.workspace,
+                    constructor=dict(self.read_handler_slot._pinned),
+                    self_test=candidate_self_test,probe=candidate_probe,
+                    current=lambda frame:self.recovery_worker.factory._current((
+                        frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])))
         return self.prepared
 
     async def aclose(self):
