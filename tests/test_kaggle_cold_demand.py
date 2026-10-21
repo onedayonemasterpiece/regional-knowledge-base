@@ -42,6 +42,25 @@ def test_concurrent_startup_requests_use_one_stable_run_even_after_lost_launch_a
 
 
 
+def test_poll_immediately_after_control_detach_sees_historical_unknown(tmp_path):
+    """NULL current_run does not turn a prior UNKNOWN into false pending/stopped."""
+    q=BgeQueue(tmp_path/'null-current.sqlite',clock=lambda:1000.)
+    first=q.request_startup();old=first['run_id']
+    assert q.launch_claim(old,provider_ref='owner/rkb-bge-m3-cpu') is not None
+    with q.connect() as db:
+        db.execute('update control set current_run=null,successor=null where id=1')
+    # No maintenance, no replacement run allocation, and no second search.
+    poll=q.startup_status(first['startup_ref'])
+    assert poll['status']=='unavailable'
+    assert poll['reason']=='provider_execution_unknown'
+    status=q.status()
+    assert status['state']=='unknown'
+    assert status['reason']=='provider_execution_unknown'
+    with q.connect(write=False) as db:
+        assert db.execute('select count(*) from runs').fetchone()[0]==1
+        assert db.execute('select launch_state from runs where id=?',(old,)).fetchone()[0]=='dispatching'
+
+
 def test_detached_historical_unknown_reports_unavailable_not_false_pending(tmp_path):
     """The persisted old UNKNOWN can block even if it is no longer current_run."""
     now=[1000.]

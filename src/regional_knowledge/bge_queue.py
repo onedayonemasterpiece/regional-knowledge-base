@@ -966,7 +966,10 @@ class BgeQueue:
         makes no provider call, allocation, or state transition.
         """
         control=db.execute('select current_run,successor from control where id=1').fetchone()
-        for prior in db.execute("select * from runs where id!=? and launch_state in ('dispatching','dispatched')",
+        # SQLite IS NOT is NULL-safe. The control pointer can legitimately be
+        # absent during a migration/terminal handover; id!=NULL would select
+        # zero rows and hide EVERY historical provider reservation.
+        for prior in db.execute("select * from runs where id IS NOT ? and launch_state in ('dispatching','dispatched')",
                                 (run_id,)).fetchall():
             if provider_ref is not None and prior['provider_ref'] not in (None,provider_ref):
                 continue
