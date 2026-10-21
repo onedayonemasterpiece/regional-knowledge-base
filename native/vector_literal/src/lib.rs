@@ -20,7 +20,27 @@ fn python_float(value: f64) -> String {
     if value == 0.0 {
         return if value.is_sign_negative() { "-0.0" } else { "0.0" }.into();
     }
-    let s = format!("{value:?}");
+    // Rust's shortest Debug choice may round decimal half-ways upward,
+    // while CPython str(float) chooses the even last decimal digit.
+    // Request the SAME shortest significant precision explicitly, so the
+    // formatter rounds ties-to-even before converting its layout to Python.
+    let shortest = format!("{value:?}");
+    let unsigned = shortest.trim_start_matches('-');
+    let (mantissa0, e0) = match unsigned.split_once('e') {
+        Some((m, e)) => (m, e.parse::<i32>().expect("float exponent")),
+        None => (unsigned, 0),
+    };
+    let point0 = mantissa0.find('.').unwrap_or(mantissa0.len()) as i32;
+    let digits0: String = mantissa0.chars().filter(|c| c.is_ascii_digit()).collect();
+    let leading0 = digits0.bytes().take_while(|b| *b == b'0').count() as i32;
+    let shortest_digits = digits0[leading0 as usize..].trim_end_matches('0').len();
+    let exponent0 = e0 + point0 - 1 - leading0;
+    let s = if (-4..=15).contains(&exponent0) {
+        let places = (shortest_digits as i32 - exponent0 - 1).max(0) as usize;
+        format!("{:.*}", places, value)
+    } else {
+        format!("{:.*e}", shortest_digits.saturating_sub(1), value)
+    };
     let (sign, core) = if let Some(tail) = s.strip_prefix('-') {
         ("-", tail)
     } else {
