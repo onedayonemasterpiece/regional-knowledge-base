@@ -1,0 +1,56 @@
+name: rkb-vector-validation-leaf
+
+on:
+  push:
+    branches:
+      - chatgpt/rkb-linza-python-validate-once-20261022
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-source-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Pin input revisions and source-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p vector-validation-artifacts
+          echo "base=f2c6ad0ba9df283a08240ee31de5ae771c2820eb" | tee vector-validation-artifacts/base.txt
+          echo "head=$(git rev-parse HEAD)" | tee vector-validation-artifacts/head.txt
+          git merge-base --is-ancestor f2c6ad0ba9df283a08240ee31de5ae771c2820eb HEAD
+          git diff --name-only f2c6ad0ba9df283a08240ee31de5ae771c2820eb HEAD | tee vector-validation-artifacts/changed-paths.txt
+          python --version | tee vector-validation-artifacts/python.txt
+          sha256sum src/regional_knowledge/kaggle_query.py src/regional_knowledge/kaggle_search.py tests/test_kaggle_vector_validation_leaf.py | tee vector-validation-artifacts/source.sha256
+      - name: Exact source-backed synthetic parity and cancellation BEFORE performance
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 90s python -m unittest discover -s tests -p 'test_kaggle_vector_validation_leaf.py' -v 2>&1 | tee vector-validation-artifacts/parity.log
+      - name: Bounded smoke A original vs D actual changed path
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 40s python tests/test_kaggle_vector_validation_leaf.py --benchmark --smoke --iterations 24 --output vector-validation-artifacts/smoke.json
+      - name: Bounded source-backed A/D wall CPU RSS measurement
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 110s python tests/test_kaggle_vector_validation_leaf.py --benchmark --iterations 1200 --output vector-validation-artifacts/benchmark.json
+      - name: Preserve synthetic-only evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rkb-query-validation-leaf
+          path: vector-validation-artifacts/
+          if-no-files-found: warn
+          retention-days: 14

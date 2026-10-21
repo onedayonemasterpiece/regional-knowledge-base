@@ -15,7 +15,7 @@ from .kaggle_protocol import (
     EvidenceItem, EvidenceMetadata, ItemDependencies, PassageContinuation, Query,
     QueryResult, SourceDependency, PassageReadRequest, PassageReadResult, encode_envelope,
 )
-from .kaggle_search import SearchEvidence, fused_search, vector_literal
+from .kaggle_search import SearchEvidence, fused_search, validate_vector_values
 from .kaggle_acceptance_contracts import AcceptanceReadRequest, AcceptanceReadResult, BranchRanks
 
 
@@ -161,7 +161,7 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
                     async def checked_encode(text):
                         try:
                             values = await encode(text)
-                            vector_literal(values)  # Invalid dense output cannot become hybrid success.
+                            validate_vector_values(values)  # Reject bad dense values before retrieval success.
                             return values
                         except asyncio.CancelledError:
                             raise
