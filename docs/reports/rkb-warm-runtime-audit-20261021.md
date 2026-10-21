@@ -327,3 +327,58 @@ Fence на side effects и pointer CAS, exact version + SHA/size, writer generat
 
 Срез на 22:26 UTC: v104 всё ещё `starting/dispatched`, heartbeat не обновлялся 389 с, `ready_at`
 пуст, слот занят. Процессы те же (controller PID 1360 на f2c6ad0, второго controller нет).
+
+## 8. Подготовка живого прогона (четвёртый проход, 22:56–23:30 UTC)
+
+Владелец разрешил правки и живой запуск. Живой запуск **не выполнен**: слияние PR207/PR208 в
+`main` отклонено классификатором автономного режима («Merge Without Review»). Деплой неслитого
+кода нарушил бы правило «прод только из `origin/main`» и смысл этого отказа. После отказа
+классификатор отклонил и read-only чтение журнала, поэтому живые операции остановлены.
+
+### Live read-only наблюдения перед остановкой
+
+- Kaggle `get_kernel_session_status`: v102, v103, v104 — **ERROR**. Последняя версия по slug — 104,
+  её source содержит run v104. Notebook v104 завершён, а в очереди run держит слот в
+  `starting/dispatched`.
+- **Замечание Кварца B подтверждено на живых данных.** У архива Dataset1 (base seq 7) в manifest
+  `native_version` имеет форму GCS upload-etag `CL…=`. GET-ETag той же версии через
+  `snapshot_download_link` — MD5 в кавычках. Они не равны, поэтому PR207 в исходном виде
+  детерминированно упал бы в `prepare` на `recovery_download_ticket_blob_changed` до скачивания.
+- `regional-knowledge-e5.service` (E5 retired) в цикле auto-restart примерно каждые 3 с: лишняя
+  нагрузка на Dev с 4 ГБ. Не трогал: остановку юнита должен решить владелец сервисов.
+
+### Исправления этого прохода
+
+| Коммит | Что | Почему |
+|---|---|---|
+| `c8af603` (PR208) | Guard запуска: отказ, если `writer_generation` target **уже записана** за другим run в `rkb_writer_generations` | Первая версия guard (сравнение с `rkb_writer_control.run_id`) была **ошибочной**: writer переключается на новый run только в `begin_restore` после attach. Она отклонила бы и легитимный запуск, как v103 |
+| `0ad811e` (PR208) | Контроллер запрашивает exact terminal proof и для текущего владельца с потерянным lease, не чаще раза в 30 с | Run с неизвестным provider outcome никогда не становится `expired`, а proof запрашивался только для `expired`. Поэтому каждый мёртвый run (v103, v104) требовал ручной правки статуса. Retire только по native `ERROR/COMPLETE` после последнего heartbeat |
+| `7017f19` (PR207) | `_download_ticket_matches`: для закреплённого архива Dataset-checkpoint сверка по name/size/SHA-256 pin вместо сравнения GET-ETag с upload-etag. Для same-store тикетов сравнение прежнее | Наблюдение B выше. Transfer по-прежнему требует If-Match тикета и потоковый SHA-256. Тест проходит через настоящую функцию проверки на формах значений из Dataset1 |
+| P1 (отчёт) | Путь горячей замены read handler в main есть (`read_handler_*`) | Первая версия отчёта его пропустила |
+
+Проверки: объединённое состояние PR207 + PR208 (`23e1ab4`) — полный набор **2283 passed, 133
+skipped**. CI зелёный: PR207 на `7017f19`, PR208 на `23e1ab4`. Замечание Кварца A (legacy
+`dataset_base`-ветка) не исправлено: при новом коде на обеих сторонах оно не срабатывает, но для
+смешанного rollout его нужно закрыть отдельно.
+
+### Runbook живого прогона после слияния (проверено по коду, не выполнено)
+
+1. Слить PR207, затем PR208. Релиз `releases/<main>/source` создать через `git archive` +
+   `.rkb-release-sha`, как у f2c6ad0. Перед переключением доказать, что f2c6ad0 — предок нового
+   main.
+2. Остановить controller (один актор). Одним вызовом кода нового релиза:
+   `reconcile_provider_history(current_only=True)` → retire v104 по exact proof → `maintenance()`
+   создаёт новый run R (startup demand pending).
+3. Минтинг для R: копия последнего `target.json` с новым `writer_generation` W (uuid4, не в
+   `rkb_writer_generations`). `worker_source(...)` того же релиза с токеном R из credentials file
+   записывает nonce и ожидание. `launch_config_sha256` взять из `bge_runtime_expectations`.
+   Копия source-service: `run_id=R`, `writer_generation=W`, оба `launch_config_sha256`, новый
+   `source_restore.operation_key`. Dataset checkpoint остаётся v1.
+4. Обновить drop-in'ы контроллера и MCP, `story-registry-release.env` и `source-acceptance.env`
+   (оригиналы сохранить в artifacts), затем `daemon-reload`, restart MCP, start controller.
+5. Ожидаемо: push v105 без ложного отказа guard → HELLO → `begin_restore` (writer → R/W) →
+   prepare через Dataset-тикет → READY. Дальше: доля закрытых тиков routing, `dataset_verify`
+   Dataset2, длительность тёплого run.
+
+Шаги 2–3 — это и есть отсутствующая автоматизация P2. Их стоит превратить в одну типизированную
+операцию контроллера, а не повторять вручную.
