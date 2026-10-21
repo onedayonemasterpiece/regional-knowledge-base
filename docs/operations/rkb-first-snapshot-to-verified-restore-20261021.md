@@ -123,3 +123,13 @@ filesystem. The verifier checks `fstatvfs(ST_RDONLY)` on opened descriptors befo
 rejecting those bits; size, SHA-256, version binding and no-follow checks still
 apply. A failed native prepare wakes its initialization waiter with the original
 error. A finish interrupted by detach retains its existing reconciliation path.
+
+The installed Kaggle save/get-kernel API returns attached Dataset references
+without their requested version qualifiers. That metadata does not establish
+which version a mount contains; never copy the intended pin into an alleged
+provider observation. Production restore therefore uses the Dataset API's exact
+version/file download capability through the existing scoped WSS ticket and
+native HTTP transfer. Metadata stays bounded on Dev; archive bytes move directly
+to Kaggle and are hashed there before the same PostgreSQL restore. The notebook
+does not attach an ambiguous mount. Dataset slug and built-in versions remain
+the persistence authority.
