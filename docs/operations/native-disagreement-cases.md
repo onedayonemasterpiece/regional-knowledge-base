@@ -81,9 +81,10 @@ command and remote outcome, matching the native result, current database
 generation and canonical actor. Native `native_only`, missing remote bytes or mismatches cannot produce
 Saved. A retry of the same CREATE key **after** raw spool collection consults
 the retained compact receipt before reserving a new sequence or applying a
-new command; it returns the same verified outcome only when the caller's
-model-authored command is identical. Changed payload with the same key is an
-explicit conflict. The check is repeated under the existing single-writer
+new command; it returns the same verified outcome only when the **full original
+caller envelope** matches: action, typed model payload, Case and object IDs,
+case_revision and object_version. Changed payload, expected revision or draft ID
+with the same key is an explicit conflict. The check is repeated under the existing single-writer
 control lock to close the racing GC/retry window. This recovery path performs
 no enqueue, publication or replay effect.
 Current Case/source and participant revocations apply on readback and again at

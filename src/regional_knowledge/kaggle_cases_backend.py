@@ -262,7 +262,22 @@ class KaggleCasesBackend:
                 saved=applied.status=='applied',result=json.loads(base64.b64decode(outcome['result_b64'],validate=True)))
         return result
 
-    async def _recover_operation(self,authority,context,binding,key,case_id,*,expected_action=None,expected_command=None):
+    @staticmethod
+    def _verify_collected_retry(command,key,action,model,case_id,object_id,case_revision,object_version):
+        """Compare the entire caller-controlled CAS envelope after raw GC."""
+        original=validate_case_payload(command.payload)
+        wanted_object=(case_id if action=='create' else
+            exact_uuid(str(object_id)) if object_id is not None else str(uuid5(_NAMESPACE,key+':object')))
+        if (action not in _TYPES or type(model) is not _TYPES[action]
+                or original['action']!=action or original['command']!=model.model_dump(mode='json')
+                or command.ids['case_id']!=case_id or command.ids['object_id']!=wanted_object
+                or int(command.expected_revisions['case_revision'])!=case_revision
+                or int(command.expected_revisions['object_version'])!=object_version):
+            raise failure('operation_key_conflict','invalid_query')
+
+    async def _recover_operation(self,authority,context,binding,key,case_id,*,expected_action=None,
+                                 expected_command=None,expected_object_id=None,expected_case_revision=0,
+                                 expected_object_version=0):
         """Read a collected intent; native-only or local-only evidence is not Saved.
 
         The compact remote receipt outlives raw spool bytes. Re-read its exact
@@ -310,11 +325,8 @@ class KaggleCasesBackend:
                         or native['state']!='applied' or native['outcome_durability']!='native_only'):
                     raise failure('remote_outcome_unproved')
                 if expected_action is not None:
-                    original=validate_case_payload(command.payload)
-                    if (expected_action not in _TYPES or type(expected_command) is not _TYPES[expected_action]
-                            or original['action']!=expected_action
-                            or original['command']!=expected_command.model_dump(mode='json')):
-                        raise failure('operation_key_conflict','invalid_query')
+                    self._verify_collected_retry(command,key,expected_action,expected_command,case_id,
+                        expected_object_id,expected_case_revision,expected_object_version)
                 # Fixed historical command semantics and current route/actor
                 # authority, including private draft authorship, are rechecked.
                 await self._check(authority,context,binding,command)
@@ -371,7 +383,8 @@ class KaggleCasesBackend:
                 if action not in _TYPES or type(command) is not _TYPES[action]:raise ValueError('exact Case command type required')
                 if await self._collected(key):
                     result=await self._recover_operation(authority,context,binding,key,case_id,
-                        expected_action=action,expected_command=command)
+                        expected_action=action,expected_command=command,expected_object_id=object_id,
+                        expected_case_revision=case_revision,expected_object_version=object_version)
                     retained=True;return result
                 if case_id is None:
                     if action!='create':raise ValueError('existing Case UUID required')
@@ -413,7 +426,8 @@ class KaggleCasesBackend:
                         entry=await self.spool._write(self.spool._stage,frozen,data,handler,binding.database_generation)
                 if collected:
                     result=await self._recover_operation(authority,context,binding,key,case_id,
-                        expected_action=action,expected_command=command)
+                        expected_action=action,expected_command=command,expected_object_id=object_id,
+                        expected_case_revision=case_revision,expected_object_version=object_version)
                     retained=True;return result
             if status_only and case_id is not None and entry.command.ids['case_id']!=exact_uuid(str(case_id)):
                 raise failure('operation_key_conflict','invalid_query')

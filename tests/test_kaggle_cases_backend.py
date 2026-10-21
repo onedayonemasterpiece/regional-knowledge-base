@@ -430,6 +430,35 @@ async def test_collected_operation_recovery_never_infers_saved_from_unknown_or_w
         assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]==0
 
 
+def test_collected_noncreate_retry_compares_cas_revision_and_draft_id_before_replay():
+    # These envelopes are immutable accepted commands from the same native
+    # constructors used for PG apply; the raw control row has been collected.
+    # A matching payload does not excuse mismatched expected CAS versions/IDs.
+    from uuid import UUID
+    from regional_knowledge.disagreement_contracts import CaseRevise,PersonalDraft
+    from test_disagreement_native import command as case_command,CASE,OBJECT
+    revise=CaseRevise(question='Which date is correct?',context='Exact original context.',
+        classification='candidate discrepancy',rationale='Synthetic reason.',reason='Review date.')
+    historical=case_command('revise',revise,case_revision=1)
+    key=historical.operation_key
+    check=KaggleCasesBackend._verify_collected_retry
+    check(historical,key,'revise',revise,CASE,OBJECT,1,0)
+    with pytest.raises(Exception,match='operation_key_conflict'):
+        check(historical,key,'revise',revise,CASE,OBJECT,2,0)
+    with pytest.raises(Exception,match='operation_key_conflict'):
+        check(historical,key,'revise',revise,CASE,'00000000-0000-0000-0000-000000000099',1,0)
+    draft=PersonalDraft(text='Original private source-based argument.',based_on_seq=1,
+        evidence_ids=[],position_ids=[])
+    saved=case_command('draft_save',draft,object_version=1)
+    key=saved.operation_key
+    check(saved,key,'draft_save',draft,CASE,OBJECT,0,1)
+    with pytest.raises(Exception,match='operation_key_conflict'):
+        check(saved,key,'draft_save',draft,CASE,'00000000-0000-0000-0000-000000000099',0,1)
+    with pytest.raises(Exception,match='operation_key_conflict'):
+        check(saved,key,'draft_save',draft,CASE,OBJECT,0,2)
+    assert UUID(CASE) != UUID(OBJECT)  # Explicitly distinct case and private draft identities.
+
+
 @pytest.mark.asyncio
 async def test_repeat_create_after_raw_gc_returns_exact_saved_case_without_new_effect(env,auth,monkeypatch):
     # The caller retries the original CREATE because the first response was lost.
