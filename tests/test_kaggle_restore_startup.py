@@ -88,9 +88,20 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
     e.old.c.generate_presigned_url=sign
     history=WssNativeHistoryProofAdapter(database=database,expected_catalog_sha256='a'*64,
         expected_acl_sha256='b'*64,expected_observer_sha256='c'*64)
+    imports=None
+    if dataset_input:
+        from regional_knowledge.kaggle_import_composition import SourceImportOwners
+        from regional_knowledge.kaggle_import_tokenizer import TokenizerProcessSpec
+        imports=SourceImportOwners('a'*64,'b'*64,('https://existing-s3.fixture.invalid',),'/operator/tokenizer',
+            TokenizerProcessSpec('/operator/versioned-venv/bin/python','c'*64,'d'*64))
     startup=compose_source_service(queue=e.q,oauth_provider=e.old.auth.provider,participants=e.old.auth.p.registry,
         object_store=SimpleNamespace(client=e.old.c,bucket=e.s.bucket),stream=e.j.stream,registry=registry,history_adapter=history,
         run_id=e.run,database_generation='synthetic-db',writer_generation='writer-2',source_restore=plan)
+    if dataset_input:
+        imported=imports.compose(queue=e.q,spool=startup.config.spool,participants=e.old.auth.p.registry,
+            object_store=SimpleNamespace(client=e.old.c,bucket=e.s.bucket),writer=startup.config.writer_owner)
+        assert imported['import_originals'].spool is startup.config.spool
+        assert imported['import_originals'].store.client is e.old.c
     task=asyncio.create_task(startup.restorer.refresh());phases=[]
     try:
         async with asyncio.timeout(3):

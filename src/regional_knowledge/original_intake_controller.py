@@ -23,8 +23,15 @@ _LOG=logging.getLogger(__name__)
 class OriginalIntakeController:
     def __init__(self,*,queue,spool,participants,object_store,binding_current,current_binding,
                  allowed_origins,max_bytes=128*1024*1024):
+        from .dataset_recovery_store import DatasetRecoveryStore
+        recovery=spool.journal.store
+        if type(recovery) is DatasetRecoveryStore:
+            same_storage=(recovery.queue is queue and getattr(recovery.writer_guard,'queue',None) is queue)
+        else:
+            same_storage=(object_store.client is getattr(recovery,'client',None)
+                and object_store.bucket==getattr(recovery,'bucket',None))
         if (spool.queue is not queue or spool.participants is not participants
-                or object_store.client is not spool.journal.store.client or object_store.bucket!=spool.journal.store.bucket
+                or not same_storage
                 or not callable(binding_current) or not callable(current_binding)
                 or type(allowed_origins) is not frozenset or not 1<=len(allowed_origins)<=4
                 or any(origin(s)!=s for s in allowed_origins)

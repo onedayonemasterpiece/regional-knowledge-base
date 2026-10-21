@@ -85,6 +85,8 @@ class SourceDatasetSeed:
 
     def _control(self,physical,proof):return physical._control(proof)
 
+    async def _prepare_prefix(self,proof):pass
+
     async def _capture(self,physical,bridge,binding,sequence):
         return await physical.native.capture(binding,versions=dict(self.config.versions),expected_sequence=sequence)
 
@@ -134,6 +136,7 @@ class SourceDatasetSeed:
             bridge.snapshot_tickets = self.tickets
             async with self.startup.config.spool._lock:
                 proof = self.startup.history._coverage
+                await self._prepare_prefix(proof)
                 if not self._prefix_ready(proof):
                     raise SnapshotError('dataset_seed_requires_drained_prefix')
                 control = self._control(physical,proof)
