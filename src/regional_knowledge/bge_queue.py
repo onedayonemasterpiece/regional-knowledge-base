@@ -643,6 +643,12 @@ class BgeQueue:
                         raise StaleAttachment('writer publication must reconcile before handover')
                     db.execute("update runs set status='draining' where id=?",(control['current_run'],))
                     db.execute('update control set current_run=?,successor=null where id=1',(run_id,))
+                # A legacy document-only cycle has no MCP startup_ref, so
+                # finish_startup() is never invoked. Its verified READY is
+                # the only authority that clears prior known-not-sent startup
+                # failures. Plain heartbeat / public request cannot reset it.
+                db.execute('''UPDATE control SET startup_failures=0
+                    WHERE current_run=? AND startup_ref IS NULL AND startup_state IS NULL''',(run_id,))
             return self._status(db,now)
 
     def claim(self, run_id, token, *, connection_generation=None):
@@ -969,14 +975,22 @@ class BgeQueue:
                     # A normal useful-idle shutdown is NOT fresh demand. Do
                     # not resurrect an already satisfied startup merely
                     # because its old worker later terminates.
-                    if (control['current_run']==run_id
-                            and control['startup_state']!='blocked'
+                    if (control['current_run']==run_id and control['startup_state']!='blocked'
                             and (control['startup_state']!='ready' or outstanding)):
-                        db.execute('''UPDATE control SET startup_failures=startup_failures+1,
-                            startup_state=CASE WHEN startup_failures+1>=? THEN 'blocked'
-                                WHEN startup_ref IS NOT NULL THEN 'pending'
-                                ELSE startup_state END
-                            WHERE current_run=?''',
-                            (MAX_STARTUP_FAILURES,run_id))
+                        if row['status']=='starting' or control['startup_state']=='pending':
+                            # Actual incomplete cold lifecycle. The plain
+                            # notebook/session terminal after an already
+                            # successful READY must NOT consume another
+                            # preparation-failure attempt.
+                            db.execute('''UPDATE control SET startup_failures=startup_failures+1,
+                                startup_state=CASE WHEN startup_failures+1>=? THEN 'blocked'
+                                    WHEN startup_ref IS NOT NULL THEN 'pending'
+                                    ELSE startup_state END WHERE current_run=?''',
+                                (MAX_STARTUP_FAILURES,run_id))
+                        elif control['startup_state']=='ready' and outstanding and control['startup_ref'] is not None:
+                            # Reopen only unsettled demand, with fresh
+                            # permissions on next read; old incarnation is
+                            # still fenced until separate execution proof.
+                            db.execute("update control set startup_state='pending' where current_run=?",(run_id,))
                 db.execute('update runs set heartbeat=? where id=?',(self.clock(),run_id))
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run_id,))

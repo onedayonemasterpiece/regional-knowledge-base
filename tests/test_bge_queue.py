@@ -74,6 +74,69 @@ def test_worker_diagnostics_do_not_preserve_arbitrary_private_fields(tmp_path):
         assert json.loads(db.execute('select diagnostics from runs where id=?',(run,)).fetchone()[0])=={'rss_kib':1024}
 
 
+def test_legacy_failure_budget_resets_only_after_proven_ready_and_successful_work(tmp_path):
+    """Two NOT SENT incidents must not poison a later independent cycle."""
+    now=[1000.]
+    queue=BgeQueue(tmp_path/'legacy-success-cycle.sqlite',clock=lambda:now[0])
+    document=queue.enqueue('indexer','first',['synthetic passage'],kind='document')
+    run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
+    for _ in range(2):
+        token=queue.launch_claim(run,provider_ref='owner/stable-slug')
+        assert token is not None
+        queue.launch_record(run,'owner/stable-slug',failed=True)
+        now[0]+=61
+        run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
+    with queue.connect(write=False) as db:
+        assert db.execute('select startup_failures from control where id=1').fetchone()[0]==2
+    token=queue.launch_claim(run,provider_ref='owner/stable-slug')
+    queue.launch_record(run,'owner/stable-slug',provider_version=7)
+    # A mere socket heartbeat without actual READY is insufficient.
+    queue.heartbeat(run,token)
+    with queue.connect(write=False) as db:
+        assert db.execute('select startup_failures from control where id=1').fetchone()[0]==2
+    queue.heartbeat(run,token,ready=True)
+    assigned=queue.claim(run,token)
+    assert assigned['id']==document
+    assert queue.complete(run,token,document,assigned['claim'],SPACE,[[1]+[0]*1023],{})=='accepted'
+    assert queue.result('indexer',document)['state']=='done'
+    with queue.connect(write=False) as db:
+        control=db.execute('select startup_ref,startup_state,startup_failures from control where id=1').fetchone()
+        assert tuple(control)==(None,None,0)
+    # Independent terminal proof is conceptually external; neither it nor
+    # eventual useful-idle expiry is a failed cold startup.
+    queue.launch_record(run,'owner/stable-slug',failed=True,provider_version=7)
+    with queue.connect(write=False) as db:
+        assert db.execute('select startup_failures from control where id=1').fetchone()[0]==0
+    now[0]+=61
+    queue.maintenance()
+    second=queue.enqueue('indexer','new-cycle',['another passage'],kind='document')
+    next_run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
+    assert next_run!=run
+    queue.launch_claim(next_run,provider_ref='owner/stable-slug')
+    queue.launch_record(next_run,'owner/stable-slug',failed=True)
+    with queue.connect(write=False) as db:
+        state=db.execute('select startup_state,startup_failures from control where id=1').fetchone()
+    assert state['startup_state'] is None and state['startup_failures']==1
+    assert queue.result('indexer',second)['state']=='pending'
+
+
+def test_legacy_unverified_heartbeat_does_not_reset_failure_budget(tmp_path):
+    now=[1000.]
+    queue=BgeQueue(tmp_path/'legacy-unverified.sqlite',clock=lambda:now[0])
+    queue.enqueue('indexer','doc',['synthetic document'],kind='document')
+    run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
+    for index in range(3):
+        token=queue.launch_claim(run,provider_ref='owner/stable-slug')
+        if index==2:queue.heartbeat(run,token,ready=False)
+        queue.launch_record(run,'owner/stable-slug',failed=True)
+        if index!=2:
+            now[0]+=61
+            run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
+    with queue.connect(write=False) as db:
+        state=db.execute('select startup_state,startup_failures from control where id=1').fetchone()
+    assert tuple(state)==('blocked',3)
+
+
 def test_legacy_document_demand_without_startup_ref_cannot_retry_forever(tmp_path):
     """Source regression for observed active controller not_sent ValueErrors."""
     from regional_knowledge.bge_queue import MAX_STARTUP_FAILURES
