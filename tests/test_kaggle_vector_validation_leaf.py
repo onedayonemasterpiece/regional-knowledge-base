@@ -1,8 +1,9 @@
 """Isolated source-backed synthetic vector validation regression + honest benchmark.
 
 No import of regional_knowledge runtime, PG, torch, tokenizers or pytest:
-the AST loads the exact existing Python functions, including the nested
-execute_query.checked_encode closure from both old and changed sources.
+the AST loads the exact checked_encode and validation functions. Shallow
+PR checkouts use tiny immutable baseline fragments independently checked for
+AST equality against the pinned original in the deeper isolated CI run.
 """
 from __future__ import annotations
 
@@ -31,13 +32,84 @@ QUERY = "src/regional_knowledge/kaggle_query.py"
 BGE = "src/regional_knowledge/bge_contract.py"
 DIM = 1024
 
+# Minimal immutable baseline AST fragments. The normal deep-checkout CI compares
+# each fragment with the true pinned commit before running tests. GitHub's
+# mandatory pull_request workflow uses a depth-1 checkout, where the historical
+# git object is unavailable: use these verified snippets there, without any
+# network fetch, skipped assertions or modified production code.
+BASELINE_FIXTURES = {
+    BGE: """
+DIMENSION = 1024
+
+def validate_vector(values):
+    if not isinstance(values, list) or len(values) != DIMENSION:
+        raise ValueError('BGE dimension mismatch')
+    vector = [float(value) for value in values]
+    if not all(math.isfinite(value) for value in vector):
+        raise ValueError('BGE nonfinite vector')
+    if abs(math.sqrt(sum(value * value for value in vector)) - 1) > .002:
+        raise ValueError('BGE normalization mismatch')
+    return vector
+""",
+    SEARCH: """
+def vector_literal(values: Sequence[float]) -> str:
+    if not isinstance(values, list) or any(type(v) not in (int, float) for v in values):
+        raise ValueError("vector values must be numeric, excluding booleans")
+    return "[" + ",".join(map(str, validate_vector(values))) + "]"
+""",
+    QUERY: """
+async def execute_query():
+    async def checked_encode(text):
+        try:
+            values = await encode(text)
+            vector_literal(values)
+            return values
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise DenseUnavailable("resident encoder is unavailable") from None
+""",
+}
+
+
+def _pinned_fragment(source, path):
+    tree = ast.parse(source)
+    if path == QUERY:
+        parents = [node for node in tree.body
+                   if isinstance(node, ast.AsyncFunctionDef)
+                   and node.name == "execute_query"]
+        if len(parents) != 1:
+            raise AssertionError("pinned execute_query not found uniquely")
+        fragments = [node for node in ast.walk(parents[0])
+                     if isinstance(node, ast.AsyncFunctionDef)
+                     and node.name == "checked_encode"]
+    else:
+        name = "validate_vector" if path == BGE else "vector_literal"
+        fragments = [node for node in tree.body
+                     if isinstance(node, ast.FunctionDef) and node.name == name]
+    if len(fragments) != 1:
+        raise AssertionError("pinned vector validation AST not found uniquely")
+    return ast.dump(fragments[0], include_attributes=False)
+
 
 def read_source(path, *, baseline=False):
     if baseline:
-        result = subprocess.run(["git", "show", f"{BASE_MAIN}:{path}"],
-                                cwd=ROOT, capture_output=True, text=True,
-                                timeout=10, check=True)
-        return result.stdout
+        if path not in BASELINE_FIXTURES:
+            raise ValueError("unknown immutable baseline source")
+        available = subprocess.run(["git", "cat-file", "-e",
+                                   f"{BASE_MAIN}^{{commit}}"],
+                                   cwd=ROOT, capture_output=True, timeout=10)
+        if available.returncode == 0:
+            actual = subprocess.run(["git", "show", f"{BASE_MAIN}:{path}"],
+                                    cwd=ROOT, capture_output=True, text=True,
+                                    timeout=10, check=True).stdout
+            if _pinned_fragment(actual, path) != _pinned_fragment(
+                    BASELINE_FIXTURES[path], path):
+                raise AssertionError("embedded immutable baseline differs from pinned source")
+            return actual
+        # Explicitly support shallow PR checkouts: this fallback must have
+        # passed the real-pinned-source AST comparison in isolated branch CI.
+        return BASELINE_FIXTURES[path]
     return (ROOT / path).read_text(encoding="utf-8")
 
 
