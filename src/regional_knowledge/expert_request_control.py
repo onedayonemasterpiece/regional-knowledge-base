@@ -323,6 +323,53 @@ class TargetExpertRequestControl:
             return dict(state='leased',request_id=row['id'],generation=generation,
                         execution_token=token,**({'resume_state':resume} if resume else {}))
 
+    def issuance_current(self,credentials,request_id,generation,execution_token,origin):
+        """Nonblocking last-byte lease/destination fence for a trusted receiver.
+
+        The final HTTP source gate separately refreshes real source/participant
+        rights. This checks the existing control row and executor service with
+        a bounded read-only SQLite connection; a busy database denies output.
+        """
+        import sqlite3
+        if (type(credentials) is not ExecutorCredentials or type(generation) is not int
+                or type(execution_token) is not str or type(origin) is not dict):
+            return False
+        db=None
+        try:
+            db=sqlite3.connect(self.corpus.path.resolve().as_uri()+'?mode=ro',
+                uri=True,timeout=0.002,isolation_level=None)
+            db.row_factory=sqlite3.Row
+            service=self._service(db,credentials)
+            row=db.execute('SELECT * FROM rkb_expert_requests WHERE id=?',
+                           (str(request_id),)).fetchone()
+            if (row is None or row['state']!='leased' or row['generation']!=generation
+                    or row['executor_id']!=service['id'] or row['service_epoch']!=service['epoch']
+                    or row['lease_until'] is None or row['lease_until']<=self.clock()
+                    or not hmac.compare_digest(row['execution_token_hash'] or '',
+                        hashlib.sha256(execution_token.encode()).hexdigest())
+                    or json.loads(row['origin'])!=origin):
+                return False
+            self._destination_allowed(origin)
+            # Recheck the verified Slack person/link and current capabilities
+            # via the SAME bounded read-only SQLite connection immediately before
+            # ASGI sends the buffered evidence. An async SourceReadGate refresh
+            # can have finished *before* a concurrent unlink/grant revocation.
+            current=self.people.resolve_external(
+                provider='slack',tenant=origin['team_id'],provider_subject=origin['user_id'],
+                principal_factory=lambda person:Principal(
+                    subject=person,client_id='rkb-trusted-slack',issuer='slack',access_token=''),
+                connection=db)
+            if (current.principal.subject!=row['person_id']
+                    or current.link_id!=row['link_id']
+                    or current.link_revision!=row['link_revision']
+                    or self.people.require(current,'public_search',connection=db)!=row['person_id']):
+                return False
+            return True
+        except (sqlite3.Error,ValueError,TypeError,ParticipantError,RequestControlError,OverflowError):
+            return False
+        finally:
+            if db is not None:db.close()
+
     def claim_context(self,credentials,request_id,generation,execution_token):
         with self.corpus.connect() as db:
             db.execute('BEGIN')
