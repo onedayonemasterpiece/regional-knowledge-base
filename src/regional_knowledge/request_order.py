@@ -83,7 +83,10 @@ def fair_head(db,now,scope_sql,scope_args):
     Give waiting people without active work a first turn, then cycle again
     without imposing an artificial one-active-job-per-person ceiling.
     """
-    ready="(r.state='pending' OR (r.state='leased' AND r.lease_until<=?))"
+    # Only a pre-send expired lease can be reclaimed. Once sending/unknown,
+    # the provider might have committed; preserve the dialog head until exact
+    # receipt/reconciliation, never let another executor resend automatically.
+    ready="(r.state='pending' OR (r.state IN ('leased','result_unsealed','result_ready','send_intent_ready') AND r.lease_until<=?))"
     heads=f'''SELECT r.id FROM rkb_request_dialogs d JOIN rkb_expert_requests r
         ON r.dialog_id=d.id AND r.dialog_seq=d.head_seq
         WHERE d.head_person_id=p.person_id AND {ready} AND ({scope_sql})'''
@@ -91,7 +94,7 @@ def fair_head(db,now,scope_sql,scope_args):
     common=(now,*scope_args,cursor)
     person=None
     for first_turn in (True,False):
-        extra=" AND NOT EXISTS(SELECT 1 FROM rkb_expert_requests a WHERE a.person_id=p.person_id AND a.state='leased' AND a.lease_until>?)" if first_turn else ''
+        extra=" AND NOT EXISTS(SELECT 1 FROM rkb_expert_requests a WHERE a.person_id=p.person_id AND a.state IN ('leased','result_unsealed','result_ready','send_intent_ready') AND a.lease_until>?)" if first_turn else ''
         args=(now,*scope_args,now,cursor) if first_turn else common
         person=db.execute(f'''SELECT p.* FROM rkb_request_people p WHERE EXISTS({heads}){extra}
             ORDER BY CASE WHEN p.ordinal>? THEN 0 ELSE 1 END,p.ordinal LIMIT 1''',args).fetchone()

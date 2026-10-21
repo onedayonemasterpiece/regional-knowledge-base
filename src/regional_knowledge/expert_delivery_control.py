@@ -75,9 +75,10 @@ class TargetExpertDeliveryControl:
         with self.control.corpus.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             found={row['name'] for row in db.execute('PRAGMA table_info(rkb_expert_requests)')}
-            for column in ('result_remote_hash','send_intent_hash'):
+            for column,kind in (('result_remote_hash','TEXT'),('send_intent_hash','TEXT'),
+                                ('result_generation','INTEGER')):
                 if column not in found:
-                    db.execute('ALTER TABLE rkb_expert_requests ADD COLUMN '+column+' TEXT')
+                    db.execute('ALTER TABLE rkb_expert_requests ADD COLUMN '+column+' '+kind)
 
     def _lease(self, db, credentials, request_id, generation, token, *, states):
         service=self.control._service(db,credentials)
@@ -90,6 +91,7 @@ class TargetExpertDeliveryControl:
                                            hashlib.sha256(token.encode()).hexdigest())):
             _fail('request_fence_denied')
         origin=json.loads(row['origin'])
+        self.control._destination_allowed(origin)
         person=self.control.people.resolve_external(
             provider='slack',tenant=origin['team_id'],provider_subject=origin['user_id'],
             principal_factory=lambda who:Principal(subject=who,client_id='rkb-trusted-slack',
@@ -118,28 +120,36 @@ class TargetExpertDeliveryControl:
             row,origin=self._lease(db,credentials,request_id,generation,execution_token,
                                    states=('leased','result_unsealed'))
             self._source_current(row,origin)
+            # A reclaimed executor has a new execution generation. The
+            # already authored result MUST retain its original generation,
+            # byte identity and remote-intent dependency.
+            original=row['result_generation']
+            if row['result_hash'] and (type(original) is not int or original<1):
+                _fail('result_generation_unproved')
+            result_gen=original if row['result_hash'] else generation
             payload=_canonical(dict(codec='rkb.expert-result.v1',request_id=row['id'],
-                                    generation=generation,person_id=row['person_id'],
+                                    generation=result_gen,person_id=row['person_id'],
                                     output_scope=row['output_scope'],text=text))
             digest=hashlib.sha256(payload.encode()).hexdigest()
             if row['result_hash']:
                 if row['result_hash']!=digest:
                     _fail('result_conflict')
                 return dict(request_id=row['id'],state='result_unsealed',saved=False)
-            db.execute('UPDATE rkb_expert_requests SET state=?,result_json=?,result_hash=?,updated_at=? WHERE id=?',
-                       ('result_unsealed',payload,digest,self.control.clock(),row['id']))
+            db.execute('UPDATE rkb_expert_requests SET state=?,result_json=?,result_hash=?,result_generation=?,updated_at=? WHERE id=?',
+                       ('result_unsealed',payload,digest,result_gen,self.control.clock(),row['id']))
             return dict(request_id=row['id'],state='result_unsealed',saved=False)
 
     def exact_result_intent(self,request_id,sequence: int) -> ExactCommand:
         row=self.control._row(request_id)
         if (row['state'] not in ('result_unsealed','result_ready')
-                or not row['result_hash'] or not row['result_json'] or type(sequence) is not int
-                or sequence<1):_fail('result_intent_unavailable')
+                or not row['result_hash'] or not row['result_json']
+                or type(row['result_generation']) is not int or row['result_generation']<1
+                or type(sequence) is not int or sequence<1):_fail('result_intent_unavailable')
         return ExactCommand(sequence=sequence,operation_key='expert-result:'+row['id'],
             request_id=row['id'],person_id=row['person_id'],route='expert.result.v1',
             logical_time=str(row['created_at']),schema_revision='rkb-expert-control-v1',
             function_revision='no-native-domain-effect',executor_revision='existing-control-owner',
-            ids=dict(request_id=row['id']),expected_revisions=dict(generation=str(row['generation'])),
+            ids=dict(request_id=row['id']),expected_revisions=dict(generation=str(row['result_generation'])),
             payload=row['result_json'].encode(),kind='control')
 
     async def verify_remote_result(self,credentials,request_id,generation,token,command,seal):
@@ -161,19 +171,20 @@ class TargetExpertDeliveryControl:
     def exact_send_intent(self,request_id,sequence: int) -> ExactCommand:
         row=self.control._row(request_id)
         if (row['state'] not in ('result_ready','send_intent_ready') or not row['result_remote_hash']
+                or type(row['result_generation']) is not int or row['result_generation']<1
                 or type(sequence) is not int or sequence<1):
             _fail('send_intent_unavailable')
-        marker=str(uuid5(NAMESPACE_URL,'rkb:expert-send:'+row['id']+':'+str(row['generation'])))
+        marker=str(uuid5(NAMESPACE_URL,'rkb:expert-send:'+row['id']+':'+str(row['result_generation'])))
         origin=json.loads(row['origin'])
         payload=dict(codec='rkb.expert-slack-send.v1',request_id=row['id'],
-                     generation=row['generation'],marker=marker,origin=origin,
+                     generation=row['result_generation'],marker=marker,origin=origin,
                      result_hash=row['result_hash'],output_scope=row['output_scope'])
         return ExactCommand(sequence=sequence,operation_key='expert-send:'+row['id'],
             request_id=row['id'],person_id=row['person_id'],route='expert.slack.send.v1',
             logical_time=str(row['created_at']),schema_revision='rkb-expert-control-v1',
             function_revision='no-native-domain-effect',executor_revision='existing-control-owner',
             ids=dict(request_id=row['id'],client_msg_id=marker),
-            expected_revisions=dict(generation=str(row['generation'])),
+            expected_revisions=dict(generation=str(row['result_generation'])),
             payload=_canonical(payload).encode(),kind='provider_intent')
 
     async def verify_remote_send(self,credentials,request_id,generation,token,command,seal):

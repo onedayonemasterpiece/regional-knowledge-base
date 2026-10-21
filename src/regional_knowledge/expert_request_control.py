@@ -198,6 +198,17 @@ class TargetExpertRequestControl:
             request_order.assign_slack(db,ident,person,origin)
             return dict(request_id=ident,state='received',durable=False)
 
+    def _destination_allowed(self,origin):
+        """Recheck current Slack destination policy, not only intake policy."""
+        if (type(origin) is not dict or origin.get('app_id')!=self.app_id
+                or origin.get('team_id')!=self.team_id
+                or origin.get('channel_type') not in ('group','im')
+                or type(origin.get('channel_id')) is not str
+                or not origin['channel_id']
+                or origin['channel_type']=='group'
+                and origin['channel_id'] not in self.allowed_channels):
+            _fail('slack_destination_revoked')
+
     def _row(self,request_id):
         with self.corpus.connect() as db:
             row=db.execute('SELECT * FROM rkb_expert_requests WHERE id=?',(str(request_id),)).fetchone()
@@ -221,11 +232,8 @@ class TargetExpertRequestControl:
     async def verify_remote_intent(self, request_id, command: ExactCommand, seal: AcceptedSeal):
         """Only an existing remote journal acceptance allows fair claim/dispatch."""
         row=self._row(request_id)
-        if (type(command) is not ExactCommand or command.kind!='control'
-                or command.route!='expert.request.v1' or command.request_id!=row['id']
-                or command.person_id!=row['person_id'] or command.ids!={'request_id':row['id']}
-                or command.expected_revisions!={'generation':'0'}
-                or command.payload!=self.exact_remote_intent(request_id,command.sequence).payload):
+        if (type(command) is not ExactCommand or
+                command.encode()!=self.exact_remote_intent(request_id,command.sequence).encode()):
             _fail('remote_intent_conflict')
         confirmed=await self.spool.journal.verify_accepted(seal,command)
         with self.corpus.connect() as db:
@@ -287,6 +295,7 @@ class TargetExpertRequestControl:
             if not row['remote_command_hash']:_fail('unsealed_request_not_claimable')
             origin=json.loads(row['origin'])
             try:
+                self._destination_allowed(origin)
                 context=self.people.resolve_external(provider='slack',tenant=origin['team_id'],
                     provider_subject=origin['user_id'],principal_factory=lambda person:Principal(
                         subject=person,client_id='rkb-trusted-slack',issuer='slack',access_token=''),
@@ -300,21 +309,27 @@ class TargetExpertRequestControl:
                 return dict(state='blocked',request_id=row['id'])
             generation=row['generation']+1
             token=secrets.token_urlsafe(32)
-            db.execute("""UPDATE rkb_expert_requests SET state='leased',generation=?,executor_id=?,
+            # A lost pre-send worker may reclaim only after its lease expires.
+            # Preserve the exact saved result/send intent and their ORIGINAL
+            # generation; rotate only the execution generation and token.
+            resume=row['state'] if row['state'] in (
+                'result_unsealed','result_ready','send_intent_ready') else None
+            db.execute("""UPDATE rkb_expert_requests SET state=?,generation=?,executor_id=?,
                 service_epoch=?,execution_token_hash=?,lease_until=?,updated_at=?
-                WHERE id=?""",(generation,service['id'],service['epoch'],
+                WHERE id=?""",(resume or 'leased',generation,service['id'],service['epoch'],
                 hashlib.sha256(token.encode()).hexdigest(),self.clock()+lease_seconds,
                 self.clock(),row['id']))
             request_order.claimed(db,row)
             return dict(state='leased',request_id=row['id'],generation=generation,
-                        execution_token=token)
+                        execution_token=token,**({'resume_state':resume} if resume else {}))
 
     def claim_context(self,credentials,request_id,generation,execution_token):
         with self.corpus.connect() as db:
             db.execute('BEGIN')
             service=self._service(db,credentials)
             row=db.execute('SELECT * FROM rkb_expert_requests WHERE id=?',(str(request_id),)).fetchone()
-            if (row is None or row['state']!='leased' or row['generation']!=generation
+            if (row is None or row['state'] not in ('leased','result_unsealed','result_ready','send_intent_ready')
+                    or row['generation']!=generation
                     or row['executor_id']!=service['id'] or row['service_epoch']!=service['epoch']
                     or row['lease_until'] is None or row['lease_until']<=self.clock()
                     or type(execution_token) is not str or
@@ -322,6 +337,7 @@ class TargetExpertRequestControl:
                         hashlib.sha256(execution_token.encode()).hexdigest())):
                 _fail('request_fence_denied')
             origin=json.loads(row['origin'])
+            self._destination_allowed(origin)
             context=self.people.resolve_external(provider='slack',tenant=origin['team_id'],
                 provider_subject=origin['user_id'],principal_factory=lambda person:Principal(
                     subject=person,client_id='rkb-trusted-slack',issuer='slack',access_token=''),

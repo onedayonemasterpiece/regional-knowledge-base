@@ -11,8 +11,8 @@ from test_expert_request_control import _prepare, _observation
 from regional_knowledge.expert_request_control import TargetExpertRequestControl
 
 
-async def _accepted_request(env, ctl, number, sequence, *, thread="1792000000.100"):
-    entry=ctl.accept(_observation(n=number,thread=thread))
+async def _accepted_request(env, ctl, number, sequence, *, thread="1792000000.100", group=False):
+    entry=ctl.accept(_observation(n=number,thread=thread,group=group))
     command=ctl.exact_remote_intent(entry['request_id'],sequence)
     seal=await env.journal.seal([command],predecessor=await env.journal.head(),
                                 writer_generation='writer-1')
@@ -113,6 +113,88 @@ async def test_external_account_unlink_between_result_and_send_fails_closed(env)
         row=db.execute('SELECT state,delivery_attempt FROM rkb_expert_requests WHERE id=?',
                        (entry['request_id'],)).fetchone()
         assert row['state']=='send_intent_ready' and row['delivery_attempt']==0
+
+
+@pytest.mark.asyncio
+async def test_expired_pre_send_lease_recovers_original_result_and_send_intents(env):
+    e=env;ctl,creds,_=_prepare(e)
+    now=[1792000001.0]
+    ctl.clock=lambda:now[0]
+    delivery=TargetExpertDeliveryControl(ctl,source_gate=lambda row,origin:True)
+    entry=await _accepted_request(e,ctl,1,1)
+    first=ctl.claim(creds,request_id=entry['request_id'])
+    one=(creds,entry['request_id'],first['generation'],first['execution_token'])
+    assert delivery.prepare_result(*one,text='Exact preserved answer.')['state']=='result_unsealed'
+    original_result=delivery.exact_result_intent(entry['request_id'],2)
+    assert original_result.expected_revisions['generation']=='1'
+    now[0]+=125
+    second=ctl.claim(creds,request_id=entry['request_id'])
+    assert second['generation']==2 and second['resume_state']=='result_unsealed'
+    two=(creds,entry['request_id'],second['generation'],second['execution_token'])
+    with pytest.raises(RequestControlError,match='request_fence_denied'):
+        delivery.prepare_result(*one,text='Exact preserved answer.')
+    assert delivery.prepare_result(*two,text='Exact preserved answer.')['state']=='result_unsealed'
+    with pytest.raises(RequestControlError,match='result_conflict'):
+        delivery.prepare_result(*two,text='Changed after remote intent?')
+    assert delivery.exact_result_intent(entry['request_id'],2).encode()==original_result.encode()
+    seal=await e.journal.seal([original_result],predecessor=await e.journal.head(),writer_generation='writer-1')
+    await delivery.verify_remote_result(*two,original_result,seal)
+    original_send=delivery.exact_send_intent(entry['request_id'],3)
+    assert original_send.expected_revisions['generation']=='1'
+    now[0]+=125
+    third=ctl.claim(creds,request_id=entry['request_id'])
+    assert third['generation']==3 and third['resume_state']=='result_ready'
+    three=(creds,entry['request_id'],third['generation'],third['execution_token'])
+    assert delivery.exact_send_intent(entry['request_id'],3).encode()==original_send.encode()
+    seal=await e.journal.seal([original_send],predecessor=await e.journal.head(),writer_generation='writer-1')
+    await delivery.verify_remote_send(*three,original_send,seal)
+    now[0]+=125
+    fourth=ctl.claim(creds,request_id=entry['request_id'])
+    assert fourth['generation']==4 and fourth['resume_state']=='send_intent_ready'
+    four=(creds,entry['request_id'],fourth['generation'],fourth['execution_token'])
+    assert delivery.exact_send_intent(entry['request_id'],3).encode()==original_send.encode()
+    with pytest.raises(RequestControlError,match='request_fence_denied'):
+        delivery.claim_send_once(*three)
+    outgoing=delivery.claim_send_once(*four)
+    assert outgoing['delivery_id']==original_send.ids['client_msg_id']
+    assert outgoing['text']=='Exact preserved answer.'
+    now[0]+=125
+    assert ctl.claim(creds,request_id=entry['request_id'])=={'state':'empty'}
+    delivery.uncertain_delivery(creds,entry['request_id'],outgoing['delivery_id'])
+    assert ctl.claim(creds,request_id=entry['request_id'])=={'state':'empty'}
+    with e.p.corpus.connect() as db:
+        row=db.execute('SELECT generation,result_generation,delivery_attempt FROM rkb_expert_requests WHERE id=?',
+                       (entry['request_id'],)).fetchone()
+        assert tuple(row)==(4,1,1)
+
+
+@pytest.mark.asyncio
+async def test_revoked_group_allowlist_blocks_context_and_final_send(env):
+    e=env;ctl,creds,_=_prepare(e)
+    delivery=TargetExpertDeliveryControl(ctl,source_gate=lambda row,origin:True)
+    entry=await _accepted_request(e,ctl,1,1,group=True)
+    args=await _ready_delivery(e,ctl,delivery,creds,entry,2)
+    assert ctl.claim_context(*args)['origin']['channel_id']=='C111'
+    # After a valid intake and remote send intent, the deployed policy changes.
+    # Reopening the same control database must recheck allowlist before pixels.
+    updated=TargetExpertRequestControl(e.p.registry,e.spool,app_id='A111',team_id='T111',
+        bot_user_id='UBOT',allowed_channels=(),clock=lambda:1792000001.0)
+    later=TargetExpertDeliveryControl(updated,source_gate=lambda row,origin:True)
+    with pytest.raises(RequestControlError,match='slack_destination_revoked'):
+        updated.claim_context(*args)
+    with pytest.raises(RequestControlError,match='slack_destination_revoked'):
+        later.claim_send_once(*args)
+    with e.p.corpus.connect() as db:
+        row=db.execute('SELECT state,delivery_attempt FROM rkb_expert_requests WHERE id=?',(entry['request_id'],)).fetchone()
+        assert tuple(row)==('send_intent_ready',0)
+    # If policy was already withdrawn before claim, there is no execution.
+    separate=await _accepted_request(e,ctl,2,4,thread='1792000000.222',group=True)
+    updated.allowed_channels=frozenset()
+    assert updated.claim(creds,request_id=separate['request_id'])=={
+        'state':'blocked','request_id':separate['request_id']}
+    with e.p.corpus.connect() as db:
+        assert db.execute('SELECT state FROM rkb_expert_requests WHERE id=?',
+                          (separate['request_id'],)).fetchone()[0]=='blocked'
 
 
 @pytest.mark.asyncio

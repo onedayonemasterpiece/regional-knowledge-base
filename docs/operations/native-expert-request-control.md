@@ -17,8 +17,10 @@ end-to-end acceptance remain NOT RUN.
   boundary; verified external identity and grants via the *existing*
   Participants; request dedup by event/message; bounded local request/order
   projection; existing RecoveryJournal exact-command acceptance readback
-  before a request becomes eligible for claim; service epoch and
-  per-request execution-token/generation fences. A local `received` row
+  before a request becomes eligible for claim. Verify the complete original
+  `ExactCommand.encode()` (including operation key, revisions and logical
+  time), not just its source payload. Service epoch and per-request
+  execution-token/generation fences. A local `received` row
   is explicitly **not** `saved`, `accepted` or an authorisation to execute.
 - `expert_delivery_control.py`: result-intent and send-intent are separate
   exact externally verifiable commands in the same **existing** recovery
@@ -27,8 +29,13 @@ end-to-end acceptance remain NOT RUN.
   remote intent. An unknown send ACK stays `unknown` across controller
   reconstruction and forbids retransmission. A real native Slack
   provider message with the exact client message ID, app/bot and destination
-  fields allows a receipt to advance the dialog head. Results may not be
-  issued on failed current request/identity/source gate.
+  fields allows a receipt to advance the dialog head. An expired pre-send
+  lease can be reclaimed with a new execution generation and token, while
+  the original result_generation and accepted remote result/send intents
+  remain immutable. `sending`/`unknown` cannot be reclaimed for automatic
+  resend. The current Slack channel allowlist is rechecked at claim,
+  context and final send, not only at initial event intake. Results may not
+  be issued on failed current request/identity/source gate.
 
 This intentionally **does not import** the legacy
 `ExpertRequests.__init__`, `DisagreementJournal`, `PersonalDrafts`,
@@ -82,10 +89,10 @@ file. Confirm actual placement and capacity before enabling this module.
 |---|---|---|
 | `received` | Locally stored signed request; exact remote intent not yet proved | None |
 | `pending` | Request intent exists in the **same** remote acceptance journal | Claim only after current identity/grants/admission |
-| `leased` | One fenced generation and executor token | Trusted PG lookup only with current destination/source permissions |
+| `leased` | One fenced execution generation and token; on pre-send expiry, a new lease preserves original result_generation | Trusted PG lookup only with current destination/source permissions |
 | `result_unsealed` | Bounded result prepared locally | None |
 | `result_ready` | Exact result intent externally accepted | Prepare send intent, **no Slack send** |
-| `send_intent_ready` | Exact provider intent externally accepted | One permitted native send only after final policy check |
+| `send_intent_ready` | Exact provider intent accepted; original generation/marker remain immutable across pre-send reclaim | One permitted native send only after final current-source and Slack destination policy check |
 | `sending` / `unknown` | Effect may already have happened | No duplicate send; provider readback/reconcile only |
 | `delivered` | Exact native provider receipt correlated to sent intent | Advance original dialog head; **not** a claim of durable PG mutation |
 

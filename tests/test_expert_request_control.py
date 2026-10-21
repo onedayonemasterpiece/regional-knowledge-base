@@ -15,11 +15,11 @@ from test_control_spool import env
 from test_participants import people, bind, change
 
 
-def _event(n=1, *, text="Which event is supported by this source?", thread="1792000000.100"):
+def _event(n=1, *, text="Which event is supported by this source?", thread="1792000000.100", group=False):
     payload = {"api_app_id": "A111", "team_id": "T111", "event_id": f"Ev-{n}",
                "type": "event_callback", "event": {
-                   "user": "U111", "channel": "D111", "channel_type": "im",
-                   "type": "message", "ts": f"1792000000.{n:03d}",
+                   "user": "U111", "channel": "C111" if group else "D111", "channel_type": "channel" if group else "im",
+                   "type": "app_mention" if group else "message", "ts": f"1792000000.{n:03d}",
                    "thread_ts": thread, "text": text}}
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
     stamp = "1792000000"
@@ -115,6 +115,29 @@ async def test_remote_intent_mismatch_cannot_claim_or_mutate_another_event(env):
         await ctl.verify_remote_intent(one["request_id"],bad,seal)
     assert ctl.claim(creds)=={"state":"empty"}
     assert ctl.accept(_observation(n=2))["state"]=="received"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field,value',[
+    ('operation_key','expert-request:forged-operation'),
+    ('logical_time','9999999999.99'),
+    ('schema_revision','forged-schema'),
+    ('function_revision','forged-function'),
+    ('executor_revision','forged-executor'),
+    ('kind','provider_intent'),
+])
+async def test_remote_proof_of_altered_exact_envelope_is_not_original_intent(env,field,value):
+    e=env;ctl,creds,_=_prepare(e)
+    req=ctl.accept(_observation())
+    original=ctl.exact_remote_intent(req['request_id'],1)
+    forged=replace(original,**{field:value})
+    # Even genuine membership of an altered command in the REMOTE journal
+    # must not reclassify this *different* original request as accepted.
+    seal=await e.journal.seal([forged],predecessor=None,writer_generation='writer-1')
+    with pytest.raises(RequestControlError,match='remote_intent_conflict'):
+        await ctl.verify_remote_intent(req['request_id'],forged,seal)
+    assert ctl._row(req['request_id'])['state']=='received'
+    assert ctl.claim(creds)=={'state':'empty'}
 
 
 @pytest.mark.asyncio
