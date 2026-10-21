@@ -275,3 +275,18 @@ def test_unknown_launch_source_reconciliation_is_bounded_without_changing_origin
     monkeypatch.setattr(module,'notebook_snapshot',lambda api,ref:{'run_id':run_id,'version':92})
     assert module.reconcile_launch_due(None,queue,run,ref,probed,now=160) is True
     assert next(r for r in queue.maintenance() if r['id']==run_id)['provider_version']==92
+
+
+def test_restore_launch_refuses_writer_bound_to_another_run(tmp_path):
+    """A successor demand cannot push a target pinned to a retired run's writer."""
+    import pytest
+    from regional_knowledge.bge_queue import BgeQueue
+    module=controller();q=BgeQueue(tmp_path/'writer-binding.sqlite',clock=lambda:1000.)
+    with q.connect() as db:
+        db.execute('CREATE TABLE rkb_writer_control(id INTEGER PRIMARY KEY,run_id TEXT,writer_generation TEXT)')
+        db.execute("INSERT INTO rkb_writer_control VALUES(1,'retired-run','writer-a')")
+    module.require_writer_binding(q,'retired-run','writer-a')
+    for run_id,writer in (('successor-run','writer-a'),('retired-run','writer-b')):
+        with pytest.raises(ValueError):module.require_writer_binding(q,run_id,writer)
+    report=module.provider_boundary_report(ValueError('x'),'successor-run','launch_preparation','verify_writer_binding')
+    assert report['submission_state']=='not_sent' and report['preparation_step']=='verify_writer_binding'

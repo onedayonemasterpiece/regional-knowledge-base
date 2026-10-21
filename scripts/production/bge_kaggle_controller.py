@@ -33,7 +33,7 @@ def provider_error_facts(error):
     return result
 
 _PREPARATION_STEPS=frozenset({'not_started','create_private_folder',
-    'verify_empty_journal_intent','compose_notebook_source',
+    'verify_empty_journal_intent','verify_writer_binding','compose_notebook_source',
     'write_private_notebook','write_private_metadata','provider_submission'})
 
 
@@ -187,6 +187,14 @@ def reconcile_provider_history(api, queue, *, limit=2, current_only=False):
     return retired
 
 
+def require_writer_binding(queue, run_id, writer_generation):
+    """Known not-sent refusal unless the restore writer belongs to this run."""
+    with queue.connect(write=False) as db:
+        row=db.execute('SELECT run_id,writer_generation FROM rkb_writer_control WHERE id=1').fetchone()
+    if row is None or tuple(row)!=(run_id,writer_generation):
+        raise ValueError('restore writer binding belongs to another run')
+
+
 def target_sql_hashes(target, repository):
     """Pin exactly the migration prefix the native initializer will execute."""
     from regional_knowledge.kaggle_owned_pg import sql_artifacts, digest
@@ -281,6 +289,13 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                         asyncio.run(persist_empty_intent(queue,run_id,target_spec,launch_nonce=nonce,
                             recovery_journal=recovery_journal,
                             sql_hashes=target_sql_hashes(target_spec,Path(__file__).resolve().parents[2])))
+                    if target_spec is not None and target_spec.database.mode=='VERIFIED_INITIALIZED':
+                        # A restore target pins one writer generation minted for
+                        # one run. A successor created by later demand (reboot,
+                        # retire) cannot adopt it, so pushing would only burn a
+                        # Kaggle session that waits for an impossible restore.
+                        preparation_step='verify_writer_binding'
+                        require_writer_binding(queue,run_id,target_spec.database.writer_generation)
                     preparation_step='compose_notebook_source'
                     source=worker_source(template,queue,run_id,token,broker,
                                          transport=os.getenv('RKB_BGE_TRANSPORT','http'),target=target_spec,provider_image=image)
