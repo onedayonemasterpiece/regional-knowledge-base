@@ -56,10 +56,11 @@ READY run отдаёт чтения нестабильно, потому что 
 
 ### P1. Нет in-run обновления SQL/handler (§5.4, первые две строки таблицы; DBG-1)
 
-- DISPATCH-виды в main: embed/query jobs, `source_command`, `recovery_phase`
-  (`bge_channel.py:144-146`, `bge_kaggle_worker.py`). Видов вроде live SQL migration, stateless
-  handler swap или maintenance bundle **нет**; `model_load_count` есть только в bootstrap readiness
-  (`kaggle_bootstrap.py:251`).
+- Поправка (третий проход): узкий путь **горячей замены read handler** в main есть. Это подфазы
+  `recovery_phase` `read_handler_status/stage/activate/rollback`
+  (`kaggle_recovery_phases.py:19-20`, `kaggle_warm_maintenance.py`, `kaggle_warm_read.py`). В
+  первой версии я искал только по видам DISPATCH и его пропустил. Живого **SQL migration apply**
+  в живом run нет. Живого прогона handler-пути (DBG-1) в журналах тоже не видно.
 - Следствие на практике: v102 (READY, GEO1–20 выполнены) отозван в 21:41:38. Причина —
   native-дефект `dataset_verify`, который нельзя было исправить в живом run. По журналу: 30
   закрытий чтений с `dataset_native_snapshot_readback_changed` за окно READY, см. §7 O2. Исправление

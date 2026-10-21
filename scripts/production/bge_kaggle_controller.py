@@ -149,6 +149,27 @@ def reconcile_dispatched_terminal(api, queue, run, ref):
     return phase
 
 
+_LEASE_TERMINAL_PROBED={}
+LEASE_TERMINAL_PROBE_SECONDS=30
+
+
+def lease_terminal_probe_due(queue, run, *, now=None):
+    """An owned run whose lease elapsed may be retired only by exact proof.
+
+    _expire keeps a dispatched run's status while its provider outcome is
+    unknown, so status alone would never request that proof and every dead
+    run would need a manual retire. Probe at most every 30 s per run.
+    """
+    if run['status']=='expired':return True
+    if run['status'] not in ('starting','ready','draining') or not queue._run_expired(run,queue.clock()):
+        return False
+    now=time.monotonic() if now is None else now
+    previous=_LEASE_TERMINAL_PROBED.get(run['id'])
+    if previous is not None and now-previous<LEASE_TERMINAL_PROBE_SECONDS:return False
+    _LEASE_TERMINAL_PROBED[run['id']]=now
+    return True
+
+
 def reconcile_provider_history(api, queue, *, limit=2, current_only=False):
     """One bounded resumable page; unknown submissions never hold up known rows.
 
@@ -169,7 +190,7 @@ def reconcile_provider_history(api, queue, *, limit=2, current_only=False):
     for run in runs:
         try:
             if (type(run['provider_version']) is int and run['provider_ref']
-                    and run['status']=='expired'):
+                    and (run['status']=='expired' if not current_only else lease_terminal_probe_due(queue,run))):
                 proof=observe_version_terminal(api,run,clock=queue.clock)
                 if proof is not None and queue.retire_provider_reservation(proof):
                     retired+=1
