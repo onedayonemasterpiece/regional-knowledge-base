@@ -16,7 +16,8 @@ from native_vector_literal import (
 class TestNativeVectorLiteral(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.original, cls.source_hashes = original_python()
+        original, cls.source_hashes = original_python()
+        cls.original = staticmethod(original)
         cls.native = RustVector()
 
     def assert_original_parity(self, values):
