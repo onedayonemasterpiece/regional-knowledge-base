@@ -68,13 +68,13 @@
 | REC-2 | Corrupt snapshot / wrong version / несовместимый codec | Candidate не становится canonical; доступна прежняя verified baseline или явный controlled recovery. |
 | REC-3 | Yandex candidate upload/verify fail | Старая baseline сохраняется, remote tail GC учитывает её watermark и consumers; local sealed spool может compact независимо. |
 | REC-4 | Потеря DevCoveer control disk | Все final accepted/saved восстанавливаются из verified remote tail; локальный received остаётся pending, epoch/UNKNOWN/grants/receipts восстановлены. |
-| REC-5 | Dataset persistence/continuation outage, local byte cap, old weekly backup | Нет false accepted/Saved; непокрытый cursor виден, backpressure до переполнения; local/remote GC сохраняют реально необходимую recovery chain. |
+| REC-5 | Dataset persistence/continuation outage, local byte cap, старый weekly backup | Нет false accepted/Saved; точно виден непокрытый cursor, backpressure до переполнения; local/remote GC не уничтожают единственную recovery copy. |
 | REC-6 | Expired operation ID / same key different hash / UNKNOWN старше 4 h | Expired не исполняется заново, hash conflict явный, UNKNOWN не исчезает по TTL. |
 | REC-7 | Crash на upload/manifest/control checkpoint boundary | Выбирается только целая sealed chain без gaps; orphan не становится принятой командой; outcome receipt восстанавливаем. |
 | REC-8 | Base на другом collation/runtime; derived BGE после иной batch/thread конфигурации | Несовместимый index repair до READY; canonical outcome неизменен, projection lag честный и quality gate сохранён. |
 | REC-9 | Много provider UNKNOWN без readback | Нет autoresend/false delivery; scoped explicit resolve, unrelated imports/saves работают в своих budgets. |
 | REC-10 | Старый worker завершил presigned upload после epoch change | Orphan не становится current; DELETE/admin недоступен notebook, large bytes не попали в control spool. |
-| IMP-1 | Последовательные fresh A→B/B→A, competing start/resume | Один owner-only import lease, concurrent reads; каждая revision/research frontier сохранены, второй импорт не исполняется параллельно. |
+| IMP-1 | Последовательные fresh A→B/B→A, конкурирующие start/resume | Один owner-only import lease, каждая revision активируется корректно, research frontier сохранён, reads продолжаются; второй импорт не исполняется параллельно. |
 | IMP-2 | Retry stage/finalize/reextract/rename | Нет дубля book/findings/Story/Variant/case; corrected metadata не меняет corpus. |
 | IMP-3 | Table/caption/footnote без эпизода | Facts, dates, observations, entities и exact evidence доступны, zero new story допустим. |
 | STO-1 | Эпизод через windows/страницы | Сохранённое continuation приводит к одному связному досье, не набору chunk stories. |
@@ -101,7 +101,7 @@
 | PRF-3 | Mixed ready/pending/failed pages | Успехи возвращены по items, continuation сохранён, actual MIME верен. |
 | PRF-4 | Owner/demo/expert/local_historian и обычный читатель | Все получают illustration; первые четыре категории при scope получают proof, остальные — denial; full PDF не открыт. |
 | PRF-5 | Full page labelled illustration / shared-channel request | Серверная classification/geometry и current audience закрывают обход; public cache не содержит proof. |
-| ARC-1 | Oversize/stream break/FloodWait/unknown send | Direct Kaggle Telethon, один uploader, bounded resources и session lease; успех по доступному media locator, без custom Telegram download/hash comparison; unknown не повторяется вслепую. |
+| ARC-1 | Oversize/stream break/FloodWait/неизвестный send | Один прямой Telethon uploader в Kaggle, bounded ресурсы и independent session lease; успех по доступному media locator, без custom Telegram hash/readback; неизвестный send не повторяется вслепую. |
 | QUE-1 | Один пользователь с многими dialog и explicit IDs | Canonical-person fairness без обхода fair head. |
 | QUE-2 | UNKNOWN delivery / новая реплика / cancel | Порядок своего диалога сохранён, другие люди работают, подтверждённые эффекты не удалены. |
 | QUE-3 | Capacity shrink/grow / long import / ETA | Permits пересчитаны, search reserve есть, >10 s notice coalesced и final приоритетен. |
@@ -117,10 +117,6 @@
 Это набор различающих сценариев, а не предписание создать по сервису/fixture на строку. Повторяющиеся механизмы проверяются одним meaningful тестом с несколькими условиями; существующее доказательство переиспользуется для неизменённого кода.
 
 Тесты с реальными источниками по умолчанию используют isolated case/corpus fixture и один test_run_id. Не публиковать вымышленные экспертные мнения в live cases, subscriptions или VK. Если требуется canonical mutation, заранее baseline/allowed effects и узкая idempotent CAS compensation своих действий, сохраняющая поздние реальные вклады; rollback_conflict не лечится force overwrite. Component tests не требуют подделывать Slack event; actual user-sender E2E отдельно и без impersonation.
-
-## Дополнение после аудита 21.10.2026
-
-[Owner alignment](../designs/rkb-owner-alignment-20261021.md) обязателен. [Новая parity-матрица](rkb-migration-parity-20261021.md) дополняет, не ослабляет численные gates: scan/model reading без native gate, PDF/DjVu/large-book, illustration+actual pixels, один import, direct Telethon/presence, Dataset primary/weekly Yandex, document-vector locality, hot update, Go/Rust decision. В ней отдельно проверяются весь research→Case цикл, positions, настоящий exact-version human support и публичная Astro-страница. Code/fixture/deploy/live фиксируются раздельно; все новые сценарии до выполнения NOT RUN. Общие integrity checks артефактов/PG не являются требованием Telegram media hashes.
 
 ### 14.4. Скорость полезного ответа, выбор native и сравнение Mira/Dot
 
