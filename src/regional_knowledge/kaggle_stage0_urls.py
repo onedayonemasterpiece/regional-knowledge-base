@@ -137,8 +137,14 @@ def renew_stage0_urls(stage0, *, objects, sign_get, now,
         if (_expiry(item.url, pin, now)-now).total_seconds() < minimum:
             expired.add(pin.name)
     for item in stage0.downloads:
-        if item.name not in pins and 'X-Amz-' in urlsplit(item.url).query:
-            raise ValueError('stage0_signed_object_not_pinned')
+        if item.name not in pins:
+            try:
+                names = {key for key, _ in parse_qsl(urlsplit(item.url).query,
+                    keep_blank_values=True, max_num_fields=64)}
+            except ValueError:
+                raise ValueError('stage0_unmapped_query_invalid') from None
+            if any(key.startswith('X-Amz-') for key in names):
+                raise ValueError('stage0_signed_object_not_pinned')
     if not expired:
         return stage0
     downloads = []

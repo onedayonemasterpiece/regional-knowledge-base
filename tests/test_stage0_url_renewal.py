@@ -101,6 +101,20 @@ def test_unmapped_signed_object_is_not_silently_ignored():
         renew_stage0_urls(plan((a,b)), objects=(a,), sign_get=lambda *a: pytest.fail(), now=NOW)
 
 
+def test_encoded_unmapped_signing_fields_fail_before_first_signer_call():
+    a, b = pin(), pin('native.json', 'native/manifest.json')
+    before = plan((a,b), when=NOW-timedelta(days=1))
+    encoded = replace(before.downloads[1], url=before.downloads[1].url.replace('X-Amz-', 'X%2DAmz-'))
+    before = replace(before, downloads=(before.downloads[0], encoded, before.downloads[2]))
+    calls = []
+    def sign(p, seconds):
+        calls.append(p.name)
+        return signed(p, seconds=seconds)
+    with pytest.raises(ValueError, match='stage0_signed_object_not_pinned'):
+        renew_stage0_urls(before, objects=(a,), sign_get=sign, now=NOW)
+    assert calls == []
+
+
 def test_existing_s3_signer_uses_get_only_and_exact_bucket_key():
     calls = []
     item = pin()
