@@ -23,7 +23,7 @@ from .kaggle_case_contracts import CaseReadRequest,canonical,exact_uuid
 from .kaggle_domain_bindings import DOMAIN_REVISIONS,resolved_current_case_command
 from .kaggle_protocol import TrustedActorContext
 from .kaggle_public_backend import current_binding
-from .participants import RequestAuthority
+from .participants import RequestAuthority,ParticipantError
 from .read_issuance import retain_read_output
 from .source_read_gate import GatedResult
 
@@ -138,6 +138,28 @@ class KaggleCasesBackend:
         return {**(result.record or {}),'status':result.status,'reason':result.reason,
             'observed_data_seq':result.observed_data_seq,'observed_projection_seq':result.observed_projection_seq}
 
+    def _render_case(self,result):
+        # Native immutable contribution records stay exactly as signed by PG.
+        # The owner's later mistaken-account correction is a *current* policy
+        # annotation, recomputed on the final MCP issuance after gate refresh.
+        output=self._render(result)
+        if output.get('section')!='contributions':return output
+        items=output.get('items')
+        if type(items) is not list or len(items)>20:
+            raise failure('invalid_case_page')
+        references=[]
+        for item in items:
+            attribution=item['payload']['attribution']
+            if attribution['route']=='expert':
+                references.append((item['actor_id'],attribution['link_id'],attribution['link_revision']))
+        try:flags=self.participants.historical_attribution_review(tuple(references))
+        except ParticipantError:raise failure('case_attribution_unavailable') from None
+        for item in items:
+            attribution=item['payload']['attribution']
+            ref=(item['actor_id'],attribution['link_id'],attribution['link_revision'])
+            item['attribution_review_required']=flags.get(ref,False)
+        return output
+
     async def _read(self,principal,**selector):
         deadline=time.monotonic()+2
         authority=gated=None;retained=False
@@ -147,8 +169,8 @@ class KaggleCasesBackend:
                 authority=await self.read_authority.resolve_oauth(principal.access_token,destination=self.destination)
                 binding=await asyncio.to_thread(current_binding,self.queue)
                 gated=await self._native(authority,binding,deadline=deadline,**selector)
-                output=self._render(gated.result)
-                if not retain_read_output(self.gate,gated,self._render,on_release=lambda:self.read_authority.release(authority)):
+                output=self._render_case(gated.result)
+                if not retain_read_output(self.gate,gated,self._render_case,on_release=lambda:self.read_authority.release(authority)):
                     raise failure('public_output_boundary_required')
                 retained=True;return output
         except ToolError:raise
