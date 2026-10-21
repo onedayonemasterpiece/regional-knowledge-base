@@ -4,6 +4,31 @@ from enum import Enum
 import json
 from uuid import uuid4
 
+def test_preparation_failure_receipt_identifies_stage_without_secrets():
+    """Installed logs give root-cause boundary without echoing env/token/URL."""
+    module=controller()
+    private="SECRET_VALUE_1234 https://private.example/?token=leak"
+    exc=ValueError(private)
+    expected=('create_private_folder','verify_empty_journal_intent',
+              'compose_notebook_source','write_private_notebook','write_private_metadata')
+    for stage in expected:
+        row=module.provider_boundary_report(exc,'synthetic-run','launch_preparation',stage)
+        raw=json.dumps(row)
+        assert row==dict(event='bge_provider_boundary_failed',
+                         run_id='synthetic-run',boundary='launch_preparation',
+                         submission_state='not_sent',error_type='ValueError',
+                         preparation_step=stage)
+        assert private not in raw and 'SECRET_VALUE_1234' not in raw
+    provider=module.provider_boundary_report(RuntimeError(private),
+        'synthetic-run','save_kernel','provider_submission')
+    assert provider['submission_state']=='unknown'
+    assert 'preparation_step' not in provider
+    assert private not in json.dumps(provider)
+    forged=module.provider_boundary_report(exc,'synthetic-run','launch_preparation',
+        'UNVERIFIED_'+private)
+    assert forged['preparation_step']=='not_started'
+
+
 def test_kaggle_status_accepts_current_sdk_enum_and_legacy_dictionary():
     path=Path(__file__).resolve().parents[1]/'scripts/production/bge_kaggle_controller.py'
     spec=importlib.util.spec_from_file_location('bge_controller_test',path)

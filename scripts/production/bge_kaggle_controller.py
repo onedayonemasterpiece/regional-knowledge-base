@@ -32,6 +32,22 @@ def provider_error_facts(error):
         except (ValueError,TypeError):pass
     return result
 
+_PREPARATION_STEPS=frozenset({'not_started','create_private_folder',
+    'verify_empty_journal_intent','compose_notebook_source',
+    'write_private_notebook','write_private_metadata','provider_submission'})
+
+
+def provider_boundary_report(error, run_id, boundary, preparation_step):
+    """Only static stage/exception type for operations; never arbitrary text."""
+    facts={'event':'bge_provider_boundary_failed','run_id':run_id,
+        'boundary':boundary,'submission_state':'not_sent' if boundary=='launch_preparation' else 'unknown',
+        **provider_error_facts(error)}
+    if boundary=='launch_preparation':
+        facts['preparation_step']=(preparation_step if preparation_step in _PREPARATION_STEPS
+                                   else 'not_started')
+    return facts
+
+
 def provider_phase(status):
     phase=status.get('status') if isinstance(status,dict) else getattr(status,'status',None)
     return str(getattr(phase,'name',phase)).rsplit('.',1)[-1].upper()
@@ -208,29 +224,36 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
         for run in runs:
             run_id=run['id'];ref=notebook_ref(run,state);slug=ref.rsplit('/',1)[-1]
             boundary='observation'
+            preparation_step='not_started'  # Fixed, low-cardinality diagnostic only.
             try:
                 if run['status']=='starting' and run['launch_state']=='pending':
                     token=queue.launch_claim(run_id,provider_ref=ref)
                     if token is None:continue
                     boundary='launch_preparation'
+                    preparation_step='create_private_folder'
                     folder=state/run_id;folder.mkdir(mode=0o700,exist_ok=True)
                     if target_spec is not None and target_spec.database.mode=='NEW_EMPTY_GENERATION':
+                        preparation_step='verify_empty_journal_intent'
                         import asyncio
                         from regional_knowledge.kaggle_target_launch import persist_empty_intent
                         nonce=queue.prepare_channel(run_id)
                         asyncio.run(persist_empty_intent(queue,run_id,target_spec,launch_nonce=nonce,
                             recovery_journal=recovery_journal,
                             sql_hashes=target_sql_hashes(target_spec,Path(__file__).resolve().parents[2])))
+                    preparation_step='compose_notebook_source'
                     source=worker_source(template,queue,run_id,token,broker,
                                          transport=os.getenv('RKB_BGE_TRANSPORT','http'),target=target_spec,provider_image=image)
+                    preparation_step='write_private_notebook'
                     (folder/'main.py').write_text(source);(folder/'main.py').chmod(0o600)
                     metadata={'id':ref,'title':slug,'code_file':'main.py','language':'python','kernel_type':'script','is_private':True,'enable_gpu':False,'enable_tpu':False,'enable_internet':True,'dataset_sources':[],'competition_sources':[],'kernel_sources':[]}
                     if image is not None:
                         metadata.update(docker_image=image,docker_image_pinning_type='original')
+                    preparation_step='write_private_metadata'
                     (folder/'kernel-metadata.json').write_text(json.dumps(metadata));(folder/'kernel-metadata.json').chmod(0o600)
                     # Credential is run-bound and source remains private. SDK
                     # provider request is the only notebook creation boundary.
                     boundary='save_kernel'
+                    preparation_step='provider_submission'
                     saved=api.kernels_push(str(folder),timeout=11*3600)
                     if saved.error or saved.ref!=ref or saved.version_number<1:
                         raise RuntimeError('kaggle_save_receipt_invalid')
@@ -256,9 +279,9 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                     # No provider save was called; this is a known not-sent
                     # operation, not an uncertain remote effect to re-dispatch.
                     queue.launch_record(run_id,ref,failed=True)
-                logging.warning(json.dumps({'event':'bge_provider_boundary_failed','run_id':run_id,
-                    'boundary':boundary,'submission_state':'not_sent' if boundary=='launch_preparation' else 'unknown',
-                    **provider_error_facts(error)}))
+                # No error.message, URL, notebook bytes, token, or tracebacks
+                # enter the durable journal. The step is a fixed source label.
+                logging.warning(json.dumps(provider_boundary_report(error,run_id,boundary,preparation_step)))
         time.sleep(5)
 
 if __name__=='__main__':main()
