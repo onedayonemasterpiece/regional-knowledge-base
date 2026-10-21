@@ -88,6 +88,10 @@ class BgeQueue:
             # executescript ends its caller's transaction. Serialize additive
             # migrations explicitly, including concurrent first-time openers.
             db.execute('begin immediate')
+            control_columns={row['name'] for row in db.execute('pragma table_info(control)')}
+            for name,definition in (('startup_ref','text'),('startup_state','text')):
+                if name not in control_columns:
+                    db.execute(f'alter table control add column {name} {definition}')
             if 'diagnostics' not in {row['name'] for row in db.execute('pragma table_info(runs)')}:
                 db.execute("alter table runs add column diagnostics text not null default '{}'")
             if 'provider_version' not in {row['name'] for row in db.execute('pragma table_info(runs)')}:
@@ -109,7 +113,7 @@ class BgeQueue:
         try:
             with self.connect(write=False) as db:
                 db.execute('select id,status,token_hash,started,heartbeat,useful,ready_at,provider_ref,launch_state,diagnostics,provider_version,launch_nonce,runtime_incarnation,connection_generation,channel_active,attachment_conflict,bootstrap_finalized_at from runs limit 0')
-                if db.execute('select current_run,successor from control where id=1').fetchone() is None:
+                if db.execute('select current_run,successor,startup_ref,startup_state from control where id=1').fetchone() is None:
                     return False
                 db.execute('select id,actor,idempotency,kind,texts,identity,state,created,updated,run_id,claim,lease_until,result,attempt from jobs limit 0')
             return True
@@ -144,13 +148,13 @@ class BgeQueue:
         return run_id
 
     @staticmethod
+    def _provider_outcome_unknown(run):
+        # The local run lease is not proof that the remote notebook terminated.
+        return (run['launch_state'] in ('dispatching','dispatched')
+                and run['status'] in ('starting','ready','draining'))
+
+    @staticmethod
     def _run_expired(run, now):
-        # A submitted Kaggle launch has no proven terminal execution yet.
-        # Expiring its local lease would let a cold read allocate and push a
-        # second notebook version after a lost provider ACK. Keep the exact
-        # run as UNKNOWN until the existing controller reconciles it.
-        if run['status']=='starting' and run['launch_state'] in ('dispatching','dispatched'):
-            return False
         if run['status']=='failed' and now-run['heartbeat']<60:
             return False
         prepared=('bootstrap_finalized_at' in run.keys() and run['bootstrap_finalized_at'] is not None)
@@ -167,7 +171,11 @@ class BgeQueue:
             # normal heartbeat lease; idle and maximum lifetimes still apply.
             if self._run_expired(run, now):
                 from .queue_writer import pending
-                if pending(db,run['id']):continue  # UNKNOWN publication is not released ownership.
+                # An elapsed lease must fail read/worker authorization, but
+                # cannot release remote capacity until exact provider terminal
+                # evidence is reconciled by the existing controller.
+                if self._provider_outcome_unknown(run) or pending(db,run['id']):
+                    continue
                 db.execute("update runs set status='expired' where id=?",(run['id'],))
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
                 db.execute('update control set current_run=null where current_run=?',(run['id'],))
@@ -185,24 +193,62 @@ class BgeQueue:
             db.execute('update control set current_run=?,successor=null where id=1',(run_id,))
         else:
             run_id=current['id']
-            if current['status']=='ready' and now-current['started']>=ROTATE_SECONDS and not control['successor']:
+            if (current['status']=='ready' and not self._run_expired(current,now)
+                    and now-current['started']>=ROTATE_SECONDS and not control['successor']):
                 successor=self._new_run(db,now)
                 db.execute('update control set successor=? where id=1',(successor,))
         if useful:db.execute('update runs set useful=? where id=?',(now,run_id))
         return run_id
 
     def request_startup(self):
-        """Persist one cold-start demand for the existing Kaggle controller.
+        """One persisted cold demand, independent of a particular run's TTL.
 
-        Callers must verify read authority first. This never calls Kaggle,
-        queues a QUERY, or allocates a replacement for an UNKNOWN launch.
-        Repeated/concurrent demands refer to the same controlled run.
+        An authorized public caller creates this demand; controller maintenance
+        can resume it after restart without another user request. A run with
+        an uncertain remote outcome remains reserved, not replaced.
         """
         now=self.clock()
         with self.connect() as db:
             run_id=self._ensure(db,now)
-            return {'status':'pending','run_id':run_id,
-                    'startup_ref':'rkb:startup:v1:'+run_id}
+            row=db.execute('select startup_ref,startup_state from control where id=1').fetchone()
+            if row['startup_ref'] is None or row['startup_state']!='pending':
+                ref='rkb:startup:v1:'+str(uuid.uuid4())
+                db.execute("update control set startup_ref=?,startup_state='pending' where id=1",(ref,))
+            else:ref=row['startup_ref']
+            return {'status':'pending','run_id':run_id,'startup_ref':ref}
+
+    def startup_status(self, startup_ref):
+        """Read only. A locator is NOT an access grant: caller reauths at MCP."""
+        if (type(startup_ref) is not str or not startup_ref.startswith('rkb:startup:v1:')
+                or len(startup_ref)!=len('rkb:startup:v1:')+36):
+            raise ValueError('invalid startup ref')
+        try:
+            if str(uuid.UUID(startup_ref.split(':')[-1]))!=startup_ref.split(':')[-1]:
+                raise ValueError('noncanonical startup ref')
+        except (ValueError,AttributeError):
+            raise ValueError('invalid startup ref') from None
+        with self.connect(write=False) as db:
+            row=db.execute('select startup_ref,startup_state,current_run from control where id=1').fetchone()
+            if row['startup_ref']!=startup_ref:
+                return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
+                        'status':'unavailable','reason':'startup_ref_stale'}
+            if row['startup_state']=='ready':
+                return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
+                        'status':'ready','reason':None}
+            return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
+                    'status':'pending','reason':'target_warming'}
+
+    def finish_startup(self, run_id):
+        """Mark ready only after current full history/PG/BGE proof on caller."""
+        with self.connect() as db:
+            control=db.execute('select current_run,startup_state from control where id=1').fetchone()
+            run=db.execute('select * from runs where id=?',(run_id,)).fetchone()
+            if (control['current_run']!=run_id or not run or run['status']!='ready'
+                    or self._run_expired(run,self.clock()) or not run['channel_active']):
+                return False
+            if control['startup_state']=='pending':
+                db.execute("update control set startup_state='ready' where id=1")
+            return True
 
     def enqueue(self, actor, idempotency, texts, *, kind='query', identity=None):
         if kind not in ('query','document') or len(texts)!=1 or not isinstance(texts[0],str) or not texts[0].strip() or len(texts[0])>(16000 if kind=='query' else 40000):
@@ -337,7 +383,17 @@ class BgeQueue:
             self._shared_owner(db)
             run=self._authorize(db,run_id,token,now)
             if self._run_expired(run,now):
-                raise RevokedRun('invalid or stale BGE worker')
+                # A lost WSS heartbeat alone does not kill a live notebook.
+                # Accept only the EXACT prior authenticated incarnation,
+                # while useful/maximum lifetimes and conflict fences still
+                # hold. Re-attachment must reprove the new read generation.
+                same_unresolved = (self._provider_outcome_unknown(run)
+                    and run['status']=='ready' and run['runtime_incarnation']==runtime_incarnation
+                    and run['launch_nonce']==launch_nonce and not run['attachment_conflict']
+                    and now<run['started']+MAX_LIFETIME
+                    and now<run['useful']+IDLE_SECONDS)
+                if not same_unresolved:
+                    raise RevokedRun('invalid or stale BGE worker')
             if (not isinstance(launch_nonce,str) or not run['launch_nonce']
                     or not secrets.compare_digest(run['launch_nonce'].encode(),launch_nonce.encode())):
                 raise StaleAttachment('invalid BGE launch nonce')
@@ -783,10 +839,11 @@ class BgeQueue:
     def _status(self, db, now):
         control=db.execute('select * from control where id=1').fetchone()
         run=db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
-        if run and self._run_expired(run,now):run=None
+        stale_remote=bool(run and self._run_expired(run,now) and self._provider_outcome_unknown(run))
+        if run and self._run_expired(run,now) and not stale_remote:run=None
         successor=db.execute('select * from runs where id=?',(control['successor'],)).fetchone()
         successor_starting=bool(successor and not self._run_expired(successor,now))
-        return {'state':run['status'] if run else 'stopped','space':SPACE,'queue_depth':db.execute("select count(*) from jobs where state!='done'").fetchone()[0],'successor_starting':successor_starting,'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
+        return {'state':'unknown' if stale_remote else run['status'] if run else 'stopped','space':SPACE,'queue_depth':db.execute("select count(*) from jobs where state!='done'").fetchone()[0],'successor_starting':successor_starting,'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
 
     def status(self):
         with self.connect(write=False) as db:
@@ -796,10 +853,14 @@ class BgeQueue:
         now=self.clock()
         with self.connect() as db:
             self._expire(db,now)
-            if db.execute("select 1 from jobs where state!='done'").fetchone():self._ensure(db,now,useful=False)
+            control=db.execute('select startup_state from control where id=1').fetchone()
+            if (db.execute("select 1 from jobs where state!='done'").fetchone()
+                    or control['startup_state']=='pending'):
+                self._ensure(db,now,useful=False)
             control=db.execute('select * from control where id=1').fetchone()
             current=db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
-            if current and current['status']=='ready' and now-current['started']>=ROTATE_SECONDS and not control['successor']:
+            if (current and current['status']=='ready' and not self._run_expired(current,now)
+                    and now-current['started']>=ROTATE_SECONDS and not control['successor']):
                 db.execute('update control set successor=? where id=1',(self._new_run(db,now),))
             # Old workers drain only their already claimed job; no more claims.
             draining=db.execute("select id from runs where status='draining' and not exists(select 1 from jobs where jobs.run_id=runs.id and state='claimed')").fetchall()

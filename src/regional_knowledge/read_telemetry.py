@@ -14,7 +14,7 @@ from uuid import uuid4
 from .query_telemetry import ReadAttempt
 
 current_trace_id: ContextVar[str | None] = ContextVar("rkb_read_trace", default=None)
-_CONTROLLER_STAGES=frozenset({'auth_ms','binding_ms','dispatch_gate_ms','admission_ms',
+_CONTROLLER_STAGES=frozenset({'auth_ms','binding_ms','startup_demand_ms','dispatch_gate_ms','admission_ms',
     'dispatch_to_result_ms','finish_gate_ms','result_to_terminal_ms'})
 _STAGES = frozenset({"database_seconds", "queue_seconds", "encoder_seconds",
                      "hydration_seconds", "search_seconds", "total_seconds",

@@ -442,9 +442,20 @@ class ReadTrace(BaseModel):
     request_ref: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
+class StartupStatus(BaseModel):
+    """Versioned MCP-level status; not a Kaggle QUERY_RESULT wire status.
+
+    The ref is a locator, never a grant. Each poll rechecks public_search.
+    """
+    protocol: Literal['rkb.startup.v1'] = 'rkb.startup.v1'
+    startup_ref: str = Field(min_length=51,max_length=51)
+    status: Literal['pending','ready','unavailable']
+    reason: str | None = None
+
+
 class SearchOutput(BaseModel):
     results: list[SearchResult]
-    status: Literal['ok','degraded','unavailable','cancelled','invalid_query','denied'] | None = None
+    status: Literal['ok','degraded','pending','unavailable','cancelled','invalid_query','denied'] | None = None
     reason: str | None = None
     observed_data_seq: int | None = Field(default=None, ge=0)
     observed_projection_seq: int | None = Field(default=None, ge=0)
@@ -455,6 +466,7 @@ class SearchOutput(BaseModel):
     latency_ms: float | None = Field(default=None,ge=0)
     main_state: Literal['disabled','starting','pending','ready','unavailable'] = 'disabled'
     main_job_id: str | None = None
+    startup: StartupStatus | None = None
     indexing: IndexingStatus | None = None
     timings: dict[str, float] = Field(default_factory=dict, exclude=True)
     read_trace: ReadTrace | None = None
@@ -475,7 +487,7 @@ class FetchOutput(BaseModel):
 
 class EvidenceSearchOutput(BaseModel):
     evidence: list[FetchOutput]
-    status: Literal['ok','degraded','unavailable','cancelled','invalid_query','denied'] | None = None
+    status: Literal['ok','degraded','pending','unavailable','cancelled','invalid_query','denied'] | None = None
     reason: str | None = None
     observed_data_seq: int | None = Field(default=None, ge=0)
     observed_projection_seq: int | None = Field(default=None, ge=0)
@@ -486,6 +498,7 @@ class EvidenceSearchOutput(BaseModel):
     latency_ms: float | None = Field(default=None,ge=0)
     main_state: Literal['disabled','starting','pending','ready','unavailable'] = 'disabled'
     main_job_id: str | None = None
+    startup: StartupStatus | None = None
     indexing: IndexingStatus | None = None
     timings: dict[str, float] = Field(default_factory=dict, exclude=True)
     read_trace: ReadTrace | None = None
