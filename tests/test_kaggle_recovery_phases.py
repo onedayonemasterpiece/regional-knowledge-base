@@ -731,3 +731,30 @@ async def test_ticket_issuance_requires_exact_capture_resource_and_urls_are_not_
         await bridge.receive(response(s,frame,{'native':'capture'}),run_id=s.run,token=s.token,generation=s.generation)
         assert await task=={'native':'capture'}
     finally:await bridge.aclose()
+
+
+def test_dataset_archive_ticket_uses_its_own_get_etag_not_the_upload_version():
+    """Dataset1 shape: upload etag 'CL…=' differs from the version GET ETag '"md5"'."""
+    from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint,DatasetFile
+    from regional_knowledge.kaggle_pg_snapshot_native import BlobRef
+    from regional_knowledge.kaggle_recovery_phases import _download_ticket_matches
+    from regional_knowledge.native_snapshot_transfer import SnapshotTicket
+    archive=DatasetFile('pg-'+'a'*64+'.blob',56422400,'b'*64)
+    other=lambda name:DatasetFile(name,10,'c'*64)
+    pinned=DatasetCheckpoint('owner','checkpoints',1,'db',7,other('base-manifest.json'),archive,
+        other('source-control.json'),other('journal-control.json')).wire()
+    blob=BlobRef('dataset-blobs/'+'a'*64+'/'+archive.name,archive.size,archive.sha256,'CLvthNDhzpADEAE=')
+    def ticket(etag,*,size=archive.size):
+        return SnapshotTicket('GET','d'*64,blob.key,size,archive.sha256,2e9,'https://storage.googleapis.com/x',
+            (('If-Match',etag),))
+    get_etag='"'+'e'*32+'"'
+    # Old behaviour: the S3-domain comparison rejects a correct Dataset ticket.
+    assert not _download_ticket_matches(blob,ticket(get_etag))
+    assert _download_ticket_matches(blob,ticket(get_etag),pinned)
+    # Exact bytes and the pinned archive remain mandatory (GET tickets always carry If-Match).
+    assert not _download_ticket_matches(blob,ticket(get_etag,size=1),pinned)
+    unpinned=BlobRef(blob.key.replace('a'*64+'.blob','f'*64+'.blob'),archive.size,archive.sha256,'CLvthNDhzpADEAE=')
+    assert not _download_ticket_matches(unpinned,SnapshotTicket('GET','d'*64,unpinned.key,archive.size,archive.sha256,
+        2e9,'https://storage.googleapis.com/x',(('If-Match',get_etag),)),pinned)
+    # Same-store recovery tickets keep the exact upload-version If-Match.
+    assert _download_ticket_matches(blob,ticket('CLvthNDhzpADEAE='))

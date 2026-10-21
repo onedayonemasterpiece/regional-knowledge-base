@@ -20,6 +20,26 @@ PHASES = frozenset({'capture','prepare','apply','finish','verify','source_histor
     'dataset_verify','read_handler_status','read_handler_stage','read_handler_activate','read_handler_rollback'})|ORIGINAL_PHASES|DRILL_PHASES
 
 
+def _download_ticket_matches(blob,ticket,dataset_checkpoint=None):
+    """Exact bytes always; If-Match identity only within one storage domain.
+
+    A recovery-store ticket reuses the upload's native version as If-Match.
+    A Kaggle Dataset version GET carries its own ETag, which differs from the
+    upload-time GCS etag of the same archive; for the launch-pinned checkpoint
+    archive the exact name/size/SHA-256 pin replaces that comparison, and the
+    transfer still enforces the ticket's If-Match and streamed SHA-256.
+    """
+    headers={k.lower():v for k,v in ticket.headers}
+    if (ticket.key,ticket.size,ticket.sha256)!=(blob.key,blob.size,blob.sha256) or not headers.get('if-match'):
+        return False
+    if dataset_checkpoint is not None:
+        from .kaggle_dataset_base import DatasetCheckpoint
+        archive=DatasetCheckpoint.from_wire(dataset_checkpoint).archive
+        if (blob.key.rsplit('/',1)[-1],blob.size,blob.sha256)==(archive.name,archive.size,archive.sha256):
+            return True
+    return headers['if-match']==blob.native_version
+
+
 async def build_recovery_worker(*,native_bundle,database,identity,tools,native_uid,native_gid,
                                 current,workspace_private_current,workspace,upload=None,download=None,
                                 ticket_channel=None,transfer=None,acquire=None,limits=None,model_pins=None,sql_root=None,dataset_checkpoint=None):
@@ -50,9 +70,7 @@ async def build_recovery_worker(*,native_bundle,database,identity,tools,native_u
             return BlobRef(ticket.key,size,sha256,etag)
         async def download(blob,restore_operation,*,ticket,transfer_operation):
             ticket=SnapshotTicket.from_wire(ticket)
-            headers={k.lower():v for k,v in ticket.headers}
-            if ((ticket.key,ticket.size,ticket.sha256)!=(blob.key,blob.size,blob.sha256)
-                    or headers.get('if-match')!=blob.native_version):
+            if not _download_ticket_matches(blob,ticket,dataset_checkpoint):
                 raise SnapshotError('recovery_download_ticket_blob_changed')
             return await transfer.download(ticket,workspace(restore_operation,'download'),operation_key=transfer_operation)
     if (type(native_bundle) is not VerifiedNativeBundle
