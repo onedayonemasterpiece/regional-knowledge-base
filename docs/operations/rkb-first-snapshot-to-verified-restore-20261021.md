@@ -111,3 +111,15 @@ runtime configuration, outside source, logs and receipts. The helper performs no
 download, credential discovery, queue mutation or Kaggle launch. Its integration
 into the controller lifecycle is a separate source change; helper tests alone
 do not establish automatic production renewal.
+
+## Dataset availability and mounted permissions
+
+Keep the Dataset slug stable and use its built-in versions. After creating or
+updating a version, wait for provider readiness and verify that exact version's
+file inventory and metadata before launching a consumer; publication and launch
+are separate steps. An already running notebook keeps its mounted version.
+Kaggle input directories can retain permissive Unix mode bits on a read-only
+filesystem. The verifier checks `fstatvfs(ST_RDONLY)` on opened descriptors before
+rejecting those bits; size, SHA-256, version binding and no-follow checks still
+apply. A failed native prepare wakes its initialization waiter with the original
+error. A finish interrupted by detach retains its existing reconciliation path.
