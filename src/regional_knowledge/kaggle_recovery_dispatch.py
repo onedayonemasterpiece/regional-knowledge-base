@@ -119,12 +119,9 @@ class RecoveryPhaseDispatch:
             identity=json.loads(job['identity'])
             payload=dict(id=job_id,claim=job['claim'],kind='recovery_phase',**identity)
         if identity['phase'] in ('prepare','drill_prepare','read_handler_stage','dataset_verify'):
-            if identity['phase']=='prepare' and self.dataset_checkpoint is not None:
-                pin=self.dataset_checkpoint.for_execution(run_id=run_id,notebook_version=run['provider_version'])
-                payload['dataset_base']=pin.wire()
-                payload['dataset_observation']=dict(dataset_ref=pin.ref,dataset_version=pin.dataset_version,
-                    notebook_version=run['provider_version'],run_id=run_id)
-                return payload
+            # Kernel metadata readback drops Dataset version qualifiers.
+            # Resolve an exact-version SDK download ticket instead of claiming
+            # a mounted version observation from our own intended pin.
             if self.snapshot_tickets is None:
                 raise PermissionError('current signed artifact transfer owner required')
             from .kaggle_pg_snapshot_native import BlobRef

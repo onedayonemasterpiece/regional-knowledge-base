@@ -23,6 +23,48 @@ def database():return replace(spec().database,mode='VERIFIED_INITIALIZED',owners
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('invalid',[None,'archive','control','missing_ticket'])
+async def test_native_dataset_prepare_uses_pinned_download_and_same_pg_factory(invalid):
+    from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint,DatasetFile
+    from regional_knowledge.native_snapshot_transfer import SnapshotTicket
+    db=database();body=b'archive';digest=sha(body)
+    blob=dict(key='dataset-blobs/pin/pg-fixture.blob',size=len(body),sha256=digest,native_version='dataset-1')
+    manifest=encode(dict(blob=blob,applied_sequence=7,database_generation=db.database_generation))
+    control=encode(dict(fixture='source-control'))
+    part=lambda name,data:DatasetFile(name,len(data),sha(data))
+    pin=DatasetCheckpoint('fixture-owner','rkb-checkpoints',1,db.database_generation,7,
+        part('base-manifest.json',manifest),part('pg-fixture.blob',body),part('source-control.json',control),
+        part('journal-control.json',b'journal'))
+    if invalid in ('archive','control'):
+        pin=replace(pin,**{invalid:replace(getattr(pin,invalid),sha256='f'*64)})
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=db;native.identity=('r','nonce','inc');native.dataset_checkpoint=pin
+    calls=[];candidate=object()
+    async def prepare(binding,**kwargs):
+        calls.append(('prepare',kwargs));return candidate
+    async def download(ref,operation,**kwargs):
+        assert ref.key==blob['key'] and kwargs['ticket']['sha256']==digest
+        calls.append(('download',operation));return '/private/exact-version1-archive'
+    native.prepare=prepare
+    worker=WorkerRecoveryPhases(factory=native,download=download,workspace=lambda op,phase:'/private/'+phase)
+    key='restore';ticket=SnapshotTicket('GET',sha(key.encode()),blob['key'],len(body),digest,10000,
+        'https://storage.googleapis.com/version1',(('If-Match','v1'),))
+    frame=dict(operation_key=key,download_ticket=ticket.wire())
+    if invalid=='missing_ticket':frame.pop('download_ticket')
+    args=dict(database=db.wire(),identity=list(native.identity),manifest_b64=__import__('base64').b64encode(manifest).decode(),
+        control_b64=__import__('base64').b64encode(control).decode(),manifest_ref=dict(sha256=sha(manifest)),
+        blob=blob,restore_operation='original-restore',expected_versions={})
+    if invalid:
+        with pytest.raises(SnapshotError,match='dataset_restore_'):await worker._execute('prepare',args,key,('r','inc',1),frame)
+        assert not calls;return
+    result=await worker._execute('prepare',args,key,('r','inc',1),frame)
+    assert worker._sessions[result['handle']] is candidate
+    assert [c[0] for c in calls]==['download','prepare']
+    assert calls[1][1]['archive_path']=='/private/exact-version1-archive'
+    assert calls[1][1]['manifest_bytes']==manifest and calls[1][1]['control_bytes']==control
+
+
+@pytest.mark.asyncio
 async def test_dataset_readback_uses_actual_deferred_workspace_resolver(tmp_path,monkeypatch):
     from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint,DatasetFile
     from regional_knowledge.kaggle_recovery_composition import DeferredRecoveryRuntime
@@ -110,22 +152,27 @@ async def test_capture_refusal_preserves_native_owner_for_following_readback():
 
 
 @pytest.mark.asyncio
-async def test_exact_dataset_prepare_uses_attached_version_without_storage_ticket(state):
+async def test_exact_dataset_prepare_uses_versioned_download_without_mount_attestation(state):
     from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint,DatasetFile
+    from regional_knowledge.native_snapshot_transfer import SnapshotTicket
     s=state
     part=lambda name:DatasetFile(name,10,'a'*64)
     checkpoint=DatasetCheckpoint('fixture-owner','rkb-pg-checkpoint',3,database().database_generation,7,
         part('base-manifest.json'),part('pg.blob'),part('source-control.json'),part('journal-control.json'))
+    blob=dict(key='dataset-blobs/pin/pg.blob',size=10,sha256='a'*64,native_version='dataset-3')
+    class Tickets:
+        async def issue_download(self,binding,key,ref):
+            assert binding is s and ref.key==blob['key']
+            return SnapshotTicket('GET',sha(key.encode()),ref.key,ref.size,ref.sha256,10000,
+                'https://storage.googleapis.com/exact-version-3',(('If-Match','version3'),))
     bridge=RecoveryPhaseDispatch(s.q,database=database(),identity=(s.run,s.nonce,'incarnation-a'),
-        binding_current=lambda b:b is s,dataset_checkpoint=checkpoint)
+        binding_current=lambda b:b is s,dataset_checkpoint=checkpoint,snapshot_tickets=Tickets())
     task=None
     try:
-        task,work,frame=await work_for(s,bridge,phase='prepare',args={'blob':{'unused':'no S3 download'}})
-        assert 'download_ticket' not in frame
-        assert frame['dataset_base']['dataset_version']==3
-        assert frame['dataset_base']['run_id']==s.run
-        assert frame['dataset_observation']['notebook_version']==frame['dataset_base']['notebook_version']
-        assert frame['dataset_observation']['dataset_ref']=='fixture-owner/rkb-pg-checkpoint'
+        task,work,frame=await work_for(s,bridge,phase='prepare',args={'blob':blob})
+        assert 'download_ticket' in frame
+        assert 'dataset_base' not in frame and 'dataset_observation' not in frame
+        assert frame['download_ticket']['sha256']==checkpoint.archive.sha256
         await bridge.receive(response(s,frame,{'handle':'native-dataset'}),run_id=s.run,token=s.token,generation=s.generation)
         assert await task=={'handle':'native-dataset'}
     finally:

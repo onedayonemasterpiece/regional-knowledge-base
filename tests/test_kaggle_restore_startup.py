@@ -55,6 +55,7 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
     mkey=e.j.prefix+'/snapshots/manifests/'+sha(manifest)
     e.old.c.objects.update({ckey:(control,'"native-control"'),blob_key:(blob,'"native-blob"'),mkey:(manifest,'"native-manifest"')})
     plan=replace(e.plan,manifest=ObjectRef(mkey,sha(manifest),len(manifest),0))
+    dataset_downloads=[]
     if dataset_input:
         import base64
         import json
@@ -72,6 +73,10 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
             def read_control(self,file,*,version):
                 assert version==1 and file.name!=checkpoint.archive.name
                 return {'base-manifest.json':manifest,'source-control.json':control,'journal-control.json':journal}[file.name]
+            def snapshot_download_link(self,file,*,version):
+                assert version==1 and file==checkpoint.archive
+                dataset_downloads.append((file.name,version))
+                return 'https://storage.googleapis.com/historical-version-1','"dataset-version1"'
         monkeypatch.setattr('regional_knowledge.kaggle_dataset_publisher.authenticated_service_api',
             lambda:SimpleNamespace(CONFIG_NAME_USER='user',get_config_value=lambda _: 'fixture-owner'))
         monkeypatch.setattr('regional_knowledge.kaggle_dataset_publisher.KaggleDatasetPublisher',Publisher)
@@ -79,7 +84,7 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
             db.execute('CREATE TABLE rkb_dataset_seed(operation_key TEXT PRIMARY KEY,provider_ref TEXT,state TEXT,package_json TEXT,version INTEGER)')
             db.execute('INSERT INTO rkb_dataset_seed VALUES(?,?,?,?,?)',('seed',Publisher.ref,'published',
                 json.dumps(dict(manifest_sha256=sha(manifest),database_generation='synthetic-db',base_sequence=0)),1))
-        plan=replace(plan,dataset_checkpoint=checkpoint)
+        plan=replace(plan,dataset_checkpoint=checkpoint,allowed_origins=('https://storage.googleapis.com',))
     signatures=[]
     def sign(method,**kwargs):
         signatures.append((method,kwargs))
@@ -116,9 +121,8 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
                 if phase=='prepare':
                     assert e.q.status()['state']=='starting'
                     if dataset_input:
-                        assert 'download_ticket' not in frame
-                        assert frame['dataset_base']['dataset_version']==1
-                        assert frame['dataset_observation']['run_id']==e.run
+                        assert frame['download_ticket']['headers']==[['If-Match','"dataset-version1"']]
+                        assert 'dataset_base' not in frame and 'dataset_observation' not in frame
                     else:assert frame['download_ticket']['headers']==[['If-Match','"native-blob"']]
                     assert frame['arguments']['manifest_b64'] and frame['writer_generation']=='writer-2'
                     value={'handle':'native-retained-session'}
@@ -144,6 +148,7 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
             assert await task
         assert phases==['prepare','finish','verify','verify','verify']
         assert bool(signatures)==(not dataset_input)
+        assert bool(dataset_downloads)==dataset_input
         assert startup.config.writer_owner.current(database_generation='synthetic-db',writer_generation='writer-2')
         assert not startup.reads_current()  # Full native source history remains a separate mandatory gate.
         from regional_knowledge.kaggle_public_backend import current_binding

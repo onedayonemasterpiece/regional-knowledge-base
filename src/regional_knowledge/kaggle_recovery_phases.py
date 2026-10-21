@@ -300,6 +300,15 @@ class WorkerRecoveryPhases:
                 raise SnapshotError('recovery_phase_blob_reference_changed')
             checkpoint=getattr(self.factory,'dataset_checkpoint',None)
             if checkpoint is not None:
+                if (checkpoint.database_generation!=self.factory.database.database_generation
+                        or declared.get('database_generation')!=checkpoint.database_generation
+                        or (len(manifest),len(control))!=(checkpoint.manifest.size,checkpoint.control.size)
+                        or sha(manifest)!=checkpoint.manifest.sha256 or sha(control)!=checkpoint.control.sha256
+                        or declared['blob']['key'].rsplit('/',1)[-1]!=checkpoint.archive.name
+                        or (declared['blob']['size'],declared['blob']['sha256'])!=(checkpoint.archive.size,checkpoint.archive.sha256)
+                        or declared.get('applied_sequence')!=checkpoint.base_sequence):
+                    raise SnapshotError('dataset_restore_pinned_input_changed')
+            if checkpoint is not None and 'dataset_base' in frame:
                 from .kaggle_dataset_base import DatasetBasePin
                 pin=DatasetBasePin.from_wire(frame.get('dataset_base'))
                 observation=frame.get('dataset_observation',{})
@@ -316,6 +325,8 @@ class WorkerRecoveryPhases:
             else:
                 if 'dataset_base' in frame or 'dataset_observation' in frame:
                     raise SnapshotError('dataset_restore_not_selected_by_launch')
+                if checkpoint is not None and 'download_ticket' not in frame:
+                    raise SnapshotError('dataset_restore_versioned_ticket_required')
                 transfer={}
                 if 'download_ticket' in frame:
                     transfer=dict(ticket=frame['download_ticket'],transfer_operation=frame['operation_key'])
