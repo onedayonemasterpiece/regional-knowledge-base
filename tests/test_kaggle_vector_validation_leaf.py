@@ -231,6 +231,110 @@ class VectorValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("vector_literal(values)  # Invalid dense output", query_source)
 
 
+
+class ExecuteQueryBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    """Run the real execute_query AST with strictly in-memory fake SQL/inference.
+
+    The injected fused-search callback calls its real checked_encode closure,
+    so invalid dense results must take the existing DenseUnavailable branch
+    and become unavailable/mode=None rather than returning hybrid evidence.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from types import SimpleNamespace
+        scope, _ = load_path(baseline=False)
+
+        class Query:
+            def __init__(self):
+                self.request_id = "synthetic-executor"
+                self.connection_generation = 1
+                self.turn_generation = 0
+                self.query = "synthetic"
+                self.deadline_ms = 2000
+                self.min_data_seq = 0
+                self.filters = SimpleNamespace(kinds=None, source_ids=None)
+
+        class PinnedTokenizer:
+            async def count(self, text):
+                return 12
+
+        class QueryResult:
+            def __init__(self, **fields):
+                self.__dict__.update(fields)
+
+        class ReadUnavailable(Exception):
+            def __init__(self, reason):
+                self.reason = reason
+
+        class TokenizerUnavailable(Exception):
+            pass
+
+        class SyntheticPsycopgError(Exception):
+            pass
+
+        async def fused_search(conn, text, *, encode, **kwargs):
+            # Invalid encoder output cannot pass this callback's checked_encode.
+            await encode(text)
+            raise AssertionError("invalid vector incorrectly reached hybrid success")
+
+        scope.update({
+            "Query": Query,
+            "AcceptanceReadRequest": type("AcceptanceReadRequest", (), {}),
+            "PinnedTokenizer": PinnedTokenizer,
+            "QueryResult": QueryResult,
+            "ReadUnavailable": ReadUnavailable,
+            "TokenizerUnavailable": TokenizerUnavailable,
+            "DenseUnavailable": DenseUnavailable,
+            "MAX_TOKENS": 512,
+            "fused_search": fused_search,
+            "_scope": lambda query: None,
+            "psycopg": SimpleNamespace(Error=SyntheticPsycopgError, errors=SimpleNamespace(
+                UndefinedTable=type("UndefinedTable", (SyntheticPsycopgError,), {}))),
+            "encode_envelope": lambda result: b"synthetic",
+        })
+        extract(read_source(QUERY), "_identity", scope)
+        extract(read_source(QUERY), "_unavailable", scope)
+        extract(read_source(QUERY), "execute_query", scope)
+        cls.execute = staticmethod(scope["execute_query"])
+        cls.Query = Query
+        cls.PinnedTokenizer = PinnedTokenizer
+
+    async def _run_probe(self, encode):
+        from contextlib import asynccontextmanager
+        lease = {"entered": 0, "exited": 0}
+        @asynccontextmanager
+        async def acquire():
+            lease["entered"] += 1
+            try:
+                yield object()
+            finally:
+                lease["exited"] += 1
+        try:
+            result = await self.execute(self.Query(), acquire=acquire,
+                                        tokenizer=self.PinnedTokenizer(), encode=encode)
+            return result, lease
+        except BaseException:
+            self.assertEqual(lease, {"entered": 1, "exited": 1})
+            raise
+
+    async def test_actual_execute_query_never_returns_hybrid_for_bad_dense_values(self):
+        for i, vector in enumerate(invalid_vectors()):
+            with self.subTest(i=i):
+                async def encode(_):
+                    return vector
+                result, lease = await self._run_probe(encode)
+                self.assertEqual((result.status, result.mode, result.reason),
+                                 ("unavailable", None, "dense_unavailable"))
+                self.assertEqual(lease, {"entered": 1, "exited": 1})
+
+    async def test_actual_execute_query_propagates_cancel_and_cleans_lease(self):
+        async def encode(_):
+            raise asyncio.CancelledError
+        with self.assertRaises(asyncio.CancelledError):
+            await self._run_probe(encode)
+
+
 def percentiles_ns(samples):
     ordered = sorted(samples)
     def p(value):
