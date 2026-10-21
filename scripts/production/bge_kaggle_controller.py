@@ -149,6 +149,35 @@ def reconcile_dispatched_terminal(api, queue, run, ref):
     return phase
 
 
+def reconcile_provider_history(api, queue, *, limit=2):
+    """One bounded resumable page; unknown submissions never hold up known rows.
+
+    The native adapter performs no writes. Only its sealed exact-session proof
+    can retire a queue reservation; provider bodies never enter diagnostics.
+    """
+    from regional_knowledge.kaggle_provider_terminal import observe_version_terminal
+    retired=0
+    for run in queue.provider_reconciliation_page(limit=limit):
+        try:
+            if (type(run['provider_version']) is int and run['provider_ref']
+                    and run['status']=='expired'):
+                proof=observe_version_terminal(api,run,clock=queue.clock)
+                if proof is not None and queue.retire_provider_reservation(proof):
+                    retired+=1
+                    logging.info(json.dumps({'event':'bge_provider_session_terminal',
+                        'run_id':run['id'],'provider_version':run['provider_version'],
+                        'phase':proof.status,'contract':proof.contract}))
+                else:
+                    logging.info(json.dumps({'event':'bge_provider_session_unknown',
+                        'run_id':run['id'],'provider_version':run['provider_version']}))
+        except Exception as error:
+            logging.warning(json.dumps({'event':'bge_provider_reconciliation_failed',
+                'run_id':run['id'],'error_type':type(error).__name__}))
+        finally:
+            queue.advance_provider_reconciliation(run['_cursor'])
+    return retired
+
+
 def target_sql_hashes(target, repository):
     """Pin exactly the migration prefix the native initializer will execute."""
     from regional_knowledge.kaggle_owned_pg import sql_artifacts, digest
@@ -220,6 +249,7 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
     state=queue.path.parent/'bge-launches';state.mkdir(mode=0o700,exist_ok=True)
     probed={}
     while True:
+        reconcile_provider_history(api,queue)
         runs=queue.maintenance()
         for run in runs:
             run_id=run['id'];ref=notebook_ref(run,state);slug=ref.rsplit('/',1)[-1]
@@ -264,16 +294,9 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                     # issue another save/version: reconcile the stable slug.
                     if reconcile_launch_due(api,queue,run,ref,probed,now=time.monotonic()) is False:
                         logging.warning(json.dumps({'event':'bge_launch_observation_mismatch','run_id':run_id,'provider_ref':ref}))
-                elif run['launch_state']=='dispatched' and time.monotonic()-probed.get(run_id,0)>30:
-                    # READY with lost WSS/heartbeat still owns its exact Kaggle
-                    # version. Reconcile before allowing the pending demand to
-                    # start a new run. Healthy READY only reads the local row.
-                    probed[run_id]=time.monotonic()
-                    reconcile_dispatched_terminal(api,queue,run,ref)
-                elif run['status']=='expired' and run['launch_state']=='dispatched':
-                    # Expired credential makes worker polling stop even when
-                    # provider cancellation is unavailable in this SDK.
-                    queue.launch_record(run_id,ref)
+                # Known-version terminal observations are performed only by
+                # the bounded persisted history cursor above, including expired
+                # legacy rows. Do not also perform latest-source probes here.
             except Exception as error:
                 if boundary=='launch_preparation':
                     # No provider save was called; this is a known not-sent
