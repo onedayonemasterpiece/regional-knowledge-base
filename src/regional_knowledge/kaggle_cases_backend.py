@@ -237,6 +237,15 @@ class KaggleCasesBackend:
             if str(exc)=='control operation not found':return None
             raise
 
+    async def _collected(self,key):
+        # Terminal compact receipts outlive the short raw intent spool.
+        # Do not re-stage a collected operation under the same key.
+        from .control_spool import _database
+        def present():
+            with self.spool._db() as db:
+                return db.execute('SELECT 1 FROM rkb_control_receipts WHERE operation_key=?',(key,)).fetchone() is not None
+        return await _database(present)
+
     @staticmethod
     def _reply(entry):
         command=entry.command
@@ -253,7 +262,7 @@ class KaggleCasesBackend:
                 saved=applied.status=='applied',result=json.loads(base64.b64decode(outcome['result_b64'],validate=True)))
         return result
 
-    async def _recover_operation(self,authority,context,binding,key,case_id):
+    async def _recover_operation(self,authority,context,binding,key,case_id,*,expected_action=None,expected_command=None):
         """Read a collected intent; native-only or local-only evidence is not Saved.
 
         The compact remote receipt outlives raw spool bytes. Re-read its exact
@@ -262,8 +271,15 @@ class KaggleCasesBackend:
         """
         from .control_spool import _database,_command
         from .recovery_journal import RemoteOutcomeReceipt
-        if case_id is None:raise failure('case_id_required_after_control_retention','invalid_query')
-        case_id=exact_uuid(str(case_id));gated=None
+        # CREATE resolves its case ID before durable acceptance from the
+        # actor-bound operation key. A caller that lost the create response
+        # cannot supply case_id after raw spool GC: reconstruct only this
+        # original CREATE locator, then prove it against the native PG receipt,
+        # the immutable command and the remotely sealed outcome below.
+        inferred_create=case_id is None
+        case_id=(str(uuid5(_NAMESPACE,key+':case')) if inferred_create
+                 else exact_uuid(str(case_id)))
+        gated=None
         def compact():
             with self.spool._db() as db:
                 row=db.execute('SELECT command_sha256,receipt_bytes FROM rkb_control_receipts WHERE operation_key=?',(key,)).fetchone()
@@ -289,9 +305,16 @@ class KaggleCasesBackend:
                 command=_command(original.data)
                 if (command.operation_key!=key or command.person_id!=authority.person_id
                         or command.ids.get('case_id')!=case_id or not command.route.startswith('disagreement.')
+                        or inferred_create and validate_case_payload(command.payload)['action']!='create'
                         or native['sequence']!=command.sequence or native['request_id']!=command.request_id
                         or native['state']!='applied' or native['outcome_durability']!='native_only'):
                     raise failure('remote_outcome_unproved')
+                if expected_action is not None:
+                    original=validate_case_payload(command.payload)
+                    if (expected_action not in _TYPES or type(expected_command) is not _TYPES[expected_action]
+                            or original['action']!=expected_action
+                            or original['command']!=expected_command.model_dump(mode='json')):
+                        raise failure('operation_key_conflict','invalid_query')
                 # Fixed historical command semantics and current route/actor
                 # authority, including private draft authorship, are rechecked.
                 await self._check(authority,context,binding,command)
@@ -331,7 +354,7 @@ class KaggleCasesBackend:
 
     async def _mutate(self,principal,action,operation_key,command=None,*,case_id=None,object_id=None,
                       case_revision=0,object_version=0,status_only=False):
-        authority=context=binding=entry=gated=None;retained=False
+        authority=context=binding=entry=gated=None;retained=False;collected=False
         try:
             if not self.startup.reads_current():raise failure('case_history_unavailable')
             authority=await self.read_authority.resolve_oauth(principal.access_token,destination=self.destination)
@@ -346,6 +369,10 @@ class KaggleCasesBackend:
                     result=await self._recover_operation(authority,context,binding,key,case_id)
                     retained=True;return result
                 if action not in _TYPES or type(command) is not _TYPES[action]:raise ValueError('exact Case command type required')
+                if await self._collected(key):
+                    result=await self._recover_operation(authority,context,binding,key,case_id,
+                        expected_action=action,expected_command=command)
+                    retained=True;return result
                 if case_id is None:
                     if action!='create':raise ValueError('existing Case UUID required')
                     case_id=str(uuid5(_NAMESPACE,key+':case'))
@@ -363,7 +390,9 @@ class KaggleCasesBackend:
                     if gated.result.status!='ok':raise failure(gated.result.reason)
                 async with self.spool._lock:
                     entry=await self._entry(key)
-                    if entry is None:
+                    if entry is None and await self._collected(key):
+                        collected=True
+                    if entry is None and not collected:
                         scope=await self.spool.scope_state()
                         if scope['pending'] or scope['unknown'] or scope['sequence']!=scope['accepted_sequence']:raise failure('prior_write_pending')
                         head=await self.spool.journal.head();sequence=head.reference.last_sequence if head else 0
@@ -382,6 +411,10 @@ class KaggleCasesBackend:
                         if gated is not None and not self.gate.issuance_current(gated.ticket):raise failure('prior_write_pending')
                         frozen,data,handler=self.spool._validate(resolved,binding.database_generation)
                         entry=await self.spool._write(self.spool._stage,frozen,data,handler,binding.database_generation)
+                if collected:
+                    result=await self._recover_operation(authority,context,binding,key,case_id,
+                        expected_action=action,expected_command=command)
+                    retained=True;return result
             if status_only and case_id is not None and entry.command.ids['case_id']!=exact_uuid(str(case_id)):
                 raise failure('operation_key_conflict','invalid_query')
             if not status_only:

@@ -68,13 +68,24 @@ source-command executor. `operation_status` resumes the same stored command and
 predecessor after an unknown result. Pending/accepted is not Saved; only a native
 applied outcome with a verified durable remote receipt produces `saved=true`.
 Current participant, Case and source checks remain active at final MCP issuance.
-After raw control-spool retention, supply both the returned `case_id` and exact
-`operation_key` to `operation_status`. The same bounded `CASE_READ` operation
-reads the actor-scoped native receipt. Recovery also requires the retained
-compact remote receipt and exact readback of the original command and remote
-outcome, matching the native result, current database generation and canonical
-actor. Native `native_only`, missing remote bytes or mismatches cannot produce
-Saved. This recovery path performs no enqueue, publication or replay effect.
+After raw control-spool retention, `operation_status` accepts the exact
+`operation_key` alone **for an original CREATE whose response was lost**. It
+derives only that CREATE's `case_id` from the canonical actor-bound key, then
+verifies the retrieved native PG receipt, exact immutable CREATE command and
+remote sealed outcome; a derived candidate is never evidence by itself.
+For non-CREATE operations supply the existing `case_id` after raw retention;
+no unscoped all-case enumeration or new SQLite receipt registry is introduced.
+The same bounded `CASE_READ` checks current actor/case rights. Recovery also
+requires the retained compact remote receipt and exact readback of the original
+command and remote outcome, matching the native result, current database
+generation and canonical actor. Native `native_only`, missing remote bytes or mismatches cannot produce
+Saved. A retry of the same CREATE key **after** raw spool collection consults
+the retained compact receipt before reserving a new sequence or applying a
+new command; it returns the same verified outcome only when the caller's
+model-authored command is identical. Changed payload with the same key is an
+explicit conflict. The check is repeated under the existing single-writer
+control lock to close the racing GC/retry window. This recovery path performs
+no enqueue, publication or replay effect.
 Current Case/source and participant revocations apply on readback and again at
 final output. The current native operation function exposes successful applied
 receipts only; rejected preconditions after raw retention remain unavailable
