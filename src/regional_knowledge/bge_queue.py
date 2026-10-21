@@ -795,9 +795,13 @@ class BgeQueue:
             result=validate_terminal(expected,capabilities,observed,last_heartbeat_at=run['heartbeat'],
                                      now=self.clock(),max_age_seconds=max_age_seconds)
             if not result.ok:return result
-            # A native exact terminal gates the old run before the next owned
-            # baseline; an old still-authenticated socket cannot revive it.
-            db.execute("update runs set status='expired',channel_active=0 where id=?",(run['id'],))
+            # The capability+execution-bound terminal proof is the ONLY
+            # authority to release the old notebook's provider reservation.
+            # Persist it in launch_state in the SAME transaction before any
+            # subsequent launch_claim scans historical runs. Mere heartbeat,
+            # Kaggle version status, or local timeout never sets this state.
+            db.execute("update runs set status='expired',channel_active=0,launch_state='terminal' where id=?",
+                       (run['id'],))
             db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
             db.execute('update control set current_run=null where current_run=?',(run['id'],))
             db.execute('update control set successor=null where successor=?',(run['id'],))
@@ -950,6 +954,29 @@ class BgeQueue:
         with self.connect() as db:
             row=db.execute('select * from runs where id=?',(run_id,)).fetchone()
             if not row or row['status']!='starting' or row['launch_state']!='pending':return None
+            # Historical/legacy control pointers can be reassigned while a
+            # prior Kaggle execution remains UNKNOWN. Reserve the stable slug
+            # across ALL durable run rows, not merely control.current_run.
+            # Known healthy READY/DRAINING permits intentional warm rotation;
+            # no unknown or expired incarnation may be overwritten by a push.
+            # This transaction is the single provider-claim serialization.
+            control=db.execute('select current_run,successor from control where id=1').fetchone()
+            for prior in db.execute("select * from runs where id!=? and launch_state in ('dispatching','dispatched')",
+                                    (run_id,)).fetchall():
+                # An omitted new provider_ref is NOT proof of a different
+                # slug. Legacy callers lacking that optional argument must
+                # never bypass a known older UNKNOWN execution.
+                if provider_ref is not None and prior['provider_ref'] not in (None,provider_ref):
+                    continue
+                intentional_warm=(provider_ref is not None
+                    and prior['provider_ref']==provider_ref
+                    and prior['launch_state']=='dispatched'
+                    and prior['status']=='ready'
+                    and not self._run_expired(prior,self.clock())
+                    and control['current_run']==prior['id']
+                    and control['successor']==run_id)
+                if not intentional_warm:
+                    return None
             # Claim once. An ambiguous provider response is reconciled by its
             # stable notebook slug, never retried as an unknown second launch.
             db.execute("update runs set launch_state='dispatching',provider_ref=coalesce(provider_ref,?) where id=?",(provider_ref,run_id))
@@ -960,7 +987,9 @@ class BgeQueue:
         if provider_version is not None and (type(provider_version) is not int or provider_version<1):
             raise ValueError('invalid Kaggle notebook version')
         with self.connect() as db:
-            row=db.execute('select provider_ref,provider_version,status from runs where id=?',(run_id,)).fetchone()
+            row=db.execute('select provider_ref,provider_version,status,launch_state from runs where id=?',(run_id,)).fetchone()
+            if row and row['launch_state']=='terminal':
+                raise StaleAttachment('execution-qualified terminal run cannot be relaunched')
             if row and ((row['provider_ref'] and row['provider_ref']!=provider_ref)
                     or (row['provider_version'] and provider_version and row['provider_version']!=provider_version)):
                 raise ValueError('Kaggle run identity changed')
