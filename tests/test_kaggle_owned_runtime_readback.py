@@ -98,6 +98,41 @@ def test_generated_worker_rejects_missing_stage0_measurement(monkeypatch):
     assert worker._RKB_STAGE0_COUNTERS is None
 
 
+
+
+@pytest.mark.asyncio
+async def test_generated_notebook_stage0_location_drives_actual_counter_gate(monkeypatch,tmp_path):
+    from dataclasses import replace
+    import ast
+    from test_kaggle_target_runtime import queue_run,generate
+    from test_kaggle_generated_restore import target
+    # The real verified-restore layout carries Stage0 without requiring a
+    # NEW_EMPTY_GENERATION initialization intent or mutating the queue.
+    selected=target()
+    queue,run=queue_run(tmp_path)
+    source=generate(queue,run,selected)
+    tree=ast.parse(source)
+    assignments=[node for node in tree.body if isinstance(node,ast.Assign)
+        and any(isinstance(item,ast.Name) and item.id=='RUN_CONFIG'
+                for item in node.targets)]
+    config=ast.literal_eval(assignments[0].value)
+    assert config['stage0']==selected.stage0.wire()
+    assert 'stage0' not in config['target_runtime']
+    runtime,_=prepared_runtime(monkeypatch)
+    runtime.config['stage0']=config['stage0']
+    assert runtime.target.get('stage0') is None
+    monkeypatch.setattr(sys.modules['__main__'],'_MODEL_LOAD_COUNT',1,raising=False)
+    monkeypatch.delattr(sys.modules['__main__'],'_RKB_STAGE0_COUNTERS',raising=False)
+    denied=await runtime._read_owned_runtime()
+    assert denied==dict(status='unavailable',reason='stage0_runtime_counters_unavailable')
+    actual=dict(invocation_count=1,install_count=1,downloaded_bytes=123456)
+    monkeypatch.setattr(sys.modules['__main__'],'_RKB_STAGE0_COUNTERS',actual,raising=False)
+    ready=await runtime._read_owned_runtime()
+    assert ready['status']=='ready'
+    assert ready['stage0_actual_counters']==actual
+    assert ready['resident_model_load_count']==ready['process_model_load_count']
+
+
 @pytest.mark.asyncio
 async def test_actual_pg_superuser_identity_and_model_process_counter(monkeypatch):
     runtime,statements=prepared_runtime(monkeypatch)
@@ -135,7 +170,10 @@ async def test_live_reloaded_model_or_unavailable_counter_is_not_reported_as_pas
 @pytest.mark.asyncio
 async def test_actual_stage0_metrics_and_pg_model_identity_survive_readback(monkeypatch):
     runtime,statements=prepared_runtime(monkeypatch)
-    runtime.target['stage0']={'configured':True}  # already validated by TargetLaunchSpec
+    # compose_target puts Stage0 at top level, NOT target_runtime; the
+    # generated config must exercise the same location used in production.
+    runtime.config['stage0']={'configured':True}
+    assert runtime.target.get('stage0') is None
     monkeypatch.setattr(sys.modules['__main__'],'_MODEL_LOAD_COUNT',1,raising=False)
     expected=dict(invocation_count=1,downloaded_bytes=65536,install_count=1)
     monkeypatch.setattr(sys.modules['__main__'],'_RKB_STAGE0_COUNTERS',expected,raising=False)
@@ -155,7 +193,8 @@ async def test_actual_stage0_metrics_and_pg_model_identity_survive_readback(monk
 @pytest.mark.asyncio
 async def test_missing_or_fabricated_stage0_metrics_fail_closed(monkeypatch):
     runtime,_=prepared_runtime(monkeypatch)
-    runtime.target['stage0']={'configured':True}
+    runtime.config['stage0']={'configured':True}
+    assert runtime.target.get('stage0') is None
     monkeypatch.setattr(sys.modules['__main__'],'_MODEL_LOAD_COUNT',1,raising=False)
     monkeypatch.delattr(sys.modules['__main__'],'_RKB_STAGE0_COUNTERS',raising=False)
     missing=await runtime._read_owned_runtime()

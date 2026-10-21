@@ -229,7 +229,10 @@ class TargetRuntime:
         if type(global_counter) is not int or global_counter<counter:
             return {'status':'unavailable','reason':'resident_model_counter_unavailable'}
         stage0=None
-        if self.target.get('stage0') is not None:
+        # compose_target moves Stage0 into top-level RUN_CONFIG because it
+        # belongs to load_encoder, NOT target_runtime. Looking in self.target
+        # hides a configured Stage0 and could falsely report "not_configured".
+        if self.config.get('stage0') is not None:
             observed=getattr(main,'_RKB_STAGE0_COUNTERS',None)
             if (type(observed) is not dict
                     or set(observed)!={'invocation_count','install_count','downloaded_bytes'}

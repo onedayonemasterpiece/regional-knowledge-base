@@ -195,6 +195,54 @@ async def test_exact_run_read_handler_status_uses_retained_slot_without_pg_or_bg
     await worker.aclose()
 
 
+
+
+@pytest.mark.asyncio
+async def test_reconnect_during_pg_readback_yields_stale_receipt_without_killing_wss_runtime():
+    """Post-I/O generation change may not escape _encode/_failure as fatal."""
+    from regional_knowledge.kaggle_warm_read import ReadHandlerSlot
+    from test_kaggle_warm_read import old,context
+    from test_bge_wss_worker import module,CONFIG
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=database();native.identity=('r','n','i')
+    active=[True]
+    def current(binding):
+        if not active[0]:raise SnapshotError('native_restore_binding_changed')
+    native._current=current
+    native._owned_candidates=set();native._capabilities=set()
+    worker=WorkerRecoveryPhases(factory=native,download=lambda *_:None,
+                                workspace=lambda *_:None)
+    slot=ReadHandlerSlot(old,loaded_sha256='a'*64,compatibility=context())
+    worker.read_handler_slot=slot
+    async def changed_during_await(binding):
+        assert active[0]
+        await asyncio.sleep(0)
+        active[0]=False  # Simulate old connection generation after PG I/O
+        return {'status':'ready','pg_system_identifier':'previous-PG'}
+    worker.read_handler_runtime_observer=changed_during_await
+    phase='read_handler_status';arguments={}
+    frame=dict(type='DISPATCH',protocol_version=2,connection_generation=1,
+        id='job-stale',claim='claim',kind='recovery_phase',run_id='r',
+        launch_nonce='n',runtime_incarnation='i',
+        database_generation=native.database.database_generation,
+        writer_generation=native.database.writer_generation,
+        phase=phase,operation_key='readback-while-detached',arguments=arguments,
+        request_sha256=sha(encode(dict(phase=phase,arguments=arguments))),
+        compute_claim='slot',dispatch_generation=1)
+    transport=module('bge_wss_transport').BgeWssTransport(
+        dict(CONFIG,shared_reads=True),lambda:lambda text:[1.]+[0.]*1023,
+        lambda:{},query_handler=old,recovery_handler=worker)
+    task=asyncio.create_task(transport._encode(frame))
+    await task
+    transport._failure(task)  # Former code raised and triggered close_runtime.
+    assert transport.pending['receipt']['value']==dict(
+        status='unavailable',reason='runtime_readback_stale')
+    assert 'previous-PG' not in repr(transport.pending)
+    assert slot.receipt()['loaded_sha256']=='a'*64
+    assert slot.receipt()['generation']==0
+    await worker.aclose()
+
+
 @pytest.mark.asyncio
 async def test_readback_dispatch_uses_real_durable_owner_and_new_operation_per_poll(state):
     s=state

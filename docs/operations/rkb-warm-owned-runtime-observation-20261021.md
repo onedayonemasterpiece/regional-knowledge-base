@@ -45,15 +45,20 @@ The callback obtains the following **actual owned observations**:
 - Actual `runtime_process_pid` and authenticated `runtime_incarnation` are
   read beside the PG identity; both must remain unchanged between the
   first and subsequent same-run observations.
-- If the actual target config includes Stage0, the generated Kaggle worker
-  preserves cumulative counters from the real `prepare_stage0` return:
+- If the **top-level** `RUN_CONFIG.stage0` includes Stage0, the generated
+  Kaggle worker preserves cumulative counters from the real
+  `prepare_stage0` return:
   `stage0_actual_counters.invocation_count`, `downloaded_bytes`, and
   `install_count`. Its real prepare call already differentiates verified
   cached bytes from downloaded bytes, and an actual offline pip install
   from a no-op. The generated worker records the counters only upon
   successful Stage0 return. No separate download/install or reconnect loop
   is started by readback. Missing, malformed or uninitialized counters
-  return `stage0_runtime_counters_unavailable`, **never zero**.
+  return `stage0_runtime_counters_unavailable`, **never zero**. Generated
+  `compose_target` intentionally **removes `stage0` from `target_runtime`**:
+  only the top-level field controls the encoder's Stage0 lifecycle. This
+  source fix is exercised with the actual generated notebook RUN_CONFIG,
+  not a fabricated nested Stage0 test object.
 - The typed logical database/writer generation are included alongside the
   PG system/start IDs, not substituted for them.
 
@@ -64,8 +69,15 @@ returning a SQL exception, DB password, private query text or source rows.
 The existing WSS readback continues to return loaded code SHA; a
 diagnostic failure **must not terminate the BGE/PG worker**. WSS
 generation is rechecked after the await to prevent a stale owner from
-reading the observation. Production useful search and current native
-capability checks are still separate gates.
+reading the observation. **If the connection generation changes during
+PG I/O**, `read_handler_status` returns only the fixed
+`{status:unavailable,reason:runtime_readback_stale}` value, discarding
+both the old loaded SHA and all PG/model/Stage0 metrics, while the existing
+`BgeWssTransport._encode` still completes normally. This protects PG/BGE
+from fatal diagnostic-only readback exceptions on WSS reconnect. A real
+transport regression exercises the changed generation *during* the await.
+Production useful search and current native capability checks are still
+separate gates.
 
 ## Not-yet-observed instrumentation and acceptance
 
@@ -92,7 +104,6 @@ No manual Kaggle Save/Stop or provider API changes occur in A2c.
 `PYTHONPATH=src:tests pytest -q
 tests/test_kaggle_owned_runtime_readback.py
 tests/test_kaggle_recovery_phases.py
-tests/test_kaggle_target_runtime.py
 tests/test_kaggle_target_runtime.py
 tests/test_kaggle_generated_restore.py
 tests/test_kaggle_warm_read.py`

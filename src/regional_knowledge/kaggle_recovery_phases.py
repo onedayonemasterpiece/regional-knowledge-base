@@ -232,8 +232,15 @@ class WorkerRecoveryPhases:
                     # bounded PG observation is unavailable. Never turn a
                     # missing counter or SQL exception into fabricated zero.
                     observed={'status':'unavailable','reason':'runtime_readback_unavailable'}
+                # A WSS reconnect can revoke generation while this bounded
+                # PG call is in progress. Do not pass old PG/model counters as
+                # CURRENT and do not let a diagnostic-only read close the
+                # warmed model-owning runtime through _encode/_failure.
+                try:
+                    self.factory._current(binding)
+                except Exception:
+                    return {'status':'unavailable','reason':'runtime_readback_stale'}
                 receipt['owned_runtime']=observed
-                self.factory._current(binding)  # No stale generation post I/O.
             return receipt
         if phase in ('read_handler_stage','read_handler_activate','read_handler_rollback'):
             from .kaggle_warm_maintenance import WarmHandlerMaintenance
