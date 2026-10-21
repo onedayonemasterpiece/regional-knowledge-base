@@ -307,8 +307,22 @@ async def test_fused_dense_only_evidence_and_single_batch_hydration():
     ("canceling statement due to user request", True, False),
 ])
 async def test_server_timeout_race_classifies_only_own_expired_budget(
-        server_message, at_budget, expected_timeout):
-    import time
+        server_message, at_budget, expected_timeout, monkeypatch):
+    # Real time.sleep(server_budget_ms/1000) at the same 20 ms deadline is
+    # nondeterministic under CI load: asyncio's local timeout may fire BEFORE
+    # the synthetic server raises QueryCanceled. Model server-first explicitly
+    # using a virtual loop clock; keep the strict exception-cause assertion.
+    loop = asyncio.get_running_loop()
+    real_time = loop.time
+    frozen = [None]
+    monkeypatch.setattr(loop, "time",
+                        lambda: real_time() if frozen[0] is None else frozen[0])
+    deadline = [None]
+    original_timeout_at = asyncio.timeout_at
+    def capture_deadline(when):
+        deadline[0] = when
+        return original_timeout_at(when)
+    monkeypatch.setattr(asyncio, "timeout_at", capture_deadline)
     from psycopg.errors import QueryCanceled
     from psycopg.pq import DiagnosticField
 
@@ -321,9 +335,12 @@ async def test_server_timeout_race_classifies_only_own_expired_budget(
                 self.server_budget_ms = int(params[0])
             if "lexical_candidates" in statement:
                 if at_budget:
-                    # Deterministically model a server response arriving before
-                    # the event loop can run its absolute-deadline callback.
-                    time.sleep(self.server_budget_ms / 1000)
+                    # Server QueryCanceled has arrived just before the async
+                    # deadline, while the event-loop callback has NOT fired.
+                    # Freeze until exception classification/rollback completes;
+                    # never rely on operating-system sleep granularity.
+                    assert deadline[0] is not None
+                    frozen[0] = deadline[0] - .0005
                 raise server_error
             await super().execute(statement, params)
 
@@ -331,8 +348,11 @@ async def test_server_timeout_race_classifies_only_own_expired_budget(
         return [1] + [0] * 1023
 
     connection = ServerFirst()
-    with pytest.raises(TimeoutError if expected_timeout else QueryCanceled) as caught:
-        await fused_search(connection, "fixture", encode=encode, timeout_seconds=.02)
+    try:
+        with pytest.raises(TimeoutError if expected_timeout else QueryCanceled) as caught:
+            await fused_search(connection, "fixture", encode=encode, timeout_seconds=.05)
+    finally:
+        frozen[0] = None
     assert connection.cleaned
     if expected_timeout:
         assert caught.value.__cause__ is server_error
