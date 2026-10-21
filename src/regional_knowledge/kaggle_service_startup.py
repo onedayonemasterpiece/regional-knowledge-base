@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import logging
 import math
+import time
 from typing import Callable, Mapping, Protocol, runtime_checkable
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -25,6 +26,7 @@ from .read_authority import ReadAuthority
 from .source_read_gate import SourceReadGate
 
 _LOG=logging.getLogger(__name__)
+GEO_RETRY_SECONDS=300
 
 
 class SourceHistoryCoverage(Protocol):
@@ -221,7 +223,7 @@ class TargetServiceStartup:
         if self.gate.graph_supported():
             self.routes.update({'source.entity_read':self.backend.source_graph_fetch,
                 'source.entity_list':self.backend.entity_list})
-        self.geo_gate=self.geo_backend=None
+        self.geo_gate=self.geo_backend=None;self._geo_denied=None
         if config.geo_manifest_operation_keys:
             from .geo_read_gate import GeoReadGate
             from .kaggle_geo_backend import KaggleGeoBackend
@@ -334,6 +336,21 @@ class TargetServiceStartup:
         keys=installer.effective_keys if installer is not None else self.config.geo_manifest_operation_keys
         return bool(self.geo_gate is not None and self.geo_gate.installation_current(self.binding,keys))
 
+    def _coverage_idle(self):
+        """Nothing new to verify and ample time left on the current proof.
+
+        Re-observing an unchanged native prefix every tick only adds WSS/queue
+        work and PG SHARE locks; the proof keeps its own deadline and any new
+        accepted/applied command, pending restriction or write still extends.
+        """
+        c=self.coverage;spool=self.config.spool
+        verifier=getattr(c,'verifier',None);deadline=getattr(c,'deadline',None)
+        if verifier is None or deadline is None:return False
+        margin=2*self.config.refresh_seconds+getattr(verifier,'timeout_seconds',10)
+        return (deadline-verifier.clock()>margin and not c.pending and not spool._writing
+                and spool._source_anchor is c
+                and c.applied_sequence==c.accepted_sequence==spool._source_covered_sequence)
+
     async def refresh(self):
         if self.dataset_seed is not None and self.dataset_seed.published():
             # The one-time seed is finished. Do not keep polling S3 as a live
@@ -361,7 +378,7 @@ class TargetServiceStartup:
                 self.coverage=None;self.gate.invalidate();self.geo_installer.kick(binding)
                 return False
             if binding==self.binding and self.coverage is not None and self.coverage.current():
-                coverage=await self.history.extend(self.binding)
+                coverage=self.coverage if self._coverage_idle() else await self.history.extend(self.binding)
             else:
                 self.coverage=None;self.gate.invalidate();self.binding=binding
                 if self.geo_gate is not None:self.geo_gate.invalidate()
@@ -388,12 +405,21 @@ class TargetServiceStartup:
             if self.snapshot is not None:self.snapshot.kick(self.binding)
             if self.geo_gate is not None and (self.geo_gate._manifest is None
                     or self.geo_gate._manifest.database!=binding.database_generation):
-                try:
-                    await self.geo_gate.establish(self.config.geo_manifest_operation_keys,binding=self.binding)
-                except asyncio.CancelledError:raise
-                except Exception as exc:
-                    self.geo_gate.invalidate()
-                    _LOG.warning('target_geo_routing state=closed reason=%s',type(exc).__name__)
+                # establish() holds the spool lock while re-reading every GEO
+                # command; a denial for unchanged inputs repeats identically, so
+                # retry only after spool/binding change or GEO_RETRY_SECONDS.
+                inputs=(binding.database_generation,binding.connection_generation,
+                    self.config.spool._source_covered_sequence)
+                denied=self._geo_denied
+                if denied is None or denied[0]!=inputs or time.monotonic()-denied[1]>=GEO_RETRY_SECONDS:
+                    try:
+                        await self.geo_gate.establish(self.config.geo_manifest_operation_keys,binding=self.binding)
+                        self._geo_denied=None
+                    except asyncio.CancelledError:raise
+                    except Exception as exc:
+                        self.geo_gate.invalidate()
+                        self._geo_denied=(inputs,time.monotonic())
+                        _LOG.warning('target_geo_routing state=closed reason=%s',type(exc).__name__)
             if self.geo_installer is not None:self.geo_installer.kick(self.binding)
             if self.reads_current():
                 # Mark the original demand complete only after the full
