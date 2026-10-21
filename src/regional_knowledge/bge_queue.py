@@ -220,8 +220,16 @@ class BgeQueue:
                 return {'status':'unavailable','reason':'startup_retry_exhausted',
                     'run_id':row['current_run'],'startup_ref':row['startup_ref']}
             run_id=self._ensure(db,now)
-            if row['startup_ref'] is None or row['startup_state']!='pending':
+            if row['startup_ref'] is None:
                 ref='rkb:startup:v1:'+str(uuid.uuid4())
+                # A preexisting legacy document/controller failure already
+                # consumes the same global Kaggle startup budget. Joining the
+                # demand must NEVER reset prior known-not-sent failures.
+                db.execute("update control set startup_ref=?,startup_state='pending' where id=1",(ref,))
+            elif row['startup_state']!='pending':
+                ref='rkb:startup:v1:'+str(uuid.uuid4())
+                # An actual fresh demand after a previously READY run is a
+                # new bounded lifecycle; BLOCKED never reaches this branch.
                 db.execute("update control set startup_ref=?,startup_state='pending',startup_failures=0 where id=1",(ref,))
             else:ref=row['startup_ref']
             run=db.execute('select * from runs where id=?',(run_id,)).fetchone()
@@ -635,6 +643,12 @@ class BgeQueue:
                         raise StaleAttachment('writer publication must reconcile before handover')
                     db.execute("update runs set status='draining' where id=?",(control['current_run'],))
                     db.execute('update control set current_run=?,successor=null where id=1',(run_id,))
+                # A legacy document-only cycle has no MCP startup_ref, so
+                # finish_startup() is never invoked. Its verified READY is
+                # the only authority that clears prior known-not-sent startup
+                # failures. Plain heartbeat / public request cannot reset it.
+                db.execute('''UPDATE control SET startup_failures=0
+                    WHERE current_run=? AND startup_ref IS NULL AND startup_state IS NULL''',(run_id,))
             return self._status(db,now)
 
     def claim(self, run_id, token, *, connection_generation=None):
@@ -870,7 +884,12 @@ class BgeQueue:
         if run and self._run_expired(run,now) and not stale_remote:run=None
         successor=db.execute('select * from runs where id=?',(control['successor'],)).fetchone()
         successor_starting=bool(successor and not self._run_expired(successor,now))
-        return {'state':'unknown' if stale_remote else run['status'] if run else 'stopped','space':SPACE,'queue_depth':db.execute("select count(*) from jobs where state!='done'").fetchone()[0],'successor_starting':successor_starting,'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
+        blocked=control['startup_state']=='blocked'
+        return {'state':'unknown' if stale_remote else 'blocked' if blocked else run['status'] if run else 'stopped',
+            'reason':'startup_retry_exhausted' if blocked else None,
+            'space':SPACE,'queue_depth':db.execute("select count(*) from jobs where state!='done'").fetchone()[0],
+            'successor_starting':successor_starting,
+            'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
 
     def status(self):
         with self.connect(write=False) as db:
@@ -956,12 +975,22 @@ class BgeQueue:
                     # A normal useful-idle shutdown is NOT fresh demand. Do
                     # not resurrect an already satisfied startup merely
                     # because its old worker later terminates.
-                    if (control['current_run']==run_id and control['startup_ref'] is not None
-                            and control['startup_state']!='blocked'
-                            and (control['startup_state']=='pending' or outstanding)):
-                        db.execute('''UPDATE control SET startup_failures=startup_failures+1,
-                            startup_state=CASE WHEN startup_failures+1>=? THEN 'blocked' ELSE 'pending' END
-                            WHERE current_run=? AND startup_ref IS NOT NULL''',
-                            (MAX_STARTUP_FAILURES,run_id))
+                    if (control['current_run']==run_id and control['startup_state']!='blocked'
+                            and (control['startup_state']!='ready' or outstanding)):
+                        if row['status']=='starting' or control['startup_state']=='pending':
+                            # Actual incomplete cold lifecycle. The plain
+                            # notebook/session terminal after an already
+                            # successful READY must NOT consume another
+                            # preparation-failure attempt.
+                            db.execute('''UPDATE control SET startup_failures=startup_failures+1,
+                                startup_state=CASE WHEN startup_failures+1>=? THEN 'blocked'
+                                    WHEN startup_ref IS NOT NULL THEN 'pending'
+                                    ELSE startup_state END WHERE current_run=?''',
+                                (MAX_STARTUP_FAILURES,run_id))
+                        elif control['startup_state']=='ready' and outstanding and control['startup_ref'] is not None:
+                            # Reopen only unsettled demand, with fresh
+                            # permissions on next read; old incarnation is
+                            # still fenced until separate execution proof.
+                            db.execute("update control set startup_state='pending' where current_run=?",(run_id,))
                 db.execute('update runs set heartbeat=? where id=?',(self.clock(),run_id))
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run_id,))

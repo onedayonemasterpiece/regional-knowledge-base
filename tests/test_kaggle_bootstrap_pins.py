@@ -168,9 +168,20 @@ def test_authenticated_wss_observation_stays_closed_without_shared_admission(tmp
             assert not s.q.channel_status(s.run,s.token,generation)['ready']
             s.q.finalize_bootstrap_runtime(s.run,s.expected,
                 observation_sha256=acknowledgment['observation_sha256'],review_evidence='independent native/catalog review')
-            frame=socket.receive_json()
-            assert frame['type']=='READY_ACK' and frame['status']=='runtime_not_ready'
-            assert frame['reasons']==['shared_admission_required']
+            # Finalization may emit BOOTSTRAP_ACK(pins_finalized) before
+            # READY_ACK(runtime_not_ready). Both are independent control
+            # observations; their order is not a readiness permission.
+            for _ in range(3):
+                frame=socket.receive_json()
+                if frame['type']=='BOOTSTRAP_ACK':
+                    assert frame['status']=='pins_finalized'
+                    assert not s.q.channel_status(s.run,s.token,generation)['ready']
+                    continue
+                assert frame['type']=='READY_ACK' and frame['status']=='runtime_not_ready'
+                assert frame['reasons']==['shared_admission_required']
+                break
+            else:
+                pytest.fail('bounded READY_ACK not observed')
             assert not s.q.channel_status(s.run,s.token,generation)['ready']
 
 
