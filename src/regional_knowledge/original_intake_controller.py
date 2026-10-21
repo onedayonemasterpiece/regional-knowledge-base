@@ -148,17 +148,28 @@ class OriginalIntakeController:
         text(operation_id);uuid_value(source_id);uuid_value(ingestion_id)
         if not isinstance(file,ChatFile):raise OriginalIntakeError('original_chat_file_required')
         if type(max_bytes) is not int or not 1<=max_bytes<=self.max_bytes:raise OriginalIntakeError('original_byte_bound')
-        spec=OriginalIntakeSpec(source_id,ingestion_id,str(uuid5(UUID(ingestion_id),'original:'+operation_id)),file.file_id,
+        # The caller may now offer a larger size/page budget, but it must
+        # never mutate an already persisted operation's canonical input.
+        # Historical 2MiB/32-page jobs remain valid exact replay inputs.
+        request_id=str(uuid5(UUID(ingestion_id),'original:'+operation_id))
+        spec=OriginalIntakeSpec(source_id,ingestion_id,request_id,file.file_id,
             file_name=file.file_name,mime_type=file.mime_type,max_bytes=max_bytes)
         async with self._lock:
             with self.queue.connect() as db:
                 prior=db.execute('SELECT * FROM rkb_original_intakes WHERE ingestion_id=?',(ingestion_id,)).fetchone()
-                encoded=canonical(spec.wire()).decode()
                 if prior is not None:
-                    if (prior['actor'],prior['operation_id'],prior['spec_json'],prior['storage_sha256'])!=(actor,operation_id,encoded,self._storage):
+                    stored=OriginalIntakeSpec.from_wire(json.loads(prior['spec_json']))
+                    if (prior['actor']!=actor or prior['operation_id']!=operation_id
+                            or prior['storage_sha256']!=self._storage
+                            or (stored.source_id,stored.ingestion_id,stored.request_id,stored.file_id,
+                                stored.file_name,stored.mime_type)!=(source_id,ingestion_id,request_id,
+                                    file.file_id,file.file_name,file.mime_type)
+                            or stored.max_bytes>self.max_bytes):
                         raise OriginalIntakeError('original_operation_changed')
-                else:db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,operation_id,spec_json,storage_sha256) VALUES(?,?,?,?,?)',
-                    (ingestion_id,actor,operation_id,encoded,self._storage))
+                    spec=stored
+                else:
+                    db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,operation_id,spec_json,storage_sha256) VALUES(?,?,?,?,?)',
+                        (ingestion_id,actor,operation_id,canonical(spec.wire()).decode(),self._storage))
             row=self._row(actor,ingestion_id)
             try:
                 if row['failure_code'] is not None:return OriginalIntakeStatus(ingestion_id,'rejected',reason=row['failure_code'])

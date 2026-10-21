@@ -90,6 +90,7 @@ async def test_native_verified_djvu_archive_over_2mib_139_pages_without_bulk_ren
         packages={"PyMuPDF": "pinned-version"},
         code=digest(parser_path.read_bytes()),
         djvu_inspector_sha256=digest(inspector_path.read_bytes()),
+        legacy_pdf_parser_sha256=digest(parser_path.with_name("kaggle_original_parser_pdf_v1.py").read_bytes()),
     )))
     assert acquired["parser_sha256"] == expected_parser_hash
     # Reconciliation remains idempotent and must not reread the attachment.
@@ -142,3 +143,74 @@ def test_malformed_djvu_is_terminal_invalid_not_an_endless_pending_decoder(corru
     path.write_bytes(raw)
     with pytest.raises(ValueError, match="original_djvu_invalid"):
         parse(path, "inspect")
+
+
+@pytest.mark.asyncio
+async def test_legacy_stored_intake_retries_same_exact_operation_after_bounds_upgrade(tmp_path):
+    """A former 2MiB/32-page operation must not be silently rewritten at retry."""
+    import asyncio
+    import json
+    import sqlite3
+    from contextlib import contextmanager
+    from uuid import UUID, uuid5
+    from regional_knowledge.contracts import ChatFile
+    from regional_knowledge.original_intake import OriginalIntakeError
+    from regional_knowledge.original_intake_controller import OriginalIntakeController
+
+    class Queue:
+        def __init__(self, path):
+            self.path = path
+        @contextmanager
+        def connect(self, write=False):
+            db = sqlite3.connect(self.path)
+            db.row_factory = sqlite3.Row
+            try:
+                with db:
+                    yield db
+            finally:
+                db.close()
+
+    queue = Queue(str(tmp_path / "control.sqlite3"))
+    with queue.connect() as db:
+        db.execute("""CREATE TABLE rkb_original_intakes(
+            ingestion_id TEXT PRIMARY KEY,actor TEXT NOT NULL,operation_id TEXT NOT NULL,
+            spec_json TEXT NOT NULL,storage_sha256 TEXT NOT NULL,acquisition_json TEXT,
+            receipt_json TEXT,failure_code TEXT,restore_json TEXT,
+            UNIQUE(actor,operation_id))""")
+    op = "source-original:" + INGEST
+    old = OriginalIntakeSpec(SOURCE, INGEST, str(uuid5(UUID(INGEST), "original:" + op)),
+                             "same-file",file_name="old.pdf",mime_type="application/pdf",
+                             max_bytes=2*1024*1024,max_pages=32)
+    actor = "50000000-0000-0000-0000-000000000005"
+    with queue.connect() as db:
+        db.execute("""INSERT INTO rkb_original_intakes
+            (ingestion_id,actor,operation_id,spec_json,storage_sha256)
+            VALUES(?,?,?,?,?)""",(INGEST,actor,op,canonical(old.wire()).decode(),"a"*64))
+
+    controller=object.__new__(OriginalIntakeController)
+    controller.queue=queue
+    controller._lock=asyncio.Lock()
+    controller.max_bytes=128*1024*1024
+    controller._storage="a"*64
+    async def authorize(_):
+        return actor, SimpleNamespace(run_id="legacy-test-run")
+    controller._authorize=authorize
+    requests=[]
+    async def phase(binding, name, args, private=None):
+        requests.append((name,args))
+        raise OriginalIntakeError("synthetic_pending_without_receipt")
+    controller._phase=phase
+    file=ChatFile(download_url="https://attachment.invalid/private", file_id="same-file",
+                  file_name="old.pdf", mime_type="application/pdf")
+    result=await controller.begin(None,operation_id=op,source_id=SOURCE,ingestion_id=INGEST,
+                                  file=file,max_bytes=128*1024*1024)
+    assert result.state=="pending"
+    assert requests == [("original_acquire",{"spec":old.wire()})]
+    with queue.connect(write=True) as db:
+        saved=db.execute("SELECT spec_json FROM rkb_original_intakes WHERE ingestion_id=?",(INGEST,)).fetchone()[0]
+    assert saved == canonical(old.wire()).decode()
+    with pytest.raises(OriginalIntakeError,match="original_operation_changed"):
+        await controller.begin(None,operation_id=op,source_id=SOURCE,ingestion_id=INGEST,
+                               file=file.model_copy(update={"file_id":"another-file"}),
+                               max_bytes=128*1024*1024)
+    assert len(requests)==1

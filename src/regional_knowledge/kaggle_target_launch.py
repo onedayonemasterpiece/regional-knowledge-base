@@ -19,7 +19,7 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
     'source_import','kaggle_source_commands','kaggle_stage0','kaggle_restored_database','kaggle_native_bundle',
     'kaggle_environment','kaggle_pg_snapshot_native','kaggle_recovery_phases','kaggle_snapshot_channel',
     'native_snapshot_transfer','kaggle_bootstrap_pins','kaggle_native_env','kaggle_source_acl','kaggle_source_history_native',
-    'original_intake','kaggle_original_native','kaggle_original_parser','kaggle_djvu_inspect','file_ingress','source_adapter','ingestion',
+    'original_intake','kaggle_original_native','kaggle_original_parser','kaggle_djvu_inspect','kaggle_original_parser_pdf_v1','file_ingress','source_adapter','ingestion',
     'source_import_v2','story_contracts','kaggle_story_read','source_import_v3','kaggle_fact_contracts','kaggle_fact_read','kaggle_source_read','source_import_v4','source_manifest',
     'story_editorial','disagreement_contracts','disagreement_native','geo_migration','geo_manifest_commands',
     'kaggle_case_contracts','kaggle_case_read','kaggle_geo_contracts','kaggle_geo_read',
