@@ -29,6 +29,18 @@ def target():
         command_handlers=(dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64),))
 
 
+def test_restore_pending_launch_requires_native_proof_not_fabricated_initialized_receipt():
+    """A cold target cannot possess a new PG's native initialized receipt yet."""
+    pending=replace(target(),initialized_receipt=None)
+    assert pending.database.mode=='VERIFIED_INITIALIZED'
+    assert pending.recovery is not None and not pending.recovery.drill_empty
+    assert pending.bootstrap_only is False
+    assert pending.initialized_receipt is None
+    assert target_launch_from_wire(pending.wire())==pending
+    with pytest.raises(ValueError,match='initialized'):
+        replace(pending,recovery=None)  # no independent native recovery owner
+
+
 def test_restore_config_roundtrip_and_explicit_mode_only():
     value=target();loaded=target_launch_from_wire(value.wire())
     assert loaded.recovery.wire()==value.recovery.wire()
@@ -54,8 +66,10 @@ def _entry(source,tmp_path):
 
 
 @pytest.mark.parametrize('wrong_identity',[False,True])
-def test_real_generated_restore_entrypoint_waits_native_capability_and_refuses_wrong_identity(tmp_path,monkeypatch,wrong_identity):
-    q,run=queue_run(tmp_path);source=generate(q,run,target());namespace,entry=_entry(source,tmp_path)
+@pytest.mark.parametrize('restore_pending',[False,True])
+def test_real_generated_restore_entrypoint_waits_native_capability_and_refuses_wrong_identity(tmp_path,monkeypatch,wrong_identity,restore_pending):
+    launch=replace(target(),initialized_receipt=None) if restore_pending else target()
+    q,run=queue_run(tmp_path);source=generate(q,run,launch);namespace,entry=_entry(source,tmp_path)
     config=namespace['RUN_CONFIG'];events=[];ready=asyncio.Event();released=[]
     encoder=SimpleNamespace(artifacts=SimpleNamespace(root=Path('/kaggle/working'),entries=(),role_hash=lambda roles:'d'*64))
     monkeypatch.setattr('regional_knowledge.kaggle_native_bundle.prepare_native_bundle',
