@@ -351,7 +351,7 @@ class TargetExpertRequestControl:
                 return False
             self._destination_allowed(origin)
             # Recheck the verified Slack person/link and current capabilities
-            # in this SAME bounded read-only SQLite snapshot immediately before
+            # via the SAME bounded read-only SQLite connection immediately before
             # ASGI sends the buffered evidence. An async SourceReadGate refresh
             # can have finished *before* a concurrent unlink/grant revocation.
             current=self.people.resolve_external(
