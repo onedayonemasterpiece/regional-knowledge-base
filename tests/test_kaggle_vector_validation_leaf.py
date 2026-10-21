@@ -43,7 +43,7 @@ def read_source(path, *, baseline=False):
 
 def extract(source, name, namespace):
     tree = ast.parse(source)
-    found = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
+    found = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name]
     if len(found) != 1:
         raise AssertionError(f"expected one tracked top-level function {name}")
     exec(compile(ast.Module(body=found, type_ignores=[]), f"<tracked:{name}>", "exec"), namespace)
