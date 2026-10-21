@@ -71,6 +71,7 @@ class BgeWssTransport:
         self.heartbeat_seconds, self.maximum_seconds = heartbeat_seconds, maximum_seconds
         self.stop = stop or asyncio.Event()
         self.incarnation = secrets.token_urlsafe(24)
+        self._retry_clock = time.monotonic
         self.encoder = None
         self.loading = None
         self.encoding = None
@@ -362,6 +363,7 @@ class BgeWssTransport:
         if welcome.get('type') != 'WELCOME' or type(generation) is not int or generation < 1:
             raise ValueError('server attachment generation required')
         self._connection_generation=generation
+        connected_at=self._retry_clock()
         if self.recovery_attachment is not None:
             self.recovery_attachment.attached(generation,runtime_incarnation=self.incarnation)
         if self.source_history_handler is not None:self.source_history_handler.attached(generation)
@@ -575,7 +577,11 @@ class BgeWssTransport:
                     if self.bootstrap_only and frame.get('status')=='ready':
                         self.bootstrap_finalized=True
                         self._lifetime_timeout.reschedule(self._overall_deadline)
-                elif kind!='HEARTBEAT_ACK':
+                elif kind=='HEARTBEAT_ACK':
+                    # A stable authenticated session starts a fresh outage budget.
+                    if self._retry_clock()-connected_at>=30:
+                        self._reconnect_attempt=0
+                else:
                     raise ValueError('unexpected channel frame')
 
         tasks = [asyncio.create_task(coro()) for coro in (writer, heartbeat, states, reader)]
@@ -639,7 +645,7 @@ class BgeWssTransport:
         self._overall_deadline=deadline
         bootstrap_deadline=(asyncio.get_running_loop().time()+self.config['target_runtime'].get('bootstrap_seconds',900)
             if self.bootstrap_only else deadline)
-        attempt = 0
+        self._reconnect_attempt = 0
         try:
             async with asyncio.timeout_at(min(deadline,bootstrap_deadline)) as lifetime:
                 self._lifetime_timeout=lifetime
@@ -654,11 +660,11 @@ class BgeWssTransport:
                     except BgeChannelStopped:
                         raise
                     except (ConnectionError, OSError, TimeoutError, aiohttp.ClientError):
-                        attempt += 1
-                        if attempt >= 10:
+                        self._reconnect_attempt += 1
+                        if self._reconnect_attempt >= 10:
                             raise BgeChannelStopped('bounded channel reconnect exhausted') from None
                         # Reconnect the same process/model/nonce; never invoke push.
-                        delay = random.uniform(.25, min(5.0, .5 * 2 ** attempt))
+                        delay = random.uniform(.25, min(5.0, .5 * 2 ** self._reconnect_attempt))
                         try:
                             await asyncio.wait_for(self.stop.wait(), delay)
                         except TimeoutError:

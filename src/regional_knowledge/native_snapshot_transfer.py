@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -88,7 +89,8 @@ class SnapshotTicket:
                 or h['content-type'] != 'application/octet-stream'
                 or self.upload_kind == 's3' and h['if-none-match'] != '*'):
             raise SnapshotTransferError('snapshot_transfer_headers_invalid')
-        if self.upload_kind == 'kaggle-dataset' and origin(self.url) != 'https://storage.googleapis.com':
+        if self.upload_kind == 'kaggle-dataset' and origin(self.url) not in {
+                'https://storage.googleapis.com','https://www.googleapis.com'}:
             raise SnapshotTransferError('snapshot_transfer_dataset_origin')
 
     def wire(self):
@@ -161,6 +163,22 @@ class NativeSnapshotTransfer:
                     if response.status not in (200, 201, 204):
                         raise SnapshotTransferError('snapshot_transfer_upload_unknown')
                     version = response.headers.get('ETag')
+                    if not version and ticket.upload_kind=='kaggle-dataset':
+                        # Kaggle's real signed JSON upload endpoint is
+                        # www.googleapis.com. Its object generation may be in
+                        # the bounded JSON receipt rather than an ETag header.
+                        receipt=bytearray()
+                        while len(receipt)<=16384:
+                            chunk=await response.content.read(min(4096,16385-len(receipt)))
+                            if not chunk:break
+                            receipt.extend(chunk)
+                        if len(receipt)<=16384:
+                            try:
+                                value=json.loads(receipt);generation=value.get('generation')
+                                if (type(generation) is str and 1<=len(generation)<=128 and generation.isdecimal()
+                                        and str(value.get('size',ticket.size))==str(ticket.size)):
+                                    version='gcs-generation:'+generation
+                            except (ValueError,TypeError,AttributeError):pass
                     if not version or len(version) > 512:
                         raise SnapshotTransferError('snapshot_transfer_upload_unknown')
                     return version

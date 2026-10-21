@@ -573,3 +573,30 @@ async def test_ticket_issuance_requires_exact_capture_resource_and_urls_are_not_
         await bridge.receive(response(s,frame,{'native':'capture'}),run_id=s.run,token=s.token,generation=s.generation)
         assert await task=={'native':'capture'}
     finally:await bridge.aclose()
+
+
+@pytest.mark.asyncio
+async def test_capture_refusal_preserves_native_owner_for_following_readback():
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=database();native.identity=('r','nonce','inc')
+    native._current=lambda binding:None
+    closed=[]
+    class Candidate:
+        async def aclose(self):closed.append(True)
+    candidate=Candidate();native._owned_candidates={candidate};native._capabilities=set()
+    async def capture(*args,**kwargs):raise ConnectionError('provider upload unavailable')
+    async def verify(*args):return {'resident_pg':'unchanged'}
+    native.capture=capture;native.verify_reference=verify
+    worker=WorkerRecoveryPhases(factory=native,download=lambda *_:None,workspace=lambda *_:None)
+    def frame(phase,args,key):
+        return dict(type='DISPATCH',protocol_version=2,connection_generation=1,id=key,claim='claim',
+            kind='recovery_phase',run_id='r',launch_nonce='nonce',runtime_incarnation='inc',
+            database_generation=native.database.database_generation,writer_generation=native.database.writer_generation,
+            phase=phase,operation_key=key,arguments=args,request_sha256=sha(encode(dict(phase=phase,arguments=args))),
+            compute_claim='slot',dispatch_generation=1)
+    failed=frame('capture',dict(versions={},expected_sequence=7),'capture')
+    result=await worker(failed)
+    assert result['value']==dict(status='rejected',reason='snapshot_capture_rejected')
+    assert await worker(failed)==result and not closed
+    assert (await worker(frame('verify',{'reference':'retained'},'readback')))['value']=={'resident_pg':'unchanged'}
+    assert native._owned_candidates=={candidate} and not closed

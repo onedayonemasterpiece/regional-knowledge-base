@@ -71,6 +71,41 @@ async def test_current_binding_and_bound_before_presign(deployment):
 
 
 @pytest.mark.asyncio
+async def test_real_kaggle_json_upload_uses_scoped_origin_and_object_generation(tmp_path,monkeypatch):
+    import aiohttp,json
+    from pathlib import Path
+    raw=b'synthetic physical archive';path=tmp_path/'pg.blob';path.write_bytes(raw)
+    key='capture';digest=hashlib.sha256(raw).hexdigest();sent=[]
+    ticket=SnapshotTicket('PUT',hashlib.sha256(key.encode()).hexdigest(),'dataset-blobs/capture/pg.blob',
+        len(raw),digest,200,'https://www.googleapis.com/upload/storage/v1/b/owned/o?upload_id=opaque',
+        (('Content-Length',str(len(raw))),('Content-Type','application/octet-stream')),upload_kind='kaggle-dataset')
+    class Content:
+        done=False
+        async def read(self,size):
+            if self.done:return b''
+            self.done=True
+            return json.dumps(dict(kind='storage#object',generation='123456789')).encode()
+    class Response:
+        status=200;headers={};content=Content()
+        def __init__(self,data):self.data=data
+        async def __aenter__(self):
+            sent.append(b''.join([chunk async for chunk in self.data]));return self
+        async def __aexit__(self,*args):pass
+    class Session:
+        def __init__(self,**kwargs):assert kwargs['trust_env'] is False
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        def put(self,url,*,data,headers,allow_redirects):
+            assert allow_redirects is False and 'If-None-Match' not in headers
+            return Response(data)
+    monkeypatch.setattr(aiohttp,'ClientSession',Session)
+    transfer=NativeSnapshotTransfer(allowed_origins=frozenset({'https://www.googleapis.com'}),max_bytes=1024,clock=lambda:100)
+    monkeypatch.setattr(transfer,'_path',lambda value:Path(value))
+    assert await transfer.upload(ticket,path,operation_key=key)=='gcs-generation:123456789'
+    assert sent==[raw]
+
+
+@pytest.mark.asyncio
 async def test_ticket_cannot_change_operation_origin_method_or_expiry(deployment):
     issuer, binding, raw, _, _ = deployment
     ticket = await issuer.issue_upload(binding, 'operation', size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
