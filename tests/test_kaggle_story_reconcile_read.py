@@ -263,7 +263,8 @@ async def test_stale_cursor_rejects_epoch_and_pg_visibility_change():
     assert first.next_cursor
     valid = await adapter.next_sources(ACTOR,after=first.next_cursor,limit=1)
     assert valid.items[0].proofs[0].assertion_id != first.items[0].proofs[0].assertion_id
-    assert decode_source_cursor(first.next_cursor,"f"*64) != ("","") if False else True
+    with pytest.raises(ReconcileError,match="invalid_or_stale_reconciliation_cursor"):
+        decode_source_cursor(first.next_cursor,"f"*64)
     changed, *_ = reader(db.items,epoch=4)
     with pytest.raises(ReconcileError,match="invalid_or_stale_reconciliation_cursor"):
         await changed.next_sources(ACTOR,after=first.next_cursor,limit=1)

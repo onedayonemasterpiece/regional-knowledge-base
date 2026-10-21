@@ -149,6 +149,12 @@ class FakePgCursor:
     async def finish(self, actor, key, version):
         return self.cas(actor, key, version, done=True)
 
+    async def reject(self, actor, key, version, rejected_step):
+        old = self.rows[(actor, key)]
+        if not old.attempted or old.step_index != rejected_step or old.done:
+            raise ReconcileError("invalid_rejection_progress")
+        return self.cas(actor, key, version, rejected=True, rejected_step=rejected_step)
+
 
 class FakeExistingCaseBackend:
     """Exactly one remote effect per Case operation_key; retries return same receipt."""
@@ -437,3 +443,84 @@ async def test_completed_case_receipt_is_rechecked_after_later_case_permission_c
     with pytest.raises(error):
         await adapter.apply(ACTOR, operation)
     assert len(cases.effects) == effects_before, "no Case write or new receipt on repeat"
+
+
+@pytest.mark.asyncio
+async def test_invalid_created_position_is_rejected_before_any_case_mutation(environment):
+    from pydantic import ValidationError
+    a, b, _, authority, sources, store, cases, adapter = environment
+    good = comparison(a, b)
+    missing = good.case_plan.evidence[0].model_copy(update={"position_ids": ["missing"]})
+    with pytest.raises(ValidationError):
+        CasePlan(action="create", create=good.case_plan.create,
+                 evidence=(missing, good.case_plan.evidence[1]))
+    # Untrusted model_copy must not bypass the source/evidence boundary.
+    unsafe = good.model_copy(update={"case_plan": good.case_plan.model_copy(
+        update={"evidence": (missing, good.case_plan.evidence[1])})})
+    with pytest.raises(ReconcileError, match="case_position_unknown"):
+        await adapter.stage(ACTOR, unsafe)
+    assert store.rows == {} and cases.attempts == []
+
+
+@pytest.mark.asyncio
+async def test_native_terminal_rejected_is_persisted_once_and_not_retried(environment):
+    a, b, _, authority, sources, store, cases, adapter = environment
+    staged = await adapter.stage(ACTOR, comparison(a, b))
+    parent = staged["operation_key"]
+    effect = staged["current_case_operation_key"]
+
+    class RejectedCase:
+        attempts = []
+        async def disagreement_edit(self, action, key, principal, **kwargs):
+            self.attempts.append((action, key))
+            return dict(status="rejected",saved=False,outcome_durability="DURABLE",
+                        intent_remote_accepted=True,case_id=None)
+
+    case = RejectedCase()
+    adapter.cases = case
+    result = await adapter.apply(ACTOR, parent)
+    assert result["status"] == "rejected" and result["reason"] == "case_rejected_precondition"
+    assert result["operation_key"] == parent and effect != parent
+    stored = store.rows[(ACTOR, parent)]
+    assert stored.rejected and stored.rejected_step == 0 and not stored.done
+    assert result["case_id"] is None and result["cross_book_complete"] is False
+    assert (await adapter.status(ACTOR, parent))["status"] == "rejected"
+    assert (await adapter.apply(ACTOR, parent))["status"] == "rejected"
+    assert case.attempts == [("create", effect)]
+
+
+@pytest.mark.asyncio
+async def test_native_only_rejected_is_not_recorded_as_terminal(environment):
+    a, b, _, authority, sources, store, cases, adapter = environment
+    staged = await adapter.stage(ACTOR, comparison(a, b))
+
+    class NativeOnly:
+        async def disagreement_edit(self, *args, **kwargs):
+            return dict(status="rejected",saved=False,outcome_durability="native_only",
+                        intent_remote_accepted=True)
+
+    adapter.cases = NativeOnly()
+    result = await adapter.apply(ACTOR, staged["operation_key"])
+    assert result["status"] == "pending" and result["reason"] == "case_outcome_pending"
+    assert not store.rows[(ACTOR,staged["operation_key"])].rejected
+
+
+@pytest.mark.asyncio
+async def test_status_reports_durable_case_rejected_without_mutating_parent_cursor(environment):
+    a, b, _, authority, sources, store, cases, adapter = environment
+    parent = (await adapter.stage(ACTOR, comparison(a, b)))["operation_key"]
+
+    class StatusReject:
+        async def disagreement_edit(self, action, key, principal, **kwargs):
+            return dict(status="rejected",saved=False,outcome_durability="DURABLE",
+                        intent_remote_accepted=True)
+
+    adapter.cases = StatusReject()
+    await adapter.store.begin(ACTOR,parent,store.rows[(ACTOR,parent)].version)
+    before = store.rows[(ACTOR,parent)]
+    reported = await adapter.status(ACTOR,parent)
+    assert reported["status"] == "rejected" and reported["case_receipt_verified"] is True
+    assert reported["operation_key"] == parent and reported["case_id"] is None
+    assert store.rows[(ACTOR,parent)] is before and not before.rejected
+    recorded = await adapter.apply(ACTOR,parent)
+    assert recorded["status"] == "rejected" and store.rows[(ACTOR,parent)].rejected

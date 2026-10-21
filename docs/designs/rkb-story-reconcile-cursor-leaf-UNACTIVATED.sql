@@ -50,8 +50,13 @@ CREATE TABLE rkb_v4.story_reconciliation_intents (
     attempted boolean NOT NULL DEFAULT false,
     case_id uuid REFERENCES rkb_v4.disagreement_cases(case_id),
     done boolean NOT NULL DEFAULT false,
+    rejected boolean NOT NULL DEFAULT false,
+    rejected_step integer CHECK (rejected_step >= 0),
     progress_version bigint NOT NULL DEFAULT 1 CHECK (progress_version > 0),
-    CHECK (source_id <> peer_source_id)
+    CHECK (source_id <> peer_source_id),
+    CHECK (NOT (done AND rejected)),
+    CHECK ((rejected AND rejected_step=current_step)
+        OR (NOT rejected AND rejected_step IS NULL))
 );
 CREATE INDEX story_reconciliation_actor_cursor
     ON rkb_v4.story_reconciliation_intents(actor_id,source_id,operation_key);

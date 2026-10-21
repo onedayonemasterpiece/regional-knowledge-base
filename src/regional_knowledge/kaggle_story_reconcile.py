@@ -71,6 +71,10 @@ class CasePlan(ExactInput):
                 raise ValueError("new Case needs typed question and both source proofs")
         elif self.case_id is None or self.create is not None or not self.evidence:
             raise ValueError("existing Case needs its real ID and sourced evidence")
+        if self.action == "create":
+            positions = {position.id for position in self.create.positions}
+            if any(set(item.position_ids) - positions for item in self.evidence):
+                raise ValueError("Case evidence must refer to real created positions")
         return self
 
 
@@ -153,6 +157,8 @@ class StoredIntent:
     attempted: bool = False
     case_id: str | None = None
     done: bool = False
+    rejected: bool = False
+    rejected_step: int | None = None
 
 
 class SourceReader(Protocol):
@@ -178,6 +184,8 @@ class ReconcileStore(Protocol):
     async def advance(self, actor_id: str, operation_key: str, expected_version: int,
                       step_index: int, case_id: str | None) -> StoredIntent: ...
     async def finish(self, actor_id: str, operation_key: str, expected_version: int) -> StoredIntent: ...
+    async def reject(self, actor_id: str, operation_key: str, expected_version: int,
+                     rejected_step: int) -> StoredIntent: ...
 
 
 class ExistingCaseBackend(Protocol):
@@ -221,8 +229,14 @@ def _ensure_evidence(comparison: Comparison, anchor: Proof, peer: Proof) -> None
                 or evidence.text_start != proof.text_start or evidence.quote != proof.quote):
             raise ReconcileError("case_evidence_mismatch")
         found.add(str(evidence.document_id))
-    if comparison.case_plan.action == "create" and found != set(proof_map):
-        raise ReconcileError("new_case_requires_both_source_evidences")
+    if comparison.case_plan.action == "create":
+        if found != set(proof_map):
+            raise ReconcileError("new_case_requires_both_source_evidences")
+        # model_copy can bypass model_validator. Recheck exact created
+        # position IDs at the final source/evidence boundary before staging.
+        positions = {p.id for p in comparison.case_plan.create.positions}
+        if any(set(item.position_ids) - positions for item in comparison.case_plan.evidence):
+            raise ReconcileError("case_position_unknown")
 
 
 def _effect_key(parent: str, index: int) -> str:
@@ -241,6 +255,13 @@ def _steps(comparison: Comparison) -> tuple[tuple[str, Any], ...]:
 def _saved(output: dict[str, Any]) -> bool:
     return (type(output) is dict and output.get("status") == "saved"
             and output.get("saved") is True and output.get("outcome_durability") == "DURABLE"
+            and output.get("intent_remote_accepted") is True)
+
+
+def _rejected(output: dict[str, Any]) -> bool:
+    # A local rejection or native-only result is not a terminal receipt.
+    return (type(output) is dict and output.get("status") == "rejected"
+            and output.get("saved") is False and output.get("outcome_durability") == "DURABLE"
             and output.get("intent_remote_accepted") is True)
 
 
@@ -327,13 +348,16 @@ class TargetStoryReconcile:
     @staticmethod
     def _output(row: StoredIntent, *, reason: str | None = None) -> dict[str, Any]:
         total = len(_steps(row.intent.comparison))
-        return dict(status="completed" if row.done else "needs_context" if row.intent.comparison.decision == "needs_context"
+        return dict(status="rejected" if row.rejected else "completed" if row.done else "needs_context"
+                    if row.intent.comparison.decision == "needs_context"
                     else "pending" if (row.attempted or row.step_index) else "staged",
-                    reason=reason, operation_key=row.intent.operation_key,
+                    reason="case_rejected_precondition" if row.rejected else reason,
+                    operation_key=row.intent.operation_key,
                     step_index=row.step_index, step_count=total,
                     current_case_operation_key=_effect_key(row.intent.operation_key, row.step_index)
                         if row.step_index < total else None,
-                    case_id=row.case_id, source_pass_state=row.intent.anchor_source.source_pass_state,
+                    case_id=None if row.rejected else row.case_id,
+                    source_pass_state=row.intent.anchor_source.source_pass_state,
                     cross_book_complete=False, request_sha256=row.intent.request_sha256)
 
 
@@ -351,6 +375,8 @@ class TargetStoryReconcile:
 
     async def apply(self, principal: Any, operation_key: str) -> dict[str, Any]:
         actor, row, source_ids = await self._current_intent(principal, operation_key, mutate=True)
+        if row.rejected:
+            return self._output(row)
         if row.done:
             await self._require_completed_case_current(principal, row)
             await self.authority.current(actor, source_ids=source_ids, mutate=True)
@@ -378,6 +404,10 @@ class TargetStoryReconcile:
                 case_id=case_id, command=command)
         except TimeoutError:
             return self._output(row, reason="case_result_unknown")
+        if _rejected(outcome):
+            await self.authority.current(actor, source_ids=source_ids, mutate=True)
+            row = await self.store.reject(actor.person_id, operation_key, row.version, row.step_index)
+            return self._output(row)
         if not _saved(outcome):
             return self._output(row, reason="case_outcome_pending")
         confirmed = case_id
@@ -401,13 +431,17 @@ class TargetStoryReconcile:
             await self._require_completed_case_current(principal, row)
         result = self._output(row)
         steps = _steps(row.intent.comparison)
-        if row.attempted and not row.done and row.step_index < len(steps):
+        if row.attempted and not row.done and not row.rejected and row.step_index < len(steps):
             key = _effect_key(operation_key, row.step_index)
             try:
                 observed = await self.cases.disagreement_edit("operation_status", key, principal,
                     case_id=row.case_id or (str(row.intent.comparison.case_plan.case_id)
                         if row.intent.comparison.case_plan.case_id is not None else None))
-                result["case_receipt_verified"] = _saved(observed)
+                result["case_receipt_verified"] = _saved(observed) or _rejected(observed)
+                if _rejected(observed):
+                    # Status is read-only. Next apply records the durable
+                    # terminal receipt with an explicit parent CAS reject.
+                    result.update(status="rejected", reason="case_rejected_precondition", case_id=None)
             except TimeoutError:
                 result["case_receipt_verified"] = False
             # Read-only status never advances the reconciliation cursor.
