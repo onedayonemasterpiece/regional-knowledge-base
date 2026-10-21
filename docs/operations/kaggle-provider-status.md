@@ -102,14 +102,13 @@ A surviving shared-admission process releases sent RAM debt on an attachment
 change only after an indexed read of the exact old incarnation's persisted native
 terminal receipt. Same-run reads do not acquire a new receipt check or writer lock.
 
-The existing controller visits at most two history rows per iteration through a
-durable SQLite rowid cursor. UNKNOWN/unmapped rows are skipped, not cleared;
-failures cannot starve later known versions. Exhausted cycles back off 30 seconds.
-A crash before cursor advancement repeats a read; a committed terminal receipt
-is idempotent across retries/restarts. The main loop no longer duplicates the
-history observer with latest-source terminal probes. Healthy successor admission
-and the stable-slug no-duplicate-push fence are unchanged. The separate historical
-status predicate work is not included here.
+The automatic controller observes at most two current owners per iteration.
+Detached launch history is not probed automatically and does not gate launch.
+An explicit bounded historical diagnostic sweep can still use the durable SQLite
+rowid cursor: UNKNOWN/unmapped rows are retained, exhausted cycles back off for
+30 seconds, and a crash repeats only a safe read. Native terminal receipts stay
+idempotent across retries. Healthy nominated successor admission and one-shot
+claiming of the current request remain in place.
 
 Validation is synthetic: native request selectors/response modes, invalid bodies,
 freshness/CAS, 101 mixed historical rows, cross-process RAM-debt reconciliation,
@@ -120,19 +119,13 @@ queue/admission regressions. No live provider, model, runtime database, Stop,
 launch, rollout or product acceptance is implied.
 
 
-## Development continuation
+## Development launch scope (owner clarification 2026-10-21)
 
-This service is still being built. Ordinary owner-directed development launches
-need no additional recovery approval. If expired historical reservations prevent
-progress, the local operator may call `BgeQueue.prepare_debug_launch` for one
-exact pending candidate and stable notebook reference. It records the exact
-fenced historical identities and a bounded lease. `launch_claim` consumes that
-intent in the same transaction as the provider dispatch claim. New reservations,
-identity changes, active old channels, claimed jobs, active writer or unsettled
-publication prevent that claim. No public RPC or automatic enrollment exists.
-
-Old outcomes remain UNKNOWN with their original rows and accepted work. A lost
-Save response reconciles the same candidate; the consumed intent cannot fund a
-replacement run or an automatic retry. Individual native terminal receipts remain
-the only evidence that an old provider execution terminated. The ordinary
-all-history guard remains in effect without this explicitly recorded dev intent.
+Archived run history is diagnostic. Old UNKNOWN rows alone do not block a new
+ordinary development launch and need no exception registry. Only the current
+request, current/successor owner, shared compute owner and active writer/publication
+retain launch authority. Claiming the current pending request is atomic and
+one-shot; an unknown Save response is reconciled for that same request, never
+blindly submitted again. Accepted data, writer fences and original historical
+outcomes remain intact. Automatic reconciliation observes current owners; a
+bounded historical sweep remains an explicit diagnostic operation.

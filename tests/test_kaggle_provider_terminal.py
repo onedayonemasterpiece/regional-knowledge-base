@@ -238,15 +238,18 @@ def test_live_known_successor_is_not_probed_or_retired(env):
     assert q.launch_claim(successor, provider_ref=REF) is not None
 
 
-def test_unknown_still_fences_new_push_after_other_history_retired(env):
+def test_archived_unknown_does_not_block_current_development_after_retirement(env):
     q, now, rid, row = env
     with q.connect() as db:
         unknown = q._new_run(db, 0.)
         db.execute("update runs set status='expired',launch_state='dispatching',provider_ref=? where id=?", (REF, unknown))
         candidate = q._new_run(db, now[0])
     assert q.retire_provider_reservation(observe(API(row()), row, now))
+    with q.connect() as db:db.execute('update control set current_run=? where id=1',(candidate,))
+    assert q.launch_claim(candidate, provider_ref=REF) is not None
     assert q.launch_claim(candidate, provider_ref=REF) is None
-    assert q.launch_claim(candidate, provider_ref='other-owner/different-notebook') is not None
+    with q.connect(write=False) as db:
+        assert db.execute('select launch_state from runs where id=?',(unknown,)).fetchone()[0]=='dispatching'
 
 
 def test_publication_intent_and_durable_claim_survive_terminal(env):
@@ -480,14 +483,21 @@ def test_finite_claim_lease_then_requeue_finalizes_closed_pointer_and_allocates(
         assert db.execute('select current_run from control').fetchone()[0]==current
 
 
-def test_native_terminal_retirement_is_allowed_after_exact_dev_inventory(env):
-    q,now,old,row=env
+def test_automatic_reconciliation_does_not_probe_archived_unknown(env):
+    q,now,rid,row=env
     with q.connect() as db:
         candidate=q._new_run(db,now[0])
         db.execute('update control set current_run=? where id=1',(candidate,))
-    q.prepare_debug_launch(candidate,provider_ref=REF,operation_key='native-terminal-dev-case',
-                           reason_reference='offline native proof regression')
-    proof=observe(API(row()),row,now)
-    assert proof is not None and q.retire_provider_reservation(proof)
-    assert q.launch_claim(candidate,provider_ref=REF) is not None
+    api=API(row())
+    assert controller().reconcile_provider_history(api,q,current_only=True)==0
+    assert api.calls==[]
+    assert q.launch_claim(candidate,provider_ref=REF)
+    assert q.launch_claim(candidate,provider_ref=REF) is None
+
+
+def test_current_unknown_owner_still_fences_a_successor(env):
+    q,now,rid,row=env
+    with q.connect() as db:
+        candidate=q._new_run(db,now[0])
+        db.execute('update control set successor=? where id=1',(candidate,))
     assert q.launch_claim(candidate,provider_ref=REF) is None
