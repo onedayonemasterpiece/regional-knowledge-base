@@ -950,6 +950,24 @@ class BgeQueue:
         with self.connect() as db:
             row=db.execute('select * from runs where id=?',(run_id,)).fetchone()
             if not row or row['status']!='starting' or row['launch_state']!='pending':return None
+            # Historical/legacy control pointers can be reassigned while a
+            # prior Kaggle execution remains UNKNOWN. Reserve the stable slug
+            # across ALL durable run rows, not merely control.current_run.
+            # Known healthy READY/DRAINING permits intentional warm rotation;
+            # no unknown or expired incarnation may be overwritten by a push.
+            # This transaction is the single provider-claim serialization.
+            control=db.execute('select current_run,successor from control where id=1').fetchone()
+            for prior in db.execute("select * from runs where id!=? and launch_state in ('dispatching','dispatched')",
+                                    (run_id,)).fetchall():
+                if prior['provider_ref'] not in (None,provider_ref):
+                    continue
+                intentional_warm=(prior['launch_state']=='dispatched'
+                    and prior['status']=='ready'
+                    and not self._run_expired(prior,self.clock())
+                    and control['current_run']==prior['id']
+                    and control['successor']==run_id)
+                if not intentional_warm:
+                    return None
             # Claim once. An ambiguous provider response is reconciled by its
             # stable notebook slug, never retried as an unknown second launch.
             db.execute("update runs set launch_state='dispatching',provider_ref=coalesce(provider_ref,?) where id=?",(provider_ref,run_id))
