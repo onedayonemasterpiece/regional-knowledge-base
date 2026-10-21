@@ -327,7 +327,7 @@ class TargetStoryReconcile:
     @staticmethod
     def _output(row: StoredIntent, *, reason: str | None = None) -> dict[str, Any]:
         total = len(_steps(row.intent.comparison))
-        return dict(status="completed" if row.done else "pending" if row.attempted else "staged",
+        return dict(status="completed" if row.done else "pending" if (row.attempted or row.step_index) else "staged",
                     reason=reason, operation_key=row.intent.operation_key,
                     step_index=row.step_index, step_count=total,
                     current_case_operation_key=_effect_key(row.intent.operation_key, row.step_index)
@@ -346,7 +346,8 @@ class TargetStoryReconcile:
         action, command = steps[row.step_index]
         if not row.attempted:
             row = await self.store.begin(actor.person_id, operation_key, row.version)
-        case_id = row.case_id if action == "add_evidence" else None
+        case_id = (row.case_id or (str(row.intent.comparison.case_plan.case_id)
+                    if row.intent.comparison.case_plan.case_id is not None else None)) if action == "add_evidence" else None
         if action == "add_evidence" and not case_id:
             raise ReconcileError("case_creation_not_confirmed")
         child_key = _effect_key(operation_key, row.step_index)
@@ -360,7 +361,7 @@ class TargetStoryReconcile:
             return self._output(row, reason="case_result_unknown")
         if not _saved(outcome):
             return self._output(row, reason="case_outcome_pending")
-        confirmed = row.case_id
+        confirmed = case_id
         if action == "create":
             value = outcome.get("case_id")
             if type(value) is not str:
@@ -383,7 +384,8 @@ class TargetStoryReconcile:
             key = _effect_key(operation_key, row.step_index)
             try:
                 observed = await self.cases.disagreement_edit("operation_status", key, principal,
-                    case_id=row.case_id)
+                    case_id=row.case_id or (str(row.intent.comparison.case_plan.case_id)
+                        if row.intent.comparison.case_plan.case_id is not None else None))
                 result["case_receipt_verified"] = _saved(observed)
             except TimeoutError:
                 result["case_receipt_verified"] = False
