@@ -478,3 +478,16 @@ def test_finite_claim_lease_then_requeue_finalizes_closed_pointer_and_allocates(
     assert q.retire_provider_reservation(proof)  # repeat cannot clear the new owner
     with q.connect(write=False) as db:
         assert db.execute('select current_run from control').fetchone()[0]==current
+
+
+def test_native_terminal_retirement_is_allowed_after_exact_dev_inventory(env):
+    q,now,old,row=env
+    with q.connect() as db:
+        candidate=q._new_run(db,now[0])
+        db.execute('update control set current_run=? where id=1',(candidate,))
+    q.prepare_debug_launch(candidate,provider_ref=REF,operation_key='native-terminal-dev-case',
+                           reason_reference='offline native proof regression')
+    proof=observe(API(row()),row,now)
+    assert proof is not None and q.retire_provider_reservation(proof)
+    assert q.launch_claim(candidate,provider_ref=REF) is not None
+    assert q.launch_claim(candidate,provider_ref=REF) is None

@@ -51,7 +51,7 @@ def test_fenced_history_preserved_and_one_exact_claim(env):
     assert q.status()['state']=='starting'
 
 
-@pytest.mark.parametrize('mutation',["provider_version=7","channel_active=1","heartbeat=1001", "status='ready'"])
+@pytest.mark.parametrize('mutation',["provider_version=7","channel_active=1","heartbeat=1001", "status='ready'", "provider_ref='another/slug'"])
 def test_old_identity_or_authority_drift_blocks_claim(env,mutation):
     q,now,old,candidate=env;prepare(q,candidate)
     with q.connect() as db:db.execute('update runs set '+mutation+' where id=?',(old,))
@@ -120,3 +120,12 @@ def test_known_not_sent_failure_does_not_rearm_allowance(env):
     assert replacement!=candidate
     assert q.launch_claim(replacement,provider_ref=REF) is None
     assert prepare(q,candidate)['consumed_at'] is not None
+
+
+@pytest.mark.parametrize('change',["delete from runs where id=?", "update runs set launch_state='terminal' where id=?"])
+def test_missing_or_falsely_terminal_enrolled_row_blocks_consumption(env,change):
+    q,now,old,candidate=env;prepare(q,candidate)
+    with q.connect() as db:db.execute(change,(old,))
+    assert q.launch_claim(candidate,provider_ref=REF) is None
+    with q.connect(write=False) as db:
+        assert db.execute('select consumed_at from bge_debug_launches').fetchone()[0] is None

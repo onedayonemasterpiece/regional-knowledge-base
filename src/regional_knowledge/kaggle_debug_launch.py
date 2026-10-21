@@ -80,8 +80,19 @@ def scoped_ids(db,run_id,provider_ref,now,*,claim=False):
     elif claim:return None
     inventory=json.loads(row['inventory_json'])
     current=historical(db,run_id,row['provider_ref'])
-    # Native terminal retirement can remove old rows from the current set.
-    # Every remaining reservation must still have its exact fenced identity.
+    # Check EVERY enrolled ID, including rows that moved outside this slug's
+    # query. Only a genuine native receipt may remove an enrolled reservation.
+    for old_id,expected in inventory.items():
+        enrolled=db.execute('select * from runs where id=?',(old_id,)).fetchone()
+        if enrolled is None:return None
+        if fingerprint(enrolled)==expected:continue
+        terminal=db.execute('select receipt_json from bge_provider_terminal_receipts where run_id=?',
+                            (old_id,)).fetchone()
+        if enrolled['launch_state']!='terminal' or terminal is None:return None
+        native=json.loads(terminal['receipt_json'])['identity']
+        original=dict(enrolled);original['launch_state']=native['launch_state']
+        if (any(original[k]!=v for k,v in native.items())
+                or fingerprint(original)!=expected):return None
     if any(inventory.get(old['id'])!=fingerprint(old) for old in current):return None
     if claim:
         writer=db.execute("select 1 from sqlite_master where type='table' and name='rkb_writer_control'").fetchone()
