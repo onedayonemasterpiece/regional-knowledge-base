@@ -327,7 +327,8 @@ class TargetStoryReconcile:
     @staticmethod
     def _output(row: StoredIntent, *, reason: str | None = None) -> dict[str, Any]:
         total = len(_steps(row.intent.comparison))
-        return dict(status="completed" if row.done else "pending" if (row.attempted or row.step_index) else "staged",
+        return dict(status="completed" if row.done else "needs_context" if row.intent.comparison.decision == "needs_context"
+                    else "pending" if (row.attempted or row.step_index) else "staged",
                     reason=reason, operation_key=row.intent.operation_key,
                     step_index=row.step_index, step_count=total,
                     current_case_operation_key=_effect_key(row.intent.operation_key, row.step_index)
@@ -339,6 +340,9 @@ class TargetStoryReconcile:
         actor, row, source_ids = await self._current_intent(principal, operation_key, mutate=True)
         if row.done:
             return self._output(row)
+        if row.intent.comparison.decision == "needs_context":
+            # A recorded gap is a resumable frontier, not a completed comparison.
+            return self._output(row, reason="model_requires_additional_source_context")
         steps = _steps(row.intent.comparison)
         if row.step_index == len(steps):
             await self.authority.current(actor, source_ids=source_ids, mutate=True)
