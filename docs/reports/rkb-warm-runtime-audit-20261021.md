@@ -405,7 +405,13 @@ skipped**. CI зелёный: PR207 на `7017f19`, PR208 на `23e1ab4`. Зам
   `geo_manifest_operation_keys` четыре — `REJECTED_PRECONDITION` (батчи seq 5–7 и `activate`
   seq 20, logical time 20.10 21:10, причина в outcome не записана). `GeoReadGate.establish`
   требует, чтобы каждый ключ был `APPLIED`, поэтому `SourceGateDenied` идёт с 21:18 и на v102.
-  Нужен versioned repair GEO-манифеста (`geo_read_gate.py:129`) — решение владельца GEO-переноса.
+  Путь починки уже есть в main: `geo-repair12` (`fe93987`, `geo_manifest_commands.geo_dependency_repair_commands`,
+  `sql/kaggle/012_geo_dependency_bound.sql`). Батчи schema11 отклоняются по пределу в 64 зависимости
+  (`geo_dependency_limit_rejection`). Repair выполняет упорядоченную миграцию `geo.dependencies.upgrade.v2` в том же
+  tail и повторяет отклонённые батчи и activate на GEO_V2 — это живая SQL-миграция без нового notebook.
+  Включается полем `geo_dependency_upgrade` (`GeoUpgradePins`) в source-service; в конфиге v105 его нет. Это
+  «ordered SQL12→14 wiring» из незавершённого снимка dot, поэтому необратимую миграцию на реальной базе я не
+  запускал: нужны согласованные pins и решение по порядку SQL12→14.
 - **O3 подтверждён количественно:** около 106 durable job'ов за 4,4 мин тёплой работы (примерно
   1400 в час) только на пере-верификацию истории.
 - **P3 подтверждён ещё раз:** `kaggle_save_receipt_invalid` на успешном push v105.
