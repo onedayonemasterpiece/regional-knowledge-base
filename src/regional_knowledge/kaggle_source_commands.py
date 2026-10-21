@@ -40,7 +40,10 @@ def decode_command(data):
             'logical_time','schema_revision','function_revision','executor_revision','ids','expected_revisions','kind')},
             payload=base64.b64decode(value['payload_b64'],validate=True))
         if command.encode()!=data:raise ValueError
-        if command.schema_revision=='rkb-v4-sql001-011-v1':
+        if command.route=='geo.dependencies.upgrade.v2':
+            from .geo_manifest_commands import validate_geo_dependency_transition
+            validate_geo_dependency_transition(command,artifact_sha256=json.loads(command.payload)['artifact_sha256'])
+        elif command.schema_revision in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
             from .kaggle_domain_bindings import validate_current_command
             validate_current_command(command)
         elif command.route==SOURCE_IMPORT:validate_import_command(command)
@@ -129,13 +132,27 @@ def fixed_registry(database,entries):
     """Deployment pins only, never definitions or SQL supplied by a request."""
     from .kaggle_apply import DependencySpec
     handlers=[]
-    revisions=Revisions(database.schema_revision,database.function_revision,database.executor_revision)
-    if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=12:raise ValueError('fixed source registry required')
+    default_revisions=Revisions(database.schema_revision,database.function_revision,database.executor_revision)
+    if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=32:raise ValueError('fixed source registry required')
     for entry in entries:
-        if not isinstance(entry,dict) or set(entry)!={'route','check_sha256','apply_sha256'}:raise ValueError('fixed source registry pins required')
-        if revisions.schema=='rkb-v4-sql001-011-v1':
+        base={'route','check_sha256','apply_sha256'}
+        if not isinstance(entry,dict) or not base<=entry.keys() or set(entry)-base-{'revisions','artifact_sha256'}:
+            raise ValueError('fixed source registry pins required')
+        revisions=default_revisions
+        if 'revisions' in entry:
+            wire=entry['revisions']
+            if type(wire) not in (list,tuple) or len(wire)!=3:raise ValueError('exact historical handler revisions required')
+            revisions=Revisions(*wire)
+        if entry['route']=='geo.dependencies.upgrade.v2':
+            from .geo_manifest_commands import GEO_REVISIONS,geo_dependency_transition_handler
+            if revisions!=GEO_REVISIONS or 'artifact_sha256' not in entry:raise ValueError('exact geographic migration artifact required')
+            handler=geo_dependency_transition_handler(artifact_sha256=entry['artifact_sha256'],
+                check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
+        elif 'artifact_sha256' in entry:
+            raise ValueError('artifact pin only supported for the fixed geographic migration')
+        elif revisions.schema in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
             from .kaggle_domain_bindings import current_handler
-            handler=current_handler(entry['route'],check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
+            handler=current_handler(entry['route'],check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'],revisions=revisions)
         elif entry['route']==SOURCE_IMPORT:
             handler=source_import_handler(revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
         elif entry['route']=='source.import.v2':
@@ -188,9 +205,12 @@ class ControllerAcceptedProof:
 
 
 class WorkerSourceExecutor:
-    def __init__(self,*,acquire,registry,database,run_id,launch_nonce,runtime_incarnation):
+    def __init__(self,*,acquire,registry,database,run_id,launch_nonce,runtime_incarnation,prepare_transition=None):
+        if prepare_transition is not None and not callable(prepare_transition):
+            raise TypeError('trusted native transition preparation required')
         self.acquire,self.registry,self.database=acquire,registry,database
         self.identity=(run_id,launch_nonce,runtime_incarnation)
+        self.prepare_transition=prepare_transition
 
     async def __call__(self,frame):
         if (set(frame)!={'type','protocol_version','connection_generation','id','claim','kind','run_id',
@@ -214,6 +234,8 @@ class WorkerSourceExecutor:
         if frame.get('handler_sha256')!=handler.fingerprint:
             raise PermissionError('source registry binding mismatch')
         async with self.acquire() as connection:
+            if handler.transition is not None and self.prepare_transition is not None:
+                await self.prepare_transition(connection,command,handler)
             receipt=await apply_accepted(connection,journal=proof,seal=seal,command=command,
                 database_generation=self.database.database_generation,writer_generation=self.database.writer_generation,
                 registry=self.registry,max_outcome_bytes=8192)

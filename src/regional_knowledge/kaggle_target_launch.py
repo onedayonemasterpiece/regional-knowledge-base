@@ -21,7 +21,7 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
     'native_snapshot_transfer','kaggle_bootstrap_pins','kaggle_native_env','kaggle_source_acl','kaggle_source_history_native',
     'original_intake','kaggle_original_native','kaggle_original_parser','kaggle_djvu_inspect','kaggle_original_parser_pdf_v1','kaggle_djvu_pixels','kaggle_djvu_elf','kaggle_djvu_decoder_child','file_ingress','source_adapter','ingestion',
     'source_import_v2','story_contracts','kaggle_story_read','source_import_v3','kaggle_fact_contracts','kaggle_fact_read','kaggle_source_read','source_import_v4','source_manifest',
-    'story_editorial','disagreement_contracts','disagreement_native','geo_migration','geo_manifest_commands',
+    'story_editorial','disagreement_contracts','disagreement_native','geo_migration','geo_manifest_commands','kaggle_geo_upgrade','kaggle_dataset_base',
     'kaggle_case_contracts','kaggle_case_read','kaggle_geo_contracts','kaggle_geo_read',
     'kaggle_domain_bindings','kaggle_domain_schema','kaggle_editorial_contracts','kaggle_editorial_read','source_graph','entity_graph','contracts','kaggle_source_graph_read','stage_graph','poi_reference','kaggle_recovery_composition','kaggle_snapshot_drill','kaggle_acceptance_contracts')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
@@ -33,7 +33,8 @@ def source_bundle(repository):
     repository = Path(repository)
     files = {f'regional_knowledge/{name}.py':(repository/'src/regional_knowledge'/f'{name}.py').read_bytes()
              for name in MODULES}
-    files.update({f'sql/{name}':(repository/'sql/kaggle'/name).read_bytes() for name in DOMAIN_SQL_ARTIFACTS})
+    from .kaggle_owned_pg import DOMAIN_V2_SQL_ARTIFACTS
+    files.update({f'sql/{name}':(repository/'sql/kaggle'/name).read_bytes() for name in DOMAIN_V2_SQL_ARTIFACTS})
     if sum(map(len,files.values())) > MAX_SOURCE_BYTES:
         raise ValueError('immutable target source byte budget exceeded')
     manifest = {name:digest(data) for name,data in sorted(files.items())}

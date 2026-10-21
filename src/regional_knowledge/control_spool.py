@@ -322,7 +322,7 @@ class ControlSpool:
         self._require_intake()
         if command.route.startswith('disagreement.'):
             from .disagreement_native import validate_case_command,required_capabilities
-            if command.schema_revision=='rkb-v4-sql001-011-v1':
+            if command.schema_revision in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
                 from .kaggle_domain_bindings import validate_current_command,required_current_capabilities
                 doc=validate_current_command(command);capabilities=required_current_capabilities(command)
             else:doc=validate_case_command(command);capabilities=required_capabilities(command)
@@ -393,10 +393,21 @@ class ControlSpool:
         _bounded(command.operation_key,4096)
         frozen,data=_snapshot(command,self.max_command_bytes)
         handler=self.registry.resolve(frozen)
-        if frozen.schema_revision=='rkb-v4-sql001-011-v1':
+        if frozen.route=='geo.dependencies.upgrade.v2':
+            from .geo_manifest_commands import geo_dependency_transition_handler,validate_geo_dependency_transition
+            transition=handler.transition
+            if transition is None:raise SpoolDenied('installed geographic migration artifact required')
+            expected=geo_dependency_transition_handler(artifact_sha256=transition.artifact_sha256,
+                check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
+            if handler!=expected:raise SpoolDenied('only exact geographic dependency migration supported')
+            validate_geo_dependency_transition(frozen,artifact_sha256=transition.artifact_sha256)
+            return frozen,data,handler
+        if frozen.schema_revision in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
             from .kaggle_domain_bindings import current_handler,validate_current_command
+            from .kaggle_apply import Revisions
             expected=current_handler(frozen.route,check_sha256=handler.check.definition_sha256,
-                apply_sha256=handler.apply.definition_sha256)
+                apply_sha256=handler.apply.definition_sha256,
+                revisions=Revisions(frozen.schema_revision,frozen.function_revision,frozen.executor_revision))
             if handler!=expected:raise SpoolDenied('only exact reviewed fresh11 handler supported')
             validate_current_command(frozen)
             return frozen,data,handler
@@ -408,8 +419,9 @@ class ControlSpool:
             validate_case_command(frozen)
             return frozen,data,handler
         if frozen.route=='geo.manifest.install.v1':
-            from .geo_manifest_commands import geo_manifest_handler,validate_geo_manifest_command,GEO_REVISIONS
-            expected=geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256=handler.check.definition_sha256,
+            from .geo_manifest_commands import geo_manifest_handler,validate_geo_manifest_command
+            from .kaggle_apply import Revisions
+            expected=geo_manifest_handler(revisions=Revisions(frozen.schema_revision,frozen.function_revision,frozen.executor_revision),check_sha256=handler.check.definition_sha256,
                 apply_sha256=handler.apply.definition_sha256)
             if handler!=expected:raise SpoolDenied('only exact installed geographic handler supported')
             validate_geo_manifest_command(frozen)
@@ -537,7 +549,7 @@ class ControlSpool:
         async with self._lock:
             frozen,data,handler=self._validate(command,database_generation)
             if frozen.route not in ('story.edit.v1','story.access.v1','disagreement.edit.v1',
-                    'disagreement.access.v1','disagreement.draft.v1','disagreement.publish.v1','geo.manifest.install.v1'):
+                    'disagreement.access.v1','disagreement.draft.v1','disagreement.publish.v1','geo.manifest.install.v1','geo.dependencies.upgrade.v2'):
                 raise SpoolDenied('domain intake requires a fixed installed domain route')
             await self.authorize_command(context,frozen)
             return await self._write(self._stage,frozen,data,handler,database_generation)

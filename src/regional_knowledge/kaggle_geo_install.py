@@ -12,7 +12,7 @@ import stat
 from .control_spool import SpoolError,SpoolConflict,_database
 from .geo_inventory import GeoInventoryObservation,geo_watermark
 from .geo_migration import GeoMigrationManifest,canonical
-from .geo_manifest_commands import plan_geo_manifest,geo_dependency_limit_rejection
+from .geo_manifest_commands import plan_geo_manifest,geo_dependency_limit_rejection,geo_dependency_repair_commands,GEO_V2_REVISIONS
 
 _LOG=logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def read_manifest(config):
 
 
 class SourceGeoInstaller:
-    def __init__(self,startup,config):
+    def __init__(self,startup,config,*,upgrade_pins=None):
         if type(config) is not SourceGeoInstallConfig:raise TypeError('typed fixed GEO bootstrap configuration required')
         self.startup,self.config=startup,config
         self.spool=startup.config.spool;self.queue=startup.config.queue
@@ -67,6 +67,18 @@ class SourceGeoInstaller:
             raise ValueError('same fixed GEO/recovery/writer owners required')
         self.manifest=read_manifest(config);self.plan=plan_geo_manifest(self.manifest)
         self.keys=tuple('geo-bootstrap11:'+self.plan.manifest_id+':'+str(n) for n in range(len(self.plan.payloads)))
+        self.effective_keys=self.keys
+        self.upgrade_pins=upgrade_pins
+        self.upgrade_pending=False
+        if upgrade_pins is not None:
+            from .kaggle_geo_upgrade import GeoUpgradePins
+            if type(upgrade_pins) is not GeoUpgradePins:raise TypeError('reviewed fixed geographic upgrade pins required')
+            migration_key='geo-repair12:'+self.plan.manifest_id+':migration'
+            with self.queue.connect(write=False) as db:
+                staged=db.execute('SELECT 1 FROM rkb_control_operations WHERE operation_key=?',(migration_key,)).fetchone()
+            if staged:
+                self.spool.registry=upgrade_pins.registry(self.spool.registry)
+                self.upgrade_pending=True
         if startup.config.geo_manifest_operation_keys!=self.keys:
             raise ValueError('exact ordered configured GEO bootstrap keys required')
         self.expected_watermark=geo_watermark(self.manifest)
@@ -94,7 +106,62 @@ class SourceGeoInstaller:
     def current(self):
         return bool(not self.closed and self.complete and self.startup.reads_current()
             and (self._retirement_current() if self.retirement is not None else self.inventory.current(self.expected_watermark))
-            and self.startup.geo_gate.installation_current(self.startup.binding,self.keys))
+            and self.startup.geo_gate.installation_current(self.startup.binding,self.effective_keys))
+
+    def needs_native_upgrade(self,binding):
+        if not self.upgrade_pending:return False
+        with self.queue.connect(write=False) as db:
+            row=self.queue._runtime_row(db,binding.run_id)
+            if row is None:return False
+            expected=json.loads(row['expected_json'])
+        return tuple(expected.get(k) for k in ('schema_revision','function_revision','executor_revision'))!=GEO_V2_REVISIONS.wire()
+
+    async def _dependency_repair(self,binding,commands,context):
+        if self.upgrade_pins is None:return False
+        outcomes={}
+        for command in commands:
+            entry=await self.spool.get(command.operation_key)
+            if entry.command_bytes!=command.encode() or entry.outcome_state!='DURABLE' or entry.apply_receipt is None:
+                return False
+            outcomes[command.operation_key]=entry.apply_receipt.status
+        repair=geo_dependency_repair_commands(commands,settled_outcomes=outcomes,
+            artifact_sha256=self.upgrade_pins.artifact_sha256)
+        self.spool.registry=self.upgrade_pins.registry(self.spool.registry)
+        self.upgrade_pending=True
+        native_ready=not self.needs_native_upgrade(binding)
+        for command in repair:
+            try:entry=await self.spool.get(command.operation_key)
+            except SpoolError as exc:
+                if type(exc) is not SpoolError:raise
+                await self.spool.stage_domain_command(context,command,database_generation=binding.database_generation)
+                entry=await self.spool.get(command.operation_key)
+            if entry.command_bytes!=command.encode():raise SpoolConflict('retained geographic repair intent changed')
+            if entry.accepted is None:
+                if entry.seal_state=='NOT_SENT':
+                    await self.spool.seal(context,command.operation_key,writer_generation=self.startup.config.writer_generation,
+                        predecessor=await self.spool.journal.head())
+                else:
+                    await self.spool.seal(context,command.operation_key,writer_generation=self.startup.config.writer_generation)
+                entry=await self.spool.get(command.operation_key)
+            if not native_ready:continue  # Frozen pending commands, never dispatched to the old worker.
+            if entry.apply_state=='REJECTED_PRECONDITION':raise SpoolConflict('geographic repair native precondition rejected')
+            if entry.apply_state!='APPLIED' or entry.outcome_state!='DURABLE':
+                await self.startup.source_dispatch.enqueue(context,command.operation_key,
+                    writer_generation=self.startup.config.writer_generation)
+                return False
+        if not native_ready:
+            _LOG.info('geo_bootstrap state=upgrade_prepared manifest_sha256=%s final_sequence=%s',self.plan.manifest_id,repair[-1].sequence)
+            return False
+        rejected=[command for command in commands if outcomes[command.operation_key]=='rejected_precondition']
+        replacements={old.operation_key:new.operation_key for old,new in zip(rejected,repair[1:])}
+        effective=tuple(replacements.get(key,key) for key in self.keys)
+        await self.startup.geo_gate.establish(effective,binding=binding)
+        self.effective_keys=effective;self.upgrade_pending=False
+        with self.queue.connect() as db:
+            db.execute("UPDATE rkb_geo_bootstrap SET state='complete' WHERE id=1 AND plan_json=?",(self.plan_json,))
+        self.complete=True
+        _LOG.info('geo_bootstrap state=repaired manifest_sha256=%s activation_sequence=%s',self.plan.manifest_id,repair[-1].sequence)
+        return self.current()
 
     def _validate_retirement(self,receipt):
         expected=dict(codec='rkb.geo-legacy-retirement.v1',plan_sha256=hashlib.sha256(self.plan_json.encode()).hexdigest(),
@@ -270,6 +337,10 @@ class SourceGeoInstaller:
 
     async def advance(self,binding):
         """One bounded continuation. Every effect uses its original durable key."""
+        if self.needs_native_upgrade(binding):
+            if self.closed or not self.startup.binding_current(binding) or not self.startup.snapshot.verified:return False
+            commands=tuple([(await self.spool.get(key)).command for key in self.keys])
+            return await self._dependency_repair(binding,commands,self._context())
         if self.closed or not self._source_ready(binding):return False
         if self.current():return True
         await _database(self._load_retirement)
@@ -321,6 +392,7 @@ class SourceGeoInstaller:
                     return False
             if dependency_repair_required:
                 self.complete=False
+                if self.upgrade_pins is not None:return await self._dependency_repair(binding,commands,context)
                 _LOG.warning('geo_bootstrap state=repair_required reason=schema11_dependency_limit manifest_sha256=%s',self.plan.manifest_id)
                 return False
             if not source_current or not self.startup.geo_gate.installation_current(binding,self.keys):return False

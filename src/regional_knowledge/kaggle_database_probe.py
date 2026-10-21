@@ -153,7 +153,9 @@ def native_probe_for_schema(schema_revision, *, timeout_seconds=2.0):
     606416 bytes before role hardening; explicit11 uses1376. Byte/definition limits are unchanged.
     """
     return NativeDatabaseProbe(timeout_seconds=timeout_seconds,
-        max_catalog_rows=(1376 if schema_revision=='rkb-v4-sql001-011-v1' else
+        schema_revision=schema_revision,
+        max_catalog_rows=(1408 if schema_revision=='rkb-v4-sql001-012-v1' else
+            1376 if schema_revision=='rkb-v4-sql001-011-v1' else
             576 if schema_revision=='rkb-v4-sql001-008-v1' else 512))
 
 
@@ -163,6 +165,7 @@ class NativeDatabaseProbe:
     max_catalog_bytes: int = 1024 * 1024
     max_catalog_rows: int = 512
     max_definition_bytes: int = 65536
+    schema_revision: str | None = None
 
     def __post_init__(self):
         if (type(self.timeout_seconds) not in (int, float) or not math.isfinite(self.timeout_seconds)
@@ -268,8 +271,7 @@ class NativeDatabaseProbe:
         except Exception:
             raise DatabaseProbeUnavailable('database_probe_failed') from None
 
-    @staticmethod
-    def _validate_catalog(observed):
+    def _validate_catalog(self,observed):
         stories=bool(STORY_TABLES.intersection(observed['tables']))
         tables=TABLES|STORY_TABLES if stories else TABLES
         functions=FUNCTIONS|STORY_FUNCTIONS if stories else FUNCTIONS
@@ -285,6 +287,13 @@ class NativeDatabaseProbe:
                 tables=tables|known_tables;functions=functions|known_functions.keys()
                 required_triggers=required_triggers|known_triggers
                 extra_functions.update(known_functions)
+        if self.schema_revision=='rkb-v4-sql001-012-v1':
+            upgrades={
+                'rkb_v4.check_geo_manifest_install_v2(bytea,jsonb,jsonb,text)':('boolean',False),
+                'rkb_v4.apply_geo_manifest_install_v2(bytea,jsonb,jsonb,text)':('bytea',False),
+                'rkb_v4.check_geo_dependencies_v2_transition(bytea,jsonb,jsonb,text)':('boolean',False),
+                'rkb_v4.apply_geo_dependencies_v2_transition(bytea,jsonb,jsonb,text)':('bytea',False)}
+            functions=functions|upgrades.keys();extra_functions.update(upgrades)
         env = observed['environment'].get('runtime',{})
         if (type(env.get('server_version_num')) is not int or env['server_version_num']//10000 != 17
                 or env.get('vector_version') != '0.8.2' or env.get('vector_schema') != 'public'

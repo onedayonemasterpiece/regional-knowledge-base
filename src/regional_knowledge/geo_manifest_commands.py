@@ -191,8 +191,24 @@ def geo_dependency_transition_handler(*,artifact_sha256,check_sha256,apply_sha25
     return HandlerSpec('schema_transition','geo.dependencies.upgrade.v2',GEO_REVISIONS,
         PgFunction('check_geo_dependencies_v2_transition',check_sha256),
         PgFunction('apply_geo_dependencies_v2_transition',apply_sha256),
-        frozenset({'schema','function','executor','migration'}),
-        MigrationTransition(GEO_DEPENDENCY_MIGRATION,artifact_sha256,None,GEO_V2_REVISIONS))
+        frozenset({'schema','function','executor','migration','installer_person_id'}),
+        MigrationTransition(GEO_DEPENDENCY_MIGRATION,artifact_sha256,None,GEO_V2_REVISIONS,preserve_read_frontier=True),
+        dependency=DependencySpec('geo.dependencies.upgrade.v2','geo_manifest',frozenset({'manifest_id'}),'actor',False))
+
+
+def validate_geo_dependency_transition(command,*,artifact_sha256):
+    _digest(artifact_sha256)
+    if (type(command) is not ExactCommand or command.kind!='schema_transition'
+            or command.route!='geo.dependencies.upgrade.v2'
+            or (command.schema_revision,command.function_revision,command.executor_revision)!=GEO_REVISIONS.wire()
+            or set(command.ids)!={'manifest_id'}
+            or command.expected_revisions!={'schema':GEO_REVISIONS.schema,'function':GEO_REVISIONS.function,
+                'executor':GEO_REVISIONS.executor,'migration':'','installer_person_id':command.person_id}
+            or command.payload!=canonical({'migration_id':GEO_DEPENDENCY_MIGRATION,
+                'artifact_sha256':artifact_sha256,'predecessor':None})):
+        raise ValueError('exact installed geographic dependency migration required')
+    _digest(command.ids['manifest_id']);exact_uuid(command.person_id)
+    return {'migration_id':GEO_DEPENDENCY_MIGRATION,'artifact_sha256':artifact_sha256,'predecessor':None}
 
 
 def geo_dependency_repair_commands(originals,*,settled_outcomes,artifact_sha256):
@@ -226,9 +242,9 @@ def geo_dependency_repair_commands(originals,*,settled_outcomes,artifact_sha256)
         raise ValueError('exact rejected GEO batches and final activation required')
     last=originals[-1];prefix='geo-repair12:'+last.ids['manifest_id']+':'
     transition=replace(last,sequence=last.sequence+1,operation_key=prefix+'migration',
-        kind='schema_transition',route='geo.dependencies.upgrade.v2',ids={},
+        kind='schema_transition',route='geo.dependencies.upgrade.v2',
         expected_revisions={'schema':GEO_REVISIONS.schema,'function':GEO_REVISIONS.function,
-            'executor':GEO_REVISIONS.executor,'migration':''},
+            'executor':GEO_REVISIONS.executor,'migration':'','installer_person_id':last.person_id},
         payload=canonical({'migration_id':GEO_DEPENDENCY_MIGRATION,
             'artifact_sha256':artifact_sha256,'predecessor':None}))
     retries=tuple(replace(command,sequence=transition.sequence+offset,

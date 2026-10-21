@@ -125,8 +125,13 @@ class GeoReadGate:
                     used+=len(c.encode())
                     if used>12*1024*1024:raise SourceGateDenied('GEO proof byte budget')
                     entries.append((entry,c,payload))
-                if [c.sequence for _,c,_ in entries]!=list(range(entries[0][1].sequence,entries[0][1].sequence+len(entries))):
-                    raise SourceGateDenied('GEO manifest phases not contiguous')
+                sequences=[c.sequence for _,c,_ in entries]
+                # A versioned repair can replace a rejected batch after other
+                # accepted commands. Exact accepted/applied/durable bytes and
+                # complete manifest reconstruction remain mandatory below.
+                if (len(set(sequences))!=len(sequences) or sequences[0]!=min(sequences)
+                        or sequences[-1]!=max(sequences)):
+                    raise SourceGateDenied('GEO manifest phase boundaries differ')
                 first,last=entries[0],entries[-1]
                 if first[2]['action']!='open' or last[2]['action']!='activate' or any(p['action']!='batch' for _,_,p in entries[1:-1]):
                     raise SourceGateDenied('GEO manifest phase ordering differs')

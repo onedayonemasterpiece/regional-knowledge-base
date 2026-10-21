@@ -272,7 +272,9 @@ class TargetRuntime:
             identity=(run_id,launch_nonce,runtime_incarnation),tools=tools,native_uid=native_uid,
             native_gid=native_gid,current=current,workspace_private_current=workspace_private_current,
             upload=upload,download=download,workspace=workspace,limits=limits,
-            ticket_channel=ticket_channel,transfer=transfer,acquire=acquire,model_pins=model_pins)
+            ticket_channel=ticket_channel,transfer=transfer,acquire=acquire,model_pins=model_pins,
+            **({'sql_root':self.target['sql_root']} if any(e.get('route')=='geo.dependencies.upgrade.v2'
+                for e in self.target['command_handlers']) else {}))
         self.recovery_worker=worker
         self._bind_read_handler_maintenance()
         self._recovery_available.set()
@@ -356,7 +358,7 @@ class TargetRuntime:
             raise BootstrapUnavailable('target_database_binding_mismatch')
         # Same per-invocation context is used by telemetry's native adapter.
         handler = prepared.query_handler
-        if self.database.schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'):
+        if self.database.schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
             from dataclasses import replace
             handler=replace(handler,source_provenance=True)
         from .kaggle_warm_read import ReadHandlerCompatibility,ReadHandlerSlot
@@ -381,7 +383,8 @@ class TargetRuntime:
             await self.writer_pool.open(wait=True,timeout=10)
             source_handler=WorkerSourceExecutor(acquire=self.writer_pool.connection,
                 registry=fixed_registry(self.database,self.target['command_handlers']),database=self.database,
-                run_id=run_id,launch_nonce=launch_nonce,runtime_incarnation=runtime_incarnation)
+                run_id=run_id,launch_nonce=launch_nonce,runtime_incarnation=runtime_incarnation,
+                prepare_transition=(self.recovery_worker.factory.prepare_transition if self.recovery_worker is not None else None))
             from contextlib import asynccontextmanager
             from .kaggle_source_history_native import NativeSourceHistoryObserver
             @asynccontextmanager

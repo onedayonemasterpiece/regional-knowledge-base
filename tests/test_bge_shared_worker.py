@@ -535,3 +535,97 @@ async def test_native_read_events_attach_to_existing_result_without_changing_res
         assert value['status']=='degraded' and value['read_events']==[{'synthetic_native_timing':1}]
         assert calls==['native-event-query'] and len(json.dumps(value).encode())<=262144
     finally:stop.set();await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('job_kind', ['source_command', 'recovery_phase'])
+@pytest.mark.parametrize('fault', ['new_dispatch', 'wrong_incarnation', 'stale_generation',
+                                  'changed_replay', 'wrong_ack', 'authority_closed'])
+async def test_pending_native_result_resync_preserves_runtime_and_auth_fences(monkeypatch, job_kind, fault):
+    from regional_knowledge.kaggle_bootstrap import PreparedRuntime
+    from test_kaggle_target_runtime import candidate
+    transport = module('bge_wss_transport')
+    monkeypatch.setattr(transport.random, 'uniform', lambda *_: .001)
+    peer, stop = Peer(), asyncio.Event()
+    loads, preparations, executions, closes = [], [], [], []
+
+    def load():
+        loads.append('load')
+        return lambda _: [1.] + [0.] * 1023
+
+    async def read(frame, *, encode):
+        return result(frame)
+
+    async def native(frame):
+        executions.append(frame['id'])
+        return {'retained_native_receipt': frame['id']}
+
+    async def prepare(*args, **kwargs):
+        prepared = PreparedRuntime(read, candidate(), source_handler=native)
+        preparations.append(prepared)
+        return prepared
+
+    async def close():
+        closes.append('close')
+
+    worker = transport.BgeWssTransport(dict(CONFIG, shared_reads=True), load, lambda: {},
+        prepare_runtime=prepare, recovery_handler=native, close_runtime=close,
+        connector=peer.connect, heartbeat_seconds=.01, maximum_seconds=5, stop=stop)
+    task = asyncio.create_task(worker.run())
+    dispatch = dict(type='DISPATCH', id='retained-job', claim='retained-claim', kind=job_kind,
+        compute_claim='retained-compute', dispatch_generation=1, run_id=CONFIG['run_id'],
+        launch_nonce=CONFIG['launch_nonce'], runtime_incarnation=worker.incarnation,
+        database_generation='fixture-db', writer_generation='fixture-writer',
+        command_b64='e30=', command_sha256='a' * 64, accepted={}, handler_sha256='b' * 64,
+        phase='fixture-phase', operation_key='fixture-operation', request_sha256='c' * 64, arguments={})
+    result_type = 'SOURCE_COMMAND_RESULT' if job_kind == 'source_command' else 'RECOVERY_PHASE_RESULT'
+    try:
+        await peer.wait('READY')
+        await peer.put(dispatch)
+        original_result = await peer.wait(result_type)
+        await peer.wait('RESOURCE_RELEASED')
+        original_job, original_pending = worker.job, worker.pending
+        original_encoder, original_runtime = worker.encoder, worker.prepared_runtime
+        conflicting = dict(dispatch, id='different-job', claim='different-claim', compute_claim='different-compute')
+        if fault == 'wrong_incarnation':
+            conflicting['runtime_incarnation'] = 'different-incarnation'
+        elif fault == 'stale_generation':
+            conflicting['connection_generation'] = 0
+        elif fault == 'changed_replay':
+            conflicting = dict(dispatch, command_sha256='d' * 64, request_sha256='d' * 64)
+        elif fault == 'wrong_ack':
+            conflicting = dict(type='RESULT_ACK', job_id='retained-job', claim='wrong', status='accepted')
+        if fault == 'authority_closed':
+            await peer.inputs[1].put(transport.BgeChannelStopped('channel authority or contract ended'))
+        else:
+            await peer.put(conflicting)
+        if fault != 'new_dispatch':
+            error = transport.BgeChannelStopped if fault in ('stale_generation', 'authority_closed') else ValueError
+            with pytest.raises(error):
+                await asyncio.wait_for(task, 2)
+            assert peer.sessions == 1 and closes == ['close']
+            assert worker.job is original_job and worker.pending is original_pending
+            return
+        # This is the real run() reconnect path, not a swallowed reader error.
+        replayed = await peer.wait(result_type, generation=2)
+        assert not task.done() and not closes
+        assert worker.job is original_job and worker.pending is original_pending
+        assert worker.encoder is original_encoder and worker.prepared_runtime is original_runtime
+        assert loads == ['load'] and preparations == [original_runtime] and executions == ['retained-job']
+        assert {k: v for k, v in original_result.items() if k != 'connection_generation'} == {
+            k: v for k, v in replayed.items() if k != 'connection_generation'}
+        assert {f['runtime_incarnation'] for f in peer.frames('ATTACH')} == {worker.incarnation}
+        if job_kind == 'source_command':
+            await peer.put(dict(type='RESULT_ACK', job_id='retained-job', claim='retained-claim', status='apply_received'))
+            await peer.put(dict(type='RESOURCE_PROBE', probe_nonce='local-receipt-only'))
+            await peer.wait('RESOURCE_STATE', predicate=lambda f: f.get('probe_nonce') == 'local-receipt-only')
+            assert worker.pending is original_pending and worker.job is original_job
+        await peer.put(dict(type='RESULT_ACK', job_id='retained-job', claim='retained-claim', status='duplicate'))
+        await peer.put(dict(type='RESOURCE_PROBE', probe_nonce='terminal-receipt'))
+        await peer.wait('RESOURCE_STATE', predicate=lambda f: f.get('probe_nonce') == 'terminal-receipt')
+        assert worker.pending is None and worker.job is None and not closes
+        assert executions == ['retained-job'] and peer.sessions == 2
+    finally:
+        stop.set()
+        await asyncio.gather(task, return_exceptions=True)
+    assert closes == ['close']

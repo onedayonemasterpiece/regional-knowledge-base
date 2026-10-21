@@ -22,7 +22,7 @@ PHASES = frozenset({'capture','prepare','apply','finish','verify','source_histor
 
 async def build_recovery_worker(*,native_bundle,database,identity,tools,native_uid,native_gid,
                                 current,workspace_private_current,workspace,upload=None,download=None,
-                                ticket_channel=None,transfer=None,acquire=None,limits=None,model_pins=None):
+                                ticket_channel=None,transfer=None,acquire=None,limits=None,model_pins=None,sql_root=None):
     """Construct the real native owner from the retained Stage0 verification.
 
     tools declares each binary's bundle-relative path and exact --version output.
@@ -77,8 +77,15 @@ async def build_recovery_worker(*,native_bundle,database,identity,tools,native_u
         binaries[name]=NativeBinary(absolute,pin[0],pin[1],value['version_output'])
     await asyncio.to_thread(grant_native_code_access,native_bundle.root,native_bundle.pins,
         uid=native_uid,gid=native_gid)
+    registry=fixed_registry(database,tools['command_handlers'])
+    prepare_transition=None
+    if any(h.route=='geo.dependencies.upgrade.v2' for h in registry.handlers.values()):
+        if sql_root is None:raise SnapshotError('recovery_migration_bundle_required')
+        from .kaggle_geo_upgrade import NativeGeoMigration
+        prepare_transition=NativeGeoMigration(sql_root=sql_root,registry=registry,
+            database_generation=database.database_generation).prepare
     factory=NativeSnapshotFactory(tools=PhysicalPgTools(**binaries),database=database,identity=identity,
-        registry=fixed_registry(database,tools['command_handlers']),executor_factory=WorkerSourceExecutor,
+        registry=registry,executor_factory=WorkerSourceExecutor,prepare_transition=prepare_transition,
         current=current,workspace_private_current=workspace_private_current,native_uid=native_uid,
         native_gid=native_gid,acquire=acquire,upload_ticket=upload,limits=limits or SnapshotLimits())
     # Verify exact installed ELF revisions before any backup/restore operation.

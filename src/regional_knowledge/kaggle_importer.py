@@ -33,7 +33,7 @@ from .source_import_v2 import IMPORT_V2_DEPENDENCY, SOURCE_IMPORT_V2, STORY_REVI
 from .source_import_v3 import IMPORT_V3_DEPENDENCY, SOURCE_IMPORT_V3, FACT_REVISIONS, resolved_import_v3_command
 from .source_import_v4 import IMPORT_V4_DEPENDENCY, SOURCE_IMPORT_V4, resolved_import_v4_command
 from .story_editorial import EDITORIAL_REVISIONS
-from .kaggle_domain_bindings import DOMAIN_REVISIONS,resolved_current_import_v4_command
+from .kaggle_domain_bindings import DOMAIN_REVISIONS,DOMAIN_V2_REVISIONS,resolved_current_import_v4_command
 from .story_contracts import StageStoryCandidateInput
 from .stage_graph import StagedGraph, compile_model_stage, merge_stage, validate_graph
 
@@ -91,9 +91,14 @@ class KaggleSourceImporter:
             (SOURCE_IMPORT_V2,STORY_REVISIONS,IMPORT_V2_DEPENDENCY,resolved_import_v2_command),
             (SOURCE_IMPORT_V3,FACT_REVISIONS,IMPORT_V3_DEPENDENCY,resolved_import_v3_command),
             (SOURCE_IMPORT_V4,EDITORIAL_REVISIONS,IMPORT_V4_DEPENDENCY,resolved_import_v4_command),
-            (SOURCE_IMPORT_V4,DOMAIN_REVISIONS,IMPORT_V4_DEPENDENCY,resolved_current_import_v4_command))
+            (SOURCE_IMPORT_V4,DOMAIN_REVISIONS,IMPORT_V4_DEPENDENCY,resolved_current_import_v4_command),
+            (SOURCE_IMPORT_V4,DOMAIN_V2_REVISIONS,IMPORT_V4_DEPENDENCY,resolved_current_import_v4_command))
             if (handler:=self.spool.registry.handlers.get(('domain_command',route,*versions.wire()))) is not None
             and handler.dependency == dependency]
+        expected_database=getattr(getattr(config,'history_adapter',None),'database',None)
+        if expected_database is not None:
+            expected=tuple(getattr(expected_database,key) for key in ('schema_revision','function_revision','executor_revision'))
+            choices=[choice for choice in choices if choice[0].wire()==expected]
         if len(choices)!=1:
             raise TypeError('exact future source findings/narrative handler required before intake')
         self.import_revisions,self.import_command=choices[0]
@@ -336,7 +341,7 @@ class KaggleSourceImporter:
         if (source_import is not None and source_import.public_rights is not None
                 and canonical(source_import.public_rights.model_dump(mode='json')).decode() != row['rights_json']):
             raise failure('original_public_rights_basis_is_immutable', status='invalid_query')
-        if payload.get('poi_media_links') or (self.import_revisions!=DOMAIN_REVISIONS and any(
+        if payload.get('poi_media_links') or (self.import_revisions not in (DOMAIN_REVISIONS,DOMAIN_V2_REVISIONS) and any(
                 payload.get(key) for key in ('poi_facts','entity_candidates'))):
             raise failure('target_semantic_domain_unavailable')
         pages = [StagePageInput.model_validate(value) for value in payload.get('pages', [])]
@@ -360,7 +365,7 @@ class KaggleSourceImporter:
         semantic = json.loads(row['semantic_json']) if row['semantic_json'] else {'candidates': {}, 'page_reviews': {}}
         for value in payload.get('story_candidates', []):
             candidate = StageStoryCandidateInput.model_validate(value)
-            if candidate.entity_keys and self.import_revisions!=DOMAIN_REVISIONS:
+            if candidate.entity_keys and self.import_revisions not in (DOMAIN_REVISIONS,DOMAIN_V2_REVISIONS):
                 raise failure('target_entity_resolution_unavailable')
             semantic['candidates'][candidate.candidate_key] = candidate.model_dump(mode='json')
         for page in pages:
@@ -492,7 +497,7 @@ class KaggleSourceImporter:
             narrative_inputs.append(dict(passage_id=variant_id, body=variant.body, input_tokens=count))
         if result['pending'] and SourceResearchInput.model_validate_json(row['research_json']).state != 'pending':
             raise failure('unfinished_narratives_require_explicit_research_continuation', status='invalid_query')
-        if self.import_revisions==DOMAIN_REVISIONS:
+        if self.import_revisions in (DOMAIN_REVISIONS,DOMAIN_V2_REVISIONS):
             from .source_graph import resolve_source_graph
             resolve_source_graph(graph,source_id=row['source_id'],person_id=row['person_id'],semantic=result)
         return result, narrative_inputs
@@ -633,14 +638,14 @@ class KaggleSourceImporter:
                     dimension=DIMENSION, max_tokens=MAX_TOKENS), passages=resolved[:len(passages)], semantic=semantic,
                 research=dict(frontier_id=str(uuid5(UUID(row['ingestion_id']), 'research')),
                     **research.model_dump(mode='json')))
-            if self.import_revisions in (EDITORIAL_REVISIONS,DOMAIN_REVISIONS):
+            if self.import_revisions in (EDITORIAL_REVISIONS,DOMAIN_REVISIONS,DOMAIN_V2_REVISIONS):
                 from .contracts import StartMetadataInput
                 from .source_manifest import build_source_manifest
                 proof=await self._native_proof(access,row,receipt,graph)
                 payload['codec']='rkb.source-import.v4'
                 payload['source_manifest']=build_source_manifest(metadata=StartMetadataInput.model_validate(metadata),
                     receipt=receipt,proof=proof,graph=graph,semantic=semantic,passages=payload['passages'])
-            if self.import_revisions==DOMAIN_REVISIONS and (graph.entity_candidates or graph.poi_facts
+            if self.import_revisions in (DOMAIN_REVISIONS,DOMAIN_V2_REVISIONS) and (graph.entity_candidates or graph.poi_facts
                     or any(finding['entity_keys'] for finding in semantic['findings'])):
                 from .source_graph import resolve_source_graph
                 payload['source_graph']=resolve_source_graph(graph,source_id=row['source_id'],person_id=row['person_id'],semantic=semantic)

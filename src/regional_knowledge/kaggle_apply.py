@@ -112,12 +112,15 @@ class MigrationTransition:
     artifact_sha256: str
     predecessor: str | None
     target: Revisions
+    preserve_read_frontier: bool = False
 
     def __post_init__(self):
         _text(self.migration_id)
         _digest(self.artifact_sha256)
         if self.predecessor is not None:
             _text(self.predecessor)
+        if type(self.preserve_read_frontier) is not bool:
+            raise ValueError('explicit trusted projection compatibility required')
 
 
 @dataclass(frozen=True)
@@ -194,6 +197,8 @@ class HandlerSpec:
         # Preserve historical fingerprints exactly when this new metadata is
         # absent. New scope semantics require their own versioned handler key.
         if self.dependency is not None:data['dependency']=self.dependency.wire()
+        if transition is not None and transition.preserve_read_frontier:
+            data['preserve_read_frontier']=True
         return _hash(_json(data))
 
 
@@ -436,6 +441,12 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                     if checked is None or type(checked[0]) is not bool:
                         raise ApplyConflict("precondition function must return one boolean")
                     status = "applied" if checked[0] else "rejected_precondition"
+                    frontier=None
+                    if checked[0] and transition is not None and transition.preserve_read_frontier:
+                        frontier=await(await connection.execute('''SELECT projection_seq,visibility_epoch,
+                            text_ready,dense_ready,pending_seq FROM rkb_v4.read_frontier
+                            WHERE singleton FOR UPDATE''')).fetchone()
+                        if frontier is None:raise ApplyConflict('trusted migration requires existing read frontier')
                     result = b""
                     after = before
                     if checked[0]:
@@ -467,6 +478,12 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                         schema_revision=%s,function_revision=%s,executor_revision=%s,
                         last_migration_id=%s,last_migration_hash=%s WHERE singleton""",
                         (command.sequence, *after.wire(), migration_id, migration_hash))
+                    if frontier is not None and frontier[0]==state[2] and frontier[4] is None:
+                        # Only deployment-declared compatible migrations may
+                        # carry an already current projection across revisions.
+                        # Dirty/lagged/false readiness is never upgraded here.
+                        await connection.execute('SELECT rkb_v4.publish_read_frontier(%s,%s,%s,%s,%s,%s)',
+                            (database_generation,writer_generation,frontier[1],command.sequence,frontier[2],frontier[3]))
                     receipt = ApplyReceipt(database_generation, command.operation_key, command.sequence,
                                            command_hash, status, outcome, digest, False)
                 stage = 'commit'
