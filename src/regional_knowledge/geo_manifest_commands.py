@@ -7,7 +7,7 @@ whole manifest SHA before activating its immutable IDs.
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass,replace
 import hashlib
 import json
 import re
@@ -193,3 +193,38 @@ def geo_dependency_transition_handler(*,artifact_sha256,check_sha256,apply_sha25
         PgFunction('apply_geo_dependencies_v2_transition',apply_sha256),
         frozenset({'schema','function','executor','migration'}),
         MigrationTransition(GEO_DEPENDENCY_MIGRATION,artifact_sha256,None,GEO_V2_REVISIONS))
+
+
+def geo_dependency_repair_commands(originals,*,rejected_sequence,artifact_sha256):
+    """Resolve a repair from frozen inputs, after retiring only unsent reservations.
+
+    This function grants no authority and changes no queue/journal state. The
+    caller must prove the rejected outcome is durable and every later original
+    reservation was never sent before installing the returned continuation.
+    """
+    _digest(artifact_sha256)
+    originals=tuple(originals)
+    if not originals or len(originals)>4096:
+        raise ValueError('bounded original GEO plan required')
+    for command in originals:
+        validate_geo_manifest_command(command)
+        if (command.schema_revision,command.function_revision,command.executor_revision)!=GEO_REVISIONS.wire():
+            raise ValueError('original schema11 GEO plan required')
+    if (any(b.sequence!=a.sequence+1 for a,b in zip(originals,originals[1:]))
+            or any(command.ids!=originals[0].ids or command.person_id!=originals[0].person_id for command in originals)):
+        raise ValueError('same actor and contiguous original manifest required')
+    tail=tuple(command for command in originals if command.sequence>=rejected_sequence)
+    if not tail or tail[0].sequence!=rejected_sequence or json.loads(tail[0].payload)['action']!='batch':
+        raise ValueError('exact rejected GEO batch required')
+    failed=tail[0];prefix='geo-repair12:'+failed.ids['manifest_id']+':'
+    transition=replace(failed,sequence=rejected_sequence+1,operation_key=prefix+'migration',
+        kind='schema_transition',route='geo.dependencies.upgrade.v2',ids={},
+        expected_revisions={'schema':GEO_REVISIONS.schema,'function':GEO_REVISIONS.function,
+            'executor':GEO_REVISIONS.executor,'migration':''},
+        payload=canonical({'migration_id':GEO_DEPENDENCY_MIGRATION,
+            'artifact_sha256':artifact_sha256,'predecessor':None}))
+    retries=tuple(replace(command,sequence=transition.sequence+offset,
+        operation_key=prefix+str(command.sequence),schema_revision=GEO_V2_REVISIONS.schema,
+        function_revision=GEO_V2_REVISIONS.function,executor_revision=GEO_V2_REVISIONS.executor)
+        for offset,command in enumerate(tail,start=1))
+    return (transition,*retries)

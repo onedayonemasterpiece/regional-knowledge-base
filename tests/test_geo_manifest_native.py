@@ -10,7 +10,7 @@ import pytest
 import pytest_asyncio
 
 from regional_knowledge.geo_manifest_commands import (GEO_REVISIONS,GEO_V2_REVISIONS,
-    GEO_DEPENDENCY_MIGRATION,geo_dependency_transition_handler,geo_manifest_handler,plan_geo_manifest)
+    geo_dependency_repair_commands,geo_dependency_transition_handler,geo_manifest_handler,plan_geo_manifest)
 from regional_knowledge.geo_migration import canonical,sha
 from regional_knowledge.geo_whitelist import build_geo_whitelist
 from regional_knowledge.kaggle_apply import HandlerRegistry,initialize_database
@@ -90,19 +90,9 @@ async def test_native_place_preserves_more_than_64_provenance_dependencies(nativ
         check_sha256=(await pinned(connection,'check_geo_manifest_install_v2')).definition_sha256,
         apply_sha256=(await pinned(connection,'apply_geo_manifest_install_v2')).definition_sha256)
     native['registry']=HandlerRegistry([*native['registry'].handlers.values(),migration,upgraded])
-    transition=replace(command,sequence=command.sequence+1,operation_key='geo-dependencies-upgrade',
-        kind='schema_transition',route='geo.dependencies.upgrade.v2',ids={},
-        expected_revisions={'schema':GEO_REVISIONS.schema,'function':GEO_REVISIONS.function,
-            'executor':GEO_REVISIONS.executor,'migration':''},
-        payload=canonical({'migration_id':GEO_DEPENDENCY_MIGRATION,
-            'artifact_sha256':artifact_sha,'predecessor':None}))
-    assert (await apply(native,transition)).status=='applied'
-    for offset,original in enumerate(resolved[failed_index:],start=1):
-        retried=replace(original,sequence=transition.sequence+offset,
-            operation_key='geo-repair:'+original.operation_key,
-            schema_revision=GEO_V2_REVISIONS.schema,function_revision=GEO_V2_REVISIONS.function,
-            executor_revision=GEO_V2_REVISIONS.executor)
-        assert (await apply(native,retried)).status=='applied'
+    repair=geo_dependency_repair_commands(resolved,rejected_sequence=command.sequence,artifact_sha256=artifact_sha)
+    for command in repair:
+        assert (await apply(native,command)).status=='applied'
     async with connection.transaction():
         retained=await(await connection.execute('SELECT status,outcome_bytes FROM rkb_v4.applied_ops WHERE operation_key=%s',
             (rejected.operation_key,))).fetchone()
