@@ -50,6 +50,74 @@ def test_unknown_save_binds_source_run_and_version_without_second_push(monkeypat
     with pytest.raises(ValueError):queue.launch_record(run['id'],ref,provider_version=6)
     with pytest.raises(ValueError):queue.launch_record(run['id'],'fixture-owner/another-slug')
 
+
+
+def test_ready_lost_heartbeat_reconciles_exact_terminal_before_restarting_cold_demand(monkeypatch,tmp_path):
+    """Confirmed provider terminal frees capacity; unconfirmed does not."""
+    from regional_knowledge.bge_queue import BgeQueue
+    module=controller()
+    now=[1000.]
+    queue=BgeQueue(tmp_path/'ready-terminal.sqlite',clock=lambda:now[0])
+    demand=queue.request_startup()
+    run_id=demand['run_id']
+    ref='fixture-owner/stable-slug'
+    token=queue.launch_claim(run_id,provider_ref=ref)
+    queue.launch_record(run_id,ref,provider_version=7)
+    queue.heartbeat(run_id,token,ready=True)
+    monkeypatch.setattr(module,'notebook_snapshot',
+        lambda api,requested:{'run_id':run_id,'version':7})
+    observed=[]
+    phase=['RUNNING']
+    def native_status(api,requested,version):
+        observed.append((requested,version))
+        return {'status':phase[0]}
+    monkeypatch.setattr(module,'version_status',native_status)
+    assert module.reconcile_dispatched_terminal(None,queue,
+        next(x for x in queue.maintenance() if x['id']==run_id),ref) is None
+    assert not observed, 'healthy READY must never poll remote each iteration'
+    now[0]+=121
+    assert queue.request_startup()['run_id']==run_id
+    assert queue.status()['state']=='unknown'
+    row=next(x for x in queue.maintenance() if x['id']==run_id)
+    assert queue.needs_dispatched_terminal_probe(run_id)
+    assert module.reconcile_dispatched_terminal(None,queue,row,ref)=='RUNNING'
+    assert observed==[(ref,7)]
+    assert queue.request_startup()['run_id']==run_id
+    assert len(queue.maintenance())==1
+    phase[0]='COMPLETE'
+    assert module.reconcile_dispatched_terminal(None,queue,row,ref)=='COMPLETE'
+    with queue.connect(write=False) as db:
+        assert db.execute('select status from runs where id=?',(run_id,)).fetchone()[0]=='failed'
+        assert db.execute('select startup_state from control where id=1').fetchone()[0]=='pending'
+    now[0]+=61
+    new=[x for x in queue.maintenance() if x['status']=='starting']
+    assert len(new)==1 and new[0]['id']!=run_id
+    assert queue.request_startup()['startup_ref']==demand['startup_ref']
+    assert queue.startup_status(demand['startup_ref'])['status']=='pending'
+
+
+def test_ready_lost_heartbeat_mismatched_version_keeps_unknown_capacity(monkeypatch,tmp_path):
+    from regional_knowledge.bge_queue import BgeQueue
+    module=controller()
+    now=[1000.]
+    queue=BgeQueue(tmp_path/'mismatch-terminal.sqlite',clock=lambda:now[0])
+    run=queue.request_startup()
+    rid=run['run_id']
+    token=queue.launch_claim(rid,provider_ref='fixture-owner/stable-slug')
+    queue.launch_record(rid,'fixture-owner/stable-slug',provider_version=7)
+    queue.heartbeat(rid,token,ready=True)
+    now[0]+=121
+    monkeypatch.setattr(module,'notebook_snapshot',
+        lambda api,ref:{'run_id':rid,'version':8})
+    def forbidden(*args,**kwargs):raise AssertionError('wrong version must never count as terminal')
+    monkeypatch.setattr(module,'version_status',forbidden)
+    row=next(x for x in queue.maintenance() if x['id']==rid)
+    assert module.reconcile_dispatched_terminal(None,queue,row,'fixture-owner/stable-slug')=='unknown'
+    assert queue.status()['state']=='unknown'
+    assert queue.request_startup()['run_id']==rid
+    assert len(queue.maintenance())==1
+
+
 def test_run_identity_read_does_not_execute_notebook_source():
     module=controller()
     assert module.source_run_id("RUN_CONFIG = {'run_id':'exact','token':'private'}\nraise RuntimeError('not executed')")=='exact'

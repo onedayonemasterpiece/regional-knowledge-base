@@ -133,6 +133,81 @@ def test_current_readiness_is_required_again_after_reconnect(run, monkeypatch):
         queue.expect_search_runtime(ident, replace(expected(), database_generation='other'))
 
 
+
+def test_actual_wss_reconnect_from_stale_ready_reproves_before_search(shared_channel_run, auth):
+    """The ASGI path—not a direct queue call—must survive >120s WSS outage."""
+    import time
+    from regional_knowledge.kaggle_public_backend import current_binding,TargetUnavailable
+    from regional_knowledge.kaggle_protocol import Query,TrustedActorContext,QueryResult
+    queue, ident, token, nonce = shared_channel_run
+    now=[1000.0]
+    queue.clock=lambda:now[0]
+    with TestClient(Starlette(routes=[channel_route(queue)])) as app:
+        def attach(socket):
+            socket.send_json(dict(type='ATTACH',protocol_version=2,run_id=ident,
+                launch_nonce=nonce,runtime_incarnation='incarnation'))
+            return socket.receive_json()['connection_generation']
+        def message(socket,generation,kind,**kwargs):
+            socket.send_json(dict(type=kind,protocol_version=2,
+                connection_generation=generation,**kwargs))
+        def initial_ready(socket,generation):
+            message(socket,generation,'RESOURCE_STATE',state='idle')
+            message(socket,generation,'READY',model_revision=REVISION,space=SPACE,
+                runtime_readiness=observation())
+            response=socket.receive_json()
+            assert response['type']=='READY_ACK' and response['status']=='ready'
+        with app.websocket_connect('/bge-worker/channel',headers={'Authorization':'Bearer '+token}) as first:
+            old=attach(first)
+            initial_ready(first,old)
+            assert current_binding(queue).connection_generation==old
+        now[0]+=121
+        assert queue.status()['state']=='unknown'
+        with pytest.raises(TargetUnavailable):current_binding(queue)
+        with app.websocket_connect('/bge-worker/channel',headers={'Authorization':'Bearer '+token}) as second:
+            generation=attach(second)
+            assert generation>old
+            # ATTACH has no semantic proof; old generation's BGE and PG
+            # readiness MUST NOT authorize a read in the new generation.
+            with pytest.raises(TargetUnavailable):current_binding(queue)
+            message(second,generation,'HEARTBEAT')
+            response=second.receive_json()
+            if response['type']=='RESOURCE_PROBE':
+                message(second,generation,'RESOURCE_STATE',state='idle',
+                    probe_nonce=response['probe_nonce'])
+                response=second.receive_json()
+            assert response['type']=='HEARTBEAT_ACK'
+            initial_ready(second,generation)
+            assert current_binding(queue).connection_generation==generation
+
+            async def start():
+                context=await auth.resolver.resolve_oauth(auth.tokens.access_token,
+                    destination=__import__('regional_knowledge.read_authority',
+                        fromlist=['TrustedReadDestination']).TrustedReadDestination(
+                        'mcp','personal','current-response'))
+                query=Query(request_id='wss-stale-ready-recovered',
+                    connection_generation=generation,turn_generation=17,
+                    query='synthetic regional query',deadline_ms=2000,min_data_seq=5,
+                    actor=TrustedActorContext(person_id=context.person_id,
+                        audience=context.destination.key,auth_epoch=context.auth_revision,
+                        visibility_epoch=0,context_ref=context.context_ref))
+                return await queue.shared_reads.begin_read(context,query,
+                    dialog_ref='recovered-dialog',deadline=time.monotonic()+1.9)
+            ticket=app.portal.call(start)
+            dispatched=second.receive_json()
+            assert dispatched['type']=='QUERY' and dispatched['request_id']==ticket.request_id
+            message(second,generation,'QUERY_RESULT',request_id=dispatched['request_id'],
+                turn_generation=dispatched['turn_generation'],status='degraded',mode='hybrid',
+                reason='bounded_retrieval',evidence=[],observed_data_seq=5,
+                observed_projection_seq=5,observed_visibility_epoch=0,
+                observed_database_generation='synthetic-db')
+            async def delivered():
+                return await ticket.result
+            assert app.portal.call(delivered).mode=='hybrid'
+            message(second,generation,'RESOURCE_RELEASED',resource_kind='read',
+                resource_id=dispatched['request_id'],compute_claim=dispatched['compute_claim'],
+                dispatch_generation=generation)
+
+
 def test_model_only_ready_does_not_promote_target_channel(shared_channel_run):
     queue, ident, token, nonce = shared_channel_run
     with TestClient(Starlette(routes=[channel_route(queue)])) as app:

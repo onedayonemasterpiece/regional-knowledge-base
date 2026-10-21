@@ -411,8 +411,13 @@ class BgeQueue:
                 ).fetchone():
                     raise AttachmentBusy('BGE HTTP assignment is still active')
                 generation=run['connection_generation']+1
-                db.execute('update runs set runtime_incarnation=?,connection_generation=?,channel_active=1 where id=?',
-                           (runtime_incarnation,generation,run_id))
+                # Authenticated exact-incarnation ATTACH is proof of the
+                # socket's present liveness (NOT proof of search readiness).
+                # Refresh its heartbeat atomically with the generation fence;
+                # otherwise receiver/dispatcher status() would reject every
+                # frame before the worker can submit new runtime proof.
+                db.execute('update runs set runtime_incarnation=?,connection_generation=?,channel_active=1,heartbeat=? where id=?',
+                           (runtime_incarnation,generation,now,run_id))
                 result={'connection_generation':generation,
                         'provider_version':str(run['provider_version']) if run['provider_version'] is not None else None}
         if conflict:
@@ -880,6 +885,23 @@ class BgeQueue:
             )
             return [dict(row) for row in db.execute('select id,status,launch_state,provider_ref,provider_version from runs').fetchall()]
 
+    def needs_dispatched_terminal_probe(self, run_id):
+        """Only an exact owner with a lost ready connection needs terminal lookup.
+
+        This is a read-only controller hint. It does not assert provider death,
+        revoke credentials or authorize another push; the controller must
+        inspect the original exact-version native session independently.
+        """
+        with self.connect(write=False) as db:
+            self._shared_owner(db)
+            run=db.execute('select * from runs where id=?',(run_id,)).fetchone()
+            if (run is None or run['launch_state']!='dispatched'
+                    or type(run['provider_version']) is not int):
+                return False
+            if run['status']=='starting':return True
+            return (run['status'] in ('ready','draining')
+                    and self._run_expired(run,self.clock()))
+
     def launch_claim(self, run_id, *, provider_ref=None):
         with self.connect() as db:
             row=db.execute('select * from runs where id=?',(run_id,)).fetchone()
@@ -901,5 +923,10 @@ class BgeQueue:
             db.execute('update runs set provider_ref=?,provider_version=coalesce(provider_version,?),launch_state=?,status=case when ? then ? else status end where id=?',
                        (provider_ref,provider_version,'failed' if failed else 'dispatched',failed,'failed',run_id))
             if failed:
+                # A proven terminal outcome of a previously READY run must
+                # reopen its durable cold demand, or maintenance will never
+                # start a replacement after the safety cooldown.
+                db.execute("update control set startup_state='pending' where current_run=? and startup_ref is not null",
+                           (run_id,))
                 db.execute('update runs set heartbeat=? where id=?',(self.clock(),run_id))
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run_id,))
