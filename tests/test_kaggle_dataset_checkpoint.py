@@ -8,6 +8,7 @@ from regional_knowledge.kaggle_dataset_base import DatasetFile
 from regional_knowledge.kaggle_dataset_checkpoint import SourceDatasetCheckpoints
 from regional_knowledge.kaggle_pg_snapshot_native import encode,sha
 from test_dataset_recovery_store import prepared
+from test_control_spool import env,people,receipt
 
 
 @pytest.mark.asyncio
@@ -74,3 +75,36 @@ async def test_work_cycle_waits_for_quiet_then_resumes_published_version_after_l
     assert store.latest_checkpoint==checkpoint
     assert calls==['capture_and_publish','native_verify','native_verify']
     assert not await again.refresh('binding')
+
+
+@pytest.mark.asyncio
+async def test_capture_materializes_crash_gap_outcome_before_export_and_keeps_it_pending(tmp_path,env):
+    from regional_knowledge.kaggle_dataset_checkpoint import _WorkCycleCapture
+    from regional_knowledge.recovery_journal import RecoveryJournal
+    p=prepared(tmp_path);journal=RecoveryJournal(p.store,stream='stream')
+    command=env.cmd
+    seal=await journal.seal([command],predecessor=None,writer_generation='writer')
+    native=receipt(command,database='db')
+    with p.q.connect() as db:
+        db.execute('CREATE TABLE rkb_control_operations(operation_key TEXT,sequence INTEGER,seal_state TEXT,'
+            'apply_state TEXT,outcome_state TEXT,outcome_sha256 TEXT)')
+        db.execute('INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?)',
+            (command.operation_key,1,'ACCEPTED','APPLIED','NOT_SENT',native.outcome_sha256))
+    async def get(key):
+        assert key==command.operation_key
+        return NS(command=command,accepted=seal,apply_receipt=native,database_generation='db')
+    proof=NS(current=lambda:True,accepted_sequence=1,applied_sequence=1,pending=('not remotely saved',))
+    batch=_WorkCycleCapture.__new__(_WorkCycleCapture);batch.queue=p.q
+    batch.startup=NS(config=NS(writer_generation='writer',spool=NS(journal=journal,get=get,_source_covered_sequence=1)),
+        restorer=NS(physical=NS(limits=NS(max_receipts=100))))
+    key=journal.prefix+'/outcomes/'+sha(command.operation_key.encode())
+    assert await p.store.read(key,max_bytes=8192) is None
+    assert not batch._prefix_ready(proof)
+    await batch._prepare_prefix(proof)
+    stored=await p.store.read(key,max_bytes=8192)
+    assert stored is not None and batch._prefix_ready(proof)
+    assert not p.store.remote_durable(key,stored.data)
+    assert json.loads(stored.data)['outcome_sha256']==native.outcome_sha256
+    assert key in {o['key'] for o in json.loads(p.store.export_control())['objects']}
+    with p.q.connect(write=False) as db:
+        assert db.execute('SELECT outcome_state FROM rkb_control_operations').fetchone()[0]=='NOT_SENT'

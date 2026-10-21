@@ -17,6 +17,26 @@ _LOG=logging.getLogger(__name__)
 
 
 class _WorkCycleCapture(SourceDatasetSeed):
+    async def _prepare_prefix(self,proof):
+        if proof is None:return
+        spool=self.startup.config.spool
+        with self.queue.connect(write=False) as db:
+            keys=[r[0] for r in db.execute("SELECT operation_key FROM rkb_control_operations WHERE sequence<=? "
+                "AND seal_state='ACCEPTED' AND apply_state IN ('APPLIED','REJECTED_PRECONDITION') "
+                "AND outcome_state='NOT_SENT' ORDER BY sequence LIMIT ?",
+                (proof.applied_sequence,self.startup.restorer.physical.limits.max_receipts))]
+        for key in keys:
+            entry=await spool.get(key)
+            if entry.accepted is None or entry.apply_receipt is None:
+                raise SnapshotError('dataset_checkpoint_exact_native_outcome_required')
+            from .recovery_journal import JournalUnknown
+            try:
+                await spool.journal.record_outcome(entry.accepted,command=entry.command,
+                    database_generation=entry.database_generation,outcome=entry.apply_receipt.outcome,
+                    writer_generation=self.startup.config.writer_generation)
+            except JournalUnknown as exc:
+                if exc.args!=('outcome_pending_dataset_checkpoint',):raise
+
     def _prefix_ready(self,proof):
         if (proof is None or not proof.current() or proof.accepted_sequence!=proof.applied_sequence
                 or proof.accepted_sequence!=self.startup.config.spool._source_covered_sequence):return False
@@ -26,7 +46,19 @@ class _WorkCycleCapture(SourceDatasetSeed):
             unknown=db.execute("SELECT 1 FROM rkb_control_operations WHERE sequence<=? AND "
                 "(seal_state<>'ACCEPTED' OR apply_state NOT IN ('APPLIED','REJECTED_PRECONDITION') "
                 "OR outcome_state='SENT_UNKNOWN') LIMIT 1",(proof.applied_sequence,)).fetchone()
-        return unknown is None
+            if unknown is not None:return False
+            rows=db.execute("SELECT operation_key,sequence,outcome_sha256 FROM rkb_control_operations "
+                "WHERE sequence<=? AND outcome_state='NOT_SENT'",(proof.applied_sequence,)).fetchall()
+            store=self.startup.config.spool.journal.store
+            for row in rows:
+                key=self.startup.config.spool.journal.prefix+'/outcomes/'+sha(row['operation_key'].encode())
+                obj=db.execute('SELECT data FROM rkb_dataset_recovery_objects WHERE storage=? AND key=?',
+                    (store.storage_identity,key)).fetchone()
+                if obj is None:return False
+                value=json.loads(obj['data'])
+                if (value.get('operation_key'),value.get('sequence'),value.get('outcome_sha256'))!=(
+                        row['operation_key'],row['sequence'],row['outcome_sha256']):return False
+        return True
 
     def _control(self,physical,proof):
         with self.queue.connect(write=False) as db:
