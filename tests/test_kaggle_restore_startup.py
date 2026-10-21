@@ -23,6 +23,7 @@ async def test_api_restart_of_active_restore_recreates_capture_facade_without_pg
     async def begin(*args,**kwargs):pass
     coordinator.writer=SimpleNamespace(begin_restore=begin,current=lambda **kwargs:True)
     coordinator.config=SimpleNamespace()
+    coordinator.startup=SimpleNamespace(dataset_seed=object())
     coordinator.journal=object();coordinator.complete=False
     coordinator.dispatch=None;coordinator.physical=None
     coordinator._observe=lambda:(binding,'nonce')
