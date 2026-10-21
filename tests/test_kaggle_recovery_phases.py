@@ -23,6 +23,28 @@ def database():return replace(spec().database,mode='VERIFIED_INITIALIZED',owners
 
 
 @pytest.mark.asyncio
+async def test_failed_prepare_releases_initialization_waiter_without_readiness():
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=database();native.identity=('r','nonce','inc')
+    native._current=lambda binding:None
+    worker=WorkerRecoveryPhases(factory=native,download=lambda *_:None,workspace=lambda *_:None)
+    failure=SnapshotError('synthetic_dataset_mount_failure')
+    async def execute(*args):raise failure
+    worker._execute=execute
+    phase='prepare';args={}
+    frame=dict(type='DISPATCH',protocol_version=2,connection_generation=1,id='job',claim='claim',
+        kind='recovery_phase',run_id='r',launch_nonce='nonce',runtime_incarnation='inc',
+        database_generation=native.database.database_generation,writer_generation=native.database.writer_generation,
+        phase=phase,operation_key='restore',arguments=args,request_sha256=sha(encode(dict(phase=phase,arguments=args))),
+        compute_claim='slot',dispatch_generation=1)
+    waiter=asyncio.create_task(worker.wait_initialized(native.database,*native.identity))
+    with pytest.raises(SnapshotError) as phase_error:await worker(frame)
+    with pytest.raises(SnapshotError) as load_error:await asyncio.wait_for(waiter,1)
+    assert phase_error.value is failure and load_error.value is failure
+    assert worker._initialized is None and not worker._results
+
+
+@pytest.mark.asyncio
 async def test_capture_refusal_preserves_native_owner_for_following_readback():
     native=object.__new__(NativeSnapshotFactory)
     native.database=database();native.identity=('r','nonce','inc')
