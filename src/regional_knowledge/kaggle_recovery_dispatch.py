@@ -28,7 +28,7 @@ class RecoveryPhaseDispatch:
         self.binding_current,self.timeout=binding_current,timeout_seconds
         self.snapshot_tickets=snapshot_tickets
         self.dataset_checkpoint=dataset_checkpoint
-        self._bindings={};self.closed=False
+        self._bindings={};self._attachment_binding=None;self.closed=False
         queue._recovery_phases=self
 
     def current(self,binding):
@@ -44,6 +44,23 @@ class RecoveryPhaseDispatch:
 
     def eligible(self,job,run,generation):
         binding=self._bindings.get(job['id'])
+        if binding is None or not self.current(binding):
+            binding=self._attachment_binding
+            if binding is not None and self.current(binding):
+                try:
+                    identity=json.loads(job['identity'])
+                    retained=(identity['run_id'],identity['launch_nonce'],identity['runtime_incarnation'])
+                    valid=(job['kind']=='recovery_phase' and job['actor']=='maintenance:'+self.identity[0]
+                        and retained==self.identity and identity['database_generation']==self.database.database_generation
+                        and identity['writer_generation']==self.database.writer_generation
+                        and identity['phase'] in PHASES and job['idempotency']=='recovery:'+identity['operation_key']
+                        and identity['request_sha256']==sha(encode(dict(phase=identity['phase'],arguments=identity['arguments']))))
+                except (KeyError,TypeError,ValueError):valid=False
+                if valid:
+                    self._bindings[job['id']]=binding
+                    _LOG.warning('recovery_job_binding_restored run_id=%s generation=%s phase=%s job_id=%s',
+                        self.identity[0],generation,identity['phase'],job['id'])
+                else:binding=None
         return (binding is not None and self.current(binding)
                 and (run['id'],run['launch_nonce'],run['runtime_incarnation'])==self.identity
                 and job['kind']=='recovery_phase')
@@ -69,6 +86,11 @@ class RecoveryPhaseDispatch:
 
     async def request(self,binding,phase,arguments,*,operation_key):
         if not self.current(binding):raise PermissionError('current maintenance binding required')
+        # A validated current request also restores authority for retained
+        # jobs of this exact runtime after socket or API-only reconnect.
+        # eligible() validates each immutable persisted job; admission still
+        # reconciles its actual compute claim before any resend.
+        self._attachment_binding=binding
         if phase not in PHASES or not isinstance(operation_key,str) or not 1<=len(operation_key.encode())<=256:
             raise SnapshotError('recovery_phase_contract')
         if len(self._bindings)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
@@ -85,6 +107,7 @@ class RecoveryPhaseDispatch:
             raise SnapshotError('recovery_phase_unknown_reconcile_same_operation')
         if not self.current(binding):raise PermissionError('recovery binding expired before delivery')
         return result['result']['value']
+
 
     async def dispatch_payload(self,job_id,*,run_id,token,generation):
         with self.queue.connect(write=False) as db:

@@ -320,3 +320,12 @@ ordinary reads and durable dispatch still require configured shared admission an
 honest accepted READY. Merely enabling shared admission persistently rejects the
 legacy durable-query path, so it is not a transparent public compatibility mode.
 Both API and controller must use the released queue code for the prepared lease.
+## Maintenance across WSS reconnects
+
+A new authenticated maintenance request can renew the attachment binding for a
+retained job of the same run, nonce, incarnation, database and writer. Validate
+the persisted phase, request hash and idempotency key before restoring that
+binding, including after an API-only restart. Keep the original job, claim,
+payload and attempt count. Shared admission must still reconcile the native
+busy/idle resource before resend; renewing authority does not prove an effect
+failed or release compute ownership.
