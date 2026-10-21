@@ -41,6 +41,79 @@ def test_concurrent_startup_requests_use_one_stable_run_even_after_lost_launch_a
         assert db.execute("select launch_state from runs where id=?", (run_id,)).fetchone()[0] == "dispatching"
 
 
+
+def test_poll_immediately_after_control_detach_sees_historical_unknown(tmp_path):
+    """NULL current_run does not turn a prior UNKNOWN into false pending/stopped."""
+    q=BgeQueue(tmp_path/'null-current.sqlite',clock=lambda:1000.)
+    first=q.request_startup();old=first['run_id']
+    assert q.launch_claim(old,provider_ref='owner/rkb-bge-m3-cpu') is not None
+    with q.connect() as db:
+        db.execute('update control set current_run=null,successor=null where id=1')
+    # No maintenance, no replacement run allocation, and no second search.
+    poll=q.startup_status(first['startup_ref'])
+    assert poll['status']=='unavailable'
+    assert poll['reason']=='provider_execution_unknown'
+    status=q.status()
+    assert status['state']=='unknown'
+    assert status['reason']=='provider_execution_unknown'
+    with q.connect(write=False) as db:
+        assert db.execute('select count(*) from runs').fetchone()[0]==1
+        assert db.execute('select launch_state from runs where id=?',(old,)).fetchone()[0]=='dispatching'
+
+
+def test_detached_historical_unknown_reports_unavailable_not_false_pending(tmp_path):
+    """The persisted old UNKNOWN can block even if it is no longer current_run."""
+    now=[1000.]
+    queue=BgeQueue(tmp_path/'historical-unknown.sqlite',clock=lambda:now[0])
+    first=queue.request_startup()
+    old_run=first['run_id'];stable='owner/rkb-bge-m3-cpu'
+    assert queue.launch_claim(old_run,provider_ref=stable) is not None
+    # Recover a historical/migrated control pointer without destroying the
+    # original provider claim or any Accepted/remote evidence.
+    with queue.connect() as db:
+        db.execute('update control set current_run=null,successor=null where id=1')
+    new=[row for row in queue.maintenance() if row['status']=='starting' and row['id']!=old_run]
+    assert len(new)==1
+    replacement=new[0]['id']
+    assert queue.launch_claim(replacement,provider_ref=stable) is None
+    current=queue.request_startup()
+    assert current['status']=='unavailable'
+    assert current['reason']=='provider_execution_unknown'
+    assert current['startup_ref']==first['startup_ref']
+    assert current['run_id']==replacement
+    poll=queue.startup_status(first['startup_ref'])
+    assert poll==dict(protocol='rkb.startup.v1',startup_ref=first['startup_ref'],
+                      status='unavailable',reason='provider_execution_unknown')
+    assert queue.status()['state']=='unknown'
+    assert queue.status()['reason']=='provider_execution_unknown'
+    with queue.connect(write=False) as db:
+        assert db.execute('select count(*) from runs').fetchone()[0]==2
+        assert db.execute('select launch_state from runs where id=?',(old_run,)).fetchone()[0]=='dispatching'
+        assert db.execute('select launch_state from runs where id=?',(replacement,)).fetchone()[0]=='pending'
+        assert db.execute('select count(*) from jobs').fetchone()[0]==0
+
+
+@pytest.mark.asyncio
+async def test_authorized_public_cold_read_honestly_reports_historical_unknown(auth,tmp_path):
+    queue=BgeQueue(tmp_path/'mcp-historical-unknown.sqlite',clock=lambda:1000.)
+    first=queue.request_startup()
+    assert queue.launch_claim(first['run_id'],provider_ref='owner/rkb-bge-m3-cpu')
+    with queue.connect() as db:
+        db.execute('update control set current_run=null,successor=null where id=1')
+    queue.configure_shared_reads(auth.resolver)
+    backend=KaggleSourceBackend(worker_queue=queue,read_authority=auth.resolver,
+        source_gate=Gate(auth.resolver),destination_ref='synthetic-response')
+    principal=SimpleNamespace(access_token=auth.tokens.access_token)
+    try:
+        with pytest.raises(ToolError,match='provider_execution_unknown') as error:
+            await backend.search('synthetic question',principal)
+        assert first['startup_ref'] in str(error.value)
+        with queue.connect(write=False) as db:
+            assert db.execute('select count(*) from runs').fetchone()[0]==2
+            assert db.execute('select count(*) from jobs').fetchone()[0]==0
+    finally:queue._shared_reads.close()
+
+
 def test_expired_ready_run_fences_remote_owner_until_terminal_reconciliation(tmp_path):
     now = [1000.0]
     queue = BgeQueue(tmp_path / 'ready-lost.sqlite', clock=lambda: now[0])
