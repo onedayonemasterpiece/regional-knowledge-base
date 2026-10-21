@@ -114,8 +114,54 @@ Telegram action is performed by this code.
   tests/test_expert_delivery_control.py`. These use synthetic/isolated
   in-memory provider receipts, not a real Slack account or Kaggle PG.
 
+## Opt-in trusted expert evidence read (subsequent source slice)
+
+`src/regional_knowledge/expert_evidence_receiver.py` adds an optional
+`POST /internal/rkb/expert-evidence` endpoint using exactly the existing
+`ReadAuthority.resolve_adapter → KaggleSourceBackend.search_adapter →
+ReadIssuanceMiddleware` chain. It is registered by `build_server` **only**
+when an explicit `ExpertEvidenceReceiver` instance is passed, with exact
+identical target startup queue/Participants/spool ownership. Default service
+configuration does **not** activate this endpoint.
+
+Only the existing canonical internal executor service may call over
+loopback. Required `Authorization: Bearer <provisioned-executor-token>`,
+`X-RKB-Expert-Service` and bounded JSON
+`{codec:"rkb.expert-evidence.v1",request_id,generation,execution_token,
+min_data_seq,deadline_monotonic}`. **No caller-controlled query, actor
+subject, source whitelist or Slack channel.** A current claimed request and
+its original signed Slack origin provide the query and human identity.
+The audience uses the actual stored Slack DM/group destination and the
+existing source gate (group cannot upgrade to personal/private evidence).
+
+The ASGI response is bound to one retained native search result. Before
+the final HTTP body, `ReadIssuanceMiddleware` refreshes source/participant
+permissions and a bounded read-only SQLite `issuance_current` check for
+request state, execution generation/token, service credential and current
+Slack destination policy. A revoked account, superseded lease, removed
+channel or unavailable source yields empty evidence; there is no
+unprotected secondary serialization path. The control DB final check has
+a 2-ms SQLite busy timeout and fails closed.
+
+The endpoint is NOT a Slack delivery/ACK executor, does not call
+`chat.postMessage`, cannot fabricate owner bearer tokens and writes
+no PG/domain data. Its output still requires subsequent result-intent,
+send-intent and exact native receipt transitions via the existing singleton
+remote writer. Existing `ProjectsHubReader` is unchanged. The runtime
+cannot enable this option until the same trusted Slack transport and
+operator-configured service credential used by CAS-F10 are actually
+integrated. Actual source gate/PG authority, real Slack provider delivery,
+Dataset durability and end-user E2E remain NOT RUN.
+
+The new ASGI tests use real synthetic OAuth/Participants, actual target
+queue read admission, middleware and same HTTP response path. They cover
+retraction at final issuance, stale execution generation, forged inputs,
+loopback boundary, and explicit-only registration. They are not an
+installed Kaggle test.
+
 Remaining release gates: authenticated Slack transport E2E, actual
 request-bound source/Case access through native PG, MCP final issuance
-revocation tests, recovery after loss of Dev local disk and Kaggle Dataset
-coverage, and successful real-user expert workflow. Do not mark CAS-F10
-PASS or merge a full cutover solely from green fixture tests.
+revocation tests on the installed product, recovery after loss of Dev
+local disk and Kaggle Dataset coverage, and successful real-user expert
+workflow. Do not mark CAS-F10 PASS or merge a full cutover solely from
+green fixture tests.

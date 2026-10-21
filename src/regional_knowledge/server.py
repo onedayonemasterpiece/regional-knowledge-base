@@ -256,6 +256,7 @@ def build_server(
     backend_profile: Literal['legacy','kaggle_source'] | None = None,
     target_startup=None,
     projects_hub_receiver=None,
+    expert_evidence_receiver=None,
 ) -> MCPServer:
     selected=backend_profile or os.getenv('RKB_BACKEND_PROFILE','').strip() or (
         'kaggle_source' if target_startup is not None else 'legacy')
@@ -471,6 +472,15 @@ def build_server(
                 or projects_hub_receiver.backend is not backend):
             raise RuntimeError('PH receiver requires the same configured target backend')
         mcp.custom_route(PATH, methods=['POST'])(projects_hub_receiver.__call__)
+
+    if expert_evidence_receiver is not None:
+        from .expert_evidence_receiver import ExpertEvidenceReceiver, PATH as EXPERT_PATH
+        if (selected != 'kaggle_source' or type(expert_evidence_receiver) is not ExpertEvidenceReceiver
+                or expert_evidence_receiver.backend is not backend
+                or expert_evidence_receiver.authority is not target_startup.authority
+                or expert_evidence_receiver.control.spool is not target_startup.config.spool):
+            raise RuntimeError('expert evidence receiver requires exact existing target owners')
+        mcp.custom_route(EXPERT_PATH, methods=['POST'])(expert_evidence_receiver.__call__)
 
     @mcp.custom_route("/fast-tier/health", methods=["GET"])
     async def fast_tier_health(request: Request):
