@@ -70,7 +70,9 @@ async def test_work_cycle_waits_for_quiet_then_resumes_published_version_after_l
     clock[0]=29
     assert not await owner.refresh('binding') and not calls
     clock[0]=31
-    with pytest.raises(TimeoutError):await owner.refresh('binding')
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    with pytest.raises(CheckpointPending) as pending:await owner.refresh('binding')
+    assert type(pending.value.__cause__) is TimeoutError and pending.value.args[0]=='TimeoutError'
     assert store.latest_checkpoint.dataset_version==1
     # A restarted owner resumes that exact published package; it cannot publish
     # version 3 just because version 2's native readback response was lost.

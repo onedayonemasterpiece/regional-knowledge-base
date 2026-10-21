@@ -298,8 +298,31 @@ Fence на side effects и pointer CAS, exact version + SHA/size, writer generat
 4. O1 полностью: продление по событию вместо таймера 5 с; O6 вместе с ним.
 5. O5, O7, O8 — после того, как тёплый run живёт стабильно.
 
-Изменений кода по §7 в этом проходе нет: правки затрагивают семантику read gate и требуют
-фикстурных тестов и согласования со Шкипером, который ведёт live-контур.
+### Исправлено в этой ветке (третий проход, 22:33–23:00 UTC)
+
+| Пункт | Изменение | Что сохранено |
+|---|---|---|
+| O2 | `SourceDatasetCheckpoints.refresh`: сбой capture/`dataset_verify`/`promote` **до** перемещения pointer превращается в `CheckpointPending`. `kaggle_service_startup.refresh` логирует `target_dataset_checkpoint state=pending` и оставляет чтения на текущей проверенной базе | Readback-проверка, pointer CAS, «не публиковать v3 после потерянного readback». Ошибки после promotion (settle в spool) по-прежнему закрывают чтения |
+| O1 (часть) | `WssSourceHistoryVerifier._verify_remote`: при `TimeoutError` или `observation unavailable` в режиме delta/renew возвращается прежний **неистёкший** proof. Условия: фаза фиксации не начата, spool-версия не менялась, binding тот же | Proof не продлевается и истекает по своему deadline. Любое противоречие, режим `full`, начатая запись или смена версии закрывают чтения как раньше. Write guard `_native_history_unsettled` не тронут |
+| O4 | `bge_queue.LIVE_JOBS`: `recovery_phase` run'а в статусе `expired/failed` не считается startup demand, admission cap 256, `queue_depth` и `outstanding` | Строки не удаляются и не меняются, остаются evidence. Мутирующие фазы живого run учитываются как раньше |
+
+Проверки:
+- новые тесты `test_pending_dataset_checkpoint_keeps_verified_reads_open`,
+  `test_renewal_without_new_evidence_keeps_unexpired_proof_only`,
+  `test_dead_run_recovery_phases_are_not_startup_demand_or_capacity`; обновлён
+  `test_kaggle_dataset_checkpoint` (ожидает `CheckpointPending` с причиной `TimeoutError`);
+- полный набор: **2276 passed, 133 skipped**. В первом прогоне один раз упал
+  `test_bge_runtime_readiness.py::test_model_only_ready_does_not_promote_target_channel`
+  (WebSocket/TestClient). Отдельно он проходит и на ветке, и на main, файл трижды зелёный,
+  повторный полный прогон зелёный. Флейк по времени на загруженном хосте. Main полностью:
+  2272 passed;
+- O4 на read-only копии живой очереди: незавершённых job'ов, считающихся спросом, было 134,
+  стало 0.
+
+Не сделано: O1 целиком (продление по событию вместо таймера, без 5-секундного цикла), O3
+(эфемерное наблюдение receipts одним вызовом), O5–O8. Ничего не задеплоено, live-контур не
+трогался. Эффект O1/O2 на долю закрытых тиков надо измерить на следующем тёплом run, до этого
+экономию не заявлять.
 
 Срез на 22:26 UTC: v104 всё ещё `starting/dispatched`, heartbeat не обновлялся 389 с, `ready_at`
 пуст, слот занят. Процессы те же (controller PID 1360 на f2c6ad0, второго controller нет).

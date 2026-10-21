@@ -290,3 +290,24 @@ def test_restore_launch_refuses_writer_bound_to_another_run(tmp_path):
         with pytest.raises(ValueError):module.require_writer_binding(q,run_id,writer)
     report=module.provider_boundary_report(ValueError('x'),'successor-run','launch_preparation','verify_writer_binding')
     assert report['submission_state']=='not_sent' and report['preparation_step']=='verify_writer_binding'
+
+
+def test_dead_run_recovery_phases_are_not_startup_demand_or_capacity(tmp_path):
+    """Run-bound recovery phases of an expired run stay as evidence only."""
+    from regional_knowledge.bge_queue import BgeQueue
+    q=BgeQueue(tmp_path/'orphans.sqlite',clock=lambda:1000.)
+    dead=q.request_startup()['run_id']
+    with q.connect() as db:
+        for n in range(256):
+            db.execute("insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)",
+                (f'orphan-{n}','maintenance:'+dead,f'recovery:{n}','recovery_phase','[]','{}','pending',900.,900.))
+        db.execute("update runs set status='expired' where id=?",(dead,))
+        db.execute("update control set current_run=null,successor=null,startup_ref=null,startup_state=null where id=1")
+    assert not any(row['id']!=dead and row['status']=='starting' for row in q.maintenance())
+    with q.connect(write=False) as db:
+        assert db.execute('select count(*) from runs').fetchone()[0]==1
+    # Real new work is still admitted despite 256 retained dead-run phases,
+    # and it is the only thing that creates a new cold run.
+    assert q.enqueue('actor','doc-1',['text'],kind='document')
+    with q.connect(write=False) as db:
+        assert db.execute("select count(*) from runs where status='starting'").fetchone()[0]==1

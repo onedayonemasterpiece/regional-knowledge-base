@@ -412,3 +412,32 @@ async def test_lost_open_receipt_never_guesses_native_lock_release(env):
         assert (await p.v.establish_genesis(p.b)).current()
         assert not env.spool._native_history_unsettled
     finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_renewal_without_new_evidence_keeps_unexpired_proof_only(env):
+    """Timeout/unavailable observation defers renewal; it never extends trust."""
+    p=pair(env);original=p.v._phase
+    try:
+        proof=await p.v.establish_genesis(p.b)
+        assert proof.current()
+        async def unavailable(binding,args):
+            if args['action']=='open':raise SpoolConflict('native source history observation unavailable')
+            return await original(binding,args)
+        p.v._phase=unavailable
+        kept=await p.v.renew(p.b)
+        assert kept is proof and kept.current() and env.spool._source_anchor is proof
+        # The retained proof still expires at its own deadline; then it fails closed.
+        clock=p.v.clock;p.v.clock=lambda:clock()+p.v.coverage_seconds+1
+        with pytest.raises(SpoolConflict,match='observation unavailable'):await p.v.renew(p.b)
+        assert p.v._coverage is None and env.spool._source_anchor is None
+        p.v.clock=clock;p.v._phase=original
+        # Contradicting evidence is never deferred.
+        assert (await p.v.establish_genesis(p.b)).current()
+        async def contradicts(binding,args):
+            if args['action']=='open':raise SpoolConflict('native source observation binding differs')
+            return await original(binding,args)
+        p.v._phase=contradicts
+        with pytest.raises(SpoolConflict,match='binding differs'):await p.v.renew(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()
