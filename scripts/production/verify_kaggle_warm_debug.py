@@ -212,13 +212,13 @@ def private_plan(path):
     return plan_from_wire(json.loads(data,object_pairs_hook=unique))
 
 
-def main():
+def main(argv=None, *, artifact_root=Path('/home/dev/artifacts')):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--client-factory',required=True,help='Trusted existing-owner adapter module:factory')
     parser.add_argument('--plan',required=True,type=Path)
     parser.add_argument('--report',required=True,type=Path)
-    args=parser.parse_args()
-    report=args.report.resolve();root=Path('/home/dev/artifacts')
+    args=parser.parse_args(argv)
+    report=args.report.resolve();root=Path(artifact_root).resolve()
     require(report.is_relative_to(root) and any((p/'.artifact.json').is_file() for p in report.parents
         if p.is_relative_to(root)), 'managed_artifact_report_required')
     trace={}

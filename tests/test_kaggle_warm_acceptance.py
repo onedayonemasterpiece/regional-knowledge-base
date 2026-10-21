@@ -251,9 +251,13 @@ def test_actual_cli_runs_offline_and_writes_private_report(tmp_path):
     plan=tmp_path/'private-plan.json';plan.write_text(json.dumps(client.plan));plan.chmod(0o600)
     client.slot.close();client.db.close()
     report=tmp_path/'cli-report.json'
-    environment=dict(os.environ,PYTHONPATH=str(ROOT/'src')+os.pathsep+str(ROOT/'tests'),
+    # CI uses its own repository fixture root; the real CLI still defaults to
+    # /home/dev/artifacts. Injection is internal, not a public CLI override.
+    (tmp_path/'.artifact.json').write_text(json.dumps({'project':'regional-knowledge-base','scope':'offline-fixture'}))
+    environment=dict(os.environ,PYTHONPATH=os.pathsep.join(map(str,[ROOT/'src',ROOT/'tests',ROOT/'scripts/production'])),
                      RKB_WARM_ACCEPTANCE_FIXTURE_ROOT=str(tmp_path/'cli-fixture'))
-    completed=subprocess.run([sys.executable,str(ROOT/'scripts/production/verify_kaggle_warm_debug.py'),
+    entry="import sys; from pathlib import Path; from verify_kaggle_warm_debug import main; root=Path(sys.argv.pop(1)); raise SystemExit(main(artifact_root=root))"
+    completed=subprocess.run([sys.executable,'-c',entry,str(tmp_path),
         '--client-factory','test_kaggle_warm_acceptance:offline_client','--plan',str(plan),
         '--report',str(report)],env=environment,capture_output=True,text=True,timeout=10)
     assert completed.returncode==0,completed.stderr
