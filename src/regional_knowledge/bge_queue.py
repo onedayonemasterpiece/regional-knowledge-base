@@ -115,6 +115,10 @@ class BgeQueue:
                 id integer primary key check(id=1),cursor integer not null,
                 next_cycle real not null)""")
             db.execute('insert or ignore into bge_provider_reconciliation values(1,0,0)')
+            db.execute('''create table if not exists bge_debug_launches(
+                operation_key text primary key,run_id text not null unique,provider_ref text not null,
+                reason_reference text not null,inventory_json text not null,created_at real not null,
+                expires_at real not null,consumed_at real)''')
         self.path.chmod(0o600)
 
     def _schema_current(self):
@@ -124,6 +128,7 @@ class BgeQueue:
                 if db.execute('select current_run,successor,startup_ref,startup_state,startup_failures from control where id=1').fetchone() is None:
                     return False
                 db.execute('select run_id,receipt_json from bge_provider_terminal_receipts limit 0')
+                db.execute('select operation_key,run_id,provider_ref,reason_reference,inventory_json,created_at,expires_at,consumed_at from bge_debug_launches limit 0')
                 if db.execute('select cursor,next_cycle from bge_provider_reconciliation where id=1').fetchone() is None:
                     return False
                 db.execute('select id,actor,idempotency,kind,texts,identity,state,created,updated,run_id,claim,lease_until,result,attempt from jobs limit 0')
@@ -1064,6 +1069,8 @@ class BgeQueue:
         new ref cannot establish that its slot is independent. This helper
         makes no provider call, allocation, or state transition.
         """
+        from .kaggle_debug_launch import scoped_ids
+        scoped=scoped_ids(db,run_id,provider_ref,now) or set()
         control=db.execute('select current_run,successor from control where id=1').fetchone()
         # SQLite IS NOT is NULL-safe. The control pointer can legitimately be
         # absent during a migration/terminal handover; id!=NULL would select
@@ -1079,8 +1086,12 @@ class BgeQueue:
                 and not self._run_expired(prior,now)
                 and control['current_run']==prior['id']
                 and control['successor']==run_id)
-            if not intentional_warm:return True
+            if not intentional_warm and prior['id'] not in scoped:return True
         return False
+
+    def prepare_debug_launch(self, run_id, **options):
+        from .kaggle_debug_launch import prepare
+        return prepare(self,run_id,**options)
 
     def launch_claim(self, run_id, *, provider_ref=None):
         with self.connect() as db:
@@ -1094,6 +1105,14 @@ class BgeQueue:
             # This transaction is the single provider-claim serialization.
             if self._historical_provider_blocker(db,run_id,provider_ref,self.clock()):
                 return None
+            allowance=db.execute('select * from bge_debug_launches where run_id=?',(run_id,)).fetchone()
+            if allowance is not None:
+                from .kaggle_debug_launch import scoped_ids
+                if (allowance['consumed_at'] is not None or provider_ref!=allowance['provider_ref']
+                        or scoped_ids(db,run_id,provider_ref,self.clock(),claim=True) is None):
+                    return None
+                db.execute('update bge_debug_launches set consumed_at=? where run_id=? and consumed_at IS NULL',
+                           (self.clock(),run_id))
             # Claim once. An ambiguous provider response is reconciled by its
             # stable notebook slug, never retried as an unknown second launch.
             db.execute("update runs set launch_state='dispatching',provider_ref=coalesce(provider_ref,?) where id=?",(provider_ref,run_id))

@@ -118,3 +118,21 @@ claim-lease requeue/pointer liveness, actual loopback HTTP slow-drip/redirect
 responses, unresolved accepted seq1/source_history preservation and existing
 queue/admission regressions. No live provider, model, runtime database, Stop,
 launch, rollout or product acceptance is implied.
+
+
+## Development continuation
+
+This service is still being built. Ordinary owner-directed development launches
+need no additional recovery approval. If expired historical reservations prevent
+progress, the local operator may call `BgeQueue.prepare_debug_launch` for one
+exact pending candidate and stable notebook reference. It records the exact
+fenced historical identities and a bounded lease. `launch_claim` consumes that
+intent in the same transaction as the provider dispatch claim. New reservations,
+identity changes, active old channels, claimed jobs, active writer or unsettled
+publication prevent that claim. No public RPC or automatic enrollment exists.
+
+Old outcomes remain UNKNOWN with their original rows and accepted work. A lost
+Save response reconciles the same candidate; the consumed intent cannot fund a
+replacement run or an automatic retry. Individual native terminal receipts remain
+the only evidence that an old provider execution terminated. The ordinary
+all-history guard remains in effect without this explicitly recorded dev intent.
