@@ -265,3 +265,23 @@ def test_done_audit_document_results_expire_without_touching_production_document
     now[0]+=DONE_AUDIT_RETENTION_SECONDS+1;queue.maintenance()
     with pytest.raises(PermissionError):queue.result('actor',audit)
     assert queue.result('actor',production)['state']=='done'
+
+
+def test_live_heartbeat_keeps_native_durable_ack_claims_until_settled(tmp_path):
+    now=[1000.];q=BgeQueue(tmp_path/'native-ack.sqlite',clock=lambda:now[0])
+    run=q.request_startup()['run_id'];token=q.launch_claim(run,provider_ref='fixture/stable')
+    q.heartbeat(run,token,ready=True)
+    with q.connect() as db:
+        for kind in ('source_command','recovery_phase','query'):
+            db.execute("insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated,run_id,claim,lease_until) values(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (kind,'fixture',kind,kind,'[]','{}','claimed',now[0],now[0],run,kind+'-claim',1010.))
+    now[0]=1005.;q.heartbeat(run,token)
+    now[0]=1011.;q.maintenance()
+    assert q._document_claim_waiting('source_command','source_command-claim')
+    assert q._document_claim_waiting('recovery_phase','recovery_phase-claim')
+    with q.connect(write=False) as db:
+        assert db.execute("select state from jobs where id='query'").fetchone()[0]=='pending'
+    # A stopped heartbeat still leaves a finite ordinary recovery lease.
+    now[0]=1190.;q.maintenance()
+    with q.connect(write=False) as db:
+        assert {r[0] for r in db.execute('select state from jobs')}=={'pending'}

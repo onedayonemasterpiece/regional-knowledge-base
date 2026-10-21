@@ -637,6 +637,12 @@ class BgeQueue:
             if ready:
                 self._require_runtime(db,run_id,connection_generation)
             db.execute('update runs set heartbeat=? where id=?',(now,run_id))
+            # A live native worker can be waiting for its durable outcome ACK
+            # after compute has finished. Do not expire that claim and dispatch
+            # different work into the worker's still occupied result slot.
+            db.execute('''update jobs set lease_until=max(coalesce(lease_until,0),?)
+                where run_id=? and state='claimed' and kind in ('source_command','recovery_phase')''',
+                (min(now+JOB_SECONDS,run['started']+MAX_LIFETIME),run_id))
             if diagnostics is not None:
                 if not isinstance(diagnostics,dict):raise ValueError('BGE diagnostics type')
                 safe=json.loads(run['diagnostics'])

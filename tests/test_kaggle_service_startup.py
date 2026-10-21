@@ -294,9 +294,12 @@ async def test_normal_maintenance_reconciles_publication_before_native_history(s
         return await original(binding)
     # A spy on the existing owner seam; the fixture's queue/read authority and
     # native-history behavior remain the same. No runtime authority is minted.
-    object.__setattr__(s.config,'writer_owner',SimpleNamespace(ensure_current=ensure,reconcile=reconcile))
+    object.__setattr__(s.config,'writer_owner',SimpleNamespace(run_id='owned-fixture-run',ensure_current=ensure,reconcile=reconcile))
+    with s.config.queue.connect() as db:
+        db.execute('create table rkb_writer_control(run_id text,writer_generation text,publication_json text)')
+        db.execute('insert into rkb_writer_control values(?,?,?)',('owned-fixture-run','writer-1','unknown-native-ack'))
     startup.history.restore=history;startup.running=True
     try:
         assert await startup.refresh()
-        assert events==['ensure','reconcile','history'] and startup.reads_current()
+        assert events==['reconcile','ensure','history'] and startup.reads_current()
     finally:startup.running=False
