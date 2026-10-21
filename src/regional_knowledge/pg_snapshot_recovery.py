@@ -159,7 +159,7 @@ class PhysicalSnapshotRecovery:
                 blob=asdict(blob),control_bytes=control_bytes,expected_versions=expected_versions,
                 database=database.wire(),identity=identity)
             head=await self.journal.head();tail=await self._tail(head,boundary,manifest['applied_sequence'])
-            heads={row[0]:row for row in control['heads']};receipts=[];transitions=[]
+            heads={row[0]:row for row in control['heads']};receipts=[];transitions=[];replayed=[]
             for command,seal in tail:
                 self._authority(binding)
                 handler=self.registry.resolve(command);dep=handler.dependency
@@ -180,8 +180,9 @@ class PhysicalSnapshotRecovery:
                 if ((receipt.database_generation,receipt.operation_key,receipt.sequence,receipt.command_sha256)
                         !=(database.database_generation,command.operation_key,command.sequence,sha(command.encode()))):
                     raise SnapshotError('snapshot_native_replay_receipt_changed')
-                await self.journal.record_outcome(seal,command=command,database_generation=database.database_generation,
+                remote=await self.journal.record_outcome(seal,command=command,database_generation=database.database_generation,
                     outcome=receipt.outcome,writer_generation=database.writer_generation)
+                replayed.append((receipt,remote))
                 receipts.append((receipt.sequence,receipt.command_sha256,receipt.outcome_sha256))
                 if handler.transition is not None:
                     transitions.append({'sequence':command.sequence,'command_sha256':sha(command.encode()),
@@ -205,6 +206,21 @@ class PhysicalSnapshotRecovery:
             proof=ControllerRecoveryProof(self,native_ref,database,identity,manifest_ref,head,sequence,final_control,binding)
             self._proofs.add(proof)
             await self.verify_initialized(proof,database,identity)
+            # Recovered commands already have exact native and remote outcomes.
+            # Reconcile retained local jobs before ordinary dispatch can select
+            # their original writer identities on the new executor.
+            spool=self.history.spool
+            for receipt,remote in replayed:
+                with spool.queue.connect(write=False) as db:
+                    retained=db.execute('select 1 from rkb_control_operations where operation_key=?',
+                                        (receipt.operation_key,)).fetchone()
+                if retained is None:continue  # Compact history need not be recreated.
+                await spool.record_apply(receipt.operation_key,receipt)
+                await spool._write(spool._durable,receipt.operation_key,remote)
+                jobs=await spool._write(spool._settle_recovered_jobs,receipt.operation_key)
+                for job_id in jobs:spool.queue._notify_result(job_id)
+                _LOG.info('snapshot_recovered_jobs_settled command_sha256=%s sequence=%s count=%s',
+                          receipt.command_sha256,receipt.sequence,len(jobs))
             _LOG.info('snapshot_recovery_verified manifest_hash=%s operation_hash=%s cursor=%s replay_count=%s',
                 manifest_ref.sha256,sha(operation_key.encode()),sequence,len(tail))
             return proof

@@ -81,6 +81,13 @@ async def test_snapshot_manifest_tail_remote_outcome_rollover_pointer_order(env,
     base=await controller.create_base(b,versions=versions(),writer_generation='writer-1')
     assert base.last_sequence==0 and not any(key.endswith('/snapshots/current') for key in env.store.objects)
     await accept(env);env.store.writer='writer-2'
+    old_identity=dict(operation_key=env.cmd.operation_key,command_sha256=sha(env.cmd.encode()),
+        database_generation='db-source',writer_generation='writer-1',sequence=env.cmd.sequence)
+    with env.q.connect() as db:
+        db.execute("insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated,attempt) values(?,?,?,?,?,?,?,?,?,?)",
+            ('old-accepted-job',env.cmd.person_id,'source-command:'+env.cmd.operation_key,'source_command','[]',
+             json.dumps(old_identity),'pending',1.,1.,1))
+    await env.spool.mark_apply_sent(env.cmd.operation_key)
     monkeypatch.setitem(sys.modules,'regional_knowledge.kaggle_source_commands',SimpleNamespace(decode_receipt=decoder))
     database=OwnedDatabase('VERIFIED_INITIALIZED','db-source','writer-2',VERSIONS.schema,VERSIONS.function,VERSIONS.executor,
         '/kaggle/temp/restore/socket','rkb',ownership_evidence='synthetic-owned-restore')
@@ -88,6 +95,12 @@ async def test_snapshot_manifest_tail_remote_outcome_rollover_pointer_order(env,
         expected_final_catalog_sha256=sha(b'catalog'),identity=('run','nonce','inc'),operation_key='recovery-1')
     assert native.events==['capture','prepare','apply','rollover-and-readiness']
     assert proof.applied_sequence==1 and json.loads(proof.control)['heads'][0][0]==SOURCE
+    restored=await env.spool.get(env.cmd.operation_key)
+    assert restored.apply_state=='REJECTED_PRECONDITION' and restored.outcome_state=='DURABLE'
+    with env.q.connect(write=False) as db:
+        job=db.execute("select state,result,identity from jobs where id='old-accepted-job'").fetchone()
+        assert job['state']=='done' and json.loads(job['result'])['remote_outcome_durable'] is True
+        assert json.loads(job['identity'])==old_identity  # Original writer/actor/bytes remain audit evidence.
     assert json.loads(proof.control)['heads'][0][3]==1
     assert len(transport.verifications)==2
     with pytest.raises(SnapshotError,match='proof_unknown'):

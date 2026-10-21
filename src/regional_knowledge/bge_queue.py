@@ -1003,9 +1003,14 @@ class BgeQueue:
                 if matched:self._finalize_provider_terminal_pointers(db)
                 return matched
             if (not validate_proof(proof,run,self.clock()) or run['attachment_conflict']
-                    or run['status']!='expired'):return False
+                    or run['status'] not in ('starting','ready','draining','expired')):return False
+            from .queue_writer import pending
+            if run['status']!='expired' and pending(db,run['id']):return False
             # CAS identity/freshness was read under this same write transaction.
             # A later heartbeat/reconnect or changed version invalidates proof.
+            # Exact native terminal evidence also retires a current run whose
+            # local ready status outlived its process. Do not rewrite that status
+            # or any writer/publication state; normal maintenance handles leases.
             db.execute('insert into bge_provider_terminal_receipts values(?,?)',(run['id'],encoded))
             db.execute("update runs set channel_active=0,launch_state='terminal' where id=?",
                        (run['id'],))
