@@ -27,6 +27,34 @@ CONFIG = {'run_id': 'fixture-run', 'token': 'synthetic-worker-token',
 
 
 @pytest.mark.asyncio
+async def test_transport_failure_is_visible_before_native_drain_without_private_text(capsys):
+    transport=module('bge_wss_transport')
+    entered=asyncio.Event();release=asyncio.Event();closed=[]
+    async def native_load():
+        await release.wait()
+    @asynccontextmanager
+    async def connect():
+        entered.set()
+        raise ValueError('private URL and credential must never be logged')
+        yield
+    async def close():closed.append(True)
+    worker=transport.BgeWssTransport(CONFIG,lambda:None,lambda:{},
+        connector=connect,close_runtime=close)
+    worker.loading=asyncio.create_task(native_load())
+    running=asyncio.create_task(worker.run())
+    try:
+        await asyncio.wait_for(entered.wait(),1)
+        event=json.loads(capsys.readouterr().out)
+        assert event==dict(event='worker_transport_failed',run_id='fixture-run',error_type='ValueError')
+        assert not running.done() and not worker.loading.done() and not closed
+    finally:
+        release.set()
+        with pytest.raises(ValueError,match='private URL'):
+            await running
+    assert closed==[True]
+
+
+@pytest.mark.asyncio
 async def test_stable_heartbeat_renews_outage_budget_without_reloading_encoder(monkeypatch):
     transport=module('bge_wss_transport')
     monkeypatch.setattr(transport.random,'uniform',lambda *args:.0001)

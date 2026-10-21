@@ -140,7 +140,7 @@ class WorkerRecoveryPhases:
             raise TypeError('retained native factory and scoped transfer required')
         self.factory,self.download,self.workspace=factory,download,workspace
         self._sessions={};self._results={};self._requests={};self._lock=asyncio.Lock()
-        self._ready=asyncio.Event();self._initialized=None;self.drill=None
+        self._ready=asyncio.Event();self._initialized=None;self._initialization_error=None;self.drill=None
         # Assigned only by the already prepared TargetRuntime. No uploaded
         # pathname, module bytes or resource reference enters this WSS phase.
         self.read_handler_slot=None
@@ -150,6 +150,7 @@ class WorkerRecoveryPhases:
         if database!=self.factory.database or (run_id,launch_nonce,runtime_incarnation)!=self.factory.identity:
             raise SnapshotError('recovery_runtime_identity_changed')
         async with asyncio.timeout(900):await self._ready.wait()
+        if self._initialization_error is not None:raise self._initialization_error
         await self._initialized.verify_for(database,run_id,launch_nonce,runtime_incarnation)
         return self._initialized
 
@@ -205,7 +206,18 @@ class WorkerRecoveryPhases:
                         'dataset_checkpoint_verify_rejected' if frame['phase']=='dataset_verify' else 'read_handler_maintenance_rejected')
                     value={'status':'rejected','reason':reason}
             else:
-                value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
+                try:
+                    value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
+                except Exception as error:
+                    # A fatal restore failure cannot produce readiness. Wake
+                    # the initialization waiter with that same failure so
+                    # transport cleanup does not spend 900 seconds draining
+                    # a waiter whose producer has already failed.
+                    # finish can be reconciled after a socket handover; do
+                    # not poison that retained session's initialization.
+                    if frame['phase']=='prepare' and self._initialized is None:
+                        self._initialization_error=error;self._ready.set()
+                    raise
             bounded(value,MAX_PHASE_RESULT_BYTES)
             result={'phase':frame['phase'],'request_sha256':request,'value':value}
             self._results[key]=result
