@@ -19,13 +19,38 @@ RUN_CONFIG = {}  # Replaced in the private generated notebook, never committed.
 REVISION = '5617a9f61b028005a4858fdac845db406aefb181'
 SPACE = 'bge-m3:5617a9f:t211-tr5161:cls-l2-512:q1-d1:v1'
 _MODEL_LOAD_COUNT = 0
+# These are ACTUAL completed Stage0 invocation measurements. An absent
+# observation is UNKNOWN, never evidence of zero installs/downloads.
+_RKB_STAGE0_COUNTERS = None
+_RKB_STAGE0_ATTEMPTS = 0
+# A partially applied failed Stage0 attempt may have unmeasured side effects.
+# Once set, this cannot be cleared by later successful Stage0 calls in the
+# same process. Warm acceptance must restart or use independent evidence.
+_RKB_STAGE0_INCOMPLETE = False
 
 def load_encoder():
+    global _RKB_STAGE0_COUNTERS, _RKB_STAGE0_ATTEMPTS, _RKB_STAGE0_INCOMPLETE
     prepared = RUN_CONFIG.get('prepared_model')
     artifacts = None
     if RUN_CONFIG.get('stage0') is not None:
         from regional_knowledge.kaggle_stage0 import prepare_stage0
-        prepare_stage0(prepared,RUN_CONFIG['stage0'],run_id=RUN_CONFIG['run_id'])
+        _RKB_STAGE0_ATTEMPTS += 1
+        try:
+            receipt = prepare_stage0(prepared,RUN_CONFIG['stage0'],run_id=RUN_CONFIG['run_id'])
+            if (type(receipt) is not dict or type(receipt.get('downloaded_bytes')) is not int
+                    or receipt['downloaded_bytes'] < 0 or type(receipt.get('installed')) is not bool):
+                raise ValueError('stage0_runtime_counters_missing')
+            previous=_RKB_STAGE0_COUNTERS or dict(invocation_count=0,
+                downloaded_bytes=0,install_count=0)
+            _RKB_STAGE0_COUNTERS=dict(
+                invocation_count=previous['invocation_count']+1,
+                downloaded_bytes=previous['downloaded_bytes']+receipt['downloaded_bytes'],
+                install_count=previous['install_count']+int(receipt['installed']))
+        except BaseException:
+            # Preserve UNKNOWN forever inside this incarnation: even a later
+            # successful retry cannot account for partial downloads/installs.
+            _RKB_STAGE0_INCOMPLETE=True
+            raise
     if prepared is not None:
         from regional_knowledge.kaggle_bootstrap import PreparedArtifact, verify_artifacts, ResidentEncoder
         from regional_knowledge.kaggle_readiness import ArtifactRequirement

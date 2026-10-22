@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import asyncio
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 
@@ -190,6 +191,9 @@ class TargetRuntime:
         self.source_history_observer=None
         self.original_intake_handler=None
         self.read_handler_slot=None  # Same model/pool retained across compatible patch.
+        self._resident_encoder=None
+        import secrets
+        self._resident_model_context_ref=secrets.token_hex(16)
         self.identity = None
         self.closed = False
         if restored_database is not None:
@@ -205,6 +209,108 @@ class TargetRuntime:
         self._recovery_available=asyncio.Event()
         if recovery_worker is not None:self._recovery_available.set()
         self.restored_database=restored_database
+
+    async def _read_owned_runtime(self):
+        """Fresh PG startup/system and actual loaded BGE count; no artificial 0.
+
+        Only the existing run-authenticated WSS maintenance owner invokes
+        this observation. The admin connection is to the SAME owned native PG
+        socket with the already retained bootstrap identity, not another
+        database/pool. A denied or stale probe does not change serving state.
+        """
+        slot=self.read_handler_slot
+        encoder=self._resident_encoder
+        if (self.closed or self.prepared is None or slot is None or encoder is None
+                or self.identity is None):
+            return {'status':'unavailable','reason':'owned_runtime_not_prepared'}
+        # The retained PinnedTokenizer must still point to the actual resident
+        # encoder supplied by the Kaggle model loader, not a swapped callback.
+        pinned=slot._pinned
+        tokenizer=pinned.get('tokenizer') if pinned else None
+        counter=getattr(encoder,'model_load_count',None)
+        if (type(counter) is not int or counter<1
+                or getattr(getattr(tokenizer,'count',None),'__self__',None) is not encoder):
+            return {'status':'unavailable','reason':'resident_model_identity_unavailable'}
+        import sys
+        main=sys.modules.get('__main__')
+        global_counter=getattr(main,'_MODEL_LOAD_COUNT',None)
+        if type(global_counter) is not int or global_counter<counter:
+            return {'status':'unavailable','reason':'resident_model_counter_unavailable'}
+        stage0=None
+        # compose_target moves Stage0 into top-level RUN_CONFIG because it
+        # belongs to load_encoder, NOT target_runtime. Looking in self.target
+        # hides a configured Stage0 and could falsely report "not_configured".
+        if self.config.get('stage0') is not None:
+            observed=getattr(main,'_RKB_STAGE0_COUNTERS',None)
+            attempts=getattr(main,'_RKB_STAGE0_ATTEMPTS',None)
+            incomplete=getattr(main,'_RKB_STAGE0_INCOMPLETE',None)
+            if (incomplete is not False or type(observed) is not dict
+                    or set(observed)!={'invocation_count','install_count','downloaded_bytes'}
+                    or any(type(value) is not int or value<0 or value>=2**63
+                        for value in observed.values())
+                    or type(attempts) is not int or not 1<=attempts<2**63
+                    or observed['invocation_count']<1
+                    # A failed or still-running Stage0 invocation could have
+                    # downloaded/installed bytes but never returned a final
+                    # receipt. Previous complete totals must not pass.
+                    or observed['invocation_count']!=attempts
+                    or observed['install_count']>observed['invocation_count']):
+                return {'status':'unavailable','reason':'stage0_runtime_counters_unavailable'}
+            # Count ONLY the actual completed Stage0 calls and transferred
+            # bytes. A plan's estimated bytes cannot stand in for a readback.
+            stage0=dict(observed)
+        connector=getattr(self.owner,'connect',None)
+        if not callable(connector):
+            return {'status':'unavailable','reason':'owned_pg_observation_unavailable'}
+        try:
+            async with asyncio.timeout(2.0):
+                # Existing authenticated rkb_bootstrap PG user, no new pool.
+                async with await connector(**self.database.connection(reader=False)) as connection:
+                    async with connection.transaction():
+                        await connection.execute('SET TRANSACTION READ ONLY')
+                        await connection.execute("SET LOCAL statement_timeout='1000ms'")
+                        cursor=await connection.execute(
+                            'SELECT system_identifier::text, '
+                            'pg_postmaster_start_time()::text FROM pg_control_system()')
+                        row=await cursor.fetchone()
+            if (not isinstance(row,tuple) or len(row)!=2
+                    or type(row[0]) is not str or not re.fullmatch(r'[0-9]{1,32}',row[0])
+                    or type(row[1]) is not str or not 1<=len(row[1])<=128):
+                raise ValueError('pg_identity_unverified')
+        except Exception:
+            # Do not send native connection errors, URLs, identities or SQL
+            # diagnostics on a WSS receipt. Missing readback != model reload.
+            return {'status':'unavailable','reason':'owned_pg_observation_unavailable'}
+        # PG observation is awaitable: Stage0 may have started or finished
+        # another invocation while the connection was in flight. Do not
+        # re-label the old snapshot as complete or merge mixed-time counters.
+        if stage0 is not None and (
+                getattr(main,'_RKB_STAGE0_INCOMPLETE',None) is not False
+                or getattr(main,'_RKB_STAGE0_ATTEMPTS',None)!=attempts
+                or getattr(main,'_RKB_STAGE0_COUNTERS',None)!=stage0):
+            return {'status':'unavailable','reason':'stage0_runtime_counters_unavailable'}
+        process=getattr(self.owner,'process',None)
+        if self.restored_database is not None:
+            process=getattr(self.restored_database._candidate,'process',None)
+        pid=getattr(process,'pid',None)
+        if type(pid) is not int or pid<1 or process.returncode is not None:
+            return {'status':'unavailable','reason':'owned_pg_process_unavailable'}
+        return dict(
+            status='ready' if global_counter==counter else 'inconsistent',
+            pg_system_identifier=row[0],
+            pg_postmaster_started_at=row[1],
+            pg_process_pid=pid,
+            pg_database_generation=self.database.database_generation,
+            pg_writer_generation=self.database.writer_generation,
+            resident_model_load_count=counter,
+            process_model_load_count=global_counter,
+            runtime_process_pid=os.getpid(),
+            runtime_incarnation=self.identity[2],
+            # This is an opaque *same-process correlation ref*, not an
+            # independent model-load or provider-execution proof.
+            resident_model_context_ref=self._resident_model_context_ref,
+            **({'stage0_actual_counters':stage0} if stage0 is not None else
+               {'stage0_counter_status':'not_configured'}))
 
     def _bind_read_handler_maintenance(self):
         """Bind the one owned PG/BGE read slot, regardless of preparation order.
@@ -222,6 +328,7 @@ class TargetRuntime:
         if type(worker) is not WorkerRecoveryPhases:
             return
         worker.read_handler_slot=slot
+        worker.read_handler_runtime_observer=lambda binding:self._read_owned_runtime()
         if worker.read_handler_control is not None or slot._pinned is None:
             return
         from .kaggle_warm_maintenance import WarmHandlerMaintenance
@@ -435,6 +542,7 @@ class TargetRuntime:
         from .query_telemetry import drain_native_read_events
         self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler,original_handler,
             read_event_drain=lambda frame:drain_native_read_events(read_events,frame))
+        self._resident_encoder=encoder
         self._bind_read_handler_maintenance()
         return self.prepared
 
