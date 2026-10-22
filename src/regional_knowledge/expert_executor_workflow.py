@@ -45,6 +45,15 @@ class ExpertExecutorContext:
                 or type(self.delivery) is not TargetExpertDeliveryControl):
             raise TypeError('existing exact executor and source-gated delivery required')
 
+    def native_receipt_consumer(self):
+        """Give the existing trusted Slack observer its original callback.
+
+        No provider client is created. Caller must be the installed owner-side
+        adapter which already verified the native Slack response.
+        """
+        from .expert_executor_native_receipt import BoundExpertNativeReceipt
+        return BoundExpertNativeReceipt(self)
+
 
 def _matches(request, configured):
     try:
