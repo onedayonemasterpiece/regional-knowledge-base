@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.skipif(not os.environ.get('RKB_IMPORT_NATIVE_METADATA'),
                     reason='explicit exact assembled native artifact metadata required')
 @pytest.mark.asyncio
-async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path):
+async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path, monkeypatch):
     artifact = Path(os.environ['RKB_IMPORT_NATIVE_METADATA'])
     raw = (artifact / 'native-manifest.json').read_bytes()
     assert hashlib.sha256(raw).hexdigest() == '84ab517abe83ca7f90b16290f30332415522eb4b355b6ef194c40df89cb264f5'
@@ -63,6 +63,15 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
     await persist_empty_intent(queue, run, target, launch_nonce=queue.prepare_channel(run),
         recovery_journal=journal, sql_hashes={name:hashlib.sha256((ROOT/'sql/kaggle'/name).read_bytes()).hexdigest()
             for name in sql_artifacts(target.database.schema_revision)})
+    from regional_knowledge import kaggle_target_launch
+    def measured(value):
+        raw = canonical(value)
+        if isinstance(value, dict) and 'prepared_model' in value and 'target_runtime' in value:
+            print(json.dumps(dict(actual_launch_config_bytes=len(raw),
+                component_bytes={key:len(canonical(part)) for key,part in value.items()},
+                metadata_only=True)))
+        return raw
+    monkeypatch.setattr(kaggle_target_launch, 'canonical', measured)
     source = generate(queue, run, target)
     config = next(ast.literal_eval(node.value) for node in ast.parse(source).body
         if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='RUN_CONFIG' for t in node.targets))
