@@ -71,7 +71,8 @@ async def installation(target,tmp_path,request):
     path=directory/'manifest.json';path.write_bytes(canonical(manifest.wire())+b'\n');path.chmod(0o600)
     config=SourceGeoInstallConfig(str(path),manifest.sha256,str(t.auth.p.registry.corpus.path))
     keys=tuple('geo-bootstrap11:'+manifest.sha256+':'+str(n) for n in range(len(plan_geo_manifest(manifest).payloads)))
-    registry=HandlerRegistry([geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256='a'*64,apply_sha256='b'*64)])
+    from regional_knowledge.kaggle_current_registry import current_registry
+    registry=current_registry()
     spool=ControlSpool(t.queue,t.auth.p.registry,RecoveryJournal(ConditionalMemoryStore(),stream='geo-install-unit'),registry)
     startup=SimpleNamespace(config=SimpleNamespace(spool=spool,queue=t.queue,participants=t.auth.p.registry,
         oauth_provider=t.auth.provider,writer_owner=object(),writer_generation='writer-1',
@@ -115,27 +116,15 @@ async def test_unrelated_precondition_rejection_still_stops_original_plan(instal
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('installation',[81],indirect=True)
-async def test_dependency_rejection_keeps_receipt_and_completes_original_plan_without_import_success(installation):
+async def test_current_installer_builds_native_intents_without_legacy_dependency_cap(installation):
     from regional_knowledge.geo_manifest_commands import geo_dependency_limit_rejection
+    from regional_knowledge.kaggle_native_source_bindings import validate_native_source_command
     s=installation;s.startup.snapshot.verified=True
-    rejected={};seen_rejection=False
-    for key in s.keys:
-        assert not await s.owner.advance(s.startup.binding)
-        entry=await s.spool.get(key)
-        assert entry.accepted is not None
-        reject=geo_dependency_limit_rejection(entry.command) or seen_rejection and json.loads(entry.command.payload)['action']=='activate'
-        status='rejected_precondition' if reject else 'applied'
-        await s.spool.record_apply(key,receipt(entry.command,status=status,database=s.startup.binding.database_generation))
-        await s.spool.publish_outcome(key,writer_generation='writer-1')
-        if reject:
-            seen_rejection=True;rejected[key]=(await s.spool.get(key)).apply_receipt.outcome
-    assert rejected
     assert not await s.owner.advance(s.startup.binding)
-    assert not s.owner.complete and not TargetServiceStartup.imports_current(s.startup)
-    for key,outcome in rejected.items():
+    for key in s.keys:
         entry=await s.spool.get(key)
-        assert entry.apply_state=='REJECTED_PRECONDITION' and entry.outcome_state=='DURABLE'
-        assert entry.apply_receipt.outcome==outcome
+        validate_native_source_command(entry.command)
+        assert not geo_dependency_limit_rejection(entry.command)
 
 
 @pytest.mark.asyncio
@@ -263,7 +252,8 @@ def test_ro_geo_watermark_rechecks_unrelated_commits_but_rejects_required_geo_dr
 async def test_real_source_owner_composition_retains_fixed_installer_and_waits_snapshot(owner,tmp_path):
     from regional_knowledge.kaggle_source_owners import compose_source_service
     from regional_knowledge.kaggle_snapshot_startup import SourceSnapshotConfig
-    from regional_knowledge.kaggle_source_commands import fixed_registry
+    from regional_knowledge.kaggle_apply import HandlerRegistry
+    from regional_knowledge.kaggle_domain_bindings import current_handler
     from regional_knowledge.kaggle_domain_bindings import DOMAIN_REVISIONS
     from regional_knowledge.source_history_wss import WssNativeHistoryProofAdapter
     from test_kaggle_target_runtime import spec
@@ -272,7 +262,7 @@ async def test_real_source_owner_composition_retains_fixed_installer_and_waits_s
     path=private/'geo.json';path.write_bytes(canonical(manifest.wire()));path.chmod(0o600)
     keys=tuple('geo-bootstrap11:'+manifest.sha256+':'+str(n) for n in range(len(plan_geo_manifest(manifest).payloads)))
     database=replace(spec(fresh=True).database,schema_version=11)
-    registry=fixed_registry(database,[dict(route=route,check_sha256='a'*64,apply_sha256='b'*64,revisions=list(DOMAIN_REVISIONS.wire()))
+    registry=HandlerRegistry([current_handler(route,check_sha256='a'*64,apply_sha256='b'*64)
         for route in ('source.import.v4','geo.manifest.install.v1')])
     history=WssNativeHistoryProofAdapter(database=database, expected_observer_sha256='c' * 64, geo_bootstrap_operation_keys=keys)
     versions=dict(schema_version=database.schema_version,server_version_num=170011,pgvector_version='0.8.2',catalog_sha256='a'*64,

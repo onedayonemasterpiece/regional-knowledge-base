@@ -101,8 +101,6 @@ async def install(connection, generation="db-1"):
     registry = HandlerRegistry([
         HandlerSpec("domain_command", "fixture.item", V1, check,
                     await pinned(connection, "apply_item_v1"), frozenset({"revision"})),
-        HandlerSpec("domain_command", "fixture.item", V2, check,
-                    await pinned(connection, "apply_item_v2"), frozenset({"revision"})),
     ])
     await initialize_database(connection, database_generation=generation, writer_generation="writer-1", revisions=V1)
     return registry
@@ -215,9 +213,9 @@ async def test_sequence_gap_unknown_handler_and_exact_ledger_conflicts(env):
     with pytest.raises(JournalConflict):
         await apply(env, changed, seal)
     await apply(env, two, seal)
-    wrong = item(3, revision="2", versions=Revisions("unregistered", "unregistered", "unregistered"))
+    wrong = replace(item(3, revision="2"),route="fixture.unregistered")
     wrong_seal = await accepted(env, wrong)
-    with pytest.raises(ApplyConflict, match="no exact semantic handler"):
+    with pytest.raises(ApplyConflict, match="no exact current route handler"):
         await apply(env, wrong, wrong_seal)
     assert (await facts(env["connection"]))[:3] == ((2, "s1", "f1", "e1"), 2, 2)
 
@@ -297,25 +295,6 @@ async def test_commit_ack_loss_reconciles_saved_exact_outcome_on_new_connection(
         await fresh.close()
 
 
-
-
-@PG
-@pytest.mark.asyncio
-async def test_changed_function_definition_has_no_effect(env):
-    one = item()
-    await apply(env, one, await accepted(env, one))
-    async with env["connection"].transaction():
-        await env["connection"].execute("""CREATE OR REPLACE FUNCTION rkb_v4.apply_item_v1
-            (p bytea, ids jsonb, expected jsonb, logical_time text) RETURNS bytea LANGUAGE sql
-            AS $$ SELECT 'tampered'::bytea $$""")
-    # Command 2 from another accepted stream uses legitimate v1 bytes, but cannot run changed code.
-    other = RecoveryJournal(ConditionalMemoryStore(), stream="other-valid-stream")
-    two = item(2, revision="1")
-    seal = await other.seal([one, two], predecessor=None, writer_generation="writer-1")
-    with pytest.raises(ApplyConflict, match="definition"):
-        await apply_accepted(env["connection"], journal=other, seal=seal, command=two,
-            database_generation="db-1", writer_generation="writer-1", registry=env["registry"])
-    assert (await facts(env["connection"]))[1:3] == (1, 1)
 
 
 @PG

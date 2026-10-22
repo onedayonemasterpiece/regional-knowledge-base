@@ -149,8 +149,9 @@ async def test_existing_public_status_uses_native_admitted_health_and_sanitizes_
     s,backend,startup_ref=ready_status_target
     def no_startup(*args,**kwargs):raise AssertionError('health must not allocate startup')
     monkeypatch.setattr(s.queue,'request_startup',no_startup)
-    returning=[False];original_recheck=s.auth.resolver.recheck
+    returning=[False];released=asyncio.Event();original_recheck=s.auth.resolver.recheck
     async def recheck(context):
+        if returning[0]:await released.wait()
         if returning[0] and final_race=='revoke':
             returning[0]=False
             change(s.auth.p,ParticipantDisable(disabled=True,reason='health final recheck fixture'))
@@ -182,6 +183,7 @@ async def test_existing_public_status_uses_native_admitted_health_and_sanitizes_
     assert await s.admission.finish_read(s.run,s.token,s.generation,decode_envelope(json.dumps(wire).encode()))
     returning[0]=True
     await release(s,dispatched)
+    released.set()
     if final_race=='revoke':
         with pytest.raises(ToolError,match='access_denied'):await pending
         return

@@ -1,6 +1,6 @@
 """Fixed opt-in GEO bootstrap using the existing controller's retained owners."""
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass,replace
 from datetime import datetime,timezone
 import json
 import hashlib
@@ -106,7 +106,9 @@ class SourceGeoInstaller:
                     or entry.outcome_state!='DURABLE' and not self._locally_applied_checkpoint_pending(entry)):
                 return False
             outcomes[command.operation_key]=entry.apply_receipt.status
-        repair=geo_dependency_repair_commands(commands,settled_outcomes=outcomes)
+        from .kaggle_native_source_bindings import new_native_command
+        repair=tuple(new_native_command(command) for command in
+            geo_dependency_repair_commands(commands,settled_outcomes=outcomes))
         for command in repair:
             try:entry=await self.spool.get(command.operation_key)
             except SpoolError as exc:
@@ -295,6 +297,22 @@ class SourceGeoInstaller:
                 self.commands=await asyncio.to_thread(self.plan.commands,first_sequence=metadata['first_sequence'],
                     operation_key='geo-bootstrap11:'+self.plan.manifest_id,request_id='geo-bootstrap11:'+self.plan.manifest_id,
                     person_id=metadata['person_id'],logical_time=metadata['logical_time'])
+                from .kaggle_native_source_bindings import new_native_command
+                resolved=[]
+                for original in self.commands:
+                    try:retained=await self.spool.get(original.operation_key)
+                    except SpoolError as exc:
+                        if type(exc) is not SpoolError:raise
+                        retained=None
+                    if retained is None:resolved.append(new_native_command(original))
+                    else:
+                        # Compare the original intent without changing retained
+                        # bytes. The three v1 audit fields are codec metadata.
+                        view=replace(retained.command,schema_revision=original.schema_revision,
+                            function_revision=original.function_revision,executor_revision=original.executor_revision)
+                        if view.encode()!=original.encode():raise SpoolConflict('retained GEO intent differs')
+                        resolved.append(retained.command)
+                self.commands=tuple(resolved)
                 self.command_identity=identity
             commands=self.commands
             for sequence,key in await asyncio.to_thread(self._reserved,metadata):

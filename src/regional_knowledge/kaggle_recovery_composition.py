@@ -159,7 +159,7 @@ class DeferredRecoveryRuntime:
         prepared=await runtime.prepare(encoder,**identity) if fresh else None
         await runtime.configure_recovery(encoder,**identity,native_bundle=bundle,
             tools=dict(binaries={k:dict(v) for k,v in self.spec.binaries.items()},
-                command_handlers=self.config['target_runtime']['command_handlers']),
+                registry_sha256=self.config['target_runtime']['registry_sha256']),
             native_uid=self.spec.native_uid,native_gid=self.spec.native_gid,current=self.current,
             workspace_private_current=self._private,workspace=self._workspace,
             ticket_channel=self.ticket_channel,transfer=NativeSnapshotTransfer(

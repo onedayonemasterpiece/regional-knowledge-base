@@ -12,6 +12,7 @@ from regional_knowledge.geo_migration import GeoMigrationManifest,canonical
 from regional_knowledge.geo_whitelist import build_geo_whitelist
 from regional_knowledge.geo_read_gate import GeoReadGate
 from regional_knowledge.kaggle_apply import HandlerRegistry
+from regional_knowledge.control_spool import SpoolDenied
 from regional_knowledge.kaggle_geo_contracts import GeoReadResult,GeoReadRecord
 from regional_knowledge.participant_contracts import ParticipantDisable
 from regional_knowledge.source_history_verifier import _Coverage
@@ -23,7 +24,7 @@ from test_geo_migration import snapshot,uid
 from test_kaggle_geo_read import request
 
 
-async def setup(e,a,*,durable=True,binding=None):
+async def setup(e,a,*,durable=True,binding=None,canonical_receipts=False):
     e.registry=HandlerRegistry([geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256='1'*64,apply_sha256='2'*64)])
     e.spool.registry=e.registry
     manifest=build_geo_whitelist(**snapshot()).require_ready()
@@ -34,7 +35,11 @@ async def setup(e,a,*,durable=True,binding=None):
     for c in resolved:
         await e.spool.stage_domain_command(e.p.admin,c,database_generation=generation)
         await e.spool.seal(e.p.admin,c.operation_key,writer_generation='writer-1',predecessor=await e.journal.head())
-        await e.spool.record_apply(c.operation_key,receipt(c,database=generation))
+        if canonical_receipts:
+            from test_first_book_restore import outcome
+            committed=outcome(c,e.registry)
+        else:committed=receipt(c,database=generation)
+        await e.spool.record_apply(c.operation_key,committed)
         if durable:await e.spool.publish_outcome(c.operation_key,writer_generation='writer-1')
     b=binding or SimpleNamespace(run_id='run',runtime_incarnation='inc',connection_generation=2,database_generation='db-source',min_data_seq=0,provider_version='1')
     # Unit-only actual _Coverage identity: native catalog/ledger verifier has
@@ -134,3 +139,45 @@ async def test_remote_outcome_readback_must_match_exact_recorded_bytes(env,auth)
     # Existing test-store type preserves its provider token; only bytes corrupt.
     env.store.objects[last.remote_outcome.key]=replace(stored,data=b'changed remote receipt')
     with pytest.raises(SourceGateDenied,match='remote outcome differs'):await gate.establish(keys,binding=b)
+
+
+@pytest.mark.asyncio
+async def test_retained_terminal_geo_spool_and_gate_survive_current_registry_without_old_handlers(env,auth):
+    from regional_knowledge.kaggle_current_registry import current_registry
+    gate,authority,b,manifest,commands,keys=await setup(env,auth,canonical_receipts=True)
+    original={command.operation_key:await env.spool.get(command.operation_key) for command in commands}
+    env.spool.registry=current_registry()
+    assert len(env.spool.registry.handlers)==13
+    for command in commands:
+        retained=await env.spool.get(command.operation_key)
+        old=original[command.operation_key]
+        assert retained.command_bytes==old.command_bytes and retained.handler_sha256==old.handler_sha256
+        assert retained.apply_receipt.outcome==old.apply_receipt.outcome
+        assert retained.remote_outcome==old.remote_outcome
+        assert await env.spool.seal(env.p.admin,command.operation_key,writer_generation='writer-1')==old.accepted
+        # A cached original success returns without any PG execution capability.
+        assert (await env.spool.apply(command.operation_key,object(),writer_generation='writer-1')).outcome==old.apply_receipt.outcome
+    assert await gate.establish(keys,binding=b)==manifest.sha256
+    permit=await gate.dispatch(authority,request(min_data_seq=0),b)
+    gated=await gate.finish(permit,result(manifest,commands))
+    assert gate.issuance_current(gated.ticket)
+    gate.release(gated.ticket)
+
+
+@pytest.mark.asyncio
+async def test_old_unapplied_spool_entry_never_executes_through_current_registry(env):
+    from regional_knowledge.kaggle_current_registry import current_registry
+    manifest=build_geo_whitelist(**snapshot()).require_ready()
+    command=plan_geo_manifest(manifest).commands(first_sequence=1,operation_key='old-pending',request_id='old-pending',
+        person_id=env.p.owner.subject,logical_time='2026-10-20T18:00:00Z')[0]
+    env.spool.registry=HandlerRegistry([geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256='1'*64,apply_sha256='2'*64)])
+    await env.spool.stage_domain_command(env.p.admin,command,database_generation='db-source')
+    await env.spool.seal(env.p.admin,command.operation_key,writer_generation='writer-1',predecessor=None)
+    env.spool.registry=current_registry()
+    class ForbiddenPg:
+        async def execute(self,*args,**kwargs):pytest.fail('historical pending command reached PG')
+    with pytest.raises(SpoolDenied):
+        await env.spool.apply(command.operation_key,ForbiddenPg(),writer_generation='writer-1')
+    row=env.spool._row(command.operation_key)
+    assert bytes(row['command_bytes'])==command.encode() and row['apply_state']=='NOT_SENT'
+    assert row['apply_bytes'] is None

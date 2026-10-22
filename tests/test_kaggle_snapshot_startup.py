@@ -9,7 +9,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from regional_knowledge.control_spool import SpoolDenied
 from regional_knowledge.kaggle_snapshot_startup import SourceSnapshotConfig,SourceSnapshotCoordinator,DrilledBaseProof
 from regional_knowledge.kaggle_source_owners import compose_source_service
-from regional_knowledge.kaggle_source_commands import fixed_registry
+from regional_knowledge.kaggle_current_registry import current_registry as fixed_registry
 from regional_knowledge.kaggle_public_backend import current_binding
 from regional_knowledge.kaggle_pg_snapshot_native import encode,sha,SnapshotError
 from regional_knowledge.kaggle_snapshot_drill import drill_database
@@ -29,7 +29,7 @@ async def test_same_owner_captures_drills_closes_then_publishes_under_unchanged_
     config=SourceSnapshotConfig('first-base-empty',versions,('https://existing-s3.fixture.invalid',),
         max_archive_bytes=128*1024**2,max_unpacked_bytes=256*1024**2,seconds=2)
     assert SourceSnapshotConfig.from_wire(config.wire()).wire()==config.wire()
-    registry=fixed_registry(database,[dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64)])
+    registry=fixed_registry()
     history=WssNativeHistoryProofAdapter(database=database, expected_observer_sha256='c' * 64)
     startup=compose_source_service(queue=e.q,oauth_provider=e.auth.provider,participants=e.auth.p.registry,
         object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),stream=e.j.stream,registry=registry,history_adapter=history,

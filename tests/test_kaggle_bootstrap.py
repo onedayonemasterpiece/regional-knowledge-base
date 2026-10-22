@@ -215,10 +215,10 @@ async def test_prepare_uses_existing_owned_lease_and_hashes_actual_observations(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('config_bytes',[65537,boot.MAX_LAUNCH_CONFIG_BYTES,boot.MAX_LAUNCH_CONFIG_BYTES+1])
+@pytest.mark.parametrize('config_bytes',[boot.MAX_LAUNCH_CONFIG_BYTES-1,boot.MAX_LAUNCH_CONFIG_BYTES,boot.MAX_LAUNCH_CONFIG_BYTES+1])
 async def test_resident_observer_uses_the_shared_generated_launch_bound(artifacts,config_bytes):
     from regional_knowledge.kaggle_target_launch import MAX_LAUNCH_CONFIG_BYTES
-    assert MAX_LAUNCH_CONFIG_BYTES==boot.MAX_LAUNCH_CONFIG_BYTES==96*1024
+    assert MAX_LAUNCH_CONFIG_BYTES==boot.MAX_LAUNCH_CONFIG_BYTES==64*1024
     encoder,_=resident(artifacts)
     config={'padding':'x'*(config_bytes-len(b'{"padding":""}'))}
     encoded=json.dumps(config,sort_keys=True,separators=(',',':')).encode()

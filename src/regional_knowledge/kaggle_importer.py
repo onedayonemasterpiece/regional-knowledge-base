@@ -94,11 +94,11 @@ class KaggleSourceImporter:
             (SOURCE_IMPORT_V4,EDITORIAL_REVISIONS,IMPORT_V4_DEPENDENCY,resolved_import_v4_command),
             (SOURCE_IMPORT_V4,DOMAIN_REVISIONS,IMPORT_V4_DEPENDENCY,resolved_current_import_v4_command),
             (SOURCE_IMPORT_V4,DOMAIN_V2_REVISIONS,IMPORT_V4_DEPENDENCY,resolved_current_import_v4_command))
-            if (handler:=self.spool.registry.handlers.get(('domain_command',route,*versions.wire()))) is not None
-            and handler.dependency == dependency]
+            if (handler:=self.spool.registry.handlers.get(route)) is not None
+            and handler.revisions==versions and handler.dependency == dependency]
         from .source_activation import ACTIVATION_REVISIONS,ACTIVATE_ROUTE,resolved_activation_command
         from .kaggle_native_source_bindings import native_source_handler
-        native=self.spool.registry.handlers.get(('domain_command',ACTIVATE_ROUTE,*ACTIVATION_REVISIONS.wire()))
+        native=self.spool.registry.handlers.get(ACTIVATE_ROUTE)
         if native is not None:
             expected=native_source_handler(ACTIVATE_ROUTE,check_sha256=native.check.definition_sha256,
                 apply_sha256=native.apply.definition_sha256)

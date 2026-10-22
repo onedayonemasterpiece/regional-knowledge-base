@@ -1,3 +1,4 @@
+from regional_knowledge.kaggle_current_registry import current_registry,registry_sha256
 """Generated notebook recovery composition; no native/model/provider effects."""
 import ast
 import asyncio
@@ -26,7 +27,7 @@ def target():
     fresh=bundled_spec();db=spec().database
     receipt=dict(database=db.wire(),schema_sha256='a'*64,stage0_receipt='stage0-fixture')
     return replace(fresh,database=db,initialized_receipt=receipt,stage0=stage0(fresh),recovery=recovery(),
-        command_handlers=(dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64),))
+        registry_sha256=registry_sha256())
 
 
 def test_restore_pending_launch_requires_native_proof_not_fabricated_initialized_receipt():
@@ -89,12 +90,13 @@ def test_real_generated_restore_entrypoint_waits_native_capability_and_refuses_w
         async def query(frame,**kw):return {'ok':True}
         return PreparedRuntime(query,candidate())
     class Runtime(TargetRuntime):
+        def _native_source_materializer(self,encoder):return None  # Native effects are injected below.
         def __init__(self,config,**kw):super().__init__(config,**kw,owner_factory=Owner,pool_factory=Pool,prepare=prepared)
     monkeypatch.setattr('regional_knowledge.kaggle_target_runtime.TargetRuntime',Runtime)
     async def build(**kw):
         events.append('factory-configured')
         assert kw['ticket_channel'] is retained[0].ticket_channel
-        assert kw['tools']['command_handlers']==config['target_runtime']['command_handlers']
+        assert kw['tools']['registry_sha256']==config['target_runtime']['registry_sha256']
         assert callable(kw['acquire']) and kw['limits'].max_archive_bytes==1024**2
         database=kw['database'];identity=kw['identity']
         class Candidate:
@@ -196,7 +198,7 @@ def test_generated_fresh_snapshot_owner_configures_after_pg_without_model_reload
     q,run=queue_run(tmp_path)
     fresh=bundled_spec()
     value=replace(fresh,stage0=stage0(fresh),recovery=replace(recovery(),drill_empty=True),
-        command_handlers=(dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64),))
+        registry_sha256=registry_sha256())
     from regional_knowledge.kaggle_target_launch import persist_empty_intent
     from test_recovery_journal import fixture
     from test_kaggle_target_runtime import hashes

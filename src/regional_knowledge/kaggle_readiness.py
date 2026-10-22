@@ -20,7 +20,7 @@ RUNTIME_HASHES = frozenset({"code", "launch_config", "executed_source", "depende
 # Full first-book metadata (33 handlers/55 wheels) measures about74.5KiB.
 # Controller assembly and resident observation must accept the same bytes.
 # The private target-file, WSS and source budgets have separate bounds.
-MAX_LAUNCH_CONFIG_BYTES = 96 * 1024
+MAX_LAUNCH_CONFIG_BYTES = 64 * 1024
 TERMINAL_STATUSES = frozenset({"complete", "failed", "cancelled"})
 
 

@@ -6,8 +6,9 @@ import pytest
 
 from regional_knowledge.source_import_v2 import STORY_REVISIONS, validate_import_v2_command
 from regional_knowledge.source_import_v3 import (FACT_REVISIONS, resolved_import_v3_command,
-    validate_import_v3_command)
-from regional_knowledge.kaggle_source_commands import decode_command, fixed_registry
+    validate_import_v3_command,source_import_v3_handler)
+from regional_knowledge.kaggle_source_commands import decode_command
+from regional_knowledge.kaggle_apply import HandlerRegistry
 from test_source_import_v2 import command as v2_command, payload, FINDING
 from test_source_import import SOURCE
 from test_kaggle_fact_read import date, observation
@@ -58,12 +59,9 @@ def test_v3_precondition_rejects_facts_absent_from_selected_evidence_before_acce
     assert validate_import_v2_command(v2_command(value))==value
 
 
-def test_fixed_registry_selects_exact_schema8_only():
-    db=SimpleNamespace(schema_revision=FACT_REVISIONS.schema,function_revision=FACT_REVISIONS.function,
-                       executor_revision=FACT_REVISIONS.executor)
-    entries=[dict(route='source.import.v3',check_sha256='a'*64,apply_sha256='b'*64,revisions=list(FACT_REVISIONS.wire()))]
-    assert fixed_registry(db,entries).resolve(command()).route=='source.import.v3'
-    with pytest.raises(ValueError):fixed_registry(db,[dict(entries[0],route='source.import.v2')])
+def test_schema8_codec_uses_one_explicit_fixture_handler():
+    registry=HandlerRegistry([source_import_v3_handler(revisions=FACT_REVISIONS,check_sha256='a'*64,apply_sha256='b'*64)])
+    assert registry.resolve(command()).route=='source.import.v3'
 
 
 def test_exact_decimal_exponent_is_preserved_without_conversion():

@@ -26,7 +26,7 @@ from regional_knowledge.geo_whitelist import build_geo_whitelist
 from regional_knowledge.kaggle_apply import ApplyReceipt, HandlerRegistry
 from regional_knowledge.bge_queue import BgeQueue
 from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint, DatasetFile
-from regional_knowledge.kaggle_domain_bindings import CURRENT_ROUTES
+from regional_knowledge.kaggle_domain_bindings import CURRENT_ROUTES,current_handler
 from regional_knowledge.kaggle_owned_pg import OwnedDatabase
 from regional_knowledge.kaggle_schema_migrate import latest_schema_version
 from regional_knowledge.kaggle_pg_snapshot_native import BlobRef, SnapshotError, encode, sha
@@ -34,7 +34,7 @@ from regional_knowledge.kaggle_readiness import (
     RUNTIME_HASHES, RunIdentity, SearchRuntimeExpectation, validate_search_runtime,
 )
 from regional_knowledge.kaggle_restore_startup import SourceRestoreConfig, SourceRestoreCoordinator
-from regional_knowledge.kaggle_source_commands import decode_command, fixed_registry, receipt_wire
+from regional_knowledge.kaggle_source_commands import decode_command, receipt_wire
 from regional_knowledge.kaggle_target_launch import source_bundle
 from regional_knowledge.pg_snapshot_recovery import PhysicalSnapshotRecovery
 from regional_knowledge.recovery_journal import ObjectRef, RecoveryJournal
@@ -96,10 +96,10 @@ async def scenario(e):
     root = package_root()
     database = OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', '/kaggle/temp/compat/socket', 'rkb', ownership_evidence='synthetic-first-context')
     old_database = replace(database, schema_version=11)
-    original_registry = fixed_registry(old_database, [
-        dict(route=route, check_sha256='a' * 64, apply_sha256='b' * 64, revisions=list(GEO_REVISIONS.wire()))
-        for route in sorted(CURRENT_ROUTES)])
-    registry=original_registry
+    original_registry = HandlerRegistry([current_handler(route,check_sha256='a'*64,apply_sha256='b'*64,
+        revisions=GEO_REVISIONS) for route in sorted(CURRENT_ROUTES)])
+    from regional_knowledge.kaggle_current_registry import current_registry
+    registry=current_registry()
     commands = original_commands(e.p.owner.subject)
     assert len(commands) == 20
     rejected = {5, 6, 7, 20}
@@ -108,12 +108,19 @@ async def scenario(e):
     assert sum(r.status == 'rejected_precondition' for r in original_receipts.values()) == 4
     memory = ConditionalMemoryStore()
     original = RecoveryJournal(memory, stream=e.journal.stream)
+    genesis=encode(dict(codec='rkb.source-genesis.v1',stream=original.stream,
+        database_generation='db-source',sequence=0,catalog_sha256='a'*64,acl_sha256='b'*64,
+        registry_sha256='c'*64,routes=['old.routes'],verifier_sha256='d'*64))
+    await original._fenced_exact(original.prefix+'/source-genesis/'+sha(b'db-source'),genesis,
+        expected_token=None,writer_generation='writer-1',limit=8192)
     accepted = {}
+    e.spool.journal=original;e.spool.registry=original_registry
     for command in commands:
-        seal = await original.seal([command], predecessor=await original.head(), writer_generation='writer-1')
+        await e.spool.stage_domain_command(e.p.admin,command,database_generation='db-source')
+        seal=await e.spool.seal(e.p.admin,command.operation_key,predecessor=await original.head(),writer_generation='writer-1')
         accepted[command.sequence] = seal
-        await original.record_outcome(seal, command=command, database_generation='db-source',
-            outcome=original_receipts[command.sequence].outcome, writer_generation='writer-1')
+        await e.spool.record_apply(command.operation_key,original_receipts[command.sequence])
+        await e.spool.publish_outcome(command.operation_key,writer_generation='writer-1')
     boundary = await original.head()
     prefix_rows = tuple((c.sequence, c.operation_key, sha(c.encode()), original_registry.resolve(c).fingerprint,
         accepted[c.sequence].manifest.sha256, original_receipts[c.sequence].status,
@@ -187,13 +194,15 @@ async def scenario(e):
     journal = RecoveryJournal(store, stream=original.stream)
     # Rejected GEO data commands replay normally after the SQL runner; no
     # schema transition is accepted or appended to the data journal.
-    tail=tuple(replace(commands[n-1],sequence=21+i,operation_key='ordinary-repair-'+str(n))
+    from regional_knowledge.kaggle_native_source_bindings import new_native_command
+    tail=tuple(new_native_command(replace(commands[n-1],sequence=21+i,operation_key='ordinary-repair-'+str(n)))
         for i,n in enumerate(sorted(rejected)))
+    e.spool.journal,e.spool.registry=journal,registry
     for command in tail:
-        await journal.seal([command], predecessor=await journal.head(), writer_generation='writer-2')
-    e.spool.journal, e.spool.registry = journal, registry
+        await e.spool.stage_domain_command(e.p.admin,command,database_generation='db-source')
+        await e.spool.seal(e.p.admin,command.operation_key,predecessor=await journal.head(),writer_generation='writer-2')
     binding = SimpleNamespace(run_id='fixture-run', runtime_incarnation='fixture-incarnation',
-                              connection_generation=1, database_generation='db-source')
+                              connection_generation=1, database_generation='db-source',min_data_seq=0,provider_version='1')
     history = WssSourceHistoryVerifier(e.spool, acquire=None, binding_current=lambda b: b is binding, routes=routes, expected_schema_version=database.schema_version, writer_generation='writer-2', database=database, observer_sha256='6' * 64, geo_bootstrap_operation_keys=tuple((c.operation_key for c in commands)))
     assert history.registry_hash != origin['registry_sha256']
     events = []
@@ -371,8 +380,7 @@ async def test_native_finish_refuses_capability_when_ledger_is_behind(monkeypatc
     binary = native.NativeBinary('/synthetic/not-executed', 1, 'a' * 64, 'PostgreSQL 17.11')
     factory = native.NativeSnapshotFactory(tools=native.PhysicalPgTools(binary, binary, binary),
         database=database, identity=('fixture-run', 'fixture-nonce', 'fixture-incarnation'),
-        registry=fixed_registry(replace(database, schema_version=11),
-            [dict(route='geo.manifest.install.v1', check_sha256='a' * 64, apply_sha256='b' * 64, revisions=list(GEO_REVISIONS.wire()))]),
+        registry=HandlerRegistry([current_handler('geo.manifest.install.v1',check_sha256='a'*64,apply_sha256='b'*64,revisions=GEO_REVISIONS)]),
         executor_factory=lambda **kwargs: None, current=lambda value: value is binding,
         workspace_private_current=lambda path: True, native_uid=1, native_gid=1,
         probe=actual_origin_probe)
@@ -391,3 +399,69 @@ async def test_native_finish_refuses_capability_when_ledger_is_behind(monkeypatc
     assert len(observed) == 1
     assert observed[0]['schema_version']==11 and observed[0]['expected_schema_version']==16
     assert b'synthetic-catalog11'.decode() not in json.dumps(observed[0])
+
+
+@pytest.mark.asyncio
+async def test_dataset2_history_verifies_original_receipts_with_only_current_routes(env):
+    from regional_knowledge.kaggle_source_history_native import NativeSourceHistoryObserver
+    from regional_knowledge.kaggle_current_registry import current_registry
+    from test_source_history_wss import NativePg,NativeCursor
+    s=await scenario(env)
+    await s.physical.recover(s.manifest,s.binding,database=s.database,expected_versions=s.versions,
+        identity=('fixture-run','fixture-nonce','fixture-incarnation'),operation_key='current-registry-history')
+    accepted={};ref=(await s.journal.head()).reference
+    while ref is not None:
+        previous,raws=await s.journal.read_segment(ref)
+        for raw in raws:accepted[decode_command(raw).sequence]=ref
+        ref=previous
+    class Cursor(NativeCursor):
+        async def execute(self,sql,args=None):
+            result=await super().execute(sql,args)
+            if 's.applied_seq FROM rkb_v4.recovery_state' in sql:
+                self.rows=[('db-source','writer-2',self.pg.applied_seq)]
+            elif 'WHERE NOT (source_id=ANY' in sql:self.rows=[(False,)]
+            return result
+    class Pg(NativePg):
+        def cursor(self,**kwargs):return Cursor(self)
+    pg=Pg();pg.applied_seq=24;pg.nonempty=True
+    for sequence,receipt in sorted(s.native.ledger.items()):
+        pg.receipts.append((sequence,receipt.operation_key,receipt.command_sha256,
+            json.loads(receipt.outcome)['handler_sha256'],accepted[sequence].sha256,
+            receipt.status,receipt.outcome_sha256,receipt.outcome_sha256,len(receipt.outcome),
+            'db-source',receipt.command_sha256))
+    async def probe(**kwargs):return b'{}',dict(schema_version=s.database.schema_version,
+        database_generation='db-source',applied_seq=24)
+    registry=current_registry()
+    observer=NativeSourceHistoryObserver(acquire=pg.acquire,database=s.database,
+        identity=('fixture-run','fixture-nonce','fixture-incarnation'),registry=registry,
+        current=lambda key:key==('fixture-run','fixture-incarnation',1),probe=probe)
+    observer.attached(1);s.history.observer_hash=observer.code_hash
+    async def phase(binding,args):
+        frame=dict(type='DISPATCH',protocol_version=2,connection_generation=1,id='current-history',claim='claim',
+            kind='recovery_phase',run_id='fixture-run',launch_nonce='fixture-nonce',runtime_incarnation='fixture-incarnation',
+            database_generation='db-source',writer_generation='writer-2',phase='source_history',operation_key=sha(encode(args)),
+            arguments=args,request_sha256=sha(encode({'phase':'source_history','arguments':args})),
+            compute_claim='shared-slot',dispatch_generation=1)
+        value=(await observer(frame))['value']
+        assert 'error' not in value,value
+        return value
+    s.history._phase=phase
+    try:
+        coverage=await s.history.restore(s.binding)
+        assert coverage.current() and coverage.applied_sequence==24
+        assert len(coverage.pending)==4  # New outcomes await a real Dataset checkpoint.
+        assert set(registry.handlers)=={handler.route for handler in registry.handlers.values()}
+        assert len(registry.handlers)==13
+        assert all(s.native.ledger[n]==receipt for n,receipt in s.original_receipts.items())
+        for command in s.originals:
+            retained=await env.spool.get(command.operation_key)
+            assert retained.command_bytes==command.encode()
+            assert retained.apply_receipt.outcome==s.original_receipts[command.sequence].outcome
+            assert retained.outcome_state=='DURABLE'
+        # A current registry is not permission to relabel the old PG receipt.
+        from regional_knowledge.control_spool import SpoolConflict
+        row=list(pg.receipts[0]);row[3]='f'*64;pg.receipts[0]=tuple(row)
+        with pytest.raises(SpoolConflict,match='historical handler receipt'):
+            await s.history.restore(s.binding)
+        assert not observer._sessions
+    finally:await observer.aclose()

@@ -1,6 +1,12 @@
 name: rkb-first-book-launch-envelope
 
 on:
+  pull_request:
+    paths:
+      - 'src/regional_knowledge/**'
+      - 'sql/kaggle/**'
+      - 'tests/test_import_actual_launch_metadata_shkiper.py'
+      - '.github/workflows/rkb-first-book-launch-envelope.yml'
   push:
     branches: [chatgpt/rkb-first-book-launch-envelope-20261022]
 

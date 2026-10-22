@@ -128,58 +128,34 @@ def decode_receipt(value):
         raise ValueError('invalid bounded native source receipt') from None
 
 
-def fixed_registry(database,entries):
-    """Deployment pins only, never definitions or SQL supplied by a request."""
-    from .kaggle_apply import DependencySpec
-    handlers=[]
-    from .source_activation import ACTIVATION_REVISIONS
-    default_revisions=ACTIVATION_REVISIONS
-    if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=64:raise ValueError('fixed source registry required')
-    for entry in entries:
-        base={'route','check_sha256','apply_sha256'}
-        if not isinstance(entry,dict) or not base<=entry.keys() or set(entry)-base-{'revisions'}:
-            raise ValueError('fixed source registry pins required')
-        revisions=default_revisions
-        if 'revisions' in entry:
-            wire=entry['revisions']
-            if type(wire) not in (list,tuple) or len(wire)!=3:raise ValueError('exact historical handler revisions required')
-            revisions=Revisions(*wire)
-        if revisions.schema=='rkb-v4-sql001-014-v1':
-            from .kaggle_native_source_bindings import native_source_handler
-            handler=native_source_handler(entry['route'],check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
-        elif revisions.schema in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
-            from .kaggle_domain_bindings import current_handler
-            handler=current_handler(entry['route'],check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'],revisions=revisions)
-        elif entry['route']==SOURCE_IMPORT:
-            handler=source_import_handler(revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
-        elif entry['route']=='source.import.v2':
-            from .source_import_v2 import source_import_v2_handler
-            handler=source_import_v2_handler(revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
-        elif entry['route']=='source.import.v3':
-            from .source_import_v3 import source_import_v3_handler
-            handler=source_import_v3_handler(revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
-        elif entry['route']=='source.import.v4':
-            from .source_import_v4 import source_import_v4_handler
-            from .story_editorial import EDITORIAL_REVISIONS
-            if revisions!=EDITORIAL_REVISIONS:raise ValueError('explicit editorial revision required')
-            handler=source_import_v4_handler(check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
-        elif entry['route'] in ('story.edit.v1','story.access.v1'):
-            from .story_editorial import editorial_handler,EDITORIAL_REVISIONS
-            if revisions!=EDITORIAL_REVISIONS:raise ValueError('explicit editorial revision required')
-            handler=editorial_handler(route=entry['route'],check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
-        elif entry['route'].startswith('disagreement.'):
-            from .disagreement_native import case_handler
-            handler=case_handler(entry['route'],revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
-        elif entry['route']=='geo.manifest.install.v1':
-            from .geo_manifest_commands import geo_manifest_handler
-            handler=geo_manifest_handler(revisions=revisions,check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
-        elif entry['route']==SOURCE_WITHDRAW:
-            handler=HandlerSpec('domain_command',SOURCE_WITHDRAW,revisions,
-                PgFunction('check_source_withdraw_v1',entry['check_sha256']),PgFunction('apply_source_withdraw_v1',entry['apply_sha256']),
-                frozenset({'eligibility_revision'}),dependency=DependencySpec(SOURCE_WITHDRAW,'public_source',frozenset({'source_id'}),'shared',True))
-        else:raise ValueError('unsupported source command registry')
-        handlers.append(handler)
-    return HandlerRegistry(handlers)
+
+def read_historical_contract(data,registry):
+    """Read v1 evidence without installing or executing a historical handler."""
+    from dataclasses import replace
+    command=decode_command(data)
+    handler=registry.handlers.get(command.route)
+    if handler is None and command.route in ('source.import.v1','source.import.v2','source.import.v3'):
+        from .source_activation import ACTIVATE_ROUTE
+        handler=registry.handlers.get(ACTIVATE_ROUTE)
+    if handler is None or handler.kind!=command.kind:raise ValueError('unsupported historical command contract')
+    dependency=handler.dependency
+    if dependency is not None and dependency.operation!=command.route:
+        dependency=replace(dependency,operation=command.route)
+    return command,handler,dependency
+
+
+def verify_historical_receipt(command,recorded_hash,receipt):
+    """The original canonical receipt, never the current implementation hash."""
+    try:
+        decoded,value=decode_receipt(receipt_wire(receipt))
+        audit=[command.schema_revision,command.function_revision,command.executor_revision]
+        return (value['handler_sha256']==recorded_hash and value['before']==value['after']==audit
+            and decoded.command_sha256==digest(command.encode())
+            and decoded.operation_key==command.operation_key and decoded.sequence==command.sequence
+            and value['route']==command.route and value['request_id']==command.request_id
+            and value['person_id']==command.person_id and value['logical_time']==command.logical_time
+            and value['ids']==dict(command.ids))
+    except (ValueError,TypeError,KeyError):return False
 
 
 class ControllerAcceptedProof:

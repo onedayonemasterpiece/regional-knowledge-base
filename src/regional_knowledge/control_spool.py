@@ -504,7 +504,7 @@ class ControlSpool:
             prior=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(command.operation_key,)).fetchone()
             if prior is not None:
                 if (bytes(prior['command_bytes'])!=data or prior['database_generation']!=database_generation
-                        or bytes(prior['dependency_bytes'])!=dependency or prior['handler_sha256']!=handler.fingerprint):
+                        or bytes(prior['dependency_bytes'])!=dependency):
                     raise SpoolConflict('operation key has different exact command/scope/database bytes')
                 return self._entry(prior)
             used=db.execute('SELECT used_bytes FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]
@@ -573,11 +573,21 @@ class ControlSpool:
         data=bytes(row['command_bytes'])
         if _hash(data)!=row['command_sha256']:raise SpoolConflict('stored command hash differs')
         command=_command(data)
-        if command.operation_key!=row['operation_key'] or command.sequence!=row['sequence'] or command.person_id!=row['person_id'] or self._resource_key(command,self.registry.resolve(command).dependency)!=row['source_id']:
+        current=self.registry.handlers.get(command.route)
+        historical=(current is None or row['handler_sha256']!=current.fingerprint)
+        if historical and row['apply_bytes'] is not None and row['apply_state'] in {'APPLIED','REJECTED_PRECONDITION'}:
+            from .kaggle_source_commands import read_historical_contract
+            command,handler,dependency=read_historical_contract(data,self.registry)
+        else:
+            _,_,handler=self._validate(command,row['database_generation'])
+            dependency=handler.dependency
+            if row['handler_sha256']!=handler.fingerprint:
+                raise SpoolConflict('stored original handler identity differs')
+        if (command.operation_key!=row['operation_key'] or command.sequence!=row['sequence']
+                or command.person_id!=row['person_id'] or self._resource_key(command,dependency)!=row['source_id']):
             raise SpoolConflict('stored operation identity differs')
-        _,_,handler=self._validate(command,row['database_generation'])
-        if bytes(row['dependency_bytes'])!=_json(None if handler.dependency is None else handler.dependency.wire()) or row['handler_sha256']!=handler.fingerprint:
-            raise SpoolConflict('stored original dependency/handler identity differs')
+        if bytes(row['dependency_bytes'])!=_json(None if dependency is None else dependency.wire()):
+            raise SpoolConflict('stored original dependency identity differs')
         apply=None;remote=None;accepted=None
         if row['seal_bytes'] is not None:accepted=_seal(row['seal_bytes'])
         if row['apply_bytes'] is not None:
@@ -586,6 +596,10 @@ class ControlSpool:
             if _hash(outcome)!=row['outcome_sha256']:raise SpoolConflict('stored apply outcome differs')
             apply=ApplyReceipt(**value,outcome=outcome,duplicate=True)
         if row['remote_receipt_bytes'] is not None:remote=RemoteOutcomeReceipt(**json.loads(row['remote_receipt_bytes']))
+        if historical:
+            from .kaggle_source_commands import verify_historical_receipt
+            if apply is None or not verify_historical_receipt(command,row['handler_sha256'],apply):
+                raise SpoolConflict('stored historical handler receipt differs')
         if ((row['seal_state']=='ACCEPTED')!=(accepted is not None)
                 or accepted is not None and (accepted.command_hashes!=(row['command_sha256'],)
                     or accepted.manifest.last_sequence!=command.sequence)):
@@ -641,7 +655,8 @@ class ControlSpool:
         self._active();_bounded(writer_generation,4096)
         async with self._lock:
             existing=await self.get(key)
-            # Re-resolve original semantics; no latest registry fallback.
+            if existing.accepted is not None and existing.apply_receipt is not None:return existing.accepted
+            # Unapplied commands still require the current executable contract.
             _,_,handler=self._validate(existing.command,existing.database_generation)
             if handler.fingerprint!=existing.handler_sha256:raise SpoolConflict('staged static handler changed')
             if existing.accepted is None and existing.seal_state=='SENT_UNKNOWN':

@@ -53,7 +53,8 @@ async def build_recovery_worker(*,native_bundle,database,identity,tools,native_u
     from .kaggle_native_bundle import VerifiedNativeBundle
     from .kaggle_owned_pg import grant_native_code_access
     from .kaggle_pg_snapshot_native import NativeSnapshotFactory,NativeBinary,PhysicalPgTools,SnapshotLimits
-    from .kaggle_source_commands import fixed_registry,WorkerSourceExecutor
+    from .kaggle_source_commands import WorkerSourceExecutor
+    from .kaggle_current_registry import current_registry,registry_sha256
     if ticket_channel is not None or transfer is not None:
         from .kaggle_snapshot_channel import SnapshotTicketChannel
         from .native_snapshot_transfer import NativeSnapshotTransfer,SnapshotTicket
@@ -75,7 +76,7 @@ async def build_recovery_worker(*,native_bundle,database,identity,tools,native_u
             return await transfer.download(ticket,workspace(restore_operation,'download'),operation_key=transfer_operation)
     if (type(native_bundle) is not VerifiedNativeBundle
             or not await asyncio.to_thread(native_bundle.current)
-            or not isinstance(tools,dict) or set(tools)!={'binaries','command_handlers'}
+            or not isinstance(tools,dict) or set(tools)!={'binaries','registry_sha256'}
             or not isinstance(tools['binaries'],dict)
             or set(tools['binaries'])!={'pg_basebackup','pg_verifybackup','postgres'}
             or any(not callable(c) for c in (current,workspace_private_current,upload,download,workspace))):
@@ -95,7 +96,8 @@ async def build_recovery_worker(*,native_bundle,database,identity,tools,native_u
         binaries[name]=NativeBinary(absolute,pin[0],pin[1],value['version_output'])
     await asyncio.to_thread(grant_native_code_access,native_bundle.root,native_bundle.pins,
         uid=native_uid,gid=native_gid)
-    registry=fixed_registry(database,tools['command_handlers'])
+    registry=current_registry()
+    if tools['registry_sha256']!=registry_sha256(registry):raise SnapshotError('current_registry_hash_differs')
     factory=NativeSnapshotFactory(tools=PhysicalPgTools(**binaries),database=database,identity=identity,
         registry=registry,executor_factory=(WorkerSourceExecutor
             if source_materializer is None else __import__('functools').partial(WorkerSourceExecutor,materializer=source_materializer)),
