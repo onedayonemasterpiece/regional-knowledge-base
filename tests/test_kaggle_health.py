@@ -209,3 +209,27 @@ async def test_health_sql_on_existing_disposable_github_pg17(env):
     result = await probe_database_health(acquire=env['acquire'], binding=expected, binding_current=lambda _: True)
     assert result.ready and result.schema_revision == 's1'
     assert result.applied_seq == result.projection_seq == 5
+
+
+def test_public_heartbeat_health_is_sanitized_and_never_allocates(tmp_path, monkeypatch):
+    from regional_knowledge.kaggle_health import heartbeat_health
+    queue = BgeQueue(tmp_path / 'cold-public.sqlite')
+    for name in ('maintenance', 'request_startup', 'status'):
+        monkeypatch.setattr(queue, name, lambda *a, **k: pytest.fail('health allocated work'))
+    cold = heartbeat_health(queue)
+    assert cold['source'] == 'heartbeat_observation' and cold['reason'] == 'notebook_not_ready'
+    assert not cold['read_ready'] and cold['notebook']['status'] == 'absent'
+
+
+def test_public_heartbeat_health_reports_runtime_observation_without_identifiers(target):
+    from regional_knowledge.kaggle_health import heartbeat_health
+    expected = current_binding(target.queue)
+    result = heartbeat_health(target.queue)
+    assert result['source'] == 'heartbeat_observation'
+    assert result['notebook']['status'] == 'ready'
+    assert result['notebook']['provider_version'] == int(expected.provider_version)
+    assert set(result['postgres']) == {'schema_revision', 'applied_seq', 'projection_seq'}
+    assert result['read_ready'] == (result.get('reason') is None)
+    text = json.dumps(result)
+    for secret in (expected.run_id, expected.runtime_incarnation, 'token', 'launch_nonce', 'provider_ref'):
+        assert secret not in text
