@@ -80,7 +80,7 @@ async def test_sequential_100_owner_intakes_after_32_completed_rows_preserve_his
     duplicate = await start(s, file_id='prior-original-000')
     assert duplicate.ingestion_id == history[0]
     with s.t.queue.connect(write=False) as db:
-        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone() == (100,)
+        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 100
 
     # Real native owner exclusion remains; an UNKNOWN/unsettled live import
     # must keep its row and reject a new unrelated original.
@@ -93,8 +93,8 @@ async def test_sequential_100_owner_intakes_after_32_completed_rows_preserve_his
         assert db.execute("""
             SELECT count(*) FROM rkb_source_intake_control
             WHERE phase NOT IN ('finalized','failed')
-        """).fetchone() == (1,)
-        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone() == (101,)
+        """).fetchone()[0] == 1
+        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 101
     # The active row remains addressable and its original receipt unchanged.
     assert s.importer._row(s.principal.subject,current.ingestion_id)['phase'] == 'staging'
     assert s.originals.receipts[current.ingestion_id].source_id == current.document_id
