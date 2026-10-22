@@ -289,3 +289,70 @@ async def test_real_shared_media_result_wrong_crop_and_source_are_not_authority(
             pump.cancel()
             with suppress(asyncio.CancelledError):
                 await pump
+
+
+def test_existing_starlette_wss_media_typed_result_uses_shared_admission(peer):
+    """Actual current Starlette TestClient WSS + BgeQueue + ReadAuthority lane.
+
+    Fake native media bytes are never used here: test that the SAME WSS channel
+    admits, correlates and delivers a typed MEDIA_RESULT and only releases
+    compute on the exact RESOURCE_RELEASED current-attachment receipt.
+    """
+    import time
+    from dataclasses import asdict
+    from regional_knowledge.kaggle_protocol import TrustedActorContext
+    from test_bge_shared_channel import attach, ready, connect, receive_expected, send
+
+    p=peer
+    with connect(p) as socket:
+        generation=attach(p,socket)
+        ready(socket,generation)
+        person=p.context
+        native=replace(snapshot(),database_generation="synthetic-db",
+            observed_data_seq=7,observed_projection_seq=7)
+        crop=hashlib.sha256(canonical_media(native.item["crop_binding"])).hexdigest()
+        async def begin():
+            query=IllustrationReadRequest(
+                request_id="media-actual-socket",connection_generation=generation,
+                turn_generation=17,action="snapshot",
+                source_id=SOURCE,illustration_id=ILLUSTRATION,
+                database_generation="synthetic-db",
+                binding_run_id=p.run,
+                binding_runtime_incarnation="synthetic-incarnation",
+                provider_version="7",archive_scope="owner-owned-topic4",
+                actor=TrustedActorContext(person_id=person.person_id,
+                    audience=person.destination.key,auth_epoch=person.auth_revision,
+                    visibility_epoch=0,context_ref=person.context_ref),
+                min_data_seq=7,deadline_ms=1800)
+            return await p.a.begin_read(
+                person,query,dialog_ref="media-actual-wss-fixture",
+                deadline=time.monotonic()+1.8)
+        ticket=p.client.portal.call(begin)
+        frame=receive_expected(socket,"ILLUSTRATION_READ")
+        assert frame["compute_claim"] and frame["request_id"]==ticket.request_id
+        assert frame["source_id"]==SOURCE and frame["illustration_id"]==ILLUSTRATION
+        response=IllustrationReadResult(
+            request_id=ticket.request_id,connection_generation=generation,
+            turn_generation=17,action="snapshot",
+            source_id=SOURCE,illustration_id=ILLUSTRATION,
+            status="ok",crop_sha256=crop,
+            snapshot=asdict(native),
+            observed_data_seq=7,observed_projection_seq=7,
+            observed_visibility_epoch=0,
+            observed_database_generation="synthetic-db")
+        socket.send_json(response.model_dump(mode="json"))
+        async def delivered():
+            return await asyncio.wait_for(asyncio.shield(ticket.result),.8)
+        received=p.client.portal.call(delivered)
+        assert type(received) is IllustrationReadResult
+        assert received.snapshot["source_id"]==SOURCE
+        assert p.client.portal.call(p.a.status)["state"]=="busy"
+        send(socket,generation,"RESOURCE_RELEASED",
+            resource_kind="read",resource_id=ticket.request_id,
+            compute_claim=frame["compute_claim"],dispatch_generation=generation)
+        send(socket,generation,"RESOURCE_STATE",state="idle")
+        from test_bge_shared_channel import heartbeat
+        heartbeat(socket,generation)
+        assert p.client.portal.call(p.a.status)["state"]=="idle"
+
+from test_bge_shared_channel import peer
