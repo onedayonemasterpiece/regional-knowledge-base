@@ -46,6 +46,8 @@ def selected(**updates):
         deadline_ms=2000,compute_claim='entity-list-sql022-read',
         actor=dict(person_id=PERSON,audience='personal',auth_epoch=1,visibility_epoch=4))
     args.update(updates)
+    if type(args.get('kinds')) is list:
+        args['kinds']=tuple(args['kinds'])  # Internal typed wire is a strict tuple.
     return SourceGraphReadRequest.model_validate(args)
 
 
@@ -83,6 +85,7 @@ async def graph_sql22():
     """Full ordinary SQL001..022 prefix on a fresh authorized fixture DB."""
     connection=await psycopg.AsyncConnection.connect(
         _validated_ci_dsn(),autocommit=True,row_factory=tuple_row)
+    owned_roles=False
     try:
         scripts=sorted((ROOT/'sql/kaggle').glob('[0-9][0-9][0-9]_*.sql'))
         assert [int(path.name[:3]) for path in scripts]==list(range(1,23))
@@ -90,6 +93,11 @@ async def graph_sql22():
             assert await (await connection.execute('SELECT current_database(),current_user')).fetchone()==('rkb_graph_test','postgres')
             assert (await (await connection.execute('SHOW server_version_num')).fetchone())[0].startswith('17')
             assert await (await connection.execute("SELECT to_regnamespace('rkb_v4')")).fetchone()==(None,)
+            assert await (await connection.execute(
+                "SELECT count(*) FROM pg_roles WHERE rolname IN ('rkb_writer','rkb_reader')")).fetchone()==(0,)
+            await connection.execute('CREATE ROLE rkb_writer NOLOGIN')
+            await connection.execute('CREATE ROLE rkb_reader NOLOGIN')
+            owned_roles=True
             await connection.execute('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public')
             assert await (await connection.execute(
                 "SELECT extversion FROM pg_extension WHERE extname='vector'")).fetchone()==('0.8.2',)
@@ -113,6 +121,11 @@ async def graph_sql22():
         await connection.rollback()
         async with connection.transaction():
             await connection.execute('DROP SCHEMA IF EXISTS rkb_v4 CASCADE')
+            if owned_roles:
+                await connection.execute('DROP OWNED BY rkb_reader')
+                await connection.execute('DROP OWNED BY rkb_writer')
+                await connection.execute('DROP ROLE IF EXISTS rkb_reader')
+                await connection.execute('DROP ROLE IF EXISTS rkb_writer')
         await connection.close()
 
 
