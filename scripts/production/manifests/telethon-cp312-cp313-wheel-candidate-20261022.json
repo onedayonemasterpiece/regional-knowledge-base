@@ -1,0 +1,128 @@
+{
+  "bounds_review_only": {
+    "current_max_prepared_files": 160,
+    "previous_sanitized_external_inventory": 59,
+    "proposed_minimum": 165,
+    "source_after_ordered_helper": 102,
+    "source_of_external_inventory": "prior operator sanitized receipt, not re-enumerated by this CI",
+    "total_if_no_duplicates": 165,
+    "wheel_closure": 4
+  },
+  "codec": "rkb.telethon_candidate_wheel_lock.v1",
+  "dependencies_provenance": {
+    "cryptg_optional_excluded": true,
+    "pyaes_requires_dist": [],
+    "pyasn1_requires_dist": [],
+    "rsa_requires_dist": [
+      "pyasn1>=0.1.3"
+    ],
+    "telethon_requires_dist": [
+      "pyaes",
+      "rsa",
+      "cryptg; extra == \"cryptg\""
+    ]
+  },
+  "machine": "x86_64",
+  "package_count": 4,
+  "packages": [
+    {
+      "filename": "telethon-1.45.0-py3-none-any.whl",
+      "origin": "verified_pypi_wheel",
+      "package": "telethon",
+      "requires": [
+        "pyaes",
+        "rsa"
+      ],
+      "requires_python": ">=3.5",
+      "sha256": "339e24c83aedc9f12cbe389264627edc49779e4289c535aa90aafc4ce62f7972",
+      "size": 804098,
+      "url": "https://files.pythonhosted.org/packages/92/ac/241c09e6905215f225d8088438ceb1f32cc4b4865f3f49068cb402debfd7/telethon-1.45.0-py3-none-any.whl",
+      "version": "1.45.0"
+    },
+    {
+      "filename": "rsa-4.9.1-py3-none-any.whl",
+      "origin": "verified_pypi_wheel",
+      "package": "rsa",
+      "requires": [
+        "pyasn1>=0.1.3"
+      ],
+      "requires_python": "<4,>=3.6",
+      "sha256": "68635866661c6836b8d39430f97a996acbd61bfa49406748ea243539fe239762",
+      "size": 34696,
+      "url": "https://files.pythonhosted.org/packages/64/8d/0133e4eb4beed9e425d9a98ed6e081a55d195481b7632472be1af08d2f6b/rsa-4.9.1-py3-none-any.whl",
+      "version": "4.9.1"
+    },
+    {
+      "filename": "pyasn1-0.6.4-py3-none-any.whl",
+      "origin": "verified_pypi_wheel",
+      "package": "pyasn1",
+      "requires": [],
+      "requires_python": ">=3.8",
+      "sha256": "deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b",
+      "size": 84410,
+      "url": "https://files.pythonhosted.org/packages/9a/3b/6163796d69c3977d1e4287bea4a6979161cbbdd170ebb430511e8e1999ce/pyasn1-0.6.4-py3-none-any.whl",
+      "version": "0.6.4"
+    },
+    {
+      "filename": "pyaes-1.6.1-py3-none-any.whl",
+      "origin": "reproducible_ci_wheel_unpublished",
+      "package": "pyaes",
+      "requires": [],
+      "requires_python": null,
+      "sha256": "18115ebd82125cdf6100accc0bf88620b2e662a48710b1bb8cd7d9d4023964f3",
+      "size": 26422,
+      "url": null,
+      "version": "1.6.1"
+    }
+  ],
+  "proof": {
+    "github_actions_run": 39698152544,
+    "inspected_immutable_artifact_wheel_bytes": true,
+    "python_3_12": {
+      "artifact_archive_sha256": "914d843e73dd67d53de0b71a68844e20ef7fbd8b80a06f024d1d818ea6f6511d",
+      "artifact_id": 12391174848,
+      "install_no_deps": "PASS",
+      "networkless_api_smoke": "PASS",
+      "version": "3.12.15"
+    },
+    "python_3_13": {
+      "artifact_archive_sha256": "d4b0abd59566d8d4e78a42174bea750726305c1cd2db1321958201f52e803714",
+      "artifact_id": 12390783707,
+      "install_no_deps": "PASS",
+      "networkless_api_smoke": "PASS",
+      "version": "3.13.16"
+    },
+    "verified_source_commit": "9191f6a43d8d37e15319aeac519c3d47203ce88d"
+  },
+  "pyaes_build": {
+    "SOURCE_DATE_EPOCH": 1700000000,
+    "build_no_index": true,
+    "build_tools": {
+      "packaging": "25.0",
+      "pip": "25.2",
+      "setuptools": "80.9.0",
+      "wheel": "0.45.1"
+    },
+    "clean_build_directories_per_python": 2,
+    "cp312_cp313_output_byte_identical": true,
+    "pyaes_repeat_build_byte_identical": true,
+    "source": "https://files.pythonhosted.org/packages/44/66/2c17bae31c906613795711fc78045c285048168919ace2220daa372c7d72/pyaes-1.6.1.tar.gz",
+    "source_sha256": "02c1b1405c38d3c370b085fb952dd8bea3fadcee6411ad99f312cc129c536d8f",
+    "source_size": 28536
+  },
+  "python": [
+    "CPython 3.12",
+    "CPython 3.13"
+  ],
+  "scope": "metadata and GitHub-hosted isolated wheel build only; not deployed; no credential/provider/Telegram/PG/model access",
+  "stage0_placement": {
+    "approved": false,
+    "full_target_runtime_attestation_unverified": true,
+    "missing": "approved permanent HTTPS object placement + content-addressed receipt; GitHub Actions artifacts expire",
+    "pyaes_permanent_wheel_url": null,
+    "target_native_abi_unverified": true
+  },
+  "status": "ci_verified_candidate_not_approved_stage0",
+  "wheel_bytes": 949626,
+  "wheel_tag": "py3-none-any"
+}
