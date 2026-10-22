@@ -539,10 +539,72 @@ class SharedReadAdmission:
         if descriptor!=self._last_release and not (self._work is not None and self._sent and self._work.resource==descriptor):
             raise StaleAttachment('source receipt has no actual admitted resource binding')
 
+    async def _next_reader_work(self, run, generation):
+        # Already-authenticated and runtime-verified *read-only* run.
+        # No document/source/recovery durable job is selectable on this path.
+        run_id=run['id'];lane=self._reader_lanes[run_id]
+        if (lane.attachment!=(run_id,generation,run['runtime_incarnation'])
+                or lane.state!='idle' or lane.work is not None):return None
+        now=self.clock()
+        for key,read in tuple(self._reads.items()):
+            if read.deadline<=now or read.ticket.result.done():self._cancel(key)
+        reads=[r for r in self._reads.values()
+            if r.ticket.run_id==run_id and r.dispatched is None]
+        if not reads:return None
+        people={r.authority.person_id for r in reads}
+        person=min(people,key=lambda p:(self._person_turn.get(p,0),p))
+        person_reads=[r for r in reads if r.authority.person_id==person]
+        read=min(person_reads,key=lambda r:(self._dialog_turn.get((person,r.dialog),0),
+                                           r.deadline,r.ticket.request_id))
+        try:
+            await self.authority.require(read.authority,
+                'case_read' if type(read.query) is CaseReadRequest else 'public_search')
+            self._require_acceptance(read.authority,read.query)
+        except PermissionError:
+            self._cancel((run_id,read.ticket.connection_generation,read.ticket.request_id))
+            return None
+        key=(run_id,read.ticket.connection_generation,read.ticket.request_id)
+        if read.deadline<=self.clock() or key not in self._reads:return None
+        remaining=min(read.query.deadline_ms,int((read.deadline-self.clock())*1000))
+        if remaining<1:self._cancel(key);return None
+        resource=ResourceClaim(run_id,run['runtime_incarnation'],secrets.token_urlsafe(24),
+                               generation,'read',read.ticket.request_id)
+        updates={'deadline_ms':remaining}
+        if 'compute_claim' in Query.model_fields:updates['compute_claim']=resource.compute_claim
+        work=ChannelWork(resource,query=read.query.model_copy(update=updates))
+        self._turn+=1;self._person_turn[person]=self._turn
+        self._dialog_turn[(person,read.dialog)]=self._turn
+        lane.work=work;lane.sent=False;lane.state='reserved'
+        lane.slot_version=object();lane.probe=None
+        return work
+
+    def select_reader_binding(self, bindings):
+        """Use only reconciled IDLE read slots; no new queue or scheduler.
+
+        A single authenticated process retains fair person/dialog counters
+        across these workers; no second writer or claim-lease is created.
+        """
+        if not bindings:raise AdmissionUnavailable('no verified read binding')
+        idle=[]
+        for b in bindings:
+            attachment=(b.run_id,b.connection_generation,b.runtime_incarnation)
+            if self._attachment==attachment:
+                if self._state=='idle' and self._work is None:idle.append(b)
+            else:
+                lane=self._reader_lanes.get(b.run_id)
+                if (lane is not None and lane.attachment==attachment
+                        and lane.state=='idle' and lane.work is None):idle.append(b)
+        if not idle:return bindings[0]
+        choice=idle[self._reader_turn%len(idle)]
+        self._reader_turn+=1
+        return choice
+
     async def next_channel_work(self, run_id, token, connection_generation):
         self._active()
         async with self._lock:
             run,owner,docs,resumed=await self._snapshot(run_id,token,connection_generation)
+            if not run['writer_slot']:
+                return await self._next_reader_work(run,connection_generation)
             if (self._state!='idle' or self._work is not None
                     or (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation'])):return None
             ready=(run['status']=='ready' and run['provider_version'] is not None
@@ -590,7 +652,8 @@ class SharedReadAdmission:
                     if authorized[doc['actor']]:eligible.append(doc)
             recovery=[d for d in eligible if d['kind']=='recovery_phase']
             if recovery:eligible=recovery
-            reads=[r for r in self._reads.values() if r.dispatched is None] if ready and not recovery else []
+            reads=[r for r in self._reads.values()
+                   if r.ticket.run_id==run_id and r.dispatched is None] if ready and not recovery else []
             if not reads and not eligible:return None
             # Person first, then dialog. Many dialogs cannot multiply a
             # person's share. Forced document turn bounds continuous read runs.
@@ -609,10 +672,10 @@ class SharedReadAdmission:
                     await self.authority.require(read.authority,'case_read' if type(read.query) is CaseReadRequest else 'public_search')
                     self._require_acceptance(read.authority,read.query)
                 except PermissionError:
-                    self._cancel((read.ticket.connection_generation,read.ticket.request_id));return None
-                if read.deadline<=self.clock() or (read.ticket.connection_generation,read.ticket.request_id) not in self._reads:return None
+                    self._cancel((run_id,read.ticket.connection_generation,read.ticket.request_id));return None
+                if read.deadline<=self.clock() or (run_id,read.ticket.connection_generation,read.ticket.request_id) not in self._reads:return None
                 remaining=min(read.query.deadline_ms,int((read.deadline-self.clock())*1000))
-                if remaining<1:self._cancel((read.ticket.connection_generation,read.ticket.request_id));return None
+                if remaining<1:self._cancel((run_id,read.ticket.connection_generation,read.ticket.request_id));return None
                 resource=ResourceClaim(run_id,run['runtime_incarnation'],secrets.token_urlsafe(24),connection_generation,'read',read.ticket.request_id)
                 updates={'deadline_ms':remaining}
                 if 'compute_claim' in Query.model_fields:updates['compute_claim']=resource.compute_claim
@@ -653,10 +716,26 @@ class SharedReadAdmission:
     def mark_work_sent(self, work):
         """Call BEFORE attempting socket send; an uncertain send retains debt."""
         self._active()
+        reader_lane=self._reader_lanes.get(work.resource.run_id)
+        if reader_lane is not None and reader_lane.work is work:
+            if reader_lane.state!='reserved' or reader_lane.sent or work.query is None:
+                raise StaleAttachment('stale reader work reservation')
+            key=(work.resource.run_id,work.dispatch_generation,work.resource.resource_id)
+            read=self._reads.get(key)
+            if read is None or read.deadline<=self.clock():
+                raise StaleAttachment('reader consumer no longer active')
+            read.dispatched=work.resource
+            reader_lane.sent=True;reader_lane.state='busy'
+            reader_lane.slot_version=object();reader_lane.probe=None
+            if read.on_dispatch is not None:
+                try:read.on_dispatch(work.resource)
+                except Exception:_LOG.warning('bge_read_dispatch_diagnostic_failed')
+            self._event.set()
+            return
         if self._work is not work or self._state!='reserved' or self._sent:
             raise StaleAttachment('stale work reservation')
         if work.query is not None:
-            key=(work.query.connection_generation,work.query.request_id)
+            key=(work.resource.run_id,work.query.connection_generation,work.query.request_id)
             read=self._reads.get(key)
             if read is None or read.deadline<=self.clock():
                 raise StaleAttachment('read consumer no longer active')
@@ -674,6 +753,11 @@ class SharedReadAdmission:
     def discard_unsent(self, work):
         """Only for work provably never handed to network/worker."""
         self._active()
+        lane=self._reader_lanes.get(work.resource.run_id)
+        if lane is not None and lane.work is work:
+            if lane.sent:raise StaleAttachment('reader compute may already be active')
+            lane.work=None;lane.state='idle';lane.slot_version=object();lane.probe=None
+            self._event.set();return
         if self._work is not work or self._sent:raise StaleAttachment('compute may already be active')
         self._work=None;self._state='idle';self._event.set()
         self._changed_slot()
@@ -682,12 +766,16 @@ class SharedReadAdmission:
         """Cancellation observation only; never releases actual compute."""
         self._active()
         if work.query is None:return False
-        read=self._reads.get((work.dispatch_generation,work.resource.resource_id))
+        read=self._reads.get((work.resource.run_id,work.dispatch_generation,work.resource.resource_id))
         return bool(read is not None and not read.ticket.result.done()
                     and read.deadline>self.clock()
                     and read.ticket.turn_generation==work.query.turn_generation
                     and (read.dispatched==work.resource or
-                         (read.dispatched is None and self._work is work and self._state=='reserved')))
+                         (read.dispatched is None and
+                          (self._work is work and self._state=='reserved' or
+                           (work.resource.run_id in self._reader_lanes and
+                            self._reader_lanes[work.resource.run_id].work is work and
+                            self._reader_lanes[work.resource.run_id].state=='reserved')))))
 
     async def finish_read(self, run_id, token, connection_generation, result):
         """Consumer delivery only. Source/withdrawal output gate remains separate."""
@@ -697,8 +785,10 @@ class SharedReadAdmission:
         if isinstance(result,QueryResult) and result.status in {'ok','degraded'} and result.mode!='hybrid':
             raise ValueError('target reads require actual hybrid retrieval')
         run,_,_,_=await self._snapshot(run_id,token,connection_generation,observe=False)
-        if self._attachment!=(run_id,connection_generation,run['runtime_incarnation']):return False
-        key=(result.connection_generation,result.request_id)
+        attachment=(self._attachment if run['writer_slot'] else
+                    self._reader_lanes.get(run_id).attachment if run_id in self._reader_lanes else None)
+        if attachment!=(run_id,connection_generation,run['runtime_incarnation']):return False
+        key=(run_id,result.connection_generation,result.request_id)
         read=self._reads.get(key)
         if (read is None or result.connection_generation!=connection_generation
                 or read.ticket.turn_generation!=result.turn_generation
@@ -716,7 +806,9 @@ class SharedReadAdmission:
         run,_,_,_=await self._snapshot(run_id,token,connection_generation,observe=False)
         if (self._reads.get(key) is not read or read.deadline<=self.clock()
                 or read.ticket.result.done()
-                or self._attachment!=(run_id,connection_generation,run['runtime_incarnation'])):return False
+                or (self._attachment if run['writer_slot'] else
+                    self._reader_lanes.get(run_id).attachment if run_id in self._reader_lanes else None)
+                    !=(run_id,connection_generation,run['runtime_incarnation'])):return False
         if result.status in {'ok','degraded'} and (result.observed_data_seq<read.query.min_data_seq
                 or result.observed_projection_seq<read.query.min_data_seq):
             raise ValueError('read result violates minimum sequence')
