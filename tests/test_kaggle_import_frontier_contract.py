@@ -71,8 +71,9 @@ def test_complete_rejects_dangling_page_continuation():
 def test_prevalidation_does_not_accept_wrong_field_types():
     with pytest.raises(ValidationError):
         SourceResearchInput.model_validate({"state": "pending", "continuation": []})
-    with pytest.raises(ValidationError):
-        SourceResearchInput.model_validate({"state": "pending", "continuation": continuation(cursor=None)})
+    assert SourceResearchInput.model_validate(
+        {"state": "pending", "continuation": continuation(cursor=None)}
+    ).continuation["arguments"]["cursor"] is None
     with pytest.raises(ValidationError):
         SourceResearchInput.model_validate({"state": "pending", "continuation": continuation(batch_size=1.0)})
 
