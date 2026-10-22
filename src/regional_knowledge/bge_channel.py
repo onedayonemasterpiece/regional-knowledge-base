@@ -214,8 +214,14 @@ def channel_route(queue, *, read_telemetry=None):
                             elif runtime_readiness is None:
                                 issues = ('runtime_readiness_required',)
                             else:
+                                evaluated = runtime_readiness
                                 proof = await queue_call(queue.accept_search_runtime, run_id, token,
-                                                         generation, runtime_readiness)
+                                                         generation, evaluated)
+                                if runtime_readiness is not evaluated:
+                                    # A newer READY replaced this observation while it
+                                    # was checked; its own promote reports the outcome.
+                                    # Never answer it with a stale runtime_not_ready.
+                                    return
                                 issues = proof.issues
                             if issues:
                                 if runtime_blocked != issues:
@@ -234,8 +240,9 @@ def channel_route(queue, *, read_telemetry=None):
                 nonlocal last_work, cancelled_work
                 resume_pending = True
                 while True:
-                    observed = await status()
-                    await promote(observed)
+                    if not promoted or shared is None or probe_nonce is not None:
+                        observed = await status()
+                        await promote(observed)
                     if shared is not None:
                         if promoted and source_dispatch is not None:
                             settled=await source_dispatch.poll_settlement(run_id=run_id,token=token,generation=generation)
