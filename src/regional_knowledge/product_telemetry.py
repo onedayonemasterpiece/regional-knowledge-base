@@ -34,13 +34,19 @@ _STATUSES = frozenset({"started", "ok", "returned", "degraded", "pending", "stag
 _IDENTIFIERS = frozenset({"trace_id", "attempt_id", "run_id", "request_ref", "operation_ref"})
 _FIELDS = frozenset({"event", "phase", "status", "duration_ms", "level",
                      "timing_semantics", "connection_generation", "turn_generation"}) | _IDENTIFIERS
+_RESOURCE_FIELDS = frozenset({"cpu_percent", "cpu_seconds", "rss_bytes", "pss_bytes",
+                              "shared_bytes", "cgroup_memory_current_bytes",
+                              "cgroup_memory_limit_bytes", "cgroup_memory_max_bytes",
+                              "read_queue_depth", "process_count"})
 _OPAQUE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _clean(record: Mapping[str, object], level: str):
-    if not isinstance(record, Mapping) or set(record) - _FIELDS:
+    if not isinstance(record, Mapping) or set(record) - (_FIELDS | _RESOURCE_FIELDS):
         raise ValueError("only fixed telemetry metadata is accepted")
+    if set(record) & _RESOURCE_FIELDS and record.get("event") != "resource.sample":
+        raise ValueError("resource samples have separate fixed numeric fields")
     if (record.get("event") not in _EVENTS or record.get("phase") not in _PHASES
             or record.get("status") not in _STATUSES or level not in ("standard", "debug")):
         raise ValueError("fixed product event/phase/status required")
@@ -69,6 +75,11 @@ def _clean(record: Mapping[str, object], level: str):
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 86_400_000:
             raise ValueError("finite monotonic duration required")
         result["duration_ms"] = round(value, 3)
+    for key in _RESOURCE_FIELDS & set(record):
+        value = record[key]
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 2**63 - 1:
+            raise ValueError("bounded finite resource reading required")
+        result[key] = round(value, 3) if type(value) is float else value
     return result
 
 
