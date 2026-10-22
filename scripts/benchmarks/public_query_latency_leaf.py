@@ -422,7 +422,7 @@ def analyze(client: Sequence[dict], telemetry: Sequence[dict]) -> tuple[dict, li
         joint.append({**sample, "diagnostic_state":state, "useful":bool(useful),
             "backend_elapsed_ms":controller["backend_elapsed_ms"] if controller else None,
             "controller_stages_ms":controller["controller_stages_ms"] if controller else {},
-            "native_stages_ms":{**stage,**{"adapter_ms":adapter["adapter_ms"]} if "adapter_ms" in adapter else {}},
+            "native_stages_ms":dict(stage, **({"adapter_ms": adapter["adapter_ms"]} if "adapter_ms" in adapter else {})),
             "dispatch_state":controller["dispatch_state"] if controller else "unknown"})
     summary={"codec":"rkb.public-query-latency-report.v1",
         "scope":"public_MCP_query_observations_only_no_runtimes_launched",
