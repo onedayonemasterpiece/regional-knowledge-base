@@ -444,7 +444,13 @@ class BgeWssTransport:
         async def heartbeat():
             while True:
                 await asyncio.sleep(self.heartbeat_seconds)
-                await put({'type': 'HEARTBEAT', 'diagnostics': await asyncio.to_thread(self.diagnostics)})
+                # A denied /proc read or malformed sampler must never kill the
+                # authenticated channel's control heartbeat.
+                try:
+                    sample = await asyncio.to_thread(self.diagnostics)
+                except Exception:
+                    sample = {}
+                await put({'type': 'HEARTBEAT', 'diagnostics': sample})
                 await request_telegram()
 
         async def states():
