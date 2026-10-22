@@ -368,3 +368,62 @@ async def test_real_same_owner_writer_transition_denies_new_slack_cas_and_checkp
     finally:
         local.spool.close()
         p.guard.close()  # Independent Dataset writer; S3 fixture owner cleans up itself.
+
+
+@pytest.mark.asyncio
+async def test_late_signed_child_after_capture_does_not_inherit_parents_saved_version(
+        env,owner,tmp_path,monkeypatch):
+    """A real signed child staged during native readback needs its OWN verified
+    Dataset coverage; replay of the parent's 200 cannot mark it Saved.
+    """
+    p,local,ctl,credentials,app=composition(owner,env,tmp_path,monkeypatch)
+    try:
+        first_raw,first_headers=_event(n=61,thread='1792000000.100')
+        child_raw,child_headers=_event(n=62,thread='1792000000.100')
+        assert (await post(app,first_raw,first_headers)).status_code==503
+        first=next(x for x in local_rows(env.p) if x['event_id']=='Ev-61')
+        first_id=first['id']
+        assert not await p.owner.refresh(p.binding)
+        p.clock[0]=31
+
+        async def late_child_after_capture():
+            p.on_verify=None
+            child_response=await post(app,child_raw,child_headers)
+            assert child_response.status_code==503
+            assert child_response.json()=={'error':'remote_intent_pending'}
+        p.on_verify=late_child_after_capture
+        assert await p.owner.refresh(p.binding)
+        assert p.store.latest_checkpoint.dataset_version==2
+
+        child=next(x for x in local_rows(env.p) if x['event_id']=='Ev-62')
+        child_id=child['id']
+        child_key=ctl.dataset_records.key(child_id)
+        child_data=from_row(ctl._row(child_id))
+        assert first_id!=child_id and child['state']=='received'
+        assert ctl.confirm_dataset_coverage(first_id)
+        assert not ctl.confirm_dataset_coverage(child_id)
+        assert not p.store.remote_durable(child_key,child_data)
+        assert p.store.pending_control() is not None
+        assert (await post(app,first_raw,first_headers)).status_code==200
+        assert (await post(app,child_raw,child_headers)).status_code==503
+        assert len(local_rows(env.p))==2
+
+        p.clock[0]=32
+        assert not await p.owner.refresh(p.binding)
+        p.clock[0]=63
+        assert await p.owner.refresh(p.binding)
+        assert p.store.latest_checkpoint.dataset_version==3
+        assert p.store.remote_durable(child_key,child_data)
+        assert (await post(app,child_raw,child_headers)).status_code==200
+        assert len(local_rows(env.p))==2
+        assert p.calls.count('capture')==2
+        assert p.calls.count('finalize')==2
+        assert p.calls.count('verify')==2
+        assert ctl.claim(credentials,request_id=child_id)=={'state':'deferred'}
+        assert ctl.claim(credentials,request_id=first_id)['state']=='leased'
+        with p.q.connect(write=False) as db:
+            assert db.execute('SELECT sequence FROM rkb_control_spool_meta '
+                              'WHERE id=1').fetchone()[0]==0
+    finally:
+        local.spool.close()
+        p.guard.close()
