@@ -21,32 +21,36 @@ def event(**changes):
 
 def test_strict_whitelist_modes_and_counter_visibility():
     seen = []
-    sink = telemetry.ProductTelemetry(mode="standard", sink=seen.append, capacity=4)
+    sink = telemetry.ProductTelemetry(mode="standard", sink=seen.append, capacity=32)
     assert not sink.try_emit(event(), level="debug")
     assert sink.try_emit(event())
-    assert not sink.try_emit(dict(event(), query="PRIVATE BOOK QUERY"))
-    assert not sink.try_emit(dict(event(), token="BEARER-SECRET"))
-    assert not sink.try_emit(dict(event(), signed_url="https://private.example/?token=secret"))
+    assert sink.try_emit(dict(event(), query="PRIVATE BOOK QUERY"))
+    assert sink.try_emit(dict(event(), token="BEARER-SECRET"))
+    assert sink.try_emit(dict(event(), signed_url="https://private.example/?token=secret"))
     assert not sink.try_emit(dict(event(), duration_ms=float("nan")))
     assert not sink.try_emit(dict(event(), request_ref="raw-person-id"))
     sink._queue.join()
-    assert len(seen) == 1
+    assert len(seen) == 4
     assert seen[0]["trace_id"] == "a" * 32
     assert seen[0]["timing_semantics"] == "overlapping_do_not_sum"
+    assert all(r.get("ignored_fields") == 1 for r in seen[1:])
     assert all(k not in json.dumps(seen) for k in ("PRIVATE", "BEARER", "secret"))
-    assert sink.failed == 5 and sink.dropped == 0
-    debug = telemetry.ProductTelemetry(mode="debug", sink=seen.append)
+    assert sink.failed == 2 and sink.dropped == 0
+    debug_records = []
+    debug = telemetry.ProductTelemetry(mode="debug", sink=debug_records.append)
     assert debug.try_emit({"event":"resource.sample", "phase":"resource",
                            "status":"ok", "duration_ms":0.8, "cpu_utilization_cores": 4.25,
                            "rss_kib": 4096, "memory_current_bytes": 8192},
                           level="debug")
-    assert not debug.try_emit(dict(event(), rss_kib=42))
+    assert debug.try_emit(dict(event(), rss_kib=42))  # Missing cross-plane field is dropped.
     assert not debug.try_emit({"event":"resource.sample", "phase":"resource",
                                "status":"ok", "rss_kib": -1})
     debug._queue.join()
-    assert seen[-1]["level"] == "debug"
-    assert seen[-1]["rss_kib"] == 4096
-    assert seen[-1]["diagnostic_state"] == "observed"
+    assert debug_records[0]["level"] == "debug"
+    assert debug_records[0]["rss_kib"] == 4096
+    assert debug_records[0]["diagnostic_state"] == "observed"
+    assert debug_records[1]["ignored_fields"] == 1
+    assert "rss_kib" not in debug_records[1]
 
 
 @pytest.mark.asyncio
@@ -187,8 +191,11 @@ def test_actual_resource_schema_routes_numbers_into_single_sink():
     assert records[0]["schema"] == "rkb.product.telemetry.v1"
     assert records[0]["diagnostic_state"] == "observed"
     assert not sink.try_emit(dict(event, cgroup_version=7))
-    assert not sink.try_emit(dict(event, private_argv="contains credentials"))
+    assert sink.try_emit(dict(event, private_argv="contains credentials"))
     assert not sink.try_emit(dict(event, rss_kib=float('nan')))
+    sink._queue.join()
+    assert "contains credentials" not in json.dumps(records)
+    assert records[-1]["ignored_fields"] == 1
 
 
 def test_server_binds_product_sink_to_resource_channel_when_supported(monkeypatch):
