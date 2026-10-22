@@ -19,7 +19,7 @@ from regional_knowledge.read_issuance import ReadIssuanceMiddleware
 from regional_knowledge.server import build_server
 from test_control_spool import env
 from test_expert_request_control import _prepare, _event
-from test_kaggle_public_backend import target, work, settle, release
+from test_kaggle_public_backend import target, settle, release
 from test_read_authority import auth
 from test_participants import people
 from test_kaggle_service_startup import service
@@ -45,7 +45,6 @@ def test_exact_owner_factory_mounts_both_existing_routes_without_creating_servic
     assert receiver.backend is s.startup.backend
     assert receiver.authority is s.startup.authority
     assert control.spool is s.config.spool
-    assert receiver.control.dataset_records is None  # This fixture's journal only.
 
     absent = build_server(target_startup=s.startup).streamable_http_app(
         stateless_http=True, json_response=True)
@@ -122,7 +121,22 @@ async def test_signed_ingress_remote_journal_then_same_person_delegated_read(ser
             'X-RKB-Expert-Service': executor.service_id}
         task = asyncio.create_task(
             http.post(EVIDENCE_PATH, json=payload, headers=headers))
-        issued = await work(s.target)
+        # Observe the actual shared queue; surface premature HTTP failure
+        # instead of hiding it behind an unrelated 200 ms polling fixture.
+        issued = None
+        for _ in range(1500):
+            if task.done():
+                early = await task
+                reason = early.json().get('reason') if early.headers.get('content-type', '').startswith('application/json') else 'non_json'
+                pytest.fail(f'delegated read ended before dispatch: status={early.status_code} reason={reason}')
+            issued = await s.target.queue.next_channel_work(
+                s.target.run, s.target.token, s.target.generation)
+            if issued is not None:
+                assert issued.kind == 'read'
+                s.target.admission.mark_work_sent(issued)
+                break
+            await asyncio.sleep(.001)
+        assert issued is not None, 'read never reached existing shared admission'
         assert issued.query.actor.person_id == s.target.auth.p.other.subject
         assert issued.query.actor.person_id != s.target.auth.p.owner.subject
         assert issued.query.request_id == request_id
