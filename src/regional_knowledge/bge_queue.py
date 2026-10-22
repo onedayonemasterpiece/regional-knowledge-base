@@ -978,6 +978,28 @@ class BgeQueue:
         with self.connect(write=False) as db:
             return self._status(db,self.clock())
 
+    def request_idle_drain(self, run_id, *, provider_ref, provider_version):
+        """Operator requests planned closure of the exact idle current run.
+
+        This revokes serving through normal draining maintenance; it does not
+        certify provider termination, retire its reservation or settle work.
+        """
+        from .queue_writer import pending
+        with self.connect() as db:
+            run=db.execute('SELECT * FROM runs WHERE id=?',(run_id,)).fetchone()
+            current=db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]
+            if (run is None or current!=run_id or type(provider_version) is not int
+                    or (run['provider_ref'],run['provider_version'])!=(provider_ref,provider_version)
+                    or run['status'] not in ('ready','draining','expired')):
+                raise StaleAttachment('planned drain requires exact current provider identity')
+            if pending(db,run_id) or db.execute(
+                    "SELECT 1 FROM jobs WHERE run_id=? AND state='claimed' LIMIT 1",(run_id,)).fetchone():
+                return False
+            if run['status']=='ready':
+                db.execute("UPDATE runs SET status='draining' WHERE id=?",(run_id,))
+                _LOG.info('bge_planned_drain requested run_id=%s provider_version=%s',run_id,provider_version)
+            return True
+
     def maintenance(self):
         now=self.clock()
         with self.connect() as db:
