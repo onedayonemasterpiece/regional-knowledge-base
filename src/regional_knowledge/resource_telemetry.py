@@ -1,4 +1,4 @@
-"""Bounded, lossy resource observations on the existing controller read sink.
+"""Bounded, lossy resource observations via the shared controller product sink.
 
 This is NOT a domain receipt, writer checkpoint or new persistent log service.
 All values are allowlisted numerical observations. Missing measurements stay
@@ -60,13 +60,13 @@ def clean_resource_numbers(value):
 
 def emit_resource_sample(collector, diagnostics, *, run_id, incarnation,
                          generation, release=None, received_unix_ms=None):
-    """Enqueue one accepted worker observation, never waiting for disk or I/O.
+    """Hand one authenticated worker observation to the shared nonblocking sink.
 
     The caller has already authenticated and fenced the WSS attachment. This
     adapter cannot grant that authority, mutate domain state, or reject a
     HEARTBEAT. It uses ReadTelemetry's existing finite, dropping queue.
     """
-    if collector is None or not callable(getattr(collector, '_record', None)):
+    if collector is None or not callable(getattr(collector, 'try_emit', None)):
         return False
     try:
         if (type(run_id) is not str or not 1 <= len(run_id) <= 256
@@ -86,7 +86,7 @@ def emit_resource_sample(collector, diagnostics, *, run_id, incarnation,
                 or re.fullmatch('[0-9a-f]{64}', release) is None):
             release = None
         dropped = getattr(collector, 'dropped', 0)
-        failed = getattr(collector, 'failed', 0)
+        failed = getattr(collector, 'failed', getattr(collector, 'error', 0))
         if type(dropped) is not int or dropped < 0:
             dropped = 0
         if type(failed) is not int or failed < 0:
@@ -115,12 +115,7 @@ def emit_resource_sample(collector, diagnostics, *, run_id, incarnation,
         serialized = json.dumps(event, allow_nan=False, separators=(',', ':'))
         if len(serialized.encode('utf-8')) > _MAX_BYTES:
             return False
-        collector._record(serialized)
-        return getattr(collector, 'dropped', 0) == dropped
+        return collector.try_emit(event) is True
     except Exception:
         # Telemetry failure never replaces a signed channel ACK or useful read.
-        try:
-            collector.failed += 1
-        except Exception:
-            pass
         return False
