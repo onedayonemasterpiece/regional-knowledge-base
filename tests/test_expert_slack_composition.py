@@ -19,7 +19,9 @@ from regional_knowledge.read_issuance import ReadIssuanceMiddleware
 from regional_knowledge.server import build_server
 from test_control_spool import env
 from test_expert_request_control import _prepare, _event
-from test_kaggle_public_backend import work, settle, release
+from test_kaggle_public_backend import target, work, settle, release
+from test_read_authority import auth
+from test_participants import people
 from test_kaggle_service_startup import service
 
 
