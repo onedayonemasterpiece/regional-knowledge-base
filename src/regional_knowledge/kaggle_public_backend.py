@@ -368,9 +368,13 @@ class KaggleSourceBackend:
             action=action,limit=limit,cursor=cursor))
 
     async def entity_list(self,principal,*,document_ids=None,kinds=None,query='',limit=3,cursor=None):
-        if (not isinstance(document_ids,(list,tuple)) or len(document_ids)!=1 or kinds or query):
+        # Preserve the native graph's exact source bound while forwarding the
+        # existing public name/kind selectors; never scan corpus on Dev.
+        if not isinstance(document_ids,(list,tuple)) or len(document_ids)!=1:
             raise ToolError('{"status":"unavailable","reason":"target_graph_exact_source_scope_required"}')
-        return await self._search('',principal,evidence=True,graph_request=dict(source_id=document_ids[0],action='list',limit=limit,cursor=cursor))
+        return await self._search('',principal,evidence=True,graph_request=dict(
+            source_id=document_ids[0],action='list',limit=limit,cursor=cursor,
+            kinds=(tuple(kinds) or None) if isinstance(kinds,(list,tuple)) else kinds,query=query))
 
     async def _search(self, query, principal, *, evidence, source_ids=None, limit=3, exact_locator=None,
                       story_request=None,fact_request=None,catalog_request=None,graph_request=None,kinds=('source',),trusted=None,story_cursor_generation=None):
@@ -666,9 +670,24 @@ class KaggleSourceBackend:
         return await self._search(None,principal,evidence=True,kinds=('story',),story_request=params,story_cursor_generation=generation)
 
     async def story_search(self,query,principal,*,filters=None,mode='hybrid',order='updated',limit=3,cursor=None):
-        if filters or mode!='hybrid' or order!='updated' or cursor is not None or not 1<=limit<=5:
+        if mode!='hybrid' or order!='updated' or cursor is not None or not 1<=limit<=5:
             raise ToolError('{"status":"unavailable","reason":"unsupported_target_story_search"}')
-        return await self._search(query,principal,evidence=True,kinds=('story',),limit=limit)
+        # Existing QueryFilters/Story SQL already scope lexical, dense and
+        # hydration by source. Other legacy filters need native predicates:
+        # never post-filter a global top-K or silently discard restrictions.
+        if filters is not None and (type(filters) is not dict or set(filters)-{'source_id'}):
+            raise ToolError('{"status":"unavailable","reason":"unsupported_target_story_filter"}')
+        source_ids=None
+        if filters and 'source_id' in filters:
+            source_id=filters['source_id']
+            try:
+                if type(source_id) is not str or str(UUID(source_id))!=source_id:
+                    raise ValueError('canonical source UUID required')
+            except (TypeError,ValueError,AttributeError):
+                raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
+            source_ids=(source_id,)
+        return await self._search(query,principal,evidence=True,kinds=('story',),
+            source_ids=source_ids,limit=limit)
 
     async def story_calendar(self,principal,*,month,day,calendar='gregorian',limit=3,cursor=None):
         return await self._search(None,principal,evidence=True,kinds=('fact',),fact_request=dict(
