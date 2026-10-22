@@ -41,6 +41,7 @@ from test_kaggle_public_backend import target,release
 from test_read_authority import auth
 from test_participants import people,change
 from regional_knowledge.participant_contracts import ParticipantGrant
+from regional_knowledge.participant_contracts import ParticipantGrant
 from regional_knowledge.server import build_server
 
 
@@ -256,8 +257,9 @@ async def test_real_source_backend_shared_admission_wss_media_to_mcp_image(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("race",["media_id","actor_revoke","source_withdraw","native_lease"])
 async def test_real_shared_media_result_wrong_crop_and_source_are_not_authority(
-    service,monkeypatch):
+    service,monkeypatch,race):
     s=service;s.adapter.available=True
     from regional_knowledge.kaggle_public_backend import current_binding
     b=current_binding(s.target.queue)
@@ -278,7 +280,17 @@ async def test_real_shared_media_result_wrong_crop_and_source_are_not_authority(
         try:
             # Uploaded bytes can change after native observation: fail entire
             # ImageContent and current gate does not send stale data.
-            client.on_chunk=lambda:setattr(client.message.photo,"id",51)
+            if race=="media_id":
+                client.on_chunk=lambda:setattr(client.message.photo,"id",51)
+            elif race=="actor_revoke":
+                client.on_chunk=lambda:change(
+                    service.target.auth.p,ParticipantGrant(
+                        capability="public_search",granted=False,
+                        reason="revoke after native Telegram image chunk"))
+            elif race=="source_withdraw":
+                client.on_chunk=service.startup.config.spool.invalidate_source_history
+            elif race=="native_lease":
+                client.on_chunk=lambda:lease.__setitem__(0,False)
             result,raw=await asyncio.wait_for(call_http(
                 type("Bound",(),{"server":server,"startup":s.startup})()),timeout=8)
             assert result["result"]["isError"]
