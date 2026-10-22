@@ -377,7 +377,7 @@ async def test_source_restore_observation_binds_final_launch_target_while_base_v
 
 
 @pytest.mark.asyncio
-async def test_native_finish_refuses_capability_when_target14_has_no_applied_schema_transition(monkeypatch):
+async def test_native_finish_refuses_capability_when_target14_has_no_applied_schema_transition(monkeypatch, capsys):
     import regional_knowledge.kaggle_pg_snapshot_native as native
     final = importlib.import_module('regional_knowledge.source_activation').ACTIVATION_REVISIONS
     database = OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', *final.wire(),
@@ -421,3 +421,9 @@ async def test_native_finish_refuses_capability_when_target14_has_no_applied_sch
         await factory.finish(session, expected_tail=(), final_head=None,
             control_bytes=control, expected_catalog_sha256=sha(b'synthetic-catalog14'))
     assert not factory._capabilities and session in factory._sessions
+    observed = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+                if 'native_restore_final_observation' in line]
+    assert len(observed) == 1
+    assert observed[0]['observed_catalog_sha256'] == sha(b'synthetic-catalog11')
+    assert observed[0]['expected_catalog_sha256'] == sha(b'synthetic-catalog14')
+    assert b'synthetic-catalog11'.decode() not in json.dumps(observed[0])
