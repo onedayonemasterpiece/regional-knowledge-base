@@ -137,13 +137,13 @@ async def test_real_pg17_sparse_kinds_query_before_limit_unicode_and_withdrawal(
     assert receipt.status=='applied'
     connection=native['connection']
     async with connection.transaction():
-        # Legacy 8x(1+1) cannot reach the three rare entities at keys zz-*.
+        # Legacy eight complete four-row scans (32 rows) cannot reach zz-*.
         after_source=after_key=None
         for scan in range(8):
             old=await (await connection.execute(
-                "SELECT * FROM rkb_v4.read_source_graph_v1(NULL,%s::uuid,'list',%s::uuid,%s,2)",
+                "SELECT * FROM rkb_v4.read_source_graph_v1(NULL,%s::uuid,'list',%s::uuid,%s,4)",
                 (SOURCE,after_source,after_key))).fetchall()
-            assert len(old)==2 and not any('Straße' in row[4]['canonical_label'] for row in old)
+            assert len(old)==4 and not any('Straße' in row[4]['canonical_label'] for row in old)
             after_source,after_key=old[-1][0],old[-1][3]
         filtered=await (await connection.execute(
             "SELECT * FROM rkb_v4.read_source_graph_filtered_v1(%s::uuid,NULL,NULL,%s::text[],%s,4)",
@@ -157,6 +157,15 @@ async def test_real_pg17_sparse_kinds_query_before_limit_unicode_and_withdrawal(
             "SELECT record_id FROM rkb_v4.read_source_graph_filtered_v1(%s::uuid,NULL,NULL,NULL,%s,4)",
             (SOURCE,'i\u0307stanbul'))).fetchall()
         assert [r[0] for r in by_alias]==['zz-case-1']
+        spelling=await (await connection.execute(
+            "SELECT data->'mention'->>'exact_source_spelling' "
+            "FROM rkb_v4.source_entity_representations WHERE source_id=%s AND entity_key='noise-00'",
+            (SOURCE,))).fetchone()
+        assert spelling and spelling[0]
+        by_spelling=await (await connection.execute(
+            "SELECT record_id FROM rkb_v4.read_source_graph_filtered_v1(%s::uuid,NULL,NULL,NULL,%s,4)",
+            (SOURCE,spelling[0].casefold()))).fetchall()
+        assert ('noise-00',) in by_spelling  # Not from its unrelated canonical label.
         none=await (await connection.execute(
             "SELECT * FROM rkb_v4.read_source_graph_filtered_v1(%s::uuid,NULL,NULL,%s::text[],%s,4)",
             (SOURCE,['poi_ref'],'strasse'))).fetchall()
@@ -214,7 +223,10 @@ async def test_real_pg17_source_filtered_cursor_returns_every_rare_entity_and_no
         await connection.execute('UPDATE rkb_v4.sources SET withdrawn=true WHERE source_id=%s',(SOURCE,))
     withdrawn=await execute_source_graph_read(
         selected(query='STRASSE',kinds=['organization']),acquire=acquire)
-    assert withdrawn.status=='ok' and not withdrawn.records and withdrawn.next_cursor is None
+    # Direct SQL withdrawal invalidates read readiness; the typed path
+    # must fail closed, never misrepresent an unready snapshot as a no-hit.
+    assert withdrawn.status=='unavailable' and withdrawn.reason=='not_ready'
+    assert not withdrawn.records and withdrawn.next_cursor is None
 
 
 @PG17
