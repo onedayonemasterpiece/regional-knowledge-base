@@ -13,7 +13,7 @@ import base64
 from dataclasses import replace
 import json
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID,uuid4
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -390,7 +390,9 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
                 "SELECT source_id,revision,ingestion_id,origin_ingestion_id,"
                 "predecessor_command_sha256 FROM rkb_v4.source_revision2_origins WHERE source_id=%s",
                 (SOURCE,))).fetchone()
-            assert origin==(SOURCE,2,v2_ingestion,INGESTION,
+            # psycopg returns PostgreSQL uuid columns as UUID, not strings.
+            # Compare exact native typed identity; never coerce away it.
+            assert origin==(UUID(SOURCE),2,UUID(v2_ingestion),UUID(INGESTION),
                             digest(original_activation.encode()))
         # One PK source ID across revisions; no second archived original.
         assert env["sequence"]>=before_seq+3
