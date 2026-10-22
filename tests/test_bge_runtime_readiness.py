@@ -266,3 +266,29 @@ def test_exact_target_ready_stays_closed_without_canonical_shared_admission(run)
             response=socket.receive_json()
             assert response['status']=='runtime_not_ready' and response['reasons']==['shared_admission_required']
             assert not queue.channel_status(ident,token,generation)['ready']
+
+
+def test_stale_readiness_evaluation_never_answers_a_newer_ready(shared_channel_run, monkeypatch):
+    """The dispatch loop may still be checking READY#2 when READY#3 arrives; its
+    late runtime_not_ready must not be sent as the answer to READY#3."""
+    import time as _time
+    queue, ident, token, nonce = shared_channel_run
+    original = queue.accept_search_runtime
+    def slow(*args, **kwargs):
+        _time.sleep(.3)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(queue, 'accept_search_runtime', slow)
+    with TestClient(Starlette(routes=[channel_route(queue)])) as app:
+        with app.websocket_connect('/bge-worker/channel', headers={'Authorization': 'Bearer ' + token}) as socket:
+            socket.send_json(dict(type='ATTACH', protocol_version=2, run_id=ident,
+                launch_nonce=nonce, runtime_incarnation='incarnation'))
+            generation = socket.receive_json()['connection_generation']
+            socket.send_json(dict(type='RESOURCE_STATE', protocol_version=2,
+                connection_generation=generation, state='idle'))
+            def send_ready(payload):
+                socket.send_json(dict(type='READY', protocol_version=2, connection_generation=generation,
+                    model_revision=REVISION, space=SPACE, runtime_readiness=payload))
+            send_ready(observation(database_generation='wrong'))
+            assert socket.receive_json()['status'] == 'runtime_not_ready'
+            send_ready(observation())
+            assert socket.receive_json()['status'] == 'ready'
