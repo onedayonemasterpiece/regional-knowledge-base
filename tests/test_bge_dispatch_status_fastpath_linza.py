@@ -153,6 +153,41 @@ def test_source_fastpath_real_wss_roundtrip_keeps_current_fence(
         assert any(caller == "dispatch" and ready for caller,ready,_ in observations)
 
 
+@pytest.mark.parametrize("fastpath", [False, True])
+def test_legacy_nonshared_mode_keeps_status_on_promoted_dispatch(fastpath):
+    """Only shared worker status is optimized; the legacy WSS loop is intact."""
+    from test_bge_channel import Queue as LegacyQueue
+    legacy=LegacyQueue()
+    observations=[]
+    route=candidate_route(fastpath=fastpath,observations=observations)
+    with TestClient(Starlette(routes=[route(legacy)])) as app:
+        with app.websocket_connect("/bge-worker/channel",
+                headers={"Authorization":"Bearer secret"}) as socket:
+            socket.send_json(dict(type="ATTACH",protocol_version=2,
+                run_id="run",launch_nonce="nonce",runtime_incarnation="incarnation"))
+            welcome=socket.receive_json()
+            assert welcome["type"]=="WELCOME"
+            generation=welcome["connection_generation"]
+            socket.send_json(dict(type="READY",protocol_version=2,
+                connection_generation=generation,space=SPACE,model_revision=REVISION))
+            ready=socket.receive_json()
+            assert ready["type"]=="READY_ACK" and ready["status"]=="ready",ready
+            legacy.enqueue()
+            assigned=socket.receive_json()
+            assert assigned["type"]=="DISPATCH" and assigned["claim"]=="claim"
+            socket.send_json(dict(type="RESULT",protocol_version=2,
+                connection_generation=generation,job_id="job",claim="claim",
+                space=SPACE,vectors=[[1.0]+[0.0]*1023],
+                timings={"encoder_seconds":.01}))
+            confirmed=socket.receive_json()
+            assert confirmed["type"]=="RESULT_ACK" and confirmed["status"]=="accepted"
+    # No shared admission, so the original legacy per-iteration status
+    # must remain present AFTER promotion in both source variants.
+    assert any(caller=="dispatch" and promoted
+               for caller,promoted,_ in observations)
+    assert legacy.completed is not None
+
+
 def test_exact_inert_patch_preserves_send_side_fences_and_protocol():
     """Only a redundant promoted dispatch status is conditionalized."""
     source = Path(inspect.getfile(production)).read_text()
