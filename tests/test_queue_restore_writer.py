@@ -98,15 +98,15 @@ async def test_recovery_only_writer_fences_old_generation_and_acceptance_until_n
     class Native:
         async def verify_initialized(self,binding,reference):
             assert reference=='actual-retained-native-reference'
-            return dict(database=db.wire(),identity=list(identity),applied_sequence=0,catalog_sha256='a'*64)
+            return dict(database=db.wire(),identity=list(identity),applied_sequence=0,schema_version=db.schema_version)
     physical=PhysicalSnapshotRecovery(e.j,None,Native(),registry=None,history_verifier=None,
         maintenance_guard=guard,current=lambda b:e.w.recovery_current(b),private_storage_current=lambda:e.w.recovery_current(e.b))
     proof=ControllerRecoveryProof(physical,'actual-retained-native-reference',db,identity,e.plan.manifest,None,0,
-        b'{"catalog_sha256":"'+b'a'*64+b'"}',e.b)
+        b'{"schema_version":16}',e.b)
     physical._proofs.add(proof)
     with pytest.raises(StaleWriter,match='verified target runtime'):
         await e.w.activate_recovered(e.j,proof,e.b)
-    value=dict(hashes=dict(e.expected.hashes),database_generation='synthetic-db',schema_revision='s1',function_revision='f1',executor_revision='e1',
+    value=dict(hashes=dict(e.expected.hashes),database_generation='synthetic-db',schema_revision='s1',function_revision='f1',executor_revision='e1',schema_version=16,
         applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,archive_read_ready=None,proof_ready=None)
     assert e.q.accept_search_runtime(e.run,e.token,e.generation,value).ok
     e.q.heartbeat(e.run,e.token,ready=True,connection_generation=e.generation)

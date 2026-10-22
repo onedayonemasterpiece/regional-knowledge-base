@@ -118,7 +118,8 @@ def retained_encoder():
 @pytest.mark.asyncio
 async def test_runtime_native14_retains_exact_encoder_and_observes_current_closed():
     runtime = object.__new__(TargetRuntime)
-    runtime.database = SimpleNamespace(schema_revision=ACTIVATION_REVISIONS.schema)
+    runtime.database = SimpleNamespace(schema_version=14)
+    runtime.target={'command_handlers':[{'route':'source.materialize.v1'}]}
     runtime.closed = False
     encoder, counted, forwarded, vector = retained_encoder()
     materializer = runtime._native_source_materializer(encoder)
@@ -136,13 +137,11 @@ async def test_runtime_native14_retains_exact_encoder_and_observes_current_close
         materializer._current()
 
 
-@pytest.mark.parametrize('schema', [
-    'rkb-v4-sql001-011-v1', 'rkb-v4-sql001-012-v1',
-    'rkb-v4-sql001-013-v1', 'rkb-v4-sql001-014-v2',
-])
+@pytest.mark.parametrize('schema', [11,12,13])
 def test_runtime_does_not_install_native14_materializer_for_another_profile(schema):
     runtime = object.__new__(TargetRuntime)
-    runtime.database = SimpleNamespace(schema_revision=schema)
+    runtime.database = SimpleNamespace(schema_version=schema)
+    runtime.target={'command_handlers':[{'route':'source.materialize.v1'}]}
     runtime.closed = False
     # An arbitrary object would fail if the resident factory were reached.
     assert runtime._native_source_materializer(object()) is None
@@ -150,7 +149,8 @@ def test_runtime_does_not_install_native14_materializer_for_another_profile(sche
 
 def test_runtime_native14_refuses_an_unverified_encoder_type():
     runtime = object.__new__(TargetRuntime)
-    runtime.database = SimpleNamespace(schema_revision=ACTIVATION_REVISIONS.schema)
+    runtime.database = SimpleNamespace(schema_version=14)
+    runtime.target={'command_handlers':[{'route':'source.materialize.v1'}]}
     runtime.closed = False
     with pytest.raises(TypeError, match='same verified resident'):
         runtime._native_source_materializer(SimpleNamespace(count=lambda text:3))

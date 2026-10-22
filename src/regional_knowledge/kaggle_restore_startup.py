@@ -99,7 +99,7 @@ class SourceRestoreCoordinator:
                     or not run['channel_active'] or run['attachment_conflict'] or self.queue._run_expired(run,self.queue.clock())
                     or not run['runtime_incarnation'] or run['provider_version'] is None or runtime is None):
                 raise SnapshotError('restore_current_attachment_unavailable')
-            expected=json.loads(runtime['expected_json'])
+            expected=self.queue._runtime_expected(runtime).wire()
             if (expected.get('hashes',{}).get('launch_config')!=self.config.launch_config_sha256
                     or expected.get('database_generation')!=self.database.database_generation
                     or any(expected.get(key)!=getattr(self.database,key) for key in

@@ -45,8 +45,8 @@ def test_dataset_native_and_wheel_copy_then_warm_reuse_without_mount(dataset_san
     working,inputs,mounted,requests=dataset_sandbox
     native=b'native fixture'*(stage0.CHUNK_BYTES//7)
     wheel=b'pinned wheel fixture'
-    (mounted/'native-packages.tar').write_bytes(native)
-    (mounted/'pyaes.whl').write_bytes(wheel)
+    (mounted/'native-packages.tar').write_bytes(native);(mounted/'native-packages.tar').chmod(0o400)
+    (mounted/'pyaes.whl').write_bytes(wheel);(mounted/'pyaes.whl').chmod(0o400)
     items=(replace(pinned('native-packages.tar',native),executable=True),
         pinned('wheels/pyaes.whl',wheel,source_name='pyaes.whl'))
     plan,inventory=plan_and_inventory(working,*items,wheels=('wheels/pyaes.whl',))
@@ -68,7 +68,7 @@ def test_dataset_native_and_wheel_copy_then_warm_reuse_without_mount(dataset_san
 def test_same_slug_with_wrong_version_bytes_is_rejected_by_content_pin(dataset_sandbox):
     working,_,mounted,requests=dataset_sandbox
     item=pinned('native-packages.tar',b'approved version')
-    (mounted/'native-packages.tar').write_bytes(b'previous version')
+    (mounted/'native-packages.tar').write_bytes(b'previous version');(mounted/'native-packages.tar').chmod(0o400)
     plan,inventory=plan_and_inventory(working,item)
     with pytest.raises(stage0.Stage0Error,match='stage0_download_hash_mismatch'):
         stage0.prepare_stage0(inventory,plan.wire())
