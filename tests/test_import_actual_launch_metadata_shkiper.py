@@ -19,7 +19,7 @@ from regional_knowledge.kaggle_stage0_urls import PinnedStage0Object
 from regional_knowledge.kaggle_stage0 import Stage0Spec
 from regional_knowledge.kaggle_target_launch import persist_empty_intent
 from regional_knowledge.source_activation import ACTIVATION_REVISIONS
-from test_import_dependency_packaging import packaging, inputs, placement
+from test_import_dependency_packaging import packaging, inputs, placement, dataset_placement
 from test_kaggle_target_runtime import generate, queue_run
 from test_recovery_journal import fixture as journal_fixture
 from test_stage0_url_renewal import signed, ORIGIN
@@ -30,18 +30,21 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.skipif(not os.environ.get('RKB_IMPORT_NATIVE_METADATA'),
                     reason='explicit exact assembled native artifact metadata required')
 @pytest.mark.asyncio
-async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path, monkeypatch):
+@pytest.mark.parametrize('dependency_transport',['https','dataset'])
+async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path, monkeypatch,dependency_transport):
     artifact = Path(os.environ['RKB_IMPORT_NATIVE_METADATA'])
     raw = (artifact / 'native-manifest.json').read_bytes()
     assert hashlib.sha256(raw).hexdigest() == '84ab517abe83ca7f90b16290f30332415522eb4b355b6ef194c40df89cb264f5'
     native = json.loads((artifact / 'native-receipt.json').read_text())
     adapter = packaging()
     base, candidate = inputs(adapter)
-    wheel_lock = adapter.merge_wheels(base, candidate, placement(candidate))
+    receipt=dataset_placement(candidate) if dependency_transport=='dataset' else placement(candidate)
+    wheel_lock = adapter.merge_wheels(base, candidate, receipt)
     assert len(wheel_lock['packages']) == 55
     assert wheel_lock['packages'][:51] == base['packages']
     native_downloads = [dict(name=row['name'], size=row['size'], sha256=row['sha256'],
-        executable=False, url=ORIGIN+'/rkb-fixture/'+row['sha256']+'/'+row['name'])
+        executable=False, url=('kaggle-dataset://fixture-owner/rkb-bootstrap/7/'+row['name']
+            if dependency_transport=='dataset' else ORIGIN+'/rkb-fixture/'+row['sha256']+'/'+row['name']))
         for row in native['artifacts']]
     target = build_bootstrap_target(wheel_lock=wheel_lock, native_receipt=native,
         native_manifest_bytes=raw, native_downloads=native_downloads,
@@ -52,13 +55,15 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
     private_names = {row['name'] for row in native['artifacts']} | {'wheels/pyaes-1.6.1-py3-none-any.whl'}
     downloads = []
     for row in target.stage0.downloads:
-        if row.name in private_names:
+        if row.name in private_names and dependency_transport=='https':
             pin = PinnedStage0Object(row.name, ORIGIN, 'rkb-fixture',
                 'rkb/kaggle-v4/bootstrap-artifacts/'+row.sha256+'/'+Path(row.name).name,
                 row.size, row.sha256)
             row = replace(row, url=signed(pin))
         downloads.append(row)
     target = replace(target, stage0=replace(target.stage0, downloads=tuple(downloads)))
+    assert target.stage0.dataset_sources==(('fixture-owner/rkb-bootstrap/7',)
+        if dependency_transport=='dataset' else ())
     queue, run = queue_run(tmp_path)
     _, journal = journal_fixture()
     await persist_empty_intent(queue, run, target, launch_nonce=queue.prepare_channel(run),
@@ -84,4 +89,5 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
         launch_json_bytes=len(canonical(config)), notebook_source_bytes=len(source.encode()),
         actual_native_manifest_sha256=hashlib.sha256(raw).hexdigest(),
         schema=target.database.schema_revision, identities_and_signed_urls='synthetic_only',
+        dependency_transport=dependency_transport,
         provider_effects=False, pg_or_model_executed=False)))

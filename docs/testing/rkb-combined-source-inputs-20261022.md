@@ -34,12 +34,16 @@ Candidate `768bca5c950507b053b157626e34c4ffcf6539af` passed CI39773458811:
 | --- | --- | --- | --- |
 | PR246 | `1836c3243b86125f03718881918eaaa5c8f3bc00` | Dataset Stage0 copy and controller pre-claim readiness/metadata | Clean |
 | PR247 | `a8033238904ee4c36b99df459a9fadb9caf5d76d` | Expert-only server.main receiver composition | One conflict in main's build_server call; retained exact incoming e928fc4 composition/call hunk; earlier health/media hunks preserved |
+| PR223 Dataset receipt follow-up | `5fad3eb6c3e7b8a12ce2910e27adcaf6f830d4f7` | Metadata wheel-lock accepts exact Dataset placement | Clean; no package bytes/pins changed |
 
 PR246 source depends on already included PR242/243. Its earlier fbdafb5
 implementation passed CI39774529351 on both Python; the later1836c32 controller
 wiring has a new run pending. PR247 brings its own main composition test;
 no source outside the declared main hunk was replaced. This later combined
-update requires its own full CI before any compatibility claim.
+update requires its own full CI before any compatibility claim. PR246 controller
+HEAD1836c32 passed full CI39774994627 on both Python. The next actual metadata
+job checks both original HTTPS descriptors and the owner's selected Dataset
+transport using the same actual native manifest and all55 wheels/165 entries.
 
 ## Explicit exclusions and next boundaries
 
