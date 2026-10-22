@@ -281,6 +281,12 @@ class PublicIllustrationOutputGate:
                     row.archive_state)):
             _fail("invalid_media_projection")
         item, page, region = row.item, row.manifest_page, row.manifest_region
+        bbox = item.get("bbox")
+        if (type(bbox) is not dict or
+                set(bbox) != {"left", "top", "right", "bottom"} or
+                any(type(x) is not int or not 0 <= x <= 20000 for x in bbox.values()) or
+                not bbox["left"] < bbox["right"] or not bbox["top"] < bbox["bottom"]):
+            _fail("invalid_media_figure_bbox")
         crop = self._binding(row)
         if (item.get("illustration_id") != illustration_id
                 or item.get("page_id") != page.get("page_id")
@@ -410,8 +416,15 @@ class PublicIllustrationOutputGate:
             if self.archive.issuance_current(proof) is not True:
                 _fail("media_archive_lease_changed")
             metadata = self.render_metadata(second.item, status="ready")
+            expected_public = {
+                k:v for k,v in second.item.items()
+                if k in _SAFE_MEDIA_FIELDS
+            }
+            expected_public.update(artifact_class="public_illustration",
+                                   rendition="preview", status="ready")
             if (type(metadata) is not dict
                     or not set(metadata) <= _SAFE_MEDIA_FIELDS
+                    or metadata != expected_public
                     or any(k in metadata for k in _PRIVATE_MARKERS)
                     or metadata.get("illustration_id") != illustration_id
                     or metadata.get("page_id") != second.manifest_page.get("page_id")
