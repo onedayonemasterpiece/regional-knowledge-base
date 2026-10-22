@@ -15,7 +15,7 @@ from .kaggle_stage0 import MAX_PREPARED_FILES
 
 MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_search',
     'kaggle_readiness','kaggle_worker_query','kaggle_warm_read','kaggle_warm_maintenance','kaggle_database_probe','kaggle_bootstrap',
-    'kaggle_owned_pg','kaggle_target_runtime','kaggle_apply','recovery_journal','query_telemetry',
+    'kaggle_owned_pg','kaggle_schema_migrate','kaggle_target_runtime','kaggle_apply','recovery_journal','query_telemetry',
     'source_import','kaggle_source_commands','kaggle_stage0','kaggle_restored_database','kaggle_native_bundle',
     'kaggle_environment','kaggle_pg_snapshot_native','kaggle_recovery_phases','kaggle_snapshot_channel',
     'native_snapshot_transfer','kaggle_bootstrap_pins','kaggle_native_env','kaggle_source_acl','kaggle_source_history_native',
