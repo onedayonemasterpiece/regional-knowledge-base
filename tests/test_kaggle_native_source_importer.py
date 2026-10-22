@@ -426,6 +426,12 @@ async def test_mcp_inline_stage_omits_absent_graph_and_rejects_malformed_graph(n
     assert entry.command.route == STAGE_ROUTE
     stage_document = validate_stage_payload(entry.command.payload, source_id=result.document_id)
     assert "entity_candidates" not in stage_document["model_payload"]
-    assert stage_document["model_payload"]["pages"] == payload["pages"]
-    assert stage_document["model_payload"]["chunks"] == payload["chunks"]
+    assert stage_document["model_payload"]["pages"] == [
+        StagePageInput.model_validate(page).model_dump(mode="json", exclude_none=True)
+        for page in payload["pages"]
+    ]
+    assert stage_document["model_payload"]["chunks"] == [
+        StageChunkInput.model_validate(chunk).model_dump(mode="json", exclude_none=True)
+        for chunk in payload["chunks"]
+    ]
     assert operation_count(s) == 1
