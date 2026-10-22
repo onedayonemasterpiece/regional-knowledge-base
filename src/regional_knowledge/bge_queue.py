@@ -787,6 +787,12 @@ class BgeQueue:
             if generation is None:raise StaleAttachment('channel generation required')
             if self._run_expired(run,self.clock()):raise RevokedRun('stale BGE worker')
             owner=db.execute('select run_id,incarnation from bge_shared_admission where id=1').fetchone()
+            current=db.execute('select current_run from control where id=1').fetchone()
+            # One persistent resource/writer owner remains global. A distinct
+            # already-authenticated read worker gets only an ephemeral read slot;
+            # it never binds this owner or claims a durable document command.
+            writer_slot=(current is not None and current['current_run']==run_id
+                         or owner['run_id']==run_id)
             # One index seek per registered canonical actor. A legacy actor's
             # arbitrarily long pending tail cannot hide another actor's head.
             # No done journal or untrusted actor enumeration is necessary.
@@ -809,7 +815,8 @@ class BgeQueue:
             resumed=db.execute("select * from jobs where state='claimed' and kind in ('document','source_command','recovery_phase') and run_id=? and lease_until>? limit 1",(run_id,self.clock())).fetchone()
             runtime=self._runtime_row(db,run_id)
             projected={**dict(run),'runtime_required':runtime is not None,
-                       'runtime_verified':runtime is not None and runtime['accepted_generation']==generation}
+                       'runtime_verified':runtime is not None and runtime['accepted_generation']==generation,
+                       'writer_slot':bool(writer_slot)}
             return projected,dict(owner),rows,dict(resumed) if resumed else None
 
     def _admission_bind(self, run_id, token, generation, incarnation):
