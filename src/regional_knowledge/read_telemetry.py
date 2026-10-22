@@ -107,6 +107,22 @@ class ReadTelemetry:
                 if key in _CONTROLLER_STAGES and type(value) in (int,float)
                 and math.isfinite(value) and 0<=value<=86400000}
         self._attempt_record(record)
+        # Bridge controller trace/attempt/request hash to the same local
+        # product sink used by the native read stages; never log request IDs.
+        try:
+            from .product_telemetry import emit_product_event
+            observed = {key: record[key] for key in (
+                'trace_id', 'attempt_id', 'request_ref', 'run_id',
+                'connection_generation', 'turn_generation') if key in record}
+            terminal = record['status']
+            if terminal in ('invalid_query', 'denied'):
+                terminal = 'rejected'
+            elif terminal not in ('ok','degraded','pending','unavailable','cancelled','error'):
+                terminal = 'error'
+            emit_product_event({'event':'read.terminal','phase':'dispatch','status':terminal,
+                'duration_ms':record['backend_elapsed_ms'], **observed})
+        except Exception:
+            self.failed += 1  # No diagnostic can change an authenticated result.
         return True
 
     def native_events(self,events,**identity):
