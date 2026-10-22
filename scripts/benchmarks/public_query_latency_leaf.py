@@ -154,23 +154,38 @@ def _trace(result: object) -> dict | None:
 
 
 def _client_row(result: object | None, *, case_id: str, phase: str,
-                warmup: bool, elapsed_ms: float, cpu_ms: float | None,
+                warmup: bool, elapsed_ms: float, callback_ms: float,
+                semaphore_wait_ms: float, cpu_ms: float | None,
                 rss_kib: int | None, exception: str | None = None) -> dict:
+    """wall_ms includes the harness-local semaphore wait; callback_wall_ms does not.
+
+    A 3-second caller timeout is right-censored. The observed time-to-censor
+    is a lower bound on hypothetical uncensored completion, NOT completion
+    latency. A timely remote deadline response is an exact failed outcome.
+    """
     ref = _trace(result) if result is not None else None
     identifiers = {key: ref.get(key) if ref else None
                    for key in ("trace_id", "attempt_id", "request_ref")}
     status, reason, mode = (
-        ("unavailable", "deadline_exceeded", None) if exception == "timeout"
+        ("unavailable", "deadline_exceeded", None)
+            if exception in ("caller_timeout", "remote_timeout")
         else ("cancelled", "caller_cancelled", None) if exception == "cancelled"
         else ("error", "internal_error", None) if exception is not None
         else (_value(result, "status"), _value(result, "reason"), _value(result, "mode")))
     evidence = _value(result, "evidence")
     if evidence is None:
         evidence = _value(result, "results")
+    censored = exception in ("caller_timeout", "cancelled")
     row = dict(event="public_client_sample", case_id=case_id, phase=phase,
         warmup=warmup, **identifiers, status=status, reason=reason, mode=mode,
         evidence_count=len(evidence) if isinstance(evidence, (tuple, list)) else 0,
+        # The whole scheduled task includes *local* harness wait, not just MCP.
         wall_ms=round(elapsed_ms, 3),
+        # Only this interval is comparable with the public MCP response SLO.
+        callback_wall_ms=round(callback_ms, 3),
+        client_semaphore_wait_ms=round(semaphore_wait_ms, 3),
+        latency_observation="right_censored" if censored else "completed",
+        censor_lower_bound_ms=round(callback_ms, 3) if censored else None,
         client_cpu_ms=round(cpu_ms, 3) if cpu_ms is not None else None,
         client_rss_kib=rss_kib)
     _validate_client(row)
@@ -180,15 +195,29 @@ def _client_row(result: object | None, *, case_id: str, phase: str,
 def _validate_client(row: dict) -> None:
     _no_extra(row, CLIENT_FIELDS, "public_client_sample")
     if (row["case_id"] not in CASE_IDS or row["phase"] not in dict(COHORTS)
-            or type(row["warmup"]) is not bool or not _number(row["wall_ms"])
+            or type(row["warmup"]) is not bool
+            or any(not _number(row[k]) for k in ("wall_ms", "callback_wall_ms",
+                                                 "client_semaphore_wait_ms"))
+            or abs(row["wall_ms"] - row["callback_wall_ms"]
+                   - row["client_semaphore_wait_ms"]) > .02
             or row["client_cpu_ms"] is not None and not _number(row["client_cpu_ms"])
             or row["client_rss_kib"] is not None and (
                 type(row["client_rss_kib"]) is not int or row["client_rss_kib"] < 0)
             or type(row["evidence_count"]) is not int or not 0 <= row["evidence_count"] <= 5
             or row["status"] not in STATUSES
             or row["reason"] is not None and row["reason"] not in REASONS
-            or row["mode"] not in (None, "hybrid", "lexical_degraded")):
+            or row["mode"] not in (None, "hybrid", "lexical_degraded")
+            or row["latency_observation"] not in ("completed", "right_censored")):
         raise ValueError("invalid or unbounded public client sample")
+    if row["latency_observation"] == "right_censored":
+        if (not _number(row["censor_lower_bound_ms"])
+                or abs(row["censor_lower_bound_ms"]-row["callback_wall_ms"]) > .02
+                or (row["status"],row["reason"]) not in (
+                    ("unavailable", "deadline_exceeded"),
+                    ("cancelled", "caller_cancelled"))):
+            raise ValueError("censored observation has no valid lower bound")
+    elif row["censor_lower_bound_ms"] is not None:
+        raise ValueError("completed latency cannot carry censor bound")
     ids = [row[k] for k in ("trace_id", "attempt_id", "request_ref")]
     if any(item is not None for item in ids):
         if not (type(ids[0]) is str and HEX32.fullmatch(ids[0]) is not None
