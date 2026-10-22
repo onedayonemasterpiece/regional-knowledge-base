@@ -274,6 +274,20 @@ class PhysicalSnapshotRecovery:
         _LOG.info('snapshot_pointer_promoted manifest_hash=%s cursor=%s',proof.manifest.sha256,proof.applied_sequence)
         return await self.journal._read(key,self.limits.max_control_bytes)
 
+    async def current_pointer(self):
+        """Exact pointer identity and CAS token, without re-validating the base it names."""
+        value=await self.journal._read(self.journal.prefix+'/snapshots/current',self.limits.max_control_bytes)
+        if value is None:return None
+        try:
+            pointer=json.loads(value.data)
+            if (encode(pointer)!=value.data or pointer['codec']!='rkb.verified-snapshot-pointer.v1'
+                    or pointer['stream']!=self.journal.stream):raise ValueError
+            ref=ObjectRef(**pointer['manifest'])
+            if (not ref.key.startswith(self.journal.prefix+'/snapshots/manifests/')
+                    or type(ref.last_sequence) is not int or ref.last_sequence<0):raise ValueError
+        except (ValueError,TypeError,KeyError):raise SnapshotError('snapshot_pointer_invalid') from None
+        return ref,value.token,pointer
+
     async def current_snapshot(self):
         """Return exact published artifact identity, never an initialization grant."""
         value=await self.journal._read(self.journal.prefix+'/snapshots/current',self.limits.max_control_bytes)

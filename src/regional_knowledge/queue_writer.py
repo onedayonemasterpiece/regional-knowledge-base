@@ -256,7 +256,13 @@ class QueueWriterAuthority:
                 db.execute("UPDATE rkb_writer_restore_control SET state='verified' WHERE id=1")
         # A captured base is not a verified current snapshot. Only this retained
         # physical restore/readiness proof may promote the canonical pointer.
-        current=await proof._factory.current_snapshot()
+        # Only the pointer's CAS token is needed to replace it. A pointer to a
+        # base superseded by a verified Dataset promotion (Dataset1 after
+        # Dataset2) no longer matches the current Dataset transport, so do not
+        # re-validate its archive here; never let an older proof replace it.
+        current=await proof._factory.current_pointer()
+        if current is not None and proof.applied_sequence<current[0].last_sequence:
+            raise StaleWriter('recovered base is older than the current snapshot pointer')
         await proof._factory.promote(proof,binding,expected_token=current[1] if current else None)
         async with self._lock():
             with self.queue.connect() as db:
