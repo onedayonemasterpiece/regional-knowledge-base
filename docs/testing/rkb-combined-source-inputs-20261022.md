@@ -100,7 +100,7 @@ test:3078 passed/35 skipped on both Python, actual metadata2 passed/0 skipped.
 PR255's own full CI39781563243 passed2479/32 skipped on each Python; its new
 combined input requires the next candidate run. Recovery/status source tests
 use synthetic external Dataset/provider I/O and do not assert installed sends.
-CI39783693219 onf5543d6 completed both Python suites and actual metadata SUCCESS,
+CI39783693341 onf5543d6 completed both Python suites and actual metadata SUCCESS,
 verifying the PR255 combined input. PR256's own CI39783320839 passed both Python;
 its new combined input still needs a fresh run. The source callback requires the
 existing provider owner's original typed native receipt and verified Dataset
