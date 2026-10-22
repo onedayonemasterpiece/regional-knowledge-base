@@ -36,7 +36,7 @@ Candidate `768bca5c950507b053b157626e34c4ffcf6539af` passed CI39773458811:
 | PR247 | `a8033238904ee4c36b99df459a9fadb9caf5d76d` | Expert-only server.main receiver composition | One conflict in main's build_server call; retained exact incoming e928fc4 composition/call hunk; earlier health/media hunks preserved |
 | PR223 Dataset receipt follow-up | `5fad3eb6c3e7b8a12ce2910e27adcaf6f830d4f7` | Metadata wheel-lock accepts exact Dataset placement | Clean; no package bytes/pins changed |
 | PR248 compatible importer input | `3e1f6c948d7b1bd937eb5b443b87c292a0faab5f` | Exact importer/test delta on native baseline6d51bfd; main PR248 head d8fc88a9b2933834fe7fd4963f5fd9e008f225ee | Clean; only2 paths, not the old whole importer |
-| PR249 | `0d7fee1b7c6dc27d4d7925379a02e2e391f6be6c` | Dispatch status fastpath after included PR239 | Clean; final tests/teardown update over fd7d564, production unchanged; PR239 epoch fix retained |
+| PR249 | `5d5a50f19f181f7b9769f19156d9e3f78b1b7eff` | Dispatch status fastpath after included PR239 | Clean; explicit legacy dispatch Event sync over0d7fee, production unchanged; PR239 epoch fix retained |
 | PR250 | `ba57b276293aaf88548c37d56b9dd99f9882cbe0` | Inert authenticated executor claim receiver | Clean; includes author's fixture import fix after initial1283b13; new files, not mounted |
 | PR251 | `cfe026b20ebe31e8251e5061062b12c08df27b5a` | Same-client leased native Telegram crop bytes | Clean; final native binding guards and changed-boundary media tests/doc over ddb69be |
 | PR252 | `f99e4f4fe3cde549572964db8c0bcf677c5d127b` | Persisted pending research continuation in native status | Clean; importer helper/callsite added on top of PR248 delta, not a whole-file replacement |
@@ -80,6 +80,19 @@ This does not register a new native warm-upgrade route, modify old SQL pins,
 change the selected launch schema14 or claim installed SQL015/016. SQL017 is
 reserved to RKB-Import's separately assigned revision2 implementation; this
 source assembly does not edit that migration or its handlers.
+
+CI39780127597 on4319a87 passed3076/35 skipped on both Python; the53 existing
+native-media/ordered-SQL cases had0 skips/0 failures, including the formerly
+missing real SQL015/016 prerequisites. The paired actual launch metadata passed
+twice. CI39780501898 on6a91209 (adds Expert254) also completed all jobs SUCCESS.
+
+PR249's event synchronization itself passed both variants on both matrices;
+its3.12 full run39779548884 failed an unrelated existing editorial fixture:
+`context` assumed async journal/post-preflight finished after300ms polling.
+The diagnostic candidate replaces only that test helper with bounded actual
+admission/task event observation; production authority, native deadlines,
+manager role, command and receipt assertions are unchanged. A new combined run
+must verify this helper repair; the preceding failure is retained as evidence.
 
 ## Explicit exclusions and next boundaries
 

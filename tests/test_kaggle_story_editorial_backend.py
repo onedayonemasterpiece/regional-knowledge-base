@@ -64,13 +64,27 @@ async def context(s,task,role='editor',*,second_role=None,second_revision=None):
         assert await s.t.admission.finish_read(s.t.run,s.t.token,s.t.generation,result)
         await release(s.t,w)
     await respond(role)
-    for _ in range(300):
-        if task.done():return await task
-        if s.t.admission._reads:
-            await respond(second_role or role,second_revision)
-            return await task
-        await asyncio.sleep(.001)
-    pytest.fail('editorial task neither completed nor acquired fresh preflight')
+    # Real OAuth/spool operations can outlive the old300ms poll on a busy CI
+    # runner. Observe the actual task/admission events; do not assume the
+    # first reply is a causal barrier for journal acceptance or next preflight.
+    deadline=asyncio.get_running_loop().time()+3
+    active=[True]
+    def completed(_):
+        if active[0]:s.t.admission.wake()
+    task.add_done_callback(completed)
+    try:
+        while asyncio.get_running_loop().time()<deadline:
+            if task.done():return await task
+            if s.t.admission._reads:
+                await respond(second_role or role,second_revision)
+                return await asyncio.wait_for(asyncio.shield(task),
+                    max(.001,deadline-asyncio.get_running_loop().time()))
+            await s.t.admission.wait_channel_work(min(.1,
+                max(0,deadline-asyncio.get_running_loop().time())))
+        pytest.fail('editorial task neither completed nor acquired fresh preflight')
+    finally:
+        active[0]=False
+        task.remove_done_callback(completed)
 
 
 @pytest.mark.asyncio
