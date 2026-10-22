@@ -203,6 +203,51 @@ class ReportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"stage"):
                 leaf.analyze(self.samples,changed)
 
+    def test_actual_production_telemetry_stage_vocabulary_not_diverged(self):
+        import ast
+        def value_of(path,name):
+            tree=ast.parse(path.read_text())
+            found=[node.value for node in tree.body if isinstance(node,ast.Assign)
+                   and any(isinstance(target,ast.Name) and target.id==name
+                           for target in node.targets)]
+            self.assertEqual(len(found),1)
+            # The existing source declares these with frozenset({...}).
+            self.assertIsInstance(found[0],ast.Call)
+            self.assertEqual(found[0].func.id,"frozenset")
+            return frozenset(ast.literal_eval(found[0].args[0]))
+        self.assertEqual(value_of(ROOT/"src/regional_knowledge/query_telemetry.py","_STAGES"),
+                         leaf.STAGES)
+        self.assertEqual(value_of(ROOT/"src/regional_knowledge/read_telemetry.py","_CONTROLLER_STAGES"),
+                         leaf.CONTROLLER_STAGES)
+
+    def test_native_terminal_mismatch_is_not_counted_as_useful_hybrid(self):
+        events=list(self.events)
+        events[8]=dict(events[8],status="error",reason="internal_error")
+        summary,_=leaf.analyze(self.samples,events)
+        self.assertEqual(summary["conclusion"],"INCONCLUSIVE_OR_NONREPRESENTATIVE")
+        self.assertEqual(summary["cohorts"]["serial"]["useful_hybrid"],47)
+
+    def test_native_runtime_reconnect_invalidates_comparison(self):
+        events=list(self.events)
+        # First measured request of concurrent2 is 64*3 + 2*3.
+        first=(len(leaf.CASE_IDS)*8)*3+2*3
+        for offset in (0,1,2):
+            events[first+offset]=dict(events[first+offset],run_id="synthetic-new-run")
+        summary,_=leaf.analyze(self.samples,events)
+        self.assertFalse(summary["native_runtime_scope_stable"])
+        self.assertEqual(summary["conclusion"],"INCONCLUSIVE_OR_NONREPRESENTATIVE")
+
+    def test_process_cpu_and_rss_are_scoped_to_client_not_kaggle(self):
+        resource=[{"event":"public_phase_resources","phase":name,
+                   "client_process_cpu_ms":12.5,"client_peak_rss_kib":12345}
+                  for name,_ in leaf.COHORTS]
+        summary,_=leaf.analyze(self.samples+resource,self.events)
+        self.assertEqual(summary["cohorts"]["serial"]["client_phase_cpu_total_ms"],12.5)
+        self.assertEqual(summary["cohorts"]["concurrent2"]["client_phase_peak_rss_kib"],12345)
+        self.assertIsNone(summary["kaggle_native_cpu_ms"])
+        with self.assertRaisesRegex(ValueError,"duplicate client process resource"):
+            leaf.analyze(self.samples+resource+resource[:1],self.events)
+
     def test_serialized_raw_jsonl_contains_only_public_fields(self):
         with tempfile.TemporaryDirectory() as t:
             client=Path(t)/"client.jsonl"
