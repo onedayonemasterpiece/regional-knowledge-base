@@ -324,7 +324,26 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
             assert await (await connection.execute(
                 "SELECT revision FROM rkb_v4.active_revision WHERE source_id=%s",
                 (SOURCE,))).fetchone()==(1,)
-        # The earlier rejected key cannot later be resurrected as accepted.
+        # A materialize intent without its exact installed native vector is
+        # a rejected precondition, never SQL NULL/ambiguous column and never
+        # a partial candidate installation. The same key must remain rejected.
+        missing_vector=resolved_revision2_native_command(
+            route=REVISION2_MATERIALIZE_ROUTE,source_id=SOURCE,payload={
+                **v2_projection,"codec":REVISION2_MATERIALIZE_CODEC,"ordinal":0},
+            sequence=env["sequence"]+1,operation_key="accepted-rev2-missing-vector",
+            request_id=REQUEST,person_id=PERSON,logical_time=TIME)
+        no_vector=await _accepted(env,missing_vector)
+        assert no_vector.status=="rejected_precondition"
+        assert (await _accepted(env,missing_vector)).duplicate
+        async with connection.transaction():
+            assert await (await connection.execute(
+                "SELECT count(*) FROM rkb_v4.source_revision2_materialized "
+                "WHERE source_id=%s",(SOURCE,))).fetchone()==(0,)
+            assert await (await connection.execute(
+                "SELECT revision FROM rkb_v4.active_revision WHERE source_id=%s",
+                (SOURCE,))).fetchone()==(1,)
+
+        # Earlier rejected keys cannot later be resurrected as accepted.
         for ordinal in range(count[0]):
             async with connection.transaction():
                 vector=await (await connection.execute(
