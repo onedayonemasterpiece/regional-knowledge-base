@@ -84,7 +84,10 @@ class ExpertExecutorRecoveryReceiver:
                     data.extend(chunk)
                     if len(data)>MAX_BODY:
                         return _response({'error':'recovery_bound'},413)
-                rid=_parse(bytes(data))
+                try:
+                    rid=_parse(bytes(data))
+                except ValueError:
+                    return _response({'error':'invalid_recovery_request'},400)
                 if self.context.delivery.dataset_effects is None:
                     return _response({'error':'verified_dataset_required'},503)
                 result=await asyncio.to_thread(
@@ -124,7 +127,9 @@ class ExpertExecutorRecoveryReceiver:
                 return _response({'error':'executor_authorization_required'},403)
             return _response({'error':'recovery_pending'},503)
         except ValueError:
-            return _response({'error':'invalid_recovery_request'},400)
+            # A corrupt/changed original remote record is a persistence
+            # uncertainty, NOT a bad request and never permission to resend.
+            return _response({'error':'recovery_pending'},503)
         except Exception:
             # The target's native bytes/outcome may be UNKNOWN. Never infer
             # "not sent" or issue a retry permit from a missing local record.
