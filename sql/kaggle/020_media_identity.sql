@@ -1,8 +1,17 @@
 -- Media hashes identify/deduplicate representations; they do not gate media.
 -- Source/page/figure geometry, accepted command identity, writer fencing and
 -- public-source eligibility remain authoritative. SQL001-019 stay immutable.
-ALTER TABLE rkb_v4.source_illustration_candidates
- DROP CONSTRAINT source_illustration_candidates_media_sha256_check;
+-- SQL015 did not name its multi-column CHECK. Resolve that one constraint by
+-- its media_sha256 column, rather than pinning PostgreSQL's generated name.
+DO $$
+DECLARE constraint_name text;
+BEGIN
+ SELECT c.conname INTO STRICT constraint_name FROM pg_catalog.pg_constraint c
+  JOIN pg_catalog.pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=ANY(c.conkey)
+  WHERE c.conrelid='rkb_v4.source_illustration_candidates'::regclass
+   AND c.contype='c' AND a.attname='media_sha256';
+ EXECUTE format('ALTER TABLE rkb_v4.source_illustration_candidates DROP CONSTRAINT %I',constraint_name);
+END $$;
 DROP TRIGGER immutable_source_illustration_candidate ON rkb_v4.source_illustration_candidates;
 DROP TRIGGER immutable_source_illustration ON rkb_v4.source_illustrations;
 
