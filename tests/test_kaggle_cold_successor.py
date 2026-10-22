@@ -193,7 +193,8 @@ async def test_successor_does_not_discard_unsettled_original_authority(owner,gua
         else:db.execute("UPDATE runs SET launch_state='dispatched' WHERE id=?",(e.run,))
     with pytest.raises(ValueError):prepare_successor(e.q,run,target(),source)
     with e.q.connect(write=False) as db:
-        assert db.execute('SELECT count(*) FROM rkb_cold_successor_plans').fetchone()[0]==0
+        # The failed transaction also rolls back its first CREATE TABLE.
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='rkb_cold_successor_plans'").fetchone() is None
         assert db.execute('SELECT count(*) FROM rkb_writer_generations').fetchone()[0]==1
 
 
