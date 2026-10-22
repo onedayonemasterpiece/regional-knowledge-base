@@ -1,3 +1,4 @@
+from regional_knowledge.kaggle_current_registry import current_registry,registry_sha256
 """Exact assembled native metadata + full55-wheel/source launch envelope.
 
 GitHub-only explicit artifact input; no downloads, installs, PG or model calls
@@ -19,7 +20,6 @@ from regional_knowledge.kaggle_stage0_urls import PinnedStage0Object
 from regional_knowledge.kaggle_stage0 import Stage0Spec
 from regional_knowledge.kaggle_target_launch import persist_empty_intent
 from regional_knowledge.kaggle_target_launch import MAX_LAUNCH_CONFIG_BYTES, source_bundle
-from first_book_registry_fixture import first_book_entries
 from regional_knowledge.source_activation import ACTIVATION_REVISIONS
 from test_import_dependency_packaging import packaging, inputs, placement, dataset_placement
 from test_kaggle_target_runtime import generate, queue_run
@@ -34,7 +34,8 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.asyncio
 @pytest.mark.parametrize('dependency_transport',['https','dataset'])
 @pytest.mark.parametrize('handler_profile',['baseline','current'])
-async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path, monkeypatch,dependency_transport,handler_profile):
+@pytest.mark.parametrize('restoring',[False,True])
+async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path, monkeypatch,dependency_transport,handler_profile,restoring):
     artifact = Path(os.environ['RKB_IMPORT_NATIVE_METADATA'])
     raw = (artifact / 'native-manifest.json').read_bytes()
     assert hashlib.sha256(raw).hexdigest() == '84ab517abe83ca7f90b16290f30332415522eb4b355b6ef194c40df89cb264f5'
@@ -55,8 +56,20 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
         uid=65534, gid=65534, identity_evidence='synthetic metadata fixture, not native identity attestation',
         original_intake=OriginalIntakeConfig(('https://archive.fixture.invalid',), (('pymupdf','1.28.2'),)))
     if handler_profile=='current':
-        target=replace(target,command_handlers=tuple(first_book_entries(ROOT)),telegram_runtime=True)
-        assert len(target.command_handlers)==13
+        target=replace(target,registry_sha256=registry_sha256(),telegram_runtime=True)
+        assert len(current_registry().handlers)==13
+    if restoring:
+        from regional_knowledge.kaggle_recovery_composition import SnapshotRecoveryConfig
+        from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint,DatasetFile
+        database=replace(target.database,mode='VERIFIED_INITIALIZED',cluster=None,uid=None,gid=None,native_paths=None)
+        recovery=SnapshotRecoveryConfig({name:dict(path='usr/lib/postgresql/17/bin/'+name,
+            version_output=name+' (PostgreSQL) 17.11') for name in ('postgres','pg_basebackup','pg_verifybackup')},
+            ('https://storage.googleapis.com',),65534,65534)
+        checkpoint=DatasetCheckpoint('fixture-owner','rkb-pg-checkpoints',2,database.database_generation,20,
+            DatasetFile('base-manifest.json',1200,'a'*64),DatasetFile('pg.blob',100000,'b'*64),
+            DatasetFile('source-control.json',1500,'c'*64),DatasetFile('journal-control.json',3000,'d'*64))
+        target=replace(target,database=database,recovery=recovery,registry_sha256=registry_sha256(),
+            dataset_checkpoint=checkpoint,min_data_seq=20,bootstrap_only=False,dependency_sha256='e'*64)
     private_names = {row['name'] for row in native['artifacts']} | {'wheels/pyaes-1.6.1-py3-none-any.whl'}
     downloads = []
     for row in target.stage0.downloads:
@@ -71,8 +84,9 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
         if dependency_transport=='dataset' else ())
     queue, run = queue_run(tmp_path)
     _, journal = journal_fixture()
-    await persist_empty_intent(queue, run, target, launch_nonce=queue.prepare_channel(run),
-        recovery_journal=journal, sql_hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (ROOT/'sql/kaggle').glob('[0-9][0-9][0-9]_*.sql')})
+    if not restoring:
+        await persist_empty_intent(queue, run, target, launch_nonce=queue.prepare_channel(run),
+            recovery_journal=journal, sql_hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (ROOT/'sql/kaggle').glob('[0-9][0-9][0-9]_*.sql')})
     from regional_knowledge import kaggle_target_launch
     def measured(value):
         raw = canonical(value)
@@ -88,11 +102,12 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
     expected_files=len(target.artifacts)+len(source_bundle(ROOT)[2])
     assert len(config['prepared_model']['entries']) == expected_files <= 192
     assert len(Stage0Spec.from_wire(config['stage0']).wheels) == 55
-    assert len(canonical(config)) <= MAX_LAUNCH_CONFIG_BYTES <= 96*1024
-    if handler_profile=='baseline':assert len(canonical(config))<=65536
+    assert len(canonical(config)) <= MAX_LAUNCH_CONFIG_BYTES == 64*1024
+    assert 'command_handlers' not in config['target_runtime']
+    assert config['target_runtime']['registry_sha256']==target.registry_sha256
     assert len(source.encode()) <= 1_000_000
     print(json.dumps(dict(prepared_entries=expected_files, wheel_count=55,
-        handler_count=len(target.command_handlers),handler_profile=handler_profile,
+        handler_count=len(current_registry().handlers) if target.registry_sha256 else 0,handler_profile=handler_profile,restoring=restoring,
         launch_json_bytes=len(canonical(config)), notebook_source_bytes=len(source.encode()),
         actual_native_manifest_sha256=hashlib.sha256(raw).hexdigest(),
         schema_version=target.database.schema_version, identities_and_signed_urls='synthetic_only',

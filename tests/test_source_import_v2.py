@@ -94,12 +94,14 @@ async def test_v2_uses_same_authorized_spool_remote_seal_and_captured_dispatch_p
     from types import SimpleNamespace
     from regional_knowledge.bge_queue import BgeQueue
     from regional_knowledge.control_spool import ControlSpool,SpoolDenied
-    from regional_knowledge.kaggle_source_commands import fixed_registry,decode_command,ControllerAcceptedProof,digest
+    from regional_knowledge.kaggle_source_commands import decode_command,ControllerAcceptedProof,digest
+    from regional_knowledge.kaggle_apply import HandlerRegistry
+    from regional_knowledge.source_import_v2 import source_import_v2_handler
     from test_recovery_journal import fixture as journal_fixture
     queue=BgeQueue(tmp_path/'queue.sqlite');_,journal=journal_fixture()
     database=SimpleNamespace(schema_revision=STORY_REVISIONS.schema,function_revision=STORY_REVISIONS.function,
         executor_revision=STORY_REVISIONS.executor)
-    registry=fixed_registry(database,[{'route':'source.import.v2','check_sha256':'1'*64,'apply_sha256':'2'*64,'revisions':list(STORY_REVISIONS.wire())}])
+    registry=HandlerRegistry([source_import_v2_handler(revisions=STORY_REVISIONS,check_sha256='1'*64,apply_sha256='2'*64)])
     spool=ControlSpool(queue,people.registry,journal,registry)
     c=replace(command(),person_id=people.owner.subject)
     try:

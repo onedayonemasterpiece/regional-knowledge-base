@@ -8,7 +8,7 @@ import pytest
 from regional_knowledge.kaggle_pg_snapshot_native import encode,sha
 from regional_knowledge.kaggle_restore_startup import SourceRestoreConfig
 from regional_knowledge.kaggle_source_owners import compose_source_service
-from regional_knowledge.kaggle_source_commands import fixed_registry
+from regional_knowledge.kaggle_current_registry import current_registry as fixed_registry
 from regional_knowledge.source_history_wss import WssNativeHistoryProofAdapter
 from regional_knowledge.recovery_journal import ObjectRef
 from test_queue_restore_writer import recovery_owner,owner,auth,people
@@ -41,7 +41,7 @@ async def test_api_restart_of_active_restore_recreates_capture_facade_without_pg
 @pytest.mark.parametrize('dataset_input',[False,True])
 async def test_production_owner_restores_before_ready_through_same_claim_and_ticket_owner(recovery_owner,dataset_input,monkeypatch):
     e=recovery_owner;database=replace(spec().database,writer_generation='writer-2')
-    registry=fixed_registry(database,[dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64)])
+    registry=fixed_registry()
     routes=['source.fetch','source.import','source.search','source.withdraw']
     control=encode(dict(codec='rkb.source-base-control.v1',stream=e.j.stream,database_generation='synthetic-db',sequence=0,
         journal_head=None,catalog_sha256='a'*64,acl_sha256='b'*64,
@@ -181,7 +181,7 @@ async def test_lifespan_yields_wss_route_before_waiting_for_pre_ready_restore(re
     from regional_knowledge.kaggle_service_startup import TargetServiceStartup,TargetServiceConfig
     from regional_knowledge.control_spool import ControlSpool
     database=replace(spec().database,writer_generation='writer-2')
-    registry=fixed_registry(database,[dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64)])
+    registry=fixed_registry()
     spool=ControlSpool(e.q,e.old.auth.p.registry,e.j,registry)
     history=WssNativeHistoryProofAdapter(database=database, expected_observer_sha256='c' * 64)
     startup=TargetServiceStartup(TargetServiceConfig(e.old.auth.provider,e.old.auth.p.registry,e.q,spool,history,'writer-2',e.w.current,

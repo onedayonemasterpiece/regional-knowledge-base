@@ -32,7 +32,7 @@ class TargetLaunchSpec:
     stage0_receipt: str = ''
     initialized_receipt: dict | None = None
     min_data_seq: int = 0
-    command_handlers: tuple[dict, ...] = ()
+    registry_sha256: str | None = None
     stage0: object = None
     native_bundle: object = None
     bootstrap_only: bool = False
@@ -95,14 +95,14 @@ class TargetLaunchSpec:
             raise ValueError('fresh generation has no initialized receipt or accepted cursor')
         # Freeze a detached canonical inventory; callers cannot mutate expected pins.
         object.__setattr__(self,'artifacts',tuple(json.loads(canonical(entries))))
-        if self.command_handlers:
-            from .kaggle_source_commands import fixed_registry
-            fixed_registry(self.database,self.command_handlers)
-        object.__setattr__(self,'command_handlers',tuple(json.loads(canonical(self.command_handlers))))
+        if self.registry_sha256 is not None:
+            from .kaggle_current_registry import registry_sha256
+            if self.registry_sha256!=registry_sha256():
+                raise ValueError('current code registry hash required')
         if self.recovery is not None:
             from .kaggle_recovery_composition import SnapshotRecoveryConfig
             if (type(self.recovery) is not SnapshotRecoveryConfig or self.database.mode not in ('VERIFIED_INITIALIZED','NEW_EMPTY_GENERATION')
-                    or self.native_bundle is None or self.stage0 is None or not self.command_handlers):
+                    or self.native_bundle is None or self.stage0 is None or not self.registry_sha256):
                 raise ValueError('initialized recovery requires exact native/package/command deployment')
             if self.recovery.drill_empty and self.database.mode!='NEW_EMPTY_GENERATION':
                 raise ValueError('empty snapshot drill requires fresh owned database')
@@ -169,7 +169,7 @@ class TargetLaunchSpec:
             artifacts=list(self.artifacts),dependency_packages=list(self.dependency_packages),
             dependency_sha256=self.dependency_sha256,
             stage0_receipt=self.stage0_receipt,initialized_receipt=self.initialized_receipt,
-            min_data_seq=self.min_data_seq,command_handlers=list(self.command_handlers),
+            min_data_seq=self.min_data_seq,registry_sha256=self.registry_sha256,
             stage0=self.stage0.wire() if self.stage0 is not None else None,
             native_bundle=self.native_bundle.wire() if self.native_bundle is not None else None,
             bootstrap_only=self.bootstrap_only,bootstrap_seconds=self.bootstrap_seconds,
@@ -262,8 +262,7 @@ class TargetRuntime:
                 frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])))
 
     def _native_source_materializer(self,encoder):
-        if self.database.schema_version<14 or not any(
-                entry.get('route')=='source.materialize.v1' for entry in self.target['command_handlers']):return None
+        if self.database.schema_version<14 or not self.target.get('registry_sha256'):return None
         from .kaggle_source_materializer import resident_source_materializer
         return resident_source_materializer(encoder,current=lambda:not self.closed)
 
@@ -438,13 +437,14 @@ class TargetRuntime:
             with bind_read_runtime(ReadRuntime(run_id,runtime_incarnation)):
                 return await self.read_handler_slot(frame,encode=encode)
         source_handler=None;history_handler=None
-        if self.target.get('command_handlers'):
-            from .kaggle_source_commands import fixed_registry,WorkerSourceExecutor
+        if self.target.get('registry_sha256'):
+            from .kaggle_source_commands import WorkerSourceExecutor
+            from .kaggle_current_registry import current_registry
             self.writer_pool=self.pool_factory(kwargs={**self.database.connection(),'user':'rkb_writer'},
                 min_size=1,max_size=1,open=False,timeout=2,max_waiting=1)
             await self.writer_pool.open(wait=True,timeout=10)
             source_handler=WorkerSourceExecutor(acquire=self.writer_pool.connection,
-                registry=fixed_registry(self.database,self.target['command_handlers']),database=self.database,
+                registry=current_registry(),database=self.database,
                 run_id=run_id,launch_nonce=launch_nonce,runtime_incarnation=runtime_incarnation,
                 materializer=self._native_source_materializer(encoder))
             from contextlib import asynccontextmanager
@@ -455,7 +455,7 @@ class TargetRuntime:
                 async with await psycopg.AsyncConnection.connect(**self.database.connection(reader=False)) as connection:
                     yield connection
             history_handler=NativeSourceHistoryObserver(acquire=acquire_history,database=self.database,identity=identity,
-                registry=fixed_registry(self.database,self.target['command_handlers']),current=lambda binding:
+                registry=current_registry(),current=lambda binding:
                     not self.closed and binding[:2]==(run_id,runtime_incarnation))
             self.source_history_observer=history_handler
         observation=None

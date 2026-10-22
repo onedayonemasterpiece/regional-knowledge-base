@@ -26,13 +26,14 @@ def test_current_validation_preserves_exact_original_semantics_and_never_relabel
 
 def test_fixed_current_registry_and_wire_keep_full_current_tuple_and_payload():
     from types import SimpleNamespace
-    from regional_knowledge.kaggle_source_commands import fixed_registry,decode_command
+    from regional_knowledge.kaggle_source_commands import decode_command
+    from regional_knowledge.kaggle_apply import HandlerRegistry
     c=resolved_current_import_v4_command(sequence=1,operation_key='current-source-1',request_id='current-request',
         person_id='60000000-0000-0000-0000-000000000002',logical_time='2026-10-20T18:00:00Z',
         source_id=manifest_payload()['source_manifest']['source_id'],payload=manifest_payload())
     db=SimpleNamespace(schema_revision=DOMAIN_REVISIONS.schema,function_revision=DOMAIN_REVISIONS.function,
         executor_revision=DOMAIN_REVISIONS.executor)
-    registry=fixed_registry(db,[dict(route=c.route,check_sha256='a'*64,apply_sha256='b'*64,revisions=list(DOMAIN_REVISIONS.wire()))])
+    registry=HandlerRegistry([current_handler(c.route,check_sha256='a'*64,apply_sha256='b'*64)])
     assert registry.resolve(c).revisions==DOMAIN_REVISIONS
     assert decode_command(c.encode()).encode()==c.encode()
 
@@ -49,11 +50,10 @@ def test_current_graph_handler_preserves_frozen_nine_function_binding():
 
 def test_current_route_registry_has_no_historical_copies():
     from types import SimpleNamespace
-    from regional_knowledge.kaggle_source_commands import fixed_registry
+    from regional_knowledge.kaggle_current_registry import current_registry
     from regional_knowledge.kaggle_native_source_bindings import NATIVE_ROUTES
-    from first_book_registry_fixture import first_book_entries
     from pathlib import Path
     db=SimpleNamespace(schema_revision='rkb-v4-sql001-014-v1',function_revision='f14',executor_revision='e14')
-    registry=fixed_registry(db,first_book_entries(Path(__file__).parents[1]))
+    registry=current_registry()
     assert {handler.route for handler in registry.handlers.values()}==NATIVE_ROUTES
     assert len(registry.handlers)==len(NATIVE_ROUTES)

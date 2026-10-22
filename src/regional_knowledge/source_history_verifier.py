@@ -36,6 +36,24 @@ def _hash(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def _receipt_handler_matches(command,handler,recorded_hash,outcome,status):
+    if recorded_hash==handler.fingerprint:return True
+    # An applied receipt binds its original immutable handler audit. It does
+    # not require an executable copy of that historical implementation.
+    try:
+        value=json.loads(outcome)
+        return (_json(value)==outcome and value.get('codec')=='rkb.applied-outcome.v1'
+            and value.get('handler_sha256')==recorded_hash and value.get('status')==status
+            and value.get('before')==[command.schema_revision,command.function_revision,command.executor_revision]
+            and value.get('after')==value.get('before')
+            and value.get('command_sha256')==_hash(command.encode())
+            and value.get('operation_key')==command.operation_key
+            and value.get('cursor')==command.sequence and value.get('route')==command.route
+            and value.get('request_id')==command.request_id and value.get('person_id')==command.person_id
+            and value.get('logical_time')==command.logical_time and value.get('ids')==dict(command.ids))
+    except (ValueError,TypeError,UnicodeError):return False
+
+
 from .kaggle_source_acl import ACL_SQL,NativeHistoryError,inspect_acl as _native_inspect_acl
 
 async def inspect_acl(connection):
@@ -149,15 +167,23 @@ class NativeSourceHistoryVerifier:
             raise SpoolConflict('genesis facts differ') from None
         return value
 
-    def _classify(self,raw,reference):
+    def _classify(self,raw,reference,*,historical=False):
         """Verify every global command; derive book heads only for book writes.
 
         Fixed Case/GEO validators confer no public source dependency and never
         add private domain IDs to the source head cache. Unknown handlers fail.
         """
         command=_command(raw)
-        try:command,_,handler=self.spool._validate(command,'history-classification')
-        except (ValueError,TypeError):raise SpoolConflict('unclassified accepted source dependency') from None
+        try:
+            if historical:
+                from .kaggle_source_commands import decode_command
+                command=decode_command(raw)
+                if command.route in ('source.import.v1','source.import.v2','source.import.v3'):
+                    from .source_activation import ACTIVATE_ROUTE
+                    handler=self.spool.registry.handlers.get(command.route) or self.spool.registry.handlers[ACTIVATE_ROUTE]
+                else:handler=self.spool.registry.resolve(command)
+            else:command,_,handler=self.spool._validate(command,'history-classification')
+        except (ValueError,TypeError,KeyError):raise SpoolConflict('unclassified accepted source dependency') from None
         dep=handler.dependency
         if dep is None:raise SpoolConflict('unclassified accepted source dependency')
         if dep.scope_class=='public_source':
@@ -575,7 +601,7 @@ class NativeSourceHistoryVerifier:
                                     used+=len(raw)
                                     if used>self.max_history_bytes or len(commands)>=self.max_commands:
                                         raise SpoolConflict('full source history budget exceeded')
-                                    command,handler,_=self._classify(raw,ref)
+                                    command,handler,_=self._classify(raw,ref,historical=True)
                                     commands.append((command,handler,ref))
                                 ref=previous
                             if ref is not None:raise SpoolConflict('full source genesis traversal incomplete')
@@ -601,11 +627,13 @@ class NativeSourceHistoryVerifier:
                                     command,handler,manifest=commands[count]; count+=1
                                     seq,op,ch,hh,mh,status,oh,outcome,generation,command_bytes=row
                                     if (seq!=command.sequence or op!=command.operation_key or ch!=_hash(command.encode())
-                                            or hh!=handler.fingerprint or mh!=manifest.sha256 or generation!=key[3]
+                                            or mh!=manifest.sha256 or generation!=key[3]
                                             or status not in ('applied','rejected_precondition') or outcome is None
                                             or command_bytes is None or bytes(command_bytes)!=command.encode()
                                             or _hash(bytes(outcome))!=oh):
                                         raise SpoolConflict('native exact applied outcome differs')
+                                    if not _receipt_handler_matches(command,handler,hh,bytes(outcome),status):
+                                        raise SpoolConflict('native historical handler receipt differs')
                                     used+=len(outcome)
                                     if used>self.max_history_bytes:raise SpoolConflict('native outcome history budget exceeded')
                                     applied[seq]=(oh,bytes(outcome))
@@ -616,6 +644,7 @@ class NativeSourceHistoryVerifier:
                             imported=[]
                             pending=[]
                             for command,handler,manifest in commands:
+                                if command.sequence>applied_seq:self._classify(command.encode(),manifest)
                                 outcome=applied.get(command.sequence); durable=False
                                 if outcome is not None:
                                     remote=await j.remote_outcome(command.operation_key)

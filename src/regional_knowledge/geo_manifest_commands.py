@@ -223,9 +223,9 @@ def geo_dependency_repair_commands(originals,*,settled_outcomes):
 
 def geo_dependency_limit_rejection(command):
     """Recognize the schema11/Python dependency-bound mismatch, never success."""
-    value=validate_geo_manifest_command(command)
-    if ((command.schema_revision,command.function_revision,command.executor_revision)!=GEO_REVISIONS.wire()
-            or value['action']!='batch'):
+    if (command.schema_revision,command.function_revision,command.executor_revision)!=GEO_REVISIONS.wire():
         return False
+    value=validate_geo_manifest_command(command)
+    if value['action']!='batch':return False
     return any(len(GeoManifestItem.from_wire(json.loads(_decode(entry['wire_b64'],64*1024))).dependencies)>64
         for entry in value['items'])

@@ -1,3 +1,4 @@
+from regional_knowledge.kaggle_current_registry import current_registry,registry_sha256
 """Actual durable admission/channel with synthetic native phases; no PG/model/S3."""
 import asyncio
 from dataclasses import replace
@@ -197,7 +198,7 @@ async def test_concrete_factory_binds_tools_to_retained_stage0_manifest(fixture,
     async def verify(tools,run):verified.append(tools)
     monkeypatch.setattr(native.PhysicalPgTools,'verify',verify)
     tools=dict(binaries={n:dict(path='usr/bin/'+n,version_output=n+' (PostgreSQL) 17.6') for n in names},
-        command_handlers=[dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64)])
+        registry_sha256=registry_sha256())
     args=dict(native_bundle=bundle,database=database(),identity=('r','n','i'),tools=tools,native_uid=1001,native_gid=1002,
         current=lambda b:True,workspace_private_current=lambda p:True,upload=lambda *a,**k:None,
         download=lambda *a:None,workspace=lambda *a:None)

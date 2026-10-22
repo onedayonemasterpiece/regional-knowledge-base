@@ -35,7 +35,7 @@ def target_launch_from_wire(value):
         from .kaggle_recovery_composition import SnapshotRecoveryConfig
         options['recovery']=SnapshotRecoveryConfig.from_wire(options['recovery'])
     options['database']=OwnedDatabase(**options['database'])
-    for name in ('artifacts','dependency_packages','command_handlers'):
+    for name in ('artifacts','dependency_packages'):
         if type(options[name]) is not list:raise ValueError('target configuration arrays required')
         options[name]=tuple(options[name])
     options['stage0']=Stage0Spec.from_wire(options['stage0']) if options['stage0'] is not None else None

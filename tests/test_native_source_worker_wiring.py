@@ -20,11 +20,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from regional_knowledge.kaggle_current_registry import current_registry as fixed_registry
 from regional_knowledge.kaggle_apply import ApplyReceipt
 from regional_knowledge.kaggle_bootstrap import ResidentEncoder
 from regional_knowledge.kaggle_native_source_bindings import resolved_native_stage_command
 from regional_knowledge.kaggle_source_commands import (
-    ControllerAcceptedProof, WorkerSourceExecutor, decode_receipt, fixed_registry, seal_wire,
+    ControllerAcceptedProof, WorkerSourceExecutor, decode_receipt, seal_wire,
 )
 from regional_knowledge.kaggle_source_materializer import (
     NativeSourceMaterializer, SourceMaterializationRejected, materializer_fingerprint,
@@ -119,7 +120,7 @@ def retained_encoder():
 async def test_runtime_native14_retains_exact_encoder_and_observes_current_closed():
     runtime = object.__new__(TargetRuntime)
     runtime.database = SimpleNamespace(schema_version=14)
-    runtime.target={'command_handlers':[{'route':'source.materialize.v1'}]}
+    runtime.target={'registry_sha256':'a'*64}
     runtime.closed = False
     encoder, counted, forwarded, vector = retained_encoder()
     materializer = runtime._native_source_materializer(encoder)
@@ -141,7 +142,7 @@ async def test_runtime_native14_retains_exact_encoder_and_observes_current_close
 def test_runtime_does_not_install_native14_materializer_for_another_profile(schema):
     runtime = object.__new__(TargetRuntime)
     runtime.database = SimpleNamespace(schema_version=schema)
-    runtime.target={'command_handlers':[{'route':'source.materialize.v1'}]}
+    runtime.target={'registry_sha256':'a'*64}
     runtime.closed = False
     # An arbitrary object would fail if the resident factory were reached.
     assert runtime._native_source_materializer(object()) is None
@@ -150,7 +151,7 @@ def test_runtime_does_not_install_native14_materializer_for_another_profile(sche
 def test_runtime_native14_refuses_an_unverified_encoder_type():
     runtime = object.__new__(TargetRuntime)
     runtime.database = SimpleNamespace(schema_version=14)
-    runtime.target={'command_handlers':[{'route':'source.materialize.v1'}]}
+    runtime.target={'registry_sha256':'a'*64}
     runtime.closed = False
     with pytest.raises(TypeError, match='same verified resident'):
         runtime._native_source_materializer(SimpleNamespace(count=lambda text:3))
@@ -175,7 +176,7 @@ async def worker_fixture(route, monkeypatch, *, materializer_error=None, status=
     database = SimpleNamespace(database_generation='synthetic-native14-db', writer_generation='writer-1',
         schema_revision=ACTIVATION_REVISIONS.schema, function_revision=ACTIVATION_REVISIONS.function,
         executor_revision=ACTIVATION_REVISIONS.executor)
-    registry = fixed_registry(database, [dict(route=route, check_sha256='a'*64, apply_sha256='b'*64)])
+    registry = fixed_registry()
     journal = RecoveryJournal(ConditionalMemoryStore(), stream='native-wiring-only')
     seal = await journal.seal([command], predecessor=None, writer_generation='writer-1')
     command_hash = await journal.verify_accepted(seal, command)

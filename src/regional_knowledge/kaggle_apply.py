@@ -165,11 +165,12 @@ class HandlerSpec:
 
     @property
     def key(self):
-        return self.kind, self.route, *self.revisions.wire()
+        # Immutable v1 audit shape; executable lookup is by route below.
+        return self.kind,self.route,*self.revisions.wire()
 
     @property
     def fingerprint(self) -> str:
-        data={"key":self.key,"check":(self.check.name,self.check.definition_sha256),
+        data={"key":(self.kind,self.route,*self.revisions.wire()),"check":(self.check.name,self.check.definition_sha256),
             "apply":(self.apply.name,self.apply.definition_sha256),
             "preconditions":sorted(self.precondition_keys),"transition":None}
         if self.dependency is not None:data['dependency']=self.dependency.wire()
@@ -182,19 +183,20 @@ class HandlerRegistry:
     handlers: Mapping
 
     def __init__(self, handlers: Sequence[HandlerSpec]):
-        if not 1 <= len(handlers) <= 64:
+        from .kaggle_native_source_bindings import NATIVE_ROUTES
+        if not 1 <= len(handlers) <= len(NATIVE_ROUTES):
             raise ValueError("a bounded trusted registry is required")
-        mapping = {handler.key: handler for handler in handlers}
+        mapping = {handler.route: handler for handler in handlers}
         if len(mapping) != len(handlers):
-            raise ValueError("duplicate semantic handler key")
+            raise ValueError("duplicate current route")
         object.__setattr__(self, "handlers", MappingProxyType(mapping))
 
     def resolve(self, command: ExactCommand) -> HandlerSpec:
-        key = (command.kind, command.route, command.schema_revision,
-               command.function_revision, command.executor_revision)
-        if key not in self.handlers:
-            raise ApplyConflict("no exact semantic handler; latest-version fallback is forbidden")
-        return self.handlers[key]
+        handler=self.handlers.get(command.route)
+        if handler is None or handler.kind!=command.kind:
+            raise ApplyConflict("no exact current route handler")
+        return handler
+
 
 
 @dataclass(frozen=True)
@@ -325,18 +327,16 @@ def _snapshot(command: ExactCommand, max_bytes: int) -> tuple[ExactCommand, byte
     return frozen, data
 
 
-async def _definition(connection, function: PgFunction, *, precondition: bool):
-    row = await (await connection.execute("""WITH d AS MATERIALIZED (
-        SELECT p.*, l.lanname, convert_to(pg_get_functiondef(p.oid), 'UTF8') AS body
-        FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang WHERE p.oid=to_regprocedure(%s))
-        SELECT octet_length(body), CASE WHEN octet_length(body)<=131072 THEN body END,
-            prorettype::regtype::text, provolatile, prosecdef, lanname, proretset, prokind FROM d""",
-        (function.signature,))).fetchone()
-    if row is None or row[1] is None or _hash(bytes(row[1])) != function.definition_sha256:
-        raise ApplyConflict("pinned versioned PG function definition differs")
-    if (row[2] != ("boolean" if precondition else "bytea") or row[4] or row[6] or row[7] != "f"
-            or row[5] not in ("sql", "plpgsql")
-            or (precondition and row[3] != "s")):
+async def _function_contract(connection,function: PgFunction,*,precondition: bool):
+    # Trusted SQL artifacts and the migration ledger own implementation bytes.
+    # Keep the invoker/scalar/stable-call contract without catalog body pins.
+    row=await (await connection.execute("""SELECT p.prorettype::regtype::text,
+        p.provolatile,p.prosecdef,l.lanname,p.proretset,p.prokind
+        FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
+        WHERE p.oid=to_regprocedure(%s)""",(function.signature,))).fetchone()
+    if (row is None or row[0]!=("boolean" if precondition else "bytea")
+            or row[2] or row[4] or row[5]!="f" or row[3] not in ("sql","plpgsql")
+            or precondition and row[1]!="s"):
         raise ApplyConflict("handler requires invoker SQL/PLpgSQL and a stable boolean precondition")
 
 
@@ -397,9 +397,9 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                     handler = registry.resolve(command)
                     if set(command.expected_revisions) != handler.precondition_keys:
                         raise ApplyConflict("complete exact precondition key set is required")
-                    stage = 'function_pins'
-                    await _definition(connection, handler.check, precondition=True)
-                    await _definition(connection, handler.apply, precondition=False)
+                    stage = 'function_contract'
+                    await _function_contract(connection, handler.check, precondition=True)
+                    await _function_contract(connection, handler.apply, precondition=False)
                     args = (command.payload, Jsonb(dict(command.ids)), Jsonb(dict(command.expected_revisions)), command.logical_time)
                     stage = 'precondition'
                     checked = await (await connection.execute(sql.SQL("SELECT ") + _call(handler.check), args)).fetchone()

@@ -169,7 +169,7 @@ def configured_source_service():
             result[key]=value
         return result
     value=json.loads(data,object_pairs_hook=unique)
-    fields={'codec','run_id','stream','database','command_handlers','observer_sha256'}
+    fields={'codec','run_id','stream','database','registry_sha256','observer_sha256'}
     if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys','source_restore','source_snapshot','geo_bootstrap','dataset_seed'}
             or value['codec']!='rkb.source-service.v1'):
         raise ValueError('exact source owner configuration required')
@@ -183,7 +183,7 @@ def configured_source_service():
     from .supabase_backend import _object_store_from_env
     from .object_store import S3ObjectStore
     from .kaggle_owned_pg import OwnedDatabase
-    from .kaggle_source_commands import fixed_registry
+    from .kaggle_current_registry import current_registry,registry_sha256
     from .source_history_wss import WssNativeHistoryProofAdapter
     provider,_owner=_runtime()
     people=provider.personal_policy.participants
@@ -197,7 +197,8 @@ def configured_source_service():
     if observed is not None and observed.get('database_generation')==database.database_generation:
         from dataclasses import replace
         database=replace(database,schema_version=observed.get('schema_version',database.schema_version))
-    registry=fixed_registry(database,value['command_handlers'])
+    registry=current_registry()
+    if value['registry_sha256']!=registry_sha256(registry):raise ValueError('current code registry hash required')
     history=WssNativeHistoryProofAdapter(database=database,expected_observer_sha256=value['observer_sha256'],
         geo_bootstrap_operation_keys=tuple(value.get('geo_manifest_operation_keys',())))
     import_owners=None

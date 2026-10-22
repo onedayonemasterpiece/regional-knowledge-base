@@ -141,7 +141,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                         if ref is None:raise SpoolConflict('verified source prefix is not an exact ancestor')
                         older,raws=await j.read_segment(ref)
                         for raw in raws:
-                            value=self._classify(raw,ref)
+                            value=self._classify(raw,ref,historical=mode=='full')
                             self._charge_history(usage,value[0],len(raw))
                             if len(commands)>=self.max_commands:
                                 raise SpoolConflict('native source history budget exceeded')
@@ -227,10 +227,16 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                                 raise SpoolConflict('native applied prefix is not exact')
                             c,h,m=known[seq]
                             if (seq<=after or op!=c.operation_key or ch!=_hash(c.encode()) or actual_ch!=ch
-                                    or hh!=h.fingerprint or mh!=m.sha256 or generation!=key[3]
+                                    or mh!=m.sha256 or generation!=key[3]
                                     or status not in ('applied','rejected_precondition') or oh!=actual_oh
                                     or type(length) is not int or not 1<=length<=j.max_outcome_bytes):
                                 raise SpoolConflict('native exact applied metadata differs')
+                            from .source_history_verifier import _receipt_handler_matches
+                            remote=remote_outcomes.get(seq)
+                            try:body=base64.b64decode(json.loads(remote.data)['outcome_b64'],validate=True) if remote is not None else b''
+                            except (ValueError,KeyError,TypeError):raise SpoolConflict('historical outcome unavailable') from None
+                            if not _receipt_handler_matches(c,h,hh,body,status):
+                                raise SpoolConflict('native historical handler receipt differs')
                             observations[seq]=(status,oh,length);after=seq
                         if page.get('after')!=after or type(page.get('done')) is not bool:
                             raise SpoolConflict('native receipt cursor differs')
@@ -240,6 +246,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     if observations.keys()!=expected:raise SpoolConflict('native applied receipt prefix incomplete')
                     changes={};pending=[];origins=[]
                     for c,h,m in known.values():
+                        if c.sequence>applied:self._classify(c.encode(),m)
                         outcome=observations.get(c.sequence);durable=False
                         if outcome is not None:
                             remote=remote_outcomes[c.sequence]
