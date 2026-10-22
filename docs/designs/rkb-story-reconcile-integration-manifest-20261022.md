@@ -38,3 +38,16 @@ The SQL effect can modify **only** the two reconciliation tables; it never edits
 6. **Real acceptance:** one authorized Kaggle run with exact Source A→B and third source (same subject Case ID), source-pass complete ≠ cross-book complete, exact `Variant.body` unchanged, false/tampered source binding rejected, lost source/Case/progress ACK readback across Dev spool GC, double-submit under concurrent actor, revoked Case/source after a saved partial result, durable reject without retry, native PG restart and Dataset snapshot/recovery coverage. Existing CI verifies source and synthetic tests but cannot substitute this real PG acceptance.
 
 **Status: SOURCE/SYNTHETIC ONLY.** No SQL016 applied, no handler registration, no new live PG run, no credentials/provider calls, no automatic migration, no user-visible `Saved` claim.
+
+
+## SQL016 corrective handoff (22 October 2026, independent review)
+
+The frozen original SQL016 source commit \`1097494db461e6a996c10202a7065315e8d7827d\` is not rewritten. A separate corrective commit updates **only** SQL016, the PG-backed \`ReconcileStore\` leaf and its targeted tests:
+
+- The exact \`story_reconcile_source_current_v1\` source-revision argument is \`$2\`, not ambiguous \`ar.revision=revision\`. All seven new function bodies are audited for the equivalent unqualified \`revision\` collision. SQL compilation requires the PG17 CI check; a synthetic string assertion is **not** execution evidence.
+- \`advance\` with an existing \`wanted_case\` requires the exact \`d.case_id=wanted_case\` **before** checking the otherwise actor-valid Case receipt. Only \`plan.action=create AND step=0 AND row.case_id IS NULL\` may establish a previously unknown Case ID. A CaseA plan with a legitimate CaseB receipt must be rejected without advancing PG.
+- A lost-ACK retry after PG \`version+1\` must use \`_same_command\` against the originally accepted canonical command (actor, parent intent SHA, revision, source IDs, step and **case_id**), including after Dev spool GC. The original \`RecoveryJournal\` object and durable PG outcome remain authoritative; no new journal, Case CRUD, or SQLite cursor is introduced.
+
+A **separate** \`tests/test_kaggle_story_reconcile_pg.py\` uses the **existing GitHub Actions** PostgreSQL 17/pgvector 0.8.2 service \`RKB_KAGGLE_TEST_DSN\` and verifies real function compilation, current source/intent proofs, CaseA-plan versus CaseB native-shaped receipt, unchanged PG cursor on rejection, and first CREATE's positive transition. The test fails if a required native function is missing *when the CI PG fixture is present*. The test transaction rolls back all SQL001–012 plus SQL016 and synthetic rows. This isolated probe is NOT the fully ordered 013/014/015→016 migration, not an installed handler, not journal acceptance, and not a live Kaggle test. No \`.github/workflows/ci.yml\`, original data, runtime role, or production migration is changed.
+
+The sole runtime owner must separately approve the exact 013–015 predecessors, function-definition hashes, reader/handler grant and final MCP/output-gate wiring before activation.
