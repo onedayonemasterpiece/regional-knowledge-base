@@ -210,7 +210,9 @@ class ProductTelemetry:
         while True:
             record = self._queue.get()
             try:
-                if not self._disabled:
+                if self._disabled:
+                    self.dropped += 1  # Already accepted, but no longer writable.
+                else:
                     self._sink(record)
             except Exception:
                 self.failed += 1
