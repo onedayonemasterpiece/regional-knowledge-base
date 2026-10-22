@@ -7,6 +7,7 @@ supplies the unpublished wheel. Missing hosting never becomes an invented URL.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import lzma
@@ -24,8 +25,12 @@ MANIFESTS = HERE / 'manifests'
 DJVU_VERSION = '3.5.28-2ubuntu0.24.04.2'
 PLATFORM = dict(os_id='ubuntu', os_version_id='24.04', machine='x86_64',
                 libc_name='glibc', libc_version='2.39')
-PREFIXES = ('usr/bin/ddjvu', 'usr/lib', 'lib', 'lib64', 'usr/lib64',
-            'usr/share/postgresql', 'usr/share/djvu')
+# Preserve the verified baseline's selected PG/library/locale trees. Broad
+# usr/lib selection also captures host configuration aliases (e.g. SSL), whose
+# targets are intentionally outside the pinned native execution tree.
+PREFIXES = ('usr/bin/ddjvu', 'usr/bin/locale', 'usr/lib/x86_64-linux-gnu',
+            'usr/lib/postgresql', 'usr/lib/locale', 'usr/share/postgresql',
+            'usr/share/djvu')
 
 
 def digest(data):
@@ -245,13 +250,20 @@ def main():
         save(root / 'native-bound.json', dict(status='UNRESOLVED', actual=len(lock['packages']),
              current_max=MAX_PACKAGES, missing='integrator-owned native package bound review', dependencies_removed=False))
         return
-    packages = []
-    for package in lock['packages']:
+    def fetch(package):
         name = package['name'] + '.deb'
         download(package['url'], root / name, maximum=512 * 1024**2,
                  expected_sha=package['sha256'], expected_size=package['size'])
-        packages.append(dict(name=package['name'], archive=name, size=package['size'], sha256=package['sha256']))
-    receipt = assemble_native_collection(root, packages, identity=PLATFORM, include_prefixes=PREFIXES, total_seconds=900)
+        return dict(name=package['name'], archive=name, size=package['size'], sha256=package['sha256'])
+    # Independent exact-hash transfers; deterministic input order is retained.
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        packages = list(executor.map(fetch, lock['packages']))
+    try:
+        receipt = assemble_native_collection(root, packages, identity=PLATFORM, include_prefixes=PREFIXES, total_seconds=900)
+    except Exception as error:
+        save(root / 'native-assembly-failure.json', dict(error_type=type(error).__name__,
+             reason=str(error), context=getattr(error, 'context', None), include_prefixes=PREFIXES))
+        raise
     save(root / 'native-receipt.json', receipt)
     # Existing extractor performs all nested hashes and safe link materialization.
     # CI has a disposable root; runtime paths remain entirely untouched.

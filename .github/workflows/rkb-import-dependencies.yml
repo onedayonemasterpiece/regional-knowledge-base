@@ -67,6 +67,7 @@ jobs:
             dependency-proof/djvu-package-lock.json
             dependency-proof/metadata-receipts.json
             dependency-proof/native-bound.json
+            dependency-proof/native-assembly-failure.json
             dependency-proof/native-receipt.json
             dependency-proof/native-manifest.json
             dependency-proof/native-packages.tar

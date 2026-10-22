@@ -42,7 +42,15 @@ locks and the remaining unresolved96-package bound. No cap change or native
 manifest/ELF readiness is implied by a resolved lock.
 
 The existing assembler retains the PG native data and libraries and adds
-ddjvu plus loader/library paths. The existing safe extractor materializes and
+ddjvu plus loader/library paths. CI39760622775 verified all103 downloads but
+rejected an unpinned link during broad `usr/lib` selection, before producing
+a manifest. Selection now preserves the verified baseline's explicit
+`usr/lib/{x86_64-linux-gnu,postgresql,locale}`, `usr/share/postgresql` and
+`usr/bin/locale` paths, adding ddjvu and its DjVu data. Host configuration aliases
+outside those trees are not selected; all103 dependency package pins remain.
+Assembly failure receipts include the offending package/member/target context.
+Four independent download workers retain exact size/SHA checks and lock order.
+The existing safe extractor materializes and
 checks the manifest on the disposable GitHub runner. The existing `kaggle_djvu_elf.pinned_djvu_elf_closure` verifies ddjvu's
 PT_INTERP, explicit pinned loader and recursive DT_NEEDED. CI overlays only
 that unchanged file from the reviewed leaf622e5b8e591f6ecf36404078eb41fb659b9e2cae,
