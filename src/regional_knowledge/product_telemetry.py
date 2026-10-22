@@ -34,19 +34,43 @@ _STATUSES = frozenset({"started", "ok", "returned", "degraded", "pending", "stag
 _IDENTIFIERS = frozenset({"trace_id", "attempt_id", "run_id", "request_ref", "operation_ref"})
 _FIELDS = frozenset({"event", "phase", "status", "duration_ms", "level",
                      "timing_semantics", "connection_generation", "turn_generation"}) | _IDENTIFIERS
-_RESOURCE_FIELDS = frozenset({"cpu_percent", "cpu_seconds", "rss_bytes", "pss_bytes",
-                              "shared_bytes", "cgroup_memory_current_bytes",
-                              "cgroup_memory_limit_bytes", "cgroup_memory_max_bytes",
-                              "read_queue_depth", "process_count"})
+# Resource-specific bounded numeric ABI shared with the existing heartbeat
+# sanitizer. Optional/missing proc/cgroup measurements must stay absent, not 0.
+_RESOURCE_FIELDS = frozenset({
+    "rss_kib", "hwm_kib", "pss_kib", "cpu_seconds", "cpu_threads", "pid",
+    "pg_master_rss_kib", "pg_master_hwm_kib", "pg_master_pss_kib",
+    "pg_master_cpu_seconds", "pg_master_pid",
+    "cgroup_version", "cpu_quota_us", "cpu_period_us", "cpu_usage_usec",
+    "cpu_nr_throttled", "cpu_throttled_usec", "cpu_usage_delta_seconds",
+    "cpu_throttled_delta_seconds", "cpu_utilization_cores",
+    "memory_current_bytes", "memory_limit_bytes", "memory_events_high",
+    "memory_events_max", "memory_events_oom", "memory_events_oom_kill",
+    "io_read_bytes", "io_write_bytes", "sample_seq", "sample_time_unix_ms",
+    "sampling_failures_total", "received_unix_ms",
+    # Narrow compatibility aliases only; never allow arbitrary metadata.
+    "cpu_percent", "rss_bytes", "pss_bytes", "shared_bytes",
+    "cgroup_memory_current_bytes", "cgroup_memory_limit_bytes",
+    "cgroup_memory_max_bytes", "read_queue_depth", "process_count"
+})
+_RESOURCE_INTEGER_FIELDS = frozenset({
+    "pid", "pg_master_pid", "cpu_threads", "cgroup_version", "cpu_quota_us",
+    "cpu_period_us", "cpu_usage_usec", "cpu_nr_throttled", "cpu_throttled_usec",
+    "memory_current_bytes", "memory_limit_bytes", "memory_events_high",
+    "memory_events_max", "memory_events_oom", "memory_events_oom_kill",
+    "io_read_bytes", "io_write_bytes", "sample_seq", "sample_time_unix_ms",
+    "received_unix_ms", "sampling_failures_total", "rss_kib", "hwm_kib",
+    "pss_kib", "pg_master_rss_kib", "pg_master_hwm_kib", "pg_master_pss_kib"
+})
 _OPAQUE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _clean(record: Mapping[str, object], level: str):
-    if not isinstance(record, Mapping) or set(record) - (_FIELDS | _RESOURCE_FIELDS):
+    resource_extras = {"runtime_incarnation", "release_sha256", "scope"}
+    if not isinstance(record, Mapping) or set(record) - (_FIELDS | _RESOURCE_FIELDS | resource_extras):
         raise ValueError("only fixed telemetry metadata is accepted")
-    if set(record) & _RESOURCE_FIELDS and record.get("event") != "resource.sample":
-        raise ValueError("resource samples have separate fixed numeric fields")
+    if set(record) & (_RESOURCE_FIELDS | resource_extras) and record.get("event") != "resource.sample":
+        raise ValueError("resource samples have separate fixed fields")
     if (record.get("event") not in _EVENTS or record.get("phase") not in _PHASES
             or record.get("status") not in _STATUSES or level not in ("standard", "debug")):
         raise ValueError("fixed product event/phase/status required")
@@ -75,10 +99,30 @@ def _clean(record: Mapping[str, object], level: str):
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 86_400_000:
             raise ValueError("finite monotonic duration required")
         result["duration_ms"] = round(value, 3)
+    if "runtime_incarnation" in record:
+        value = record["runtime_incarnation"]
+        if type(value) is not str or not 1 <= len(value) <= 256 or re.fullmatch(r"[A-Za-z0-9_.:-]+", value) is None:
+            raise ValueError("bounded internal incarnation required")
+        result["runtime_incarnation"] = value
+    if "release_sha256" in record:
+        value = record["release_sha256"]
+        if type(value) is not str or _SHA.fullmatch(value) is None:
+            raise ValueError("verified release digest only")
+        result["release_sha256"] = value
+    if "scope" in record:
+        if record["scope"] not in ("own_cgroup", "process_only"):
+            raise ValueError("fixed resource scope only")
+        result["scope"] = record["scope"]
     for key in _RESOURCE_FIELDS & set(record):
         value = record[key]
-        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 2**63 - 1:
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value < 2**63:
             raise ValueError("bounded finite resource reading required")
+        if key in _RESOURCE_INTEGER_FIELDS and type(value) is not int:
+            raise ValueError("integer resource counter required")
+        if key == "cgroup_version" and value not in (1, 2):
+            raise ValueError("supported cgroup scope required")
+        if key in ("sample_seq", "sample_time_unix_ms", "received_unix_ms") and value < 1:
+            raise ValueError("positive sample identity required")
         result[key] = round(value, 3) if type(value) is float else value
     return result
 
