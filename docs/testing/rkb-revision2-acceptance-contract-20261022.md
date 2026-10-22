@@ -104,7 +104,7 @@ hash, executed test names, cases passing/failing, and unknown/skip totals.
 
 ## Current evidence and ownership
 
-- **APIs/source HEAD:** `NOT AVAILABLE` (future SQL017/registry/worker).
+- **Provisional source HEAD:** Import branch `chatgpt/rkb-native-revision2-20261022` @ `b4359bf82f20259e32a773d165420738fa219aa2` contains **actual proposed SQL015/016/017**, but `kaggle_native_revision2_upgrade.py` does not yet exist and `source_stage.py`, `source_activation.py`, `kaggle_native_source_intake.py`, `kaggle_source_commands.py` remain original schema14 Git blobs. Thus the exact **runnable Python v2 API/registry/worker HEAD is NOT YET AVAILABLE**. The SQL017 bytes are an independently reviewable partial source artifact, **not** a working applied migration or a positive accepted-source result.
 - **NEW revision2 test:** `NOT CREATED / NOT RUN` pending exact committed API.
 - **Old SQL013/014 / native revision1 tests:** not a substitute.
 - **Actual PG17 revision2 test:** `NOT RUN`.
