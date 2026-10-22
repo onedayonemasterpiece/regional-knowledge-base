@@ -11,7 +11,8 @@ class RuntimeQueue(Queue):
     def channel_status(self,*args):
         return dict(super().channel_status(*args),active=True,runtime_verified=True)
 
-def test_sender_race_returns_pending_then_result_is_separate_from_ready():
+def test_sender_race_returns_pending_then_result_is_separate_from_ready(caplog):
+    caplog.set_level('INFO',logger='regional_knowledge.bge_channel')
     q=RuntimeQueue();eligible=[True];race=[True];confirmed=[]
     class Owner:
         def current(self,*args):return eligible[0]
@@ -41,6 +42,12 @@ def test_sender_race_returns_pending_then_result_is_separate_from_ready():
         send(socket,generation,'HEARTBEAT')
         assert socket.receive_json()['type']=='HEARTBEAT_ACK'
         assert confirmed==[('run','instance',generation,True)]
+    events=[json.loads(r.message) for r in caplog.records if r.name=='regional_knowledge.bge_channel']
+    observed=[e for e in events if e.get('event')=='rkb1_archive_authorization']
+    assert observed==[dict(event='rkb1_archive_authorization',run_id='run',
+        connection_generation=generation,status='authorized',confirmed=True)]
+    assert 'synthetic-not-a-real-session' not in caplog.text
+    assert 'api_hash' not in caplog.text and granted['challenge'] not in caplog.text
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fails',[False,True])
