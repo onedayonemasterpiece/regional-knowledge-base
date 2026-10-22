@@ -6,6 +6,7 @@ probe. This module neither registers a route nor allocates a pool/startup.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import asdict, dataclass
 import math
 import time
@@ -178,3 +179,35 @@ async def collect_health(*, queue, native_probe, controller_state='unknown', tim
         output['reason'] = 'health_probe_unavailable'
     output['elapsed_ms'] = (time.monotonic() - started) * 1000
     return output
+
+
+def heartbeat_health(queue):
+    """Sanitized Dev-side health for a public status route (no native call).
+
+    Reports the runtime observation the current run last delivered on its
+    authenticated heartbeat, labelled as such; a native SQL probe needs a
+    worker request kind and is not claimed here.
+    """
+    _, notebook, binding = _control_snapshot(queue)
+    health = dict(codec='rkb.health.v1', source='heartbeat_observation',
+                  notebook={key: notebook.get(key) for key in
+                            ('status', 'launch_state', 'provider_version', 'connection_generation', 'heartbeat_age_seconds')},
+                  read_ready=False)
+    if binding is None:
+        health['reason'] = 'notebook_not_ready'
+        return health
+    with queue.connect(write=False) as db:
+        row = queue._runtime_row(db, binding.run_id)
+    observed = json.loads(row['observed_json']) if row is not None and row['observed_json'] else {}
+    postgres = {key: observed.get(key) for key in ('schema_revision', 'applied_seq', 'projection_seq')}
+    health['postgres'] = postgres
+    applied, projection = postgres['applied_seq'], postgres['projection_seq']
+    if type(applied) is not int or type(projection) is not int:
+        health['reason'] = 'runtime_observation_missing'
+    elif projection != applied:
+        health['reason'] = 'pg_projection_lag'
+    elif applied < binding.min_data_seq:
+        health['reason'] = 'pg_sequence_behind'
+    else:
+        health['read_ready'] = True
+    return health
