@@ -41,10 +41,19 @@ class DatabaseHealth:
 
     @property
     def ready(self):
-        return self.sql_response and self.reason is None
+        return (self.sql_response is True and self.reason is None
+                and type(self.schema_revision) is str
+                and 1 <= len(self.schema_revision.encode()) <= 256
+                and type(self.applied_seq) is int and type(self.projection_seq) is int
+                and self.applied_seq >= self.binding.min_data_seq
+                and self.projection_seq == self.applied_seq and self.pending is False)
 
     def wire(self):
         result = asdict(self)
+        # The complete identity remains internal for exact attachment validation.
+        result['binding'] = {key: result['binding'][key] for key in
+                             ('connection_generation', 'database_generation',
+                              'min_data_seq', 'provider_version')}
         result['ready'] = self.ready
         return result
 
@@ -128,10 +137,12 @@ def _control_snapshot(queue):
             runtime_incarnation,connection_generation,channel_active,attachment_conflict,heartbeat
             FROM runs WHERE id=?''', (control['current_run'],)).fetchone() if control else None
         startup_state = control['startup_state'] if control else None
-        notebook = dict(run) if run else dict(status='absent')
+        notebook = ({key: run[key] for key in
+                     ('status', 'launch_state', 'provider_version', 'connection_generation')}
+                    if run else dict(status='absent'))
+        notebook['source'] = 'controller_queue'
         if run:
             age = queue.clock() - run['heartbeat']
-            notebook.pop('heartbeat')
             notebook['heartbeat_age_seconds'] = round(max(0, age), 3) if math.isfinite(age) and age >= -5 else None
     try:
         binding = current_binding(queue) if notebook.get('heartbeat_age_seconds') is not None else None

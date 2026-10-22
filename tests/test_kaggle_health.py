@@ -159,9 +159,22 @@ async def test_existing_queue_and_native_probe_form_one_exact_health_response(ta
     result = await collect_health(queue=target.queue, native_probe=observe, controller_state='active')
     assert result['read_ready'] and result['postgres']['sql_response']
     assert result['notebook']['provider_version'] == int(expected.provider_version)
-    assert result['notebook']['runtime_incarnation'] == expected.runtime_incarnation
     assert result['notebook']['heartbeat_age_seconds'] == 0
-    assert 'token' not in json.dumps(result) and 'launch_nonce' not in json.dumps(result)
+    assert result['notebook']['source'] == 'controller_queue'
+    assert set(result['notebook']) == {'status', 'launch_state', 'provider_version',
+        'connection_generation', 'source', 'heartbeat_age_seconds'}
+    serialized = json.dumps(result)
+    for private in ('token', 'launch_nonce', 'runtime_incarnation', 'provider_ref', 'run_id'):
+        assert private not in serialized
+
+
+@pytest.mark.parametrize('fields', [
+    {}, {'schema_revision': 's1', 'applied_seq': 5, 'projection_seq': 5},
+    {'schema_revision': 's1', 'applied_seq': True, 'projection_seq': 1, 'pending': False},
+    {'schema_revision': 's1', 'applied_seq': 5, 'projection_seq': 4, 'pending': False},
+])
+def test_incomplete_or_inconsistent_callback_receipt_is_not_ready(fields):
+    assert not DatabaseHealth(binding(), sql_response=True, **fields).ready
 
 
 @pytest.mark.asyncio

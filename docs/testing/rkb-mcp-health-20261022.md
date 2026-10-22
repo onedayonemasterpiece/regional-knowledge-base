@@ -44,3 +44,12 @@ native I/O. A conditional native SQL case uses only the existing approved
 GitHub CI PG17 fixture; absent that fixture it must report SKIP. No Dev PG,
 model, real credentials, Kaggle push, service restart or deployment occurs.
 This leaf is an integration input, not an installed MCP health endpoint.
+
+Public receipt follow-up: notebook observations explicitly identify their source
+as `controller_queue`; they expose only status, launch state, provider version,
+connection generation and heartbeat age. Provider references, run IDs and runtime
+incarnations remain internal. The SQL receipt similarly sanitizes its public
+binding after full identity comparisons. Callback readiness also requires a
+complete schema/sequence/pending observation, not a bare `sql_response=True`.
+The native WSS request hook and runtime rollout remain integration-owner work;
+queue observations alone never imply a successful SQL probe.
