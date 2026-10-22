@@ -8,6 +8,14 @@
 
 **Выявленный дефект должен переходить в исправление, а не оставаться отчётом владельцу.** dot ведёт finding → bounded scope/owner → ACK → source PR/проверка → integrated/live acceptance там, где она нужна. Этот срез обновляет оперативную очередь; полные требования M1–M11 и прежние receipts ниже сохраняются. Основной coordination thread — [1792676544.802199](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792676544802199). Все времена UTC, 22.10.2026.
 
+### Обязательное закрытие предметных complexity findings — до 19:18 UTC
+
+По **прямому решению владельца**, опубликованному [dot1792689714.426359](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792689714426359), [RKB-Критик](https://chatgpt.com/c/6ada4593-cdc8-83ea-8302-7baee784c5bc) выполняет независимый complexity review. Подтверждённые предметные замечания о необоснованном усложнении **обязательны к закрытию до merge соответствующего PR**. Закрытие — исправление на exact SHA с проверкой либо явное снятие замечания критиком после конкретного контрдоказательства, что предлагаемое удаление нарушит данные/требуемую функцию. ACK, обещание «позже» или один зелёный CI замечание не закрывают.
+
+Вкусовые пожелания и неподтверждённые гипотезы не блокируют merge. Проверяется закрытие конкретного finding, **не новый полный audit на каждый ответ**. Owner исходного кода выполняет fix в своём scope; пересекающиеся hunks передаются по существующему handoff. Критик не получает merge/runtime полномочий и не становится вторым разработчиком или оператором. Findings, exact fix SHA и решение о закрытии остаются в соответствующем PR/общей координации, отдельного реестра review не создаём.
+
+Статус: reviewer **STARTED17:19:49**; это не ACK нового обязательного правила. Прямой Launcher followup с правилом **не доставлен** (`INVALID_ARGUMENT`: исполнитель ещё работает); dot передаст после завершения текущего запуска. Публичное правило опубликовано, полученный ACK критика не заявлен. Остальные source/runtime scopes не изменены.
+
 **Первый приоритет владельца — немедленно упростить миграции. Шкипер остаётся sole runtime/operator.** PR273 runner уже merged в main `03daac2`; source HEAD `f2ef0cb`, full CI39817628433 SUCCESS (3.12/3.13; actual GH PG17 fresh/baselines11/12/14/15/16, no-op, changed-file, rollback, normalized pg_dump). Это **source/CI**, не live schema14 и не Saved. PR274 delivery/barrier `57e90bf` получил **request changes**: один barrier на пакет pending migrations и один checkpoint, ledger PG — источник applied truth, без второй per-version durable state machine. PR-2 readiness/restore/version metadata — действующий следующий шаг Шкипера; до него production runner не вызывать. Ниже исторический pins-план14:10 не является параллельным заданием поверх этой новой migration очереди.
 
 | Веха / accountable owner / статус | Сейчас и следующий исполнимый результат | Scope, зависимость и приёмка |
