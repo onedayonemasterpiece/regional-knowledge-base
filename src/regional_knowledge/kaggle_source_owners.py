@@ -178,6 +178,14 @@ def configured_source_service():
         raise ValueError('exact GEO manifest operation key list required')
     queue_path=os.getenv('RKB_BGE_QUEUE_PATH','').strip()
     if not queue_path or not Path(queue_path).is_file():raise ValueError('existing configured queue required')
+    original_value=value
+    queue=BgeQueue(queue_path)
+    if 'source_restore' in value:
+        from .kaggle_cold_successor import successor_source_config
+        # Select the finalized per-run checkpoint BEFORE constructing its
+        # Dataset store. Reopening the old checkpoint after a verified promotion
+        # would correctly fail instead of recovering the current generation.
+        value=successor_source_config(queue,value,allow_pending=True)
     # Existing fixed app constructors require existing OAuth state/key and
     # canonical participant DB. They never mint a credential or create a user.
     from .personal_auth_cli import _runtime
@@ -225,9 +233,9 @@ def configured_source_service():
     if 'dataset_seed' in value:
         from .kaggle_dataset_seed import DatasetSeedConfig
         dataset_seed=DatasetSeedConfig.from_wire(value['dataset_seed'])
-    return compose_source_service(queue=BgeQueue(queue_path),oauth_provider=provider,participants=people,
+    return compose_source_service(queue=queue,oauth_provider=provider,participants=people,
         object_store=object_store,stream=value['stream'],registry=registry,history_adapter=history,
         run_id=value['run_id'],database_generation=database.database_generation,writer_generation=database.writer_generation,
         source_import=import_owners,geo_manifest_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),source_restore=restore,source_snapshot=snapshot,geo_bootstrap=geo_bootstrap,
         geo_dependency_upgrade=upgrade,dataset_seed=dataset_seed,native_source_upgrade=native_upgrade,
-        successor_source_json=json.dumps(value,sort_keys=True,separators=(',',':')) if restore is not None else None)
+        successor_source_json=json.dumps(original_value,sort_keys=True,separators=(',',':')) if restore is not None else None)

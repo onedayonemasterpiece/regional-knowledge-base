@@ -181,7 +181,7 @@ def finalize_successor(queue, plan):
         return source
 
 
-def successor_source_config(queue, original):
+def successor_source_config(queue, original, *, allow_pending=False):
     """Read finalized current plan; unchanged initial-run configuration is valid.
 
     This selector does not rebind an already running service; its maintenance
@@ -192,9 +192,11 @@ def successor_source_config(queue, original):
         if run_id == original['run_id']:
             return original
         if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rkb_cold_successor_plans'").fetchone():
+            if allow_pending:return original
             raise ValueError('current successor recovery configuration unavailable')
         row = db.execute('SELECT * FROM rkb_cold_successor_plans WHERE run_id=?', (run_id,)).fetchone()
         if row is None or row['launch_config_sha256'] is None:
+            if allow_pending:return original
             raise ValueError('current successor recovery configuration not finalized')
         plan = SuccessorPlan(run_id, target_launch_from_wire(json.loads(row['target_json'])),
             row['source_json'], row['parent_run_id'], row['storage_sha256'])

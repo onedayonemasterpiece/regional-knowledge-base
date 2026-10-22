@@ -195,3 +195,37 @@ async def test_successor_does_not_discard_unsettled_original_authority(owner,gua
     with e.q.connect(write=False) as db:
         assert db.execute('SELECT count(*) FROM rkb_cold_successor_plans').fetchone()[0]==0
         assert db.execute('SELECT count(*) FROM rkb_writer_generations').fetchone()[0]==1
+
+
+@pytest.mark.asyncio
+async def test_configured_restart_selects_finalized_run_before_constructing_restore_store(owner,tmp_path,monkeypatch):
+    from regional_knowledge.kaggle_source_owners import configured_source_service
+    from regional_knowledge.object_store import S3ObjectStore
+    from test_kaggle_target_runtime import generate
+    e=owner;source=source_config(e);source.pop('source_import')
+    source.update(command_handlers=[dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64)],
+        catalog_sha256='a'*64,acl_sha256='b'*64,observer_sha256='c'*64)
+    run=await terminal_then_demand(e)
+    assert successor_source_config(e.q,source,allow_pending=True) is source
+    plan=prepare_successor(e.q,run,target(),source)
+    e.q.launch_claim(run,provider_ref='owner/stable-slug')
+    generate(e.q,run,plan.target)
+    bound=finalize_successor(e.q,plan)
+    path=tmp_path/'source-owner.json';path.write_text(json.dumps(source));path.chmod(0o600)
+    store=S3ObjectStore.__new__(S3ObjectStore);store.client=e.c;store.bucket=e.s.bucket
+    monkeypatch.setenv('RKB_KAGGLE_SOURCE_CONFIG',str(path))
+    monkeypatch.setenv('RKB_BGE_QUEUE_PATH',str(e.q.path))
+    monkeypatch.setattr('regional_knowledge.personal_auth_cli._runtime',lambda:(e.auth.provider,None))
+    monkeypatch.setattr('regional_knowledge.supabase_backend._object_store_from_env',lambda:store)
+    monkeypatch.setattr('regional_knowledge.kaggle_source_owners.BgeQueue',lambda path:e.q)
+    startup=configured_source_service()
+    try:
+        assert startup.config.writer_owner.run_id==run
+        assert startup.config.writer_generation==plan.target.database.writer_generation
+        assert startup.config.source_restore.wire()==bound['source_restore']
+        assert json.loads(startup.config.successor_source_json)==source  # immutable original anchor retained
+        assert startup.config.spool.journal.store.client is e.c
+        assert not startup.reads_current()
+    finally:
+        await startup.restorer.aclose();await startup.source_dispatch.aclose()
+        startup.config.spool.close();startup.config.writer_owner.close()

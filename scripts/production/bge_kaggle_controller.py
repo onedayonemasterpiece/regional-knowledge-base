@@ -41,9 +41,9 @@ _PREPARATION_STEPS=frozenset({'not_started','create_private_folder',
 def provider_boundary_report(error, run_id, boundary, preparation_step):
     """Only static stage/exception type for operations; never arbitrary text."""
     facts={'event':'bge_provider_boundary_failed','run_id':run_id,
-        'boundary':boundary,'submission_state':'not_sent' if boundary=='launch_preparation' else 'unknown',
+        'boundary':boundary,'submission_state':'not_sent' if boundary in ('launch_preflight','launch_preparation') else 'unknown',
         **provider_error_facts(error)}
-    if boundary=='launch_preparation':
+    if boundary in ('launch_preflight','launch_preparation'):
         facts['preparation_step']=(preparation_step if preparation_step in _PREPARATION_STEPS
                                    else 'not_started')
     return facts
@@ -359,6 +359,7 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None,
                         # The original explicitly bound run uses its unchanged
                         # target. Later demand requires a durable recovery plan.
                         if run_id!=successor_source_config['run_id']:
+                            boundary='launch_preflight'
                             preparation_step='prepare_successor'
                             successor_plan=prepare_successor(queue,run_id,target_spec,successor_source_config)
                             launch_target=successor_plan.target

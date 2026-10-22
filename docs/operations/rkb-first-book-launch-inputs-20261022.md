@@ -4,7 +4,8 @@ This handoff separates the first model reading of pages from later revision2,
 Expert delivery and public-media parity. It is not a release or a live receipt.
 The diagnostic source checkpoint is `f5543d6ac2f885e89bdeb5fa7249229d7ec6a552`,
 with both Python jobs and actual launch metadata green in
-[39783693219](https://github.com/onedayonemasterpiece/regional-knowledge-base/actions/runs/39783693219).
+[39783693341](https://github.com/onedayonemasterpiece/regional-knowledge-base/actions/runs/39783693341):
+3083 passed/35 skipped on each Python and2 actual-metadata checks passed.
 Canonical merge/deployment remains with the designated runtime operator.
 
 ## Ready source closure
