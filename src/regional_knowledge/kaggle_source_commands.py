@@ -270,7 +270,7 @@ class WorkerSourceExecutor:
         if ((command.schema_revision=='rkb-v4-sql001-014-v1'
                 and command.route in ('source.materialize.v1','source.stage.seal.v1'))
             or (command.schema_revision=='rkb-v4-sql001-017-v1'
-                and command.route in ('source.materialize.v2','source.stage.seal.v2'))):
+                and command.route == 'source.materialize.v2')):
             if self.materializer is None:raise ValueError('native source materializer unavailable')
             # Verify this captured authenticated accepted intent BEFORE private
             # candidate effects, then apply canonical outcome in its own tx.

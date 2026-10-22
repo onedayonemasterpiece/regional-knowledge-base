@@ -338,26 +338,29 @@ END $$;
 CREATE FUNCTION rkb_v4.check_source_materialize_revision2_v1(p bytea,ids jsonb,expected jsonb,logical_time text)
 RETURNS boolean LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE d jsonb;wanted uuid;candidate rkb_v4.source_revision2_candidates;
- v rkb_v4.source_revision2_vectors;i jsonb;ordinal integer;
+ v rkb_v4.source_revision2_vectors;i jsonb;slot_index integer;
 BEGIN
  IF octet_length(p) NOT BETWEEN 1 AND 2048 THEN RETURN false;END IF;
  wanted:=(ids->>'source_id')::uuid;d:=convert_from(p,'UTF8')::jsonb;
  IF d->>'codec'<>'rkb.source-materialize.v2' OR d->'source_revision'<>'2'::jsonb
   OR d->>'ordinal' !~ '^(0|[1-9][0-9]{0,5})$'
   OR expected->>'active_revision'<>'1' THEN RETURN false;END IF;
- ordinal:=(d->>'ordinal')::integer;
+ slot_index:=(d->>'ordinal')::integer;
  SELECT * INTO candidate FROM rkb_v4.source_revision2_candidates WHERE source_id=wanted;
- IF NOT FOUND OR ordinal>=candidate.total_inputs OR candidate.ingestion_id::text<>d->>'ingestion_id'
+ IF NOT FOUND OR slot_index>=candidate.total_inputs OR candidate.ingestion_id::text<>d->>'ingestion_id'
   OR candidate.materializer_sha256<>d->>'materializer_sha256'
   OR candidate.last_batch_sha256<>d->>'last_batch_sha256'
   OR NOT EXISTS(SELECT 1 FROM rkb_v4.active_revision WHERE source_id=wanted AND revision=1)
   OR NOT EXISTS(SELECT 1 FROM rkb_v4.source_revision2_sessions WHERE source_id=wanted
    AND owner_person_id::text=expected->>'owner_person_id'
    AND predecessor_command_sha256=expected->>'predecessor_command_sha256') THEN RETURN false;END IF;
- SELECT * INTO v FROM rkb_v4.source_revision2_vectors WHERE source_id=wanted AND ordinal=ordinal;
- i:=rkb_v4.revision2_activation_input_v1(wanted,ordinal);
- RETURN v.input_id=(i->>'input_id')::uuid
-  AND v.input_sha256=encode(sha256(convert_to(i->>'body','UTF8')),'hex');
+ SELECT v2.* INTO v FROM rkb_v4.source_revision2_vectors v2
+  WHERE v2.source_id=wanted AND v2.ordinal=slot_index;
+ IF NOT FOUND THEN RETURN false;END IF;
+ i:=rkb_v4.revision2_activation_input_v1(wanted,slot_index);
+ IF i IS NULL THEN RETURN false;END IF;
+ RETURN coalesce(v.input_id=(i->>'input_id')::uuid
+  AND v.input_sha256=encode(sha256(convert_to(i->>'body','UTF8')),'hex'),false);
 EXCEPTION WHEN data_exception THEN RETURN false;
 END $$;
 
@@ -420,7 +423,7 @@ END $$;
 CREATE FUNCTION rkb_v4.apply_source_activate_revision2_v1(p bytea,ids jsonb,expected jsonb,logical_time text)
 RETURNS bytea LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE state rkb_v4.recovery_state;before rkb_v4.read_frontier;doc jsonb;
- wanted uuid;item jsonb;ordinal integer:=0;v public.vector;candidate rkb_v4.source_revision2_candidates;
+ wanted uuid;item jsonb;slot_index integer:=0;v public.vector;candidate rkb_v4.source_revision2_candidates;
  s rkb_v4.source_revision2_sessions;frontier rkb_v4.read_frontier;
 BEGIN
  SELECT * INTO STRICT state FROM rkb_v4.recovery_state WHERE singleton FOR UPDATE;
@@ -432,13 +435,14 @@ BEGIN
  doc:=candidate.knowledge;
  INSERT INTO rkb_v4.revisions VALUES(wanted,2);
  FOR item IN SELECT value FROM jsonb_array_elements(doc->'passages') LOOP
-  SELECT embedding INTO STRICT v FROM rkb_v4.source_revision2_vectors
-   WHERE source_id=wanted AND ordinal=ordinal AND input_id=(item->>'passage_id')::uuid;
+  SELECT av.embedding INTO STRICT v FROM rkb_v4.source_revision2_vectors av
+   WHERE av.source_id=wanted AND av.ordinal=slot_index
+     AND av.input_id=(item->>'passage_id')::uuid;
   INSERT INTO rkb_v4.passage_search(passage_id,source_id,revision,ordinal,locator,body,language,config,embedding)
-   VALUES((item->>'passage_id')::uuid,wanted,2,ordinal,item->>'locator',item->>'body',item->>'language',
+   VALUES((item->>'passage_id')::uuid,wanted,2,slot_index,item->>'locator',item->>'body',item->>'language',
     CASE item->>'language' WHEN 'ru' THEN 'pg_catalog.russian'::regconfig
       WHEN 'de' THEN 'pg_catalog.german'::regconfig ELSE 'pg_catalog.simple'::regconfig END,v);
-  ordinal:=ordinal+1;
+  slot_index:=slot_index+1;
  END LOOP;
  -- Model-authored facts and Story.body remain source-bound durable knowledge;
  -- projection into the editorial registries requires their independently
@@ -448,6 +452,24 @@ BEGIN
  INSERT INTO rkb_v4.source_revision2_research_frontier VALUES(wanted,2,
    (doc->'research'->>'frontier_id')::uuid,doc->'research'->>'state',
    doc->'research'->'continuation');
+ -- New v2 passages must carry the complete immutable source manifest before
+ -- switching the active revision. This uses SQL009's existing INSERT-only
+ -- projection trigger to create versioned source_catalog and
+ -- source_passage_provenance rows without rewriting any v1 manifest/body.
+ IF doc->'image_manifest'->>'source_id' IS DISTINCT FROM wanted::text
+   OR doc->'image_manifest'->'source_revision' IS DISTINCT FROM '2'::jsonb
+   OR decode(doc->'image_manifest'->>'original_receipt_b64','base64')
+       IS DISTINCT FROM s.original_receipt
+   OR (SELECT count(*) FROM jsonb_array_elements(doc->'image_manifest'->'passages'))
+       <>jsonb_array_length(doc->'passages') THEN
+   RAISE EXCEPTION 'revision2 source manifest/source pixels changed';END IF;
+ INSERT INTO rkb_v4.source_manifests(source_id,source_revision,manifest,payload_sha256,original_receipt)
+ VALUES(wanted,2,doc->'image_manifest',encode(sha256(p),'hex'),s.original_receipt);
+ IF (SELECT count(*) FROM rkb_v4.source_catalog WHERE source_id=wanted AND source_revision=2)<>1
+   OR (SELECT count(*) FROM rkb_v4.source_passage_provenance
+       WHERE source_id=wanted AND source_revision=2)
+       <>jsonb_array_length(doc->'passages') THEN
+   RAISE EXCEPTION 'revision2 catalog/index provenance incomplete';END IF;
  INSERT INTO rkb_v4.source_revision2_origins VALUES(wanted,2,s.ingestion_id,s.origin_ingestion_id,
    s.predecessor_command_sha256,encode(sha256(s.original_receipt),'hex'),s.original_sha256,
    candidate.knowledge_sha256,'revision2-activation:'||s.ingestion_id,state.applied_seq+1,
@@ -473,3 +495,34 @@ REVOKE ALL ON rkb_v4.source_revision2_sessions,rkb_v4.source_revision2_batches,
  rkb_v4.source_revision2_vectors,rkb_v4.source_revision2_materialized,
  rkb_v4.source_revision2_origins,rkb_v4.source_revision2_research_frontier,
  rkb_v4.source_revision2_semantic FROM PUBLIC;
+
+
+-- SQL009's source_passage_metadata_v1 is intentionally immutable: it joins
+-- source_import_origins revision1 only. New schema17 uses a versioned read
+-- function, retaining BOTH historical and current provenance under the
+-- existing source actor/visibility/active-revision read admission.
+CREATE FUNCTION rkb_v4.source_passage_metadata_v2(wanted uuid[])
+RETURNS TABLE(passage_id uuid,metadata jsonb)
+ LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT p.passage_id,jsonb_build_object(
+  'catalog',m.manifest->'metadata',
+  'original_sha256',coalesce(v2.original_sha256,v1.original_sha256),
+  'source_revision',p.source_revision,
+  'passage',p.data,
+  'pages',(SELECT jsonb_agg(x) FROM jsonb_array_elements(m.manifest->'pages') x
+    WHERE p.data->'page_ids' @> jsonb_build_array(x->'page_id')),
+  'regions',(SELECT jsonb_agg(x) FROM jsonb_array_elements(m.manifest->'regions') x
+    WHERE ((p.data->'region_ids')||(p.data->'footnote_region_ids')) @> jsonb_build_array(x->'region_id')))
+ FROM rkb_v4.source_passage_provenance p
+ JOIN rkb_v4.source_manifests m USING(source_id,source_revision)
+ LEFT JOIN rkb_v4.source_import_origins v1
+  ON v1.source_id=p.source_id AND v1.revision=p.source_revision
+ LEFT JOIN rkb_v4.source_revision2_origins v2
+  ON v2.source_id=p.source_id AND v2.revision=p.source_revision
+ JOIN rkb_v4.active_revision a ON a.source_id=p.source_id
+  AND a.revision=p.source_revision
+ JOIN rkb_v4.sources s ON s.source_id=p.source_id
+ WHERE p.passage_id=ANY(wanted[1:5]) AND s.accepted AND NOT s.withdrawn
+   AND (v1.source_id IS NOT NULL OR v2.source_id IS NOT NULL)
+$$;
+REVOKE ALL ON FUNCTION rkb_v4.source_passage_metadata_v2(uuid[]) FROM PUBLIC;

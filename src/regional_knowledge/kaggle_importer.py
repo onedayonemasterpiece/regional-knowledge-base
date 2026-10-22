@@ -976,6 +976,19 @@ class KaggleSourceImporter:
         if row.get('source_revision',1)==2:
             if row['phase']=='finalized':
                 raise failure('new_processing_revision_after_2_requires_upgrade')
+            # The compact successor row can be committed just before the
+            # original archive rebind is durably recorded. A lost rebind ACK
+            # MUST retry the same IDs, not allocate another ingestion.
+            historical=await asyncio.to_thread(self._row,row['person_id'],row['original_ingestion_id'])
+            previous=await self._receipt(access,historical)
+            if previous is None:
+                raise failure('verified_archived_original_required')
+            await self.originals.rebind_verified_revision2(access.context,
+                source_id=row['source_id'],original_ingestion_id=row['original_ingestion_id'],
+                successor_ingestion_id=row['ingestion_id'],
+                original_sha256=previous.sha256,original_receipt_sha256=previous.receipt_sha256,
+                predecessor_command_sha256=row['predecessor_command_sha256'])
+            await self._check(access.authority,access.context,access.binding)
             return await self.native_intake.status(access,row)
         if row['phase']!='finalized':
             raise failure('accepted_source_predecessor_not_finalized')
@@ -1033,6 +1046,12 @@ class KaggleSourceImporter:
                 if db.execute('''SELECT 1 FROM rkb_source_intake_control WHERE person_id=?
                     AND ingestion_id<>? AND phase NOT IN ('finalized','failed') LIMIT 1''',
                     (row['person_id'],row['ingestion_id'])).fetchone():
+                    raise failure('another_native_ingestion_active')
+                conflict=db.execute('''SELECT ingestion_id FROM rkb_source_revision2_control
+                    WHERE person_id=? AND source_id<>?
+                    AND phase NOT IN ('finalized','failed') LIMIT 1''',
+                    (row['person_id'],row['source_id'])).fetchone()
+                if conflict is not None:
                     raise failure('another_native_ingestion_active')
                 existing=db.execute('SELECT * FROM rkb_source_revision2_control WHERE source_id=?',
                     (row['source_id'],)).fetchone()

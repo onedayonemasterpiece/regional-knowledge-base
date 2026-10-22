@@ -35,6 +35,11 @@ ROOT=Path(__file__).resolve().parents[1]
 PERSON='60000000-0000-0000-0000-000000000002'
 
 
+class Revision2FixtureRollback(Exception):
+    """Explicit test-only rollback sentinel; psycopg.Rollback is swallowed by transaction()."""
+
+
+
 def _batch():
     base=batch(count=1)
     result={**base,'codec':REVISION2_BATCH_CODEC,'source_revision':2,'prior_revision':1,
@@ -107,7 +112,7 @@ async def test_sql017_installs_after_real_sql015_016_without_rewriting_prior_ddl
     await initialize_database(connection,database_generation='rev2-fixture',writer_generation='writer-fixture',
         revisions=REVISION2_REVISIONS)
     import psycopg
-    with pytest.raises(psycopg.Rollback):
+    with pytest.raises(Revision2FixtureRollback):
         async with connection.transaction():
             # SQL016's source-side grants require existing role names.
             # These NOLOGIN fixture identities are created only inside an
@@ -133,7 +138,7 @@ async def test_sql017_installs_after_real_sql015_016_without_rewriting_prior_ddl
                     (name,))).fetchone()
                 assert found==(1,)
             assert await(await connection.execute('SELECT count(*) FROM rkb_v4.source_revision2_origins')).fetchone()==(0,)
-            raise psycopg.Rollback()
+            raise Revision2FixtureRollback()
 
 
 
@@ -153,7 +158,8 @@ async def test_sql017_real_accepted_revision1_original_allows_only_exact_same_id
         stage_all,prepare,stage_command,accepted,install,next_command
     )
     from test_source_activation import synthetic_knowledge,activation_payload
-    from test_source_stage import seal,SEAL_ROUTE,INGESTION
+    from test_source_stage import seal,INGESTION
+    from regional_knowledge.source_stage import SEAL_ROUTE
     from regional_knowledge.source_stage import digest
     env=image_pg
     connection=env['connection']
@@ -175,7 +181,7 @@ async def test_sql017_real_accepted_revision1_original_allows_only_exact_same_id
     command=resolved_revision2_native_command(route=REVISION2_STAGE_ROUTE,source_id=source_id,
         payload=data,sequence=env['sequence']+1,operation_key='revision2-stage-real-pg',
         request_id=str(uuid4()),person_id=PERSON,logical_time='2026-10-22T12:10:00Z')
-    with pytest.raises(psycopg.Rollback):
+    with pytest.raises(Revision2FixtureRollback):
         async with connection.transaction():
             for role in ('rkb_reader','rkb_writer'):
                 assert await (await connection.execute('SELECT 1 FROM pg_roles WHERE rolname=%s',(role,))).fetchone() is None
@@ -194,4 +200,4 @@ async def test_sql017_real_accepted_revision1_original_allows_only_exact_same_id
             assert row==(False,), 'wrong edition must never inherit archived book identity'
             assert await(await connection.execute('SELECT revision FROM rkb_v4.active_revision WHERE source_id=%s',(source_id,))).fetchone()==(1,)
             assert await(await connection.execute('SELECT count(*) FROM rkb_v4.source_revision2_origins')).fetchone()==(0,)
-            raise psycopg.Rollback()
+            raise Revision2FixtureRollback()
