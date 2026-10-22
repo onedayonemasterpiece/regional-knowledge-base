@@ -63,11 +63,15 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                 raise ValueError('fixed ordered native source closure transition required')
         if geo_upgrade_pins is not None:
             from .kaggle_geo_upgrade import GeoUpgradePins
-            from .geo_manifest_commands import GEO_V2_REVISIONS
-            if (type(geo_upgrade_pins) is not GeoUpgradePins or tuple(getattr(database,k) for k in
-                    ('schema_revision','function_revision','executor_revision'))!=(ACTIVATION_REVISIONS if native_source_upgrade_pins is not None else GEO_V2_REVISIONS).wire()):
+            from .geo_manifest_commands import GEO_REVISIONS,GEO_V2_REVISIONS
+            revisions=tuple(getattr(database,k) for k in ('schema_revision','function_revision','executor_revision'))
+            target=(ACTIVATION_REVISIONS if native_source_upgrade_pins is not None else GEO_V2_REVISIONS).wire()
+            if type(geo_upgrade_pins) is not GeoUpgradePins or revisions not in (GEO_REVISIONS.wire(),target):
                 raise ValueError('fixed geographic closure transition required')
             self.origin_closure=geo_upgrade_pins.origin_closure(self.spool.registry,self.routes)
+            if revisions==GEO_REVISIONS.wire() and (self.catalog_hash,self.acl_hash)!=(
+                    self.origin_closure['catalog_sha256'],self.origin_closure['acl_sha256']):
+                raise ValueError('unchanged geographic origin catalog and ACL required')
         if (type(geo_bootstrap_operation_keys) is not tuple or len(geo_bootstrap_operation_keys)>256
                 or len(set(geo_bootstrap_operation_keys))!=len(geo_bootstrap_operation_keys)
                 or any(type(key) is not str or not 1<=len(key.encode())<=256 for key in geo_bootstrap_operation_keys)):
@@ -82,6 +86,9 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
     def _closure_transition(self,known,observations,remote_outcomes,previous):
         if self.geo_upgrade_pins is None:return None
         from .geo_manifest_commands import GEO_REVISIONS,GEO_V2_REVISIONS
+        if tuple(getattr(self.database,k,None) for k in
+                ('schema_revision','function_revision','executor_revision'))==GEO_REVISIONS.wire():
+            return None  # Future handlers do not claim an already-applied migration.
         from .source_activation import ACTIVATION_REVISIONS
         old=previous.closure_transition if previous is not None and previous.verifier is self else None
         native=self.native_source_upgrade_pins
