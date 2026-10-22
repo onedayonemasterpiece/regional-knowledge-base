@@ -47,7 +47,7 @@ class BgeWssTransport:
     """One bounded in-flight encode and result, without a second job authority."""
 
     def __init__(self, config, load_encoder, diagnostics, *, connector=None,
-                 heartbeat_seconds=20, maximum_seconds=11 * 3600, stop=None,
+                 heartbeat_seconds=20, maximum_seconds=11 * 3600, stop=None, reconnect_grace_seconds=600,
                  query_handler=None, prepare_runtime=None, close_runtime=None, recovery_handler=None, snapshot_channel=None):
         url = urlsplit(config['channel'])
         if (url.scheme != 'wss' or not url.hostname or url.port not in (None, 443)
@@ -57,6 +57,11 @@ class BgeWssTransport:
             raise ValueError('bounded heartbeat interval required')
         if not math.isfinite(maximum_seconds) or not 0 < maximum_seconds <= 11 * 3600:
             raise ValueError('bounded worker lifetime required')
+        # Control-loss grace (handoff 5.4: 10 min). A Dev API/host restart must
+        # not end a warm runtime; writes stay fenced while the lease is invalid.
+        if not math.isfinite(reconnect_grace_seconds) or not 0 < reconnect_grace_seconds <= 3600:
+            raise ValueError('bounded reconnect grace required')
+        self.reconnect_grace_seconds = reconnect_grace_seconds
         shared = config.get('shared_reads', False)
         async_prepare = (inspect.iscoroutinefunction(prepare_runtime)
                          or inspect.iscoroutinefunction(getattr(prepare_runtime, '__call__', None)))
@@ -584,7 +589,7 @@ class BgeWssTransport:
                     # disconnect over an eleven-hour warmed runtime. A stable
                     # authenticated control session earns a fresh retry budget.
                     if self._retry_clock()-connected_at>=30:
-                        self._reconnect_attempt=0
+                        self._reconnect_attempt=0;self._outage_started=None
                 else:
                     raise ValueError('unexpected channel frame')
 
@@ -649,7 +654,7 @@ class BgeWssTransport:
         self._overall_deadline=deadline
         bootstrap_deadline=(asyncio.get_running_loop().time()+self.config['target_runtime'].get('bootstrap_seconds',900)
             if self.bootstrap_only else deadline)
-        self._reconnect_attempt = 0
+        self._reconnect_attempt = 0;self._outage_started = None
         try:
             async with asyncio.timeout_at(min(deadline,bootstrap_deadline)) as lifetime:
                 self._lifetime_timeout=lifetime
@@ -665,10 +670,13 @@ class BgeWssTransport:
                         raise
                     except (ConnectionError, OSError, TimeoutError, aiohttp.ClientError):
                         self._reconnect_attempt += 1
-                        if self._reconnect_attempt >= 10:
+                        now = self._retry_clock()
+                        if self._outage_started is None:
+                            self._outage_started = now
+                        if now - self._outage_started >= self.reconnect_grace_seconds:
                             raise BgeChannelStopped('bounded channel reconnect exhausted') from None
                         # Reconnect the same process/model/nonce; never invoke push.
-                        delay = random.uniform(.25, min(5.0, .5 * 2 ** self._reconnect_attempt))
+                        delay = random.uniform(.25, min(30.0, .5 * 2 ** min(self._reconnect_attempt, 6)))
                         try:
                             await asyncio.wait_for(self.stop.wait(), delay)
                         except TimeoutError:

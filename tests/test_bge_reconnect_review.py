@@ -125,12 +125,13 @@ async def test_early_heartbeat_ack_does_not_erase_retry_debt(monkeypatch):
         yield Socket()
     worker = transport.BgeWssTransport(CONFIG,
         lambda: lambda _: [1.] + [0.] * 1023,
-        lambda: {}, connector=connect, heartbeat_seconds=.01, maximum_seconds=4)
+        lambda: {}, connector=connect, heartbeat_seconds=.01, maximum_seconds=4,
+        reconnect_grace_seconds=29)
     worker._retry_clock = lambda: clock[0]
     with pytest.raises(transport.BgeChannelStopped, match="reconnect exhausted"):
         await worker.run()
-    assert len(attempts) == 10
-    assert worker._reconnect_attempt == 10
+    # The short session did not reset the outage start: its grace still ran out.
+    assert len(attempts) == 9 and worker._outage_started == 0.0
 
 
 @pytest.mark.asyncio
@@ -161,3 +162,22 @@ async def test_wrong_generation_heartbeat_ack_cannot_reset_budget(monkeypatch):
     with pytest.raises(transport.BgeChannelStopped, match="stale channel generation"):
         await worker.run()
     assert len(attempts) == 9 and worker._reconnect_attempt == 8
+
+
+@pytest.mark.asyncio
+async def test_dev_restart_outage_within_grace_is_survived_then_bounded(monkeypatch):
+    """A ~70 s Dev reboot no longer ends the warm worker; the 10 min grace still ends it."""
+    transport = module("bge_wss_transport")
+    monkeypatch.setattr(transport.random, "uniform", lambda *_: .0001)
+    clock = [0.0]; attempts = []
+    @asynccontextmanager
+    async def connect():
+        attempts.append(clock[0]); clock[0] += 10.0
+        raise ConnectionError("Dev API restarting")
+        yield
+    worker = transport.BgeWssTransport(CONFIG, lambda: None, lambda: {}, connector=connect, maximum_seconds=30)
+    worker._retry_clock = lambda: clock[0]
+    with pytest.raises(transport.BgeChannelStopped, match="reconnect exhausted"):
+        await worker.run()
+    assert worker.reconnect_grace_seconds == 600
+    assert attempts[-1] >= 590 and len(attempts) > 8  # old 10-attempt budget would stop at ~30 s
