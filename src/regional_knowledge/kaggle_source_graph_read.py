@@ -196,7 +196,8 @@ async def execute_source_graph_read(request:SourceGraphReadRequest,*,acquire):
                             except (ValueError,TypeError,KeyError):raise ReadUnavailable('invalid_input') from None
                         records=[];evidence=[];positions=[];used=0;next_cursor=None
                         filtered=request.action=='list' and (request.kinds is not None or bool(request.query))
-                        # SQL022 applies both selectors before LIMIT, so a
+                        # SQL022 uses fixed PG lower + German/Greek name folds
+                        # and applies both selectors before LIMIT, so a
                         # sparse hit takes one source-scoped PG page. Pre-022
                         # workers retain the original bounded keyset fallback:
                         # a new handler may be staged before its DDL is applied.
@@ -207,7 +208,7 @@ async def execute_source_graph_read(request:SourceGraphReadRequest,*,acquire):
                                 await execute('SELECT * FROM rkb_v4.read_source_graph_filtered_v1(%s::uuid,%s::uuid,%s,%s::text[],%s,%s)',
                                     (request.source_id,*after_page,
                                      list(request.kinds) if request.kinds is not None else None,
-                                     request.query.strip().casefold() if request.query else None,
+                                     request.query.strip() if request.query else None,
                                      request.limit+1))
                             else:
                                 await execute('SELECT * FROM rkb_v4.read_source_graph_v1(%s::uuid,%s::uuid,%s,%s::uuid,%s,%s)',
