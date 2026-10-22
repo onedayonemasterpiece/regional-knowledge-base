@@ -33,7 +33,7 @@
       "object_key": "rkb/kaggle-v4/bootstrap-artifacts/18115ebd82125cdf6100accc0bf88620b2e662a48710b1bb8cd7d9d4023964f3/pyaes-1.6.1-py3-none-any.whl",
       "github_actions_run": 39698152544,
       "github_artifact_id": 12391174848,
-      "artifact_member": "verify wheel filename inside original artifact",
+      "artifact_member": "cp3.12/wheels/pyaes-1.6.1-py3-none-any.whl",
       "url": null,
       "receipt_ref": null
     }
