@@ -375,3 +375,30 @@ async def test_renderer_cannot_change_caption_without_private_field_leak(env,aut
     with pytest.raises(PublicMediaUnavailable,match="untrusted_public_media_renderer"):
         await issue(gate,verified,binding)
     assert not gate._tickets
+
+
+@pytest.mark.asyncio
+async def test_real_stage_optional_description_and_empty_caption_are_valid(env,auth):
+    source=snapshot()
+    source.item["visual_description"]=None
+    source.item["visual_description_language"]=None
+    source.item["caption_text"]=""
+    for key in ("visual_description","visual_description_language","caption_text"):
+        source.public_row["data"][key]=source.item[key]
+    gate,native,archive,verified,binding=await make_gate(env,auth,source)
+    output=await issue(gate,verified,binding)
+    assert output.frame.metadata["visual_description"] is None
+    assert output.frame.metadata["caption_text"]==""
+    assert gate.issuance_current(output.ticket)
+
+
+@pytest.mark.asyncio
+async def test_unexpected_native_or_archive_exception_is_redacted_not_propagated(env,auth):
+    gate,native,archive,verified,binding=await make_gate(env,auth)
+    def error(_):
+        raise RuntimeError("PRIVATE-TELEGRAM-TOKEN-MUST-NOT-ESCAPE")
+    native.on_call=error
+    with pytest.raises(PublicMediaUnavailable) as exc:
+        await issue(gate,verified,binding)
+    assert "PRIVATE-TELEGRAM" not in str(exc.value)
+    assert str(exc.value)=="media_native_or_archive_unavailable"
