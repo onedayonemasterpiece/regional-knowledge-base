@@ -5,6 +5,7 @@ import json
 import time
 
 import pytest
+import pytest_asyncio
 from mcp.server.mcpserver.exceptions import ToolError
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
@@ -20,6 +21,7 @@ from regional_knowledge.read_authority import TrustedReadDestination
 from test_kaggle_worker_query import pinned,forbidden_encode
 from test_kaggle_health import Native
 from test_kaggle_public_backend import target,release
+from test_kaggle_service_startup import service
 from test_bge_runtime_readiness import run,shared_channel_run,observation
 from test_read_authority import auth
 from test_participants import people,change
@@ -130,10 +132,21 @@ def test_actual_asgi_channel_routes_health_result_through_verified_shared_admiss
                 compute_claim=dispatched['compute_claim'],dispatch_generation=generation)
 
 
+@pytest_asyncio.fixture
+async def ready_status_target(service):
+    s=service.target;startup=service.startup
+    service.adapter.available=True
+    startup_ref=s.queue.request_startup()['startup_ref']
+    async with startup.lifespan(None):
+        assert await startup.refresh() and startup.reads_current()
+        assert s.queue.startup_status(startup_ref)['status']=='ready'
+        yield s,startup.backend,startup_ref
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('final_race',['stable','detach','revoke'])
-async def test_existing_public_status_uses_native_admitted_health_and_sanitizes_identity(target,monkeypatch,final_race):
-    s=target;startup_ref=s.queue.request_startup()['startup_ref']
+async def test_existing_public_status_uses_native_admitted_health_and_sanitizes_identity(ready_status_target,monkeypatch,final_race):
+    s,backend,startup_ref=ready_status_target
     def no_startup(*args,**kwargs):raise AssertionError('health must not allocate startup')
     monkeypatch.setattr(s.queue,'request_startup',no_startup)
     returning=[False];original_recheck=s.auth.resolver.recheck
@@ -147,7 +160,7 @@ async def test_existing_public_status_uses_native_admitted_health_and_sanitizes_
             assert s.queue.detach_channel(s.run,s.token,s.generation)
         return result
     monkeypatch.setattr(s.auth.resolver,'recheck',recheck)
-    pending=asyncio.create_task(s.backend.startup_status(startup_ref,s.principal))
+    pending=asyncio.create_task(backend.startup_status(startup_ref,s.principal))
     # Status resolves/rechecks real OAuth before it enters shared admission.
     # The search fixture's200ms poll predates that extra status roundtrip.
     dispatched=None;until=time.monotonic()+1.5
