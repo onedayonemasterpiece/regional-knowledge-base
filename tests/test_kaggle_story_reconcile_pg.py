@@ -150,6 +150,14 @@ async def test_sql016_compiles_and_rejects_case_a_plan_case_b_receipt_on_real_pg
                     paths=list((ROOT/'sql/kaggle').glob(f'{ordinal:03d}_*.sql'))
                     assert len(paths)==1, f'exact SQL{ordinal:03d} fixture missing'
                     await connection.execute(paths[0].read_text(),prepare=False)
+                # SQL016 contains narrow grants for two installed roles. This
+                # disposable CI cluster has no deployment roles: create only
+                # NOLOGIN fixture identities in the SAME rolled-back transaction.
+                existing=await(await connection.execute("""SELECT rolname FROM pg_roles
+                    WHERE rolname IN ('rkb_writer','rkb_reader')""")).fetchall()
+                assert existing==[], 'fixture must never change a pre-existing role'
+                await connection.execute('CREATE ROLE rkb_reader NOLOGIN')
+                await connection.execute('CREATE ROLE rkb_writer NOLOGIN')
                 # SQL013–015 are not yet approved. This PG probe is NOT an ordered upgrade.
                 await connection.execute((ROOT/'sql/kaggle/016_story_reconcile.sql').read_text(),prepare=False)
                 assert (await(await connection.execute("SELECT to_regprocedure("
