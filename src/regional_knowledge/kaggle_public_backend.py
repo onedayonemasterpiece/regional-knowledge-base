@@ -12,7 +12,7 @@ import json
 import math
 import time
 from urllib.parse import quote
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -397,11 +397,40 @@ class KaggleSourceBackend:
                 except TargetUnavailable:
                     observed.update(status='unavailable',reason='target_not_ready')
             await self.read_authority.recheck(authority)
-            from .kaggle_health import heartbeat_health
+            from .kaggle_health import heartbeat_health, collect_health, DatabaseHealth
             try:
-                observed['health']=await asyncio.to_thread(heartbeat_health,self.worker_queue)
+                if observed['status']=='ready':
+                    from .kaggle_protocol import SqlHealthRequest, SqlHealthResult
+                    async def native_probe(binding):
+                        deadline=time.monotonic()+2
+                        request=SqlHealthRequest(request_id=uuid4().hex,
+                            connection_generation=binding.connection_generation,turn_generation=0,
+                            database_generation=binding.database_generation,min_data_seq=binding.min_data_seq,
+                            deadline_ms=2000,
+                            actor=TrustedActorContext(person_id=authority.person_id,audience=authority.destination.key,
+                                auth_epoch=authority.auth_revision,visibility_epoch=0,context_ref=authority.context_ref))
+                        ticket=None
+                        try:
+                            ticket=await self.worker_queue.shared_reads.begin_read(authority,request,
+                                dialog_ref=authority.destination.key,deadline=deadline)
+                            result=await asyncio.shield(ticket.result)
+                            if type(result) is not SqlHealthResult:
+                                raise TargetUnavailable('SQL health response type differs')
+                            if result.health is None:
+                                return DatabaseHealth(binding,reason='pg_timeout'
+                                    if result.reason=='deadline_exceeded' else 'pg_query_failed')
+                            if (result.health.schema_revision is not None
+                                    and result.observed_database_generation!=binding.database_generation):
+                                raise TargetUnavailable('SQL health generation differs')
+                            return DatabaseHealth(binding,**result.health.model_dump())
+                        finally:
+                            if ticket is not None:self.worker_queue.shared_reads.cancel_read(ticket)
+                    observed['health']=await collect_health(queue=self.worker_queue,native_probe=native_probe)
+                else:
+                    observed['health']=await asyncio.to_thread(heartbeat_health,self.worker_queue)
             except Exception:
                 observed['health']={'codec':'rkb.health.v1','reason':'health_probe_unavailable','read_ready':False}
+            await self.read_authority.recheck(authority)
             return StartupStatus.model_validate(observed)
         except (ValueError,TypeError):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
