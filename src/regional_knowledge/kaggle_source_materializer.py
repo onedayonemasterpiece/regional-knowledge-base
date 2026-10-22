@@ -205,7 +205,7 @@ def refresh_native_graph_evidence(graph, replacement):
 
 
 
-def native_illustration_projection(graph, resolved):
+def native_illustration_projection(graph, resolved, raw_poi_locators):
     """Lower only model-reviewed illustrations against verified issued source pages.
 
     The SQL015 check consumes this exact metadata; it independently verifies
@@ -280,7 +280,9 @@ def native_illustration_projection(graph, resolved):
         if image is None or image['page_id']!=str(link.page_id):
             raise failure('native_illustration_poi_reference_invalid')
         poi_links.append(dict(link_key=link.link_key,link_id=str(link.link_id),
-            poi_locator=link.poi_locator.model_dump(mode='json'),
+            # SQL015 compares the exact accepted locator JSON, not a
+            # Pydantic-expanded object with additional default/null fields.
+            poi_locator=raw_poi_locators[link.link_key],
             illustration_id=str(link.illustration_id),page_id=str(link.page_id),
             relation=link.relation,time_scope=link.time_scope))
     return dict(codec='rkb.source-illustrations.v1',
@@ -374,7 +376,7 @@ class NativeSourceCompiler:
         if type(batches) is not list or not 1<=len(batches)<=2500:
             raise failure('native_source_batch_chain_required')
         graph=NativeStagedGraph(revision=1)
-        source=None;previous=ZERO_HASH;images={};reviews={};candidates={};research=None
+        source=None;previous=ZERO_HASH;images={};reviews={};candidates={};research=None;raw_poi_locators={}
         for index,raw in enumerate(batches):
             doc=validate_stage_payload(raw,source_id=source_id)
             if doc['batch_index']!=index or doc['previous_batch_sha256']!=previous:
@@ -387,6 +389,8 @@ class NativeSourceCompiler:
             chunks=[_typed(StageChunkInput,c) for c in payload['chunks']]
             facts=[_typed(StagePoiFactInput,f) for f in payload.get('poi_facts',[])]
             media=[_typed(StagePoiMediaLinkInput,m) for m in payload.get('poi_media_links',[])]
+            for item in payload.get('poi_media_links',[]):
+                raw_poi_locators[item['link_key']]=item['poi_locator']
             if not include_illustrations and (media or any(page.illustrations for page in pages)):
                 raise failure('native_illustration_activation_unavailable')
             partial=compile_model_stage(graph,document_id=source_id,revision=1,pages=pages,chunks=chunks,
@@ -450,7 +454,7 @@ class NativeSourceCompiler:
         if include_illustrations:
             # Private sidecar is not part of canonical knowledge or any wire
             # outcome; it is checked and sealed by existing SQL015 metadata.
-            return resolved,native_illustration_projection(graph,resolved)
+            return resolved,native_illustration_projection(graph,resolved,raw_poi_locators)
         return resolved
 
     async def _semantic(self, row, graph, passages):
