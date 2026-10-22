@@ -102,13 +102,7 @@ async def scenario(e):
     original_registry = fixed_registry(old_database, [
         dict(route=route, check_sha256='a' * 64, apply_sha256='b' * 64)
         for route in sorted(CURRENT_ROUTES)])
-    pins = GeoUpgradePins(sha((root / 'sql/kaggle/012_geo_dependency_bound.sql').read_bytes()),
-        *('c' * 64 for _ in range(4)), sha(b'synthetic-catalog11'), sha(b'synthetic-acl11'))
-    native_pins = upgrade.NativeSourceUpgradePins(
-        *(sha((root / 'sql/kaggle' / name).read_bytes()) for name in upgrade.ARTIFACTS),
-        'd' * 64, 'e' * 64)
-    registry12 = pins.registry(original_registry)
-    registry = HandlerRegistry([*registry12.handlers.values(), upgrade.native_source_upgrade_handler(native_pins)])
+    registry=original_registry
     commands = original_commands(e.p.owner.subject)
     assert len(commands) == 20
     rejected = {5, 6, 7, 20}
@@ -144,7 +138,8 @@ async def scenario(e):
     prefix_digest = await applied_prefix(PrefixConnection(), 20, SnapshotLimits())
     routes = {key: (lambda: None) for key in ('source.search', 'source.fetch', 'source.withdraw',
                                              'geo.identity_read', 'geo.members_read')}
-    origin = pins.origin_closure(registry, routes)
+    origin=dict(catalog_sha256=sha(b'old-catalog'),acl_sha256=sha(b'old-acl'),
+        registry_sha256='f'*64,routes=['old.routes'],closure_transitions=[{'legacy':'ignored'}])
     versions = dict(server_version_num=170011, pgvector_version='0.8.2',
         catalog_sha256=origin['catalog_sha256'], model_sha256='1' * 64, tokenizer_sha256='2' * 64,
         schema_revision=GEO_REVISIONS.schema, function_revision=GEO_REVISIONS.function,
@@ -193,30 +188,25 @@ async def scenario(e):
     store = DatasetRecoveryStore(e.q, checkpoint=checkpoint, manifest_ref=mref, publisher=Publisher(),
         writer_guard=Guard(), stream=original.stream)
     journal = RecoveryJournal(store, stream=original.stream)
-    repair = geo_dependency_repair_commands(commands,
-        settled_outcomes={c.operation_key: original_receipts[c.sequence].status for c in commands},
-        artifact_sha256=pins.artifact_sha256)
-    book = upgrade.resolved_native_source_upgrade(pins=native_pins, sequence=repair[-1].sequence + 1,
-        operation_key='fixture-native-upgrade', request_id='fixture-native-upgrade-request',
-        person_id=e.p.owner.subject, logical_time='2026-10-21T01:00:00Z')
-    tail = (*repair, book)
-    assert [c.sequence for c in tail] == list(range(21, 27))
+    # Rejected GEO data commands replay normally after the SQL runner; no
+    # schema transition is accepted or appended to the data journal.
+    tail=tuple(replace(commands[n-1],sequence=21+i,operation_key='ordinary-repair-'+str(n))
+        for i,n in enumerate(sorted(rejected)))
     for command in tail:
         await journal.seal([command], predecessor=await journal.head(), writer_generation='writer-2')
     e.spool.journal, e.spool.registry = journal, registry
     binding = SimpleNamespace(run_id='fixture-run', runtime_incarnation='fixture-incarnation',
                               connection_generation=1, database_generation='db-source')
     history = WssSourceHistoryVerifier(e.spool, acquire=None, binding_current=lambda b: b is binding,
-        routes=routes, expected_catalog_sha256=sha(b'synthetic-catalog14'),
+        routes=routes, expected_schema_version=16,
         expected_acl_sha256=sha(b'synthetic-acl14'), writer_generation='writer-2',
         database=database, observer_sha256='6' * 64,
-        geo_bootstrap_operation_keys=tuple(c.operation_key for c in commands),
-        geo_upgrade_pins=pins, native_source_upgrade_pins=native_pins)
-    assert history.origin_closure == origin
+        geo_bootstrap_operation_keys=tuple(c.operation_key for c in commands))
+    assert history.origin_closure is None
     assert history.registry_hash != origin['registry_sha256']
     events = []
     class Native:
-        revisions = GEO_REVISIONS
+        schema_version = 11
         ledger = dict(original_receipts)
         finished = False
         async def prepare(self, b, **args):
@@ -226,36 +216,35 @@ async def scenario(e):
                 PrefixConnection(), 20, SnapshotLimits())
             assert tuple(args['expected_versions'][key] for key in
                          ('schema_revision', 'function_revision', 'executor_revision')) == GEO_REVISIONS.wire()
-            events.append(('prepare', 20, self.revisions.wire()))
+            events.append(('prepare',20,self.schema_version))
+            self.schema_version=database.schema_version
+            events.append(('auto-migrate',20,self.schema_version))
             return 'retained-native-session'
         async def apply(self, b, handle, **args):
             command = decode_command(args['command_bytes'])
             assert handle == 'retained-native-session' and command.sequence > 20
-            assert (command.schema_revision, command.function_revision, command.executor_revision) == self.revisions.wire()
+            assert self.schema_version==database.schema_version
             spec = registry.resolve(command)
             assert spec.fingerprint == args['handler_sha256']
             receipt = outcome(command, registry)
             self.ledger[command.sequence] = receipt
-            if spec.transition:
-                self.revisions = spec.transition.target
-            events.append(('apply', command.sequence, self.revisions.wire()))
+            assert spec.transition is None
+            events.append(('apply',command.sequence,self.schema_version))
             return receipt_wire(receipt)
         async def finish(self, b, handle, **args):
-            assert self.revisions == final and len(self.ledger) == 26
-            assert all(self.ledger[n] == receipt for n, receipt in original_receipts.items())
-            current = json.loads(args['control_bytes'])
-            assert current['catalog_sha256'] == history.catalog_hash
-            assert current['acl_sha256'] == history.acl_hash
-            assert current['registry_sha256'] == history.registry_hash
-            assert current['routes'] == sorted(history.routes)
-            assert [v['sequence'] for v in current['closure_transitions']] == [21, 26]
-            events.append(('finish', 26, final.wire()))
+            assert self.schema_version==database.schema_version and len(self.ledger)==24
+            assert all(self.ledger[n]==receipt for n,receipt in original_receipts.items())
+            current=json.loads(args['control_bytes'])
+            assert current['schema_version']==database.schema_version
+            assert not {'catalog_sha256','acl_sha256','closure_transitions'} & current.keys()
+            assert current['registry_sha256']==history.registry_hash
+            events.append(('finish',24,self.schema_version))
             self.finished = True
             return 'retained-native-capability'
         async def verify_initialized(self, b, reference):
             assert self.finished and reference == 'retained-native-capability'
             return dict(database=database.wire(), identity=['fixture-run', 'fixture-nonce', 'fixture-incarnation'],
-                        applied_sequence=26, catalog_sha256=history.catalog_hash)
+                        applied_sequence=24,schema_version=database.schema_version)
     native = Native()
     physical = PhysicalSnapshotRecovery(journal, DatasetSnapshotTransport(store), native,
         registry=registry, history_verifier=history, maintenance_guard=guard,
@@ -272,15 +261,15 @@ def test_first_book_context_ships_actual_import_and_telegram_modules():
 
 
 @pytest.mark.asyncio
-async def test_dataset2_schema11_restores_old_outcomes_then_ordered_12_14_before_capability(env):
+async def test_dataset2_base20_ignores_old_closure_restores_outcomes_and_replays_only_data(env):
     s = await scenario(env)
     proof = await s.physical.recover(s.manifest, s.binding, database=s.database,
-        expected_versions=s.versions, expected_final_catalog_sha256=s.history.catalog_hash,
+        expected_versions=s.versions, expected_schema_version=s.database.schema_version,
         identity=('fixture-run', 'fixture-nonce', 'fixture-incarnation'), operation_key='first-context-restore')
-    assert proof.applied_sequence == 26
-    assert s.events[0] == ('prepare', 20, GEO_REVISIONS.wire())
+    assert proof.applied_sequence == 24
+    assert s.events[0] == ('prepare',20,11)
     assert s.events[-1][0] == 'finish'
-    assert [e[1] for e in s.events if e[0] == 'apply'] == list(range(21, 27))
+    assert [e[1] for e in s.events if e[0] == 'apply'] == list(range(21,25))
     for command in s.originals:
         remote = await s.journal.remote_outcome(command.operation_key)
         assert remote is not None
@@ -292,13 +281,12 @@ async def test_dataset2_schema11_restores_old_outcomes_then_ordered_12_14_before
 
 
 @pytest.mark.asyncio
-async def test_target14_cannot_relabel_the_schema11_dataset_manifest(env):
+async def test_dataset2_keeps_model_abi_bound_before_native_prepare(env):
     s = await scenario(env)
-    wrong = dict(s.versions, schema_revision=s.database.schema_revision,
-                 function_revision=s.database.function_revision, executor_revision=s.database.executor_revision)
+    wrong=dict(s.versions,model_sha256='f'*64)
     with pytest.raises(SnapshotError, match='restore_versions_or_writer_conflict'):
         await s.physical.recover(s.manifest, s.binding, database=s.database, expected_versions=wrong,
-            expected_final_catalog_sha256=s.history.catalog_hash,
+            expected_schema_version=s.database.schema_version,
             identity=('fixture-run', 'fixture-nonce', 'fixture-incarnation'), operation_key='wrong-origin')
     assert not s.events and not s.native.finished
 
@@ -311,11 +299,11 @@ def test_launch_target14_is_expected_final_state_and_never_accepts_origin11_read
                            'fixture-run', 'fixture-nonce', 'fixture-incarnation')
     origin = dict(hashes=hashes, database_generation='db-source', schema_revision=GEO_REVISIONS.schema,
         function_revision=GEO_REVISIONS.function, executor_revision=GEO_REVISIONS.executor,
-        applied_seq=20, projection_seq=20, visibility_epoch=0, text_search_ready=True,
+        schema_version=11,applied_seq=20, projection_seq=20, visibility_epoch=0, text_search_ready=True,
         dense_search_ready=True, archive_read_ready=None, proof_ready=None)
     assert not validate_search_runtime(target, origin, identity).ok
     observed = dict(origin, schema_revision=final.schema, function_revision=final.function,
-                    executor_revision=final.executor, applied_seq=26, projection_seq=26)
+                    executor_revision=final.executor,schema_version=16, applied_seq=26, projection_seq=26)
     assert validate_search_runtime(target, observed, identity).ok
     # This is readiness-shape validation, not a fabricated recovery capability.
 
@@ -333,7 +321,7 @@ async def test_source_restore_observation_binds_final_launch_target_while_base_v
     admission = queue.configure_shared_reads(auth.resolver)
     revision = GEO_REVISIONS if initial_revision == 11 else final
     expected = SearchRuntimeExpectation({key: 'a' * 64 for key in RUNTIME_HASHES},
-        'db-source', *revision.wire(), 26)
+        'db-source', *revision.wire(), 26,schema_version=initial_revision if initial_revision==11 else 16)
     queue.expect_search_runtime(run, expected)
     token = queue.launch_claim(run)
     queue.launch_record(run, 'fixture-owner/stable-slug', provider_version=1)
@@ -377,7 +365,7 @@ async def test_source_restore_observation_binds_final_launch_target_while_base_v
 
 
 @pytest.mark.asyncio
-async def test_native_finish_refuses_capability_when_target14_has_no_applied_schema_transition(monkeypatch, capsys):
+async def test_native_finish_refuses_capability_when_ledger_is_behind(monkeypatch, capsys):
     import regional_knowledge.kaggle_pg_snapshot_native as native
     final = importlib.import_module('regional_knowledge.source_activation').ACTIVATION_REVISIONS
     database = OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', *final.wire(),
@@ -398,7 +386,7 @@ async def test_native_finish_refuses_capability_when_target14_has_no_applied_sch
         pass  # Native SQL I/O boundary only, not a replacement restore factory.
     monkeypatch.setattr(native, 'handover_writer', handover)
     async def actual_origin_probe(**kwargs):
-        return b'synthetic-catalog11', dict(database_generation='db-source', applied_seq=20,
+        return b'{}', dict(schema_version=11,database_generation='db-source', applied_seq=20,
             projection_seq=20, text_search_ready=True, dense_search_ready=True,
             schema_revision=GEO_REVISIONS.schema, function_revision=GEO_REVISIONS.function,
             executor_revision=GEO_REVISIONS.executor)
@@ -416,14 +404,13 @@ async def test_native_finish_refuses_capability_when_target14_has_no_applied_sch
         b'{}', binding, None, [])
     factory._sessions.add(session)
     control = encode(dict(database_generation='db-source', sequence=20,
-                          journal_head=None, catalog_sha256=sha(b'synthetic-catalog14')))
+                          journal_head=None,schema_version=16))
     with pytest.raises(SnapshotError, match='native_restore_final_readiness'):
         await factory.finish(session, expected_tail=(), final_head=None,
-            control_bytes=control, expected_catalog_sha256=sha(b'synthetic-catalog14'))
+            control_bytes=control, expected_schema_version=16)
     assert not factory._capabilities and session in factory._sessions
     observed = [json.loads(line) for line in capsys.readouterr().out.splitlines()
                 if 'native_restore_final_observation' in line]
     assert len(observed) == 1
-    assert observed[0]['observed_catalog_sha256'] == sha(b'synthetic-catalog11')
-    assert observed[0]['expected_catalog_sha256'] == sha(b'synthetic-catalog14')
+    assert observed[0]['schema_version']==11 and observed[0]['expected_schema_version']==16
     assert b'synthetic-catalog11'.decode() not in json.dumps(observed[0])

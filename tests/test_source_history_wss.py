@@ -39,7 +39,7 @@ class NativePg(Pg):
 
 
 def pair(e,*,lease_seconds=10,schema_revision=None,geo_bootstrap_operation_keys=()):
-    b=binding();pg=NativePg();database=SimpleNamespace(database_generation='db-source',writer_generation='writer-1')
+    b=binding();pg=NativePg();database=SimpleNamespace(schema_version=16,database_generation='db-source',writer_generation='writer-1')
     if schema_revision is not None:database.schema_revision=schema_revision
     routes=('source.search','source.fetch','source.withdraw')
     if schema_revision in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):
@@ -47,7 +47,7 @@ def pair(e,*,lease_seconds=10,schema_revision=None,geo_bootstrap_operation_keys=
             'source.fact_read','source.calendar','source.observations')
     if schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):routes=routes+('story.edit','story.access','source.catalog')
     if schema_revision=='rkb-v4-sql001-011-v1':routes=routes+('source.entity_read','source.entity_list')
-    async def probe(**kwargs):return b'catalog',dict(database_generation='db-source',applied_seq=pg.applied_seq)
+    async def probe(**kwargs):return b'catalog',dict(schema_version=16,database_generation='db-source',applied_seq=pg.applied_seq)
     native=NativeSourceHistoryObserver(acquire=pg.acquire,database=database,identity=('run','nonce','inc'),registry=e.registry,
         current=lambda key:key==('run','inc',1),probe=probe,lease_seconds=lease_seconds)
     native.attached(1)
@@ -118,7 +118,7 @@ async def test_uncovered_native_data_and_forged_native_receipt_fail_closed(env):
 async def test_native_lock_lease_expires_and_json_cannot_create_prefix(env):
     p=pair(env,lease_seconds=.02)
     try:
-        args=dict(action='open',mode='full',nonce='a'*48,catalog_sha256=p.v.catalog_hash,acl_sha256=p.v.acl_hash,
+        args=dict(action='open',mode='full',nonce='a'*48,schema_version=p.v.schema_version,
             registry_sha256=p.v.registry_hash,observer_sha256=p.n.code_hash,routes=sorted(p.v.routes),prefix=None,pending_sequences=[])
         opened=await p.v._phase(p.b,args)
         assert opened['session'] in p.n._sessions

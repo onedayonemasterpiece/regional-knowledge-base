@@ -28,6 +28,7 @@ class RecoveryPhaseDispatch:
         self.binding_current,self.timeout=binding_current,timeout_seconds
         self.snapshot_tickets=snapshot_tickets
         self.dataset_checkpoint=dataset_checkpoint
+        self.schema_context=None
         self._bindings={};self._attachment_binding=None;self.closed=False
         queue._recovery_phases=self
 
@@ -215,7 +216,14 @@ class RecoveryPhaseDispatch:
                 if job['result']!=encoded:raise SnapshotError('recovery_receipt_changed')
                 status='duplicate'
             elif job['state']!='claimed':raise StaleClaim('recovery assignment no longer claimed')
-            else:db.execute("update jobs set state='done',result=?,updated=? where id=?",(encoded,self.queue.clock(),job['id']))
+            if identity['phase']=='schema_migrate' and receipt['value'].get('readiness') is not None:
+                if receipt['value'].get('schema_version')!=identity['arguments']['target_schema_version']:
+                    raise SnapshotError('migration_result_version_changed')
+                self.queue._promote_schema_runtime(db,run,generation,receipt['value']['readiness'],
+                    target_version=identity['arguments']['target_schema_version'])
+                if self.schema_context is None:raise SnapshotError('migration_context_promotion_unavailable')
+                self.schema_context(receipt['value']['schema_version'])
+            if status=='accepted':db.execute("update jobs set state='done',result=?,updated=? where id=?",(encoded,self.queue.clock(),job['id']))
         self.queue._notify_result(frame['job_id'])
         _LOG.info('recovery_phase_settled run_id=%s phase=%s status=%s',run_id,receipt['phase'],status)
         return dict(job_id=frame['job_id'],claim=frame['claim'],status=status)

@@ -253,13 +253,13 @@ class NativeSourceHistoryObserver:
                     'SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])')
                 cursor=await session.connection.execute(statement,(args['origin_ids'],))
                 if await cursor.fetchone()!=(True,):raise NativeHistoryError('native_history_graph_origin_uncovered')
-        if digest(await inspect_acl(session.connection))!=session.closure[1] or not self.valid(session.binding):
+        if not self.valid(session.binding):
             raise NativeHistoryError('native_history_closure_changed')
         cursor=await session.connection.execute('SELECT %s::text',(session.nonce,))
         if await cursor.fetchone()!=(session.nonce,):raise NativeHistoryError('native_history_nonce_changed')
         await self._release(session,abort=False)
         catalog,fields=await self.probe(acquire=self.acquire)
-        if (digest(catalog)!=session.closure[0] or fields['applied_seq']!=session.sequence
+        if (fields['schema_version']!=session.closure[0] or fields['applied_seq']!=session.sequence
                 or fields['database_generation']!=self.database.database_generation or not self.valid(session.binding)):
             raise NativeHistoryError('native_history_completion_changed')
         # Keep a single exact verified baseline. A supplied token never creates

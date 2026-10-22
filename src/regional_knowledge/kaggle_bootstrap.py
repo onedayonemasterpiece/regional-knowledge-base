@@ -338,7 +338,7 @@ class CandidateReadiness:
         return result
 
 
-@dataclass(frozen=True)
+@dataclass
 class PreparedRuntime:
     query_handler: object
     readiness: CandidateReadiness

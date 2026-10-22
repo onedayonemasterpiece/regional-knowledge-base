@@ -190,6 +190,13 @@ def configured_source_service():
     object_store=_object_store_from_env()
     if type(object_store) is not S3ObjectStore:raise ValueError('existing configured native S3 authority required')
     database=OwnedDatabase(**value['database'])
+    queue=BgeQueue(queue_path)
+    with queue.connect(write=False) as db:
+        runtime=queue._runtime_row(db,value['run_id'])
+        observed=json.loads(runtime['observed_json']) if runtime is not None and runtime['observed_json'] else None
+    if observed is not None and observed.get('database_generation')==database.database_generation:
+        from dataclasses import replace
+        database=replace(database,schema_version=observed.get('schema_version',database.schema_version))
     registry=fixed_registry(database,value['command_handlers'])
     upgrade=None
     native_upgrade=None
@@ -217,7 +224,7 @@ def configured_source_service():
     if 'dataset_seed' in value:
         from .kaggle_dataset_seed import DatasetSeedConfig
         dataset_seed=DatasetSeedConfig.from_wire(value['dataset_seed'])
-    return compose_source_service(queue=BgeQueue(queue_path),oauth_provider=provider,participants=people,
+    return compose_source_service(queue=queue,oauth_provider=provider,participants=people,
         object_store=object_store,stream=value['stream'],registry=registry,history_adapter=history,
         run_id=value['run_id'],database_generation=database.database_generation,writer_generation=database.writer_generation,
         source_import=import_owners,geo_manifest_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),source_restore=restore,source_snapshot=snapshot,geo_bootstrap=geo_bootstrap,

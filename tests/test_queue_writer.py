@@ -41,7 +41,7 @@ async def owner(auth,tmp_path):
     token=q.launch_claim(run);q.launch_record(run,'owner/stable-slug',provider_version=88)
     generation=q.attach_channel(run,token,nonce,'retained-incarnation')['connection_generation']
     value=dict(hashes=dict(expected.hashes),database_generation='synthetic-db',schema_revision='s1',function_revision='f1',
-        executor_revision='e1',applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,
+        executor_revision='e1',schema_version=expected.schema_version,applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,
         archive_read_ready=None,proof_ready=None)
     assert q.accept_search_runtime(run,token,generation,value).ok
     q.heartbeat(run,token,ready=True,connection_generation=generation)

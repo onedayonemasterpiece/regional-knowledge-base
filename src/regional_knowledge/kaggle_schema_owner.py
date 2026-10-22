@@ -89,6 +89,7 @@ class SourceSchemaMigrations:
                     db.execute('UPDATE rkb_schema_barrier SET barrier=1 WHERE operation_key=?',(key,))
                 sequence=proof.applied_sequence
             dispatch=startup.restorer.dispatch;bundle=plan['bundle_sha256']
+            dispatch.schema_context=getattr(startup,'promote_schema_context',None)
             if plan['artifact'] is not None:
                 result=await dispatch.request(binding,'schema_bundle_stage',dict(artifact=plan['artifact'],
                     expected_bundle_sha256=bundle),operation_key=key+':bundle')

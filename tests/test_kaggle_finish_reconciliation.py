@@ -29,12 +29,12 @@ async def test_finish_detach_after_handover_reconciles_same_session_without_seco
     async def probe(**kwargs):
         probes[0]+=1
         if probes[0]==1:current[0]=None  # Actual detach after SQL handover committed.
-        return b'catalog',dict(database_generation='db',applied_seq=0,projection_seq=0,text_search_ready=True,dense_search_ready=True,
+        return b'catalog',dict(schema_version=16,database_generation='db',applied_seq=0,projection_seq=0,text_search_ready=True,dense_search_ready=True,
             schema_revision='s',function_revision='f',executor_revision='e')
     async def readiness(connection):pass
     monkeypatch.setattr('regional_knowledge.kaggle_pg_snapshot_native.handover_writer',rollover)
     binary=NativeBinary('/fixture/postgres',1,'a'*64,'postgres (PostgreSQL) 17.11')
-    database=SimpleNamespace(database_generation='db',writer_generation='new',schema_revision='s',function_revision='f',executor_revision='e')
+    database=SimpleNamespace(schema_version=16,database_generation='db',writer_generation='new',schema_revision='s',function_revision='f',executor_revision='e')
     factory=NativeSnapshotFactory(tools=PhysicalPgTools(binary,binary,binary),database=database,identity=('run','nonce','inc'),
         registry=None,executor_factory=lambda **kw:None,current=lambda b:b==current[0],workspace_private_current=lambda p:False,
         native_uid=1000,native_gid=1000,probe=probe)
@@ -44,15 +44,15 @@ async def test_finish_detach_after_handover_reconciles_same_session_without_seco
     worker=WorkerRecoveryPhases(factory=factory,download=lambda *a:None,workspace=lambda *a:None)
     worker._sessions['retained-session']=session
     args=dict(handle='retained-session',expected_tail=[],final_head=None,
-        control_b64=__import__('base64').b64encode(encode(dict(database_generation='db',sequence=0,journal_head=None,catalog_sha256=sha(b'catalog')))).decode(),
-        expected_catalog_sha256=sha(b'catalog'))
+        control_b64=__import__('base64').b64encode(encode(dict(database_generation='db',sequence=0,journal_head=None,schema_version=16))).decode(),
+        expected_schema_version=16)
     frame=dict(type='DISPATCH',protocol_version=2,connection_generation=1,dispatch_generation=1,id='job',claim='claim',kind='recovery_phase',
         run_id='run',launch_nonce='nonce',runtime_incarnation='inc',database_generation='db',writer_generation='new',phase='finish',
         operation_key='same-finish',arguments=args,request_sha256=sha(encode(dict(phase='finish',arguments=args))),compute_claim='resource')
     with pytest.raises(SnapshotError,match='binding_changed'):await worker(frame)
     assert handover==['committed-once'] and not worker._ready.is_set() and not factory._capabilities
     current[0]=('run','inc',2)
-    with pytest.raises(SnapshotError):await worker(dict(frame,connection_generation=2,arguments=dict(args,expected_catalog_sha256='b'*64)))
+    with pytest.raises(SnapshotError):await worker(dict(frame,connection_generation=2,arguments=dict(args,expected_schema_version=15)))
     result=await worker(dict(frame,connection_generation=2))
     assert result['value']['reference'] and worker._ready.is_set() and handover==['committed-once']
     assert await worker(dict(frame,connection_generation=2))==result

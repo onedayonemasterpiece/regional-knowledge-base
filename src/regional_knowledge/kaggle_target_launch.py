@@ -117,7 +117,7 @@ def compose_target(template,config,target,*,queue,repository):
         raise ValueError('unique bounded final artifact inventory required')
     intent = read_empty_intent(queue,config['run_id'])
     if target.database.mode == 'NEW_EMPTY_GENERATION':
-        sql_hashes = {name:digest(base64.b64decode(files['sql/'+name])) for name in sql_artifacts(target.database.schema_revision)}
+        sql_hashes = {name[4:]:digest(base64.b64decode(data)) for name,data in files.items() if name.startswith('sql/')}
         if (intent is None or intent['database']!=target.database.wire()
                 or intent['run_id']!=config['run_id'] or intent['launch_nonce']!=config['launch_nonce']
                 or intent.get('native_bundle')!=(target.native_bundle.wire() if target.native_bundle is not None else None)

@@ -130,12 +130,12 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
                     assert frame['arguments']['handle']=='native-retained-session'
                     value={'reference':'retained-native-capability'}
                     ready=dict(hashes=dict(e.expected.hashes),database_generation='synthetic-db',schema_revision='s1',function_revision='f1',executor_revision='e1',
-                        applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,archive_read_ready=None,proof_ready=None)
+                        schema_version=16,applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,archive_read_ready=None,proof_ready=None)
                     assert e.q.accept_search_runtime(e.run,e.token,e.generation,ready).ok
                     e.q.heartbeat(e.run,e.token,ready=True,connection_generation=e.generation)
                     assert not startup.config.writer_owner.current(database_generation='synthetic-db',writer_generation='writer-2')
                 elif phase=='verify':
-                    value=dict(database=database.wire(),identity=[e.run,e.nonce,e.b.runtime_incarnation],applied_sequence=0,catalog_sha256='a'*64)
+                    value=dict(database=database.wire(),identity=[e.run,e.nonce,e.b.runtime_incarnation],applied_sequence=0,schema_version=database.schema_version)
                 else:raise AssertionError(phase)
                 receipt=dict(job_id=frame['id'],claim=frame['claim'],receipt=dict(phase=phase,request_sha256=frame['request_sha256'],value=value),
                     run_id=e.run,launch_nonce=e.nonce,runtime_incarnation=e.b.runtime_incarnation,

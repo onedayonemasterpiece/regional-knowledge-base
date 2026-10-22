@@ -468,10 +468,8 @@ class NativeSnapshotFactory:
                 or sha(control_bytes)!=m['source_control']['sha256']):
             raise SnapshotError('native_restore_manifest_binding')
         blob=BlobRef(**m['blob'])
-        for name in ('pg_basebackup','pg_verifybackup','postgres'):
-            actual=asdict(getattr(self.tools,name));original=m['native_tools'][name]
-            if any(actual[k]!=original.get(k) for k in ('size','sha256','version_output')):
-                raise SnapshotError('native_restore_stage0_inventory_differs')
+        # Current executables are verified against the loaded bundle below.
+        # Snapshot binary hashes are provenance; PG17 patch releases may differ.
         if (blob.size>self.limits.max_archive_bytes or m['unpacked_bytes']>self.limits.max_unpacked_bytes
                 or m['file_count']>self.limits.max_files):raise SnapshotError('native_restore_artifact_budget')
         if len(self._owned_candidates)>=2:raise SnapshotError('native_restore_candidate_capacity')
@@ -513,16 +511,7 @@ class NativeSnapshotFactory:
                         'FROM rkb_v4.recovery_state WHERE singleton')
                     if await cursor.fetchone()!=(self.database.database_generation,m['applied_sequence']):
                         raise SnapshotError('native_restore_internal_cursor')
-            files=getattr(self,'schema_files',None)
-            if files is None:raise SnapshotError('native_restore_migration_bundle_required')
-            from .kaggle_schema_migrate import migrate
-            async with candidate.acquire() as connection:
-                await migrate(connection,files)
-            _,fields=await self.probe(acquire=candidate.acquire)
-            if (fields['schema_version']!=self.database.schema_version
-                    or fields['database_generation']!=self.database.database_generation
-                    or fields['applied_seq']!=m['applied_sequence']):
-                raise SnapshotError('native_restore_migrated_version_or_cursor')
+            await self._upgrade_restored(candidate,m)
             original=replace(self.database,writer_generation=m['writer_generation'])
             options={} if self.prepare_transition is None else {'prepare_transition':self.prepare_transition}
             executor=self.executor_factory(acquire=candidate.acquire,registry=self.registry,database=original,
@@ -532,6 +521,29 @@ class NativeSnapshotFactory:
             return session
         except BaseException:
             await candidate.aclose();self._owned_candidates.discard(candidate);raise
+
+    async def _upgrade_restored(self,candidate,manifest):
+        """Verified physical bytes/cursor precede DDL; replay follows this call."""
+        files=getattr(self,'schema_files',None)
+        if files is None:raise SnapshotError('native_restore_migration_bundle_required')
+        from .kaggle_schema_migrate import migrate
+        from .kaggle_owned_pg import configure_migration_defaults
+        async with candidate.acquire() as connection:
+            async with connection.transaction():
+                # New checkpoints bind their ledger version; old Dataset2 has
+                # no integer and is established by the runner's fixed baseline.
+                declared=manifest['versions'].get('schema_version')
+                if declared is not None:
+                    actual=await (await connection.execute(
+                        'SELECT max(version) FROM rkb_v4.schema_migrations')).fetchone()
+                    if actual!=(declared,):raise SnapshotError('native_restore_base_schema_version')
+                await configure_migration_defaults(connection)
+            await migrate(connection,files)
+        _,fields=await self.probe(acquire=candidate.acquire)
+        if (fields['schema_version']!=self.database.schema_version
+                or fields['database_generation']!=self.database.database_generation
+                or fields['applied_seq']!=manifest['applied_sequence']):
+            raise SnapshotError('native_restore_migrated_version_or_cursor')
 
     async def apply(self,session,frame):
         if session not in self._sessions:raise SnapshotError('native_restore_session_unknown')

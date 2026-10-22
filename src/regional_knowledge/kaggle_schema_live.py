@@ -56,10 +56,11 @@ def decode_sql_bundle(raw):
 
 
 class LiveSchemaMigrations:
-    def __init__(self, *, files, acquire, current, download, database):
+    def __init__(self, *, files, acquire, current, download, database, on_version=None):
         bundle_migrations(files)
         self.files = MappingProxyType(dict(files))
         self.acquire, self.current, self.download, self.database = acquire, current, download, database
+        self.on_version=on_version
 
     async def __call__(self, phase, args, operation_key, frame):
         self.current(frame)
@@ -109,14 +110,17 @@ class LiveSchemaMigrations:
                     raise MigrationDenied("migration_writer_changed")
             async with connection.transaction():
                 await writer_fence(connection)
+                from .kaggle_owned_pg import configure_migration_defaults
+                await configure_migration_defaults(connection)
             self.current(frame)
             applied = await migrate(connection, self.files, before_file=writer_fence)
             async with connection.transaction():
                 version = (await (await connection.execute(
                     "SELECT max(version) FROM rkb_v4.schema_migrations")).fetchone())[0]
             self.current(frame)
-        return dict(self.receipt(), schema_version=version,
-                    checkpoint_required=True, applied_versions=list(applied))
+        result=dict(self.receipt(), schema_version=version,checkpoint_required=True,applied_versions=list(applied))
+        if self.on_version is not None:result['readiness']=await self.on_version(version)
+        return result
 
     def receipt(self):
         return dict(bundle_sha256=bundle_hash(self.files), latest_schema_version=len(bundle_migrations(self.files)))

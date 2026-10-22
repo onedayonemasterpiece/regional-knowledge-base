@@ -10,6 +10,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import logging
+import json
 import math
 import time
 from typing import Callable, Mapping, Protocol, runtime_checkable
@@ -318,6 +319,23 @@ class TargetServiceStartup:
         from .kaggle_schema_owner import SourceSchemaMigrations
         self.schema_migrations=SourceSchemaMigrations(self)
         config.spool._schema_intake_guard=self.schema_migrations.intake_allowed
+
+    def promote_schema_context(self,version):
+        """The authenticated migration result advances metadata in this owner."""
+        from dataclasses import replace
+        from .kaggle_pg_snapshot_native import encode
+        adapter=self.config.history_adapter
+        database=replace(adapter.database,schema_version=version)
+        adapter.database=database
+        self.history.database=database;self.history.schema_version=version
+        self.history._native_prefix=None
+        self.restorer.database=database
+        self.restorer.dispatch.database=database
+        proof=self.restorer.proof
+        if proof is not None:
+            control=json.loads(proof.control);control['schema_version']=version
+            object.__setattr__(proof,'database',database)
+            object.__setattr__(proof,'control',encode(control))
 
     def binding_current(self,binding):
         try:

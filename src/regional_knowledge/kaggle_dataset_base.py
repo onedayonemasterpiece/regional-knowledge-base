@@ -266,7 +266,7 @@ def verify_mounted_dataset_base(pin:DatasetBasePin, *,
                 or manifest['source_control']['sha256']!=pin.control.sha256
                 or manifest['source_control']['length']!=pin.control.size
                 or control['journal_head']!=manifest['journal_head']
-                or control['catalog_sha256']!=manifest['versions']['catalog_sha256']
+                or ('schema_version' in control and control['schema_version']!=manifest['versions'].get('schema_version'))
                 or manifest['blob']['size']!=pin.archive.size
                 or manifest['blob']['sha256']!=pin.archive.sha256):
             raise ValueError
