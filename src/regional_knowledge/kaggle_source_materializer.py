@@ -228,9 +228,7 @@ def native_illustration_projection(graph, resolved, raw_poi_locators):
         page=pages.get(page_id)
         region=manifest_regions.get(region_id)
         if (page is None or region is None or region['page_id']!=page_id
-                or region['kind']!='figure'
-                or not page.get('source_image_receipt_sha256') or not page.get('image_sha256')
-                or not resolved['original'].get('sha256')):
+                or region['kind']!='figure'):
             raise failure('native_illustration_source_binding_invalid')
         bbox=region['bbox']
         if bbox!=figure.bbox.model_dump(mode='json'):
@@ -251,9 +249,9 @@ def native_illustration_projection(graph, resolved, raw_poi_locators):
         crop=dict(source_id=manifest['source_id'],source_revision=1,
             illustration_id=figure_id,page_id=page_id,source_region_id=region_id,
             bbox=bbox,display_rotation_degrees=figure.display_rotation_degrees,
-            source_image_receipt_sha256=page['source_image_receipt_sha256'],
-            source_raster_sha256=page['image_sha256'],
-            original_sha256=resolved['original']['sha256'],rendition='preview')
+            source_image_receipt_sha256=page.get('source_image_receipt_sha256'),
+            source_raster_sha256=page.get('image_sha256'),
+            original_sha256=resolved['original'].get('sha256'),rendition='preview')
         illustrations[figure_id]=dict(
             illustration_key=figure.illustration_key,illustration_id=figure_id,
             page_id=page_id,source_region_id=region_id,bbox=bbox,kind=figure.kind,

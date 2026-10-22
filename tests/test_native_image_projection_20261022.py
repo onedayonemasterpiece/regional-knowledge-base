@@ -98,6 +98,25 @@ async def test_native_image_projection_rejects_changed_or_cross_page_source(case
         await compile_image(raw)
 
 
+@pytest.mark.asyncio
+async def test_figure_lowering_does_not_require_media_hash_identifiers(monkeypatch):
+    from regional_knowledge import kaggle_source_materializer as materializer
+    project=materializer.native_illustration_projection
+    def without_hash_ids(graph,resolved,locators):
+        value=copy.deepcopy(resolved)
+        value['original'].pop('sha256')
+        for page in value['image_manifest']['pages']:
+            page.pop('source_image_receipt_sha256')
+            page.pop('image_sha256')
+        return project(graph,value,locators)
+    monkeypatch.setattr(materializer,'native_illustration_projection',without_hash_ids)
+    _,media,_=await compile_image(illustrated_batch())
+    crop=media['illustrations'][0]['crop_binding']
+    assert crop['source_id']==SOURCE and crop['page_id']
+    assert all(crop[key] is None for key in
+        ('original_sha256','source_raster_sha256','source_image_receipt_sha256'))
+
+
 @PG
 @pytest.mark.asyncio
 async def test_pg_sql015_native_prepares_exact_illustration_candidate(image_pg_sql18):
@@ -153,8 +172,8 @@ async def test_pg_sql015_native_prepares_exact_illustration_candidate(image_pg_s
             "SELECT rkb_v4.check_source_illustrations_v1(%s::jsonb,%s::jsonb,%s::uuid)",
             (Jsonb(knowledge), Jsonb(media), SOURCE))).fetchone()) == (True,)
 
-        # The public crop metadata cannot be rebound to another source,
-        # nonexistent page, different original or substituted issued raster.
+        # Source/page identity still matters; media hash identifiers may change
+        # when a rendition is re-encoded, without becoming an acceptance gate.
         for mismatch in ("source_id", "page_id", "original_sha256", "source_raster_sha256"):
             changed = copy.deepcopy(media)
             item = changed["illustrations"][0]
@@ -167,7 +186,8 @@ async def test_pg_sql015_native_prepares_exact_illustration_candidate(image_pg_s
                 crop[mismatch] = "f" * 64
             assert (await (await connection.execute(
                 "SELECT rkb_v4.check_source_illustrations_v1(%s::jsonb,%s::jsonb,%s::uuid)",
-                (Jsonb(knowledge), Jsonb(changed), SOURCE))).fetchone()) == (False,)
+                (Jsonb(knowledge), Jsonb(changed), SOURCE))).fetchone()) == (
+                    mismatch in ('original_sha256','source_raster_sha256'),)
         assert await (await connection.execute(
             "SELECT count(*) FROM rkb_v4.sources WHERE source_id=%s",
             (SOURCE,))).fetchone() == (0,)
@@ -274,3 +294,28 @@ async def test_current_registry_activates_text_and_images_with_exact_receipts(im
             assert readback == [(public_image, media['passage_links'], media['poi_media_links'], 'pending')]
         else:
             assert readback == []
+        if illustrated:
+            updated=copy.deepcopy(media)
+            crop=updated['illustrations'][0]['crop_binding']
+            for key in ('original_sha256','source_raster_sha256','source_image_receipt_sha256'):
+                crop[key]='f'*64
+            # An equivalent JSON serialization and refreshed representation
+            # identifiers update metadata rather than reject an immutable blob.
+            changed_bytes=json.dumps(updated,indent=2).encode()
+            assert await (await connection.execute(
+                'SELECT rkb_v4.prepare_source_activation_with_illustrations_v1('
+                '%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s)',
+                (SOURCE,payload['ingestion_id'],payload['batch_count'],payload['last_batch_sha256'],
+                 payload['materializer_sha256'],canonical(knowledge),DB,WRITER,changed_bytes))).fetchone()==(
+                     digest(canonical(knowledge)),)
+            assert await (await connection.execute(
+                'SELECT m.media_sha256<>o.media_sha256, '
+                'rkb_v4.verify_source_illustration_origins_v1(ARRAY[%s]::uuid[]) '
+                'FROM rkb_v4.source_illustration_candidates m '
+                'JOIN rkb_v4.source_illustration_origins o USING(source_id) WHERE m.source_id=%s',
+                (SOURCE,SOURCE))).fetchone()==(True,True)
+            assert await (await connection.execute(
+                'SELECT data FROM rkb_v4.read_source_illustrations_v1(%s,NULL,4)',
+                (SOURCE,))).fetchall()==[(public_image,)]
+    repeated=await accepted(env,activation)
+    assert repeated.duplicate and repeated.outcome==first.outcome
