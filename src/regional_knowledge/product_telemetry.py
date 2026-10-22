@@ -63,16 +63,22 @@ _SHA = re.compile(r"^[0-9a-f]{64}$")
 
 def _clean(record: Mapping[str, object], level: str):
     resource_extras = {"runtime_incarnation", "release_sha256", "scope"}
-    if not isinstance(record, Mapping) or set(record) - (_FIELDS | _RESOURCE_FIELDS | resource_extras):
-        raise ValueError("only fixed telemetry metadata is accepted")
-    if set(record) & (_RESOURCE_FIELDS | resource_extras) and record.get("event") != "resource.sample":
-        raise ValueError("resource samples have separate fixed fields")
+    if not isinstance(record, Mapping) or len(record) > 64:
+        raise ValueError("bounded telemetry record required")
+    is_resource = record.get("event") == "resource.sample"
+    permitted = _FIELDS | (_RESOURCE_FIELDS | resource_extras if is_resource else frozenset())
+    # Unknown fields are discarded, never serialized (e.g. query/token/url).
+    # Do not throw away known numbers because a new optional resource key
+    # appeared in another worker version.
+    ignored = len(set(record) - permitted)
     if (record.get("event") not in _EVENTS or record.get("phase") not in _PHASES
             or record.get("status") not in _STATUSES or level not in ("standard", "debug")):
         raise ValueError("fixed product event/phase/status required")
     result = {"schema": "rkb.product.telemetry.v1", "event": record["event"],
               "phase": record["phase"], "status": record["status"], "level": level,
               "timing_semantics": "overlapping_do_not_sum"}
+    if ignored:
+        result["ignored_fields"] = ignored  # Values/field names remain private.
     if record.get("timing_semantics", "overlapping_do_not_sum") != "overlapping_do_not_sum":
         raise ValueError("overlapping stages may not be summed")
     for key in _IDENTIFIERS:
@@ -95,21 +101,21 @@ def _clean(record: Mapping[str, object], level: str):
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 86_400_000:
             raise ValueError("finite monotonic duration required")
         result["duration_ms"] = round(value, 3)
-    if "runtime_incarnation" in record:
+    if is_resource and "runtime_incarnation" in record:
         value = record["runtime_incarnation"]
         if type(value) is not str or not 1 <= len(value) <= 256 or re.fullmatch(r"[A-Za-z0-9_.:-]+", value) is None:
             raise ValueError("bounded internal incarnation required")
         result["runtime_incarnation"] = value
-    if "release_sha256" in record:
+    if is_resource and "release_sha256" in record:
         value = record["release_sha256"]
         if type(value) is not str or _SHA.fullmatch(value) is None:
             raise ValueError("verified release digest only")
         result["release_sha256"] = value
-    if "scope" in record:
+    if is_resource and "scope" in record:
         if record["scope"] not in ("own_cgroup", "process_only"):
             raise ValueError("fixed resource scope only")
         result["scope"] = record["scope"]
-    for key in _RESOURCE_FIELDS & set(record):
+    for key in _RESOURCE_FIELDS & set(record) if is_resource else ():
         value = record[key]
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value < 2**63:
             raise ValueError("bounded finite resource reading required")
