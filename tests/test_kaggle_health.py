@@ -262,7 +262,7 @@ class BlockController(importlib.abc.MetaPathFinder):
         if any(fullname == prefix or fullname.startswith(prefix + '.') for prefix in forbidden):
             raise ImportError('controller import attempted: ' + fullname)
 sys.meta_path.insert(0, BlockController())
-from regional_knowledge.kaggle_health_native import probe_sql_health
+from regional_knowledge.kaggle_database_probe import probe_sql_health
 assert callable(probe_sql_health)
 assert not any(name == prefix or name.startswith(prefix + '.')
                for name in sys.modules for prefix in forbidden)
