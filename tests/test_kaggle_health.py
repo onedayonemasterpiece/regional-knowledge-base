@@ -247,3 +247,40 @@ def test_public_heartbeat_health_drops_observation_when_attachment_changes(targe
     result = kaggle_health.heartbeat_health(target.queue)
     assert result['reason'] == 'attachment_changed' and not result['read_ready']
     assert 'postgres' not in result
+
+
+def test_native_health_import_does_not_require_controller_or_mcp():
+    import subprocess
+    import sys
+    source = '''
+import importlib.abc
+import sys
+forbidden = ('mcp', 'regional_knowledge.kaggle_public_backend',
+             'regional_knowledge.read_authority', 'regional_knowledge.bge_queue')
+class BlockController(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if any(fullname == prefix or fullname.startswith(prefix + '.') for prefix in forbidden):
+            raise ImportError('controller import attempted: ' + fullname)
+sys.meta_path.insert(0, BlockController())
+from regional_knowledge.kaggle_health_native import probe_sql_health
+assert callable(probe_sql_health)
+assert not any(name == prefix or name.startswith(prefix + '.')
+               for name in sys.modules for prefix in forbidden)
+'''
+    subprocess.run([sys.executable, '-c', source], check=True, capture_output=True, timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_native_server_statement_timeout_is_sanitized(target):
+    from psycopg.errors import QueryCanceled
+    native = Native()
+    execute = native.execute
+    async def timeout(sql, params=None):
+        if sql == HEALTH_SQL:
+            raise QueryCanceled('private SQL diagnostic')
+        await execute(sql, params)
+    native.execute = timeout
+    result = await probe_database_health(acquire=native.acquire, binding=binding(), binding_current=lambda _: True)
+    assert result.reason == 'pg_timeout' and not result.ready
+    assert 'private' not in json.dumps(result.wire())
+    assert native.acquired == native.released == 1
