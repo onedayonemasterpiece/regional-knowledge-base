@@ -189,6 +189,9 @@ class TargetRuntime:
         self.prepared = None
         self.source_history_observer=None
         self.original_intake_handler=None
+        # A verified native decoder capability is obtained from existing
+        # Stage0/recovery ownership, never an MCP/HTTP field or ambient PATH.
+        self._original_decoder_bundle=None
         self.read_handler_slot=None  # Same model/pool retained across compatible patch.
         self.identity = None
         self.closed = False
@@ -285,6 +288,9 @@ class TargetRuntime:
                 for e in self.target['command_handlers']) else {}),
             **({'dataset_checkpoint':self.target['dataset_checkpoint']} if self.target.get('dataset_checkpoint') is not None else {}))
         self.recovery_worker=worker
+        # Restored generation configures the same verified Stage0 bundle
+        # before prepare(), while the empty-generation order is reversed.
+        self._original_decoder_bundle=native_bundle
         self._bind_read_handler_maintenance()
         self._recovery_available.set()
         return worker
@@ -349,7 +355,9 @@ class TargetRuntime:
                 native_bundle=await asyncio.to_thread(prepare_native_bundle,encoder.artifacts.root,
                     bundle.manifest_name,bundle.manifest_sha256,inventory=inventory)
             options=dict(intent=self.target.get('initialization_intent'),artifacts=encoder.artifacts,sql_root=self.target['sql_root'])
-            if native_bundle is not None:options['native_bundle']=native_bundle
+            if native_bundle is not None:
+                options['native_bundle']=native_bundle
+                self._original_decoder_bundle=native_bundle
             from .kaggle_environment import bootstrap_stage
             with bootstrap_stage(run_id,'native_pg_start'):
                 await self.owner.start_empty(**options)
@@ -426,7 +434,8 @@ class TargetRuntime:
             try:
                 original_handler=NativeOriginalIntake(config=OriginalIntakeConfig.from_wire(self.target['original_intake']),
                     database=self.database,identity=identity,workspace=workspace,current=lambda binding:
-                        not self.closed and binding[:2]==(run_id,runtime_incarnation))
+                        not self.closed and binding[:2]==(run_id,runtime_incarnation),
+                    decoder_bundle=self._original_decoder_bundle)
             except BaseException:
                 import shutil
                 await asyncio.to_thread(shutil.rmtree,workspace)
