@@ -14,6 +14,9 @@ from regional_knowledge.bge_queue import StaleAttachment
 from test_bge_admission import query, answer
 from test_bge_runtime_readiness import expected, observation
 from test_kaggle_public_backend import target, current_binding
+from regional_knowledge.kaggle_protocol import QueryResult
+from regional_knowledge.read_issuance import capture_read_output
+from test_kaggle_protocol import item
 from test_participants import people
 from test_read_authority import auth
 
@@ -127,3 +130,59 @@ async def test_unready_or_behind_reader_never_selected_and_stale_socket_cannot_r
     # An attached run has no right to alter the current writer identity.
     with s.queue.connect(write=False) as db:
         assert db.execute('SELECT run_id FROM bge_shared_admission WHERE id=1').fetchone()[0]==s.run
+
+
+
+@pytest.mark.asyncio
+async def test_public_search_routes_to_idle_reader_while_writer_claim_is_busy(target):
+    """Real public backend admission selection; no source/provider/model writes."""
+    s=target
+    reader,token,generation=await attach_existing_reader(s)
+    await s.admission.resource_state(reader,token,generation,
+        runtime_incarnation='reader-incarnation',state='idle')
+    context=await s.auth.resolver.resolve_oauth(s.auth.tokens.access_token,
+        destination=s.auth.destination)
+    writer_ticket=None
+    held=None
+    forwarded=None
+    try:
+        writer_ticket=await s.admission.begin_read(
+            context,query(context,'writer-occupied',s.generation,min_seq=5),
+            dialog_ref='held-writer',deadline=time.monotonic()+1.95,run_id=s.run)
+        held=await s.queue.next_channel_work(s.run,s.token,s.generation)
+        assert held is not None and held.query is not None
+        s.admission.mark_work_sent(held)
+        assert s.admission.status()['state']=='busy'
+        with capture_read_output() as outputs:
+            requested=asyncio.create_task(s.backend.search('synthetic source question',s.principal))
+            for _ in range(200):
+                forwarded=await s.queue.next_channel_work(reader,token,generation)
+                if forwarded is not None:break
+                await asyncio.sleep(.001)
+            assert forwarded is not None and forwarded.resource.run_id==reader
+            assert forwarded.kind=='read'
+            assert forwarded.query.min_data_seq==5
+            s.admission.mark_work_sent(forwarded)
+            result=QueryResult(
+                request_id=forwarded.query.request_id,
+                connection_generation=forwarded.dispatch_generation,
+                turn_generation=forwarded.query.turn_generation,
+                status='degraded',mode='hybrid',reason='bounded_retrieval',
+                observed_data_seq=5,observed_projection_seq=5,
+                evidence=(item(kind='source',id='passage:/1',
+                    metadata={'title':'Synthetic source'}),))
+            assert await s.admission.finish_read(reader,token,generation,result)
+            response=await requested
+            assert response.status=='degraded' and response.results
+            assert len(outputs)==1
+            outputs[0].release()
+        assert await release(s,reader,token,generation,forwarded)
+        forwarded=None
+        # Reader work/reply does not release or settle the first writer claim.
+        assert s.admission.status()['state']=='busy'
+        assert writer_ticket is not None and not writer_ticket.result.done()
+    finally:
+        if writer_ticket is not None:s.admission.cancel_read(writer_ticket)
+        if forwarded is not None:await release(s,reader,token,generation,forwarded)
+        if held is not None:await release(s,s.run,s.token,s.generation,held)
+        s.auth.resolver.release(context)
