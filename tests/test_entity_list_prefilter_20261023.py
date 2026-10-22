@@ -85,7 +85,6 @@ async def graph_sql22():
         assert [int(path.name[:3]) for path in scripts]==list(range(1,23))
         async with connection.transaction():
             assert await (await connection.execute('SELECT current_database(),current_user')).fetchone()==('rkb','rkb_bootstrap')
-            assert (await connection.execute('SHOW server_version_num')) is not None
             assert (await (await connection.execute('SHOW server_version_num')).fetchone())[0].startswith('17')
             assert await (await connection.execute("SELECT to_regnamespace('rkb_v4')")).fetchone()==(None,)
             await connection.execute('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public')
@@ -203,7 +202,7 @@ async def test_real_pg17_default_unicode_fold_matches_python_codepoint_rules(gra
 
 @pytest.mark.asyncio
 async def test_new_sql22_single_pg_page_dispatch_keeps_existing_list_contract():
-    original=original_row(0)
+    original=original_row(2)
     n=Native([original],revision=('rkb-v4-sql001-022-v1','current'))
     result=await execute_source_graph_read(selected(query='  ReCoRdEd aLiAs  ',
         kinds=['person'],limit=1),acquire=n.acquire)
@@ -221,7 +220,7 @@ async def test_new_sql22_single_pg_page_dispatch_keeps_existing_list_contract():
 
 @pytest.mark.asyncio
 async def test_pre022_version_uses_old_keyset_without_calling_missing_function():
-    n=Native([original_row(0)],revision=('rkb-v4-sql001-021-v1','current'))
+    n=Native([original_row(2)],revision=('rkb-v4-sql001-021-v1','current'))
     result=await execute_source_graph_read(selected(query='recorded alias',kinds=['person']),
         acquire=n.acquire)
     assert result.status=='ok'
