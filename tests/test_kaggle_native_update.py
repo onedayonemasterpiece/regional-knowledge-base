@@ -504,3 +504,86 @@ async def test_ack_cannot_open_dispatch_before_quiescence_boundary_returns():
     await h.owner.activate(h.binding())
     h.acknowledge()
     assert h.owner.bindings() is h.candidate
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('exit_error', [NativeUpdateRejected, asyncio.CancelledError])
+async def test_rollback_exit_requires_reconcile_before_ack_including_reconcile_exit_retry(exit_error):
+    h = Host()
+    await h.stage()
+    await h.owner.activate(h.binding())
+    h.acknowledge()
+    original = h.quiesce
+    fail_exit = [True]
+    @asynccontextmanager
+    async def uncertain_exit(binding):
+        async with original(binding) as head:
+            yield head
+            if fail_exit[0]:
+                fail_exit[0] = False
+                raise exit_error('synthetic rollback exit failure')
+    h.owner.quiesce = uncertain_exit
+    with pytest.raises(exit_error):
+        await h.owner.rollback(h.binding())
+    assert h.owner.active is h.old and h.owner.generation == 2
+    assert h.owner.state == 'reconcile_required'
+    with pytest.raises(NativeUpdateRejected, match='ack_binding'):
+        h.acknowledge()
+    with pytest.raises(NativeUpdateRejected, match='dispatch_fenced'):
+        h.owner.bindings()
+    fail_exit[0] = True
+    with pytest.raises(exit_error):
+        await h.owner.reconcile(h.binding())
+    assert h.owner.state == 'reconcile_required' and h.owner.generation == 2
+    with pytest.raises(NativeUpdateRejected, match='ack_binding'):
+        h.acknowledge()
+    await h.owner.reconcile(h.binding())
+    assert h.owner.generation == 2 and h.owner.state == 'awaiting_ack'
+    h.acknowledge()
+    assert h.owner.bindings() is h.old
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('resume', [False, True])
+async def test_already_applied_barrier_reads_exact_ledger_without_new_apply_callback(resume):
+    h = Host(schema=True)
+    await h.stage()
+    if resume:
+        h.fail_before_commit = True
+        with pytest.raises(TimeoutError):
+            await h.owner.activate(h.binding())
+        await h.owner.reconcile(h.binding())
+        assert h.owner.state == 'resume_ready'
+        h.fail_before_commit = False
+    # A previous executor completed this same accepted operation after the
+    # earlier observation. Head now advertises end/pending0 before activation.
+    h.quiesced = True
+    try:
+        await h.apply(h.plan.transitions, h.candidate)
+    finally:
+        h.quiesced = False
+    calls = h.apply_calls
+    async def forbidden_apply(*args):
+        raise AssertionError('already applied operation reached apply callback')
+    h.owner.apply_transitions = forbidden_apply
+    await h.owner.activate(h.binding())
+    assert h.owner.state == 'awaiting_ack' and h.owner.generation == 1
+    h.acknowledge()
+    assert h.owner.bindings() is h.candidate
+    assert h.apply_calls == calls and h.reconcile_calls == (2 if resume else 1)
+
+
+@pytest.mark.asyncio
+async def test_already_applied_barrier_without_matching_native_ledger_stays_fenced():
+    h = Host(schema=True)
+    await h.stage()
+    h.head = replace(h.head, applied_sequence=h.head.sequence,
+                     pending_writes=0, pending_operation_sha256=())
+    with pytest.raises(NativeUpdateRejected, match='transition_readback'):
+        await h.owner.activate(h.binding())
+    assert h.apply_calls == 0 and h.owner.state == 'reconcile_required'
+    with pytest.raises(NativeUpdateRejected, match='dispatch_fenced'):
+        h.owner.bindings()
+    with pytest.raises(NativeUpdateRejected, match='transition_readback'):
+        await h.owner.reconcile(h.binding())
+    assert h.owner.state == 'reconcile_required' and h.apply_calls == 0

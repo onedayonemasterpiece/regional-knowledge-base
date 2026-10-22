@@ -279,6 +279,7 @@ class NativeUpdateOwner:
         self.staged = None
         self.previous = None
         self._pending_ack_key = None
+        self._rollback_reconcile = None
         self._lock = asyncio.Lock()
 
     def _current(self, binding):
@@ -403,6 +404,7 @@ class NativeUpdateOwner:
                     or receipt.command_sha256 != _sha(command.encode())
                     or receipt.operation_key != command.operation_key or receipt.sequence != command.sequence):
                 raise NativeUpdateRejected('native_update_transition_receipt')
+
             _, outcome = decode_receipt(receipt_wire(receipt))
             if (outcome['handler_sha256'] != handler.fingerprint
                     or outcome['before'] != list(handler.revisions.wire())
@@ -410,6 +412,13 @@ class NativeUpdateOwner:
                     or any(outcome[key] != getattr(command, key) for key in
                            ('ids', 'request_id', 'person_id', 'route', 'logical_time'))):
                 raise NativeUpdateRejected('native_update_transition_receipt')
+
+    def _applied_readback(self, plan, candidate, progress):
+        if (type(progress) is not NativeTransitionReadback
+                or progress.native_sequence != plan.head.sequence + len(plan.transitions)
+                or progress.revisions != plan.target or progress.unapplied_command_sha256):
+            raise NativeUpdateRejected('native_update_transition_readback')
+        self._receipts(plan, candidate, progress.receipts)
 
     def _cutover(self, plan, candidate):
         self.previous = (self.active, plan)
@@ -451,9 +460,16 @@ class NativeUpdateOwner:
                     self.state = 'activating'
                     if plan.transitions:
                         transition_started = True
-                        receipts = await self.apply_transitions(plan.transitions, candidate)
-                        self._current(binding)
-                        self._receipts(plan, candidate, receipts)
+                        if head.applied_sequence == head.sequence:
+                            # Already-applied metadata never authorizes a new
+                            # apply callback, even if its lower layer dedupes.
+                            progress = await self.reconcile_transitions(plan.transitions, candidate)
+                            self._current(binding)
+                            self._applied_readback(plan, candidate, progress)
+                        else:
+                            receipts = await self.apply_transitions(plan.transitions, candidate)
+                            self._current(binding)
+                            self._receipts(plan, candidate, receipts)
                     await self.probe(candidate)
                     self._current(binding)
                     self._cutover(plan, candidate)  # One synchronous aggregate cutover.
@@ -470,7 +486,11 @@ class NativeUpdateOwner:
         """Read back the SAME accepted transitions; never submit them again."""
         async with self._lock:
             self._current(binding)
-            if self.state != 'reconcile_required' or self.staged is None:
+            if self.state != 'reconcile_required':
+                raise NativeUpdateRejected('native_update_reconcile_state')
+            if self._rollback_reconcile is not None:
+                return await self._reconcile_rollback(binding)
+            if self.staged is None:
                 raise NativeUpdateRejected('native_update_reconcile_state')
             plan, candidate = self.staged
             try:
@@ -483,6 +503,7 @@ class NativeUpdateOwner:
                         raise NativeUpdateRejected('native_update_transition_readback')
                     unapplied = tuple(_sha(c.encode()) for c in plan.transitions)
                     if (plan.transitions and progress.receipts == ()
+                            and head.applied_sequence == plan.head.sequence
                             and progress.native_sequence == plan.head.sequence
                             and progress.revisions == plan.origin
                             and progress.unapplied_command_sha256 == unapplied):
@@ -490,10 +511,7 @@ class NativeUpdateOwner:
                         # bytes; no automatic resubmission or fresh operation.
                         self.state = 'resume_ready'
                         return self.receipt()
-                    if (progress.native_sequence != plan.head.sequence + len(plan.transitions)
-                            or progress.revisions != plan.target or progress.unapplied_command_sha256):
-                        raise NativeUpdateRejected('native_update_transition_readback')
-                    self._receipts(plan, candidate, progress.receipts)
+                    self._applied_readback(plan, candidate, progress)
                     await self.probe(candidate)
                     self._current(binding)
                     if self.active is candidate:
@@ -506,6 +524,26 @@ class NativeUpdateOwner:
                 self.state = 'reconcile_required'
                 raise
             return self.receipt()
+
+    async def _reconcile_rollback(self, binding):
+        plan, target, generation = self._rollback_reconcile
+        if self.active is not target or self.generation != generation:
+            raise NativeUpdateRejected('native_update_rollback_context_changed')
+        # Keep the context and fence across probe AND quiesce exit. Neither an
+        # exception nor cancellation may reduce this to a bare awaiting_ack.
+        async with self.quiesce(binding) as head:
+            self._current(binding)
+            if type(head) is not NativeUpdateHead:
+                raise NativeUpdateRejected('native_update_head_readback')
+            head.require_settled()
+            if head != plan.head:
+                raise NativeUpdateRejected('native_update_head_changed')
+            await self.probe(target)
+            self._current(binding)
+        self._pending_ack_key = plan.operation_key + ':rollback'
+        self._rollback_reconcile = None
+        self.state = 'awaiting_ack'
+        return self.receipt()
 
     async def rollback(self, binding):
         async with self._lock:
@@ -520,6 +558,7 @@ class NativeUpdateOwner:
             if previous.revisions != self.active.revisions:
                 raise NativeUpdateRejected('native_update_committed_schema_not_reversible')
             self.state = 'quiescing'
+            did_cutover = False
             try:
                 async with self.quiesce(binding) as head:
                     self._current(binding)
@@ -528,11 +567,17 @@ class NativeUpdateOwner:
                         raise NativeUpdateRejected('native_update_head_changed')
                     await self.probe(previous)
                     self._current(binding)
+                    did_cutover = True
                     self.active = previous
                     self.generation += 1
                     self.previous = None
                     self._pending_ack_key = plan.operation_key + ':rollback'
                     self.state = 'awaiting_ack'
+            except BaseException:
+                if did_cutover:
+                    self._rollback_reconcile = (plan, previous, self.generation)
+                    self.state = 'reconcile_required'
+                raise
             finally:
                 if self.state == 'quiescing':
                     self.state = 'active'
