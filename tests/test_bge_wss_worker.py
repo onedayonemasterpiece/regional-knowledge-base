@@ -102,7 +102,12 @@ async def test_unhealthy_connections_still_exhaust_bounded_outage_budget(monkeyp
         attempts.append(1)
         raise ConnectionError('API stays unavailable')
         yield
-    worker=transport.BgeWssTransport(CONFIG,lambda:None,lambda:{},connector=connect,maximum_seconds=3)
+    worker=transport.BgeWssTransport(CONFIG,lambda:None,lambda:{},connector=connect,maximum_seconds=3,
+        reconnect_grace_seconds=9)
+    clock=[0.]
+    def tick():
+        clock[0]+=1.;return clock[0]
+    worker._retry_clock=tick
     with pytest.raises(transport.BgeChannelStopped,match='reconnect exhausted'):
         await worker.run()
     assert len(attempts)==10

@@ -454,6 +454,8 @@ class StartupStatus(BaseModel):
     startup_ref: str = Field(min_length=51,max_length=51)
     status: Literal['pending','ready','unavailable']
     reason: str | None = None
+    # Sanitized operator health (no run/incarnation/provider identifiers).
+    health: dict | None = None
 
 
 class SearchOutput(BaseModel):

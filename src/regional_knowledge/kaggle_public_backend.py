@@ -397,6 +397,11 @@ class KaggleSourceBackend:
                 except TargetUnavailable:
                     observed.update(status='unavailable',reason='target_not_ready')
             await self.read_authority.recheck(authority)
+            from .kaggle_health import heartbeat_health
+            try:
+                observed['health']=await asyncio.to_thread(heartbeat_health,self.worker_queue)
+            except Exception:
+                observed['health']={'codec':'rkb.health.v1','reason':'health_probe_unavailable','read_ready':False}
             return StartupStatus.model_validate(observed)
         except (ValueError,TypeError):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
