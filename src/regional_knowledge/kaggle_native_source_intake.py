@@ -399,3 +399,219 @@ class NativeSourceIntake:
                 state=await self._recover_orphan(access,row,state,'seal',
                     self._operation(row,'seal',head=state['last_batch_sha256']))
         return self._output(row,state)
+
+
+
+class NativeSourceRevision2Intake(NativeSourceIntake):
+    """Same owner spool/lease/UNKNOWN mechanics with a *separate* version2 state.
+
+    Old rkb_native_source_intake_state and accepted source_id remain immutable.
+    New controller records have their own ingestion_id but the SAME source_id
+    and inherit the exact already-verified original receipt.
+    """
+    def __init__(self,importer):
+        from .kaggle_native_revision2_upgrade import REVISION2_REVISIONS
+        if importer.import_revisions!=REVISION2_REVISIONS:
+            raise TypeError('installed schema17 required for accepted-source successor')
+        self.importer=importer
+        self.queue,self.spool,self.startup=importer.queue,importer.spool,importer.startup
+        with self.queue.connect() as db:
+            db.execute('''CREATE TABLE IF NOT EXISTS rkb_native_source_revision2_state(
+                ingestion_id TEXT PRIMARY KEY,source_id TEXT UNIQUE NOT NULL,person_id TEXT NOT NULL,
+                original_ingestion_id TEXT NOT NULL,predecessor_command_sha256 TEXT NOT NULL,
+                batch_count INTEGER NOT NULL DEFAULT 0,last_batch_sha256 TEXT NOT NULL,
+                last_request_sha256 TEXT,pending_operation_key TEXT,pending_kind TEXT,
+                phase TEXT NOT NULL DEFAULT 'staging',seal_sha256 TEXT,rejected_seal_head TEXT,
+                materializer_sha256 TEXT,next_ordinal INTEGER NOT NULL DEFAULT 0,
+                total_inputs INTEGER,knowledge_sha256 TEXT,
+                CHECK(batch_count BETWEEN 0 AND 2500),CHECK(next_ordinal>=0),
+                CHECK((pending_operation_key IS NULL)=(pending_kind IS NULL)),
+                CHECK(phase IN ('staging','sealed','materializing','ready_activation','finalized','failed')))''')
+            db.execute('''CREATE UNIQUE INDEX IF NOT EXISTS rkb_native_one_revision2_owner
+                ON rkb_native_source_revision2_state(person_id)
+                WHERE phase NOT IN ('finalized','failed')''')
+
+    def _state(self,row,*,create=False):
+        with self.queue.connect(write=create) as db:
+            if create:
+                try:
+                    db.execute('''INSERT OR IGNORE INTO rkb_native_source_revision2_state(
+                        ingestion_id,source_id,person_id,original_ingestion_id,
+                        predecessor_command_sha256,last_batch_sha256)
+                        VALUES(?,?,?,?,?,?)''',(
+                        row['ingestion_id'],row['source_id'],row['person_id'],
+                        row['original_ingestion_id'],row['predecessor_command_sha256'],ZERO_HASH))
+                except sqlite3.IntegrityError:
+                    raise _failure('another_native_ingestion_active') from None
+            value=db.execute('''SELECT * FROM rkb_native_source_revision2_state
+                WHERE ingestion_id=? AND person_id=?''',
+                (row['ingestion_id'],row['person_id'])).fetchone()
+        if value is None:
+            if create:raise _failure('another_native_ingestion_active')
+            return None
+        state=dict(value)
+        if (state['source_id'],state['original_ingestion_id'],state['predecessor_command_sha256'])!=(
+                row['source_id'],row['original_ingestion_id'],row['predecessor_command_sha256']):
+            raise _failure('accepted_source_successor_changed')
+        return state
+
+    def _update(self,row,**changes):
+        allowed={'batch_count','last_batch_sha256','last_request_sha256','pending_operation_key',
+            'pending_kind','phase','seal_sha256','materializer_sha256','next_ordinal','total_inputs',
+            'knowledge_sha256','rejected_seal_head'}
+        if not changes or set(changes)-allowed:raise ValueError('exact compact revision2 progress only')
+        with self.queue.connect() as db:
+            result=db.execute('UPDATE rkb_native_source_revision2_state SET '
+                +','.join(key+'=?' for key in changes)
+                +' WHERE ingestion_id=? AND source_id=? AND person_id=?',
+                (*changes.values(),row['ingestion_id'],row['source_id'],row['person_id']))
+            if result.rowcount!=1:raise _failure('owned_successor_ingestion_required',status='denied')
+        return self._state(row)
+
+    @staticmethod
+    def _operation(row,kind,ordinal=None,*,head=None):
+        prefix='revision2:'+row['ingestion_id']
+        if kind=='stage':return prefix+':stage:'+str(ordinal)
+        if kind=='seal':
+            if type(head) is not str or len(head)!=64 or set(head)-set('0123456789abcdef'):
+                raise ValueError('exact successor seal head required')
+            return prefix+':seal:'+head
+        if kind=='materialize':return prefix+':materialize:'+str(ordinal)
+        if kind=='activate':return 'revision2-activation:'+row['ingestion_id']
+        raise ValueError('explicit successor operation kind required')
+
+    async def _settle(self,access,row,state,entry):
+        if entry.outcome_state=='DURABLE' and entry.apply_receipt is not None and entry.apply_receipt.status=='applied':
+            result=self._result(entry)
+            if result.get('source_revision',result.get('content_revision'))!=2:
+                raise _failure('native_revision2_outcome_differs')
+        return await super()._settle(access,row,state,entry)
+
+    async def _recover_orphan(self,access,row,state,kind,key):
+        from .source_stage import REVISION2_STAGE_ROUTE,REVISION2_SEAL_ROUTE
+        from .source_activation import REVISION2_MATERIALIZE_ROUTE,REVISION2_ACTIVATE_ROUTE
+        if state['pending_operation_key']:return await self._drive(access,row,state)
+        entry=await self._entry(key)
+        if entry is None:return state
+        route=dict(stage=REVISION2_STAGE_ROUTE,seal=REVISION2_SEAL_ROUTE,
+            materialize=REVISION2_MATERIALIZE_ROUTE,activate=REVISION2_ACTIVATE_ROUTE)[kind]
+        if (entry.command.route!=route or entry.command.person_id!=row['person_id']
+                or entry.command.ids!={'source_id':row['source_id']}
+                or (entry.command.schema_revision,entry.command.function_revision,entry.command.executor_revision)
+                  !=self.importer.import_revisions.wire()):
+            raise _failure('revision2_accepted_command_identity_changed')
+        state=await asyncio.to_thread(self._update,row,pending_operation_key=key,pending_kind=kind)
+        return await self._drive(access,row,state)
+
+    async def stage(self,access,row,payload,source_import):
+        from .kaggle_import_contracts import SourceResearchInput
+        from .contracts import StartMetadataInput
+        from .source_stage import (REVISION2_STAGE_ROUTE,REVISION2_BATCH_CODEC,
+            validate_revision2_stage_payload)
+        from .kaggle_native_source_bindings import resolved_revision2_native_command
+        await self._check(access,row)
+        if type(payload) is not dict or type(payload.get('pages')) is not list or not 1<=len(payload['pages'])<=8:
+            raise _failure('bounded_model_authored_selected_pages_required',status='invalid_query')
+        state=await asyncio.to_thread(self._state,row,create=True)
+        state=await self._recover_orphan(access,row,state,'stage',
+            self._operation(row,'stage',state['batch_count']))
+        if state['pending_operation_key'] or state['phase']=='failed':return self._output(row,state)
+        if state['phase']!='staging':raise _failure('revision2_candidate_already_sealed',status='invalid_query')
+        receipt=await self.importer._receipt(access,row)
+        if receipt is None:raise _failure('verified_original_predecessor_required')
+        if receipt.ingestion_id!=row['original_ingestion_id'] or receipt.source_id!=row['source_id']:
+            raise _failure('original_same_source_rebind_changed')
+        research=source_import.research if source_import is not None else None
+        if research is None:
+            if not row['research_json']:raise _failure('model_authored_research_required',status='invalid_query')
+            research=SourceResearchInput.model_validate_json(row['research_json'])
+        if research.state=='pending':
+            continuation=research.continuation
+            if (continuation.get('tool')!='book_pages' or type(continuation.get('arguments')) is not dict
+                    or continuation['arguments'].get('ingestion_id')!=row['ingestion_id']):
+                raise _failure('research_requires_reachable_owned_page_continuation',status='invalid_query')
+        issued=await self.importer.originals.selected_image_receipts(access.context,
+            row['original_ingestion_id'],tuple((p['physical_page_index'],p['source_image_receipt_sha256'])
+                for p in payload['pages']))
+        await self._check(access,row)
+        metadata=StartMetadataInput.model_validate_json(row['metadata_json']).model_dump(mode='json')
+        bibliography='; '.join(filter(None,[', '.join(metadata['authors']),metadata['title'],
+            str(metadata['publication_year']) if metadata['publication_year'] else None]))
+        doc=dict(codec=REVISION2_BATCH_CODEC,source_revision=2,prior_revision=1,
+            ingestion_id=row['ingestion_id'],original_ingestion_id=row['original_ingestion_id'],
+            predecessor_command_sha256=row['predecessor_command_sha256'],
+            batch_index=state['batch_count'],previous_batch_sha256=state['last_batch_sha256'],
+            source=dict(bibliography=bibliography,work_id=str(uuid5(UUID(row['source_id']),'work')),
+                edition_id=str(uuid5(UUID(row['source_id']),'edition')),
+                metadata=metadata,original_receipt_b64=base64.b64encode(canonical(receipt.wire())).decode(),
+                public_rights=json.loads(row['rights_json'])),
+            issued_images_b64=[encode_issued_image(value) for value in issued],
+            model_payload=payload,
+            research=dict(frontier_id=str(uuid5(UUID(row['ingestion_id']),'research')),
+                **research.model_dump(mode='json')))
+        validate_revision2_stage_payload(canonical(doc),source_id=row['source_id'])
+        if self._request_hash(doc)==state['last_request_sha256']:return self._output(row,state)
+        await self._stage_exact(access,row,kind='stage',
+            key=self._operation(row,'stage',state['batch_count']),
+            route=REVISION2_STAGE_ROUTE,payload=doc,
+            builder=lambda **kw:resolved_revision2_native_command(route=REVISION2_STAGE_ROUTE,**kw))
+        await asyncio.to_thread(self.importer._save,row,
+            phase='staging',research_json=canonical(research.model_dump(mode='json')).decode())
+        return self._output(row,await self._drive(access,row,await asyncio.to_thread(self._state,row)))
+
+    async def validate(self,access,row):
+        from .source_stage import REVISION2_SEAL_ROUTE,REVISION2_SEAL_CODEC
+        from .kaggle_native_source_bindings import resolved_revision2_native_command
+        await self._check(access,row)
+        state=await asyncio.to_thread(self._state,row)
+        if state is None:raise _failure('stage_before_validate',status='invalid_query')
+        state=await self._recover_orphan(access,row,state,'stage',
+            self._operation(row,'stage',state['batch_count']))
+        if state['pending_operation_key'] or state['phase']=='failed':return self._output(row,state)
+        if state['phase']!='staging':return self._output(row,state)
+        if not state['batch_count']:raise _failure('stage_before_validate',status='invalid_query')
+        if state['rejected_seal_head']==state['last_batch_sha256']:return self._output(row,state)
+        doc=dict(codec=REVISION2_SEAL_CODEC,source_revision=2,prior_revision=1,
+            ingestion_id=row['ingestion_id'],batch_count=state['batch_count'],
+            last_batch_sha256=state['last_batch_sha256'],
+            predecessor_command_sha256=row['predecessor_command_sha256'])
+        await self._stage_exact(access,row,kind='seal',
+            key=self._operation(row,'seal',head=state['last_batch_sha256']),
+            route=REVISION2_SEAL_ROUTE,payload=doc,
+            builder=lambda **kw:resolved_revision2_native_command(route=REVISION2_SEAL_ROUTE,**kw))
+        return self._output(row,await self._drive(access,row,await asyncio.to_thread(self._state,row)))
+
+    async def finalize(self,access,row):
+        from .source_activation import (REVISION2_ACTIVATE_ROUTE,REVISION2_MATERIALIZE_ROUTE,
+            REVISION2_ACTIVATION_CODEC,REVISION2_MATERIALIZE_CODEC)
+        from .kaggle_native_source_bindings import resolved_revision2_native_command
+        from .kaggle_source_materializer import materializer_fingerprint
+        await self._check(access,row)
+        state=await asyncio.to_thread(self._state,row)
+        if state is None:raise _failure('validate_before_finalize',status='invalid_query')
+        state=await self._drive(access,row,state)
+        if state['pending_operation_key'] or state['phase'] in ('failed','finalized'):return self._output(row,state)
+        if state['phase']=='staging':
+            if state['rejected_seal_head']==state['last_batch_sha256']:return self._output(row,state)
+            state=await self._recover_orphan(access,row,state,'seal',
+                self._operation(row,'seal',head=state['last_batch_sha256']))
+            if state['phase']=='staging':raise _failure('validate_before_finalize',status='invalid_query')
+            if state['pending_operation_key']:return self._output(row,state)
+        kind='activate' if state['phase']=='ready_activation' else 'materialize'
+        state=await self._recover_orphan(access,row,state,kind,
+            self._operation(row,kind,state['next_ordinal']))
+        if state['pending_operation_key'] or state['phase'] in ('failed','finalized'):return self._output(row,state)
+        fingerprint=materializer_fingerprint()
+        if state['materializer_sha256'] is not None and state['materializer_sha256']!=fingerprint:
+            raise _failure('accepted_native_materializer_changed')
+        doc=dict(source_revision=2,prior_revision=1,ingestion_id=row['ingestion_id'],
+            batch_count=state['batch_count'],last_batch_sha256=state['last_batch_sha256'],
+            predecessor_command_sha256=row['predecessor_command_sha256'],
+            materializer_sha256=fingerprint)
+        if kind=='materialize':
+            route=REVISION2_MATERIALIZE_ROUTE;doc.update(codec=REVISION2_MATERIALIZE_CODEC,
+                ordinal=state['next_ordinal'])
+        else:route=REVISION2_ACTIVATE_ROUTE;doc['codec']=REVISION2_ACTIVATION_CODEC
+        await self._stage_exact(access,row,kind=kind,key=self._operation(row,kind,state['next_ordinal']),
+            route=route,payload=doc,builder=lambda **kw:resolved_revision2_native_command(route=route,**kw))
+        return self._output(row,await self._drive(access,row,await asyncio.to_thread(self._state,row)))
