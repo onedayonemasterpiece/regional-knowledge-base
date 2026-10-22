@@ -1,6 +1,6 @@
 # READY_ACK interleaving — diagnostic-only real WSS regression (2026-10-22)
 
-**Status: deliberate diagnostic RED expectation, not an approved production fix.** This source-only artifact is **separate from PR220**; no existing test, queue, WSS, readiness, heartbeat handler, scheduler, CI or runtime code is edited. Do **not** add it to the default mandatory pytest suite or claim it is a PASS simply because PR220's ordinary CI passed. The native integrator is stopped following denials; no work on its blocked files is authorized.
+**Status: DIAGNOSTIC SOURCE PREPARED; ACTUAL EXECUTION NOT RUN.** Expected RED is a hypothesis until an actual test receipt exists; this is not an approved production fix. This source-only artifact is **separate from PR220**; no existing test, queue, WSS, readiness, heartbeat handler, scheduler, CI or runtime code is edited. Do **not** add it to the default mandatory pytest suite or claim it is a PASS simply because PR220's ordinary CI passed. The native integrator is stopped following denials; no work on its blocked files is authorized.
 
 ## Source-level race (no claim of prior execution)
 
@@ -14,6 +14,10 @@ Current immutable production baseline: `bd138b2449f68cabb2cbfa3df552df8471f40c78
 5. `HEARTBEAT_ACK` (receiver's HEARTBEAT path) does not acquire `promotion_lock`; PR220's earlier HEARTBEAT barrier therefore does not forbid this schedule.
 
 This ordering is **possible from source**, not automatically the root cause of PR208/PR218 historical RED. The diagnostic test must execute it to claim a real reproduction.
+
+## Execution attempt and exact blocker
+
+An authorized isolated test environment was not reachable in this run: the **read-only** `Codex_DevCoveer.project_probe` for the RKB repository returned **`UNAVAILABLE: McpServerError: Connection failed`** before any test launch, worktree switch, dependency installation or mutation. This is **not** an access-denied receipt, not a diagnostic test result and not an actual RED. No alternate executor, GitHub Actions workflow edit, Dev PG, model or provider was used to work around it. GitHub source commit/diff verifies the new test/doc files only. The selector below must be explicitly run by an owner-approved existing test environment before declaring reproduction.
 
 ## Explicit selector, not default CI
 
