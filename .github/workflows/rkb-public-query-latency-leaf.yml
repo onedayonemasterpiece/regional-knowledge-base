@@ -7,6 +7,7 @@ on:
       - scripts/benchmarks/public_query_latency_leaf.py
       - tests/test_public_query_latency_leaf.py
       - docs/testing/rkb-public-query-latency-workload-20261022.md
+      - docs/testing/rkb-first-book-acceptance-matrix-20261022.md
       - .github/workflows/rkb-public-query-latency-leaf.yml
 
 permissions:
