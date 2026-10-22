@@ -227,8 +227,9 @@ def test_sanitizer_sink_correlation_release_and_no_private_keys():
     class Sink:
         dropped = 0
         failed = 0
-        def _record(self, raw):
-            records.append(json.loads(raw))
+        def try_emit(self, record):
+            records.append(record)
+            return True
     assert emit(Sink(), observation())
     record = records[0]
     assert (record['run_id'], record['runtime_incarnation'],
@@ -244,12 +245,33 @@ def test_sanitizer_sink_correlation_release_and_no_private_keys():
         'secret': 'private'}) == {'pid': 17}
 
 
+class SharedSinkFixture:
+    """Contract-level ProductTelemetry.try_emit fixture using an existing
+    bounded queue to test full/failed sink without a second production writer.
+    """
+    def __init__(self, *, capacity, sink):
+        self.inner = ReadTelemetry(capacity=capacity, sink=sink)
+
+    @property
+    def dropped(self):
+        return self.inner.dropped
+
+    @property
+    def failed(self):
+        return self.inner.failed
+
+    def try_emit(self, record):
+        before = self.dropped
+        self.inner._record(json.dumps(record))
+        return self.dropped == before
+
+
 def test_full_sink_drops_without_blocking_heartbeat():
     entered, release = threading.Event(), threading.Event()
     def blocked(_):
         entered.set()
         release.wait(2)
-    telemetry = ReadTelemetry(capacity=1, sink=blocked)
+    telemetry = SharedSinkFixture(capacity=1, sink=blocked)
     try:
         assert emit(telemetry, observation(1))
         assert entered.wait(1)
@@ -258,7 +280,7 @@ def test_full_sink_drops_without_blocking_heartbeat():
         assert telemetry.dropped == 1
     finally:
         release.set()
-        telemetry._queue.join()
+        telemetry.inner._queue.join()
 
 
 def test_failed_sink_is_counted_and_next_sample_reports_loss():
@@ -266,12 +288,12 @@ def test_failed_sink_is_counted_and_next_sample_reports_loss():
     def failed(raw):
         records.append(json.loads(raw))
         raise RuntimeError('sensitive sink exception not in records')
-    telemetry = ReadTelemetry(capacity=2, sink=failed)
+    telemetry = SharedSinkFixture(capacity=2, sink=failed)
     assert emit(telemetry, observation(1))
-    telemetry._queue.join()
+    telemetry.inner._queue.join()
     assert telemetry.failed == 1
     assert emit(telemetry, observation(2))
-    telemetry._queue.join()
+    telemetry.inner._queue.join()
     assert records[1]['loss_before']['controller_failed'] == 1
     assert records[1]['diagnostic_state'] == 'inconclusive'
     assert 'sensitive' not in json.dumps(records)
