@@ -961,6 +961,111 @@ class KaggleSourceImporter:
         # patch must not fake that capability or mutate immutable old pages.
         raise failure('native_source_revision_upgrade_required')
 
+    async def _create_revision2_successor(self,access,row,command):
+        """One previously Saved canonical source, one new processing intent.
+
+        Original input, exact result, owner, Dataset-covered remote outcome,
+        and old book identity are checked BEFORE any new source revision2
+        intake ID is reserved. No provider or model call occurs here.
+        """
+        from .kaggle_native_revision2_upgrade import REVISION2_REVISIONS
+        from .dataset_recovery_store import DatasetRecoveryStore
+        from .recovery_journal import RemoteOutcomeReceipt
+        if self.import_revisions!=REVISION2_REVISIONS or self.native_intake is None:
+            raise failure('native_revision2_schema_not_installed')
+        if row.get('source_revision',1)==2:
+            if row['phase']=='finalized':
+                raise failure('new_processing_revision_after_2_requires_upgrade')
+            return await self.native_intake.status(access,row)
+        if row['phase']!='finalized':
+            raise failure('accepted_source_predecessor_not_finalized')
+        receipt=await self._receipt(access,row)
+        if receipt is None:
+            raise failure('verified_archived_original_required')
+        key='source-activate:'+row['ingestion_id']
+        try:entry=await self.spool.get(key)
+        except Exception:
+            raise failure('accepted_source_predecessor_unavailable') from None
+        if (entry is None or entry.command.operation_key!=key
+                or entry.command.route!='source.activate.v1'
+                or entry.command.person_id!=row['person_id']
+                or entry.command.ids!={'source_id':row['source_id']}
+                or entry.accepted is None or entry.apply_receipt is None
+                or entry.apply_receipt.status!='applied'
+                or entry.outcome_state!='DURABLE'
+                or type(entry.remote_outcome) is not RemoteOutcomeReceipt
+                or entry.remote_outcome.command_sha256!=entry.command_sha256
+                or entry.remote_outcome.database_generation!=entry.database_generation):
+            raise failure('native_revision1_saved_predecessor_required')
+        store=self.spool.journal.store
+        if type(store) is not DatasetRecoveryStore:
+            raise failure('native_revision1_dataset_coverage_required')
+        published=await store.read(entry.remote_outcome.key,
+            max_bytes=self.spool.journal.max_outcome_bytes)
+        if (published is None or len(published.data)!=entry.remote_outcome.length
+                or not store.remote_durable(entry.remote_outcome.key,published.data)):
+            raise failure('native_revision1_dataset_coverage_required')
+        try:
+            import base64
+            old=json.loads(published.data)
+            if (canonical(old)!=published.data or old['codec']!='rkb.outcome.v1'
+                    or old['operation_key']!=key or old['stream']!=self.spool.journal.stream
+                    or old['sequence']!=entry.command.sequence
+                    or old['command_sha256']!=entry.command_sha256
+                    or old['database_generation']!=entry.database_generation
+                    or old['outcome_sha256']!=digest(entry.apply_receipt.outcome)
+                    or base64.b64decode(old['outcome_b64'],validate=True)!=entry.apply_receipt.outcome):
+                raise ValueError
+            applied=json.loads(entry.apply_receipt.outcome)
+            # This is a SOURCE result, not a model-supplied book title or an
+            # arbitrary old artifact that merely has the right UUID.
+            raw=base64.b64decode(applied['result_b64'],validate=True)
+            outcome=json.loads(raw)
+            if (outcome['source_id']!=row['source_id']
+                    or outcome.get('content_revision',1)!=1
+                    or outcome.get('accepted') is not True):
+                raise ValueError
+        except (ValueError,KeyError,TypeError,UnicodeError):
+            raise failure('native_revision1_outcome_identity_changed') from None
+        await self._check(access.authority,access.context,access.binding)
+        def reserve():
+            with self.queue.connect() as db:
+                if db.execute('''SELECT 1 FROM rkb_source_intake_control WHERE person_id=?
+                    AND ingestion_id<>? AND phase NOT IN ('finalized','failed') LIMIT 1''',
+                    (row['person_id'],row['ingestion_id'])).fetchone():
+                    raise failure('another_native_ingestion_active')
+                existing=db.execute('SELECT * FROM rkb_source_revision2_control WHERE source_id=?',
+                    (row['source_id'],)).fetchone()
+                if existing is not None:
+                    if (existing['person_id']!=row['person_id']
+                            or existing['original_ingestion_id']!=row['ingestion_id']
+                            or existing['predecessor_command_sha256']!=entry.command_sha256):
+                        raise failure('revision2_successor_predecessor_changed')
+                    return dict(existing)
+                now=self.queue.clock();ingestion=str(uuid4());request=str(uuid4())
+                db.execute('''INSERT INTO rkb_source_revision2_control(
+                    ingestion_id,source_id,person_id,original_ingestion_id,
+                    predecessor_command_sha256,source_revision,file_id,request_id,
+                    metadata_json,rights_json,phase,created,updated)
+                    VALUES(?,?,?,?,?,2,?,?,?,?,'staging',?,?)''',
+                    (ingestion,row['source_id'],row['person_id'],row['ingestion_id'],
+                     entry.command_sha256,row['file_id'],request,row['metadata_json'],row['rights_json'],
+                     now,now))
+                self._budget(db)
+                return dict(db.execute('''SELECT * FROM rkb_source_revision2_control
+                    WHERE ingestion_id=?''',(ingestion,)).fetchone())
+        successor=await asyncio.to_thread(reserve)
+        await self.originals.rebind_verified_revision2(access.context,
+            source_id=row['source_id'],original_ingestion_id=row['ingestion_id'],
+            successor_ingestion_id=successor['ingestion_id'],
+            original_sha256=receipt.sha256,original_receipt_sha256=receipt.receipt_sha256,
+            predecessor_command_sha256=entry.command_sha256)
+        await self._check(access.authority,access.context,access.binding)
+        return self._output(successor,'staged',
+            'Verified original reused under one new owner-bound processing revision 2; '
+            'model must review actual pages and supply source-bound stage before activation',
+            'continue_pages',next_cursor='0',source_archive_status='verified')
+
     async def book_ingest(self, *, command, principal, file=None, ingestion_id=None,
                           cursor=None, payload=None, document_id=None, source_import=None, stage_file_sha256=None):
         if command not in ('start', 'reprocess', 'rechunk', 'stage', 'validate', 'finalize', 'status'):
@@ -977,6 +1082,11 @@ class KaggleSourceImporter:
             async with self._access(principal) as access:
                 async with self._lock:
                     if command == 'start':
+                        from .kaggle_native_revision2_upgrade import REVISION2_REVISIONS
+                        if self.import_revisions==REVISION2_REVISIONS:
+                            # Fresh v1 requires its own retained schema17
+                            # v1 compatibility handler, not a synthetic v2 book.
+                            raise failure('fresh_native_v1_profile_required')
                         if ingestion_id or document_id:
                             raise failure('fresh_source_identity_is_server_owned', status='invalid_query')
                         output = await self._start(access, file=file, metadata=payload or {}, source_import=source_import)
@@ -987,7 +1097,10 @@ class KaggleSourceImporter:
                         if command in ('reprocess', 'rechunk'):
                             if payload is not None or stage_file_sha256 is not None:
                                 raise failure('native_reuse_cannot_replace_accepted_input', status='invalid_query')
-                            output = await self._native_reuse_or_resume(access, row, command)
+                            from .kaggle_native_revision2_upgrade import REVISION2_REVISIONS
+                            output = (await self._create_revision2_successor(access,row,command)
+                                if self.import_revisions==REVISION2_REVISIONS
+                                else await self._native_reuse_or_resume(access,row,command))
                         elif command == 'stage':
                             output = await self._stage(access, row, payload, source_import)
                         elif command == 'validate':
@@ -1040,7 +1153,8 @@ class KaggleSourceImporter:
             row = await asyncio.to_thread(self._row, access.authority.person_id, ingestion_id)
             if await self._receipt(access, row) is None:
                 raise failure('verified_original_pending')
-            batch = await self.originals.pages(access.context, row['ingestion_id'], cursor=cursor, batch_size=1)
+            origin_id=row['original_ingestion_id'] if row.get('source_revision',1)==2 else row['ingestion_id']
+            batch = await self.originals.pages(access.context,origin_id,cursor=cursor,batch_size=1)
             if len(batch.pages) != 1 or sum(len(page.data) for page in batch.pages) > 256 * 1024:
                 raise failure('bounded_original_page_output_required')
             for page in batch.pages:
