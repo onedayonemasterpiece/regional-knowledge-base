@@ -46,7 +46,7 @@ def composition(owner, env, tmp_path, monkeypatch):
     from regional_knowledge.dataset_recovery_store import DatasetRecoveryStore
     from regional_knowledge.kaggle_dataset_base import DatasetFile
     from regional_knowledge.kaggle_pg_snapshot_native import encode, sha
-    from regional_knowledge.recovery_journal import ObjectRef
+    from regional_knowledge.recovery_journal import ObjectRef, StaleWriter
     from regional_knowledge.kaggle_dataset_checkpoint import _WorkCycleCapture
 
     p=control_cycle(tmp_path,monkeypatch)
@@ -57,11 +57,17 @@ def composition(owner, env, tmp_path, monkeypatch):
     fake_publisher=p.store.publisher
     fixture=p.checkpoint
     q=owner.q
-    writer=owner.w
-    assert isinstance(q,BgeQueue) and isinstance(writer,QueueWriterAuthority)
-    assert writer.queue is q and writer.current(
-        database_generation=writer.database_generation,
-        writer_generation=writer.writer_generation)
+    s3_writer=owner.w
+    assert isinstance(q,BgeQueue) and isinstance(s3_writer,QueueWriterAuthority)
+    assert s3_writer.queue is q and s3_writer.current(
+        database_generation=s3_writer.database_generation,
+        writer_generation=s3_writer.writer_generation)
+    # Independent real instance: its FIRST store binding is Dataset, never S3.
+    # The S3 fixture owner remains bound to its original storage authority.
+    writer=QueueWriterAuthority(q,run_id=s3_writer.run_id,
+        database_generation=s3_writer.database_generation,
+        writer_generation=s3_writer.writer_generation,stream=s3_writer.stream)
+    assert writer is not s3_writer and writer.queue is q
     assert writer._publication_binding.__func__ is QueueWriterAuthority._publication_binding
 
     prefix='recovery/v1/'+hashlib.sha256(writer.stream.encode()).hexdigest()+'/'
@@ -92,20 +98,25 @@ def composition(owner, env, tmp_path, monkeypatch):
         def finalize(self,**kwargs):return fake_publisher.finalize(**kwargs)
         def reconcile(self,**kwargs):return fake_publisher.reconcile(**kwargs)
 
-    # Synthetic genesis was already accepted into the current owner. This is
-    # the same one-time fixture transition used in our REAL writer race tests,
-    # NOT a replacement _publication_binding or production restoration API.
+    # Explicitly SYNTHETIC pre-verified Dataset genesis; NOT proof of native
+    # S3-to-Dataset recovery/adoption. Change only this isolated queue fixture's
+    # persisted genesis record, never either writer instance's private identity.
     target_id=hashlib.sha256(json.dumps(
         ['kaggle-dataset',checkpoint.owner_slug,checkpoint.dataset_slug,prefix],
         separators=(',',':')).encode()).hexdigest()
-    writer._store_identity=None
     with q.connect() as db:
         db.execute('UPDATE rkb_writer_control SET storage_sha256=? WHERE id=1',
                    (target_id,))
     store=DatasetRecoveryStore(q,checkpoint=checkpoint,manifest_ref=manifest_ref,
         publisher=SyntheticDatasetPublisher(),writer_guard=writer,stream=writer.stream)
+    assert store.storage_identity==target_id
     assert writer.current(database_generation=writer.database_generation,
                           writer_generation=writer.writer_generation)
+    # The original S3 instance is never rebound, reset or used for Dataset CAS.
+    with pytest.raises(StaleWriter,match='writer cannot change existing storage authority'):
+        s3_writer.bind_store(store)
+    assert not s3_writer.current(database_generation=s3_writer.database_generation,
+                                 writer_generation=s3_writer.writer_generation)
     journal=RecoveryJournal(store,stream=writer.stream)
     spool=ControlSpool(q,env.p.registry,journal,HandlerRegistry([handler()]))
     assert spool.queue is q and spool.journal.store is store
@@ -119,22 +130,29 @@ def composition(owner, env, tmp_path, monkeypatch):
     p.binding=NS(run_id=owner.run,runtime_incarnation=bound['runtime_incarnation'],
                  connection_generation=bound['connection_generation'],
                  writer_generation=writer.writer_generation)
-    p.proof.applied_sequence=0
-    p.proof.accepted_sequence=0
-    p.proof.database_generation=writer.database_generation
-    p.proof.current=lambda:writer.current(
-        database_generation=writer.database_generation,
-        writer_generation=writer.writer_generation)
+    # Build new synthetic native-coverage metadata around the actual writer
+    # guard, instead of overriding methods on a running runtime object.
+    old_proof=p.proof
+    p.proof=NS(applied_sequence=0,accepted_sequence=0,
+        database_generation=writer.database_generation,head=old_proof.head,
+        pending=old_proof.pending,
+        current=lambda:writer.current(database_generation=writer.database_generation,
+                                      writer_generation=writer.writer_generation))
     p.startup.history._coverage=p.proof
     p.startup.config.queue=q
     p.startup.config.spool=spool
     p.startup.config.writer_owner=writer
     p.startup.config.writer_generation=writer.writer_generation
     p.startup.restorer.physical.journal=journal
-    p.startup.binding_current=lambda binding:(
-        p.alive and binding is p.binding and writer.current(
-            database_generation=writer.database_generation,
-            writer_generation=writer.writer_generation))
+    # A fixture-local startup description is built with the genuine writer
+    # fence from inception; no production runtime method is monkeypatched.
+    original_startup=p.startup
+    p.startup=NS(config=original_startup.config,history=original_startup.history,
+        restorer=original_startup.restorer,
+        binding_current=lambda binding:(
+            p.alive and binding is p.binding and writer.current(
+                database_generation=writer.database_generation,
+                writer_generation=writer.writer_generation)))
     async def fake_native_capture(batch,physical,bridge,binding,sequence):
         p.calls.append('capture')
         ticket=await batch.tickets.issue_upload(
@@ -252,6 +270,7 @@ async def test_signed_ingress_quiet_capture_same_pg_seq_then_exact_ack_and_unkno
         assert p.calls.count('verify')==3
     finally:
         local.spool.close()
+        p.guard.close()  # Independent Dataset writer; S3 fixture owner cleans up itself.
 
 
 @pytest.mark.asyncio
@@ -286,6 +305,7 @@ async def test_lost_publish_ack_retains_original_version_and_single_signed_event
         assert not await p.owner.refresh(p.binding)
     finally:
         local.spool.close()
+        p.guard.close()  # Independent Dataset writer; S3 fixture owner cleans up itself.
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('transition',['retire','current_run'])
@@ -304,7 +324,9 @@ async def test_real_same_owner_writer_transition_denies_new_slack_cas_and_checkp
         assert type(local.q) is BgeQueue
         assert type(p.guard) is QueueWriterAuthority
         assert local.spool.queue is p.store.queue is p.q is owner.q
-        assert p.store.writer_guard is p.guard is owner.w
+        assert p.store.writer_guard is p.guard and p.guard is not owner.w
+        assert not owner.w.current(database_generation=owner.w.database_generation,
+                                   writer_generation=owner.w.writer_generation)
         assert p.guard._publication_binding.__func__ is QueueWriterAuthority._publication_binding
 
         raw,headers=_event(n=51)
@@ -318,12 +340,12 @@ async def test_real_same_owner_writer_transition_denies_new_slack_cas_and_checkp
         assert not p.store.remote_durable(existing_key,staged.data)
 
         if transition=='retire':
-            await owner.w.retire(owner.w.writer_generation)
+            await p.guard.retire(p.guard.writer_generation)
         else:
-            with owner.q.connect() as db:
+            with p.q.connect() as db:
                 db.execute('UPDATE control SET current_run=NULL WHERE id=1')
-        assert not owner.w.current(database_generation=owner.w.database_generation,
-                                   writer_generation=owner.w.writer_generation)
+        assert not p.guard.current(database_generation=p.guard.database_generation,
+                                   writer_generation=p.guard.writer_generation)
         raw2,headers2=_event(n=52)
         denied=await post(app,raw2,headers2)
         assert denied.status_code==503 and denied.json().get('ok') is not True
@@ -345,3 +367,63 @@ async def test_real_same_owner_writer_transition_denies_new_slack_cas_and_checkp
                               'WHERE id=1').fetchone()[0]==0
     finally:
         local.spool.close()
+        p.guard.close()  # Independent Dataset writer; S3 fixture owner cleans up itself.
+
+
+@pytest.mark.asyncio
+async def test_late_signed_child_after_capture_does_not_inherit_parents_saved_version(
+        env,owner,tmp_path,monkeypatch):
+    """A real signed child staged during native readback needs its OWN verified
+    Dataset coverage; replay of the parent's 200 cannot mark it Saved.
+    """
+    p,local,ctl,credentials,app=composition(owner,env,tmp_path,monkeypatch)
+    try:
+        first_raw,first_headers=_event(n=61,thread='1792000000.100')
+        child_raw,child_headers=_event(n=62,thread='1792000000.100')
+        assert (await post(app,first_raw,first_headers)).status_code==503
+        first=next(x for x in local_rows(env.p) if x['event_id']=='Ev-61')
+        first_id=first['id']
+        assert not await p.owner.refresh(p.binding)
+        p.clock[0]=31
+
+        async def late_child_after_capture():
+            p.on_verify=None
+            child_response=await post(app,child_raw,child_headers)
+            assert child_response.status_code==503
+            assert child_response.json()=={'error':'remote_intent_pending'}
+        p.on_verify=late_child_after_capture
+        assert await p.owner.refresh(p.binding)
+        assert p.store.latest_checkpoint.dataset_version==2
+
+        child=next(x for x in local_rows(env.p) if x['event_id']=='Ev-62')
+        child_id=child['id']
+        child_key=ctl.dataset_records.key(child_id)
+        child_data=from_row(ctl._row(child_id))
+        assert first_id!=child_id and child['state']=='received'
+        assert ctl.confirm_dataset_coverage(first_id)
+        assert not ctl.confirm_dataset_coverage(child_id)
+        assert not p.store.remote_durable(child_key,child_data)
+        assert p.store.pending_control() is not None
+        assert (await post(app,first_raw,first_headers)).status_code==200
+        assert (await post(app,child_raw,child_headers)).status_code==503
+        assert len(local_rows(env.p))==2
+
+        p.clock[0]=32
+        assert not await p.owner.refresh(p.binding)
+        p.clock[0]=63
+        assert await p.owner.refresh(p.binding)
+        assert p.store.latest_checkpoint.dataset_version==3
+        assert p.store.remote_durable(child_key,child_data)
+        assert (await post(app,child_raw,child_headers)).status_code==200
+        assert len(local_rows(env.p))==2
+        assert p.calls.count('capture')==2
+        assert p.calls.count('finalize')==2
+        assert p.calls.count('verify')==2
+        assert ctl.claim(credentials,request_id=child_id)=={'state':'deferred'}
+        assert ctl.claim(credentials,request_id=first_id)['state']=='leased'
+        with p.q.connect(write=False) as db:
+            assert db.execute('SELECT sequence FROM rkb_control_spool_meta '
+                              'WHERE id=1').fetchone()[0]==0
+    finally:
+        local.spool.close()
+        p.guard.close()
