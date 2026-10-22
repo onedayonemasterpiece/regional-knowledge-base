@@ -36,9 +36,10 @@ Candidate `768bca5c950507b053b157626e34c4ffcf6539af` passed CI39773458811:
 | PR247 | `a8033238904ee4c36b99df459a9fadb9caf5d76d` | Expert-only server.main receiver composition | One conflict in main's build_server call; retained exact incoming e928fc4 composition/call hunk; earlier health/media hunks preserved |
 | PR223 Dataset receipt follow-up | `5fad3eb6c3e7b8a12ce2910e27adcaf6f830d4f7` | Metadata wheel-lock accepts exact Dataset placement | Clean; no package bytes/pins changed |
 | PR248 compatible importer input | `3e1f6c948d7b1bd937eb5b443b87c292a0faab5f` | Exact importer/test delta on native baseline6d51bfd; main PR248 head d8fc88a9b2933834fe7fd4963f5fd9e008f225ee | Clean; only2 paths, not the old whole importer |
-| PR249 | `fd7d564830178d7c71e54a0cd74f35591146483b` | Dispatch status fastpath after included PR239 | Clean; PR239 epoch fix retained |
+| PR249 | `0d7fee1b7c6dc27d4d7925379a02e2e391f6be6c` | Dispatch status fastpath after included PR239 | Clean; final tests/teardown update over fd7d564, production unchanged; PR239 epoch fix retained |
 | PR250 | `ba57b276293aaf88548c37d56b9dd99f9882cbe0` | Inert authenticated executor claim receiver | Clean; includes author's fixture import fix after initial1283b13; new files, not mounted |
 | PR251 | `ddb69be3ce1e09ba0a64bb158fabd821e9b85067` | Same-client leased native Telegram crop bytes | Clean; new native file/tests and owned media doc |
+| PR252 | `f99e4f4fe3cde549572964db8c0bcf677c5d127b` | Persisted pending research continuation in native status | Clean; importer helper/callsite added on top of PR248 delta, not a whole-file replacement |
 
 PR246 source depends on already included PR242/243. Its earlier fbdafb5
 implementation passed CI39774529351 on both Python; the later1836c32 controller
@@ -48,6 +49,10 @@ update requires its own full CI before any compatibility claim. PR246 controller
 HEAD1836c32 passed full CI39774994627 on both Python. The next actual metadata
 job checks both original HTTPS descriptors and the owner's selected Dataset
 transport using the same actual native manifest and all55 wheels/165 entries.
+Candidate `d2d0d91d00735d9117528607ca9ed442cfdb3dd7` passed CI39775995609:
+3023 passed /45 skipped on each Python and actual metadata2 passed/0 skipped.
+The later PR249 final-test update and PR252 continuation input require a fresh
+combined run; source-only work continues before the next batched CI submission.
 
 ## Explicit exclusions and next boundaries
 
