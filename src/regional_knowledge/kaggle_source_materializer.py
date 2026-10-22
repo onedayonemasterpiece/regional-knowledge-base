@@ -241,7 +241,9 @@ class NativeSourceCompiler:
         self._current()
         if type(batches) is not list or not 1<=len(batches)<=2500:
             raise failure('native_source_batch_chain_required')
-        graph=NativeStagedGraph(revision=self.source_revision)
+        # Physical pages/crops retain original page:1 IDs on successor. Do
+        # not relabel the archived pixels or verified source coordinates.
+        graph=NativeStagedGraph(revision=1)
         source=None;previous=ZERO_HASH;images={};reviews={};candidates={};research=None
         for index,raw in enumerate(batches):
             if self.source_revision==2:
@@ -260,7 +262,7 @@ class NativeSourceCompiler:
             media=[_typed(StagePoiMediaLinkInput,m) for m in payload.get('poi_media_links',[])]
             if media or any(page.illustrations for page in pages):
                 raise failure('native_illustration_activation_unavailable')
-            partial=compile_model_stage(graph,document_id=source_id,revision=self.source_revision,pages=pages,chunks=chunks,
+            partial=compile_model_stage(graph,document_id=source_id,revision=1,pages=pages,chunks=chunks,
                 poi_facts=facts,poi_media_links=media)
             graph=merge_native_stage(graph,partial)
             bundle=_typed(GraphBundle,payload['entity_candidates']) if payload.get('entity_candidates') else None
@@ -283,6 +285,15 @@ class NativeSourceCompiler:
                 candidates[candidate.candidate_key]=candidate.model_dump(mode='json')
             research=doc['research']
         if previous!=last_batch_sha256:raise failure('native_source_batch_chain_changed')
+        if self.source_revision==2:
+            # New derived passage IDs must not collide with immutable revision1
+            # global passage_search UUIDs. Region/page IDs are the ORIGINAL
+            # physical source IDs. The model never had to download them again.
+            graph.chunks=[
+                chunk.model_copy(update={'chunk_id':uuid5(UUID(source_id),
+                    'revision2:chunk:'+str(chunk.chunk_id))})
+                for chunk in graph.chunks
+            ]
         receipt=VerifiedOriginalReceipt.from_wire(json.loads(base64.b64decode(source['original_receipt_b64'],validate=True)))
         validation=validate_graph(graph,expected_page_count=receipt.page_count)
         if not validation.ready:raise failure('native_source_stage_requires_review')
