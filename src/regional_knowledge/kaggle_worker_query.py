@@ -81,6 +81,8 @@ class KaggleWorkerQuery:
     tokenizer: PinnedTokenizer
     telemetry: asyncio.Queue | None = None
     source_provenance: bool = False
+    media_archive: object | None = None
+    media_binding_current: object | None = None
 
     def __post_init__(self):
         if not callable(self.acquire):
@@ -113,6 +115,9 @@ class KaggleWorkerQuery:
         identity = _identity(frame_dict)
         if frame_dict.get('type')=='SQL_HEALTH':
             return await self._health(frame_dict,identity,lease_current=lease_current,started=started)
+        if frame_dict.get('type')=='ILLUSTRATION_READ':
+            return await self._media(frame_dict,identity,
+                                     lease_current=lease_current,started=started)
         acceptance = frame_dict.get('type')=='ACCEPTANCE_READ'
         graph = frame_dict.get('type')=='SOURCE_GRAPH_READ'
         editorial = frame_dict.get('type')=='EDITORIAL_READ'
@@ -190,6 +195,47 @@ class KaggleWorkerQuery:
             raise
         except Exception:
             return _wire(failure('internal_error'))
+
+
+    async def _media(self,frame,identity,*,lease_current,started):
+        """Only media WSS branch; no changes to SQL_HEALTH or BGE request flow."""
+        from .kaggle_media_wss_contracts import IllustrationReadRequest
+        from .kaggle_media_native_execute import execute_illustration_read
+        from .kaggle_media_wss_contracts import IllustrationReadResult
+        def failure(reason):
+            return _wire(IllustrationReadResult(
+                **identity.model_dump(),action=frame.get('action','snapshot')
+                  if frame.get('action') in ('snapshot','observe','pixels') else 'snapshot',
+                source_id=frame.get('source_id','00000000-0000-0000-0000-000000000001'),
+                illustration_id=frame.get('illustration_id','00000000-0000-0000-0000-000000000001'),
+                status='unavailable',reason=reason))
+        try:
+            raw=json.dumps(frame,ensure_ascii=False,allow_nan=False,
+                           separators=(',',':')).encode('utf-8')
+            if len(raw)>QUERY_MAX_BYTES:
+                return failure('invalid_input')
+            query=decode_envelope(raw)
+            if (type(query) is not IllustrationReadRequest
+                    or query.compute_claim is None
+                    or len(query.compute_claim.encode())>256):
+                return failure('invalid_input')
+        except (TypeError,ValueError,RecursionError,OverflowError):
+            return failure('invalid_input')
+        if not callable(lease_current):
+            return failure('not_ready')
+        remaining = query.deadline_ms/1000-(asyncio.get_running_loop().time()-started)
+        if remaining<=0:
+            return failure('deadline_exceeded')
+        async with asyncio.timeout(remaining):
+            result=await execute_illustration_read(
+                query,acquire=self.acquire,archive=self.media_archive,
+                binding_current=self.media_binding_current,
+                lease_current=lease_current)
+        if type(result) is not IllustrationReadResult or any(
+                getattr(result,key)!=getattr(identity,key)
+                for key in ('request_id','connection_generation','turn_generation')):
+            raise ValueError('native media read identity mismatch')
+        return _wire(result)
 
     async def _health(self,frame,identity,*,lease_current,started):
         def failure(reason,*,invalid=False):
