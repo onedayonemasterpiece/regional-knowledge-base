@@ -33,9 +33,45 @@ RESOURCE_INTEGERS = frozenset({
     'memory_events_oom_kill', 'io_read_bytes', 'io_write_bytes',
     'sample_seq', 'sample_time_unix_ms', 'sampling_failures_total',
 })
+# Latest-diagnostics values never survive a new observation when missing.
 RESOURCE_LATEST = RESOURCE_NUMBERS - {'sample_seq', 'sample_time_unix_ms',
                                       'sampling_failures_total'}
-_MAX_BYTES = 4096
+
+# The Trassa shared ProductTelemetry has one flat bounded numeric allowlist.
+# Units are explicit; no host/notebook capacity is inferred. New fields must be
+# admitted exclusively by its resource.sample schema, not by generic records.
+_KIB_TO_BYTES = {
+    'rss_kib': 'rss_bytes',
+    'hwm_kib': 'hwm_bytes',
+    'pss_kib': 'pss_bytes',
+    'pg_master_rss_kib': 'pg_master_rss_bytes',
+    'pg_master_hwm_kib': 'pg_master_hwm_bytes',
+    'pg_master_pss_kib': 'pg_master_pss_bytes',
+}
+_DIRECT_METRICS = {
+    'cpu_seconds': 'cpu_seconds',
+    'pid': 'worker_pid',
+    'pg_master_cpu_seconds': 'pg_master_cpu_seconds',
+    'pg_master_pid': 'pg_master_pid',
+    'cgroup_version': 'cgroup_version',
+    'cpu_quota_us': 'cpu_quota_us',
+    'cpu_period_us': 'cpu_period_us',
+    'cpu_usage_usec': 'cpu_usage_usec',
+    'cpu_nr_throttled': 'cpu_nr_throttled',
+    'cpu_throttled_usec': 'cpu_throttled_usec',
+    'cpu_usage_delta_seconds': 'cpu_usage_delta_seconds',
+    'cpu_throttled_delta_seconds': 'cpu_throttled_delta_seconds',
+    'cpu_utilization_cores': 'cpu_utilization_cores',
+    'memory_current_bytes': 'cgroup_memory_current_bytes',
+    'memory_limit_bytes': 'cgroup_memory_limit_bytes',
+    'memory_events_high': 'cgroup_memory_events_high',
+    'memory_events_max': 'cgroup_memory_events_max',
+    'memory_events_oom': 'cgroup_memory_events_oom',
+    'memory_events_oom_kill': 'cgroup_memory_events_oom_kill',
+    'io_read_bytes': 'io_read_bytes',
+    'io_write_bytes': 'io_write_bytes',
+}
+_MAX_BYTES = 1600  # Shared file sink permits 2048 bytes including its envelope.
 
 
 def clean_resource_numbers(value):
@@ -60,62 +96,52 @@ def clean_resource_numbers(value):
 
 def emit_resource_sample(collector, diagnostics, *, run_id, incarnation,
                          generation, release=None, received_unix_ms=None):
-    """Hand one authenticated worker observation to the shared nonblocking sink.
+    """Send fixed numeric fields via ONE shared ProductTelemetry.try_emit queue.
 
-    The caller has already authenticated and fenced the WSS attachment. This
-    adapter cannot grant that authority, mutate domain state, or reject a
-    HEARTBEAT. It uses ReadTelemetry's existing finite, dropping queue.
+    Caller owns authenticated WSS attachment; this lossy observation cannot
+    change ACK, admission, domain receipts or read results. A missing sink or
+    standard-mode debug filter simply drops telemetry without a second writer.
     """
     if collector is None or not callable(getattr(collector, 'try_emit', None)):
         return False
     try:
-        if (type(run_id) is not str or not 1 <= len(run_id) <= 256
+        if (type(run_id) is not str or not 1 <= len(run_id) <= 128
                 or re.fullmatch(r'[A-Za-z0-9_.:-]+', run_id) is None
-                or type(incarnation) is not str or not 1 <= len(incarnation) <= 256
+                or type(incarnation) is not str or not 1 <= len(incarnation) <= 128
                 or re.fullmatch(r'[A-Za-z0-9_.:-]+', incarnation) is None
                 or type(generation) is not int or not 1 <= generation < 2**63):
             return False
-        clean = clean_resource_numbers(diagnostics)
-        if not clean.get('sample_seq') or not clean.get('sample_time_unix_ms'):
-            return False  # Old heartbeat formats remain supported, not invented.
+        values = clean_resource_numbers(diagnostics)
+        if not values.get('sample_seq') or not values.get('sample_time_unix_ms'):
+            return False
         if received_unix_ms is None:
             received_unix_ms = int(time.time() * 1000)
         if type(received_unix_ms) is not int or not 1 <= received_unix_ms < 2**63:
             return False
-        if release is not None and (type(release) is not str
-                or re.fullmatch('[0-9a-f]{64}', release) is None):
-            release = None
-        dropped = getattr(collector, 'dropped', 0)
-        failed = getattr(collector, 'failed', getattr(collector, 'error', 0))
-        if type(dropped) is not int or dropped < 0:
-            dropped = 0
-        if type(failed) is not int or failed < 0:
-            failed = 0
-        missing = ('cgroup_version' not in clean or 'memory_current_bytes' not in clean)
-        inconclusive = bool(missing or clean.get('sampling_failures_total', 0)
-                            or dropped or failed)
         event = {
-            'event': 'resource_sample', 'schema': 'rkb.resource.sample.v1',
-            'plane': 'controller', 'run_id': run_id,
-            'runtime_incarnation': incarnation,
+            'event': 'resource.sample', 'phase': 'resource',
+            'status': ('degraded' if values.get('sampling_failures_total', 0)
+                       or 'cgroup_version' not in values
+                       or 'memory_current_bytes' not in values else 'ok'),
+            'run_id': run_id, 'runtime_incarnation': incarnation,
             'connection_generation': generation,
-            'release_sha256': release,
-            'sample_seq': clean.pop('sample_seq'),
-            'sample_time_unix_ms': clean.pop('sample_time_unix_ms'),
+            'sample_seq': values['sample_seq'],
+            'sample_time_unix_ms': values['sample_time_unix_ms'],
             'received_unix_ms': received_unix_ms,
-            'diagnostic_state': 'inconclusive' if inconclusive else 'observed',
-            'scope': 'own_cgroup' if 'cgroup_version' in clean else 'process_only',
-            'loss_before': {
-                'controller_dropped': dropped,
-                'controller_failed': failed,
-                'worker_sampling_failed': clean.pop('sampling_failures_total', 0),
-            },
-            'metrics': clean,
+            'worker_sampling_failed_total': values.get('sampling_failures_total', 0),
         }
-        serialized = json.dumps(event, allow_nan=False, separators=(',', ':'))
-        if len(serialized.encode('utf-8')) > _MAX_BYTES:
+        if type(release) is str and re.fullmatch('[0-9a-f]{64}', release):
+            event['release_sha256'] = release
+        for key, destination in _KIB_TO_BYTES.items():
+            number = values.get(key)
+            if number is not None and number < 2**53:
+                event[destination] = number * 1024
+        for key, destination in _DIRECT_METRICS.items():
+            if key in values:
+                event[destination] = values[key]
+        # A small flat product record fits the shared sink's hard JSONL bound.
+        if len(json.dumps(event, allow_nan=False, separators=(',', ':')).encode()) > _MAX_BYTES:
             return False
-        return collector.try_emit(event) is True
+        return collector.try_emit(event, level='debug') is True
     except Exception:
-        # Telemetry failure never replaces a signed channel ACK or useful read.
-        return False
+        return False  # Lossy telemetry never replaces an authorized response.
