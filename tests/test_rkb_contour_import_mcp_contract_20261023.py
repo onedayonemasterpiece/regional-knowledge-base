@@ -189,8 +189,13 @@ def test_story_without_sufficient_evidence_has_no_fabricated_body(outcome):
 @pytest.mark.parametrize("location", ["top_level", "metadata"])
 async def test_mcp_accepts_each_existing_source_import_location(native_intake, monkeypatch, location):
     import regional_knowledge.server as source_server
+    import regional_knowledge.read_issuance as read_issuance
     s = native_intake
     monkeypatch.setattr(source_server, "_principal", lambda: s.principal)
+    # A direct unit call has no HTTP request context. Exercise actual MCP parsing,
+    # owner authority and importer without binding a transport response.
+    monkeypatch.setattr(read_issuance, "bind_request_output",
+                        lambda context, calls: False)
     server = build_server(target_startup=s.startup)
     declared = options().model_dump(mode="json", exclude_none=True)
     arguments = dict(
