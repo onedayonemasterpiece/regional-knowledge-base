@@ -6,7 +6,7 @@
 
 The operator uses the existing authenticated public MCP `search` / `knowledge_search` request: `KaggleSourceBackend._search` → `ReadAuthority` → `SourceReadGate` → shared RAM `SharedReadAdmission` → owned WSS QUERY → resident `KaggleWorkerQuery` (tokenizer/BGE, PG lexical/dense/hydration, serialization) → final retained public output gate and MCP response. Existing `ReadTelemetry` / `query_telemetry` records correlate the exact `ReadTrace` and safe controller/native stages, may drop records, and grant no new permission. No alternative client, BGE encoder, PG connection, inference sidecar, scheduler or credentials may be introduced.
 
-The bounded leaf `scripts/benchmarks/public_query_latency_leaf.py` accepts **only** the operator's *already authorized* public MCP query callable, privately held eight-question fixture, independently existing read-only corpus version readback and safe output sink. The offline tool only joins existing sanitized telemetry; neither path can launch the provider. These raw client samples do not contain query/evidence text, credentials, private exception strings, or raw runtime identity.
+The bounded leaf `scripts/benchmarks/public_query_latency_leaf.py` accepts **only** the operator's *already authorized* public MCP query callable, privately held eight-question fixture, independently existing read-only corpus version readback, approved eight-case metadata gold manifest and safe output sink. The offline tool only joins existing sanitized telemetry; neither path can launch the provider. These raw client samples do not contain query/evidence text, credentials, private exception strings, or raw runtime identity.
 
 ## Two explicitly separate corpus profiles
 
@@ -17,11 +17,17 @@ The bounded leaf `scripts/benchmarks/public_query_latency_leaf.py` accepts **onl
 
 A source count is an anti-empty check, **not proof** that an accepted source is a genuine book or that its evidence quality is representative. Both profiles require the owner's trusted nonsecret checkpoint: source-manifest SHA, hashed DB generation, schema revision, applied_seq==projection_seq, visibility epoch, accepted/visible counts, actual loaded source release SHA, and owner handoff ref. The readback **before and after each run must be byte-for-byte identical including profile and release SHA**; a change invalidates that run. Across two separately authorized before/after runs, `assert_comparable_receipts` requires **exact same profile, corpus/version/generation, question SHA**; reviewed source SHA and handoff ref may differ but are explicitly recorded, not interpreted as data changes. A comparison across different profiles is **rejected**, not reported as a gain.
 
-Current warm v105/schema11's retained read-only receipt shows canonical GEO commands, **not an accepted book**. Neither profile can currently be used as real search baseline, even if the API is READY.
+The last independently verified v105/schema11 read-only receipt showed only canonical GEO commands, **not an accepted book**; Opus's current live state must be checked afresh before a public query slot. Neither profile is authorized by a merely READY API or a synthetic first-book receipt.
+
+## Frozen source-quality sidecar (metadata-only; no fabricated visual gold)
+
+Operator must first provide exact accepted source/edition and independently human-reviewed evidence for the selected genuine book. The source quality [acceptance matrix](rkb-first-book-acceptance-matrix-20261022.md) is separate from performance. A new pure validation call inside the existing leaf checks the structured `gold_manifest` before issuing **any** public workload query. The manifest is codec `rkb.first-book-query-gold.v1`, state `human_reviewed`, same corpus profile, database generation and source manifest SHA as the existing owner readback, a real edition/reviewer SHA, **eight ordered cases** q01–q08, with exact SHA-256 of each private question, canonical source ID/content revision, nonempty exact locator digest(s), and source human-review digest. Allowed evidence bases are `human_reviewed_source_text`, `human_reviewed_actual_pixels`, `approved_story_body`, `owner_verified_bibliography`. **OCR-only/preview/unreviewed/wrong source** cannot be promoted to approved visual gold. This validates binding and structure, not authenticity of human approval; only Opus's external approval/readback makes a fixture eligible.
+
+The manifest **must not be created from synthetic text/locator fixtures for production use**. It is never written to Git or raw latency logs. The leaf emits only `gold_fixture_sha256` in the run receipt, and before/after comparison refuses changes in question or gold manifest SHA. Correct source-revision/locator quality of actual returned evidence is verified separately by the authorized operator; a fast hybrid response without true expected evidence is not a useful product answer.
 
 ## Bounded workload and exact timeouts
 
-The same **eight owner-frozen questions** `q01`…`q08` appear in both A/B observations, with aggregate canonical question fixture SHA-256 saved and text kept private. For each cohort (serial concurrency **1**, then bounded concurrent **2**), each question has **2 serial warmups** and **6 measured repeats**: **32 warmups + 96 measured = 128 requests** total, max entire run **450 seconds**. No extra alias calls, automatic retries, client sessions or hidden BGE/PG bypass. Errors and gate closures remain in the measured denominator.
+The same **eight owner-frozen source-grounded positive questions** `q01`…`q08` appear in both A/B observations, with aggregate canonical question SHA-256 and exact human-reviewed gold manifest digest saved; actual question/evidence content stays private. For each cohort (serial concurrency **1**, then bounded concurrent **2**), each question has **2 serial warmups** and **6 measured repeats**: **32 warmups + 96 measured = 128 requests** total, max entire run **450 seconds**. No extra alias calls, automatic retries, client sessions or hidden BGE/PG bypass. Errors and gate closures remain in the measured denominator.
 
 Three distinct deadlines must never be conflated:
 
@@ -51,6 +57,7 @@ receipt = await run_public_workload(
     query_public=existing_authorized_mcp_query, # no new auth/transport
     corpus_readback=existing_owner_readback,  # no new PG/provider calls
     emit=approved_sanitized_jsonl_sink,
+    gold_manifest=approved_human_reviewed_source_gold,  # private exact 8-case source/revision/locator hashes
 )
 # Store this small receipt separately from the current ReadTelemetry sink;
 # the public question texts and original source evidence remain private.
@@ -68,6 +75,6 @@ python scripts/benchmarks/public_query_latency_leaf.py \
   --raw /approved/operator/raw-sanitized-samples.jsonl
 ```
 
-For the first run omit `--before-receipt`. The optional before receipt verifies profile, question fixture and corpus identity against the later run while recording differing code SHAs. Input max 2,048 JSONL records, 8KiB per line, strict field allowlists and finite timing values; outputs are small nonsecret synthetic-friendly metadata. A successful synthetic test **cannot authorize** live reads or prove latency gains.
+For the first run omit `--before-receipt`. The optional before receipt verifies profile, **question fixture, gold manifest** and corpus identity against the later run while recording differing code SHAs. Input max 2,048 JSONL records, 8KiB per line, strict field allowlists and finite timing values; outputs are small nonsecret synthetic-friendly metadata. A successful synthetic test **cannot authorize** live reads or prove latency gains.
 
 **Gate status:** current v105 book corpus/positive-gold and runtime read slot are not approved for this run. Owner's accepted first real book permits the *limited* profile only after proof; the later *expanded* profile requires a corpus matching its own bounds. Only after actual measured baseline with real useful search and independently reviewed top bottleneck may one small semantic/authority-preserving source fix proceed. PR209's Python microkernel before/after is **not actual public MCP end-to-end**; PR209/212/215, mandatory CI and live runtime remain untouched.
