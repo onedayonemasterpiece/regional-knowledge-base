@@ -48,12 +48,16 @@ INSTRUMENTED_STATUS = """            async def status():
                 # Test-only observation. Calls the REAL queue method and
                 # preserves its attachment validation.
                 frame = sys._getframe(1)
-                _status_observations.append((frame.f_code.co_name, promoted))
+                caller = frame.f_code.co_name
+                _status_observations.append((caller, promoted, probe_nonce is not None))
+                if (caller == "dispatch" and promoted and probe_nonce is not None
+                        and _probe_dispatch_event is not None):
+                    _probe_dispatch_event.set()
                 return await queue_call(queue.channel_status, run_id, token, generation)
 """
 
 
-def candidate_route(*, fastpath: bool, observations: list):
+def candidate_route(*, fastpath: bool, observations: list, probe_event=None):
     """Build a temporary module; no global module, source or runtime patch."""
     source = Path(inspect.getfile(production)).read_text()
     if (source.count(CANDIDATE) != 1 or source.count(BEFORE_STATUS) != 1
@@ -67,6 +71,7 @@ def candidate_route(*, fastpath: bool, observations: list):
     module.__file__ = inspect.getfile(production)
     module.__dict__["sys"] = sys
     module.__dict__["_status_observations"] = observations
+    module.__dict__["_probe_dispatch_event"] = probe_event
     exec(compile(source, module.__file__, "exec"), module.__dict__)
     return module.channel_route
 
@@ -140,12 +145,12 @@ def test_source_fastpath_real_wss_roundtrip_keeps_current_fence(
     observations,elapsed=roundtrip(queue,ident,token,nonce,auth,fastpath=fastpath)
     assert elapsed > 0
     # This observer never overrides queue authorization or WSS send.
-    assert any(caller == "sender" and ready for caller,ready in observations)
-    assert any(caller == "receiver" for caller,ready in observations)
+    assert any(caller == "sender" and ready for caller,ready,_ in observations)
+    assert any(caller == "receiver" for caller,_,_ in observations)
     if fastpath:
-        assert not any(caller == "dispatch" and ready for caller,ready in observations)
+        assert not any(caller == "dispatch" and ready and not probe for caller,ready,probe in observations)
     else:
-        assert any(caller == "dispatch" and ready for caller,ready in observations)
+        assert any(caller == "dispatch" and ready for caller,ready,_ in observations)
 
 
 def test_exact_inert_patch_preserves_send_side_fences_and_protocol():
