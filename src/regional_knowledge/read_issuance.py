@@ -23,6 +23,7 @@ class GuardedOutput:
     gate: object
     gated: object
     render: object
+    on_refresh: object = None
     on_release: object = None
     on_terminal: object = None
     released: bool = False
@@ -64,15 +65,25 @@ def capture_read_output():
         _capture.reset(token)
 
 
-def retain_read_output(gate, gated, render, *, on_release=None, on_terminal=None):
-    """Trusted backend seam; neither locators nor caller fields grant access."""
+def retain_read_output(gate, gated, render, *, on_release=None, on_terminal=None,
+                       on_refresh=None):
+    """Trusted backend seam; neither locators nor caller fields grant access.
+
+    Media needs its EXISTING gate.issue + owner-bound bytes re-acquired after
+    awaits; it must not pretend its IssuedPublicIllustration supports the
+    generic text gate.refresh(result) API. The optional scoped on_refresh
+    belongs to this one trusted backend call, never to request JSON.
+    """
+    if on_refresh is not None and not callable(on_refresh):
+        raise TypeError("trusted output refresh callback required")
     calls = _capture.get()
     if calls is None:
         # A direct internal caller must check/consume its own GatedResult.
         return False
     if calls:
         raise RuntimeError('one guarded read result per MCP tool call required')
-    calls.append(GuardedOutput(gate, gated, render, on_release, on_terminal))
+    calls.append(GuardedOutput(gate, gated, render,
+                              on_refresh, on_release, on_terminal))
     return True
 
 
@@ -186,8 +197,15 @@ class ReadIssuanceMiddleware:
                 envelope = received
                 previous = envelope.get('result', {})
                 for _ in range(2):
-                    issued.gated = await issued.gate.refresh(issued.gated)
-                    rendered = issued.render(issued.gated.result)
+                    if issued.on_refresh is None:
+                        issued.gated = await issued.gate.refresh(issued.gated)
+                        rendered = issued.render(issued.gated.result)
+                    else:
+                        # Entire media frame + its independently issued real
+                        # image bytes are reobtained under the same root gate.
+                        # No pre-refreshed pixels survive a source/lease change.
+                        issued.gated = await issued.on_refresh(issued.gated)
+                        rendered = issued.render(issued.gated)
                     if typed_denied is not None:
                         envelope = rendered
                     else:
