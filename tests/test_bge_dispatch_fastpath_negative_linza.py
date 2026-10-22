@@ -119,7 +119,11 @@ def test_expired_run_between_reservation_and_sender_fresh_status_cannot_hit_wire
                 with pytest.raises(WebSocketDisconnect) as disconnected:
                     socket.receive_json()
                 assert disconnected.value.code==4403
-                assert not ticket.result.done() or ticket.result.cancelled()
+                # The client portal owns the ticket's original event loop.
+                # Cancel while that loop is still alive; fixture teardown
+                # must never try to touch a future after TestClient exits.
+                app.portal.call(queue.shared_reads.cancel_read, ticket)
+                assert ticket.result.cancelled()
     finally:
         release.set()
 
