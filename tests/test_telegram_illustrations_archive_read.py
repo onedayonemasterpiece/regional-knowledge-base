@@ -139,6 +139,8 @@ async def test_native_actual_issued_png_bytes_current_lease_same_existing_client
 @pytest.mark.parametrize("reason",[
     "wrong_actor","stale_scope","withdrawn","wrong_original","wrong_media_sha",
     "pending","unknown","no_locator","wrong_topic","wrong_crop","wrong_operation",
+    "wrong_page","wrong_region","wrong_bbox","wrong_raster",
+    "wrong_receipt","wrong_rotation","wrong_archive_chat",
 ])
 async def test_native_archive_mint_denies_untrusted_actor_source_crop_and_status(reason):
     owner,client,lease,clock,native=fixture()
@@ -154,6 +156,13 @@ async def test_native_archive_mint_denies_untrusted_actor_source_crop_and_status
     elif reason=="wrong_topic":native.archive_state["photo"]["topic_id"]=2
     elif reason=="wrong_crop":native.item["crop_binding"]["source_id"]="not-source"
     elif reason=="wrong_operation":native.archive_state["operation_key"]="illustration:"+"f"*64
+    elif reason=="wrong_page":native.manifest_page["page_id"]=SOURCE
+    elif reason=="wrong_region":native.manifest_region["region_id"]=SOURCE
+    elif reason=="wrong_bbox":native.manifest_region["bbox"]["left"]=1
+    elif reason=="wrong_raster":native.manifest_page["image_sha256"]="f"*64
+    elif reason=="wrong_receipt":native.manifest_page["source_image_receipt_sha256"]="f"*64
+    elif reason=="wrong_rotation":native.item["display_rotation_degrees"]=0
+    elif reason=="wrong_archive_chat":native=replace(native,archive_chat_id=-100999)
     with pytest.raises((IllustrationArchiveReadUnavailable,ValueError)):
         await owner.read_opaque(native,actor)
     assert not owner._issued_proofs
