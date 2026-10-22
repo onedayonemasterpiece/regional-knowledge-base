@@ -74,9 +74,14 @@ async def test_native_restore_n_minus_two_migrates_before_tail_and_readiness():
         older={name:body for name,body in artifacts.items() if int(name[4:7])<=len(artifacts)-2}
         assert await migrate(connection,older)==tuple(range(1,len(artifacts)-1))
         await connection.execute("INSERT INTO rkb_v4.writer_generations(generation) VALUES('old')")
-        await connection.execute("""INSERT INTO rkb_v4.recovery_state
-            (singleton,database_generation,writer_generation,applied_seq,schema_revision,function_revision,executor_revision)
-            VALUES(true,'restore-fixture','old',20,'rkb-v4-sql001-014-v1','old','old')""")
+        if len(artifacts)-2<17:
+            await connection.execute("""INSERT INTO rkb_v4.recovery_state
+                (singleton,database_generation,writer_generation,applied_seq,schema_revision,function_revision,executor_revision)
+                VALUES(true,'restore-fixture','old',20,'rkb-v4-sql001-014-v1','old','old')""")
+        else:
+            await connection.execute("""INSERT INTO rkb_v4.recovery_state
+                (singleton,database_generation,writer_generation,applied_seq)
+                VALUES(true,'restore-fixture','old',20)""")
         await connection.execute("SELECT rkb_v4.publish_read_frontier('restore-fixture','old',0,20,true,true)")
         @asynccontextmanager
         async def acquire():yield connection
