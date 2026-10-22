@@ -187,6 +187,10 @@ class TargetRuntime:
         from psycopg_pool import AsyncConnectionPool
         self.config = config
         target = config['target_runtime']
+        from .kaggle_current_registry import registry_sha256
+        if ('command_handlers' in target or target.get('registry_sha256') is not None
+                and target['registry_sha256']!=registry_sha256()):
+            raise BootstrapUnavailable('current_registry_hash_differs')
         self.database = OwnedDatabase(**target['database'])
         self.target = target
         self.executed_source = executed_source
