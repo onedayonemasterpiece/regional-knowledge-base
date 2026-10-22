@@ -61,7 +61,7 @@ _RESOURCE_INTEGER_FIELDS = frozenset({
     "received_unix_ms", "sampling_failures_total", "rss_kib", "hwm_kib",
     "pss_kib", "pg_master_rss_kib", "pg_master_hwm_kib", "pg_master_pss_kib"
 })
-_OPAQUE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+_OPAQUE = re.compile(r"^[A-Za-z0-9_.:-]{1,256}$")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -147,6 +147,7 @@ class SegmentedLogSink:
         self._path = None
         self._hash = hashlib.sha256()
         self._size = 0
+        self._opened_at = 0.0
         self._used = None
 
     def _prepare(self):
@@ -171,6 +172,7 @@ class SegmentedLogSink:
         self._handle = self._path.open("xb")
         os.chmod(self._path, 0o600)
         self._size = 0
+        self._opened_at = self.clock()
         self._hash = hashlib.sha256()
 
     def __call__(self, record: dict[str, object]) -> None:
@@ -181,8 +183,10 @@ class SegmentedLogSink:
             raise ValueError("bounded event only")
         if self._used + len(line) > self.disk_limit_bytes:
             raise OSError(errno.ENOSPC, "product telemetry segment budget exhausted")
-        if self._handle is not None and self._size and self._size + len(line) > self.segment_bytes:
-            self.seal()
+        if (self._handle is not None and self._size
+                and (self._size + len(line) > self.segment_bytes
+                     or self.clock() - self._opened_at >= 3600)):
+            self.seal()  # Hourly maximum segment age on an active stream.
         self._open()
         self._handle.write(line)
         self._handle.flush()  # No fsync or durable-accepted claim.
