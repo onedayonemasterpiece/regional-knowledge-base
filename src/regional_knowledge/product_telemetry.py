@@ -229,6 +229,9 @@ class ProductTelemetry:
                 self.dropped += 1
                 return False
             cleaned = _clean(record, level)
+            cleaned["loss_before"] = {"dropped": self.dropped, "failed": self.failed}
+            cleaned["diagnostic_state"] = (
+                "inconclusive" if self.dropped or self.failed else "observed")
             self._queue.put_nowait(cleaned)
             self.emitted += 1
             return True
