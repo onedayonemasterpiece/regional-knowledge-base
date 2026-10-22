@@ -225,6 +225,56 @@ class NativeSourceCompiler:
             result.append(count)
         return result
 
+    async def _narrative_fragments(self, variant_id, body):
+        """Keep the authored body intact; count only actual full encoder inputs.
+
+        Offsets use Python/PG Unicode characters. No tokenizer truncation or
+        summary substitute is permitted; a long story reuses the same native
+        ordinal/vector path with one stable ID per contiguous source fragment.
+        """
+        self._current()
+        whole = await self.count(body)
+        self._current()
+        if type(whole) is not int or not 1 <= whole <= 100000:
+            raise failure('complete_native_input_token_count_invalid')
+        if whole <= MAX_TOKENS:
+            return whole, None
+        start = 0
+        fragments = []
+        while start < len(body):
+            lo, hi = start + 1, len(body)
+            while lo < hi:
+                middle = (lo + hi + 1) // 2
+                self._current()
+                candidate_count = await self.count(body[start:middle])
+                self._current()
+                if type(candidate_count) is not int or not 1 <= candidate_count <= 100000:
+                    raise failure('complete_native_input_token_count_invalid')
+                if candidate_count <= MAX_TOKENS:
+                    lo = middle
+                else:
+                    hi = middle - 1
+            end = lo
+            if end <= start:
+                raise failure('complete_narrative_fragment_exceeds_512_tokens')
+            # Prefer an actual word boundary without dropping whitespace. A
+            # language with no spaces still gets exact lossless char offsets.
+            if end < len(body):
+                break_at = body.rfind(' ', start, end)
+                if break_at >= start + (end - start) // 2:
+                    end = break_at + 1
+            self._current()
+            tokens = await self.count(body[start:end])
+            self._current()
+            if type(tokens) is not int or not 1 <= tokens <= MAX_TOKENS:
+                raise failure('complete_narrative_fragment_exceeds_512_tokens')
+            fragments.append(dict(fragment_id=str(uuid5(UUID(variant_id),
+                f'fragment:{start}:{end}')),start=start,end=end,input_tokens=tokens))
+            start = end
+        if ''.join(body[f['start']:f['end']] for f in fragments) != body:
+            raise failure('complete_narrative_fragment_coverage_changed')
+        return fragments[0]['input_tokens'], fragments
+
     async def compile(self,batches,*,source_id,person_id,last_batch_sha256):
         try:
             return await self._compile(batches,source_id=source_id,person_id=person_id,
@@ -322,9 +372,15 @@ class NativeSourceCompiler:
             findings=[], stories=[], pending=[])
         narrative_inputs = []
         candidates = [_typed(StageStoryCandidateInput,raw) for raw in staged['candidates'].values()]
-        variants = [candidate for candidate in candidates if candidate.basic_variant is not None]
-        variant_counts = dict(zip((value.candidate_key for value in variants),
-            await self._counts([value.basic_variant.body for value in variants]) if variants else [], strict=True))
+        # The complete authored body is not itself a model input when it needs
+        # multiple bounded embeddings. Keep one scalar token count for the
+        # representative first input; the fragment ledger retains every other.
+        vector_inputs = {}
+        for candidate in candidates:
+            if candidate.basic_variant is not None:
+                variant_id = str(uuid5(UUID(row['source_id']), 'variant:'+candidate.candidate_key))
+                vector_inputs[candidate.candidate_key] = await self._narrative_fragments(
+                    variant_id, candidate.basic_variant.body)
         for candidate in candidates:
             key = candidate.candidate_key
             assertion_id = str(uuid5(UUID(row['source_id']), 'finding:'+key))
@@ -367,17 +423,22 @@ class NativeSourceCompiler:
                 if candidate.narrative_outcome != 'facts_only':
                     result['pending'].append(dict(candidate_key=key, finding_ids=[assertion_id], reason='needs_context'))
                 continue
-            count = variant_counts[key]
-            if not 1 <= count <= MAX_TOKENS:
-                raise failure('complete_narrative_input_exceeds_512_tokens', status='invalid_query')
+            count, fragments = vector_inputs[key]
             variant_id = str(uuid5(UUID(row['source_id']), 'variant:'+key))
+            saved_variant = dict(variant_id=variant_id, revision=1,
+                audience=variant.audience, format='story', language=variant.language, body=variant.body,
+                blocks=[dict(start=block.start, end=block.end, assertion_ids=[assertion_id]) for block in variant.blocks],
+                input_tokens=count)
+            if fragments is not None:
+                saved_variant['fragments'] = fragments
             result['stories'].append(dict(story_id=str(uuid5(UUID(row['source_id']), 'story:'+key)),
                 finding_ids=[assertion_id], title=candidate.title, summary=candidate.summary,
-                material_type=candidate.material_type, default_variant=dict(variant_id=variant_id, revision=1,
-                    audience=variant.audience, format='story', language=variant.language, body=variant.body,
-                    blocks=[dict(start=block.start, end=block.end, assertion_ids=[assertion_id]) for block in variant.blocks],
-                    input_tokens=count)))
-            narrative_inputs.append(dict(passage_id=variant_id, body=variant.body, input_tokens=count))
+                material_type=candidate.material_type, default_variant=saved_variant))
+            for fragment in fragments or (dict(fragment_id=variant_id,
+                    start=0,end=len(variant.body),input_tokens=count),):
+                narrative_inputs.append(dict(passage_id=fragment['fragment_id'],
+                    body=variant.body[fragment['start']:fragment['end']],
+                    input_tokens=fragment['input_tokens']))
         if result['pending'] and SourceResearchInput.model_validate_json(row['research_json']).state != 'pending':
             raise failure('unfinished_narratives_require_explicit_research_continuation', status='invalid_query')
         return result, narrative_inputs
