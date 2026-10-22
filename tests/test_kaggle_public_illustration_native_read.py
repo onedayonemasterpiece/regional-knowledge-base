@@ -668,3 +668,124 @@ async def test_read_authority_revoked_during_actual_native_snapshot_await(env,au
         await issue(gate,verified,binding)
     assert pool.acquire_calls==1 and archive.mint_count==0
     assert not gate._tickets
+
+
+# Meaningful post-snapshot issuance races. These operate on the ACTUAL
+# ReadAuthority/SourceReadGate/ControlSpool fixture objects, not a fabricated
+# publication permit or private provider accessor.
+@pytest.mark.asyncio
+async def test_native_media_final_issuance_refuses_real_source_withdrawal_pending_after_issue(env, auth):
+    """A real local ControlSpool withdrawal barrier wins over a cached frame."""
+    from test_control_spool import stage
+    gate, _, archive, verified, binding = await make_gate(env, auth)
+    pool = _ExistingReaderPool()
+    gate.native_read = NativePublicIllustrationReader(
+        acquire=pool.acquire,
+        binding_current=gate.source_gate.binding_current,
+        archive_chat_id=-100234, archive_scope="owner-owned-topic4",
+    )
+    gate.reader_sha = READ_SQL_SHA256
+    issued = await issue(gate, verified, binding)
+    assert pool.acquire_calls == 2
+    assert gate.issuance_current(issued.ticket)
+    await stage(env)  # canonical *pending restriction*, not a made-up DB flag
+    assert not gate.issuance_current(issued.ticket)
+    gate.release(issued.ticket)
+    assert not gate._tickets
+
+
+@pytest.mark.asyncio
+async def test_native_media_withdrawal_during_archive_await_prevents_second_read_and_public_ticket(env, auth):
+    """Source staged while the archive await is outstanding cannot be issued."""
+    from test_control_spool import stage
+    from regional_knowledge.kaggle_public_illustration_gate import PublicMediaUnavailable
+    gate, _, archive, verified, binding = await make_gate(env, auth)
+    pool = _ExistingReaderPool()
+    gate.native_read = NativePublicIllustrationReader(
+        acquire=pool.acquire, binding_current=gate.source_gate.binding_current,
+        archive_chat_id=-100234, archive_scope="owner-owned-topic4",
+    )
+    gate.reader_sha = READ_SQL_SHA256
+    observe = archive.read_opaque
+
+    async def restricted_after_archive(native, person):
+        proof = await observe(native, person)
+        await stage(env)
+        return proof
+
+    archive.read_opaque = restricted_after_archive
+    with pytest.raises(PublicMediaUnavailable):
+        await issue(gate, verified, binding)
+    assert pool.acquire_calls == 1 and not gate._tickets
+
+
+@pytest.mark.asyncio
+async def test_native_media_reconnect_rotates_exact_lease_identity_despite_equal_tuple(env, auth):
+    """An old owner object isn't current after reconnect, even with equal fields."""
+    from types import SimpleNamespace
+    from regional_knowledge.source_read_gate import binding_key
+    gate, _, archive, verified, binding = await make_gate(env, auth)
+    owner = [binding]
+    pool = _ExistingReaderPool()
+    current = lambda b: b is owner[0] and pool.lease
+    gate.source_gate.binding_current = current
+    gate.native_read = NativePublicIllustrationReader(
+        acquire=pool.acquire, binding_current=current,
+        archive_chat_id=-100234, archive_scope="owner-owned-topic4",
+    )
+    gate.reader_sha = READ_SQL_SHA256
+    issued = await issue(gate, verified, binding)
+    assert gate.issuance_current(issued.ticket)
+    new_owner_binding = SimpleNamespace(**vars(binding))
+    assert new_owner_binding is not binding
+    assert binding_key(new_owner_binding) == binding_key(binding)
+    owner[0] = new_owner_binding
+    assert not gate.issuance_current(issued.ticket)
+    with pytest.raises(NativeIllustrationReadUnavailable):
+        await read_current(gate.native_read, binding)
+    gate.release(issued.ticket)
+
+
+@pytest.mark.asyncio
+async def test_native_media_archive_lease_lost_during_await_forces_second_native_read_denial(env, auth):
+    """Native lease changes at archive await: a SQL-ready first read is stale."""
+    from regional_knowledge.kaggle_public_illustration_gate import PublicMediaUnavailable
+    gate, _, archive, verified, binding = await make_gate(env, auth)
+    pool = _ExistingReaderPool()
+    gate.native_read = NativePublicIllustrationReader(
+        acquire=pool.acquire,
+        binding_current=lambda b: gate.source_gate.binding_current(b) and pool.lease,
+        archive_chat_id=-100234, archive_scope="owner-owned-topic4",
+    )
+    gate.reader_sha = READ_SQL_SHA256
+    archive.on_read = lambda: setattr(pool, "lease", False)
+    with pytest.raises(PublicMediaUnavailable):
+        await issue(gate, verified, binding)
+    assert pool.acquire_calls == 1 and not gate._tickets
+
+
+@pytest.mark.asyncio
+async def test_native_media_current_read_authority_revoke_at_last_renderer_before_emit(env, auth):
+    """No post-render await is required for final actor epoch fencing."""
+    from regional_knowledge.kaggle_public_illustration_gate import PublicMediaUnavailable
+    from regional_knowledge.participant_contracts import ParticipantGrant
+    from test_participants import change
+    gate, _, archive, verified, binding = await make_gate(env, auth)
+    pool = _ExistingReaderPool()
+    gate.native_read = NativePublicIllustrationReader(
+        acquire=pool.acquire,
+        binding_current=gate.source_gate.binding_current,
+        archive_chat_id=-100234, archive_scope="owner-owned-topic4",
+    )
+    gate.reader_sha = READ_SQL_SHA256
+
+    def changed_role(item, *, status):
+        change(auth.p, ParticipantGrant(
+            capability="public_search", granted=False,
+            reason="synthetic disable at final renderer boundary"))
+        return media_renderer(item, status=status)
+
+    gate.render_metadata = changed_role
+    with pytest.raises(PublicMediaUnavailable, match="media_output_fence_changed"):
+        await issue(gate, verified, binding)
+    assert pool.acquire_calls == 2 and not gate._tickets
