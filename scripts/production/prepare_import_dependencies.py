@@ -12,6 +12,7 @@ import hashlib
 import json
 import lzma
 from pathlib import Path
+import re
 import time
 from urllib.error import URLError
 from urllib.parse import urlsplit
@@ -50,7 +51,7 @@ def secure_url(url):
 
 
 def merge_wheels(base, candidate, placement=None):
-    """Produce the real Stage0 codec only with all four actual download URLs."""
+    """Bind reviewed wheels to exact HTTPS or versioned Dataset placement."""
     if base.get('codec') != 'rkb.candidate_wheel_lock.v1':
         raise ValueError('base Stage0 wheel lock required')
     if candidate.get('codec') != 'rkb.telethon_candidate_wheel_lock.v1':
@@ -61,15 +62,25 @@ def merge_wheels(base, candidate, placement=None):
     pyaes = next(p for p in packages if p['package'] == 'pyaes')
     if placement is None:
         return dict(codec='rkb.import_dependency_inputs.v1', status='UNRESOLVED',
-                    missing=['approved permanent pyaes HTTPS placement receipt'],
+                    missing=['verified pyaes HTTPS or versioned Dataset placement receipt'],
                     pyaes={k: pyaes[k] for k in ('filename', 'size', 'sha256', 'version')},
                     runtime_lock=None)
     if (placement.get('approved') is not True or not placement.get('receipt_ref')
             or any(placement.get(k) != pyaes[k] for k in ('size', 'sha256'))):
         raise ValueError('placement must bind approved exact pyaes bytes and receipt')
-    url = secure_url(placement['url'])
-    if pyaes['sha256'] not in urlsplit(url).path:
-        raise ValueError('content-addressed pyaes placement required')
+    dataset=placement.get('dataset')
+    if dataset is not None:
+        if (type(dataset) is not dict or set(dataset)!={'owner','slug','version','filename'}
+                or any(type(dataset[k]) is not str or re.fullmatch(r'[a-z0-9][a-z0-9-]{1,98}[a-z0-9]',dataset[k]) is None
+                    for k in ('owner','slug'))
+                or type(dataset['version']) is not int or not 1<=dataset['version']<=9999999999
+                or dataset['filename']!=pyaes['filename'] or placement.get('url') is not None):
+            raise ValueError('exact versioned pyaes Dataset placement required')
+        url=f"kaggle-dataset://{dataset['owner']}/{dataset['slug']}/{dataset['version']}/{dataset['filename']}"
+    else:
+        url = secure_url(placement['url'])
+        if pyaes['sha256'] not in urlsplit(url).path:
+            raise ValueError('content-addressed pyaes placement required')
     result = json.loads(json.dumps(base))
     identities = {p['package'].lower().replace('_', '-') for p in base['packages']}
     if identities & {'telethon', 'pyaes', 'rsa', 'pyasn1'}:
@@ -82,6 +93,8 @@ def merge_wheels(base, candidate, placement=None):
         result['packages'].append(row)
     result['wheel_bytes'] = sum(p['size'] for p in result['packages'])
     result['telegram_placement_receipt'] = placement['receipt_ref']
+    if dataset is not None:
+        result['telegram_dataset_source']=f"{dataset['owner']}/{dataset['slug']}/{dataset['version']}"
     return result
 
 
