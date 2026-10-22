@@ -27,6 +27,7 @@ from regional_knowledge.source_activation import (
 )
 from test_source_stage import SOURCE,INGESTION,batch,original
 from test_kaggle_pg_driver import database
+from test_source_activation_pg import image_pg
 from test_kaggle_apply import PG
 from regional_knowledge.kaggle_apply import initialize_database
 
