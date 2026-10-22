@@ -183,7 +183,7 @@ class TargetRuntime:
     """One owned pool/PG/model preparation across WSS reconnects, on one loop."""
     def __init__(self, config, *, executed_source, pool_factory=None, owner_factory=OwnedPostgres,
                  probe=None, prepare=prepare_resident_runtime, restored_database=None, recovery_worker=None,
-                 telegram_original_downloader=None):
+                 telegram_original_downloader=None, telegram_illustrations=None):
         from psycopg_pool import AsyncConnectionPool
         self.config = config
         target = config['target_runtime']
@@ -202,6 +202,15 @@ class TargetRuntime:
         if telegram_original_downloader is not None and type(telegram_original_downloader) is not NativeTelegramOriginalDownloader:
             raise TypeError('existing owner Telegram downloader required')
         self.telegram_original_downloader=telegram_original_downloader
+        # Root injects the existing archive owner's SAME leased Telethon
+        # client; no second credential/client/pool/session is opened here.
+        if telegram_illustrations is not None:
+            from .telegram_illustrations import NativeTelegramIllustrations
+            if (type(telegram_illustrations) is not NativeTelegramIllustrations
+                    or (telegram_original_downloader is not None and
+                        telegram_illustrations.client is not telegram_original_downloader._client)):
+                raise TypeError('same retained Telegram archive client required')
+        self.telegram_illustrations=telegram_illustrations
         self.original_intake_handler=None
         self.read_handler_slot=None  # Same model/pool retained across compatible patch.
         self.identity = None
@@ -390,6 +399,20 @@ class TargetRuntime:
         if self.database.schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1','rkb-v4-sql001-014-v1'):
             from dataclasses import replace
             handler=replace(handler,source_provenance=True)
+        # Use the SINGLE prepared resident PG pool/model worker. Native media
+        # is opt-in only when the actual SQL015/016 role and same-client archive
+        # owner are installed; unrelated schema14 health stays unchanged.
+        if (self.telegram_illustrations is not None
+                and self.database.schema_revision in (
+                    'rkb-v4-sql001-015-v1','rkb-v4-sql001-016-v1')):
+            from dataclasses import replace
+            def current_media(b):
+                return (not self.closed and self.identity ==
+                        (b.run_id,self.config['launch_nonce'],b.runtime_incarnation)
+                        and b.database_generation == self.database.database_generation
+                        and self.telegram_illustrations.current() is True)
+            handler=replace(handler,media_archive=self.telegram_illustrations,
+                            media_binding_current=current_media)
         from .kaggle_warm_read import ReadHandlerCompatibility,ReadHandlerSlot
         self.read_handler_slot=ReadHandlerSlot(handler,
             loaded_sha256=readiness.hashes['code'],
