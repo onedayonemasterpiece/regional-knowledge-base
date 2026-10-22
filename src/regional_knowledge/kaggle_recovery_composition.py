@@ -168,7 +168,12 @@ class DeferredRecoveryRuntime:
             from .kaggle_snapshot_drill import EmptySnapshotDrill
             runtime.recovery_worker.drill=EmptySnapshotDrill(runtime.recovery_worker.factory,
                 download=runtime.recovery_worker.download,workspace=self._workspace)
-        elif not fresh and runtime.recovery_worker.factory.dataset_checkpoint is not None:
+        elif (not fresh and runtime.recovery_worker.factory.dataset_checkpoint is not None
+                and any(e.get('route')=='source.native.upgrade.v1'
+                    for e in self.config['target_runtime']['command_handlers'])):
+            # A schema11-only restored release remains fully supported; this
+            # isolated drill is opt-in ONLY when the exact target native
+            # schema14 upgrade handler is installed in its deployment.
             # Same existing restore owner, exact launch-pinned Dataset checkpoint
             # and immutable native migration pins. Merely constructing this
             # opt-in source drill does NOT restore/migrate a serving database.
