@@ -368,8 +368,9 @@ def build_server(
              "Follow every book_pages continuation before using clipped source text. "
              "Stage exact observed native blocks or unique source spans with their actual bounding boxes; "
              "source_import.research must contain the calling model's explicit state and reachable continuation. "
-             "Story candidates may supply a basic_variant with the actual authored body and complete evidence map; "
-             "a summary never becomes a narrative. A facts_only outcome or needs_context frontier is explicit model work. "
+             "Only when sufficient evidence supports an actual narrative may story candidates supply "
+             "basic_variant.body with a complete evidence map. Otherwise omit basic_variant and explicitly "
+             "report needs_context or facts_only; never invent a body from title or summary. "
              "Finalized source activation does not establish retrieval acceptance or exhaustive semantic coverage. "
              if selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None else "") +
             "Search and retrieve sourced regional knowledge. Use search before fetch. "
@@ -1184,8 +1185,10 @@ def build_server(
             "including on the owner-personal route, because accepted text enters shared search. "
             "Neither missing rights nor owner OAuth implies permission to publish a private original. "
             "Pass the optional top-level source_import or compatible metadata.source_import, not both. "
-            "For each story candidate use story_candidates.basic_variant.body plus evidence-mapped blocks "
-            "for the complete authored narrative; title/summary alone never substitute for body. "
+            "When sufficient evidence supports an authored narrative, supply "
+            "story_candidates.basic_variant.body and evidence-mapped blocks for the complete body. "
+            "Otherwise OMIT basic_variant, explicitly set narrative_outcome=needs_context or facts_only, "
+            "and preserve the evidence gap instead of inventing prose; title/summary are not body. "
             "For a new attached PDF/DjVu use start, "
             "then book_pages plus model-authored stage, validate and finalize while following "
             "next_action. For an existing book named by the user, call book_find first and "
@@ -1204,7 +1207,10 @@ def build_server(
             "to start one newer archived-source revision instead of resuming the pending job. "
             "For a large model-authored batch, stage may use file=one UTF-8 JSON attachment "
             "instead of inline arrays. That JSON must contain ingestion_id, source_revision and "
-            "the same stage fields, with at most 8 pages, 100 chunks and 12 stories, <=1 MiB. "
+            "the same stage fields, with at most 8 pages, 100 chunks and 12 stories, <=1 MiB "
+            "(stage-file TRANSPORT bound only). Native admission separately limits the entire canonical "
+            "source-stage envelope to <=700 KiB, INCLUDING issued image receipts, source metadata "
+            "and model payload: a valid 1 MiB stage file is not guaranteed native acceptance. "
             "Never mix a stage file with inline metadata/arrays or put an original PDF in stage. "
             "File transport does not replace model source review or automatically mark pages reviewed. "
             "Finalization alone activates "
@@ -1270,8 +1276,10 @@ def build_server(
         poi_media_links: list[StagePoiMediaLinkInput] | None = None,
         entity_candidates: GraphBundle | None = None,
         story_candidates: Annotated[list[StageStoryCandidateInput], Field(max_length=12,
-            description="Model-authored, evidence-grounded candidates. Use basic_variant.body and "
-                "basic_variant.blocks for an actual complete narrative; no summary substitution.")] | None = None,
+            description="Model-authored evidence-grounded candidates: when evidence is sufficient, "
+                "supply basic_variant.body and complete evidence-mapped basic_variant.blocks. "
+                "Otherwise omit basic_variant and explicitly mark narrative_outcome=needs_context "
+                "or facts_only; never fabricate a body from title or summary.")] | None = None,
         source_import: Annotated[TargetSourceImportInput | None, Field(
             description="Native import options: start currently requires public_rights with verified "
                 "public-distribution basis, even for owner-personal calls. Stage may carry model-authored "
