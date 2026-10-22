@@ -175,17 +175,17 @@ class ReportTests(unittest.TestCase):
 
     def test_loss_or_terminal_conflict_is_inconclusive_not_ignored(self):
         events=list(self.events)
-        events[0]=dict(events[0],loss_before={"dropped":1,"failed":0})
+        events[6]=dict(events[6],loss_before={"dropped":1,"failed":0})
         summary,_=leaf.analyze(self.samples,events)
         self.assertEqual(summary["conclusion"],"INCONCLUSIVE_OR_NONREPRESENTATIVE")
         self.assertEqual(summary["cohorts"]["serial"]["observed_complete"],47)
         events=list(self.events)
-        events[0]=dict(events[0],status="denied",reason="access_denied")
+        events[6]=dict(events[6],status="denied",reason="access_denied")
         summary,_=leaf.analyze(self.samples,events)
         self.assertEqual(summary["cohorts"]["serial"]["useful_hybrid"],47)
 
     def test_missing_native_event_never_becomes_zero_latency(self):
-        summary,joined=leaf.analyze(self.samples,self.events[1:])
+        summary,joined=leaf.analyze(self.samples,self.events[:7]+self.events[8:])
         self.assertEqual(summary["conclusion"],"INCONCLUSIVE_OR_NONREPRESENTATIVE")
         self.assertEqual(sum(x["diagnostic_state"]=="inconclusive" for x in joined),1)
 
