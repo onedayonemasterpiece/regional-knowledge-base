@@ -148,6 +148,22 @@ def native_review(base, extra):
                 deployable=False, manifest=None, elf_receipt=None)
 
 
+def preserved_native_closure(base):
+    """Resolve captured dependency constraints with the original base pins intact."""
+    metadata = json.loads((MANIFESTS / 'native-preserved-metadata-20261022.json').read_text())
+    snapshots = [PackageSnapshot(MANIFESTS / item['name'], item['release'],
+                                 item['base_url'], item['sha256']) for item in metadata['inputs']]
+    lock = resolve_native_closure(snapshots, release='noble',
+                                 roots=base['roots'] | {'djvulibre-bin': DJVU_VERSION})
+    selected = {p['name']: p for p in lock['packages']}
+    for previous in base['packages']:
+        current = selected.get(previous['name'])
+        if current is None or any(current[key] != previous[key]
+                                 for key in ('version', 'architecture', 'size', 'sha256', 'url')):
+            raise ValueError('preserved closure changed baseline pin: ' + previous['name'])
+    return lock
+
+
 def capture_djvu(root):
     snapshots = []
     receipts = []
@@ -209,12 +225,21 @@ def main():
             (MANIFESTS / 'kaggle-native-djvu-noble-lock-20261022.json').read_text())
         save(root / 'djvu-package-lock.json', extra)
         save(root / 'native-base-lock.json', base_native)
-        review = native_review(base_native, extra)
+        # Re-resolve actual Debian constraints from retained records, never
+        # merely overwrite the three conflicting versions in the candidate.
+        if not args.refresh_djvu_metadata:
+            lock = preserved_native_closure(base_native)
+            review = native_review(base_native, lock)
+            save(root / 'native-package-lock.json', lock)
+        else:
+            review = native_review(base_native, extra)
+            lock = None
         save(root / 'native-merge-review.json', review)
         if review['status'] == 'UNRESOLVED':
             print(json.dumps(review), flush=True)
             return
-        lock = merge_native(base_native, extra)
+        if lock is None:
+            lock = merge_native(base_native, extra)
     save(root / 'native-package-lock.json', lock)
     if len(lock['packages']) > MAX_PACKAGES:
         save(root / 'native-bound.json', dict(status='UNRESOLVED', actual=len(lock['packages']),

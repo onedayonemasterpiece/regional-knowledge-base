@@ -1,0 +1,154 @@
+{
+  "codec": "rkb.native_metadata_inputs.v1",
+  "inputs": [
+    {
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "name": "native-preserved-ubuntu-Packages",
+      "release": "noble",
+      "sha256": "082fac0eacba99cdccbd675dd64b1cebeff3b306e6137662b12866e3973553e3"
+    },
+    {
+      "base_url": "https://apt.postgresql.org/pub/repos/apt/",
+      "name": "native-preserved-pgdg-Packages",
+      "release": "noble",
+      "sha256": "a5a2d2841ed280d745972009eaf5c53bf7747cc7284d64cca21609020ee1c86a"
+    }
+  ],
+  "package_count": 103,
+  "selection": "baseline85 pins win existing package identity; exact captured DjVu lock adds new packages; CI resolver must verify all transitive dependency constraints",
+  "source_receipts": [
+    {
+      "captured_snapshot": "pgdg-noble-Packages",
+      "selected_packages": [
+        "postgresql-17-pgvector",
+        "postgresql-client-common",
+        "postgresql-common",
+        "libpq5",
+        "postgresql-17",
+        "postgresql-client-17"
+      ],
+      "sha256": "d285243ece8b1eb72fdd14d7b7125af01187adf63bf4595a5b4d8e475a5783e8"
+    },
+    {
+      "captured_snapshot": "ubuntu-noble-main-Packages",
+      "selected_packages": [
+        "adduser",
+        "debconf",
+        "init-system-helpers",
+        "libbrotli1",
+        "libcap-ng0",
+        "libcrypt1",
+        "libdb5.3t64",
+        "libedit2",
+        "libffi8",
+        "libgdbm-compat4t64",
+        "libgdbm6t64",
+        "libjbig0",
+        "libjpeg-turbo8",
+        "libjpeg8",
+        "libjson-perl",
+        "libkeyutils1",
+        "liblerc4",
+        "libpsl5t64",
+        "libreadline8t64",
+        "librtmp1",
+        "libsemanage-common",
+        "libsemanage2",
+        "libsepol2",
+        "libsharpyuv0",
+        "libwebp7",
+        "netbase",
+        "readline-common",
+        "sensible-utils",
+        "ssl-cert",
+        "sysvinit-utils",
+        "ucf"
+      ],
+      "sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "captured_snapshot": "ubuntu-noble-security-main-Packages",
+      "selected_packages": [
+        "curl",
+        "dpkg",
+        "gcc-14-base",
+        "libbz2-1.0",
+        "libc-bin",
+        "libc6",
+        "libcap2",
+        "libcurl4t64",
+        "libdjvulibre-text",
+        "libdjvulibre21",
+        "libgcc-s1",
+        "libgcrypt20",
+        "libgnutls30t64",
+        "libllvm19",
+        "liblzma5",
+        "libnghttp2-14",
+        "libp11-kit0",
+        "libpam-modules",
+        "libpam-modules-bin",
+        "libpam0g",
+        "libperl5.38t64",
+        "libssh-4",
+        "libssl3t64",
+        "libstdc++6",
+        "libsystemd0",
+        "libtasn1-6",
+        "libtiff6",
+        "libtinfo6",
+        "libuuid1",
+        "libxml2",
+        "libxslt1.1",
+        "locales",
+        "openssl",
+        "perl",
+        "perl-base",
+        "perl-modules-5.38",
+        "tar",
+        "tzdata",
+        "zlib1g"
+      ],
+      "sha256": "6b423c1e193c4847fd70bc014dacef54ada22103de643a180ea33fe79a388d85"
+    },
+    {
+      "captured_snapshot": "ubuntu-noble-security-universe-Packages",
+      "selected_packages": [
+        "djvulibre-bin"
+      ],
+      "sha256": "01f18fc13468ae74b4233cc40a56c6d3c578ee1e9005738e062ac8e997ae894d"
+    },
+    {
+      "captured_snapshot": "ubuntu-noble-updates-main-Packages",
+      "selected_packages": [
+        "libacl1",
+        "libaudit-common",
+        "libaudit1",
+        "libbsd0",
+        "libcom-err2",
+        "libdeflate0",
+        "libgmp10",
+        "libgpg-error0",
+        "libgssapi-krb5-2",
+        "libhogweed6t64",
+        "libicu74",
+        "libidn2-0",
+        "libk5crypto3",
+        "libkrb5-3",
+        "libkrb5support0",
+        "libldap2",
+        "liblz4-1",
+        "libmd0",
+        "libnettle8t64",
+        "libpcre2-8-0",
+        "libsasl2-2",
+        "libsasl2-modules-db",
+        "libselinux1",
+        "libunistring5",
+        "libzstd1",
+        "passwd"
+      ],
+      "sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    }
+  ]
+}

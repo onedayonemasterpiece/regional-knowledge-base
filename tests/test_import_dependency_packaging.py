@@ -109,3 +109,18 @@ def test_captured_ci_closure_reports_all_conflicts_and_bound_without_a_fake_mani
     assert review['deployable'] is False and review['dependencies_removed'] is False
     assert review['manifest'] is None and review['elf_receipt'] is None
 
+
+def test_preserved_metadata_resolves_real_constraints_without_base_pin_changes():
+    m = packaging()
+    base = json.loads((m.MANIFESTS / 'kaggle-native-noble-pg17.11-base-lock.json').read_text())
+    resolved = m.preserved_native_closure(base)
+    review = m.native_review(base, resolved)
+    assert review['conflicts'] == []
+    assert review['union_package_count'] == 103
+    assert review['package_bound_exceeded'] is True
+    assert resolved['roots']['djvulibre-bin'] == m.DJVU_VERSION
+    assert set(base['roots']) <= resolved['roots'].keys()
+    # A dependency closure is still not a native ELF execution receipt.
+    assert resolved['native_execution_verified'] is False
+    assert review['manifest'] is None and review['elf_receipt'] is None
+

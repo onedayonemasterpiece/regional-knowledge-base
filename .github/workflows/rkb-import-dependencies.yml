@@ -7,6 +7,8 @@ on:
       - scripts/production/prepare_import_dependencies.py
       - scripts/production/manifests/kaggle-native-noble-pg17.11-base-lock.json
       - scripts/production/manifests/kaggle-native-djvu-noble-lock-20261022.json
+      - scripts/production/manifests/native-preserved-*-Packages
+      - scripts/production/manifests/native-preserved-metadata-20261022.json
       - scripts/production/manifests/telethon-stage0-input-20261022.json
       - tests/test_import_dependency_packaging.py
       - .github/workflows/rkb-import-dependencies.yml

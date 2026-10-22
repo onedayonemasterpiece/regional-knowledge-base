@@ -18,7 +18,7 @@ Default CI uses this fixed input; `--refresh-djvu-metadata` explicitly captures
 new moving indexes. `--native-lock` rebuilds an approved exact merged closure
 without resolving moving metadata again.
 
-The actual initial integration is UNRESOLVED: union103 exceeds current96 and
+The initial captured integration was UNRESOLVED: union103 exceeds current96 and
 libhogweed6t64/libnettle8t64 select3.9.1-2.2build1 rather than baseline
 3.9.1-2.2build1.1; liblzma5 selects5.6.1+really5.4.5-1ubuntu0.4 rather than
 baseline0.3. `native-merge-review.json` preserves every complete conflicting
@@ -27,6 +27,19 @@ package pin alongside both full input locks. It declares `deployable=false`,
 reported as a built or ELF-verified native artifact. The integration owner must
 approve a coherent dependency lock and package bound, or a separately reviewed
 executable ELF packaging plan; this leaf does neither implicitly.
+
+The follow-up supplies retained dependency metadata for all103 desired packages
+in `native-preserved-{ubuntu,pgdg}-Packages`, with full Depends/Pre-Depends/Provides
+and original download pins. The accompanying metadata JSON binds both pruned
+snapshots by SHA-256 and lists the exact earlier captured source indexes and
+their hashes. Only public package metadata is committed, no executable bytes.
+The existing resolver verifies constraints on CI; the adapter then requires all
+85 original package version/architecture/size/SHA/URL pins unchanged. It does
+not hand-edit the three collision versions or pretend dependency edges suffice
+to prove their constraints. Default receipt production emits the coherent
+`native-package-lock.json` if resolution succeeds, alongside both earlier input
+locks and the remaining unresolved96-package bound. No cap change or native
+manifest/ELF readiness is implied by a resolved lock.
 
 The existing assembler retains the PG native data and libraries and adds
 ddjvu plus loader/library paths. The existing safe extractor materializes and
