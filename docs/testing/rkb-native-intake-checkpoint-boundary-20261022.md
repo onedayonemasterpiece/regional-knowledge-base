@@ -1,6 +1,6 @@
 # Native intake: ordinal vs verified Dataset checkpoint boundary (2026-10-22)
 
-**Status: frozen-source existing regression 6 PASS; NEW 2/3-input test prepared but NOT executed. No production fix, live Dataset or Kaggle acceptance.**
+**Status: isolated compatible candidate CI39759312648 passed9 tests, including all5 new boundary selectors. No production fix, live Dataset or Kaggle acceptance.**
 
 ## Scope and mandatory product contract
 
@@ -55,13 +55,41 @@ coverage is current and facts are contiguous, but real `read_facts.pending`
 still refuses allocation. No `_drive` replacement, source guard patch or private
 storage-identity reset is used.
 
-These five new/updated cases remain **NOT RUN until the integration owner
-provides a compatible writable candidate/test slot**. The branch's main base
+These five cases initially remained NOT RUN pending a compatible candidate.
+After the owner's explicit instruction to proceed independently, an isolated
+writable copy was prepared and executed as recorded below. The leaf's main base
 does not contain the native14 fixture, so execution against it would be an
 unrelated import failure, not a meaningful RED result. Frozen5f63/e58 and the
 deniedb833 path remain untouched. The native fixture's conditional object store
 does not measure real Dataset versions; existing checkpoint-class tests and
 actual provider acceptance remain separately identified above.
+
+## Actual compatible candidate execution
+
+GitHub-hosted CI [39759312648](https://github.com/onedayonemasterpiece/regional-knowledge-base/actions/runs/39759312648)
+at `317a539cdb9fb20fa33db75557025b52996d324e`: **9 PASS,0 FAIL,0 SKIP,4.292s**.
+The existing physical worktree was reused. Candidate baseline commit01a1c71
+copies exactly77 source paths from immutable `src_5f63d09f8c1a0d3df77220f6`,
+basebd138b2449f68cabb2cbfa3df552df8471f40c78, captured input patch
+`ae08868278c5227557ab105ca45673163eadceef675bb99dd5680581a3915f09`.
+Every copied source file was rechecked byte-identical after execution; source
+and frozen handoff were not patched. Only owned test/doc and branch-only CI
+were added. Candidate is a synthetic test slot, not a second release.
+
+Five new selectors cover2/3 materialize inputs and the three independent
+allocation barriers. Four selected real checkpoint-class cases cover exact
+captured-byte promotion, crash-gap outcome capture and lost-readback recovery.
+Initial run39759090976 found a genuine standalone test fixture-registration
+error (4checkpointPASS/5setupERROR); `target`, `auth` and `people` fixtures are
+now explicitly imported. Earlier async-generator assertions were also fixed.
+No source guard was weakened to obtain PASS.
+
+Retained evidence:
+`/home/dev/artifacts/regional-knowledge-base/20261021T124437Z-rkb-shkiper-d-preflight-20261021/intake-boundary-ci39759312648/`
+contains JUnit and per-file provenance. No Dev install, PG/model, Telegram,
+Kaggle or runtime mutation occurred. Logical5/6 barriers remain distinct from
+physical Dataset-version counts; full book/pixel/Story.body/Saved/live reads
+are not certified by this receipt.
 
 ## Owner's minimal future correction contract — not implemented
 
