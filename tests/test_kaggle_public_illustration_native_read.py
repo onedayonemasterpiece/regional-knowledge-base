@@ -30,7 +30,44 @@ from test_kaggle_public_illustration_gate import (
     snapshot, ExistingArchiveReader, media_renderer, archive_validator,
     make_gate, issue, ILLUSTRATION, READER_SHA,
 )
-from test_story_reconcile_ordered_013_016_pg import _validated_ci_dsn, _files
+# SQL013–016 belong to the sole root integrator, not this exact five-file
+# media handoff. Only REAL approved SQL files may enable populated PG tests;
+# explicitly mark that separate prerequisite NOT RUN until they are installed.
+from pathlib import Path
+
+_SQL_ROOT = Path(__file__).resolve().parents[1] / "sql" / "kaggle"
+_SQL_PREREQUISITES_MISSING = any(
+    len(list(_SQL_ROOT.glob(f"{ordinal:03d}_*.sql"))) != 1
+    for ordinal in range(1, 17)
+)
+
+
+def _validated_ci_dsn():
+    from psycopg.conninfo import conninfo_to_dict
+    dsn = os.environ["RKB_KAGGLE_TEST_DSN"]
+    assert os.environ.get("GITHUB_ACTIONS") == "true"
+    assert os.environ.get("GITHUB_REPOSITORY") == "onedayonemasterpiece/regional-knowledge-base"
+    assert conninfo_to_dict(dsn) == dict(
+        host="127.0.0.1", port="54329", dbname="rkb_graph_test",
+        user="postgres", password="graph_fixture_only",
+    )
+    return dsn
+
+
+def _files():
+    # Never install or pass off a dummy SQL015 as the real source. The entire
+    # exact predecessor chain must be present when this function is called.
+    paths = {}
+    for ordinal in range(1, 17):
+        candidates = list(_SQL_ROOT.glob(f"{ordinal:03d}_*.sql"))
+        assert len(candidates) == 1, f"actual SQL{ordinal:03d} source missing or ambiguous"
+        paths[ordinal] = candidates[0]
+    assert paths[14].name == "014_source_stage_activation.sql"
+    assert paths[15].name == "015_source_illustrations.sql"
+    assert hashlib.sha256(paths[14].read_bytes()).hexdigest() == SQL014_SHA256
+    assert hashlib.sha256(paths[15].read_bytes()).hexdigest() == SQL015_SHA256
+    return paths
+
 
 
 def source_row(s=None):
@@ -331,6 +368,7 @@ async def test_deadline_is_bounded_without_any_provider_work():
     assert pool.events[-1]=="exit:existing-pool"
 
 
+@pytest.mark.skipif(_SQL_PREREQUISITES_MISSING, reason="NOT RUN: root has not combined actual SQL013–016; no fake SQL015 allowed")
 def test_static_exact_source_sql_pins_are_immutable_in_this_leaf():
     from pathlib import Path
     root=Path(__file__).resolve().parents[1]
@@ -344,6 +382,8 @@ class _Rollback(Exception):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(_SQL_PREREQUISITES_MISSING,
+                    reason="NOT RUN: root SQL013–016 exact predecessors not yet in this branch")
 @pytest.mark.skipif(not os.environ.get("RKB_KAGGLE_TEST_DSN"),
                     reason="Only existing approved GitHub PG17 CI fixture may run SQL")
 async def test_real_github_pg17_001_to_016_executes_exact_private_sql_without_rows():
@@ -384,6 +424,8 @@ async def test_real_github_pg17_001_to_016_executes_exact_private_sql_without_ro
 # rejects changes; it does NOT simulate an accepted command, provider ACK,
 # durable Dataset, real image payload or installed production reader grants.
 @pytest.mark.asyncio
+@pytest.mark.skipif(_SQL_PREREQUISITES_MISSING,
+                    reason="NOT RUN: root SQL013–016 exact predecessors not yet in this branch")
 @pytest.mark.skipif(not os.environ.get("RKB_KAGGLE_TEST_DSN"),
                     reason="Only existing GitHub PG17 CI fixture is authorized")
 @pytest.mark.parametrize("scenario", (
