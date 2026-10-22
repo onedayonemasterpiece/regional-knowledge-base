@@ -147,6 +147,206 @@ class WorkloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len([x for x in emitted if x["event"]=="public_client_sample"]),128)
 
 
+class CensorAndProfileTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _questions():
+        return {k: "PRIVATE query material "+k for k in leaf.CASE_IDS}
+
+    @staticmethod
+    def _response(text, index):
+        ident=sha256((text+str(index)).encode()).hexdigest()
+        return {"status":"degraded","reason":"bounded_retrieval","mode":"hybrid",
+                "results":[{"id":"private must never be saved"}],
+                "read_trace":{"trace_id":ident[:32],"attempt_id":ident[:32],
+                              "request_ref":ident}}
+
+    @staticmethod
+    def _operator_first_book():
+        return corpus(count=1, passages=5, profile="limited_first_book")
+
+    async def test_limited_first_real_book_profile_allows_one_bounded_source(self):
+        before=self._operator_first_book()
+        self.assertEqual(leaf.valid_corpus(before)["profile"],"limited_first_book")
+        self.assertEqual(leaf.valid_corpus(corpus())["profile"],"comparison_corpus")
+        with self.assertRaisesRegex(ValueError,"comparison_corpus_requires"):
+            leaf.valid_corpus(dict(before,profile="comparison_corpus"))
+        with self.assertRaisesRegex(ValueError,"limited_first_book_requires"):
+            leaf.valid_corpus(dict(before,visible_passage_count=0))
+        with self.assertRaisesRegex(ValueError,"limited_first_book_requires"):
+            leaf.valid_corpus(dict(corpus(),profile="limited_first_book"))
+        counter=0
+        emitted=[]
+        async def query(text):
+            nonlocal counter
+            counter+=1
+            await asyncio.sleep(0)
+            return self._response(text,counter)
+        async def readback():
+            return dict(before)
+        receipt=await leaf.run_public_workload(self._questions(),query,readback,emitted.append)
+        self.assertEqual(receipt["corpus"]["profile"],"limited_first_book")
+        records=[x for x in emitted if x["event"]=="public_client_sample"]
+        self.assertEqual(len(records),128)
+        report,_=leaf.analyze(emitted,make_telemetry(records),profile="limited_first_book")
+        self.assertEqual(report["conclusion"],"LIMITED_FIRST_BOOK_BASELINE_ONLY_NOT_REPRESENTATIVE")
+        self.assertFalse(report["production_scale_accepted"])
+        self.assertIn("NOT_REPRESENTATIVE",report["profile_label"])
+        self.assertEqual(report["cohorts"]["serial"]["timeout_rate"],0)
+        self.assertEqual(report["cohorts"]["concurrent2"]["public_success_count"],48)
+
+    async def test_caller_3s_timeout_is_right_censored_and_all_timeout_rate_one(self):
+        emitted=[]
+        async def query(text):
+            await asyncio.sleep(.05)
+            raise AssertionError("must be cancelled before private late response")
+        async def readback():
+            return self._operator_first_book()
+        with patch.object(leaf,"CALL_TIMEOUT_S",.003):
+            receipt=await leaf.run_public_workload(self._questions(),query,readback,emitted.append)
+        self.assertEqual(receipt["calls"],128)
+        samples=[x for x in emitted if x["event"]=="public_client_sample"]
+        self.assertEqual(sum(x["latency_observation"]=="right_censored" for x in samples),128)
+        self.assertEqual(sum(x["warmup"] for x in samples),32)
+        self.assertTrue(all(x["censor_lower_bound_ms"]==x["callback_wall_ms"] for x in samples))
+        report,joint=leaf.analyze(emitted,[],profile="limited_first_book")
+        for group in report["cohorts"].values():
+            self.assertEqual(group["samples"],48)
+            self.assertEqual(group["timeout_rate"],1.0)
+            self.assertEqual(group["failure_rate"],1.0)
+            self.assertEqual(group["right_censored_count"],48)
+            self.assertEqual(group["caller_timeout_censored_count"],48)
+            self.assertIsNone(group["success_only_p95_public_callback_ms"])
+            self.assertIsNone(group["all_requests_completion_p95_public_ms"])
+            self.assertGreaterEqual(group["all_requests_p95_public_lower_bound_ms"],2.5)
+        self.assertEqual(report["conclusion"],"INCONCLUSIVE_OR_CENSORED")
+        self.assertTrue(all(x["diagnostic_state"]=="inconclusive" for x in joint))
+        self.assertNotIn("PRIVATE query material",json.dumps(joint))
+        self.assertNotIn("must be cancelled",json.dumps(joint))
+
+    async def test_slow_tail_partial_success_and_fast_remote_deadline_keep_denominator(self):
+        emitted=[]
+        counter=0
+        async def query(text):
+            nonlocal counter
+            counter+=1
+            if text.endswith("q08"):
+                await asyncio.sleep(.05)
+                return self._response(text,counter)
+            if text.endswith("q07"):
+                raise TimeoutError("secret remote exception text")
+            await asyncio.sleep(0)
+            return self._response(text,counter)
+        async def readback():
+            return self._operator_first_book()
+        with patch.object(leaf,"CALL_TIMEOUT_S",.003):
+            await leaf.run_public_workload(self._questions(),query,readback,emitted.append)
+        samples=[x for x in emitted if x["event"]=="public_client_sample"]
+        report,joint=leaf.analyze(emitted,make_telemetry(samples),profile="limited_first_book")
+        for group in report["cohorts"].values():
+            self.assertEqual(group["samples"],48)
+            self.assertEqual(group["public_success_count"],36)
+            self.assertEqual(group["failure_count"],12)
+            self.assertEqual(group["timeout_count"],12)
+            self.assertEqual(group["timeout_rate"],.25)
+            self.assertEqual(group["failure_rate"],.25)
+            self.assertEqual(group["caller_timeout_censored_count"],6)
+            self.assertEqual(group["server_deadline_completed_count"],6)
+            self.assertEqual(group["right_censored_count"],6)
+            self.assertIsNone(group["all_requests_completion_p95_public_ms"])
+            self.assertIsNone(group["all_requests_completion_p95_scheduled_ms"])
+            self.assertIsNotNone(group["success_only_p95_public_callback_ms"])
+            self.assertLess(group["success_only_p95_public_callback_ms"],
+                            group["all_requests_p95_public_lower_bound_ms"])
+            self.assertEqual(group["status_reason_counts"]["unavailable:deadline_exceeded"],12)
+        self.assertEqual(report["conclusion"],"INCONCLUSIVE_OR_CENSORED")
+        self.assertNotIn("secret remote exception",json.dumps(joint))
+        self.assertNotIn("PRIVATE query material",json.dumps(joint))
+
+    async def test_local_semaphore_wait_measured_not_hidden_or_added_to_public_callback(self):
+        emitted=[]
+        counter=0
+        async def query(text):
+            nonlocal counter
+            counter+=1
+            await asyncio.sleep(.004)
+            return self._response(text,counter)
+        async def readback():
+            return self._operator_first_book()
+        with patch.object(leaf,"CALL_TIMEOUT_S",.1):
+            await leaf.run_public_workload(self._questions(),query,readback,emitted.append)
+        report,joint=leaf.analyze(emitted,make_telemetry(emitted),profile="limited_first_book")
+        rows=[x for x in joint if x["phase"]=="concurrent2" and not x["warmup"]]
+        self.assertEqual(len(rows),48)
+        self.assertTrue(any(x["client_semaphore_wait_ms"]>=5 for x in rows))
+        self.assertTrue(all(abs(x["wall_ms"]-x["callback_wall_ms"]
+                                -x["client_semaphore_wait_ms"])<.02 for x in rows))
+        self.assertGreater(report["cohorts"]["concurrent2"]["success_only_p95_scheduled_ms"],
+                           report["cohorts"]["concurrent2"]["success_only_p95_public_callback_ms"])
+        self.assertFalse(report["semaphore_wait_in_public_callback_latency"])
+        self.assertTrue(report["semaphore_wait_in_client_scheduled_latency"])
+
+    async def test_before_after_requires_same_profile_same_corpus_and_question_hash(self):
+        async def readback():
+            return self._operator_first_book()
+        counter=0
+        async def query(text):
+            nonlocal counter
+            counter+=1
+            return self._response(text,counter)
+        receipt=await leaf.run_public_workload(self._questions(),query,readback,lambda row:None)
+        self.assertTrue(leaf.assert_comparable_receipts(receipt,dict(receipt))["same_fixture"])
+        other_profile=dict(receipt,corpus=dict(corpus(),profile="comparison_corpus"))
+        with self.assertRaisesRegex(ValueError,"before_after_profile_changed"):
+            leaf.assert_comparable_receipts(receipt,other_profile)
+        changed_questions=dict(receipt,question_fixture_sha256="f"*64)
+        with self.assertRaisesRegex(ValueError,"before_after_question_fixture_changed"):
+            leaf.assert_comparable_receipts(receipt,changed_questions)
+        changed_revision=dict(receipt,corpus=dict(receipt["corpus"],visibility_epoch=99))
+        with self.assertRaisesRegex(ValueError,"before_after_corpus_or_version_changed"):
+            leaf.assert_comparable_receipts(receipt,changed_revision)
+
+    async def test_changed_profile_mid_run_rejected_without_faking_baseline(self):
+        observations=0
+        async def readback():
+            nonlocal observations
+            observations+=1
+            if observations==1:
+                return self._operator_first_book()
+            return corpus()
+        emitted=[]
+        n=0
+        async def query(text):
+            nonlocal n
+            n+=1
+            return self._response(text,n)
+        with self.assertRaisesRegex(RuntimeError,"corpus/profile/version changed"):
+            await leaf.run_public_workload(self._questions(),query,readback,emitted.append)
+        self.assertEqual(n,128)
+        self.assertEqual(observations,2)
+
+    def test_timeout_shape_and_production_deadline_distinct_from_client_guard(self):
+        row=leaf._client_row(None,case_id="q01",phase="concurrent2",warmup=False,
+            elapsed_ms=3600.0,callback_ms=3000.0,semaphore_wait_ms=600.0,
+            cpu_ms=None,rss_kib=123,exception="caller_timeout")
+        self.assertEqual(row["latency_observation"],"right_censored")
+        self.assertEqual(row["censor_lower_bound_ms"],3000.0)
+        self.assertEqual(row["client_semaphore_wait_ms"],600.0)
+        remote=leaf._client_row(None,case_id="q01",phase="serial",warmup=False,
+            elapsed_ms=1800.0,callback_ms=1800.0,semaphore_wait_ms=0.0,
+            cpu_ms=1,rss_kib=123,exception="remote_timeout")
+        self.assertEqual(remote["latency_observation"],"completed")
+        self.assertIsNone(remote["censor_lower_bound_ms"])
+        self.assertEqual(leaf.PUBLIC_SERVER_QUERY_DEADLINE_S,2.0)
+        self.assertEqual(leaf.PUBLIC_MCP_P95_SLO_MS,1500)
+        self.assertEqual(leaf.CALL_TIMEOUT_S,3.0)
+        backend=(ROOT/"src/regional_knowledge/kaggle_public_backend.py").read_text()
+        worker=(ROOT/"src/regional_knowledge/kaggle_query.py").read_text()
+        self.assertIn("deadline = min(time.monotonic()+2,",backend)
+        self.assertIn("deadline = started + min(query.deadline_ms, 2000) / 1000",worker)
+
+
+
+
 class ReportTests(unittest.TestCase):
     def setUp(self):
         self.samples=[]
