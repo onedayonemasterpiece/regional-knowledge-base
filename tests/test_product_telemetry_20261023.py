@@ -37,15 +37,15 @@ def test_strict_whitelist_modes_and_counter_visibility():
     assert sink.failed == 5 and sink.dropped == 0
     debug = telemetry.ProductTelemetry(mode="debug", sink=seen.append)
     assert debug.try_emit({"event":"resource.sample", "phase":"resource",
-                           "status":"ok", "duration_ms":0.8, "cpu_percent": 4.25,
-                           "rss_bytes": 4096, "cgroup_memory_current_bytes": 8192},
+                           "status":"ok", "duration_ms":0.8, "cpu_utilization_cores": 4.25,
+                           "rss_kib": 4096, "memory_current_bytes": 8192},
                           level="debug")
-    assert not debug.try_emit(dict(event(), rss_bytes=42))
+    assert not debug.try_emit(dict(event(), rss_kib=42))
     assert not debug.try_emit({"event":"resource.sample", "phase":"resource",
-                               "status":"ok", "rss_bytes": -1})
+                               "status":"ok", "rss_kib": -1})
     debug._queue.join()
     assert seen[-1]["level"] == "debug"
-    assert seen[-1]["rss_bytes"] == 4096
+    assert seen[-1]["rss_kib"] == 4096
     assert seen[-1]["diagnostic_state"] == "observed"
 
 
