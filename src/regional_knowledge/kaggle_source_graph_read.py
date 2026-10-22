@@ -111,10 +111,16 @@ class SourceGraphReadResult(ReadIdentity):
 
 
 def _scope(request,observed):
+    actor=request.actor.model_dump(mode='json')
+    if request.action=='list':
+        # context_ref is an ephemeral random authority handle minted afresh
+        # for EACH OAuth read. Binding a paginated list cursor to that handle
+        # makes the promised second MCP call impossible. Bind to the verified
+        # person/audience/auth epoch instead; reauthorization and the current
+        # source/grant checks still occur independently on every new read.
+        actor.pop('context_ref',None)
     scope=dict(action=request.action,entity=request.entity_id,source=request.source_id,
-        actor=request.actor.model_dump(mode='json'),observed=observed)
-    # Keep old unfiltered cursor bytes, but bind each filtered continuation to
-    # exact selectors, authenticated actor and observed native frontier.
+        actor=actor,observed=observed)
     if request.kinds is not None or request.query:
         scope.update(kinds=request.kinds,query=request.query)
     return hashlib.sha256(canonical(scope)).hexdigest()
