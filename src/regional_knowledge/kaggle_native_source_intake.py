@@ -381,6 +381,12 @@ class NativeSourceIntake:
         state=await asyncio.to_thread(self._state,row)
         if state is None:
             receipt=await self.importer._receipt(access,row)
+            if receipt is None and row['phase'] in ('acquiring','failed'):
+                # No native stage exists yet. Read the same durable original
+                # failure_code as start; do not turn terminal PDF rejection
+                # back into perpetual processing on the next MCP status.
+                original=await self.importer.originals.status(access.context,row['ingestion_id'])
+                return await self.importer._original_pending(row,original)
             return self.importer._output(row,'staged' if receipt else 'processing',
                 'Review issued pages and stage exact model input' if receipt else 'Verified original pending',
                 'continue_pages' if receipt else 'wait',source_archive_status='verified' if receipt else 'pending')

@@ -205,10 +205,13 @@ class KaggleSourceImporter:
 
     @staticmethod
     def _budget(db):
+        # Keep terminal intake identities, receipts and status addressable;
+        # only unsettled control rows consume active row/byte capacity.
         row = db.execute('''SELECT count(*),coalesce(sum(length(CAST(metadata_json AS BLOB))+
             length(CAST(rights_json AS BLOB))+coalesce(length(CAST(stage_json AS BLOB)),0)+
             coalesce(length(CAST(research_json AS BLOB)),0)+
-            coalesce(length(CAST(semantic_json AS BLOB)),0)+2048),0) FROM rkb_source_intake_control''').fetchone()
+            coalesce(length(CAST(semantic_json AS BLOB)),0)+2048),0) FROM rkb_source_intake_control
+            WHERE phase NOT IN ('finalized','failed')''').fetchone()
         if row[0] > MAX_CONTROL_ROWS or row[1] > MAX_CONTROL_BYTES:
             raise failure('small_import_control_capacity')
 
@@ -283,7 +286,7 @@ class KaggleSourceImporter:
             source_id=row['source_id'], ingestion_id=row['ingestion_id'], file=file, max_bytes=MAX_BYTES)
         receipt = await self._receipt(access, row)
         if receipt is None:
-            return self._original_pending(row,status)
+            return await self._original_pending(row,status)
         if row['phase'] == 'acquiring':
             row = await asyncio.to_thread(self._save, row, phase='staging')
         if await self._entry(row) is not None or row['phase']=='embedding':
@@ -294,7 +297,17 @@ class KaggleSourceImporter:
         return self._output(row, 'staged', 'Verified original; review source pages and stage exact source-backed chunks',
             'continue_pages', next_cursor='0', source_archive_status='verified')
 
-    def _original_pending(self,row,status):
+    async def _original_pending(self,row,status):
+        # Only the existing controller's fixed, durable terminal rejection
+        # can finish an unstarted intake. UNKNOWN/temporary/pending results
+        # must not release the single active owner slot.
+        if status.state == 'rejected' and status.reason in TERMINAL_REJECTIONS:
+            if row['phase'] == 'acquiring':
+                row = await asyncio.to_thread(self._save, row, phase='failed')
+            return self._output(row,'failed','Native original intake rejected this source within the supported bounds',
+                'blocker',source_archive_status='pending',warnings=[status.reason])
+        if status.state == 'rejected':
+            raise failure('native_original_terminal_rejection_unverified')
         if status.reason == 'original_telegram_binding_required':
             return self._output(row,'processing',
                 'The owned Kaggle runtime requires its existing authorized Telegram archive client binding',
@@ -303,10 +316,6 @@ class KaggleSourceImporter:
             return self._output(row,'processing',
                 'Resume book_ingest(start) with the same file_id, metadata and rights, and a refreshed attachment URL',
                 'blocker',source_archive_status='pending',warnings=[status.reason])
-        if status.state == 'rejected':
-            return self._output(row,'failed','Native original intake rejected this source within the supported bounds',
-                'blocker',source_archive_status='pending',warnings=[status.reason if status.reason in TERMINAL_REJECTIONS
-                    else 'native_original_rejected'])
         return self._output(row,'processing','Original acquisition and verified durable readback pending',
             'wait',source_archive_status='pending')
 
@@ -958,8 +967,11 @@ class KaggleSourceImporter:
                         else:
                             status = await self.originals.status(access.context, row['ingestion_id'])
                             receipt = await self._receipt(access, row)
-                            output = self._output(row,'staged','Review actual original pages and stage source-backed chunks',
-                                'continue_pages',next_cursor='0',source_archive_status='verified') if receipt else self._original_pending(row,status)
+                            if receipt:
+                                output = self._output(row,'staged','Review actual original pages and stage source-backed chunks',
+                                    'continue_pages',next_cursor='0',source_archive_status='verified')
+                            else:
+                                output = await self._original_pending(row,status)
                 if (command == 'status' and getattr(self, 'native_intake', None) is not None
                         and output.state == 'finalized'):
                     output = await self._native_research_status(access, row, output)
