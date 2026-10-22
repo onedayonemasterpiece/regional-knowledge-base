@@ -196,6 +196,30 @@ class NativeTelegramIllustrations:
                 or crop.get('source_revision') != 1
                 or crop.get('original_sha256') != native.original_sha256):
             raise IllustrationArchiveReadUnavailable('native_illustration_binding_invalid')
+        # Native private crop evidence comes from the SAME accepted image
+        # manifest page+figure. Do not rely on a user/model crop dict alone;
+        # the Dev output gate also checks this after each awaited boundary.
+        page=getattr(native,'manifest_page',None)
+        region=getattr(native,'manifest_region',None)
+        if (type(page) is not dict or type(region) is not dict
+                or not _uuid(item.get('page_id'))
+                or not _uuid(item.get('source_region_id'))
+                or page.get('page_id') != item.get('page_id')
+                or region.get('region_id') != item.get('source_region_id')
+                or region.get('page_id') != item.get('page_id')
+                or region.get('kind') != 'figure'
+                or region.get('bbox') != item.get('bbox')
+                or crop.get('page_id') != item.get('page_id')
+                or crop.get('source_region_id') != item.get('source_region_id')
+                or crop.get('bbox') != item.get('bbox')
+                or crop.get('display_rotation_degrees') != item.get('display_rotation_degrees')
+                or crop.get('source_image_receipt_sha256') != page.get('source_image_receipt_sha256')
+                or crop.get('source_raster_sha256') != page.get('image_sha256')
+                or not _digest(page.get('source_image_receipt_sha256'))
+                or not _digest(page.get('image_sha256'))
+                or getattr(native,'archive_chat_id',None) != self.chat_id
+                or getattr(native,'archive_topic_id',None) != self.topic_id):
+            raise IllustrationArchiveReadUnavailable('native_illustration_figure_crop_changed')
         crop_bytes=_canonical(crop)
         if (len(crop_bytes) > 8192
                 or state.get('operation_key') !=

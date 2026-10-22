@@ -8,6 +8,8 @@ regressions remain in test_telegram_illustrations.py from exact media delta.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 from dataclasses import replace
 import hashlib
 from io import BytesIO
@@ -137,6 +139,8 @@ async def test_native_actual_issued_png_bytes_current_lease_same_existing_client
 @pytest.mark.parametrize("reason",[
     "wrong_actor","stale_scope","withdrawn","wrong_original","wrong_media_sha",
     "pending","unknown","no_locator","wrong_topic","wrong_crop","wrong_operation",
+    "wrong_page","wrong_region","wrong_bbox","wrong_raster",
+    "wrong_receipt","wrong_rotation","wrong_archive_chat",
 ])
 async def test_native_archive_mint_denies_untrusted_actor_source_crop_and_status(reason):
     owner,client,lease,clock,native=fixture()
@@ -152,6 +156,13 @@ async def test_native_archive_mint_denies_untrusted_actor_source_crop_and_status
     elif reason=="wrong_topic":native.archive_state["photo"]["topic_id"]=2
     elif reason=="wrong_crop":native.item["crop_binding"]["source_id"]="not-source"
     elif reason=="wrong_operation":native.archive_state["operation_key"]="illustration:"+"f"*64
+    elif reason=="wrong_page":native.manifest_page["page_id"]=SOURCE
+    elif reason=="wrong_region":native.manifest_region["region_id"]=SOURCE
+    elif reason=="wrong_bbox":native.manifest_region["bbox"]["left"]=1
+    elif reason=="wrong_raster":native.manifest_page["image_sha256"]="f"*64
+    elif reason=="wrong_receipt":native.manifest_page["source_image_receipt_sha256"]="f"*64
+    elif reason=="wrong_rotation":native.item["display_rotation_degrees"]=0
+    elif reason=="wrong_archive_chat":native=replace(native,archive_chat_id=-100999)
     with pytest.raises((IllustrationArchiveReadUnavailable,ValueError)):
         await owner.read_opaque(native,actor)
     assert not owner._issued_proofs
@@ -288,3 +299,148 @@ async def test_native_provider_errors_redacted_without_leaking_private_session()
     with pytest.raises(IllustrationArchiveReadUnavailable) as error:
         await owner.read_issued_bytes(proof)
     assert "PRIVATE" not in str(error.value)
+
+
+# Next PR238/M3 changed-boundary test after native issuer source CI passed:
+# A *TEST ONLY* local composition models the missing WSS handoff by retaining
+# the REAL native owner's proof after actual observe/iter_download on fake I/O,
+# and binding a distinct Dev-side ArchiveOpaqueProof object. This bridge is
+# intentionally NOT production code, no fake SQL or Telegram provider result.
+from regional_knowledge.kaggle_public_illustration_gate import (
+    ArchiveOpaqueProof, IssuedArtifactBytes,
+)
+from test_kaggle_service_startup import service
+from test_kaggle_public_backend import target
+from test_read_authority import auth
+from test_participants import people, change
+from regional_knowledge.participant_contracts import ParticipantGrant
+from test_kaggle_public_media_wiring import configured, call_http
+
+
+class _TestOnlyLocalProofBoundary:
+    """No second client or issuer: translates actual NATIVE observed proof for tests.
+
+    A real deployment MUST substitute the existing authenticated, lease-bound
+    WSS native result. Never accept a public ref/string or treat this class as
+    a production transport, artifact token mint or installed E2E success.
+    """
+
+    def __init__(self, native):
+        self.native=native
+        self.pairs={}
+        self.byte_reads=0
+
+    async def read_opaque(self, snapshot, actor_id):
+        native=await self.native.read_opaque(snapshot,actor_id)
+        assert type(native) is NativeIllustrationArchiveProof
+        assert native.owner is self.native and self.native.issuance_current(native)
+        dev=ArchiveOpaqueProof(
+            ref=native.ref,source_id=native.source_id,
+            illustration_id=native.illustration_id,actor_id=native.actor_id,
+            binding_sha256=native.binding_sha256,
+            archive_scope=native.archive_scope,owner=self)
+        self.pairs[id(dev)]=(dev,native)
+        return dev
+
+    def issuance_current(self, proof):
+        entry=self.pairs.get(id(proof))
+        return bool(type(proof) is ArchiveOpaqueProof and proof.owner is self
+                    and entry is not None and entry[0] is proof
+                    and self.native.issuance_current(entry[1]))
+
+    async def read_issued_bytes(self, dev):
+        if not self.issuance_current(dev):
+            raise IllustrationArchiveReadUnavailable("test boundary proof not current")
+        native=self.pairs[id(dev)][1]
+        content=await self.native.read_issued_bytes(native)
+        self.byte_reads+=1
+        assert content.proof is native
+        return IssuedArtifactBytes(proof=dev,data=content.data,
+                                   mime_type=content.mime_type,sha256=content.sha256)
+
+
+async def _local_media_handler(service_fixture,monkeypatch):
+    client=LeasedFakeTelethon(content=png(width=800,height=670))
+    client.message=message(width=800,height=670)
+    lease=[True]
+    archive=NativeTelegramIllustrations(
+        client=client,chat_id=CHAT,topic_id=TOPIC,
+        current=lambda:lease[0],archive_scope="owner-owned-topic4")
+    bridge=_TestOnlyLocalProofBoundary(archive)
+    harness=await configured(service_fixture,monkeypatch,pixels=bridge)
+    return harness,client,lease,archive,bridge
+
+
+@pytest.mark.asyncio
+async def test_local_native_owner_real_mcp_image_boundary_source_only(service,monkeypatch):
+    """MCP ImageContent bytes originate at actual NativeTelegramIllustrations.
+
+    Outer Telegram I/O is synthetic; WSS transfer is NOT installed.
+    """
+    harness,client,lease,archive,bridge=await _local_media_handler(service,monkeypatch)
+    async with harness.startup.lifespan(None):
+        output,raw=await call_http(harness)
+        assert output["result"]["isError"] is False
+        contents=output["result"]["content"]
+        assert len(contents)==2
+        assert contents[0]["type"]=="text"
+        assert json.loads(contents[0]["text"])["metadata"]["status"]=="ready"
+        assert contents[1]["type"]=="image" and contents[1]["mimeType"]=="image/png"
+        assert base64.b64decode(contents[1]["data"])==png(width=800,height=670)
+        assert bridge.byte_reads==1
+        assert "iter-download" in client.events
+        assert client.events.count("read-message")>=4
+        assert not harness.gate._tickets
+        assert all(secret.encode() not in raw for secret in
+                   ("crop_binding","archive_locator","message_id","media_id",
+                    "chat_id","topic_id","credential","provider_ref"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("race",[
+    "lease_during_stream","lease_during_close","locator_mutation",
+    "withdraw_during_stream","revoke_during_stream","oversized_crop"
+])
+async def test_local_native_to_real_mcp_boundary_denies_stale_pixels_after_await(
+    service,monkeypatch,race):
+    harness,client,lease,archive,bridge=await _local_media_handler(service,monkeypatch)
+    if race=="lease_during_stream":
+        client.on_chunk=lambda:lease.__setitem__(0,False)
+    elif race=="lease_during_close":
+        client.on_close=lambda:lease.__setitem__(0,False)
+    elif race=="locator_mutation":
+        client.on_chunk=lambda:setattr(client.message.photo,"id",51)
+    elif race=="withdraw_during_stream":
+        client.on_chunk=harness.startup.config.spool.invalidate_source_history
+    elif race=="revoke_during_stream":
+        client.on_chunk=lambda:change(
+            service.target.auth.p,
+            ParticipantGrant(capability="public_search",granted=False,
+                             reason="synthetic archive await actor revoke"))
+    elif race=="oversized_crop":
+        client.chunks=[b"x"*65536 for _ in range(5)]
+    async with harness.startup.lifespan(None):
+        output,raw=await call_http(harness)
+        assert output["result"]["isError"] is True
+        assert len(output["result"]["content"])==1
+        assert output["result"]["content"][0]["type"]=="text"
+        assert '"type":"image"' not in raw.decode()
+        assert "iVBOR" not in raw.decode()
+        assert not harness.gate._tickets
+
+
+@pytest.mark.asyncio
+async def test_native_dev_proof_objects_are_distinct_and_cannot_cross_as_a_bearer():
+    owner,client,lease,clock,native=fixture()
+    direct=await owner.read_opaque(native,PERSON)
+    bridge=_TestOnlyLocalProofBoundary(owner)
+    assert not bridge.issuance_current(direct)
+    with pytest.raises(IllustrationArchiveReadUnavailable):
+        await bridge.read_issued_bytes(direct)
+    # A copied value-only proof does not re-establish WSS or reader authority.
+    fake=ArchiveOpaqueProof(
+        ref=direct.ref,source_id=direct.source_id,
+        illustration_id=direct.illustration_id,actor_id=direct.actor_id,
+        binding_sha256=direct.binding_sha256,
+        archive_scope=direct.archive_scope,owner=bridge)
+    assert not bridge.issuance_current(fake)

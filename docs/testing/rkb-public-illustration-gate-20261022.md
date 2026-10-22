@@ -458,3 +458,81 @@ A complete first-approved-book PDF/DjVu page→model bbox→Telegram archived cr
 →MCP ImageContent→model actually sees pixels still requires root-owned
 typed WSS transport and sole Opus installed E2E slot, as required by full
 pinned RKB v4.1 / owner alignment / acceptance contract.
+
+
+### M3 installed owner E2E execution contract (NOT RUN; sole Opus live slot)
+
+Source-only runnable regression: 
+`test_local_native_owner_real_mcp_image_boundary_source_only` consumes actual
+`NativeTelegramIllustrations.read_opaque/read_issued_bytes` methods under
+fake external Telethon I/O and runs the existing real
+`KnowledgeMCPServer.call_tool('illustration_fetch')` and
+`ReadIssuanceMiddleware`. It creates real PIL PNG bytes, tests byte-for-byte
+image content and checks that the final MCP frame never includes private chat,
+topic, provider locator or credential. Its `_TestOnlyLocalProofBoundary`
+explicitly models only the *currently absent* WSS proof transfer, retaining
+**a proof minted after native observe**, never guessing a bearer ref.
+It is NOT an installed WSS sender, independent public IAM or Telegram proof.
+Other changed-boundary negatives:
+`test_local_native_to_real_mcp_boundary_denies_stale_pixels_after_await`
+covers six distinct races: lease lost during chunks, lease lost at stream
+close, private registered media ID replaced during download, real source spool
+history withdrawn during download, real ReadAuthority public_search revoked
+during download, and byte-bound exceeded. The distinct object-identity
+test denies passing native proof directly as Dev proof or reconstructing
+the same fields. Native mint independently enforces accepted page/figure/crop,
+issued image receipt and raster SHA, actual actor UUID, archive destination
+and current lease before visiting the provider.
+
+The real owner-approved **installed** E2E to be run by Opus (NOT executed
+by RKB-Риф, no new access/credentials/restart implied) requires all:
+1. Show model a page of the *already approved* PDF/DjVu through its existing
+   client/MCP issued page ImageContent; record original revision and immutable
+   source image receipt, the actual physical page/figure region and displayed
+   crop bbox/rotation. Do not use OCR as model-gold or synthesize captions.
+2. Model chooses a grounded figure/caption in the same source review; submit
+   canonical media sidecar and accepted source operation. Verify SQL015
+   `source_illustrations`, accepted `source_image_origins`,
+   `source_illustration_origins` and persisted availability starts pending.
+3. Existing *same* exclusive native Telegram client calls
+   `NativeTelegramIllustrations.send_one` under the exact durable
+   `load→begin UNKNOWN→register locator→observe→complete ready` lifecycle,
+   source/actor/lease/current writer fences. An UNKNOWN reply is reconciled,
+   not blindly resent. Record private topic-4 locator and outcome receipt
+   internally only, never in public content.
+4. Native media read is assigned under the same current Kaggle PG reader and
+   Telegram session. Check the accepted source, original SHA, image/raster
+   proof, figure region/crop and archive operation. Existing
+   `NativeTelegramIllustrations.observe` verifies registered exact message
+   and `read_issued_bytes` streams the **actual** pixels from that same
+   client with chunk, SHA, MIME and lease verification.
+5. Existing typed native WSS transport must bind native response
+   identity/attachment+generation and bounded image bytes digest to the
+   **Dev-held**, newly issued `ArchiveOpaqueProof` object. Never transmit
+   native Python object identity as a JSON field, use a user-supplied bearer,
+   recycle recovery `SnapshotTicketChannel`/Dataset transfer, or turn
+   PG `ready` alone into public Saved.
+6. Existing `illustration_fetch` reads source+actor a second time **after**
+   byte delivery, checks explicit public illustration eligibility and
+   source visibility/revision/withdrawal, then current authority/lease and
+   synchronously finalizes TextContent printed-caption/model-observation
+   provenance together with actual `ImageContent`. The model demonstrates
+   it received/observed the selected crop (no source-only screenshot as a
+   substitute). Verify same-result after a new client read/reconnect.
+7. Negative E2E: revoke actor or withdraw/replace source between the page,
+   archive await and final output; wrong page/region/crop/original digest,
+   topic/media-id replacement, partially downloaded bytes, UNKNOWN send
+   and old runtime owner after reconnect must all return safe unavailable
+   with no base64, no private Telegram locator and no second provider send.
+8. Independent product acceptance includes full book Saved in Dataset,
+   indexed source facts, real Story.body, pagination/continuation and
+   subsequent authorized reading. One green native picture fixture never
+   upgrades M1–M5 to READY.
+
+This contract needs a **root-owned verified WSS pixels DTO/bridge**; do not
+run the above live script without Opus' explicit slot and exact installed
+reader/proof/issuer revisions. Retained media byte hashes are download
+evidence, not a claim of bitwise identity to pre-upload pixels when Telegram
+legitimately recompresses photo; choose document when exact resolution
+requires it and bind upload bytes digest in a reviewed durable receipt if
+bitwise matching is required.
