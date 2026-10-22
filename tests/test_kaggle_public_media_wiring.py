@@ -27,6 +27,11 @@ from regional_knowledge.kaggle_public_illustration_gate import (
 from regional_knowledge.read_issuance import ReadIssuanceMiddleware
 from regional_knowledge.server import build_server
 from test_kaggle_service_startup import service
+# Register the REAL existing multi-layer fixture's dependencies. Pytest does
+# not register re-exported fixtures from another module automatically.
+from test_kaggle_public_backend import target
+from test_read_authority import auth
+from test_participants import people
 from test_kaggle_public_illustration_gate import (
     NativeRead, ExistingArchiveReader, snapshot, media_renderer,
     archive_validator, READER_SHA, SOURCE, ILLUSTRATION,
