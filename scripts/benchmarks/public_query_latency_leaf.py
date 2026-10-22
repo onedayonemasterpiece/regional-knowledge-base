@@ -332,7 +332,7 @@ async def run_public_workload(questions: Mapping[str, str],
         raise ValueError("eight exact owner-held public-query fixtures required")
     fixture_hash = sha256(json.dumps([questions[k] for k in CASE_IDS],
         ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-    before = valid_corpus(await corpus_readback())
+    before = valid_corpus(await asyncio.wait_for(corpus_readback(), CALL_TIMEOUT_S))
     raw = []
     def record(value):
         raw.append(value)
@@ -351,6 +351,12 @@ async def run_public_workload(questions: Mapping[str, str],
         try:
             async with window:
                 result = await query_public(questions[case_id])
+            # asyncio.timeout can expire while a callback suppresses its
+            # cancellation. Such a late return is still a censored response,
+            # never a successful measured 3-second completion.
+            if window.expired():
+                error = "caller_timeout"
+                result = None
         except asyncio.CancelledError:
             error = "cancelled"
             raise
@@ -389,7 +395,7 @@ async def run_public_workload(questions: Mapping[str, str],
             record(dict(event="public_phase_resources", phase=phase,
                 client_process_cpu_ms=round((time.process_time_ns()-cpu_before)/1_000_000,3),
                 client_peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
-    after = valid_corpus(await corpus_readback())
+    after = valid_corpus(await asyncio.wait_for(corpus_readback(), CALL_TIMEOUT_S))
     if before != after:
         raise RuntimeError("corpus/profile/version changed during workload; samples are not comparable")
     return dict(codec="rkb.public-query-telemetry-run.v1",
