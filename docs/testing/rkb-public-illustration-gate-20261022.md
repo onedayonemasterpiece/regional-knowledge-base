@@ -209,3 +209,125 @@ have been authorized, read and delivered. Real
 SQL013–016, private fixed reader grants, typed WSS, registered archive
 `observe` and real current-lease pixel delivery, plus compatible
 `read_issuance.refresh` handling and no-await final output fence.
+
+
+## 22 October — Opus-assigned existing MCP illustration_fetch and ASGI issuance wiring
+
+This is a **separate shared-media PR** from Opus' verified canonical integration
+base `b932c15ef133d668a0eaa3570cc895e750876c77`, preserving his health
+hook. The first commit imports only the five exact, independently reviewed
+PR231 media leaf blobs, then changes assigned
+`src/regional_knowledge/server.py` (existing tool body/target allowlist),
+`src/regional_knowledge/kaggle_public_backend.py` (method on the existing
+KaggleSourceBackend), `src/regional_knowledge/read_issuance.py` (optional
+request-local refresh callback), and the OWN output gate's proof-bound actual
+image byte read. No standalone renderer, queue/IAM/read-pool/WSS/worker,
+SQL13–16 migration, role grant, upload, provider send or native runtime change.
+
+### Concrete tool invocation / owner composition
+
+Only **the existing** `illustration_fetch(id)` MCP tool is reused.
+For the native backend its locator is
+`rkb:illustration:v1:<canonical source UUID>:<canonical illustration UUID>`.
+Both are *untrusted selectors*, never capabilities. An illustration UUID
+alone is insufficient to establish source identity; the legacy
+`knowledge://illustrations/<uuid>` route is preserved **only** on the
+legacy profile and is never silently used for Kaggle native data.
+
+The root service owner must explicitly compose and register the canonical gate
+**before** `build_server(target_startup=...)`:
+
+```python
+# All objects are the existing sole owner-resolved instances, not strings.
+gate = PublicIllustrationOutputGate(
+    authority=startup.authority, source_gate=startup.gate,
+    native_read=real_typed_native_media_reader, archive=leased_archive_owner,
+    render_metadata=source_illustrations_native.public_illustration_metadata,
+    validate_archive_state=source_illustrations_native.validate_archive_state,
+    native_reader_sha256=approved_native_media_reader_hash,
+)
+startup.backend.configure_public_illustrations(gate)
+# Then build_server(target_startup=startup) uses the existing illustration_fetch.
+```
+
+This owner configuration **requires** callable
+`leased_archive_owner.read_opaque(snapshot, actor_id)`,
+`issuance_current(retained_proof)` **and**
+`read_issued_bytes(the identical retained ArchiveOpaqueProof object)`.
+The method must get actual, independently authorized crop bytes from the
+registered existing source/page/figure archive client **on its current lease**,
+not from SQL015 `ready`, an arbitrary `rkb-art-...` ref or a user-supplied
+Telegram locator. The owner returns the exact private
+`IssuedArtifactBytes(proof=same_proof, data=actual_crop_bytes,
+mime_type='image/png'/'image/jpeg'/'image/webp', sha256=sha256(data))`,
+bound to the SAME immutable proof object, actor/source/region/crop,
+current storage authority and archive scope. The gate validates proof
+identity, digest, real Pillow decoder/MIME/dimensions and a 256 KiB bounded
+image response, rechecks the same PG source after the bytes await, plus
+current actor/source history/native lease. If this byte issuer does not exist
+or returns UNKNOWN, **the media tool is not advertised** by the native
+profile; no fake proof or pending image is serialized.
+
+**No production leased archive bytes issuer is installed in the current
+candidate.** The only positive ImageContent in tests uses a clearly named
+`SyntheticArchivePixels` with real generated 20×20 PNG bytes and fake
+external I/O; this does not establish Telegram/pixel deployment or valid
+accepted-command/Dataset media lifecycle.
+
+### Exact final issuance
+
+`KaggleSourceBackend.illustration_fetch` validates a paired locator and
+uses the SAME `ReadAuthority.resolve_oauth`,
+`SourceReadGate.binding_current`, current native binding and
+`PublicIllustrationOutputGate.issue`. The initial tool result is a harmless
+NO-IMAGE placeholder retained **only** in
+`read_issuance.capture_read_output` for the actual MCP request, and fails
+closed if that request-local capture is absent.
+
+The **existing** `ReadIssuanceMiddleware` now accepts an optional
+trusted, request-local `on_refresh` for the media variant. This callback
+releases the prior ticket and obtains an entirely new gate-issued
+source+archive proof and actual owner-issued image bytes. Native + source/actor
+are reread AFTER each archive await. The final renderer emits the existing
+`CallToolResult` contract:
+`TextContent` with the canonical typed safe public frame and
+`ImageContent` with the bounded real verified image bytes and MIME. It does
+not emit private Telegram locator/chat/topic/media IDs, document originals,
+token, or credential. The ASGI middleware serializes a newly refreshed body
+and checks `gate.issuance_current(ticket)` **synchronously immediately
+before** its sole `await send`, then releases authority and ticket. If
+revoked/stale/expired, the complete text-and-image result is replaced by
+generic `unavailable/context_gap` without leaking a base64 prefix.
+Existing text/case/source issuance paths continue to use their original
+`gate.refresh(gated.result)` logic untouched.
+
+### Exact remaining ROOT responsibilities and NO-GO boundaries
+
+1. Install/approve ordered SQL013–016 Media15 source and **narrow
+   accepted-provenance PG reader grants** in a single canonical target.
+   Do not replace missing SQL015 with a no-op. Current integration before
+   those migrations has 10 explicit SQL-dependent media PG test SKIPs.
+2. Register the existing WSS/worker media-read request type into the single
+   target native reader pool and bind an actual
+   `NativePublicIllustrationReader` to the canonical
+   `SourceReadGate`; no second pool or IAM.
+3. Supply an **ACTUAL** leased archive reader that performs
+   `NativeTelegramIllustrations.observe` on the exact registered
+   topic-4 message and returns crop bytes via its existing supported
+   transfer mechanism (not an invented Telegram API). Its
+   `read_issued_bytes` must bind immutable digest, actor, scope,
+   original/page/crop identity and survive same-owner reconnect/fence
+   revocation. The archive output method does NOT yet exist in the
+   approved source bundle; without that the tool remains intentionally
+   unavailable. Do not call a purely synthetic test archive an issuer.
+4. Add a real image locator producer to existing search/fetch media metadata
+   and test true end-to-end PDF/DjVu page→figure→crop→actual ImageContent
+   on a combined, approved source candidate; the public locator is an
+   untrusted pair and must not itself grant permissions. The current route
+   accepts such a locator but **nothing produces it automatically yet**.
+5. On combined candidate, run changed-boundary class tests and actual
+   populated GitHub PG17 fixtures (after exact migrations). Separate
+   acceptance still requires real remotely durable book import (Saved),
+   qualified PDF/DjVu pixels, authentic facts, Story.body and continuation,
+   native Dataset checkpoint/restart and public API proof. This source
+   PR alone cannot establish installed reader/issuer/live readiness.
