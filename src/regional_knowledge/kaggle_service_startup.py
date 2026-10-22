@@ -19,7 +19,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from .bge_queue import BgeQueue
 from .control_spool import ControlSpool
-from .kaggle_public_backend import KaggleSourceBackend, TargetReadBinding, current_binding
+from .kaggle_public_backend import KaggleSourceBackend, TargetReadBinding, TargetUnavailable, current_binding
 from .kaggle_source_commands import AcceptedSourceDispatch
 from .oauth_provider import RegionalOAuthProvider
 from .participants import Participants
@@ -407,7 +407,14 @@ class TargetServiceStartup:
                 if pending:await owner.reconcile(self.config.spool.journal.store)
             if self.restorer is not None and not self.restorer.complete:
                 await self.restorer.refresh()
-            binding=await asyncio.to_thread(current_binding,self.config.queue)
+            try:
+                binding=await asyncio.to_thread(current_binding,self.config.queue)
+            except TargetUnavailable:
+                # The migrated worker can reconnect before its lost receipt
+                # advances our observed version. Reconcile that original job
+                # through existing pre-ready authority, then resume READY.
+                self.schema_migrations.resume_attachment()
+                raise
             if self.config.writer_owner is not None:
                 await self.config.writer_owner.ensure_current(self.config.spool.journal)
             if not self.binding_current(binding):raise PermissionError('current writer binding unavailable')

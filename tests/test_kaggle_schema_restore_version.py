@@ -26,6 +26,38 @@ def test_old_dataset_versions_ignore_catalog_acl_and_minor_pg_but_keep_runtime_a
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not os.getenv('RKB_KAGGLE_TEST_DSN'),reason='existing PG17 CI service only')
+async def test_production_fresh_schema_sequence_creates_roles_before_sql_grants():
+    from dataclasses import replace
+    from regional_knowledge.kaggle_owned_pg import OwnedPostgres
+    from test_kaggle_target_runtime import spec
+    from test_kaggle_public_illustration_native_read import _validated_ci_dsn
+    connection=await psycopg.AsyncConnection.connect(_validated_ci_dsn(),autocommit=True)
+    owned=False
+    try:
+        assert await (await connection.execute("SELECT to_regnamespace('rkb_v4')")).fetchone()==(None,)
+        assert await (await connection.execute("SELECT rolname FROM pg_roles WHERE rolname IN ('rkb_bootstrap','rkb_writer','rkb_reader')")).fetchall()==[]
+        # Represents the sole identity made by initdb, not the application roles.
+        await connection.execute('CREATE ROLE rkb_bootstrap SUPERUSER NOLOGIN')
+        owned=True
+        await connection.execute('SET ROLE rkb_bootstrap')
+        owner=OwnedPostgres(replace(spec(fresh=True).database,dbname='rkb_graph_test'))
+        artifacts={m.name:m.body for m in bundle_migrations(files())}
+        await owner._initialize_schema(connection,artifacts)
+        assert await (await connection.execute('SELECT max(version) FROM rkb_v4.schema_migrations')).fetchone()==(16,)
+        assert await (await connection.execute("SELECT rolname,rolsuper,rolcreaterole,rolcreatedb FROM pg_roles WHERE rolname IN ('rkb_writer','rkb_reader') ORDER BY rolname")).fetchall()==[
+            ('rkb_reader',False,False,False),('rkb_writer',False,False,False)]
+        assert await (await connection.execute("SELECT has_table_privilege('rkb_reader','rkb_v4.schema_migrations','SELECT'),has_table_privilege('rkb_writer','rkb_v4.schema_migrations','INSERT')")).fetchone()==(True,False)
+    finally:
+        await connection.execute('RESET ROLE')
+        if owned:
+            await connection.execute('DROP SCHEMA IF EXISTS rkb_v4 CASCADE')
+            await connection.execute('DROP OWNED BY rkb_bootstrap,rkb_writer,rkb_reader')
+            await connection.execute('DROP ROLE rkb_writer,rkb_reader,rkb_bootstrap')
+        await connection.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.getenv('RKB_KAGGLE_TEST_DSN'),reason='existing PG17 CI service only')
 async def test_native_restore_n_minus_two_migrates_before_tail_and_readiness():
     """Runs real PG DDL/probe, not the physical archive/provider boundary."""
     from test_kaggle_public_illustration_native_read import _validated_ci_dsn

@@ -35,6 +35,11 @@ class RecoveryPhaseDispatch:
     def current(self,binding):
         return (not self.closed and self.queue._recovery_phases is self and self.binding_current(binding))
 
+    def bind_attachment(self,binding):
+        if not self.current(binding):raise PermissionError('current maintenance binding required')
+        self._attachment_binding=binding
+        self.queue.shared_reads._event.set()
+
     def _run(self,db,run_id,token,generation):
         q=self.queue;run=q._authorize(db,run_id,token,q.clock());q._dispatch_authorize(run,generation)
         if (run_id,run['launch_nonce'],run['runtime_incarnation'])!=self.identity:
@@ -91,7 +96,7 @@ class RecoveryPhaseDispatch:
         # jobs of this exact runtime after socket or API-only reconnect.
         # eligible() validates each immutable persisted job; admission still
         # reconciles its actual compute claim before any resend.
-        self._attachment_binding=binding
+        self.bind_attachment(binding)
         if phase not in PHASES or not isinstance(operation_key,str) or not 1<=len(operation_key.encode())<=256:
             raise SnapshotError('recovery_phase_contract')
         if phase=='schema_migrate':

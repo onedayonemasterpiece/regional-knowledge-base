@@ -62,7 +62,13 @@ READER_FUNCTIONS = ('lexical_candidates(text,integer)', 'dense_candidates(public
     'dense_candidates_scoped(public.vector,integer,uuid[])', 'hydrate_scoped(uuid[],uuid[])')
 
 
-async def configure_native_roles(admin,*,selected_sql,dbname):
+async def create_native_roles(admin):
+    """Fixed fresh-cluster roles, before SQL files grant privileges to them."""
+    await admin.execute('''CREATE ROLE rkb_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        CREATE ROLE rkb_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;''',prepare=False)
+
+
+async def configure_native_roles(admin,*,selected_sql,dbname,create_roles=True):
     """Harden a newly owned native cluster, using the exact bootstrap grant path.
 
     The caller owns the transaction. Roles must be absent; this function never
@@ -74,9 +80,8 @@ async def configure_native_roles(admin,*,selected_sql,dbname):
         raise ValueError('complete verified native SQL prefix required')
     if type(dbname) is not str or not re.fullmatch(r'[a-z][a-z0-9_]{0,62}',dbname):
         raise ValueError('exact owned native database name required')
-    await admin.execute('''CREATE ROLE rkb_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-        CREATE ROLE rkb_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-        REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+    if create_roles:await create_native_roles(admin)
+    await admin.execute('''REVOKE CREATE ON SCHEMA public FROM PUBLIC;
         REVOKE ALL ON SCHEMA rkb_v4 FROM PUBLIC;
         REVOKE ALL ON ALL TABLES IN SCHEMA rkb_v4 FROM PUBLIC;
         REVOKE ALL ON ALL FUNCTIONS IN SCHEMA rkb_v4 FROM PUBLIC;
@@ -526,17 +531,7 @@ class OwnedPostgres:
         async with admin:
             await admin.execute("SET statement_timeout='10s'; SET lock_timeout='2s'",prepare=False)
             await admin.commit()
-            async with admin.transaction():
-                await admin.execute('CREATE EXTENSION vector WITH SCHEMA public')
-            await migrate(admin,{'sql/'+name:files[name] for name in selected_sql[:2]})
-            await initialize_database(admin,database_generation=spec.database_generation,
-                writer_generation=spec.writer_generation,
-                revisions=Revisions(spec.schema_revision,spec.function_revision,spec.executor_revision))
-            await migrate(admin,{'sql/'+name:files[name] for name in selected_sql})
-            async with admin.transaction():
-                await configure_native_roles(admin,selected_sql=selected_sql,dbname=spec.dbname)
-                await admin.execute('GRANT SELECT ON rkb_v4.schema_migrations TO rkb_reader')
-                await admin.execute('REVOKE ALL ON rkb_v4.schema_migrations FROM rkb_writer')
+            await self._initialize_schema(admin,files)
         # Fresh empty projections contain no accepted/source data; explicitly
         # publish only cursor zero under the same trusted writer lock.
         admin = await self.connect(**spec.connection(reader=False))
@@ -548,6 +543,24 @@ class OwnedPostgres:
                                     (spec.database_generation,spec.writer_generation))
         self._startup_complete=True
         self._startup_stderr.clear()  # Accepted/query diagnostics are never retained.
+
+    async def _initialize_schema(self,admin,files):
+        """Production fresh-schema sequence, independently testable on CI PG17."""
+        from .kaggle_schema_migrate import migrate
+        selected_sql=tuple(files)
+        spec=self.spec
+        async with admin.transaction():
+            await admin.execute('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public')
+            await create_native_roles(admin)
+        await migrate(admin,{'sql/'+name:files[name] for name in selected_sql[:2]})
+        await initialize_database(admin,database_generation=spec.database_generation,
+            writer_generation=spec.writer_generation,
+            revisions=Revisions(spec.schema_revision,spec.function_revision,spec.executor_revision))
+        await migrate(admin,{'sql/'+name:files[name] for name in selected_sql})
+        async with admin.transaction():
+            await configure_native_roles(admin,selected_sql=selected_sql,dbname=spec.dbname,create_roles=False)
+            await admin.execute('GRANT SELECT ON rkb_v4.schema_migrations TO rkb_reader')
+            await admin.execute('REVOKE ALL ON rkb_v4.schema_migrations FROM rkb_writer')
 
     async def aclose(self):
         try:
