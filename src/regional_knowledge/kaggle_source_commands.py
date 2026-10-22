@@ -142,7 +142,7 @@ def fixed_registry(database,entries):
     if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=32:raise ValueError('fixed source registry required')
     for entry in entries:
         base={'route','check_sha256','apply_sha256'}
-        if not isinstance(entry,dict) or not base<=entry.keys() or set(entry)-base-{'revisions','artifact_sha256','native_source_upgrade'}:
+        if not isinstance(entry,dict) or not base<=entry.keys() or set(entry)-base-{'revisions','artifact_sha256','native_source_upgrade','native_revision2_upgrade'}:
             raise ValueError('fixed source registry pins required')
         revisions=default_revisions
         if 'revisions' in entry:
@@ -156,8 +156,16 @@ def fixed_registry(database,entries):
             if (revisions!=handler.revisions or entry.get('artifact_sha256')!=pins.artifact_sha256
                     or entry['check_sha256']!=pins.transition_check_sha256 or entry['apply_sha256']!=pins.transition_apply_sha256):
                 raise ValueError('exact native source migration artifact required')
-        elif 'native_source_upgrade' in entry:
-            raise ValueError('native source pins only allowed for fixed migration')
+        elif entry['route']=='source.revision2.upgrade.v1':
+            from .kaggle_native_revision2_upgrade import NativeRevision2UpgradePins,revision2_upgrade_handler
+            pins=NativeRevision2UpgradePins.from_wire(entry.get('native_revision2_upgrade'))
+            handler=revision2_upgrade_handler(pins)
+            if (revisions!=handler.revisions or entry.get('artifact_sha256')!=pins.artifact_sha256
+                    or entry['check_sha256']!=pins.transition_check_sha256
+                    or entry['apply_sha256']!=pins.transition_apply_sha256):
+                raise ValueError('exact revision2 migration manifest required')
+        elif 'native_source_upgrade' in entry or 'native_revision2_upgrade' in entry:
+            raise ValueError('source migration pins may not authorize ordinary routes')
         elif entry['route']=='geo.dependencies.upgrade.v2':
             from .geo_manifest_commands import GEO_REVISIONS,geo_dependency_transition_handler
             if revisions!=GEO_REVISIONS or 'artifact_sha256' not in entry:raise ValueError('exact geographic migration artifact required')
@@ -165,6 +173,12 @@ def fixed_registry(database,entries):
                 check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
         elif 'artifact_sha256' in entry:
             raise ValueError('artifact pin only supported for the fixed geographic migration')
+        elif revisions.schema=='rkb-v4-sql001-017-v1':
+            from .kaggle_native_source_bindings import revision2_native_handler
+            from .kaggle_native_revision2_upgrade import REVISION2_REVISIONS
+            if revisions!=REVISION2_REVISIONS:raise ValueError('exact source successor revision required')
+            handler=revision2_native_handler(entry['route'],check_sha256=entry['check_sha256'],
+                apply_sha256=entry['apply_sha256'])
         elif revisions.schema=='rkb-v4-sql001-014-v1':
             from .kaggle_native_source_bindings import native_source_handler
             handler=native_source_handler(entry['route'],check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
@@ -253,7 +267,10 @@ class WorkerSourceExecutor:
         handler=self.registry.resolve(command)
         if frame.get('handler_sha256')!=handler.fingerprint:
             raise PermissionError('source registry binding mismatch')
-        if command.schema_revision=='rkb-v4-sql001-014-v1' and command.route in ('source.materialize.v1','source.stage.seal.v1'):
+        if ((command.schema_revision=='rkb-v4-sql001-014-v1'
+                and command.route in ('source.materialize.v1','source.stage.seal.v1'))
+            or (command.schema_revision=='rkb-v4-sql001-017-v1'
+                and command.route in ('source.materialize.v2','source.stage.seal.v2'))):
             if self.materializer is None:raise ValueError('native source materializer unavailable')
             # Verify this captured authenticated accepted intent BEFORE private
             # candidate effects, then apply canonical outcome in its own tx.
