@@ -30,6 +30,27 @@ def corpus(*, count=3, passages=128, profile="comparison_corpus"):
                 owner_handoff_ref="synthetic-owner-only", profile=profile)
 
 
+def gold_for(questions, state):
+    """SYNTHETIC TEST FIXTURE ONLY, not an owner-approved real source/gold."""
+    rows=[]
+    for case_id in leaf.CASE_IDS:
+        rows.append(dict(case_id=case_id,
+            question_sha256=sha256(questions[case_id].encode()).hexdigest(),
+            source_id="00000000-0000-0000-0000-000000000001",
+            source_revision=1,
+            evidence_locator_sha256=[
+                sha256(("synthetic-only-gold-locator:"+case_id).encode()).hexdigest()],
+            gold_basis="human_reviewed_source_text",
+            review_receipt_sha256=sha256(("synthetic-review:"+case_id).encode()).hexdigest()))
+    return dict(codec="rkb.first-book-query-gold.v1",
+        state="human_reviewed",profile=state["profile"],
+        corpus_manifest_sha256=state["corpus_manifest_sha256"],
+        database_generation_ref=state["database_generation_ref"],
+        source_edition_sha256="e"*64,
+        review_receipt_sha256="f"*64,
+        cases=rows)
+
+
 def make_telemetry(client_rows):
     events=[]
     for sample in client_rows:
@@ -66,6 +87,49 @@ def make_telemetry(client_rows):
 
 
 class WorkloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_live_run_without_owner_gold_is_denied_before_any_query(self):
+        sent=0
+        questions={k:"private fixture:"+k for k in leaf.CASE_IDS}
+        async def query(_):
+            nonlocal sent
+            sent+=1
+        async def readback():
+            return corpus()
+        with self.assertRaisesRegex(ValueError,"owner-approved source gold"):
+            await leaf.run_public_workload(questions,query,readback,lambda _:None)
+        self.assertEqual(sent,0)
+
+    def test_gold_rejects_ocr_only_wrong_revision_private_text_and_question_drift(self):
+        import copy
+        questions={k:"private query "+k for k in leaf.CASE_IDS}
+        value=corpus(count=1,passages=3,profile="limited_first_book")
+        gold=gold_for(questions,value)
+        ref=leaf.verify_query_gold_fixture(questions,value,gold)
+        self.assertRegex(ref,r"^[a-f0-9]{64}$")
+        for edited,message in [
+            (dict(gold,state="ocr_only"),"gold_profile_or_corpus_identity_changed"),
+            (dict(gold,profile="comparison_corpus"),"gold_profile_or_corpus_identity_changed"),
+            (dict(gold,corpus_manifest_sha256="b"*64),"gold_profile_or_corpus_identity_changed"),
+        ]:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError,message):
+                    leaf.verify_query_gold_fixture(questions,value,edited)
+        wrong=copy.deepcopy(gold);wrong["cases"][0]["gold_basis"]="unreviewed_ocr"
+        with self.assertRaisesRegex(ValueError,"OCR-only"):
+            leaf.verify_query_gold_fixture(questions,value,wrong)
+        changed=copy.deepcopy(gold);changed["cases"][1]["question_sha256"]="0"*64
+        with self.assertRaisesRegex(ValueError,"question bytes"):
+            leaf.verify_query_gold_fixture(questions,value,changed)
+        changed=copy.deepcopy(gold);changed["cases"][2]["source_revision"]=0
+        with self.assertRaisesRegex(ValueError,"source/revision"):
+            leaf.verify_query_gold_fixture(questions,value,changed)
+        changed=copy.deepcopy(gold);changed["cases"][4]["source_text"]="private payload"
+        with self.assertRaisesRegex(ValueError,"private gold case field"):
+            leaf.verify_query_gold_fixture(questions,value,changed)
+        changed=copy.deepcopy(gold);changed["cases"].pop()
+        with self.assertRaisesRegex(ValueError,"exact eight"):
+            leaf.verify_query_gold_fixture(questions,value,changed)
+
     async def test_not_ready_corpus_fails_before_public_queries(self):
         count=0
         async def query(text):
@@ -106,8 +170,10 @@ class WorkloadTests(unittest.IsolatedAsyncioTestCase):
             nonlocal snapshots
             snapshots+=1
             return corpus()
-        receipt=await leaf.run_public_workload(questions,query,readback,records.append)
+        receipt=await leaf.run_public_workload(questions,query,readback,records.append,
+            gold_manifest=gold_for(questions,corpus()))
         self.assertEqual(receipt["calls"],128)
+        self.assertRegex(receipt["gold_fixture_sha256"],r"^[0-9a-f]{64}$")
         self.assertEqual(receipt["warmups"],32)
         self.assertEqual(snapshots,2)
         self.assertLessEqual(max_concurrency,2)
@@ -143,7 +209,8 @@ class WorkloadTests(unittest.IsolatedAsyncioTestCase):
                 "read_trace":{"trace_id":v[:32],"attempt_id":v[:32],"request_ref":v}}
         emitted=[]
         with self.assertRaisesRegex(RuntimeError,"corpus/profile/version changed"):
-            await leaf.run_public_workload(questions,query,readback,emitted.append)
+            await leaf.run_public_workload(questions,query,readback,emitted.append,
+                gold_manifest=gold_for(questions,corpus()))
         self.assertEqual(len([x for x in emitted if x["event"]=="public_client_sample"]),128)
 
 
@@ -183,7 +250,8 @@ class CensorAndProfileTests(unittest.IsolatedAsyncioTestCase):
             return self._response(text,counter)
         async def readback():
             return dict(before)
-        receipt=await leaf.run_public_workload(self._questions(),query,readback,emitted.append)
+        receipt=await leaf.run_public_workload(self._questions(),query,readback,emitted.append,
+                gold_manifest=gold_for(self._questions(),self._operator_first_book()))
         self.assertEqual(receipt["corpus"]["profile"],"limited_first_book")
         records=[x for x in emitted if x["event"]=="public_client_sample"]
         self.assertEqual(len(records),128)
@@ -202,8 +270,10 @@ class CensorAndProfileTests(unittest.IsolatedAsyncioTestCase):
         async def readback():
             return self._operator_first_book()
         with patch.object(leaf,"CALL_TIMEOUT_S",.003):
-            receipt=await leaf.run_public_workload(self._questions(),query,readback,emitted.append)
+            receipt=await leaf.run_public_workload(self._questions(),query,readback,emitted.append,
+                gold_manifest=gold_for(self._questions(),self._operator_first_book()))
         self.assertEqual(receipt["calls"],128)
+        self.assertRegex(receipt["gold_fixture_sha256"],r"^[0-9a-f]{64}$")
         samples=[x for x in emitted if x["event"]=="public_client_sample"]
         self.assertEqual(sum(x["latency_observation"]=="right_censored" for x in samples),128)
         self.assertEqual(sum(x["warmup"] for x in samples),32)
@@ -239,7 +309,8 @@ class CensorAndProfileTests(unittest.IsolatedAsyncioTestCase):
         async def readback():
             return self._operator_first_book()
         with patch.object(leaf,"CALL_TIMEOUT_S",.003):
-            await leaf.run_public_workload(self._questions(),query,readback,emitted.append)
+            await leaf.run_public_workload(self._questions(),query,readback,emitted.append,
+                gold_manifest=gold_for(self._questions(),self._operator_first_book()))
         samples=[x for x in emitted if x["event"]=="public_client_sample"]
         report,joint=leaf.analyze(emitted,make_telemetry(samples),profile="limited_first_book")
         for group in report["cohorts"].values():
@@ -273,7 +344,8 @@ class CensorAndProfileTests(unittest.IsolatedAsyncioTestCase):
         async def readback():
             return self._operator_first_book()
         with patch.object(leaf,"CALL_TIMEOUT_S",.1):
-            await leaf.run_public_workload(self._questions(),query,readback,emitted.append)
+            await leaf.run_public_workload(self._questions(),query,readback,emitted.append,
+                gold_manifest=gold_for(self._questions(),self._operator_first_book()))
         report,joint=leaf.analyze(emitted,make_telemetry(emitted),profile="limited_first_book")
         rows=[x for x in joint if x["phase"]=="concurrent2" and not x["warmup"]]
         self.assertEqual(len(rows),48)
@@ -293,7 +365,8 @@ class CensorAndProfileTests(unittest.IsolatedAsyncioTestCase):
             nonlocal counter
             counter+=1
             return self._response(text,counter)
-        receipt=await leaf.run_public_workload(self._questions(),query,readback,lambda row:None)
+        receipt=await leaf.run_public_workload(self._questions(),query,readback,lambda row:None,
+            gold_manifest=gold_for(self._questions(),self._operator_first_book()))
         self.assertTrue(leaf.assert_comparable_receipts(receipt,dict(receipt))["same_fixture"])
         other_profile=dict(receipt,corpus=dict(corpus(),profile="comparison_corpus"))
         with self.assertRaisesRegex(ValueError,"before_after_profile_changed"):
@@ -301,6 +374,9 @@ class CensorAndProfileTests(unittest.IsolatedAsyncioTestCase):
         changed_questions=dict(receipt,question_fixture_sha256="f"*64)
         with self.assertRaisesRegex(ValueError,"before_after_question_fixture_changed"):
             leaf.assert_comparable_receipts(receipt,changed_questions)
+        changed_gold=dict(receipt,gold_fixture_sha256="0"*64)
+        with self.assertRaisesRegex(ValueError,"before_after_gold_fixture_changed"):
+            leaf.assert_comparable_receipts(receipt,changed_gold)
         changed_revision=dict(receipt,corpus=dict(receipt["corpus"],visibility_epoch=99))
         with self.assertRaisesRegex(ValueError,"before_after_corpus_or_version_changed"):
             leaf.assert_comparable_receipts(receipt,changed_revision)
@@ -329,7 +405,8 @@ class CensorAndProfileTests(unittest.IsolatedAsyncioTestCase):
             n+=1
             return self._response(text,n)
         with self.assertRaisesRegex(RuntimeError,"corpus/profile/version changed"):
-            await leaf.run_public_workload(self._questions(),query,readback,emitted.append)
+            await leaf.run_public_workload(self._questions(),query,readback,emitted.append,
+                gold_manifest=gold_for(self._questions(),self._operator_first_book()))
         self.assertEqual(n,128)
         self.assertEqual(observations,2)
 
@@ -349,7 +426,8 @@ class CensorAndProfileTests(unittest.IsolatedAsyncioTestCase):
         async def readback():
             return self._operator_first_book()
         with patch.object(leaf,"CALL_TIMEOUT_S",.003):
-            await leaf.run_public_workload(self._questions(),query,readback,emitted.append)
+            await leaf.run_public_workload(self._questions(),query,readback,emitted.append,
+                gold_manifest=gold_for(self._questions(),self._operator_first_book()))
         samples=[row for row in emitted if row["event"]=="public_client_sample"]
         self.assertEqual(len(samples),128)
         self.assertTrue(all(x["latency_observation"]=="right_censored" for x in samples))
@@ -370,7 +448,8 @@ class CensorAndProfileTests(unittest.IsolatedAsyncioTestCase):
             return self._operator_first_book()
         with patch.object(leaf,"CALL_TIMEOUT_S",.003):
             with self.assertRaises(TimeoutError):
-                await leaf.run_public_workload(self._questions(),query,readback,lambda _:None)
+                await leaf.run_public_workload(self._questions(),query,readback,lambda _:None,
+                    gold_manifest=gold_for(self._questions(),self._operator_first_book()))
         self.assertEqual(calls,0)
 
     def test_timeout_shape_and_production_deadline_distinct_from_client_guard(self):
