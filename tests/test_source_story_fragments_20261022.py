@@ -31,7 +31,7 @@ from regional_knowledge.source_stage import STAGE_ROUTE, SEAL_ROUTE
 LONG_BODY = " ".join(f"w{n:03d}" for n in range(660))
 
 
-def authored_batch():
+def authored_batch(*, body=LONG_BODY):
     page = exact_batch(count=1, receipt=original(page_count=1))
     region = page["model_payload"]["pages"][0]["regions"][0]
     excerpt = region["source_text"]
@@ -43,8 +43,8 @@ def authored_batch():
         evidence_refs=[dict(page_id=page["model_payload"]["pages"][0]["page_id"],
                             region_key=region["region_key"],
                             original_excerpt=excerpt)],
-        basic_variant=dict(body=LONG_BODY, audience="general", language="ru",
-                           blocks=[dict(start=0, end=len(LONG_BODY),
+        basic_variant=dict(body=body, audience="general", language="ru",
+                           blocks=[dict(start=0, end=len(body),
                                         evidence_indexes=[0])]),
     )]
     StageStoryCandidateInput.model_validate(page["model_payload"]["story_candidates"][0])
@@ -248,7 +248,7 @@ async def test_native_source_requires_sql018_even_for_short_body(image_pg):
     from test_source_activation_pg import DB, WRITER
 
     env = image_pg  # Explicit SQL014-only fixture: SQL018 is not installed.
-    sample = json.loads(authored_batch())
+    sample = json.loads(authored_batch(body="A short, complete synthetic narrative."))
     await stage_all(env, [sample])
     tokenized, encoded = [], []
 
