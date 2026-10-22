@@ -152,6 +152,14 @@ def ordered_migration_prepare(*,sql_root,registry,database_generation,entries):
         pins=NativeSourceUpgradePins.from_wire(native[0].get('native_source_upgrade'))
         hooks[ROUTE]=NativeSourceMigration(sql_root=sql_root,registry=registry,
             database_generation=database_generation,pins=pins).prepare
+    from .kaggle_native_revision2_upgrade import (
+        ROUTE as REV2_ROUTE,NativeRevision2UpgradePins,NativeRevision2Migration)
+    successors=[e for e in entries if e.get('route')==REV2_ROUTE]
+    if successors:
+        if len(successors)!=1:raise ValueError('one exact versioned successor transition required')
+        pins=NativeRevision2UpgradePins.from_wire(successors[0].get('native_revision2_upgrade'))
+        hooks[REV2_ROUTE]=NativeRevision2Migration(sql_root=sql_root,registry=registry,
+            database_generation=database_generation,pins=pins).prepare
     if not hooks:return None
     async def prepare(connection,command,handler):
         if handler.transition is None:return
