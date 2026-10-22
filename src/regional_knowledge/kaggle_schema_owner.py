@@ -19,7 +19,7 @@ def initialize(queue):
 
 
 def request_migration(queue,*,target_schema_version,bundle_sha256,database_generation,
-                      writer_generation,run_id,artifact=None):
+                      writer_generation,run_id,artifact=None,sql_files=None):
     if (type(target_schema_version) is not int or target_schema_version<1
             or type(bundle_sha256) is not str or len(bundle_sha256)!=64
             or set(bundle_sha256)-set('0123456789abcdef')):
@@ -27,8 +27,16 @@ def request_migration(queue,*,target_schema_version,bundle_sha256,database_gener
     if any(type(v) is not str or not 1<=len(v)<=256 for v in (database_generation,writer_generation,run_id)):
         raise ValueError('exact migration target identity required')
     if artifact is not None:artifact=WarmHandlerPatchApproval.from_wire(artifact).wire()
+    if artifact is not None and sql_files is not None:
+        raise ValueError('one migration delivery path required')
+    options={}
+    if sql_files is not None:
+        from .kaggle_schema_live import inline_sql_files
+        inline_sql_files(sql_files)
+        options['sql_files']=sql_files
     plan=encode(dict(target_schema_version=target_schema_version,bundle_sha256=bundle_sha256,
-        database_generation=database_generation,writer_generation=writer_generation,run_id=run_id,artifact=artifact)).decode()
+        database_generation=database_generation,writer_generation=writer_generation,run_id=run_id,artifact=artifact,
+        **options)).decode()
     key='schema-migrate:'+sha(plan.encode())
     initialize(queue)
     with queue.connect() as db:
@@ -130,7 +138,8 @@ class SourceSchemaMigrations:
                     raise SnapshotError('migration_target_bundle_changed')
                 bundle=result['bundle_sha256']
             result=await dispatch.request(binding,'schema_migrate',dict(bundle_sha256=bundle,
-                target_schema_version=plan['target_schema_version']),operation_key=key+':apply')
+                target_schema_version=plan['target_schema_version'],
+                **({'sql_files':plan['sql_files']} if 'sql_files' in plan else {})),operation_key=key+':apply')
             if result.get('status')=='rejected':
                 if result.get('retryable'):return False  # existing refresh backoff, existing job retains outcome
                 raise SnapshotError(result['reason'])

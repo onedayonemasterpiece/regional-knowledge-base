@@ -13,6 +13,9 @@ from regional_knowledge.kaggle_schema_owner import SourceSchemaMigrations, reque
 from regional_knowledge.kaggle_pg_snapshot_native import BlobRef, SnapshotError
 from regional_knowledge.kaggle_warm_maintenance import WarmHandlerPatchApproval
 from test_control_spool import env, people
+from test_kaggle_apply import PG
+from test_kaggle_pg_driver import database
+from test_source_activation_pg import image_pg_sql18
 
 
 def test_live_bundle_is_canonical_complete_sql_only():
@@ -23,6 +26,58 @@ def test_live_bundle_is_canonical_complete_sql_only():
                 b'{"sql/002_gap.sql":"Uw=="}'):
         with pytest.raises(MigrationDenied):
             decode_sql_bundle(raw)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('delta',[
+    {'module.py':'print(1)'}, {'../sql/002_escape.sql':'SELECT 2;'},
+    {'sql/003_gap.sql':'SELECT 3;'}, {'sql/001_first.sql':'SELECT 9;'},
+    {'sql/002_next.sql':''}, {'sql/002_next.sql':'x'*(2*1024*1024)},
+])
+async def test_inline_sql_invalid_delta_never_opens_pg(delta):
+    old={'sql/001_first.sql':b'SELECT 1;'}
+    def forbidden():raise AssertionError('invalid SQL delivery reached PG')
+    owner=LiveSchemaMigrations(files=old,acquire=forbidden,current=lambda _:None,
+                               download=None,database=None)
+    with pytest.raises(MigrationDenied):
+        await owner('schema_migrate',dict(target_schema_version=2,
+            bundle_sha256='a'*64,sql_files=delta),'invalid',{})
+    assert dict(owner.files)==old
+
+
+@PG
+@pytest.mark.asyncio
+async def test_pg17_inline_nullable_column_keeps_session_frontier_and_ledger(image_pg_sql18):
+    from test_kaggle_schema_migrate import files
+    from test_source_activation_pg import DB,WRITER
+    connection=image_pg_sql18['connection'];old=files();version=len(old)+1
+    name=f'sql/{version:03d}_inline_probe.sql'
+    body='ALTER TABLE rkb_v4.sources ADD COLUMN inline_probe text;'
+    target=dict(old,**{name:body.encode()})
+    @asynccontextmanager
+    async def acquire():yield connection
+    async def state():
+        async with connection.transaction():
+            pid=(await (await connection.execute('SELECT pg_backend_pid()')).fetchone())[0]
+            frontier=await (await connection.execute('SELECT * FROM rkb_v4.read_frontier')).fetchall()
+            return pid,frontier
+    before=await state()
+    owner=LiveSchemaMigrations(files=old,acquire=acquire,current=lambda _:None,
+        download=None,database=NS(database_generation=DB,writer_generation=WRITER))
+    args=dict(target_schema_version=version,bundle_sha256=bundle_hash(target),sql_files={name:body})
+    first=await owner('schema_migrate',args,'inline-probe',{})
+    assert first['schema_version']==version and first['checkpoint_required']
+    assert await state()==before
+    async with connection.transaction():
+        assert (await (await connection.execute("SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_schema='rkb_v4' AND table_name='sources' AND column_name='inline_probe'")).fetchone())==('YES',)
+        ledger=await (await connection.execute('SELECT * FROM rkb_v4.schema_migrations ORDER BY version')).fetchall()
+    assert (await owner('schema_migrate',args,'inline-probe',{}))['schema_version']==version
+    async with connection.transaction():
+        assert await (await connection.execute('SELECT * FROM rkb_v4.schema_migrations ORDER BY version')).fetchall()==ledger
+    with pytest.raises(MigrationDenied,match='file_changed'):
+        await owner('schema_migrate',dict(args,sql_files={name:body+' -- changed'}),'changed',{})
+    assert await state()==before
 
 
 @pytest.mark.asyncio
@@ -51,7 +106,8 @@ async def test_live_sql_delivery_pins_bytes_retains_process_and_never_changes_ol
 
 @pytest.mark.asyncio
 async def test_schema_migration_requires_actual_pg_writer_and_reconciles_same_version(monkeypatch):
-    files={'sql/001_first.sql':b'SELECT 1;', 'sql/002_next.sql':b'SELECT 2;'}
+    old={'sql/001_first.sql':b'SELECT 1;'}
+    files=dict(old, **{'sql/002_next.sql':b'SELECT 2;'})
     state=dict(version=1,retired=True);effects=[]
     class Cursor:
         def __init__(self,row):self.row=row
@@ -71,12 +127,13 @@ async def test_schema_migration_requires_actual_pg_writer_and_reconciles_same_ve
         effects.append(2);state['version']=2
         return (2,)
     monkeypatch.setattr('regional_knowledge.kaggle_schema_live.migrate',migrate)
-    owner=LiveSchemaMigrations(files=files,acquire=acquire,current=lambda _:None,
+    owner=LiveSchemaMigrations(files=old,acquire=acquire,current=lambda _:None,
         download=None,database=NS(database_generation='db',writer_generation='writer'))
-    args=dict(target_schema_version=2,bundle_sha256=bundle_hash(files))
+    args=dict(target_schema_version=2,bundle_sha256=bundle_hash(files),
+              sql_files={'sql/002_next.sql':'SELECT 2;'})
     with pytest.raises(MigrationDenied,match='writer_changed'):
         await owner('schema_migrate',args,'same-step',{})
-    assert not effects
+    assert not effects and dict(owner.files)==old
     state['retired']=False
     result=await owner('schema_migrate',args,'same-step',{})
     assert result['schema_version']==2 and result['checkpoint_required']
@@ -110,6 +167,7 @@ async def test_controller_holds_barrier_across_lost_checkpoint_and_restart_befor
     async def request(binding,phase,args,*,operation_key):
         assert phase=='schema_migrate'
         assert args['target_schema_version']==13
+        assert args['sql_files']=={'sql/012_next.sql':'SELECT 12;','sql/013_next.sql':'SELECT 13;'}
         effects.extend(range(ledger[0]+1,14));ledger[0]=13
         return dict(schema_version=13,latest_schema_version=13,checkpoint_required=True)
     async def checkpoint(binding,*,schema_version,operation_key,expected_sequence):
@@ -123,7 +181,8 @@ async def test_controller_holds_barrier_across_lost_checkpoint_and_restart_befor
         restorer=NS(complete=True,dispatch=NS(request=request)),
         dataset_checkpoints=NS(checkpoint_schema=checkpoint))
     options=dict(target_schema_version=13,bundle_sha256='a'*64,
-                 database_generation='db',writer_generation='writer',run_id='run')
+                 database_generation='db',writer_generation='writer',run_id='run',
+                 sql_files={'sql/012_next.sql':'SELECT 12;','sql/013_next.sql':'SELECT 13;'})
     key=request_migration(env.q,**options)
     assert request_migration(env.q,**options)==key
     owner=SourceSchemaMigrations(startup)

@@ -1,15 +1,15 @@
-"""Live SQL artifact delivery over the retained recovery transfer and WSS owner.
+"""Trusted controller SQL delivery through the existing authenticated WSS owner.
 
-Only a complete immutable SQL prefix can be staged. Python, paths and SQL text
-are not command arguments; the approved blob travels through the existing exact
-size/SHA/ETag download adapter. The resident model and serving pool stay owned by
-TargetRuntime.
+New numbered UTF-8 files may travel inline; the full target manifest hash and
+immutable applied-file ledger remain checked. No Python or arbitrary paths are
+accepted. The resident model and serving pool stay owned by TargetRuntime.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
+import re
 from pathlib import Path
 from types import MappingProxyType
 
@@ -17,6 +17,18 @@ from .kaggle_schema_migrate import MigrationDenied, bundle_migrations, migrate
 from .kaggle_warm_maintenance import WarmHandlerPatchApproval
 
 MAX_SQL_BUNDLE_BYTES = 2 * 1024 * 1024
+# Leave room for the fixed run/claim/writer envelope in the 2 MiB WSS frame.
+MAX_INLINE_SQL_BYTES = MAX_SQL_BUNDLE_BYTES-4096
+
+
+def inline_sql_files(value):
+    if (type(value) is not dict or not value
+            or any(type(k) is not str or re.fullmatch(r'sql/[0-9]{3}_[a-z0-9_]+\.sql',k) is None
+                   or type(v) is not str or not v for k,v in value.items())):
+        raise MigrationDenied('migration_inline_sql_files_required')
+    if len(json.dumps(value,ensure_ascii=False,separators=(',',':')).encode())>MAX_INLINE_SQL_BYTES:
+        raise MigrationDenied('migration_bundle_budget')
+    return {key:text.encode('utf-8') for key,text in value.items()}
 
 
 def bundle_hash(files):
@@ -94,11 +106,20 @@ class LiveSchemaMigrations:
             finally:
                 path.unlink(missing_ok=True)
             return self.receipt()
-        if phase != "schema_migrate" or set(args) != {"target_schema_version", "bundle_sha256"}:
+        required={"target_schema_version", "bundle_sha256"}
+        if phase != "schema_migrate" or not required<=set(args) or set(args)-required-{'sql_files'}:
             raise MigrationDenied("migration_phase_arguments")
-        latest = len(bundle_migrations(self.files))
+        candidate=dict(self.files)
+        if 'sql_files' in args:
+            for key,body in inline_sql_files(args['sql_files']).items():
+                if key in candidate and candidate[key]!=body:
+                    raise MigrationDenied('migration_file_changed')
+                candidate[key]=body
+            if len(encode_sql_bundle(candidate))>MAX_SQL_BUNDLE_BYTES:
+                raise MigrationDenied('migration_bundle_budget')
+        latest = len(bundle_migrations(candidate))
         if (type(args['target_schema_version']) is not int or args['target_schema_version']!=latest
-                or args["bundle_sha256"] != bundle_hash(self.files)):
+                or args["bundle_sha256"] != bundle_hash(candidate)):
             raise MigrationDenied("migration_version_changed")
         async with self.acquire() as connection:
             async def writer_fence(connection):
@@ -113,6 +134,7 @@ class LiveSchemaMigrations:
                 from .kaggle_owned_pg import configure_migration_defaults
                 await configure_migration_defaults(connection)
             self.current(frame)
+            self.files=MappingProxyType(candidate)
             applied = await migrate(connection, self.files, before_file=writer_fence)
             async with connection.transaction():
                 version = (await (await connection.execute(
