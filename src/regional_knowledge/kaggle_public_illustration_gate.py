@@ -32,6 +32,7 @@ from PIL import Image, UnidentifiedImageError
 from .contracts import Principal
 from .read_authority import ReadAuthority, VerifiedReadAuthority
 from .source_read_gate import SourceReadGate, binding_key
+from .source_activation import MEDIA_HASH_IDENTIFIERS,media_crop_identity
 
 
 class PublicMediaUnavailable(PermissionError):
@@ -102,10 +103,10 @@ class NativeMediaSnapshot:
     eligibility_revision: int
     accepted: bool
     withdrawn: bool
-    original_sha256: str
-    origin_original_sha256: str
-    media_candidate_sha256: str
-    media_origin_sha256: str
+    original_sha256: str | None
+    origin_original_sha256: str | None
+    media_candidate_sha256: str | None
+    media_origin_sha256: str | None
     item: dict[str, Any] = field(repr=False)
     manifest_page: dict[str, Any] = field(repr=False)
     manifest_region: dict[str, Any] = field(repr=False)
@@ -139,19 +140,35 @@ class ArchiveOpaqueProof:
     owner: object = field(repr=False, compare=False)
 
 
+def _snapshot_identity(row):
+    """Retain source/geometry/locator fences while allowing media ID refresh."""
+    if type(row) is not NativeMediaSnapshot:
+        _fail('untrusted_media_snapshot')
+    value=dict(vars(row))
+    for key in ('original_sha256','origin_original_sha256',
+                'media_candidate_sha256','media_origin_sha256'):
+        value.pop(key)
+    value['manifest_page']={k:v for k,v in row.manifest_page.items()
+        if k not in ('source_image_receipt_sha256','image_sha256')}
+    value['item']=dict(row.item,crop_binding=media_crop_identity(row.item['crop_binding']))
+    value['archive_state']=dict(row.archive_state,
+        binding=media_crop_identity(row.archive_state['binding']))
+    return value
+
+
 @dataclass(frozen=True)
 class IssuedArtifactBytes:
     """Private bytes returned by the EXISTING, independent archive issuer only.
 
     A caller string/ref is not proof. The archive owner must return the exact
-    owner-held ArchiveOpaqueProof object and immutable SHA-bound real crop bytes.
+    owner-held ArchiveOpaqueProof object and actual encoded crop bytes.
     Nothing in this structure is exposed as a public frame or locator.
     """
 
     proof: ArchiveOpaqueProof
     data: bytes = field(repr=False)
     mime_type: str
-    sha256: str
+    sha256: str | None
 
 
 @dataclass(frozen=True, eq=False)
@@ -262,12 +279,12 @@ class PublicIllustrationOutputGate:
         if type(source) is not NativeMediaSnapshot:
             _fail("untrusted_media_snapshot")
         binding = source.item.get("crop_binding") if type(source.item) is dict else None
-        if type(binding) is not dict or set(binding) != {
+        required={
             "source_id", "source_revision", "illustration_id", "page_id",
             "source_region_id", "bbox", "display_rotation_degrees",
-            "source_image_receipt_sha256", "source_raster_sha256",
-            "original_sha256", "rendition",
-        }:
+            "rendition"}
+        if (type(binding) is not dict or not required<=binding.keys()
+                or set(binding)-required-MEDIA_HASH_IDENTIFIERS):
             _fail("invalid_media_crop_binding")
         return binding
 
@@ -279,10 +296,6 @@ class PublicIllustrationOutputGate:
                 or row.accepted is not True or row.withdrawn is not False
                 or type(row.source_revision) is not int or row.source_revision != 1
                 or type(row.eligibility_revision) is not int or row.eligibility_revision < 1
-                or not _digest(row.original_sha256)
-                or row.origin_original_sha256 != row.original_sha256
-                or not _digest(row.media_candidate_sha256)
-                or row.media_candidate_sha256 != row.media_origin_sha256
                 or row.native_reader_sha256 != self.reader_sha
                 or type(row.database_generation) is not str
                 or row.database_generation != expected_key[3]
@@ -341,20 +354,15 @@ class PublicIllustrationOutputGate:
                 or region.get("kind") != "figure"
                 or region.get("bbox") != item.get("bbox")
                 or item.get("visual_description_provenance") != "model_observation"
-                or crop != dict(
+                or media_crop_identity(crop) != dict(
                     source_id=source_id, source_revision=row.source_revision,
                     illustration_id=illustration_id, page_id=item.get("page_id"),
                     source_region_id=item.get("source_region_id"),
                     bbox=item.get("bbox"),
                     display_rotation_degrees=item.get("display_rotation_degrees"),
-                    source_image_receipt_sha256=page.get("source_image_receipt_sha256"),
-                    source_raster_sha256=page.get("image_sha256"),
-                    original_sha256=row.original_sha256, rendition="preview",
+                    rendition="preview",
                 )):
             _fail("media_page_region_crop_mismatch")
-        for k in ("source_image_receipt_sha256", "image_sha256"):
-            if not _digest(page.get(k)):
-                _fail("invalid_media_image_digest")
         if not all(_uuid(item.get(k)) for k in
                    ("illustration_id", "page_id", "source_region_id")):
             _fail("invalid_media_identity")
@@ -371,8 +379,11 @@ class PublicIllustrationOutputGate:
                 or public_row["archive_status"] != row.archive_state.get("status")):
             _fail("native_media_reader_projection_mismatch")
         try:
+            archive_binding=row.archive_state['binding']
+            if media_crop_identity(archive_binding)!=media_crop_identity(crop):
+                _fail('native_media_archive_binding_mismatch')
             archive = self.validate_archive_state(
-                row.archive_state, binding=crop,
+                row.archive_state, binding=archive_binding,
                 archive_chat_id=row.archive_chat_id,
                 archive_topic_id=row.archive_topic_id)
         except (ValueError, TypeError, KeyError):
@@ -471,7 +482,6 @@ class PublicIllustrationOutputGate:
                     or proof.source_id != source_id
                     or proof.illustration_id != illustration_id
                     or proof.archive_scope != first.archive_scope
-                    or proof.binding_sha256 != _hash(crop)
                     or type(proof.ref) is not str
                     or re.fullmatch(r"rkb-art-[0-9a-f]{64}",proof.ref) is None
                     or self.archive.issuance_current(proof) is not True):
@@ -482,7 +492,7 @@ class PublicIllustrationOutputGate:
             second = await self.native_read(
                 source_id, illustration_id, verified.person_id, binding)
             await self._after_await(verified, binding, key)
-            if second != first:
+            if _snapshot_identity(second) != _snapshot_identity(first):
                 _fail("media_source_changed_during_read")
             self._proof(second, source_id=source_id,
                         illustration_id=illustration_id, expected_key=key)
@@ -577,9 +587,7 @@ class PublicIllustrationOutputGate:
                     or blob.proof is not retained.archive_proof
                     or type(blob.data) is not bytes
                     or not 1 <= len(blob.data) <= 256 * 1024
-                    or blob.mime_type not in ("image/png", "image/jpeg", "image/webp")
-                    or not _digest(blob.sha256)
-                    or _sha(blob.data) != blob.sha256):
+                    or blob.mime_type not in ("image/png", "image/jpeg", "image/webp")):
                 _fail("media_issued_bytes_binding_changed")
             # MIME and dimensions are evidence about actual encoded pixels,
             # not an image filename, provider locator or model-authored label.
@@ -597,7 +605,7 @@ class PublicIllustrationOutputGate:
                 retained.source_snapshot.illustration_id,
                 retained.actor.person_id, retained.binding)
             await self._after_await(retained.actor, retained.binding, retained.binding_identity)
-            if latest != retained.source_snapshot:
+            if _snapshot_identity(latest) != _snapshot_identity(retained.source_snapshot):
                 _fail("media_source_changed_during_image_download")
             self._proof(latest,
                         source_id=retained.source_snapshot.source_id,

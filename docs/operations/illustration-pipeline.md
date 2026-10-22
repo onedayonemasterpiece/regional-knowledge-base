@@ -39,6 +39,12 @@ commands, Dataset snapshots and code artifacts keep their separate integrity
 checks. Media availability and public delivery still require current source
 eligibility, the registered archive locator and authorized pixel geometry.
 
+The public/native readers and final MCP ImageContent rendering follow the same
+rule: source/figure identity, geometry, current authorization and owner-held
+archive proof govern delivery. A different media hash, optional hash identifier
+or re-encoded PNG/JPEG/WebP does not reject those actual pixels. SHA checks on
+code and accepted command receipts remain independent of media delivery.
+
 Search material may include accepted captions and labelled visual observations without overwriting source text. An omitted descriptor can be projected only from the exact accepted shared figure/caption region, recorded as `association_basis=exact_shared_region`. A keyword or neighboring place cannot supply a missing image link. Search ranks source evidence; the agent follows its descriptor and fetches the real image.
 
 Only GEO migrates. Old book/figure/chunk/vector projections are rebuilt by fresh MCP import, not backfilled as accepted target content. Reuse verified original bytes and existing archive infrastructure as permitted; preserve GEO minimal provenance and exact reanchor under the [cutover contract](../migrations/rkb-layers-only-cutover-20261019.md).

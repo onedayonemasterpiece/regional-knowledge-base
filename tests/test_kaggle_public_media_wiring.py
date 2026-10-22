@@ -187,7 +187,7 @@ async def test_archive_has_no_real_byte_issuer_cannot_be_configured(service):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case",["revoke_at_bytes","source_withdraw_at_bytes","native_lease_lost","wrong_sha","bad_image"])
-async def test_actual_handler_blocks_image_after_async_revocation_and_archive_fence(
+async def test_actual_handler_preserves_current_fences_without_media_hash_comparison(
     service,monkeypatch,case):
     s=service
     def changes():
@@ -210,6 +210,10 @@ async def test_actual_handler_blocks_image_after_async_revocation_and_archive_fe
         pixels.read_issued_bytes=corrupted
     async with c.startup.lifespan(None):
         data,wire=await call_http(c)
+        if case=='wrong_sha':
+            assert data['result']['isError'] is False
+            assert data['result']['content'][1]['type']=='image'
+            return
         assert data["result"]["isError"] is True
         assert data["result"]["content"][0]["type"]=="text"
         assert '"status":"unavailable"' in data["result"]["content"][0]["text"]

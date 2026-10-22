@@ -23,6 +23,7 @@ MATERIALIZE_CODEC = 'rkb.source-materialize.v1'
 ACTIVATION_CODEC = 'rkb.source-activate.v1'
 PROJECTION_CODEC = 'rkb.source-activation-projection.v1'
 IMAGE_MANIFEST_CODEC = 'rkb.source-image-manifest.v1'
+MEDIA_HASH_IDENTIFIERS = frozenset({'source_image_receipt_sha256','source_raster_sha256','original_sha256'})
 ACTIVATION_REVISIONS = Revisions('rkb-v4-sql001-014-v1',
     'rkb-v4-native-source-activation-v1', 'rkb-python-apply-native-source-v1')
 ACTIVATION_DEPENDENCY = DependencySpec(ACTIVATE_ROUTE, 'public_source', frozenset({'source_id'}), 'shared', False)
@@ -30,6 +31,13 @@ MAX_KNOWLEDGE_BYTES = 32 * 1024 * 1024
 PAGE_KEYS = ('page_id physical_page_index printed_page_number width height source_image_receipt_sha256 '
              'issued_image_receipt_b64 image_sha256 preview_render source_material source_review_note')
 REGION_KEYS = 'region_id region_key page_id kind bbox reading_order column_id text_sha256 source_text_provenance'
+
+
+def media_crop_identity(binding):
+    """Accepted source/figure geometry, independent of media representation IDs."""
+    if type(binding) is not dict:
+        raise ValueError('media crop metadata required')
+    return {key:value for key,value in binding.items() if key not in MEDIA_HASH_IDENTIFIERS}
 
 
 def knowledge_bytes(resolved):

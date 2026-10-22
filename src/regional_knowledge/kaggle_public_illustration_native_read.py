@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import math
-import re
 from collections.abc import Callable
 from uuid import UUID
 
@@ -23,6 +23,7 @@ from psycopg.rows import tuple_row
 
 from .kaggle_public_illustration_gate import NativeMediaSnapshot, _canonical
 from .source_read_gate import binding_key
+from .source_activation import MEDIA_HASH_IDENTIFIERS,media_crop_identity
 
 SQL014_SHA256 = "5f8257e9fe58e2e2bdd00f67042ad17b8db007c7873dcc04f52d53be3523e855"
 SQL015_SHA256 = "7faacbf7fbb2b99f0dbdbd4339dea5138f134347e31a6be09577dff35be8c773"
@@ -76,14 +77,6 @@ WHERE s.source_id=%s::uuid AND i.illustration_id=%s::uuid
  AND manifest.manifest->>'source_id'=s.source_id::text
  AND manifest.manifest->'source_revision'='1'::jsonb
  AND manifest.manifest->>'codec'='rkb.source-image-manifest.v1'
- AND manifest.original_receipt=decode(manifest.manifest->>'original_receipt_b64','base64')
- AND encode(sha256(manifest.original_receipt),'hex')=imported.original_receipt_sha256
- AND imported.payload_sha256=manifest.payload_sha256
- AND image_origin.activation_payload_sha256=manifest.payload_sha256
- AND image_origin.knowledge_sha256=activation.knowledge_sha256
- AND media.knowledge_sha256=activation.knowledge_sha256
- AND media_origin.knowledge_sha256=activation.knowledge_sha256
- AND media_origin.media_sha256=media.media_sha256
  AND image_origin.operation_key=media_origin.operation_key
  AND image_origin.command_sha256=media_origin.command_sha256
  AND accepted.database_generation=recovery.database_generation
@@ -133,10 +126,6 @@ def _uuid(value) -> bool:
         return False
 
 
-def _sha256(value) -> bool:
-    return type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None
-
-
 def _row_to_snapshot(values, *, source_id: str, illustration_id: str,
                      reader_key: tuple, archive_chat_id: int,
                      archive_topic_id: int, archive_scope: str) -> NativeMediaSnapshot:
@@ -147,10 +136,6 @@ def _row_to_snapshot(values, *, source_id: str, illustration_id: str,
             or d["accepted"] is not True or d["withdrawn"] is not False
             or type(d["source_revision"]) is not int or d["source_revision"] != 1
             or type(d["eligibility_revision"]) is not int or d["eligibility_revision"] < 1
-            or not _sha256(d["original_sha256"])
-            or d["origin_original_sha256"] != d["original_sha256"]
-            or not _sha256(d["media_candidate_sha256"])
-            or d["media_candidate_sha256"] != d["media_origin_sha256"]
             or d["database_generation"] != reader_key[3]
             or type(d["observed_data_seq"]) is not int
             or type(d["observed_projection_seq"]) is not int
@@ -166,12 +151,12 @@ def _row_to_snapshot(values, *, source_id: str, illustration_id: str,
     if any(type(v) is not dict for v in (item, page, region)):
         _deny()
     binding = item.get("crop_binding")
-    if type(binding) is not dict or set(binding) != {
+    required={
         "source_id", "source_revision", "illustration_id", "page_id",
         "source_region_id", "bbox", "display_rotation_degrees",
-        "source_image_receipt_sha256", "source_raster_sha256",
-        "original_sha256", "rendition",
-    }:
+        "rendition"}
+    if (type(binding) is not dict or not required<=binding.keys()
+            or set(binding)-required-MEDIA_HASH_IDENTIFIERS):
         _deny()
     if (item.get("illustration_id") != illustration_id
             or page.get("page_id") != item.get("page_id")
@@ -179,32 +164,33 @@ def _row_to_snapshot(values, *, source_id: str, illustration_id: str,
             or region.get("page_id") != page.get("page_id")
             or region.get("kind") != "figure"
             or region.get("bbox") != item.get("bbox")
-            or not _sha256(page.get("source_image_receipt_sha256"))
-            or not _sha256(page.get("image_sha256"))
-            or binding != dict(
+            or media_crop_identity(binding) != dict(
                 source_id=source_id, source_revision=1,
                 illustration_id=illustration_id, page_id=item.get("page_id"),
                 source_region_id=item.get("source_region_id"),
                 bbox=item.get("bbox"),
                 display_rotation_degrees=item.get("display_rotation_degrees"),
-                source_image_receipt_sha256=page["source_image_receipt_sha256"],
-                source_raster_sha256=page["image_sha256"],
-                original_sha256=d["original_sha256"], rendition="preview")):
+                rendition="preview")):
         _deny()
     persisted = d["archive_binding_bytes"]
     if type(persisted) is memoryview:
         persisted = persisted.tobytes()
     if (type(persisted) is not bytes or not 1 <= len(persisted) <= 8192
-            or persisted != _canonical(binding)
-            or d["archive_operation_key"] !=
-                "illustration:" + hashlib.sha256(persisted).hexdigest()):
+            or type(d['archive_operation_key']) is not str
+            or not 1<=len(d['archive_operation_key'])<=256):
+        _deny()
+    try:
+        archived_binding=json.loads(persisted)
+        if media_crop_identity(archived_binding)!=media_crop_identity(binding):
+            _deny()
+    except (ValueError,TypeError):
         _deny()
     photo, document = d["photo"], d["document"]
     if (photo is not None and type(photo) is not dict
             or document is not None and type(document) is not dict
             or photo is None and document is None):
         _deny()
-    archive_state = dict(status="ready", binding=binding,
+    archive_state = dict(status="ready", binding=archived_binding,
                          operation_key=d["archive_operation_key"],
                          photo=photo, document=document)
     public_row = dict(
