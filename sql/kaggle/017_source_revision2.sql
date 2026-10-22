@@ -85,6 +85,27 @@ CREATE TABLE rkb_v4.source_revision2_semantic(
  source_graph jsonb, image_manifest jsonb NOT NULL,
  payload_sha256 text NOT NULL CHECK(payload_sha256~'^[0-9a-f]{64}$')
 );
+
+CREATE TABLE rkb_v4.source_revision2_finding_versions(
+ source_id uuid NOT NULL,source_revision bigint NOT NULL CHECK(source_revision=2),
+ assertion_id uuid NOT NULL,candidate_key text NOT NULL,
+ proposition text NOT NULL CHECK(length(proposition) BETWEEN 1 AND 500),
+ data jsonb NOT NULL CHECK(jsonb_typeof(data)='object'),
+ PRIMARY KEY(source_id,assertion_id),UNIQUE(source_id,candidate_key),
+ FOREIGN KEY(source_id,source_revision) REFERENCES rkb_v4.revisions
+);
+CREATE TABLE rkb_v4.source_revision2_story_versions(
+ source_id uuid NOT NULL,source_revision bigint NOT NULL CHECK(source_revision=2),
+ story_id uuid NOT NULL,variant_id uuid NOT NULL,
+ variant_revision bigint NOT NULL CHECK(variant_revision=1),
+ body text NOT NULL CHECK(length(body) BETWEEN 1 AND 4000),
+ body_sha256 text NOT NULL CHECK(body_sha256=encode(sha256(convert_to(body,'UTF8')),'hex')),
+ data jsonb NOT NULL CHECK(jsonb_typeof(data)='object'),
+ PRIMARY KEY(source_id,story_id),UNIQUE(source_id,variant_id),
+ FOREIGN KEY(source_id,source_revision) REFERENCES rkb_v4.revisions
+);
+CREATE INDEX source_revision2_findings_source ON rkb_v4.source_revision2_finding_versions(source_id,source_revision);
+CREATE INDEX source_revision2_stories_source ON rkb_v4.source_revision2_story_versions(source_id,source_revision);
 -- The old row, original story bodies and original vectors are NEVER updated.
 -- A rejected successor leaves active_revision=1 and every v1 row readable.
 DO $$
@@ -93,7 +114,8 @@ BEGIN
  FOREACH n IN ARRAY ARRAY[
   'source_revision2_sessions','source_revision2_batches','source_revision2_seals',
   'source_revision2_candidates','source_revision2_vectors','source_revision2_materialized',
-  'source_revision2_origins','source_revision2_research_frontier','source_revision2_semantic'] LOOP
+  'source_revision2_origins','source_revision2_research_frontier','source_revision2_semantic',
+  'source_revision2_finding_versions','source_revision2_story_versions'] LOOP
   EXECUTE format('CREATE TRIGGER immutable_%I BEFORE UPDATE OR DELETE ON rkb_v4.%I
                  FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_revision_update()',n,n);
  END LOOP;
@@ -423,7 +445,8 @@ END $$;
 CREATE FUNCTION rkb_v4.apply_source_activate_revision2_v1(p bytea,ids jsonb,expected jsonb,logical_time text)
 RETURNS bytea LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE state rkb_v4.recovery_state;before rkb_v4.read_frontier;doc jsonb;
- wanted uuid;item jsonb;slot_index integer:=0;v public.vector;candidate rkb_v4.source_revision2_candidates;
+ wanted uuid;item jsonb;variant jsonb;story_ref jsonb;slot_index integer:=0;
+ v public.vector;candidate rkb_v4.source_revision2_candidates;
  s rkb_v4.source_revision2_sessions;frontier rkb_v4.read_frontier;
 BEGIN
  SELECT * INTO STRICT state FROM rkb_v4.recovery_state WHERE singleton FOR UPDATE;
@@ -449,6 +472,37 @@ BEGIN
  -- versioned mutators, never a hidden rewrite of human-approved revision1.
  INSERT INTO rkb_v4.source_revision2_semantic VALUES(wanted,2,doc->'semantic',
    doc->'source_graph',doc->'image_manifest',encode(sha256(p),'hex'));
+
+ -- Model-source facts and actual Story.body persist in immutable revision2
+ -- rows in the SAME transaction as active revision2. Never overwrite human
+ -- approved or historical revision1 Story versions.
+ FOR item IN SELECT value FROM jsonb_array_elements(doc->'semantic'->'findings') LOOP
+  IF jsonb_typeof(item->'evidence')<>'array'
+    OR jsonb_array_length(item->'evidence') NOT BETWEEN 1 AND 4
+    OR item->>'candidate_key' IS NULL
+    OR item->>'proposition' IS NULL OR length(item->>'proposition') NOT BETWEEN 1 AND 500 THEN
+   RAISE EXCEPTION 'revision2 finding source evidence incomplete';END IF;
+  INSERT INTO rkb_v4.source_revision2_finding_versions VALUES(
+   wanted,2,(item->>'assertion_id')::uuid,item->>'candidate_key',item->>'proposition',item);
+ END LOOP;
+ FOR item IN SELECT value FROM jsonb_array_elements(doc->'semantic'->'stories') LOOP
+  variant:=item->'default_variant';
+  IF variant IS NULL OR jsonb_typeof(variant->'blocks')<>'array'
+    OR jsonb_array_length(variant->'blocks')<1
+    OR jsonb_typeof(item->'finding_ids')<>'array'
+    OR jsonb_array_length(item->'finding_ids')<1
+    OR length(variant->>'body') NOT BETWEEN 1 AND 4000 THEN
+   RAISE EXCEPTION 'revision2 narrative requires actual evidenced body';END IF;
+  FOR story_ref IN SELECT value FROM jsonb_array_elements(item->'finding_ids') LOOP
+   IF NOT EXISTS(SELECT 1 FROM rkb_v4.source_revision2_finding_versions f
+     WHERE f.source_id=wanted AND f.assertion_id=(story_ref#>>'{}')::uuid) THEN
+    RAISE EXCEPTION 'revision2 Story.body requires exact accepted finding';END IF;
+  END LOOP;
+  INSERT INTO rkb_v4.source_revision2_story_versions VALUES(
+   wanted,2,(item->>'story_id')::uuid,(variant->>'variant_id')::uuid,
+   1,variant->>'body',encode(sha256(convert_to(variant->>'body','UTF8')),'hex'),item);
+ END LOOP;
+
  INSERT INTO rkb_v4.source_revision2_research_frontier VALUES(wanted,2,
    (doc->'research'->>'frontier_id')::uuid,doc->'research'->>'state',
    doc->'research'->'continuation');
@@ -494,7 +548,8 @@ REVOKE ALL ON rkb_v4.source_revision2_sessions,rkb_v4.source_revision2_batches,
  rkb_v4.source_revision2_seals,rkb_v4.source_revision2_candidates,
  rkb_v4.source_revision2_vectors,rkb_v4.source_revision2_materialized,
  rkb_v4.source_revision2_origins,rkb_v4.source_revision2_research_frontier,
- rkb_v4.source_revision2_semantic FROM PUBLIC;
+ rkb_v4.source_revision2_semantic,rkb_v4.source_revision2_finding_versions,
+ rkb_v4.source_revision2_story_versions FROM PUBLIC;
 
 
 -- SQL009's source_passage_metadata_v1 is intentionally immutable: it joins
