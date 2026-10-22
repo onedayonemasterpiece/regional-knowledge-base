@@ -257,3 +257,71 @@ def materialize_handler(*, check_sha256, apply_sha256):
         PgFunction('check_source_materialize_v1', check_sha256),
         PgFunction('apply_source_materialize_v1', apply_sha256), frozenset({'absent_source'}),
         dependency=DependencySpec(MATERIALIZE_ROUTE, 'public_source', frozenset({'source_id'}), 'shared', False))
+
+
+# SQL017: additive processing-revision commands; rev1 accepted bytes untouched.
+REVISION2_ACTIVATE_ROUTE='source.activate.v2'
+REVISION2_MATERIALIZE_ROUTE='source.materialize.v2'
+REVISION2_ACTIVATION_CODEC='rkb.source-activate.v2'
+REVISION2_MATERIALIZE_CODEC='rkb.source-materialize.v2'
+
+
+def validate_revision2_activation_payload(payload, *, materialize=False):
+    if type(payload) is not bytes or not 1<=len(payload)<=2048:
+        raise ValueError('bounded exact revision2 activation required')
+    doc=json.loads(payload)
+    if canonical(doc)!=payload:
+        raise ValueError('exact canonical revision2 activation required')
+    codec=REVISION2_MATERIALIZE_CODEC if materialize else REVISION2_ACTIVATION_CODEC
+    fields='codec source_revision prior_revision ingestion_id batch_count last_batch_sha256 materializer_sha256 predecessor_command_sha256'
+    if materialize:fields+=' ordinal'
+    _keys(doc,fields)
+    if (doc['codec']!=codec or type(doc['source_revision']) is not int or doc['source_revision']!=2
+        or type(doc['prior_revision']) is not int or doc['prior_revision']!=1):
+        raise ValueError('revision2 requires exact revision1 predecessor')
+    _uuid(doc['ingestion_id']);_integer(doc['batch_count'],1,2500)
+    _hash(doc['last_batch_sha256']);_hash(doc['materializer_sha256'])
+    _hash(doc['predecessor_command_sha256'])
+    if materialize:_integer(doc['ordinal'],0,279999)
+    return doc
+
+
+def validate_revision2_activation_command(command):
+    from .kaggle_native_revision2_upgrade import REVISION2_REVISIONS
+    if (type(command) is not ExactCommand or command.kind!='domain_command'
+        or command.route not in (REVISION2_ACTIVATE_ROUTE,REVISION2_MATERIALIZE_ROUTE)
+        or set(command.ids)!={'source_id'}
+        or (command.schema_revision,command.function_revision,command.executor_revision)!=REVISION2_REVISIONS.wire()):
+        raise ValueError('installed revision2 activation command required')
+    _uuid(command.ids['source_id'])
+    doc=validate_revision2_activation_payload(command.payload,
+        materialize=command.route==REVISION2_MATERIALIZE_ROUTE)
+    if command.expected_revisions!=dict(active_revision='1',
+        predecessor_command_sha256=doc['predecessor_command_sha256'],owner_person_id=command.person_id):
+        raise ValueError('exact previous source and owner required')
+    return doc
+
+
+def resolved_revision2_activation_command(*,route,source_id,payload,revisions=None,**identity):
+    from .kaggle_native_revision2_upgrade import REVISION2_REVISIONS
+    if revisions is None:revisions=REVISION2_REVISIONS
+    if revisions!=REVISION2_REVISIONS or route not in (REVISION2_ACTIVATE_ROUTE,REVISION2_MATERIALIZE_ROUTE):
+        raise ValueError('one supported revision2 materialization/activation route required')
+    command=ExactCommand(**identity,route=route,schema_revision=revisions.schema,function_revision=revisions.function,
+        executor_revision=revisions.executor,ids={'source_id':source_id},
+        expected_revisions=dict(active_revision='1',owner_person_id=identity['person_id'],
+            predecessor_command_sha256=payload['predecessor_command_sha256']),
+        payload=canonical(payload))
+    validate_revision2_activation_command(command)
+    return command
+
+
+def revision2_activation_handler(*,route,check_sha256,apply_sha256):
+    from .kaggle_native_revision2_upgrade import REVISION2_REVISIONS
+    if route not in (REVISION2_ACTIVATE_ROUTE,REVISION2_MATERIALIZE_ROUTE):
+        raise ValueError('revision2 only')
+    suffix='source_activate_revision2_v1' if route==REVISION2_ACTIVATE_ROUTE else 'source_materialize_revision2_v1'
+    return HandlerSpec('domain_command',route,REVISION2_REVISIONS,
+        PgFunction('check_'+suffix,check_sha256),PgFunction('apply_'+suffix,apply_sha256),
+        frozenset({'active_revision','predecessor_command_sha256','owner_person_id'}),
+        dependency=DependencySpec(route,'public_source',frozenset({'source_id'}),'shared',False))
