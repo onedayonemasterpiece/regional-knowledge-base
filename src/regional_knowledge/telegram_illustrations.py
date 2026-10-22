@@ -18,6 +18,7 @@ import re
 import secrets
 import time
 from uuid import UUID
+from .source_activation import media_crop_identity
 
 
 class IllustrationArchiveUnknown(RuntimeError):
@@ -176,11 +177,7 @@ class NativeTelegramIllustrations:
                 or type(getattr(native, 'source_revision', None)) is not int
                 or native.source_revision != 1
                 or not _uuid(getattr(native, 'source_id', None))
-                or not _uuid(getattr(native, 'illustration_id', None))
-                or not _digest(getattr(native, 'original_sha256', None))
-                or native.original_sha256 != getattr(native, 'origin_original_sha256', None)
-                or not _digest(getattr(native, 'media_candidate_sha256', None))
-                or native.media_candidate_sha256 != getattr(native, 'media_origin_sha256', None)):
+                or not _uuid(getattr(native, 'illustration_id', None))):
             raise IllustrationArchiveReadUnavailable('native_illustration_source_not_current')
         item=getattr(native, 'item', None)
         state=getattr(native, 'archive_state', None)
@@ -188,13 +185,13 @@ class NativeTelegramIllustrations:
                 or set(state) != {'status','binding','operation_key','photo','document'}
                 or state.get('status') != 'ready'
                 or type(item.get('crop_binding')) is not dict
-                or state.get('binding') != item['crop_binding']):
+                or type(state.get('binding')) is not dict
+                or media_crop_identity(state['binding']) != media_crop_identity(item['crop_binding'])):
             raise IllustrationArchiveReadUnavailable('native_illustration_binding_invalid')
         crop=item['crop_binding']
         if (crop.get('source_id') != native.source_id
                 or crop.get('illustration_id') != native.illustration_id
-                or crop.get('source_revision') != 1
-                or crop.get('original_sha256') != native.original_sha256):
+                or crop.get('source_revision') != 1):
             raise IllustrationArchiveReadUnavailable('native_illustration_binding_invalid')
         # Native private crop evidence comes from the SAME accepted image
         # manifest page+figure. Do not rely on a user/model crop dict alone;
@@ -213,17 +210,12 @@ class NativeTelegramIllustrations:
                 or crop.get('source_region_id') != item.get('source_region_id')
                 or crop.get('bbox') != item.get('bbox')
                 or crop.get('display_rotation_degrees') != item.get('display_rotation_degrees')
-                or crop.get('source_image_receipt_sha256') != page.get('source_image_receipt_sha256')
-                or crop.get('source_raster_sha256') != page.get('image_sha256')
-                or not _digest(page.get('source_image_receipt_sha256'))
-                or not _digest(page.get('image_sha256'))
                 or getattr(native,'archive_chat_id',None) != self.chat_id
                 or getattr(native,'archive_topic_id',None) != self.topic_id):
             raise IllustrationArchiveReadUnavailable('native_illustration_figure_crop_changed')
         crop_bytes=_canonical(crop)
-        if (len(crop_bytes) > 8192
-                or state.get('operation_key') !=
-                    'illustration:' + hashlib.sha256(crop_bytes).hexdigest()):
+        if (len(crop_bytes) > 8192 or type(state.get('operation_key')) is not str
+                or not 1 <= len(state['operation_key']) <= 256):
             raise IllustrationArchiveReadUnavailable('native_illustration_operation_changed')
         # Preserve a lossless document over a potentially resized Telegram
         # photo when both have been registered. Never choose a caller locator.
