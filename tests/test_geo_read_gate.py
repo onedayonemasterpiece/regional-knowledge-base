@@ -161,3 +161,23 @@ async def test_retained_terminal_geo_spool_and_gate_survive_current_registry_wit
     gated=await gate.finish(permit,result(manifest,commands))
     assert gate.issuance_current(gated.ticket)
     gate.release(gated.ticket)
+
+
+@pytest.mark.asyncio
+async def test_old_unapplied_spool_entry_never_executes_through_current_registry(env):
+    from regional_knowledge.control_spool import SpoolError
+    from regional_knowledge.kaggle_current_registry import current_registry
+    manifest=build_geo_whitelist(**snapshot()).require_ready()
+    command=plan_geo_manifest(manifest).commands(first_sequence=1,operation_key='old-pending',request_id='old-pending',
+        person_id=env.p.owner.subject,logical_time='2026-10-20T18:00:00Z')[0]
+    env.spool.registry=HandlerRegistry([geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256='1'*64,apply_sha256='2'*64)])
+    await env.spool.stage_domain_command(env.p.admin,command,database_generation='db-source')
+    await env.spool.seal(env.p.admin,command.operation_key,writer_generation='writer-1',predecessor=None)
+    env.spool.registry=current_registry()
+    class ForbiddenPg:
+        async def execute(self,*args,**kwargs):pytest.fail('historical pending command reached PG')
+    with pytest.raises(SpoolError):
+        await env.spool.apply(command.operation_key,ForbiddenPg(),writer_generation='writer-1')
+    row=env.spool._row(command.operation_key)
+    assert bytes(row['command_bytes'])==command.encode() and row['apply_state']=='NOT_SENT'
+    assert row['apply_bytes'] is None
