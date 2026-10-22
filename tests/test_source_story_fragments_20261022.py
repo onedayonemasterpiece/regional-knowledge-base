@@ -235,3 +235,50 @@ async def test_pg_native_materializer_last_fragment_ordinal_full_body_and_replay
                and f[2] == offsets[i]["end"] for i, f in enumerate(fragments))
     assert all(f[3] <= 512 and f[4] == digest(LONG_BODY[f[1]:f[2]].encode())
                for f in fragments)
+
+
+@PG
+@pytest.mark.asyncio
+async def test_native_source_requires_sql018_even_for_short_body(image_pg):
+    """The resident materializer never selects an obsolete SQL014 ordinal path."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from psycopg.errors import UndefinedFunction
+    from regional_knowledge.kaggle_source_materializer import NativeSourceMaterializer
+    from test_source_activation_pg import DB, WRITER
+
+    env = image_pg  # Explicit SQL014-only fixture: SQL018 is not installed.
+    sample = json.loads(authored_batch())
+    await stage_all(env, [sample])
+    tokenized, encoded = [], []
+
+    async def count(value):
+        tokenized.append(value)
+        return len(value.split()) + 2
+
+    async def encode(value):
+        encoded.append(value)
+        return [1.0] + [0.0] * 1023
+
+    @asynccontextmanager
+    async def acquire():
+        yield env["connection"]
+
+    native = NativeSourceMaterializer(count=count, encode=encode, current=lambda: True)
+    command = stage_command(seal(1, digest(canonical(sample))),
+                            env["sequence"] + 1, SEAL_ROUTE)
+    await env["journal"].seal([command], predecessor=await env["journal"].head(),
+                              writer_generation=WRITER)
+    with pytest.raises(UndefinedFunction):
+        await native(command, acquire=acquire,
+                     database=SimpleNamespace(database_generation=DB,
+                                              writer_generation=WRITER))
+    assert tokenized == encoded == []
+    async with env["connection"].transaction():
+        installed = await (await env["connection"].execute(
+            "SELECT to_regprocedure('rkb_v4.source_activation_total_inputs_v2(jsonb)')"
+        )).fetchone()
+        assert installed == (None,)
+        assert await (await env["connection"].execute(
+            "SELECT count(*) FROM rkb_v4.source_activation_candidates"
+        )).fetchone() == (0,)
