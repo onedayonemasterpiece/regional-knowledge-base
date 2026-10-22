@@ -210,7 +210,15 @@ class NativeDrillMigrate:
             valid=(encode(manifest)==raw and encode(current)==control
                 and len(raw)==checkpoint.manifest.size and sha(raw)==checkpoint.manifest.sha256
                 and len(control)==checkpoint.control.size and sha(control)==checkpoint.control.sha256
-                and args['manifest_ref']=={'sha256':sha(raw)}
+                and type(args['manifest_ref']) is dict
+                and set(args['manifest_ref'])=={'key','sha256','length','last_sequence'}
+                and isinstance(args['manifest_ref']['key'],str)
+                and 1<=len(args['manifest_ref']['key'])<=1024
+                and args['manifest_ref']['sha256']==sha(raw)
+                and type(args['manifest_ref']['length']) is int
+                and args['manifest_ref']['length']==len(raw)
+                and type(args['manifest_ref']['last_sequence']) is int
+                and args['manifest_ref']['last_sequence']==checkpoint.base_sequence
                 and manifest['versions']==args['expected_versions']
                 and manifest['blob']==args['blob']
                 and manifest['database_generation']==checkpoint.database_generation
