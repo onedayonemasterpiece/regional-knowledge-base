@@ -154,19 +154,18 @@ class RecoveryPhaseDispatch:
                 raise StaleClaim('recovery assignment changed')
             identity=json.loads(job['identity'])
             payload=dict(id=job_id,claim=job['claim'],kind='recovery_phase',**identity)
-        if identity['phase'] in ('prepare','drill_prepare','read_handler_stage','schema_bundle_stage','dataset_verify'):
+        if identity['phase'] in ('prepare','drill_prepare','schema_bundle_stage','dataset_verify'):
             # Kernel metadata readback drops Dataset version qualifiers.
             # Resolve an exact-version SDK download ticket instead of claiming
             # a mounted version observation from our own intended pin.
             if self.snapshot_tickets is None:
                 raise PermissionError('current signed artifact transfer owner required')
             from .kaggle_pg_snapshot_native import BlobRef
-            if identity['phase'] in ('read_handler_stage','schema_bundle_stage'):
+            if identity['phase']=='schema_bundle_stage':
                 from .kaggle_warm_maintenance import WarmHandlerPatchApproval
-                from .kaggle_warm_read import MAX_MODULE_BYTES
                 approval=WarmHandlerPatchApproval.from_wire(identity['arguments']['artifact'])
                 from .kaggle_schema_live import MAX_SQL_BUNDLE_BYTES
-                limit=MAX_SQL_BUNDLE_BYTES if identity['phase']=='schema_bundle_stage' else MAX_MODULE_BYTES
+                limit=MAX_SQL_BUNDLE_BYTES
                 if not 1<=approval.blob.size<=limit:
                     raise SnapshotError('read_handler_artifact_budget')
                 artifact=approval.blob
@@ -290,13 +289,14 @@ class WssSnapshotPhases:
         return await self.dispatch.request(binding,'read_handler_status',{},
             operation_key=sha(encode([self.operation,'read_handler_status',secrets.token_hex(24)])))
 
-    async def stage_read_handler(self,binding,approval,*,expected_loaded_sha256,expected_generation):
-        """Stage only a trusted-owner reviewed immutable blob, never Python wire bytes."""
-        from .kaggle_warm_maintenance import WarmHandlerPatchApproval
-        from .kaggle_warm_read import MAX_MODULE_BYTES
-        if type(approval) is not WarmHandlerPatchApproval or approval.blob.size>MAX_MODULE_BYTES:
-            raise SnapshotError('reviewed_read_handler_artifact_required')
-        return await self._call(binding,'read_handler_stage',dict(artifact=approval.wire(),
+    async def stage_read_handler(self,binding,*,handler_source,reviewed_commit,
+            expected_loaded_sha256,expected_generation):
+        """Send reviewed stateless source inline over the same authenticated WSS."""
+        from .kaggle_warm_maintenance import inline_handler_bytes
+        digest=sha(handler_source.encode('utf-8')) if type(handler_source) is str else ''
+        inline_handler_bytes(handler_source,digest,reviewed_commit)
+        return await self._call(binding,'read_handler_stage',dict(handler_source=handler_source,
+            handler_sha256=digest,reviewed_commit=reviewed_commit,
             expected_loaded_sha256=expected_loaded_sha256,expected_generation=expected_generation))
 
     async def activate_read_handler(self,binding,*,staged_sha256,expected_loaded_sha256,expected_generation):
