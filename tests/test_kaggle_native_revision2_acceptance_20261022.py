@@ -19,7 +19,8 @@ import psycopg
 from psycopg.types.json import Jsonb
 import pytest
 
-from regional_knowledge.kaggle_apply import HandlerRegistry, ApplyConflict, StaleWriter
+from regional_knowledge.kaggle_apply import HandlerRegistry
+from regional_knowledge.recovery_journal import JournalConflict
 from regional_knowledge.kaggle_native_source_upgrade import (
     NativeSourceMigration, native_source_upgrade_handler, resolved_native_source_upgrade,
 )
@@ -261,8 +262,8 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
         assert replay.duplicate and replay.outcome
         different=replace(command,payload=canonical({**doc,"research":{
             **doc["research"],"state":"complete","continuation":{}}}))
-        with pytest.raises(ApplyConflict):
-            await _accepted(env,different)  # same operation key / different bytes
+        with pytest.raises(JournalConflict,match="another exact accepted command occupies this sequence"):
+            await _accepted(env,different)  # same accepted sequence / changed bytes
 
         stage_head=digest(canonical(doc))
         seal_payload=dict(codec=REVISION2_SEAL_CODEC,source_revision=2,prior_revision=1,
