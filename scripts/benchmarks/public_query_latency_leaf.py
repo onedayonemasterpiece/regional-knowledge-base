@@ -400,12 +400,16 @@ async def run_public_workload(questions: Mapping[str, str],
         elapsed_seconds=round(time.monotonic()-started,3))
 
 
-def analyze(client: Sequence[dict], telemetry: Sequence[dict]) -> tuple[dict, list[dict]]:
-    """Join actual ReadTrace → controller terminal → native events.
+def analyze(client: Sequence[dict], telemetry: Sequence[dict],
+            *, profile: str) -> tuple[dict, list[dict]]:
+    """Never infer a whole-cohort completion p95 from survivors of 3s censoring.
 
-    Missing, lossy or conflicting telemetry remains inconclusive, not a zero
-    latency or a hybrid success. Stage windows overlap and are NEVER summed.
+    True public callback response times exclude the *local test semaphore*.
+    Whole-schedule wall_ms includes that semaphore and is reported separately.
+    In both cases timeouts are lower-bound observations, never exact completion.
     """
+    if profile not in PROFILES:
+        raise ValueError("explicit same benchmark corpus profile required")
     clients = []
     resources = {}
     for row in client:
@@ -423,126 +427,190 @@ def analyze(client: Sequence[dict], telemetry: Sequence[dict]) -> tuple[dict, li
         raise ValueError("exact workload sample count required")
     for name, _ in COHORTS:
         for case_id in CASE_IDS:
-            rows = [r for r in clients if r["phase"]==name and r["case_id"]==case_id]
-            if (len(rows) != WARMUPS_PER_CASE+REPETITIONS_PER_CASE
+            rows = [r for r in clients if r["phase"] == name and r["case_id"] == case_id]
+            if (len(rows) != WARMUPS_PER_CASE + REPETITIONS_PER_CASE
                     or sum(bool(r["warmup"]) for r in rows) != WARMUPS_PER_CASE):
                 raise ValueError("incomplete or nonuniform question repetition")
     by_controller, by_native = {}, defaultdict(list)
     for event in telemetry:
         row = _sanitize_existing(event)
-        if row is None:continue
+        if row is None:
+            continue
         if row["event"] == "read_attempt_terminal":
-            key=(row["trace_id"],row["attempt_id"],row["request_ref"])
+            key = (row["trace_id"], row["attempt_id"], row["request_ref"])
             if key in by_controller:
                 raise ValueError("duplicate controller terminal")
-            by_controller[key]=row
+            by_controller[key] = row
         elif row["event"].startswith("kaggle_read_"):
             by_native[row["request_ref"]].append(row)
         else:
             raise ValueError("resource observations belong to client stream")
-    joint=[]
-    seen=set()
+    joint = []
+    seen = set()
     for sample in clients:
-        key=tuple(sample[k] for k in ("trace_id","attempt_id","request_ref"))
+        key = tuple(sample[k] for k in ("trace_id", "attempt_id", "request_ref"))
         if key[0] is not None:
             if key in seen:
                 raise ValueError("duplicate public attempt identity")
             seen.add(key)
-        controller=by_controller.get(key)
-        valid=controller is not None and controller["diagnostic_state"]=="observed"
+        controller = by_controller.get(key)
+        valid = controller is not None and controller["diagnostic_state"] == "observed"
         if controller is not None:
-            valid &= controller["status"]==sample["status"]
-            valid &= controller["reason"]==sample["reason"]
-            valid &= not (controller["loss_before"].get("dropped",0)
-                          or controller["loss_before"].get("failed",0))
-        native=[]
-        if controller is not None and controller["dispatch_state"]=="dispatched":
-            native=[e for e in by_native.get(sample["request_ref"],[])
-                    if (e["runtime_ref"]==controller["runtime_ref"]
-                        and e["connection_generation"]==controller["connection_generation"]
-                        and e["turn_generation"]==controller["turn_generation"])]
-            if len(native)!=2 or {e["event"] for e in native} != {
-                    "kaggle_read_completed","kaggle_read_adapter_terminal"}:
-                valid=False
+            valid &= controller["status"] == sample["status"]
+            valid &= controller["reason"] == sample["reason"]
+            valid &= not (controller["loss_before"].get("dropped", 0)
+                          or controller["loss_before"].get("failed", 0))
+        native = []
+        if controller is not None and controller["dispatch_state"] == "dispatched":
+            native = [e for e in by_native.get(sample["request_ref"], [])
+                      if (e["runtime_ref"] == controller["runtime_ref"]
+                          and e["connection_generation"] == controller["connection_generation"]
+                          and e["turn_generation"] == controller["turn_generation"])]
+            if len(native) != 2 or {e["event"] for e in native} != {
+                    "kaggle_read_completed", "kaggle_read_adapter_terminal"}:
+                valid = False
             else:
-                valid &= all(e["diagnostic_state"]=="observed" and
-                    not (e["loss_before"].get("dropped",0) or
-                         e["loss_before"].get("failed",0) or
-                         e["controller_loss_before"].get("dropped",0) or
-                         e["controller_loss_before"].get("failed",0)) for e in native)
-                native_terminal=next(e for e in native if e["event"]=="kaggle_read_adapter_terminal")
-                valid &= (native_terminal["status"],native_terminal["reason"]) == (
-                    controller["status"],controller["reason"])
-        if controller is not None and controller["dispatch_state"]=="not_dispatched" and by_native.get(sample["request_ref"]):
-            valid=False
-        stage = next((e["stages_ms"] for e in native
-                      if e["event"]=="kaggle_read_completed"), {})
-        adapter = next((e["stages_ms"] for e in native
-                        if e["event"]=="kaggle_read_adapter_terminal"), {})
-        state=("observed" if valid else "inconclusive")
-        useful=(sample["status"] in ("ok","degraded")
-                and sample["mode"]=="hybrid" and sample["evidence_count"]>0
-                and state=="observed"
-                and controller is not None and controller["dispatch_state"]=="dispatched")
-        joint.append({**sample, "diagnostic_state":state, "useful":bool(useful),
-            "backend_elapsed_ms":controller["backend_elapsed_ms"] if controller else None,
-            "controller_stages_ms":controller["controller_stages_ms"] if controller else {},
-            "native_stages_ms":dict(stage, **({"adapter_ms": adapter["adapter_ms"]} if "adapter_ms" in adapter else {})),
-            "dispatch_state":controller["dispatch_state"] if controller else "unknown"})
-    summary={"codec":"rkb.public-query-latency-report.v1",
+                valid &= all(e["diagnostic_state"] == "observed" and
+                    not (e["loss_before"].get("dropped", 0) or
+                         e["loss_before"].get("failed", 0) or
+                         e["controller_loss_before"].get("dropped", 0) or
+                         e["controller_loss_before"].get("failed", 0)) for e in native)
+                native_terminal = next(e for e in native if e["event"] == "kaggle_read_adapter_terminal")
+                valid &= (native_terminal["status"], native_terminal["reason"]) == (
+                    controller["status"], controller["reason"])
+        if controller is not None and controller["dispatch_state"] == "not_dispatched" and by_native.get(sample["request_ref"]):
+            valid = False
+        stage = next((e["stages_ms"] for e in native if e["event"] == "kaggle_read_completed"), {})
+        adapter = next((e["stages_ms"] for e in native if e["event"] == "kaggle_read_adapter_terminal"), {})
+        state = "observed" if valid else "inconclusive"
+        public_success = (sample["latency_observation"] == "completed"
+            and sample["status"] in ("ok", "degraded")
+            and sample["mode"] == "hybrid" and sample["evidence_count"] > 0)
+        useful = (public_success and state == "observed" and controller is not None
+                  and controller["dispatch_state"] == "dispatched")
+        joint.append({**sample, "diagnostic_state": state,
+            "public_success": bool(public_success), "useful": bool(useful),
+            "backend_elapsed_ms": controller["backend_elapsed_ms"] if controller else None,
+            "controller_stages_ms": controller["controller_stages_ms"] if controller else {},
+            "native_stages_ms": dict(stage, **({"adapter_ms": adapter["adapter_ms"]}
+                                            if "adapter_ms" in adapter else {})),
+            "dispatch_state": controller["dispatch_state"] if controller else "unknown"})
+    summary = {
+        "codec":"rkb.public-query-latency-report.v1",
         "scope":"public_MCP_query_observations_only_no_runtimes_launched",
+        "corpus_profile":profile,
+        "profile_label":("LIMITED_FIRST_ACCEPTED_BOOK_NOT_REPRESENTATIVE"
+            if profile == "limited_first_book" else
+            "EXPANDED_COMPARISON_CORPUS_NOT_PRODUCTION_SCALE_ACCEPTANCE"),
+        "production_scale_accepted":False,
+        "public_query_deadline_s":PUBLIC_SERVER_QUERY_DEADLINE_S,
+        "public_mcp_p95_slo_ms":PUBLIC_MCP_P95_SLO_MS,
+        "caller_timeout_s":CALL_TIMEOUT_S,
         "total_calls":len(clients),
         "warmups":sum(row["warmup"] for row in clients),
-        "all_attempts_preserved":True, "overlapping_stages_not_summed":True,
+        "warmup_right_censored":sum(row["warmup"] and row["latency_observation"] ==
+                                    "right_censored" for row in clients),
+        "all_attempts_preserved":True,
+        "overlapping_stages_not_summed":True,
+        "semaphore_wait_in_public_callback_latency":False,
+        "semaphore_wait_in_client_scheduled_latency":True,
         "transport_standalone_ms":None,
         "kaggle_native_cpu_ms":None, "kaggle_native_rss_kib":None,
-        "notes":"dispatch_to_result_ms includes queue transport/native latency; native encode_ms includes model and python formatting; no sum or residual decomposition"}
-    groups={}
+        "notes":"Public callback includes true MCP transport/controller admission; local harness semaphore excluded. Full scheduled latency includes local wait. 3s caller timeouts right-censored; stage durations overlap."
+    }
+    groups = {}
     for phase, concurrency in COHORTS:
-        rows=[x for x in joint if x["phase"]==phase and not x["warmup"]]
-        groups[phase]={"concurrency":concurrency, "samples":len(rows),
-            "p50_wall_ms":pct([x["wall_ms"] for x in rows],.5),
-            "p95_wall_ms":pct([x["wall_ms"] for x in rows],.95),
-            "p50_backend_ms":pct([x["backend_elapsed_ms"] for x in rows if x["backend_elapsed_ms"] is not None],.5),
-            "p95_backend_ms":pct([x["backend_elapsed_ms"] for x in rows if x["backend_elapsed_ms"] is not None],.95),
-            "observed_complete":sum(x["diagnostic_state"]=="observed" for x in rows),
+        rows = [x for x in joint if x["phase"] == phase and not x["warmup"]]
+        n = len(rows)
+        successes = [x for x in rows if x["public_success"]]
+        completed = [x for x in rows if x["latency_observation"] == "completed"]
+        observed = [x for x in rows if x["diagnostic_state"] == "observed"]
+        censored = [x for x in rows if x["latency_observation"] == "right_censored"]
+        timed_out = [x for x in rows if x["reason"] == "deadline_exceeded"]
+        caller_timed_out = [x for x in censored if x["reason"] == "deadline_exceeded"]
+        server_timed_out = [x for x in completed if x["reason"] == "deadline_exceeded"]
+        groups[phase] = {
+            "concurrency":concurrency,
+            "samples":n,
+            "completed_public_responses":len(completed),
+            "public_success_count":len(successes),
+            "failure_count":n-len(successes),
+            "failure_rate":round((n-len(successes))/n, 5),
+            "timeout_count":len(timed_out),
+            "timeout_rate":round(len(timed_out)/n, 5),
+            "caller_timeout_censored_count":len(caller_timed_out),
+            "server_deadline_completed_count":len(server_timed_out),
+            "right_censored_count":len(censored),
+            # Main requested latency quantity: true public MCP caller roundtrip,
+            # from callback invocation AFTER harness-local semaphore.
+            "success_only_p50_public_callback_ms":pct([x["callback_wall_ms"] for x in successes], .5),
+            "success_only_p95_public_callback_ms":pct([x["callback_wall_ms"] for x in successes], .95),
+            # Schedule-inclusive user-observed simulation: queue+callback.
+            "success_only_p50_scheduled_ms":pct([x["wall_ms"] for x in successes], .5),
+            "success_only_p95_scheduled_ms":pct([x["wall_ms"] for x in successes], .95),
+            "local_semaphore_wait_p50_ms":pct([x["client_semaphore_wait_ms"] for x in rows], .5),
+            "local_semaphore_wait_p95_ms":pct([x["client_semaphore_wait_ms"] for x in rows], .95),
+            # Never treat a 3s time-to-censor as a known completion.
+            "all_requests_completion_p50_public_ms":(
+                pct([x["callback_wall_ms"] for x in rows], .5) if not censored else None),
+            "all_requests_completion_p95_public_ms":(
+                pct([x["callback_wall_ms"] for x in rows], .95) if not censored else None),
+            "all_requests_completion_p95_scheduled_ms":(
+                pct([x["wall_ms"] for x in rows], .95) if not censored else None),
+            "all_requests_p95_public_lower_bound_ms":pct([x["callback_wall_ms"] for x in rows], .95),
+            "all_requests_p95_scheduled_lower_bound_ms":pct([x["wall_ms"] for x in rows], .95),
+            "right_censor_interpretation":("unknown completion, times are lower bounds if a request could complete"
+                if censored else "all public terminal times observed"),
+            "p50_backend_completed_telemetry_ms":pct(
+                [x["backend_elapsed_ms"] for x in observed if x["backend_elapsed_ms"] is not None], .5),
+            "p95_backend_completed_telemetry_ms":pct(
+                [x["backend_elapsed_ms"] for x in observed if x["backend_elapsed_ms"] is not None], .95),
+            "observed_complete":len(observed),
             "useful_hybrid":sum(x["useful"] for x in rows),
             "status_reason_counts":dict(sorted(Counter(
                 f"{x['status']}:{x['reason'] or 'none'}" for x in rows).items())),
-            "gate_closures":sum(x["dispatch_state"]!="dispatched" or not x["useful"] for x in rows),
+            "gate_closures":sum(x["dispatch_state"] != "dispatched" or not x["useful"] for x in rows),
             "controller_stages":{}, "native_stages":{},
-            "client_cpu_ms_serial_only":pct([x["client_cpu_ms"] for x in rows if x["client_cpu_ms"] is not None],.5),
-            "client_rss_kib_p95":pct([x["client_rss_kib"] for x in rows if x["client_rss_kib"] is not None],.95),
+            "client_cpu_ms_serial_only":pct(
+                [x["client_cpu_ms"] for x in rows if x["client_cpu_ms"] is not None], .5),
+            "client_rss_kib_p95":pct(
+                [x["client_rss_kib"] for x in rows if x["client_rss_kib"] is not None], .95),
             "client_phase_cpu_total_ms":resources.get(phase,{}).get("client_process_cpu_ms"),
             "client_phase_peak_rss_kib":resources.get(phase,{}).get("client_peak_rss_kib")}
-        for result_key, source in (("controller_stages","controller_stages_ms"),
-                                   ("native_stages","native_stages_ms")):
-            keys=CONTROLLER_STAGES if result_key=="controller_stages" else STAGES
-            groups[phase][result_key]={k:{"n":sum(k in x[source] for x in rows),
-                "p50_ms":pct([x[source][k] for x in rows if k in x[source]],.5),
-                "p95_ms":pct([x[source][k] for x in rows if k in x[source]],.95)}
-                for k in sorted(keys) if any(k in x[source] for x in rows)}
-        groups[phase]["valid_representative"] = (
-            len(rows)==len(CASE_IDS)*REPETITIONS_PER_CASE
-            and groups[phase]["useful_hybrid"]==len(rows)
-            and groups[phase]["observed_complete"]==len(rows))
+        for result_key, source in (("controller_stages", "controller_stages_ms"),
+                                   ("native_stages", "native_stages_ms")):
+            keys = CONTROLLER_STAGES if result_key == "controller_stages" else STAGES
+            groups[phase][result_key] = {k:{
+                "n":sum(k in x[source] for x in observed),
+                "p50_ms":pct([x[source][k] for x in observed if k in x[source]], .5),
+                "p95_ms":pct([x[source][k] for x in observed if k in x[source]], .95)}
+                for k in sorted(keys) if any(k in x[source] for x in observed)}
+        groups[phase]["valid_for_profile_baseline"] = (
+            n == len(CASE_IDS)*REPETITIONS_PER_CASE
+            and groups[phase]["useful_hybrid"] == n
+            and groups[phase]["observed_complete"] == n
+            and len(censored) == 0)
     # A silent reconnect or switch to another native worker invalidates A/B
-    # interpretation even if all individual stage records are otherwise valid.
-    owner_scope={(by_controller[(x["trace_id"],x["attempt_id"],x["request_ref"])]["runtime_ref"],
-                  by_controller[(x["trace_id"],x["attempt_id"],x["request_ref"])]["connection_generation"])
-                 for x in joint if not x["warmup"] and
-                 (x["trace_id"],x["attempt_id"],x["request_ref"]) in by_controller and
-                 by_controller[(x["trace_id"],x["attempt_id"],x["request_ref"])]["dispatch_state"]=="dispatched"}
-    summary["native_runtime_scope_stable"]=len(owner_scope)==1
-    summary["cohorts"]=groups
-    summary["conclusion"]=("CANDIDATE_BASELINE_MEASURED_NOT_INTEGRATION_ACCEPTANCE"
-        if summary["native_runtime_scope_stable"] and all(
-            g["valid_representative"] for g in groups.values())
-        else "INCONCLUSIVE_OR_NONREPRESENTATIVE")
-    # Never infer usable-data quality from latency alone; owner must verify
-    # independent evidence/gold coverage from accepted source revisions.
-    summary["evidence_quality_and_corpus_ready_owner_gate"]="required_independently"
-    return summary,joint
+    # interpretation even if all per-event records are otherwise valid.
+    owner_scope = {
+        (by_controller[(x["trace_id"],x["attempt_id"],x["request_ref"])]["runtime_ref"],
+         by_controller[(x["trace_id"],x["attempt_id"],x["request_ref"])]["connection_generation"])
+        for x in joint if not x["warmup"] and
+        (x["trace_id"],x["attempt_id"],x["request_ref"]) in by_controller and
+        by_controller[(x["trace_id"],x["attempt_id"],x["request_ref"])]["dispatch_state"] == "dispatched"}
+    summary["native_runtime_scope_stable"] = len(owner_scope) == 1
+    summary["cohorts"] = groups
+    complete = (summary["native_runtime_scope_stable"] and
+                summary["warmup_right_censored"] == 0 and
+                all(g["valid_for_profile_baseline"] for g in groups.values()))
+    if not complete:
+        summary["conclusion"] = "INCONCLUSIVE_OR_CENSORED"
+    elif profile == "limited_first_book":
+        summary["conclusion"] = "LIMITED_FIRST_BOOK_BASELINE_ONLY_NOT_REPRESENTATIVE"
+    else:
+        summary["conclusion"] = "COMPARISON_CORPUS_BASELINE_ONLY_NOT_PRODUCTION_ACCEPTANCE"
+    summary["evidence_quality_and_corpus_ready_owner_gate"] = "required_independently"
+    return summary, joint
 
 
 def validate_receipt(value):
