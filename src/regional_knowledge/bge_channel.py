@@ -28,6 +28,7 @@ from .kaggle_geo_contracts import GeoReadRequest, GeoReadResult
 from .kaggle_editorial_contracts import EditorialReadRequest, EditorialReadResult
 from .kaggle_source_graph_read import SourceGraphReadRequest, SourceGraphReadResult
 from .kaggle_acceptance_contracts import AcceptanceReadResult
+from .kaggle_media_wss_contracts import IllustrationReadResult
 
 MAX_FRAME_BYTES = 65536
 MAX_DISPATCH_BYTES = 256 * 1024
@@ -62,7 +63,7 @@ def _decode(message):
         raise ValueError('protocol')
     if frame.get('type')!='BOOTSTRAP_OBSERVATION' and len(raw)>RESULT_MAX_BYTES:
         raise ValueError('frame_size')
-    if frame.get('type') not in ('QUERY_RESULT','PASSAGE_READ_RESULT','STORY_READ_RESULT','FACT_READ_RESULT','SOURCE_READ_RESULT','CASE_READ_RESULT','GEO_READ_RESULT','EDITORIAL_READ_RESULT','SOURCE_GRAPH_READ_RESULT','ACCEPTANCE_READ_RESULT','RECOVERY_PHASE_RESULT','BOOTSTRAP_OBSERVATION') and len(raw) > MAX_FRAME_BYTES:
+    if frame.get('type') not in ('ILLUSTRATION_READ_RESULT','QUERY_RESULT','PASSAGE_READ_RESULT','STORY_READ_RESULT','FACT_READ_RESULT','SOURCE_READ_RESULT','CASE_READ_RESULT','GEO_READ_RESULT','EDITORIAL_READ_RESULT','SOURCE_GRAPH_READ_RESULT','ACCEPTANCE_READ_RESULT','RECOVERY_PHASE_RESULT','BOOTSTRAP_OBSERVATION') and len(raw) > MAX_FRAME_BYTES:
         raise ValueError('frame_size')
     if frame.get('type')=='SOURCE_COMMAND_RESULT' and len(raw)>MAX_SOURCE_RESULT_BYTES:
         raise ValueError('source_receipt_size')
@@ -372,11 +373,11 @@ def channel_route(queue, *, read_telemetry=None):
                             # challenge issued before it cannot establish idle.
                             probe_nonce = await shared.begin_resource_probe(run_id, token, generation)
                             await send('RESOURCE_PROBE', probe_nonce=probe_nonce)
-                    elif shared is not None and frame['type'] in ('QUERY_RESULT','SQL_HEALTH_RESULT','PASSAGE_READ_RESULT','STORY_READ_RESULT','FACT_READ_RESULT','SOURCE_READ_RESULT','CASE_READ_RESULT','GEO_READ_RESULT','EDITORIAL_READ_RESULT','SOURCE_GRAPH_READ_RESULT','ACCEPTANCE_READ_RESULT'):
+                    elif shared is not None and frame['type'] in ('ILLUSTRATION_READ_RESULT','QUERY_RESULT','SQL_HEALTH_RESULT','PASSAGE_READ_RESULT','STORY_READ_RESULT','FACT_READ_RESULT','SOURCE_READ_RESULT','CASE_READ_RESULT','GEO_READ_RESULT','EDITORIAL_READ_RESULT','SOURCE_GRAPH_READ_RESULT','ACCEPTANCE_READ_RESULT'):
                         events=frame.pop('read_events',None)
                         result = decode_envelope(json.dumps(frame, allow_nan=False,
                             ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
-                        if not isinstance(result, (QueryResult,SqlHealthResult,PassageReadResult,StoryReadResult,FactReadResult,SourceReadResult,CaseReadResult,GeoReadResult,EditorialReadResult,SourceGraphReadResult,AcceptanceReadResult)):
+                        if not isinstance(result, (QueryResult,SqlHealthResult,PassageReadResult,StoryReadResult,FactReadResult,SourceReadResult,CaseReadResult,GeoReadResult,EditorialReadResult,SourceGraphReadResult,AcceptanceReadResult,IllustrationReadResult)):
                             raise ValueError('query_result_required')
                         if not ready or observed['provider_version'] is None:
                             raise ValueError('not_ready')
