@@ -215,7 +215,6 @@ def native_illustration_projection(graph, resolved, raw_poi_locators):
     if not graph.illustrations:
         if graph.poi_media_links or any(chunk.illustration_ids for chunk in graph.chunks):
             raise failure('native_illustration_reference_missing')
-        return None
 
     manifest=resolved['image_manifest']
     pages={page['page_id']:page for page in manifest['pages']}
@@ -605,15 +604,10 @@ class NativeSourceMaterializer:
                 async with acquire() as connection:
                     async with connection.transaction():
                         await connection.execute("SET LOCAL statement_timeout='5s'")
-                        if media is None:
-                            row=await (await connection.execute('''SELECT rkb_v4.prepare_source_activation_v1(
-                                %s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s)''',
-                                (*exact,knowledge,database.database_generation,database.writer_generation))).fetchone()
-                        else:
-                            row=await (await connection.execute('''SELECT rkb_v4.prepare_source_activation_with_illustrations_v1(
-                                %s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s)''',
-                                (*exact,knowledge,database.database_generation,
-                                    database.writer_generation,canonical(media)))).fetchone()
+                        row=await (await connection.execute('''SELECT rkb_v4.prepare_source_activation_with_illustrations_v1(
+                            %s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s)''',
+                            (*exact,knowledge,database.database_generation,
+                                database.writer_generation,canonical(media)))).fetchone()
                         if row is None or row[0]!=digest(knowledge):raise failure('native_source_candidate_binding')
                         candidate=await (await connection.execute(candidate_query,exact)).fetchone()
                         if candidate is None or candidate[0]!=digest(knowledge):

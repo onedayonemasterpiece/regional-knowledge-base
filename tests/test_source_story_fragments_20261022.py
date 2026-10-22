@@ -17,7 +17,7 @@ from test_native_source_materializer import PERSON, exact_batch
 from test_source_stage import SOURCE, original, seal
 from test_source_activation import activation_payload
 from test_source_activation_pg import (
-    PG, image_pg, stage_all, accepted, stage_command, next_command,
+    PG, image_pg, image_pg_sql18, stage_all, accepted, stage_command, next_command,
 )
 from test_kaggle_pg_driver import database
 from test_kaggle_apply import pinned
@@ -91,7 +91,7 @@ async def test_long_body_kept_exact_but_each_vector_input_is_bounded():
 
 @PG
 @pytest.mark.asyncio
-async def test_pg_native_materializer_last_fragment_ordinal_full_body_and_replay(image_pg):
+async def test_pg_native_materializer_last_fragment_ordinal_full_body_and_replay(image_pg_sql18):
     """Exercise the real native preapply entrypoint before every accepted command.
 
     SQL-only install() can hide a mismatch between the generated legacy
@@ -106,23 +106,7 @@ async def test_pg_native_materializer_last_fragment_ordinal_full_body_and_replay
     )
     from test_source_activation_pg import DB, WRITER
 
-    env = image_pg
-    # Existing GH PG17 fixture only. Add uninstalled SQL018 explicitly and
-    # pin the actual function definitions into the existing real registry.
-    async with env["connection"].transaction():
-        await env["connection"].execute(
-            (Path(__file__).resolve().parents[1] /
-             "sql/kaggle/018_story_embedding_fragments.sql").read_text(), prepare=False)
-    handlers = []
-    for route, suffix in ((STAGE_ROUTE, "source_stage_v2"),
-                          (SEAL_ROUTE, "source_stage_seal_v2"),
-                          (MATERIALIZE_ROUTE, "source_materialize_v1"),
-                          (ACTIVATE_ROUTE, "source_activate_v1")):
-        check = await pinned(env["connection"], "check_" + suffix)
-        apply = await pinned(env["connection"], "apply_" + suffix)
-        handlers.append(native_source_handler(route,
-            check_sha256=check.definition_sha256, apply_sha256=apply.definition_sha256))
-    env["registry"] = HandlerRegistry(handlers)
+    env = image_pg_sql18
 
     sample = authored_batch()
     await stage_all(env, [json.loads(sample)])

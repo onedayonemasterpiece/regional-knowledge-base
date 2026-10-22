@@ -14,7 +14,7 @@ from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler
 from regional_knowledge.source_stage import canonical, digest
 from test_native_source_materializer import PERSON, exact_batch
 from test_source_stage import SOURCE, original
-from test_source_activation_pg import image_pg_sql18, image_pg
+from test_source_activation_pg import image_pg_sql18, image_pg, PG
 from test_kaggle_pg_driver import database
 
 
@@ -98,6 +98,7 @@ async def test_native_image_projection_rejects_changed_or_cross_page_source(case
         await compile_image(raw)
 
 
+@PG
 @pytest.mark.asyncio
 async def test_pg_sql015_native_prepares_exact_illustration_candidate(image_pg_sql18):
     """SQL015 checks the actual accepted page+crop and durable preparation.
@@ -115,11 +116,6 @@ async def test_pg_sql015_native_prepares_exact_illustration_candidate(image_pg_s
 
     env = image_pg_sql18
     connection = env["connection"]
-    sql015 = (Path(__file__).resolve().parents[1] /
-              "sql/kaggle/015_source_illustrations.sql").read_text()
-    async with connection.transaction():
-        await connection.execute(sql015, prepare=False)
-
     raw = illustrated_batch()
     await stage_all(env, [json.loads(raw)])
     forwarded = []
@@ -178,17 +174,17 @@ async def test_pg_sql015_native_prepares_exact_illustration_candidate(image_pg_s
     assert forwarded == []  # Preparing metadata did not run the encoder/media provider.
 
 
+@PG
 @pytest.mark.asyncio
-async def test_existing_trusted_registry_refuses_image_activation_without_binding(image_pg_sql18):
-    """Prove the remaining SQL015 handler wiring gap through real accepted ops.
+@pytest.mark.parametrize('illustrated', [True, False])
+async def test_current_registry_activates_text_and_images_with_exact_receipts(image_pg_sql18, illustrated):
+    """Real accepted operations use the unmodified code registry and SQL ledger.
 
-    Do not replace the installed text-only activation handler with a synthetic
-    image-aware handler just to make a fixture pass. The existing SQL015
-    deferred receipt must abort this transaction without a half-Saved source.
+    One current SQL015 handler covers both images and an empty text sidecar;
+    duplicate application preserves the original canonical receipt.
     """
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
-    from regional_knowledge.kaggle_apply import ApplyExecutionError
     from regional_knowledge.kaggle_source_materializer import (
         NativeSourceMaterializer, materializer_fingerprint,
     )
@@ -200,12 +196,8 @@ async def test_existing_trusted_registry_refuses_image_activation_without_bindin
 
     env = image_pg_sql18
     connection = env["connection"]
-    async with connection.transaction():
-        await connection.execute(
-            (Path(__file__).resolve().parents[1] /
-             "sql/kaggle/015_source_illustrations.sql").read_text(), prepare=False)
-
-    raw = illustrated_batch()
+    raw = (illustrated_batch() if illustrated else
+           canonical(exact_batch(count=1, receipt=original(page_count=1))))
     await stage_all(env, [json.loads(raw)])
     forwards = []
 
@@ -239,23 +231,46 @@ async def test_existing_trusted_registry_refuses_image_activation_without_bindin
 
     activation = next_command(payload, env["sequence"] + 1)
     installed = env["registry"].resolve(activation)
-    assert installed.check.name == "check_source_activate_v1"
-    assert installed.apply.name == "apply_source_activate_v1"
-    # SQL015 requires the image-aware exact handler, but this is the actual
-    # trusted text handler. Its deferred image receipt rejects at PG commit.
-    with pytest.raises(ApplyExecutionError):
-        await accepted(env, activation)
+    assert installed.check.name == "check_source_activate_with_illustrations_v1"
+    assert installed.apply.name == "apply_source_activate_with_illustrations_v1"
+    first = await accepted(env, activation)
+    assert first.status == 'applied'
+    duplicate = await accepted(env, activation)
+    assert duplicate.duplicate and duplicate.outcome == first.outcome
 
     async with connection.transaction():
         assert await (await connection.execute(
             "SELECT count(*) FROM rkb_v4.sources WHERE source_id=%s",
-            (SOURCE,))).fetchone() == (0,)
+            (SOURCE,))).fetchone() == (1,)
         assert await (await connection.execute(
             "SELECT count(*) FROM rkb_v4.source_illustrations WHERE source_id=%s",
-            (SOURCE,))).fetchone() == (0,)
+            (SOURCE,))).fetchone() == (int(illustrated),)
         assert await (await connection.execute(
             "SELECT count(*) FROM rkb_v4.source_illustration_candidates WHERE source_id=%s",
             (SOURCE,))).fetchone() == (1,)
         assert await (await connection.execute(
             "SELECT count(*) FROM rkb_v4.source_activation_vectors WHERE source_id=%s",
             (SOURCE,))).fetchone() == (1,)
+        assert await (await connection.execute(
+            'SELECT rkb_v4.verify_source_illustration_origins_v1(ARRAY[%s]::uuid[])',
+            (SOURCE,))).fetchone() == (True,)
+        origin = await (await connection.execute(
+            'SELECT operation_key,sequence,command_sha256 FROM rkb_v4.source_illustration_origins WHERE source_id=%s',
+            (SOURCE,))).fetchone()
+        assert origin == (activation.operation_key, activation.sequence, digest(activation.encode()))
+        knowledge,media = await (await connection.execute(
+            'SELECT k.knowledge,m.media FROM rkb_v4.source_activation_candidates k '
+            'JOIN rkb_v4.source_illustration_candidates m USING(source_id) WHERE source_id=%s',
+            (SOURCE,))).fetchone()
+        expected, expected_media, _ = await compile_image(raw)
+        assert knowledge == expected and media == expected_media
+        assert len(media['illustrations']) == int(illustrated)
+        assert len(media['passage_links']) == len(media['poi_media_links']) == int(illustrated)
+        readback = await (await connection.execute(
+            'SELECT data,passage_links,poi_media_links,archive_status '
+            'FROM rkb_v4.read_source_illustrations_v1(%s,NULL,4)', (SOURCE,))).fetchall()
+        if illustrated:
+            public_image = {k:v for k,v in media['illustrations'][0].items() if k!='crop_binding'}
+            assert readback == [(public_image, media['passage_links'], media['poi_media_links'], 'pending')]
+        else:
+            assert readback == []
