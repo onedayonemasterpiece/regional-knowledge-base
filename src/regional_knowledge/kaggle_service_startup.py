@@ -298,7 +298,8 @@ class TargetServiceStartup:
         self.geo_installer=None
         if config.geo_bootstrap is not None:
             from .kaggle_geo_install import SourceGeoInstaller
-            self.geo_installer=SourceGeoInstaller(self,config.geo_bootstrap,upgrade_pins=config.geo_dependency_upgrade)
+            self.geo_installer=SourceGeoInstaller(self,config.geo_bootstrap,upgrade_pins=config.geo_dependency_upgrade,
+                native_pins=config.native_source_upgrade)
         self.dataset_seed=None
         if config.dataset_seed is not None:
             from .kaggle_dataset_seed import SourceDatasetSeed, DatasetSeedConfig
