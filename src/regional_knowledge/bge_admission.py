@@ -365,12 +365,56 @@ class SharedReadAdmission:
             raise StaleAttachment('invalid original dispatch generation')
         return ResourceClaim(run_id,incarnation,compute_claim,dispatch_generation,resource_kind,resource_id)
 
+    def _reader_resource_state(self, run, generation, *, runtime_incarnation,
+                               state, resource_kind, resource_id, compute_claim,
+                               dispatch_generation, probe_nonce):
+        lane=self._reader_lanes[run['id']]
+        if run['runtime_incarnation']!=runtime_incarnation:
+            raise StaleAttachment('reader resource incarnation mismatch')
+        if state not in {'idle','busy'}:
+            raise ValueError('invalid resource state')
+        if state=='idle' and any(x is not None for x in
+                            (resource_kind,resource_id,compute_claim,dispatch_generation)):
+            raise ValueError('idle baseline cannot carry a claim')
+        descriptor=(self._descriptor(run['id'],runtime_incarnation,generation,
+            resource_kind,resource_id,compute_claim,dispatch_generation)
+            if state=='busy' else None)
+        probed=False
+        previous_probe=lane.probe
+        if probe_nonce is not None:
+            _identity(probe_nonce)
+            probed=(previous_probe is not None
+                and secrets.compare_digest(previous_probe[0].encode(),probe_nonce.encode())
+                and previous_probe[1]==lane.attachment
+                and previous_probe[2] is lane.slot_version)
+            if not probed:raise StaleAttachment('stale reader resource probe')
+        if lane.work is not None:
+            if probed and descriptor is None:
+                work=lane.work.resource
+                if work.resource_kind=='read':
+                    self._cancel((run['id'],work.dispatch_generation,work.resource_id))
+                lane.work=None;lane.sent=False
+            elif descriptor!=lane.work.resource:
+                raise StaleAttachment('actual reader compute claim still held')
+        elif descriptor is not None:
+            lane.work=ChannelWork(descriptor);lane.sent=True
+        lane.slot_version=object();lane.probe=None
+        lane.state='busy' if lane.work is not None else 'idle'
+        self._event.set()
+        return self.status(run['id'])
+
     async def resource_state(self, run_id, token, connection_generation, *, runtime_incarnation,
                              state, resource_kind=None,resource_id=None,compute_claim=None,dispatch_generation=None,
                              probe_nonce=None):
         self._active()
         async with self._lock:
             run,owner,_,resumed=await self._snapshot(run_id,token,connection_generation)
+            if not run['writer_slot']:
+                return self._reader_resource_state(run,connection_generation,
+                    runtime_incarnation=runtime_incarnation,state=state,
+                    resource_kind=resource_kind,resource_id=resource_id,
+                    compute_claim=compute_claim,dispatch_generation=dispatch_generation,
+                    probe_nonce=probe_nonce)
             if run['runtime_incarnation']!=runtime_incarnation:raise StaleAttachment('resource incarnation mismatch')
             if state not in {'idle','busy'}:raise ValueError('invalid resource state')
             if state=='idle' and any(v is not None for v in (resource_kind,resource_id,compute_claim,dispatch_generation)):
@@ -401,7 +445,7 @@ class SharedReadAdmission:
                     # Fresh ordered same-worker observation also proves that a
                     # dispatch lost before receipt cannot still start later.
                     r=self._work.resource
-                    if r.resource_kind=='read':self._cancel((r.dispatch_generation,r.resource_id))
+                    if r.resource_kind=='read':self._cancel((run_id,r.dispatch_generation,r.resource_id))
                     self._work=None;self._sent=False
                 elif descriptor!=self._work.resource:
                     raise StaleAttachment('actual compute claim still held')
@@ -423,6 +467,13 @@ class SharedReadAdmission:
         self._active()
         async with self._lock:
             run,owner,_,_=await self._snapshot(run_id,token,connection_generation)
+            if not run['writer_slot']:
+                lane=self._reader_lanes[run_id]
+                if lane.attachment!=(run_id,connection_generation,run['runtime_incarnation']):
+                    raise StaleAttachment('reader probe requires its current attachment')
+                nonce=secrets.token_urlsafe(32)
+                lane.probe=(nonce,lane.attachment,lane.slot_version)
+                return nonce
             if (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation']):
                 raise StaleAttachment('probe cannot erase another owned resource')
             nonce=secrets.token_urlsafe(32)
@@ -435,6 +486,20 @@ class SharedReadAdmission:
         async with self._lock:
             run,owner,_,resumed=await self._snapshot(run_id,token,connection_generation)
             descriptor=self._descriptor(run_id,runtime_incarnation,connection_generation,resource_kind,resource_id,compute_claim,dispatch_generation)
+            if not run['writer_slot']:
+                lane=self._reader_lanes[run_id]
+                if (run['runtime_incarnation']!=runtime_incarnation
+                        or lane.attachment!=(run_id,connection_generation,runtime_incarnation)):
+                    raise StaleAttachment('stale reader release')
+                if lane.last_release==descriptor:return False
+                if lane.work is None and lane.state=='unknown':
+                    lane.last_release=descriptor;lane.slot_version=object();lane.probe=None
+                    return True # Baseline still required before another read.
+                if lane.work is None or not lane.sent or lane.work.resource!=descriptor:
+                    raise StaleAttachment('stale or unknown reader release')
+                lane.work=None;lane.sent=False;lane.state='idle';lane.last_release=descriptor
+                lane.slot_version=object();lane.probe=None;self._event.set()
+                return True
             if (run['runtime_incarnation']!=runtime_incarnation
                     or (owner['run_id'],owner['incarnation'])!=(run_id,runtime_incarnation)):
                 raise StaleAttachment('stale or unknown resource release')
@@ -673,7 +738,14 @@ class SharedReadAdmission:
                 self._event.set()
             return result
 
-    def status(self):
+    def status(self, run_id=None):
+        if run_id in self._reader_lanes:
+            lane=self._reader_lanes[run_id]
+            return {'state':lane.state,
+                'pending_reads':sum(r.ticket.run_id==run_id for r in self._reads.values()),
+                'resource':lane.work.resource if lane.work else None,
+                'document_result_pending':False,
+                'document_contexts':len(self._documents),'command_contexts':len(self._commands)}
         return {'state':self._state,'pending_reads':len(self._reads),
                 'resource':self._work.resource if self._work else None,
                 'document_result_pending':self._document_result is not None,
