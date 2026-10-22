@@ -158,6 +158,11 @@ class SourceDatasetCheckpoints:
         interleave. The operation key survives lost publication responses.
         """
         async with self._refresh_lock:
+            if self._versions().get('schema_version')!=schema_version:
+                # Deliberately unavailable until PR-2's version-based native
+                # capture is installed. Never label a legacy hash-pinned base
+                # as a checkpoint for an unobserved integer schema version.
+                raise SnapshotError('migration_checkpoint_schema_version_unavailable')
             proof=self.startup.history._coverage
             if (proof is None or not proof.current() or proof.applied_sequence!=expected_sequence
                     or proof.accepted_sequence!=expected_sequence
