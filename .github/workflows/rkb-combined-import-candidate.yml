@@ -3,6 +3,11 @@ name: rkb-combined-import-candidate
 on:
   push:
     branches: [chatgpt/rkb-intake-boundary-candidate-20261022]
+    paths-ignore: ["docs/**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
