@@ -1108,7 +1108,10 @@ def build_server(
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
     async def fetch(id: str) -> FetchOutput:
-        return await backend.fetch(id, _principal())
+        # Whole authorized fetch including principal resolution; no payload
+        # enters telemetry and the DTO/ACL path is unchanged.
+        from .product_telemetry import observe_async
+        return await observe_async("fetch", lambda: backend.fetch(id, _principal()))
 
     @mcp.tool(title='Read an authorized illustration', description='Return the canonical source crop and labelled caption/model-observation metadata. Model observation is not printed evidence. No OCR or inference.', annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
     async def illustration_fetch(id: str) -> list[TextContent | ImageContent]:
