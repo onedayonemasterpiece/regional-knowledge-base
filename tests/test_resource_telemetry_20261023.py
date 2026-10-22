@@ -236,7 +236,7 @@ def test_sanitizer_sink_correlation_release_and_no_private_keys():
         dropped = 0
         failed = 0
         def try_emit(self, record, *, level='standard'):
-            assert level == 'debug'
+            assert level == 'standard'
             records.append(record)
             return True
     assert emit(Sink(), observation())
@@ -272,7 +272,7 @@ class SharedSinkFixture:
         return self.inner.failed
 
     def try_emit(self, record, *, level='standard'):
-        assert level == 'debug'
+        assert level == 'standard'
         before = self.dropped
         event = dict(record, loss_before={'dropped': self.dropped,
                                          'failed': self.failed},
@@ -332,7 +332,7 @@ def test_real_shared_product_telemetry_schema_when_companion_pr_is_present():
     assert len(received) == 1
     record = received[0]
     assert record['schema'] == 'rkb.product.telemetry.v1'
-    assert record['event'] == 'resource.sample' and record['level'] == 'debug'
+    assert record['event'] == 'resource.sample' and record['level'] == 'standard'
     assert record['run_id'] == 'fixture-run'
     assert record['runtime_incarnation'] == 'fixture.incarnation'
     assert record['sample_seq'] == 1 and record['release_sha256'] == 'a' * 64
@@ -371,7 +371,8 @@ def test_real_shared_sink_full_and_failed_never_hold_resource_producer():
     assert failed.counters()['sink_disabled'] is True
     assert not emit(failed, observation(2))
     assert failed.counters()['dropped'] >= 1
-    # Default standard mode does not implicitly enable debug publication.
+    # Resource core observations are usable with the local standard sink.
     standard = product.ProductTelemetry(mode='standard', capacity=1, sink=seen.append)
-    assert not emit(standard, observation(1))
-    assert standard.counters()['emitted'] == 0
+    assert emit(standard, observation(1))
+    standard._queue.join()
+    assert standard.counters()['emitted'] == 1
