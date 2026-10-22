@@ -97,3 +97,15 @@ def test_interrupted_download_retries_without_accepting_partial_bytes(tmp_path, 
     assert target.read_bytes() == b'complete'
     assert not target.with_name('package.deb.partial').exists()
 
+
+def test_captured_ci_closure_reports_all_conflicts_and_bound_without_a_fake_manifest():
+    m = packaging()
+    base = json.loads((m.MANIFESTS / 'kaggle-native-noble-pg17.11-base-lock.json').read_text())
+    extra = json.loads((m.MANIFESTS / 'kaggle-native-djvu-noble-lock-20261022.json').read_text())
+    review = m.native_review(base, extra)
+    assert {r['package'] for r in review['conflicts']} == {'libhogweed6t64', 'liblzma5', 'libnettle8t64'}
+    assert review['union_package_count'] == 103 and review['current_max_packages'] == 96
+    assert review['package_bound_exceeded'] and review['status'] == 'UNRESOLVED'
+    assert review['deployable'] is False and review['dependencies_removed'] is False
+    assert review['manifest'] is None and review['elf_receipt'] is None
+

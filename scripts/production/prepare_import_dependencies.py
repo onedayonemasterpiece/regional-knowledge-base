@@ -132,6 +132,22 @@ def merge_native(base, extra):
                 target_abi_observed=False, native_execution_verified=False)
 
 
+def native_review(base, extra):
+    """Retain both closures and report every conflict without blessing a union."""
+    before = {p['name']: p for p in base['packages']}
+    after = {p['name']: p for p in extra['packages']}
+    conflicts = [dict(package=name, baseline=before[name], djvu=after[name])
+                 for name in sorted(before.keys() & after.keys())
+                 if any(before[name][key] != after[name][key]
+                        for key in ('version', 'architecture', 'size', 'sha256'))]
+    count = len(before.keys() | after.keys())
+    return dict(codec='rkb.native_merge_review.v1',
+                status='UNRESOLVED' if conflicts or count > MAX_PACKAGES else 'COMPATIBLE',
+                conflicts=conflicts, union_package_count=count, current_max_packages=MAX_PACKAGES,
+                package_bound_exceeded=count > MAX_PACKAGES, dependencies_removed=False,
+                deployable=False, manifest=None, elf_receipt=None)
+
+
 def capture_djvu(root):
     snapshots = []
     receipts = []
@@ -176,6 +192,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--native-lock', type=Path, help='rebuild exact CI-produced lock, without index resolution')
+    parser.add_argument('--refresh-djvu-metadata', action='store_true', help='explicitly capture new moving Ubuntu indexes')
     parser.add_argument('--pyaes-placement', type=Path)
     args = parser.parse_args()
     root = args.output.resolve()
@@ -188,8 +205,15 @@ def main():
         lock = json.loads(args.native_lock.read_text())
     else:
         base_native = json.loads((MANIFESTS / 'kaggle-native-noble-pg17.11-base-lock.json').read_text())
-        extra = capture_djvu(root)
+        extra = capture_djvu(root) if args.refresh_djvu_metadata else json.loads(
+            (MANIFESTS / 'kaggle-native-djvu-noble-lock-20261022.json').read_text())
         save(root / 'djvu-package-lock.json', extra)
+        save(root / 'native-base-lock.json', base_native)
+        review = native_review(base_native, extra)
+        save(root / 'native-merge-review.json', review)
+        if review['status'] == 'UNRESOLVED':
+            print(json.dumps(review), flush=True)
+            return
         lock = merge_native(base_native, extra)
     save(root / 'native-package-lock.json', lock)
     if len(lock['packages']) > MAX_PACKAGES:

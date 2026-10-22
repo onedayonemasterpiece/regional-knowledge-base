@@ -6,6 +6,7 @@ on:
     paths:
       - scripts/production/prepare_import_dependencies.py
       - scripts/production/manifests/kaggle-native-noble-pg17.11-base-lock.json
+      - scripts/production/manifests/kaggle-native-djvu-noble-lock-20261022.json
       - scripts/production/manifests/telethon-stage0-input-20261022.json
       - tests/test_import_dependency_packaging.py
       - .github/workflows/rkb-import-dependencies.yml
@@ -57,6 +58,8 @@ jobs:
           name: rkb-import-dependencies
           path: |
             dependency-proof/native-package-lock.json
+            dependency-proof/native-base-lock.json
+            dependency-proof/native-merge-review.json
             dependency-proof/djvu-package-lock.json
             dependency-proof/metadata-receipts.json
             dependency-proof/native-bound.json

@@ -7,12 +7,26 @@ It does not change runtime, registry, launch composition or shared bounds.
 `scripts/production/prepare_import_dependencies.py` calls the existing
 `resolve_native_closure` and `assemble_native_collection` implementations.
 The input Noble PostgreSQL17.11/pgvector0.8.2 lock is the existing captured
-85-package candidate, not a newly installed system environment. CI captures
-Ubuntu Packages bytes and hashes, resolves exact djvulibre-bin
+85-package candidate, not a newly installed system environment. Initial CI captured
+Ubuntu Packages bytes and hashes and resolved exact djvulibre-bin
 3.5.28-2ubuntu0.24.04.2 and all Depends/Pre-Depends, and rejects any collision
 that would silently change an existing package pin. The resulting lock pins
-every downloaded .deb by version, size and SHA-256. `--native-lock` rebuilds
-that exact closure without resolving moving metadata again.
+every downloaded .deb by version, size and SHA-256. The captured DjVu lock from
+CI39745705370 is committed byte-identically (SHA256
+`2c4dd9be5a41e0f8cc64152c26d485aa7784924d4f01cd63b5451276f36edddb`).
+Default CI uses this fixed input; `--refresh-djvu-metadata` explicitly captures
+new moving indexes. `--native-lock` rebuilds an approved exact merged closure
+without resolving moving metadata again.
+
+The actual initial integration is UNRESOLVED: union103 exceeds current96 and
+libhogweed6t64/libnettle8t64 select3.9.1-2.2build1 rather than baseline
+3.9.1-2.2build1.1; liblzma5 selects5.6.1+really5.4.5-1ubuntu0.4 rather than
+baseline0.3. `native-merge-review.json` preserves every complete conflicting
+package pin alongside both full input locks. It declares `deployable=false`,
+`manifest=null`, `elf_receipt=null`. Green receipt generation must not be
+reported as a built or ELF-verified native artifact. The integration owner must
+approve a coherent dependency lock and package bound, or a separately reviewed
+executable ELF packaging plan; this leaf does neither implicitly.
 
 The existing assembler retains the PG native data and libraries and adds
 ddjvu plus loader/library paths. The existing safe extractor materializes and
