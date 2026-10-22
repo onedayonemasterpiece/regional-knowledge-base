@@ -21,7 +21,6 @@ from regional_knowledge.kaggle_source_graph_read import (
 from regional_knowledge.source_graph import resolve_source_graph, resolved_graph_import_command
 from regional_knowledge.source_import import IMPORT_PRECONDITIONS
 from regional_knowledge.source_import_v4 import IMPORT_V4_DEPENDENCY
-from regional_knowledge.kaggle_apply import PgFunction
 from pg_schema_metadata import initialize_fixture_database
 from test_source_graph import material, PERSON
 from test_source_import import SOURCE
@@ -30,7 +29,7 @@ from test_source_story_native import apply
 from test_kaggle_public_illustration_native_read import _validated_ci_dsn
 from test_kaggle_apply import pinned
 from test_recovery_journal import fixture as journal_fixture
-from test_kaggle_source_graph_read import request as old_request, row as original_row
+from test_kaggle_source_graph_read import row as original_row
 from test_kaggle_fact_read import Native
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +50,7 @@ def selected(**updates):
 
 
 def long_graph_command():
-    """42 actual model-authored entities, all with real staged evidence."""
+    """44 actual model-authored entities, all with real staged evidence."""
     doc,graph=material()
     prototype=graph.entity_candidates[0].entities[0]
     noise=[prototype.model_copy(update=dict(
@@ -165,9 +164,13 @@ async def test_real_pg17_source_filtered_cursor_returns_every_rare_entity_and_no
     async def acquire():
         yield connection
     async with connection.transaction():
-        # Restore an accurate read frontier after the accepted domain command.
+        # Actual accepted cursor and current visibility epoch, never invented.
+        observed=await (await connection.execute(
+            "SELECT s.applied_seq,f.visibility_epoch FROM rkb_v4.recovery_state s "
+            "CROSS JOIN rkb_v4.read_frontier f WHERE s.singleton AND f.singleton")).fetchone()
         await connection.execute(
-            "SELECT rkb_v4.publish_read_frontier('sql22-entity-fixture','writer-1',1,1,true,true)")
+            "SELECT rkb_v4.publish_read_frontier(%s,%s,%s,%s,true,true)",
+            ('sql22-entity-fixture','writer-1',observed[1],observed[0]))
     original_execute=psycopg.AsyncCursor.execute
     actual_pages=[]
     async def metered_execute(cursor,statement,params=None,**kwargs):
