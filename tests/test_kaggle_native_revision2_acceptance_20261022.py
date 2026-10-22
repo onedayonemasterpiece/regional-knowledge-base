@@ -163,14 +163,15 @@ async def _revisions17(env):
     connection=env["connection"]
     raw=[(ROOT/"sql/kaggle"/name).read_bytes() for name in ARTIFACTS]
     pins=NativeRevision2UpgradePins(*(sha(value) for value in raw),"1"*64,"2"*64)
-    with pytest.raises(psycopg.Rollback):
-        async with connection.transaction():
-            for artifact in raw:
-                await connection.execute(artifact.decode(),prepare=False)
-            await connection.execute(transition_sql(pins),prepare=False)
-            check=await pinned(connection,"check_native_revision2_upgrade_v1")
-            apply=await pinned(connection,"apply_native_revision2_upgrade_v1")
-            raise psycopg.Rollback()
+    # psycopg.transaction() *consumes* psycopg.Rollback after rolling back.
+    # It is a scope control, not an exception propagated to pytest.raises.
+    async with connection.transaction():
+        for artifact in raw:
+            await connection.execute(artifact.decode(),prepare=False)
+        await connection.execute(transition_sql(pins),prepare=False)
+        check=await pinned(connection,"check_native_revision2_upgrade_v1")
+        apply=await pinned(connection,"apply_native_revision2_upgrade_v1")
+        raise psycopg.Rollback()
     pins=replace(pins,transition_check_sha256=check.definition_sha256,
                  transition_apply_sha256=apply.definition_sha256)
     handler=revision2_upgrade_handler(pins)
