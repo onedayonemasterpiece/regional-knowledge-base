@@ -23,7 +23,7 @@ from regional_knowledge.expert_executor_workflow import (
     ExpertExecutorResultReceiver, CODEC as RESULT_CODEC, PATH as RESULT,
 )
 from regional_knowledge.expert_delivery_control import TargetExpertDeliveryControl
-from regional_knowledge.expert_request_control import ExecutorCredentials, RequestControlError
+from regional_knowledge.expert_request_control import ExecutorCredentials, RequestControlError, TargetExpertRequestControl
 from regional_knowledge.participant_contracts import AccountUnlink
 from test_expert_request_control import _prepare, _event
 from test_expert_slack_composition import _owned_ingress
@@ -118,7 +118,12 @@ async def test_main_wires_claim_and_result_only_with_one_provisioned_context(ser
         finally:
             await external.aclose()
 
-    other,_,_=_prepare(env)
+    # Both async fixtures can share the same Participants authority. Construct
+    # a second CONTROL over the other spool WITHOUT re-linking the same Slack
+    # subject or provisioning another service.
+    other=TargetExpertRequestControl(env.p.registry,env.spool,
+        app_id='A111',team_id='T111',bot_user_id='UBOT',
+        allowed_channels=('C111',),clock=lambda:1792000001.)
     foreign=_context(other,credentials)
     with pytest.raises(ValueError,match='authority does not match'):
         server.main(target_startup=s.startup,expert_slack_ingress=ingress,
@@ -159,6 +164,9 @@ async def test_actual_dataset_signed_claim_result_send_intent_and_unknown_no_res
                 headers=_auth(credentials))).json()['state']=='empty'
             # The original quiet native capture/checkpoint; not a fabricated
             # local accepted flag or inline per-event Dataset publish.
+            # Actual checkpoint owner first observes the pending bytes at
+            # t=0; 31s is the next quiet-cycle boundary, not an invented clock.
+            assert not await p.owner.refresh(p.binding)
             p.clock[0]=31
             assert await p.owner.refresh(p.binding)
             assert p.store.latest_checkpoint.dataset_version==2
@@ -181,6 +189,8 @@ async def test_actual_dataset_signed_claim_result_send_intent_and_unknown_no_res
             with pytest.raises(RequestControlError):
                 ctx.delivery.claim_send_once(credentials,rid,lease['generation'],
                                               lease['execution_token'])
+            p.clock[0]=32
+            assert not await p.owner.refresh(p.binding)
             p.clock[0]=63
             assert await p.owner.refresh(p.binding)
             assert p.store.latest_checkpoint.dataset_version==3
@@ -191,6 +201,8 @@ async def test_actual_dataset_signed_claim_result_send_intent_and_unknown_no_res
             with pytest.raises(RequestControlError):
                 ctx.delivery.claim_send_once(credentials,rid,lease['generation'],
                                               lease['execution_token'])
+            p.clock[0]=64
+            assert not await p.owner.refresh(p.binding)
             p.clock[0]=95
             assert await p.owner.refresh(p.binding)
             assert p.store.latest_checkpoint.dataset_version==4
