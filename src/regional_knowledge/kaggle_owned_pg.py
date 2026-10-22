@@ -6,7 +6,7 @@ Native binaries/extension files must already exist in the verified inventory.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import os
@@ -25,6 +25,7 @@ from psycopg import sql
 from psycopg.rows import tuple_row
 
 from .kaggle_apply import initialize_database, Revisions
+from .kaggle_schema_migrate import latest_schema_version
 from .kaggle_bootstrap import BootstrapUnavailable, _file_hash
 
 # Kaggle saves /kaggle/working outputs; /kaggle/temp is session-only.
@@ -126,6 +127,18 @@ async def configure_native_roles(admin,*,selected_sql,dbname):
         await admin.execute('GRANT EXECUTE ON FUNCTION rkb_v4.'+signature+' TO rkb_reader')
     await admin.execute(sql.SQL('REVOKE ALL ON DATABASE {} FROM PUBLIC').format(sql.Identifier(dbname)))
     await admin.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO rkb_writer,rkb_reader').format(sql.Identifier(dbname)))
+
+
+async def configure_migration_defaults(connection):
+    """Carry the existing technical writer profile onto additive SQL objects.
+
+    Product participant ACL/eligibility tables and public reader grants remain
+    unchanged. The migration ledger explicitly revokes this technical default.
+    """
+    await connection.execute("""ALTER DEFAULT PRIVILEGES IN SCHEMA rkb_v4
+        GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO rkb_writer;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA rkb_v4
+        GRANT EXECUTE ON FUNCTIONS TO rkb_writer""",prepare=False)
 
 
 def canonical(value):
@@ -274,8 +287,11 @@ class OwnedDatabase:
     gid: int | None = None
     native_paths: object = None
     ownership_evidence: str = ''
+    schema_version: int = field(default_factory=latest_schema_version)
 
     def __post_init__(self):
+        if type(self.schema_version) is not int or self.schema_version<1:
+            raise ValueError('integer database schema version required')
         if self.mode not in ('NEW_EMPTY_GENERATION', 'VERIFIED_INITIALIZED'):
             raise ValueError('explicit initialized or new empty generation required')
         for key in ('database_generation','writer_generation','schema_revision','function_revision',

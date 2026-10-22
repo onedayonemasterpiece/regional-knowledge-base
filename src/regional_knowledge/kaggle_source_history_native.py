@@ -113,7 +113,7 @@ class NativeSourceHistoryObserver:
         return {'phase':'source_history','request_sha256':frame['request_sha256'],'value':value}
 
     async def _open(self,binding,args):
-        expected={'action','mode','nonce','catalog_sha256','acl_sha256','registry_sha256','observer_sha256',
+        expected={'action','mode','nonce','schema_version','registry_sha256','observer_sha256',
             'routes','prefix','pending_sequences'}
         if (set(args)!=expected or args['mode'] not in ('full','delta','renew')
                 or type(args['nonce']) is not str or len(args['nonce'])!=48
@@ -133,14 +133,15 @@ class NativeSourceHistoryObserver:
         old=None
         if args['mode']!='full':
             old=self._prefixes.get(args['prefix'])
-            if old is None or old['closure']!=[args[k] for k in ('catalog_sha256','acl_sha256','registry_sha256','observer_sha256','routes')]:
+            if old is None or old['closure']!=[args[k] for k in ('schema_version','registry_sha256','observer_sha256','routes')]:
                 raise NativeHistoryError('native_history_retained_prefix_required')
             if any(i>old['sequence'] for i in args['pending_sequences']):raise NativeHistoryError('native_history_pending_prefix')
         elif args['prefix'] is not None or args['pending_sequences']:
             raise NativeHistoryError('native_history_full_arguments')
         catalog,fields=await self.probe(acquire=self.acquire)
-        if digest(catalog)!=args['catalog_sha256'] or fields['database_generation']!=self.database.database_generation:
-            raise NativeHistoryError('native_history_catalog_changed')
+        if (fields['schema_version']!=args['schema_version']
+                or fields['database_generation']!=self.database.database_generation):
+            raise NativeHistoryError('native_history_schema_version_changed')
         lease=self.acquire();connection=await lease.__aenter__();tx=None
         try:
             if connection.closed or connection.row_factory is not tuple_row or connection.info.transaction_status!=TransactionStatus.IDLE:
@@ -172,8 +173,6 @@ class NativeSourceHistoryObserver:
                 # SQL. Keep accepted model inputs/origins stable through close.
                 await connection.execute('LOCK TABLE '+','.join('rkb_v4.'+name
                     for name in sorted(TABLES_13|TABLES_14))+' IN SHARE MODE')
-            if digest(await inspect_acl(connection))!=args['acl_sha256']:
-                raise NativeHistoryError('native_history_acl_changed')
             cursor=await connection.execute('SELECT CASE WHEN octet_length(s.database_generation)<=256 THEN s.database_generation END,CASE WHEN octet_length(s.writer_generation)<=256 THEN s.writer_generation END,s.applied_seq '
                 'FROM rkb_v4.recovery_state s JOIN rkb_v4.writer_generations w ON w.generation=s.writer_generation '
                 'WHERE s.singleton AND NOT w.retired LIMIT 2')
@@ -197,7 +196,7 @@ class NativeSourceHistoryObserver:
                 (start,args['pending_sequences'],args['mode']!='renew',self.max_commands+1))
             session=_Session(lease,connection,tx,receipts,binding,args['nonce'],args['mode'],sequence,old,
                 time.monotonic()+self.lease_seconds,empty)
-            session.closure=[args[k] for k in ('catalog_sha256','acl_sha256','registry_sha256','observer_sha256','routes')]
+            session.closure=[args[k] for k in ('schema_version','registry_sha256','observer_sha256','routes')]
             token=secrets.token_urlsafe(24);self._sessions[token]=session
             async def expiry():
                 await asyncio.sleep(self.lease_seconds)
@@ -206,7 +205,7 @@ class NativeSourceHistoryObserver:
             session.timer=asyncio.create_task(expiry())
             return dict(session=token,nonce=session.nonce,applied_sequence=sequence,empty=empty,
                 database_generation=self.database.database_generation,writer_generation=self.database.writer_generation,
-                catalog_sha256=args['catalog_sha256'],acl_sha256=args['acl_sha256'],registry_sha256=self.registry_hash,
+                schema_version=args['schema_version'],registry_sha256=self.registry_hash,
                 observer_sha256=self.code_hash)
         except BaseException:
             if tx is not None:

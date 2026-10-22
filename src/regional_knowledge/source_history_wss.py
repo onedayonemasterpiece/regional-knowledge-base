@@ -19,24 +19,24 @@ _LOG=logging.getLogger(__name__)
 
 class WssNativeHistoryProofAdapter:
     """Concrete startup adapter; existing queue and private native observations."""
-    def __init__(self,*,database,expected_catalog_sha256,expected_acl_sha256,expected_observer_sha256,
+    def __init__(self,*,database,expected_observer_sha256,expected_catalog_sha256=None,expected_acl_sha256=None,
                  coverage_seconds=30,timeout_seconds=10,max_commands=2048,max_history_bytes=4*1024*1024,
                  geo_bootstrap_operation_keys=(),geo_upgrade_pins=None,native_source_upgrade_pins=None):
-        self.database=database;self.catalog=expected_catalog_sha256;self.acl=expected_acl_sha256
+        self.database=database
         self.observer=expected_observer_sha256;self.coverage_seconds=coverage_seconds
         self.timeout=timeout_seconds;self.max_commands=max_commands;self.max_bytes=max_history_bytes
         if type(self.observer) is not str or len(self.observer)!=64 or set(self.observer)-set('0123456789abcdef'):
             raise ValueError('independent native observer source pin required')
         self.geo_bootstrap_operation_keys=geo_bootstrap_operation_keys
-        self.geo_upgrade_pins=geo_upgrade_pins
-        self.native_source_upgrade_pins=native_source_upgrade_pins
+        self.geo_upgrade_pins=None
+        self.native_source_upgrade_pins=None
         self._bound=None
 
     def bind(self,*,spool,routes,binding_current,writer_generation):
         if self._bound is not None:raise ValueError('history adapter already bound')
         if writer_generation!=self.database.writer_generation:raise ValueError('native history writer differs')
         self._bound=WssSourceHistoryVerifier(spool,acquire=None,binding_current=binding_current,routes=dict(routes),
-            expected_catalog_sha256=self.catalog,expected_acl_sha256=self.acl,writer_generation=writer_generation,
+            expected_schema_version=self.database.schema_version,writer_generation=writer_generation,
             timeout_seconds=self.timeout,coverage_seconds=self.coverage_seconds,max_commands=self.max_commands,
             max_history_bytes=self.max_bytes,database=self.database,observer_sha256=self.observer,
             geo_bootstrap_operation_keys=self.geo_bootstrap_operation_keys,geo_upgrade_pins=self.geo_upgrade_pins,
@@ -51,27 +51,9 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
             raise ValueError('bounded cloud history preparation required')
         self.cloud_prepare_seconds=cloud_prepare_seconds
         self.database,self.observer_hash=database,observer_sha256
-        self.geo_upgrade_pins=geo_upgrade_pins
-        self.native_source_upgrade_pins=native_source_upgrade_pins
+        self.geo_upgrade_pins=None
+        self.native_source_upgrade_pins=None
         self.origin_closure=None
-        from .source_activation import ACTIVATION_REVISIONS
-        if native_source_upgrade_pins is not None:
-            from .kaggle_native_source_upgrade import NativeSourceUpgradePins,native_source_upgrade_handler
-            if (type(native_source_upgrade_pins) is not NativeSourceUpgradePins or geo_upgrade_pins is None
-                    or tuple(getattr(database,k) for k in ('schema_revision','function_revision','executor_revision'))!=ACTIVATION_REVISIONS.wire()
-                    or native_source_upgrade_handler(native_source_upgrade_pins) not in self.spool.registry.handlers.values()):
-                raise ValueError('fixed ordered native source closure transition required')
-        if geo_upgrade_pins is not None:
-            from .kaggle_geo_upgrade import GeoUpgradePins
-            from .geo_manifest_commands import GEO_REVISIONS,GEO_V2_REVISIONS
-            revisions=tuple(getattr(database,k) for k in ('schema_revision','function_revision','executor_revision'))
-            target=(ACTIVATION_REVISIONS if native_source_upgrade_pins is not None else GEO_V2_REVISIONS).wire()
-            if type(geo_upgrade_pins) is not GeoUpgradePins or revisions not in (GEO_REVISIONS.wire(),target):
-                raise ValueError('fixed geographic closure transition required')
-            self.origin_closure=geo_upgrade_pins.origin_closure(self.spool.registry,self.routes)
-            if revisions==GEO_REVISIONS.wire() and (self.catalog_hash,self.acl_hash)!=(
-                    self.origin_closure['catalog_sha256'],self.origin_closure['acl_sha256']):
-                raise ValueError('unchanged geographic origin catalog and ACL required')
         if (type(geo_bootstrap_operation_keys) is not tuple or len(geo_bootstrap_operation_keys)>256
                 or len(set(geo_bootstrap_operation_keys))!=len(geo_bootstrap_operation_keys)
                 or any(type(key) is not str or not 1<=len(key.encode())<=256 for key in geo_bootstrap_operation_keys)):
@@ -281,7 +263,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     nonce=secrets.token_hex(24)
                     self.spool._native_history_unsettled=True
                     opened=await self._phase(binding,dict(action='open',mode=mode,nonce=nonce,
-                        catalog_sha256=self.catalog_hash,acl_sha256=self.acl_hash,registry_sha256=self.registry_hash,
+                        schema_version=self.schema_version,registry_sha256=self.registry_hash,
                         observer_sha256=self.observer_hash,routes=sorted(self.routes),prefix=None if mode=='full' else self._native_prefix,
                         pending_sequences=[] if mode=='full' else pending_earlier))
                     session=opened.get('session');applied=opened.get('applied_sequence')
@@ -290,8 +272,8 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                             or mode!='full' and applied<previous.applied_sequence
                             or mode=='renew' and applied!=previous.applied_sequence
                             or any(opened.get(k)!=v for k,v in {'database_generation':key[3],
-                                'writer_generation':self.writer_generation,'catalog_sha256':self.catalog_hash,
-                                'acl_sha256':self.acl_hash,'registry_sha256':self.registry_hash,
+                                'writer_generation':self.writer_generation,'schema_version':self.schema_version,
+                                'registry_sha256':self.registry_hash,
                                 'observer_sha256':self.observer_hash}.items())):
                         raise SpoolConflict('native source observation binding differs')
                     remote=checkpoint;publish_genesis=False

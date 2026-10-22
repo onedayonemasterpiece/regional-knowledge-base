@@ -23,7 +23,7 @@ def _object(pairs):
 
 
 def target_launch_from_wire(value):
-    optional={'recovery','dataset_checkpoint'}
+    optional={'recovery','dataset_checkpoint','schema_sha256'}
     required={field.name for field in fields(TargetLaunchSpec)}-optional
     if type(value) is not dict or not required<=set(value) or set(value)-required-optional:
         raise ValueError('exact target launch configuration fields required')

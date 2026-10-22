@@ -5,7 +5,8 @@ capabilities inferred from a method name or an installed dependency.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from .kaggle_schema_migrate import latest_schema_version
 from hashlib import sha256
 import math
 from pathlib import PurePosixPath
@@ -119,9 +120,11 @@ class SearchRuntimeExpectation:
     function_revision: str
     executor_revision: str
     min_data_seq: int = 0
+    schema_version: int = field(default_factory=latest_schema_version)
 
     def __post_init__(self):
-        if (not isinstance(self.hashes, Mapping) or set(self.hashes) != RUNTIME_HASHES
+        if (type(self.schema_version) is not int or self.schema_version<1
+                or not isinstance(self.hashes, Mapping) or set(self.hashes) != RUNTIME_HASHES
                 or any(not isinstance(v, str) or not _HASH.fullmatch(v) for v in self.hashes.values())):
             raise ValueError('all six exact expected runtime hashes required')
         for value in (self.database_generation, self.schema_revision,
@@ -135,7 +138,8 @@ class SearchRuntimeExpectation:
     def wire(self):
         return {'hashes': dict(self.hashes), 'database_generation': self.database_generation,
                 'schema_revision': self.schema_revision, 'function_revision': self.function_revision,
-                'executor_revision': self.executor_revision, 'min_data_seq': self.min_data_seq}
+                'executor_revision': self.executor_revision, 'min_data_seq': self.min_data_seq,
+                'schema_version':self.schema_version}
 
 
 def validate_search_runtime(expected: SearchRuntimeExpectation, observed: Mapping,
@@ -148,7 +152,7 @@ def validate_search_runtime(expected: SearchRuntimeExpectation, observed: Mappin
     """
     fields = {'hashes', 'database_generation', 'schema_revision', 'function_revision',
               'executor_revision', 'applied_seq', 'projection_seq', 'visibility_epoch',
-              'text_search_ready', 'dense_search_ready', 'archive_read_ready', 'proof_ready'}
+              'text_search_ready', 'dense_search_ready', 'archive_read_ready', 'proof_ready','schema_version'}
     if (type(expected) is not SearchRuntimeExpectation or not isinstance(observed, Mapping)
             or set(observed) != fields):
         raise ValueError('exact target readiness shape required')
@@ -183,9 +187,8 @@ def validate_search_runtime(expected: SearchRuntimeExpectation, observed: Mappin
     issues = list(result.issues)
     if observed['database_generation'] != expected.database_generation:
         issues.append('database_generation_mismatch')
-    if any(observed[key] != getattr(expected, key) for key in
-           ('schema_revision', 'function_revision', 'executor_revision')):
-        issues.append('semantic_revision_mismatch')
+    if type(observed['schema_version']) is not int or observed['schema_version']!=expected.schema_version:
+        issues.append('schema_version_mismatch')
     return Validation(tuple(issues))
 
 

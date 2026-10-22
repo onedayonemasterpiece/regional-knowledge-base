@@ -26,6 +26,7 @@ from .kaggle_readiness import ArtifactRequirement, RUNTIME_HASHES, MAX_LAUNCH_CO
 from .kaggle_query import PinnedTokenizer
 from .kaggle_worker_query import KaggleWorkerQuery
 from .kaggle_stage0 import MAX_PREPARED_FILES
+from .kaggle_schema_migrate import latest_schema_version
 
 REQUIRED_DEPENDENCIES = frozenset({'torch', 'transformers', 'tokenizers', 'huggingface-hub',
                                  'psycopg', 'psycopg-pool', 'aiohttp', 'pydantic'})
@@ -313,10 +314,12 @@ class CandidateReadiness:
     dense_search_ready: bool
     archive_read_ready: bool | None = None
     proof_ready: bool | None = None
+    schema_version: int = field(default_factory=latest_schema_version)
 
     def __post_init__(self):
         hashes = dict(self.hashes)
-        if (set(hashes) != RUNTIME_HASHES or any(not isinstance(v, str) or re.fullmatch('[0-9a-f]{64}', v) is None for v in hashes.values())
+        if (type(self.schema_version) is not int or self.schema_version<1
+                or set(hashes) != RUNTIME_HASHES or any(not isinstance(v, str) or re.fullmatch('[0-9a-f]{64}', v) is None for v in hashes.values())
                 or any(not _text(getattr(self, k)) for k in ('database_generation', 'schema_revision', 'function_revision', 'executor_revision'))
                 or type(self.applied_seq) is not int or not 0 <= self.applied_seq <= 2**63-1
                 or any(v is not None and (type(v) is not int or not 0 <= v <= 2**63-1) for v in (self.projection_seq, self.visibility_epoch))
@@ -411,10 +414,10 @@ async def prepare_resident_runtime(encoder, *, acquire, probe_database, launch_c
                 'model': _sha(_json({'revision': REVISION, 'space': SPACE,
                     'artifacts': verified.role_hash({'weight', 'model_config', 'tokenizer'})}))}
         hashes = await asyncio.to_thread(observe)
-        catalog_bytes, fields = await probe_database(acquire=acquire)
-        if not isinstance(catalog_bytes, bytes) or not 1 <= len(catalog_bytes) <= 1024 * 1024:
-            raise BootstrapUnavailable('catalog_observation_invalid')
-        hashes['schema'] = _sha(catalog_bytes)
+        _, fields = await probe_database(acquire=acquire)
+        # Compatibility hash slot until PR-3 retires the revision protocol.
+        # Derived entirely from the observed integer, never from PG catalogs.
+        hashes['schema'] = _sha(_json(fields.get('schema_version',latest_schema_version())))
         readiness = CandidateReadiness(hashes=hashes, **fields)
         tokenizer = PinnedTokenizer(encoder.count, REVISION, TOKENIZER_SHA256, SPACE)
         return PreparedRuntime(KaggleWorkerQuery(acquire=acquire, tokenizer=tokenizer, telemetry=telemetry), readiness)

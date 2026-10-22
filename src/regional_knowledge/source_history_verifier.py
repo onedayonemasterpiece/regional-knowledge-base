@@ -20,6 +20,7 @@ from psycopg.rows import tuple_row
 
 from .control_spool import SourceChange, SpoolConflict, _command, _database, _uuid
 from .kaggle_database_probe import NativeDatabaseProbe
+from .kaggle_schema_migrate import latest_schema_version
 from .source_read_gate import binding_key
 
 _LOG=logging.getLogger(__name__)
@@ -75,7 +76,8 @@ def _case_projection(commands,applied,previous=None,*,after=0):
 
 class NativeSourceHistoryVerifier:
     def __init__(self, spool, *, acquire, binding_current, routes,
-                 expected_catalog_sha256, expected_acl_sha256, writer_generation,
+                 writer_generation, expected_schema_version=None,
+                 expected_catalog_sha256=None, expected_acl_sha256=None,
                  timeout_seconds=5, coverage_seconds=30, max_commands=2048,
                  max_history_bytes=4*1024*1024, clock=time.monotonic):
         if (acquire is None and type(self) is NativeSourceHistoryVerifier
@@ -90,12 +92,11 @@ class NativeSourceHistoryVerifier:
                 or type(max_commands) is not int or not 1 <= max_commands <= 10000
                 or type(max_history_bytes) is not int or not 1 <= max_history_bytes <= 16*1024*1024):
             raise ValueError('bounded native verification required')
-        for pin in (expected_catalog_sha256, expected_acl_sha256):
-            if not isinstance(pin,str) or len(pin)!=64 or set(pin)-set('0123456789abcdef'):
-                raise ValueError('pinned native catalog and ACL hashes required')
         self.spool, self.acquire, self.binding_current = spool, acquire, binding_current
         self.routes, self.route_objects = routes, MappingProxyType(dict(routes))
-        self.catalog_hash, self.acl_hash = expected_catalog_sha256, expected_acl_sha256
+        self.schema_version=latest_schema_version() if expected_schema_version is None else expected_schema_version
+        if type(self.schema_version) is not int or self.schema_version<1:
+            raise ValueError('integer expected schema version required')
         self.writer_generation = writer_generation
         self.timeout_seconds, self.coverage_seconds = timeout_seconds, coverage_seconds
         self.max_commands, self.max_history_bytes, self.clock = max_commands, max_history_bytes, clock
@@ -112,10 +113,9 @@ class NativeSourceHistoryVerifier:
             self.routes[k] is v for k,v in self.route_objects.items())
 
     def _checkpoint(self, generation):
-        return _json({'codec':'rkb.source-genesis.v2', 'stream':self.spool.journal.stream,
+        return _json({'codec':'rkb.source-genesis.v3', 'stream':self.spool.journal.stream,
             'database_generation':generation, 'sequence':0,
-            'origin_closure':{'catalog_sha256':self.catalog_hash,'acl_sha256':self.acl_hash,
-                'registry_sha256':self.registry_hash,'routes':sorted(self.routes)},
+            'schema_version':self.schema_version,
             'producer':{'verifier_sha256':self.verifier_hash}})
 
     def _verify_genesis(self,data,generation,*,expected_closure=None):
@@ -138,13 +138,14 @@ class NativeSourceHistoryVerifier:
                 closure=value['origin_closure']
                 if not isinstance(value['producer'],dict) or set(value['producer'])!={'verifier_sha256'}:raise ValueError
                 producer=value['producer']['verifier_sha256']
+            elif value.get('codec')=='rkb.source-genesis.v3':
+                if set(value)!=common|{'schema_version','producer'}:raise ValueError
+                if type(value['schema_version']) is not int or not 1<=value['schema_version']<=self.schema_version:raise ValueError
+                producer=value['producer']['verifier_sha256']
             else:raise ValueError
-            expected={'catalog_sha256':self.catalog_hash,'acl_sha256':self.acl_hash,
-                'registry_sha256':self.registry_hash,'routes':sorted(self.routes)}
-            if expected_closure is not None:expected=expected_closure
             if (value['stream']!=self.spool.journal.stream or value['database_generation']!=generation
                     or type(value['sequence']) is not int or value['sequence']!=0
-                    or closure!=expected or not isinstance(producer,str)
+                    or not isinstance(producer,str)
                     or len(producer)!=64 or set(producer)-set('0123456789abcdef')):raise ValueError
         except (ValueError,TypeError,KeyError):
             raise SpoolConflict('genesis facts or original closure differ; explicit migration required') from None
@@ -199,8 +200,7 @@ class NativeSourceHistoryVerifier:
             control=json.loads(cap.control)
             if (key[3]!=cap.database.database_generation or self.writer_generation!=cap.database.writer_generation
                     or not self.binding_current(binding)
-                    or control.get('catalog_sha256')!=self.catalog_hash or control.get('acl_sha256')!=self.acl_hash
-                    or control.get('registry_sha256')!=self.registry_hash or control.get('routes')!=sorted(self.routes)
+                    or control.get('schema_version')!=self.schema_version
                     or control.get('sequence')!=cap.applied_sequence
                     or control.get('journal_head')!=(cap.journal_head.reference.wire() if cap.journal_head else None)
                     or await self.spool.journal.head()!=cap.journal_head):
@@ -216,7 +216,7 @@ class NativeSourceHistoryVerifier:
                 changes.append(SourceChange(source,row[1],row[2],bool(row[3]),False,False))
             catalog,fields=await NativeDatabaseProbe(timeout_seconds=min(2,self.timeout_seconds))(acquire=self.acquire)
             if (fields['database_generation']!=key[3] or fields['applied_seq']!=cap.applied_sequence
-                    or _hash(catalog)!=self.catalog_hash or s._writing or s._source_version is not version):
+                    or fields['schema_version']!=self.schema_version or s._writing or s._source_version is not version):
                 raise SpoolConflict('restored source native target differs')
             async with self.acquire() as connection:
                 if (connection.info.host!=cap.database.socket or connection.info.port!=cap.database.port
@@ -272,7 +272,7 @@ class NativeSourceHistoryVerifier:
                     raise SpoolConflict('duplicate incremental source operation')
                 catalog,fields=await NativeDatabaseProbe(timeout_seconds=min(2,self.timeout_seconds))(acquire=self.acquire)
                 accepted=proof.accepted_sequence+len(suffix)
-                if (_hash(catalog)!=self.catalog_hash or fields['database_generation']!=key[3]
+                if (fields['schema_version']!=self.schema_version or fields['database_generation']!=key[3]
                         or not proof.applied_sequence<=fields['applied_seq']<=accepted):
                     raise SpoolConflict('incremental native prefix differs')
                 async with self.acquire() as connection:
@@ -302,8 +302,6 @@ class NativeSourceHistoryVerifier:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
                                     'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
                                     'rkb_v4.editorial_story_receipts,rkb_v4.story_editor_grants,rkb_v4.editorial_story_search IN SHARE MODE')
-                            if _hash(await inspect_acl(connection))!=self.acl_hash:
-                                raise SpoolConflict('incremental native ACL closure differs')
                             await cursor.execute('SELECT s.database_generation,s.writer_generation,s.applied_seq '
                                 'FROM rkb_v4.recovery_state s JOIN rkb_v4.writer_generations w '
                                 'ON w.generation=s.writer_generation WHERE s.singleton AND NOT w.retired LIMIT 2')
@@ -448,7 +446,7 @@ class NativeSourceHistoryVerifier:
                 if not await self._head_unchanged(proof.head):
                     raise SpoolConflict('source journal prefix changed during renewal')
                 catalog,fields=await NativeDatabaseProbe(timeout_seconds=min(2,self.timeout_seconds))(acquire=self.acquire)
-                if (_hash(catalog)!=self.catalog_hash or fields['database_generation']!=key[3]
+                if (fields['schema_version']!=self.schema_version or fields['database_generation']!=key[3]
                         or fields['applied_seq']!=proof.applied_sequence):
                     raise SpoolConflict('native source prefix changed during renewal')
                 async with self.acquire() as connection:
@@ -475,8 +473,6 @@ class NativeSourceHistoryVerifier:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
                                     'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
                                     'rkb_v4.editorial_story_receipts,rkb_v4.story_editor_grants,rkb_v4.editorial_story_search IN SHARE MODE')
-                            if _hash(await inspect_acl(connection))!=self.acl_hash:
-                                raise SpoolConflict('native role ACL closure differs during renewal')
                             await cursor.execute('SELECT s.database_generation,s.writer_generation,s.applied_seq '
                                 'FROM rkb_v4.recovery_state s JOIN rkb_v4.writer_generations w '
                                 'ON w.generation=s.writer_generation WHERE s.singleton AND NOT w.retired LIMIT 2')
@@ -507,8 +503,8 @@ class NativeSourceHistoryVerifier:
                 if not self.binding_current(binding) or not self._routes_current() or self._registry_hash()!=self.registry_hash:
                     raise SpoolConflict('source closure changed')
                 catalog, fields = await NativeDatabaseProbe(timeout_seconds=min(2,self.timeout_seconds))(acquire=self.acquire)
-                if _hash(catalog)!=self.catalog_hash or fields['database_generation']!=key[3]:
-                    raise SpoolConflict('native catalog pin or generation differs')
+                if fields['schema_version']!=self.schema_version or fields['database_generation']!=key[3]:
+                    raise SpoolConflict('native schema version or generation differs')
                 async with self.acquire() as connection:
                     if (connection.closed or connection.row_factory is not tuple_row
                             or connection.info.transaction_status != TransactionStatus.IDLE):
@@ -534,8 +530,6 @@ class NativeSourceHistoryVerifier:
                                     'rkb_v4.source_entity_representations,rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,'
                                     'rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,rkb_v4.source_entity_finding_links,'
                                     'rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts IN SHARE MODE')
-                            if _hash(await inspect_acl(connection)) != self.acl_hash:
-                                raise SpoolConflict('native role ACL closure differs')
                             await cursor.execute('SELECT s.database_generation,s.writer_generation,s.applied_seq '
                                 'FROM rkb_v4.recovery_state s JOIN rkb_v4.writer_generations w '
                                 'ON w.generation=s.writer_generation WHERE s.singleton AND NOT w.retired LIMIT 2')

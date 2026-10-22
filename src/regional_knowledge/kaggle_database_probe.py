@@ -156,16 +156,11 @@ def native_probe_for_schema(schema_revision, *, timeout_seconds=2.0):
     Schema14 uses the existing hard row ceiling while its combined native
     fixture is measured; this is not a claimed resource/performance acceptance.
     """
-    return NativeDatabaseProbe(timeout_seconds=timeout_seconds,
-        schema_revision=schema_revision,
-        max_catalog_rows=(2048 if schema_revision==IMAGE_SOURCE_SCHEMA else
-            1408 if schema_revision=='rkb-v4-sql001-012-v1' else
-            1376 if schema_revision=='rkb-v4-sql001-011-v1' else
-            576 if schema_revision=='rkb-v4-sql001-008-v1' else 512))
+    return NativeDatabaseProbe(timeout_seconds=timeout_seconds)
 
 
 @dataclass(frozen=True)
-class NativeDatabaseProbe:
+class _CatalogDiagnostic:
     timeout_seconds: float = 2.0
     max_catalog_bytes: int = 1024 * 1024
     max_catalog_rows: int = 512
@@ -369,6 +364,64 @@ class NativeDatabaseProbe:
             'text_search_ready':state['text_search_ready'] and current,
             'dense_search_ready':state['dense_search_ready'] and current,
             'archive_read_ready':None,'proof_ready':None}
+
+
+@dataclass(frozen=True)
+class NativeDatabaseProbe:
+    """Observe readiness and installed versions, never fingerprint the catalog.
+
+    A short read-only statement supplies one consistent frontier/ledger view.
+    Schema migrations establish structure; readiness does not enumerate owners,
+    collation, definitions or ACLs and is independent of PG patch releases.
+    """
+    timeout_seconds: float = 2.0
+
+    def __post_init__(self):
+        if (type(self.timeout_seconds) not in (int,float) or not math.isfinite(self.timeout_seconds)
+                or not 0 < self.timeout_seconds <= 10):
+            raise ValueError('bounded native probe deadline required')
+
+    async def __call__(self,*,acquire):
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                async with acquire() as connection:
+                    async with connection.transaction():
+                        await connection.execute("SET LOCAL statement_timeout='2000ms'")
+                        row=await (await connection.execute("""SELECT jsonb_build_object(
+                            'database_generation',s.database_generation,
+                            'schema_version',(SELECT max(version) FROM rkb_v4.schema_migrations),
+                            'server_version_num',current_setting('server_version_num')::integer,
+                            'pgvector_version',(SELECT extversion FROM pg_extension WHERE extname='vector'),
+                            'postgis_version',(SELECT extversion FROM pg_extension WHERE extname='postgis'),
+                            'schema_revision',s.schema_revision,'function_revision',s.function_revision,
+                            'executor_revision',s.executor_revision,
+                            'applied_seq',s.applied_seq,'projection_seq',f.projection_seq,
+                            'visibility_epoch',f.visibility_epoch,'text_search_ready',f.text_ready,
+                            'dense_search_ready',f.dense_ready,'pending',f.pending_seq IS NOT NULL)::text
+                            FROM rkb_v4.recovery_state s CROSS JOIN rkb_v4.read_frontier f
+                            WHERE s.singleton AND f.singleton LIMIT 2""")).fetchall()
+                        if len(row)!=1 or not isinstance(row[0][0],str) or len(row[0][0].encode())>4096:
+                            raise DatabaseProbeUnavailable('database_state_unavailable')
+                        state=json.loads(row[0][0])
+                        if (type(state.get('schema_version')) is not int or state['schema_version']<1
+                                or type(state.get('server_version_num')) is not int
+                                or state['server_version_num']//10000!=17
+                                or state.get('pgvector_version')!='0.8.2'):
+                            raise DatabaseProbeUnavailable('database_native_runtime_mismatch')
+                        fields=_CatalogDiagnostic._state(state)
+                        fields['schema_version']=state['schema_version']
+                        # Keep the former two-item adapter shape during the
+                        # protocol transition; these bytes are not a catalog
+                        # and must never be used as a readiness/hash pin.
+                        return b'{}',fields
+        except asyncio.CancelledError:
+            raise
+        except DatabaseProbeUnavailable:
+            raise
+        except (TimeoutError,QueryCanceled):
+            raise DatabaseProbeUnavailable('database_probe_deadline') from None
+        except Exception:
+            raise DatabaseProbeUnavailable('database_probe_failed') from None
 
 
 # Bounded health operation over the same existing native PG acquisition.

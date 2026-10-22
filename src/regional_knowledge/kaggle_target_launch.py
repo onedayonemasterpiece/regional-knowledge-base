@@ -205,7 +205,7 @@ if __name__ == '__main__':
     hashes = dict(code=role_hash({'code'}),launch_config=digest(canonical(config)),
         executed_source=digest(source.encode()),dependency=target.dependency_sha256,
         model=digest(canonical(dict(revision=REVISION,space=SPACE,
-            artifacts=role_hash({'weight','model_config','tokenizer'})))),schema=target.schema_sha256)
+            artifacts=role_hash({'weight','model_config','tokenizer'})))),schema=digest(canonical(target.database.schema_version)))
     database = target.database
     # Final source hash is persisted outside its own source bytes: no self hash.
     if target.bootstrap_only:
@@ -219,5 +219,5 @@ if __name__ == '__main__':
     else:
         queue.expect_search_runtime(config['run_id'],SearchRuntimeExpectation(hashes,
             database.database_generation,database.schema_revision,database.function_revision,
-            database.executor_revision,target.min_data_seq))
+            database.executor_revision,target.min_data_seq,schema_version=database.schema_version))
     return source

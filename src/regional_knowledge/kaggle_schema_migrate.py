@@ -11,8 +11,8 @@ import hashlib
 import logging
 import re
 from collections.abc import Mapping
+from pathlib import Path
 
-from psycopg.pq import TransactionStatus
 
 LOG = logging.getLogger(__name__)
 BASELINE_VERSIONS = {
@@ -25,6 +25,20 @@ LEDGER_SQL = """CREATE TABLE rkb_v4.schema_migrations (
     version int PRIMARY KEY, name text NOT NULL, sha256 text NOT NULL,
     applied_at timestamptz NOT NULL DEFAULT now())"""
 INSERT_SQL = "INSERT INTO rkb_v4.schema_migrations(version,name,sha256) VALUES(%s,%s,%s)"
+
+
+def latest_schema_version():
+    """Code expectation comes from the numbered SQL prefix, with no manual pin.
+
+    Worker payloads keep sql/ beside regional_knowledge/. Repository releases
+    keep sql/kaggle/ beside src/. Both are immutable verified source layouts.
+    """
+    package=Path(__file__).resolve().parent
+    root=package.parent/'sql'
+    if not root.is_dir():
+        root=package.parent.parent/'sql/kaggle'
+    files={'sql/'+path.name:path.read_bytes() for path in root.glob('[0-9][0-9][0-9]_*.sql')}
+    return len(bundle_migrations(files))
 
 
 class MigrationDenied(RuntimeError):
@@ -60,6 +74,20 @@ async def _row(connection, query, params=None):
     return await (await connection.execute(query, params)).fetchone()
 
 
+async def _create_ledger(connection):
+    await connection.execute(LEDGER_SQL)
+    # Only the trusted migration owner writes the ledger. The existing native
+    # reader needs the public SQL version/hash metadata for readiness.
+    await connection.execute("""DO $$ BEGIN
+        IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='rkb_reader') THEN
+            GRANT SELECT ON rkb_v4.schema_migrations TO rkb_reader;
+        END IF;
+        IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='rkb_writer') THEN
+            REVOKE ALL ON rkb_v4.schema_migrations FROM rkb_writer;
+        END IF;
+        END $$""")
+
+
 async def _baseline(connection, migrations, before_file=None):
     async with connection.transaction():
         if before_file is not None:
@@ -93,7 +121,7 @@ async def _baseline(connection, migrations, before_file=None):
                 version = ordinal
         if version > len(migrations):
             raise MigrationDenied("migration_bundle_behind")
-        await connection.execute(LEDGER_SQL)
+        await _create_ledger(connection)
         for migration in migrations[:version]:
             await connection.execute(INSERT_SQL, (migration.version, migration.name, migration.sha256))
         LOG.info("schema_migrate baseline schema_version=%s", version)
@@ -106,6 +134,7 @@ async def migrate(connection, files: Mapping[str, bytes], *, before_file=None) -
     calling again: committed ledger rows skip that file. No revision guessing or
     journal mutation occurs here.
     """
+    from psycopg.pq import TransactionStatus
     migrations = bundle_migrations(files)
     if connection.info.transaction_status != TransactionStatus.IDLE:
         raise MigrationDenied("migration_connection_not_idle")
@@ -137,7 +166,7 @@ async def migrate(connection, files: Mapping[str, bytes], *, before_file=None) -
                     await before_file(connection)
                 await connection.execute(migration.body.decode("utf-8"), prepare=False)
                 if migration.version == 1:
-                    await connection.execute(LEDGER_SQL)
+                    await _create_ledger(connection)
                 await connection.execute(INSERT_SQL, (migration.version, migration.name, migration.sha256))
             applied.append(migration.version)
             LOG.info("schema_migrate committed schema_version=%s", migration.version)
