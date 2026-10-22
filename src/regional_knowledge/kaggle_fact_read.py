@@ -24,6 +24,7 @@ FACT_READ_REVISIONS = frozenset({
     ('rkb-v4-sql001-009-v1','rkb-v4-source-story-editorial-v4'),
     ('rkb-v4-sql001-010-v1','rkb-v4-source-story-cases-v5'),
     ('rkb-v4-sql001-011-v1','rkb-v4-source-story-cases-geo-v6'),
+    ('rkb-v4-sql001-014-v1','rkb-v4-native-source-activation-v1'),
 })
 FACT_READER_FUNCTIONS = (
     'read_source_calendar_v1(text,integer,integer,uuid,integer,uuid,integer,integer)',

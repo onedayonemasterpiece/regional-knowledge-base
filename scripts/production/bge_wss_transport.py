@@ -93,6 +93,7 @@ class BgeWssTransport:
         self.source_handler = None
         self.source_history_handler=None
         self.original_intake_handler=None
+        self.telegram_binding_task=None
         self._connection_generation=None
         if recovery_handler is not None and (not shared or not (inspect.iscoroutinefunction(recovery_handler)
                 or inspect.iscoroutinefunction(getattr(recovery_handler,'__call__',None)))):
@@ -411,10 +412,22 @@ class BgeWssTransport:
                 read_sent = result
                 await put(result, priority=1)
 
+        ready_confirmed=False
+        telegram_request_pending=False
+        async def request_telegram():
+            nonlocal telegram_request_pending
+            owner=getattr(self.original_intake_handler,'telegram_channel',None)
+            if (ready_confirmed and owner is not None and not owner.current()
+                    and owner.failed_generation!=generation and not telegram_request_pending
+                    and (self.telegram_binding_task is None or self.telegram_binding_task.done())):
+                telegram_request_pending=True
+                await put({'type':'RKB1_BIND_REQUEST','retained_client':owner.retained_client})
+
         async def heartbeat():
             while True:
                 await asyncio.sleep(self.heartbeat_seconds)
                 await put({'type': 'HEARTBEAT', 'diagnostics': await asyncio.to_thread(self.diagnostics)})
+                await request_telegram()
 
         async def states():
             ready_sent = False
@@ -459,6 +472,7 @@ class BgeWssTransport:
                     result_sent = (self.pending['job_id'], self.pending['claim'])
 
         async def reader():
+            nonlocal ready_confirmed, telegram_request_pending
             while True:
                 frame = await receive()
                 if type(frame.get('connection_generation')) is not int or frame['connection_generation'] != generation:
@@ -580,7 +594,39 @@ class BgeWssTransport:
                         self._accept_bootstrap_pins(frame,generation,welcome.get('provider_version'))
                     elif frame.get('status')!='observed_not_ready':
                         raise ValueError('bootstrap acknowledgment status')
+                elif kind=='RKB1_BIND_PENDING':
+                    telegram_request_pending=False
+                    owner=getattr(self.original_intake_handler,'telegram_channel',None)
+                    if owner is not None:owner.authorized_generation=None
+                elif kind=='RKB1_BIND_GRANT':
+                    owner=getattr(self.original_intake_handler,'telegram_channel',None)
+                    if not ready_confirmed or owner is None or not telegram_request_pending:
+                        raise ValueError('unexpected Telegram binding')
+                    if type(frame.get('challenge')) is not str or not 32<=len(frame['challenge'])<=128:
+                        raise ValueError('invalid Telegram binding challenge')
+                    telegram_request_pending=False
+                    if self.telegram_binding_task is not None and not self.telegram_binding_task.done():
+                        raise ValueError('duplicate Telegram binding')
+                    async def bind_and_report(owner,grant):
+                        outcome='unavailable'
+                        try:
+                            await owner.receive(grant)
+                            if owner.current():outcome='authorized'
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            pass  # Only the fixed status travels; provider errors can contain secrets.
+                        finally:
+                            for key in ('bundle_b64','api_id','api_hash'):grant.pop(key,None)
+                        await put({'type':'RKB1_BIND_RESULT','status':outcome,'challenge':grant['challenge']})
+                    self.telegram_binding_task=asyncio.create_task(bind_and_report(owner,frame))
+                    def observed_binding(task):
+                        if not task.cancelled():task.exception()
+                    self.telegram_binding_task.add_done_callback(observed_binding)
                 elif kind=='READY_ACK':
+                    if frame.get('status')=='ready':
+                        ready_confirmed=True
+                        await request_telegram()
                     if self.bootstrap_only and frame.get('status')=='ready':
                         self.bootstrap_finalized=True
                         self._lifetime_timeout.reschedule(self._overall_deadline)
@@ -601,6 +647,9 @@ class BgeWssTransport:
                 task.result()
         finally:
             if self._connection_generation==generation:self._connection_generation=None
+            if self.telegram_binding_task is not None and not self.telegram_binding_task.done():
+                self.telegram_binding_task.cancel()
+                await asyncio.gather(self.telegram_binding_task,return_exceptions=True)
             if self.recovery_attachment is not None:self.recovery_attachment.detached(generation)
             if self.source_history_handler is not None:self.source_history_handler.detached(generation)
             if self.original_intake_handler is not None:self.original_intake_handler.detached(generation)

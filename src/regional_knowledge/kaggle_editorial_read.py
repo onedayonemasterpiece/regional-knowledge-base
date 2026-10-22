@@ -8,7 +8,7 @@ from .kaggle_editorial_contracts import EditorialReadRequest,EditorialReadResult
 from .kaggle_story_read import story_item
 from .kaggle_query import _frontier,_identity,ReadUnavailable
 
-EDITORIAL_SCHEMAS=frozenset({'rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'})
+EDITORIAL_SCHEMAS=frozenset({'rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-014-v1'})
 
 
 def editorial_failure(request,reason,observed):

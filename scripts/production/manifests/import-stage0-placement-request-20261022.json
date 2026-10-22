@@ -1,0 +1,50 @@
+{
+  "codec": "rkb.import_stage0_placement_request.v1",
+  "status": "bytes_verified_placement_pending",
+  "destination": "existing_permanent_stage0_artifact_host",
+  "approved": false,
+  "objects": [
+    {
+      "name": "native-packages.tar",
+      "size": 96378880,
+      "sha256": "ae4824f871ce47d4a15487b8c171515eee1c20da11611ad0bc7233b9a476c006",
+      "object_key": "rkb/kaggle-v4/bootstrap-artifacts/ae4824f871ce47d4a15487b8c171515eee1c20da11611ad0bc7233b9a476c006/native-packages.tar",
+      "github_actions_run": 39762610380,
+      "github_artifact_id": 12419470365,
+      "artifact_member": "dependency-proof/native-packages.tar",
+      "url": null,
+      "receipt_ref": null
+    },
+    {
+      "name": "native-manifest.json",
+      "size": 955336,
+      "sha256": "84ab517abe83ca7f90b16290f30332415522eb4b355b6ef194c40df89cb264f5",
+      "object_key": "rkb/kaggle-v4/bootstrap-artifacts/84ab517abe83ca7f90b16290f30332415522eb4b355b6ef194c40df89cb264f5/native-manifest.json",
+      "github_actions_run": 39762610380,
+      "github_artifact_id": 12419470365,
+      "artifact_member": "dependency-proof/native-manifest.json",
+      "url": null,
+      "receipt_ref": null
+    },
+    {
+      "name": "pyaes-1.6.1-py3-none-any.whl",
+      "size": 26422,
+      "sha256": "18115ebd82125cdf6100accc0bf88620b2e662a48710b1bb8cd7d9d4023964f3",
+      "object_key": "rkb/kaggle-v4/bootstrap-artifacts/18115ebd82125cdf6100accc0bf88620b2e662a48710b1bb8cd7d9d4023964f3/pyaes-1.6.1-py3-none-any.whl",
+      "github_actions_run": 39698152544,
+      "github_artifact_id": 12391174848,
+      "artifact_member": "cp3.12/wheels/pyaes-1.6.1-py3-none-any.whl",
+      "url": null,
+      "receipt_ref": null
+    }
+  ],
+  "verification": {
+    "native_source_commit": "3df8575d20b353f84bc17222cb69a23c9de3913c",
+    "packaging_ci": 39762610380,
+    "synthetic_decoder_ci": 39763836545,
+    "all_3487_baseline_files_preserved": true,
+    "kaggle_execution_verified": false,
+    "upload_status": "NOT_RUN"
+  },
+  "completion": "The existing hosting operator places these exact bytes, verifies permanent HTTPS size/SHA-256, and returns per-object URLs/receipts. Then provide the approved exact pyaes receipt to prepare_import_dependencies.py to emit the existing Stage0 wheel-lock codec. This request neither changes credentials/buckets nor authorizes a provider push."
+}

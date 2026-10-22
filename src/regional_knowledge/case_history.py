@@ -21,7 +21,10 @@ def project_cases(commands,statuses,previous=None):
     cases={} if previous is None else previous.cases
     for command,handler,_ in sorted(commands,key=lambda value:value[0].sequence):
         if not command.route.startswith('disagreement.') or statuses.get(command.sequence)!='applied':continue
-        if command.schema_revision=='rkb-v4-sql001-011-v1':
+        if command.schema_revision=='rkb-v4-sql001-014-v1':
+            from .kaggle_native_source_bindings import validate_native_source_command
+            doc=validate_native_source_command(command)
+        elif command.schema_revision=='rkb-v4-sql001-011-v1':
             from .kaggle_domain_bindings import validate_current_command
             validate_current_command(command)
             doc=json.loads(command.payload)

@@ -1,0 +1,51 @@
+Package: libpq5
+Version: 17.11-1.pgdg24.04+2
+Architecture: amd64
+Depends: libc6 (>= 2.38), libgssapi-krb5-2 (>= 1.17), libldap2 (>= 2.6.2), libssl3t64 (>= 3.0.0)
+Filename: pool/17/p/postgresql-17/libpq5_17.11-1.pgdg24.04+2_amd64.deb
+Size: 237304
+SHA256: 42548e7f855a646f2dc58c1aa1cfd1464678fc0e8ac04096a66d6354bca5ed10
+
+Package: postgresql-17
+Version: 17.11-1.pgdg24.04+2
+Architecture: amd64
+Depends: locales | locales-all, postgresql-client-17, postgresql-common (>= 252~), ssl-cert, tzdata, debconf (>= 0.5) | debconf-2.0, libc6 (>= 2.38), libgcc-s1 (>= 3.3.1), libgssapi-krb5-2 (>= 1.14+dfsg), libicu74 (>= 74.1-1~), libldap2 (>= 2.6.2), libllvm19, liblz4-1 (>= 0.0~r130), libpam0g (>= 0.99.7.1), libpq5 (>= 17~~), libselinux1 (>= 3.1~), libssl3t64 (>= 3.0.0), libstdc++6 (>= 5.2), libsystemd0, libuuid1 (>= 2.16), libxml2 (>= 2.7.4), libxslt1.1 (>= 1.1.25), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)
+Provides: postgresql-17-jit-llvm (= 19), postgresql-contrib-17
+Filename: pool/main/p/postgresql-17/postgresql-17_17.11-1.pgdg24.04+2_amd64.deb
+Size: 16949784
+SHA256: d5b58058a82a3f344f832aea2cc54badc4f6265c25c960752cb1f5df5d2180ee
+
+Package: postgresql-17-pgvector
+Version: 0.8.2-1.pgdg24.04+1
+Architecture: amd64
+Depends: postgresql-17, libc6 (>= 2.38)
+Filename: pool/main/p/pgvector/postgresql-17-pgvector_0.8.2-1.pgdg24.04+1_amd64.deb
+Size: 258816
+SHA256: b7f06e23480c50e86e9a06c8a2abe2b1bd6bec133c5ab9fff4e2aa4bccaf8d66
+
+Package: postgresql-client-17
+Version: 17.11-1.pgdg24.04+2
+Architecture: amd64
+Depends: libpq5 (>= 17.11), postgresql-client-common (>= 182~), sensible-utils, libc6 (>= 2.38), liblz4-1 (>= 0.0~r127), libreadline8t64 (>= 6.0), libssl3t64 (>= 3.0.0), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)
+Provides: postgresql-client
+Filename: pool/main/p/postgresql-17/postgresql-client-17_17.11-1.pgdg24.04+2_amd64.deb
+Size: 2052656
+SHA256: b3b071b67a814a382516d6f6241b529c52f909672457e2f48083acce047b634f
+
+Package: postgresql-client-common
+Version: 293.pgdg24.04+1
+Architecture: all
+Depends: netbase, perl:any
+Filename: pool/main/p/postgresql-common/postgresql-client-common_293.pgdg24.04+1_all.deb
+Size: 48488
+SHA256: 80ae115f63ba67fbba442f6b75a468a559b77a3ee3b0be357a4c49e70bf860c5
+
+Package: postgresql-common
+Version: 293.pgdg24.04+1
+Architecture: all
+Depends: adduser, debconf (>= 0.5.00) | debconf-2.0, libjson-perl, sysvinit-utils (>= 3.05-4~) | lsb-base, postgresql-client-common (= 293.pgdg24.04+1), ssl-cert (>= 1.0.11), ucf, perl:any
+Pre-Depends: init-system-helpers (>= 1.54~)
+Filename: pool/main/p/postgresql-common/postgresql-common_293.pgdg24.04+1_all.deb
+Size: 113320
+SHA256: 4393363fa55e5351c6948939927c48419d804197bf638e295a78824daecff6b3
+

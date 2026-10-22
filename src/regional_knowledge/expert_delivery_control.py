@@ -70,6 +70,11 @@ class TargetExpertDeliveryControl:
         self.control=control
         self.source_gate=source_gate
         self._ensure_columns()
+        if control.dataset_records is not None:
+            from .expert_delivery_recovery import ExpertDatasetDeliveryRecords
+            self.dataset_effects=ExpertDatasetDeliveryRecords(control.dataset_records)
+        else:
+            self.dataset_effects=None
 
     def _ensure_columns(self):
         with self.control.corpus.connect() as db:
@@ -140,6 +145,7 @@ class TargetExpertDeliveryControl:
             return dict(request_id=row['id'],state='result_unsealed',saved=False)
 
     def exact_result_intent(self,request_id,sequence: int) -> ExactCommand:
+        if self.dataset_effects is not None:_fail('dataset_effect_does_not_enter_pg_head')
         row=self.control._row(request_id)
         if (row['state'] not in ('result_unsealed','result_ready')
                 or not row['result_hash'] or not row['result_json']
@@ -153,6 +159,7 @@ class TargetExpertDeliveryControl:
             payload=row['result_json'].encode(),kind='control')
 
     async def verify_remote_result(self,credentials,request_id,generation,token,command,seal):
+        if self.dataset_effects is not None:_fail('dataset_effect_does_not_enter_pg_head')
         expected=self.exact_result_intent(request_id,command.sequence)
         if command.encode()!=expected.encode():_fail('result_intent_conflict')
         proof=await self.control.spool.journal.verify_accepted(seal,command)
@@ -169,6 +176,7 @@ class TargetExpertDeliveryControl:
             return dict(request_id=row['id'],state='result_ready',saved=False)
 
     def exact_send_intent(self,request_id,sequence: int) -> ExactCommand:
+        if self.dataset_effects is not None:_fail('dataset_effect_does_not_enter_pg_head')
         row=self.control._row(request_id)
         if (row['state'] not in ('result_ready','send_intent_ready') or not row['result_remote_hash']
                 or type(row['result_generation']) is not int or row['result_generation']<1
@@ -188,6 +196,7 @@ class TargetExpertDeliveryControl:
             payload=_canonical(payload).encode(),kind='provider_intent')
 
     async def verify_remote_send(self,credentials,request_id,generation,token,command,seal):
+        if self.dataset_effects is not None:_fail('dataset_effect_does_not_enter_pg_head')
         expected=self.exact_send_intent(request_id,command.sequence)
         if command.encode()!=expected.encode():_fail('send_intent_conflict')
         proof=await self.control.spool.journal.verify_accepted(seal,command)
@@ -209,6 +218,23 @@ class TargetExpertDeliveryControl:
             row,origin=self._lease(db,credentials,request_id,generation,token,
                                    states=('send_intent_ready',))
             self._source_current(row,origin)
+            if self.dataset_effects is not None:
+                # A stale local result/send hash is NOT provider permission.
+                from .expert_delivery_recovery import (
+                    result_bytes,parse_result,send_bytes,
+                )
+                rraw=result_bytes(row)
+                rdoc,_=parse_result(row,rraw)
+                sraw=send_bytes(row,rdoc,rraw)
+                if (not self.control._dataset_covered(row)
+                        or not self.dataset_effects.covered(request_id,'result',rraw)
+                        or not self.dataset_effects.covered(request_id,'send',sraw)
+                        or row['result_remote_hash']!=hashlib.sha256(rraw).hexdigest()
+                        or row['send_intent_hash']!=hashlib.sha256(sraw).hexdigest()
+                        or row['delivery_id']!=str(uuid5(
+                            NAMESPACE_URL,'rkb:expert-send:'+row['id']+':'
+                            +str(row['result_generation'])))):
+                    _fail('dataset_original_intent_not_covered')
             if not row['result_remote_hash'] or not row['send_intent_hash'] or not row['delivery_id']:
                 _fail('send_intent_unverified')
             message=json.loads(row['result_json'])
@@ -247,6 +273,22 @@ class TargetExpertDeliveryControl:
                     or proof.channel_id!=origin['channel_id'] or proof.thread_ts!=origin['thread_ts']
                     or proof.client_message_id!=row['delivery_id'] or proof.text!=message['text']):
                 _fail('native_receipt_mismatch')
+            if self.dataset_effects is not None:
+                from .expert_delivery_recovery import (
+                    result_bytes,parse_result,send_bytes,parse_send,receipt_bytes,
+                )
+                rraw=result_bytes(row);rdoc,_=parse_result(row,rraw)
+                sraw=send_bytes(row,rdoc,rraw)
+                sdoc,_=parse_send(row,sraw,rdoc,rraw)
+                proof_raw=receipt_bytes(row,rdoc,sdoc,sraw,proof,
+                                        bot_user_id=self.control.bot_user_id)
+                if (not self.control._dataset_covered(row)
+                        or not self.dataset_effects.covered(request_id,'result',rraw)
+                        or not self.dataset_effects.covered(request_id,'send',sraw)
+                        or not self.dataset_effects.covered(request_id,'receipt',proof_raw)
+                        or row['result_remote_hash']!=hashlib.sha256(rraw).hexdigest()
+                        or row['send_intent_hash']!=hashlib.sha256(sraw).hexdigest()):
+                    _fail('dataset_delivery_receipt_not_covered')
             receipt=_canonical(dict(app_id=proof.app_id,team_id=proof.team_id,
                  bot_user_id=proof.bot_user_id,channel_id=proof.channel_id,
                  thread_ts=proof.thread_ts,message_ts=proof.message_ts,
@@ -259,3 +301,226 @@ class TargetExpertDeliveryControl:
                        ('delivered',receipt,self.control.clock(),row['id']))
             request_order.advance(db,row['dialog_id'])
             return dict(request_id=row['id'],state='delivered')
+
+
+    def _require_dataset_effects(self):
+        if self.dataset_effects is None:
+            _fail('dataset_effect_store_required')
+        return self.dataset_effects
+
+    async def stage_dataset_result(self,credentials,request_id,generation,token):
+        """Stage original prepared result with existing fenced Dataset CAS."""
+        from .expert_delivery_recovery import result_bytes
+        effect=self._require_dataset_effects()
+        with self.control.corpus.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row,origin=self._lease(db,credentials,request_id,generation,token,
+                                   states=('result_unsealed','result_ready'))
+            self._source_current(row,origin)
+            if not self.control._dataset_covered(row):
+                _fail('request_not_remote_covered')
+            raw=result_bytes(row)
+        return await effect.stage(request_id,'result',raw)
+
+    def confirm_dataset_result(self,credentials,request_id,generation,token):
+        """Result-ready is a verified exact Dataset byte outcome, not local put."""
+        from .expert_delivery_recovery import result_bytes
+        effect=self._require_dataset_effects()
+        with self.control.corpus.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row,origin=self._lease(db,credentials,request_id,generation,token,
+                                   states=('result_unsealed','result_ready'))
+            self._source_current(row,origin)
+            if not self.control._dataset_covered(row):
+                return dict(state='result_unsealed',saved=False,remote_accepted=False)
+            raw=result_bytes(row)
+            if not effect.covered(request_id,'result',raw):
+                return dict(state='result_unsealed',saved=False,remote_accepted=False)
+            receipt_hash=hashlib.sha256(raw).hexdigest()
+            if row['result_remote_hash'] and row['result_remote_hash']!=receipt_hash:
+                _fail('result_intent_conflict')
+            db.execute("UPDATE rkb_expert_requests SET state='result_ready',"
+                       "result_remote_hash=?,updated_at=? WHERE id=?",
+                       (receipt_hash,self.control.clock(),row['id']))
+            return dict(state='result_ready',saved=False,remote_accepted=True)
+
+    async def stage_dataset_send(self,credentials,request_id,generation,token):
+        """Original deterministic send intent; no provider action."""
+        from .expert_delivery_recovery import result_bytes,parse_result,send_bytes
+        effect=self._require_dataset_effects()
+        with self.control.corpus.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row,origin=self._lease(db,credentials,request_id,generation,token,
+                                   states=('result_ready','send_intent_ready'))
+            self._source_current(row,origin)
+            result_raw=result_bytes(row)
+            result_doc,_=parse_result(row,result_raw)
+            if (not effect.covered(request_id,'result',result_raw)
+                    or row['result_remote_hash']!=hashlib.sha256(result_raw).hexdigest()):
+                _fail('result_intent_unverified')
+            raw=send_bytes(row,result_doc,result_raw)
+        return await effect.stage(request_id,'send',raw)
+
+    def confirm_dataset_send(self,credentials,request_id,generation,token):
+        from .expert_delivery_recovery import result_bytes,parse_result,send_bytes,parse_send
+        effect=self._require_dataset_effects()
+        with self.control.corpus.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row,origin=self._lease(db,credentials,request_id,generation,token,
+                                   states=('result_ready','send_intent_ready'))
+            self._source_current(row,origin)
+            result_raw=result_bytes(row)
+            result_doc,_=parse_result(row,result_raw)
+            if (not effect.covered(request_id,'result',result_raw)
+                    or row['result_remote_hash']!=hashlib.sha256(result_raw).hexdigest()):
+                _fail('result_intent_unverified')
+            raw=send_bytes(row,result_doc,result_raw)
+            if not effect.covered(request_id,'send',raw):
+                return dict(state='result_ready',saved=False,remote_accepted=False)
+            send_doc,_=parse_send(row,raw,result_doc,result_raw)
+            proof_hash=hashlib.sha256(raw).hexdigest()
+            if ((row['send_intent_hash'] and row['send_intent_hash']!=proof_hash)
+                    or (row['delivery_id'] and row['delivery_id']!=send_doc['client_msg_id'])):
+                _fail('send_intent_conflict')
+            db.execute("UPDATE rkb_expert_requests SET state='send_intent_ready',"
+                       "send_intent_hash=?,delivery_id=?,updated_at=? WHERE id=?",
+                       (proof_hash,send_doc['client_msg_id'],self.control.clock(),row['id']))
+            return dict(state='send_intent_ready',saved=False,remote_accepted=True)
+
+    async def stage_dataset_native_receipt(self,credentials,request_id,proof):
+        """Only the existing trusted NativeSlackReceipt, no caller success bool."""
+        from .expert_delivery_recovery import (
+            result_bytes,parse_result,send_bytes,parse_send,receipt_bytes,
+        )
+        effect=self._require_dataset_effects()
+        with self.control.corpus.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self.control._service(db,credentials)
+            row=db.execute('SELECT * FROM rkb_expert_requests WHERE id=?',
+                           (str(request_id),)).fetchone()
+            if (row is None or row['state'] not in ('sending','unknown','delivered')
+                    or not row['send_intent_hash'] or not row['delivery_id']):
+                _fail('delivery_unavailable')
+            result_raw=result_bytes(row)
+            result_doc,_=parse_result(row,result_raw)
+            send_raw=send_bytes(row,result_doc,result_raw)
+            send_doc,_=parse_send(row,send_raw,result_doc,result_raw)
+            if (not effect.covered(request_id,'result',result_raw)
+                    or not effect.covered(request_id,'send',send_raw)):
+                _fail('delivery_intent_not_remote_covered')
+            raw=receipt_bytes(row,result_doc,send_doc,send_raw,proof,
+                              bot_user_id=self.control.bot_user_id)
+        return await effect.stage(request_id,'receipt',raw)
+
+    def confirm_dataset_native_receipt(self,credentials,request_id,proof):
+        """The existing receipt() verifies exact correlation AFTER coverage."""
+        self._require_dataset_effects()
+        return self.receipt(credentials,request_id,proof)
+
+    def reconcile_restored_dataset_delivery(self,credentials,request_id):
+        """Resolve restored intake ONLY from original covered records.
+
+        Covered result without send: recovered_result_ready (NO permit).
+        Covered send without provider receipt: unknown (NO retry permit).
+        Covered result+send+verified native receipt: delivered, use existing
+        receipt() for exact correlation and dialog advance.
+        Local absence/noncovered records NEVER establish 'not sent'.
+        """
+        from .expert_delivery_recovery import parse_result,parse_send,parse_receipt
+        effect=self._require_dataset_effects()
+        with self.control.corpus.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self.control._service(db,credentials)
+            row=db.execute('SELECT * FROM rkb_expert_requests WHERE id=?',
+                           (str(request_id),)).fetchone()
+            if row is None:_fail('request_unavailable')
+            if row['state'] not in ('recovery_review_required',
+                    'recovered_result_ready','unknown','delivered'):
+                return dict(state=row['state'],retry_send_allowed=False)
+            if not self.control._dataset_covered(row):
+                return dict(state='recovery_review_required',
+                            missing_contract='intake_exact_coverage',
+                            retry_send_allowed=False)
+            try:
+                self.control._dataset_current_identity(db,row)
+            except (RequestControlError,ParticipantError):
+                return dict(state='recovery_review_required',
+                            missing_contract='current_verified_identity_or_capability',
+                            retry_send_allowed=False)
+            result_raw=effect.read_covered(request_id,'result')
+            if result_raw is None:
+                return dict(state='recovery_review_required',
+                            missing_contract='accepted_original_result_record',
+                            retry_send_allowed=False)
+            result_doc,result_payload=parse_result(row,result_raw)
+            if ((row['result_json'] and row['result_json']!=result_doc['result_json'])
+                    or (row['result_hash'] and row['result_hash']!=result_doc['result_hash'])
+                    or (row['result_generation'] and row['result_generation']!=result_doc['result_generation'])):
+                _fail('result_intent_conflict')
+            result_hash=hashlib.sha256(result_raw).hexdigest()
+            send_raw=effect.read_covered(request_id,'send')
+            if send_raw is None:
+                # Do NOT imply that a provider message was never sent;
+                # no original verified send intent is known to this owner.
+                if row['state'] in ('unknown','delivered'):
+                    return dict(state=row['state'],
+                                missing_contract='original_send_disposition',
+                                retry_send_allowed=False)
+                db.execute("UPDATE rkb_expert_requests SET state='recovered_result_ready',"
+                    "result_json=?,result_hash=?,result_generation=?,"
+                    "result_remote_hash=?,updated_at=? WHERE id=?",
+                    (result_doc['result_json'],result_doc['result_hash'],
+                     result_doc['result_generation'],result_hash,
+                     self.control.clock(),row['id']))
+                return dict(state='recovered_result_ready',result_known=True,
+                            missing_contract='original_send_disposition',
+                            retry_send_allowed=False,claim_allowed=False)
+            send_doc,send_payload=parse_send(row,send_raw,result_doc,result_raw)
+            send_hash=hashlib.sha256(send_raw).hexdigest()
+            if ((row['send_intent_hash'] and row['send_intent_hash']!=send_hash)
+                    or (row['delivery_id'] and row['delivery_id']!=send_doc['client_msg_id'])):
+                _fail('send_intent_conflict')
+            if row['state']=='delivered':
+                # A repeated restore must not turn a settled delivery back
+                # into UNKNOWN. Require the exact already-covered native
+                # receipt and same persisted receipt bytes, then NO-OP.
+                settled=effect.read_covered(request_id,'receipt')
+                if settled is None:
+                    return dict(state='delivered',remote_covered=False,
+                                retry_send_allowed=False,
+                                missing_contract='original_receipt_remote_coverage')
+                _,known=parse_receipt(row,settled,result_doc,send_doc,send_raw,
+                    bot_user_id=self.control.bot_user_id)
+                if row['delivery_receipt']!=_canonical(known):
+                    _fail('native_receipt_conflict')
+                return dict(state='delivered',remote_covered=True,
+                            retry_send_allowed=False)
+            db.execute("UPDATE rkb_expert_requests SET state='unknown',"
+                "result_json=?,result_hash=?,result_generation=?,result_remote_hash=?,"
+                "send_intent_hash=?,delivery_id=?,delivery_attempt=max(delivery_attempt,1),"
+                "updated_at=? WHERE id=?",
+                (result_doc['result_json'],result_doc['result_hash'],
+                 result_doc['result_generation'],result_hash,send_hash,
+                 send_doc['client_msg_id'],self.control.clock(),row['id']))
+            receipt_raw=effect.read_covered(request_id,'receipt')
+            if receipt_raw is None:
+                return dict(state='unknown',retry_send_allowed=False,
+                            missing_contract='provider_native_disposition_or_covered_receipt')
+            _,native_record=parse_receipt(row,receipt_raw,result_doc,send_doc,send_raw,
+                bot_user_id=self.control.bot_user_id)
+            native_payload=dict(app_id=native_record['app_id'],
+                user=native_record['bot_user_id'],
+                channel=native_record['channel_id'],
+                thread_ts=native_record['thread_ts'],
+                ts=native_record['message_ts'],
+                client_msg_id=native_record['client_message_id'],
+                text=result_payload['text'])
+        # Reconstruct the exact *previously verified and captured* receipt.
+        # The existing factory binds app/team/bot/origin/marker; provider calls
+        # and caller-controlled booleans are never involved.
+        proof=verified_native_slack_receipt(native_payload,
+            app_id=self.control.app_id,team_id=self.control.team_id,
+            bot_user_id=self.control.bot_user_id,
+            channel_id=native_record['channel_id'],
+            thread_ts=native_record['thread_ts'])
+        return self.receipt(credentials,request_id,proof)

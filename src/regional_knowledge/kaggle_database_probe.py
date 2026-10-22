@@ -9,12 +9,14 @@ import asyncio
 from dataclasses import dataclass
 import json
 import math
+import time
 
 from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 from psycopg.errors import QueryCanceled
 from .kaggle_domain_schema import (TABLES_9,FUNCTIONS_9,TRIGGERS_9,TABLES_10,FUNCTIONS_10,TRIGGERS_10,
-    TABLES_11,FUNCTIONS_11,TRIGGERS_11)
+    TABLES_11,FUNCTIONS_11,TRIGGERS_11,FUNCTIONS_12,TABLES_13,FUNCTIONS_13,TRIGGERS_13,
+    TABLES_14,FUNCTIONS_14,TRIGGERS_14,IMAGE_SOURCE_SCHEMA)
 
 
 class DatabaseProbeUnavailable(RuntimeError):
@@ -145,16 +147,19 @@ def _json(value):
 
 
 def native_probe_for_schema(schema_revision, *, timeout_seconds=2.0):
-    """Measured metadata budget only; selecting it grants no database readiness.
+    """Bounded metadata budget only; selecting it grants no database readiness.
 
     The exact PG17.11 fresh8 fixture measured545 records/218231 bytes.576 gives
     31 records of fixed headroom. Existing schema6/7 and unrecognized revisions
     retain512. The complete001..011 PG17.11 graph fixture measured1329 records /
     606416 bytes before role hardening; explicit11 uses1376. Byte/definition limits are unchanged.
+    Schema14 uses the existing hard row ceiling while its combined native
+    fixture is measured; this is not a claimed resource/performance acceptance.
     """
     return NativeDatabaseProbe(timeout_seconds=timeout_seconds,
         schema_revision=schema_revision,
-        max_catalog_rows=(1408 if schema_revision=='rkb-v4-sql001-012-v1' else
+        max_catalog_rows=(2048 if schema_revision==IMAGE_SOURCE_SCHEMA else
+            1408 if schema_revision=='rkb-v4-sql001-012-v1' else
             1376 if schema_revision=='rkb-v4-sql001-011-v1' else
             576 if schema_revision=='rkb-v4-sql001-008-v1' else 512))
 
@@ -248,15 +253,18 @@ class NativeDatabaseProbe:
                             state = json.loads(row[0])
                             fields = self._state(state)
                             if (bool(STORY_TABLES.intersection(observed['tables'])) !=
-                                    (state['schema_revision'] in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'))):
+                                    (state['schema_revision'] in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1',IMAGE_SOURCE_SCHEMA))):
                                 raise DatabaseProbeUnavailable('database_story_revision_mismatch')
                             if (bool(FACT_TABLES.intersection(observed['tables'])) !=
-                                    (state['schema_revision'] in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'))):
+                                    (state['schema_revision'] in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1',IMAGE_SOURCE_SCHEMA))):
                                 raise DatabaseProbeUnavailable('database_fact_revision_mismatch')
                             for layer,known in ((9,TABLES_9),(10,TABLES_10),(11,TABLES_11)):
-                                required=state['schema_revision'] in {f'rkb-v4-sql001-{n:03d}-v1' for n in range(layer,12)}
+                                required=state['schema_revision'] in {f'rkb-v4-sql001-{n:03d}-v1' for n in range(layer,12)}|{IMAGE_SOURCE_SCHEMA}
                                 if bool(known.intersection(observed['tables']))!=required:
                                     raise DatabaseProbeUnavailable('database_domain_revision_mismatch')
+                            for known in (TABLES_13,TABLES_14):
+                                if bool(known.intersection(observed['tables']))!=(state['schema_revision']==IMAGE_SOURCE_SCHEMA):
+                                    raise DatabaseProbeUnavailable('database_image_source_revision_mismatch')
                             add('semantics','current',{key:state[key] for key in (
                                 'schema_revision','function_revision','executor_revision','last_migration_id','last_migration_hash')})
             return prefix + b','.join(records) + suffix, fields
@@ -283,7 +291,8 @@ class NativeDatabaseProbe:
             required_triggers=required_triggers|FACT_TRIGGERS
         extra_functions={}
         for known_tables,known_functions,known_triggers in ((TABLES_9,FUNCTIONS_9,TRIGGERS_9),
-                (TABLES_10,FUNCTIONS_10,TRIGGERS_10),(TABLES_11,FUNCTIONS_11,TRIGGERS_11)):
+                (TABLES_10,FUNCTIONS_10,TRIGGERS_10),(TABLES_11,FUNCTIONS_11,TRIGGERS_11),
+                (TABLES_13,FUNCTIONS_13,TRIGGERS_13),(TABLES_14,FUNCTIONS_14,TRIGGERS_14)):
             if known_tables.intersection(observed['tables']):
                 tables=tables|known_tables;functions=functions|known_functions.keys()
                 required_triggers=required_triggers|known_triggers
@@ -295,6 +304,9 @@ class NativeDatabaseProbe:
                 'rkb_v4.check_geo_dependencies_v2_transition(bytea,jsonb,jsonb,text)':('boolean',False),
                 'rkb_v4.apply_geo_dependencies_v2_transition(bytea,jsonb,jsonb,text)':('bytea',False)}
             functions=functions|upgrades.keys();extra_functions.update(upgrades)
+        if (TABLES_13|TABLES_14).intersection(observed['tables']):
+            functions=functions|FUNCTIONS_12.keys()
+            extra_functions.update(FUNCTIONS_12)
         env = observed['environment'].get('runtime',{})
         if (type(env.get('server_version_num')) is not int or env['server_version_num']//10000 != 17
                 or env.get('vector_version') != '0.8.2' or env.get('vector_schema') != 'public'
@@ -357,3 +369,90 @@ class NativeDatabaseProbe:
             'text_search_ready':state['text_search_ready'] and current,
             'dense_search_ready':state['dense_search_ready'] and current,
             'archive_read_ready':None,'proof_ready':None}
+
+
+# Bounded health operation over the same existing native PG acquisition.
+HEALTH_SQL = """SELECT
+    CASE WHEN octet_length(s.database_generation)<=256 THEN s.database_generation END,
+    CASE WHEN octet_length(s.schema_revision)<=256 THEN s.schema_revision END,
+    s.applied_seq,f.projection_seq,f.pending_seq IS NOT NULL
+    FROM rkb_v4.recovery_state s CROSS JOIN rkb_v4.read_frontier f
+    WHERE s.singleton AND f.singleton LIMIT 2"""
+
+
+def _health_budget(seconds):
+    if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 < seconds <= 5:
+        raise ValueError('bounded health deadline required')
+
+
+class _HealthProbeFailure(Exception):
+    pass
+
+
+async def probe_sql_health(*, acquire, database_generation, min_data_seq, lease_current, timeout_seconds=2):
+    """One bounded native transaction over the existing injected PG acquisition.
+
+    The native WSS handler must first validate its existing request identity.
+    This fixed SELECT reads only metadata, never corpus rows or private catalog.
+    """
+    _health_budget(timeout_seconds)
+    if (type(database_generation) is not str or not 1 <= len(database_generation.encode()) <= 256
+            or type(min_data_seq) is not int or not 0 <= min_data_seq < 2**63
+            or not callable(lease_current)):
+        raise ValueError('validated native generation, sequence and lease callback required')
+    started = time.monotonic()
+    observed = dict(sql_response=False)
+    reason = None
+
+    def lease():
+        if lease_current() is not True:
+            raise _HealthProbeFailure('pg_binding_changed')
+
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            lease()
+            async with acquire() as connection:
+                lease()
+                if (connection.closed or connection.info.transaction_status != TransactionStatus.IDLE
+                        or connection.row_factory is not tuple_row):
+                    raise _HealthProbeFailure('pg_lease_invalid')
+                async with connection.transaction():
+                    async with connection.cursor() as cursor:
+                        await cursor.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+                        await cursor.execute('SET LOCAL search_path=pg_catalog')
+                        await cursor.execute("SELECT set_config('statement_timeout',%s,true),set_config('lock_timeout',%s,true)",
+                                             (str(max(1, int(timeout_seconds * 1000))), '100'))
+                        lease()
+                        await cursor.execute(HEALTH_SQL)
+                        rows = await cursor.fetchmany(2)
+                        lease()
+                        observed['sql_response'] = True
+                        if len(rows) != 1 or len(rows[0]) != 5:
+                            raise _HealthProbeFailure('pg_metadata_invalid')
+                        generation, schema, applied, projection, pending = rows[0]
+                        if (type(generation) is not str or not 1 <= len(generation.encode()) <= 256
+                                or type(schema) is not str or not 1 <= len(schema.encode()) <= 256
+                                or any(type(n) is not int or n < 0 for n in (applied, projection))
+                                or type(pending) is not bool):
+                            raise _HealthProbeFailure('pg_metadata_invalid')
+                        if generation != database_generation:
+                            raise _HealthProbeFailure('pg_generation_mismatch')
+                        observed.update(schema_revision=schema, applied_seq=applied,
+                                        projection_seq=projection, pending=pending)
+                        if pending:
+                            reason = 'pg_prior_write_pending'
+                        elif projection != applied:
+                            reason = 'pg_projection_lag'
+                        elif applied < min_data_seq:
+                            reason = 'pg_sequence_behind'
+            lease()  # Pool release / transaction exit is also a cancellation boundary.
+    except asyncio.CancelledError:
+        raise
+    except (TimeoutError, QueryCanceled):
+        reason = 'pg_timeout'
+    except _HealthProbeFailure as error:
+        reason = str(error)
+    except Exception:
+        reason = 'pg_query_failed'
+    return dict(**observed, reason=reason,
+                          elapsed_ms=(time.monotonic() - started) * 1000)

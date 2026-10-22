@@ -18,6 +18,8 @@ from .kaggle_protocol import ReadIdentity,TrustedActorContext,Identifier,Nonnega
 from .kaggle_query import ReadUnavailable,_frontier,_identity
 
 SOURCE_GRAPH_READER_FUNCTIONS=('read_source_graph_v1(uuid,uuid,text,uuid,text,integer)',)
+SOURCE_GRAPH_READ_REVISIONS=frozenset({(DOMAIN_REVISIONS.schema,DOMAIN_REVISIONS.function),
+    ('rkb-v4-sql001-014-v1','rkb-v4-native-source-activation-v1')})
 
 
 class SourceGraphReadRequest(ReadIdentity):
@@ -154,7 +156,7 @@ async def execute_source_graph_read(request:SourceGraphReadRequest,*,acquire):
                             await cursor.execute(statement,params)
                         await _frontier(cursor,execute,request,observed,require_dense=False)
                         await execute('SELECT schema_revision,function_revision FROM rkb_v4.recovery_state WHERE singleton')
-                        if await cursor.fetchone()!=(DOMAIN_REVISIONS.schema,DOMAIN_REVISIONS.function):raise ReadUnavailable('not_ready')
+                        if await cursor.fetchone() not in SOURCE_GRAPH_READ_REVISIONS:raise ReadUnavailable('not_ready')
                         scope=_scope(request,observed);after=(None,None)
                         if request.cursor:
                             try:after=_after(request.cursor,scope)

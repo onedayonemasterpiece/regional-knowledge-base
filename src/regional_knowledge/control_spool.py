@@ -322,7 +322,10 @@ class ControlSpool:
         self._require_intake()
         if command.route.startswith('disagreement.'):
             from .disagreement_native import validate_case_command,required_capabilities
-            if command.schema_revision in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+            if command.schema_revision=='rkb-v4-sql001-014-v1':
+                from .kaggle_native_source_bindings import validate_native_source_command,required_native_source_capabilities
+                doc=validate_native_source_command(command);capabilities=required_native_source_capabilities(command)
+            elif command.schema_revision in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
                 from .kaggle_domain_bindings import validate_current_command,required_current_capabilities
                 doc=validate_current_command(command);capabilities=required_current_capabilities(command)
             else:doc=validate_case_command(command);capabilities=required_capabilities(command)
@@ -341,8 +344,12 @@ class ControlSpool:
             if actor!=command.person_id:raise SpoolDenied('command person does not authenticate its actor')
             return actor
         if command.route=='geo.manifest.install.v1':
-            from .geo_manifest_commands import validate_geo_manifest_command
-            validate_geo_manifest_command(command)
+            if command.schema_revision=='rkb-v4-sql001-014-v1':
+                from .kaggle_native_source_bindings import validate_native_source_command
+                validate_native_source_command(command)
+            else:
+                from .geo_manifest_commands import validate_geo_manifest_command
+                validate_geo_manifest_command(command)
         if command.route not in ('story.edit.v1','story.access.v1'):
             actor=await self._authorize(context)
             if actor!=command.person_id:raise SpoolDenied('command person does not authenticate its actor')
@@ -393,6 +400,14 @@ class ControlSpool:
         _bounded(command.operation_key,4096)
         frozen,data=_snapshot(command,self.max_command_bytes)
         handler=self.registry.resolve(frozen)
+        if frozen.route=='source.native.upgrade.v1':
+            from .kaggle_native_source_upgrade import native_source_transition_handler,validate_native_source_upgrade
+            if handler.transition is None:raise SpoolDenied('fixed native source migration required')
+            expected=native_source_transition_handler(artifact_sha256=handler.transition.artifact_sha256,
+                check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
+            if handler!=expected:raise SpoolDenied('exact native source migration handler required')
+            validate_native_source_upgrade(frozen,artifact_sha256=handler.transition.artifact_sha256)
+            return frozen,data,handler
         if frozen.route=='geo.dependencies.upgrade.v2':
             from .geo_manifest_commands import geo_dependency_transition_handler,validate_geo_dependency_transition
             transition=handler.transition
@@ -401,6 +416,13 @@ class ControlSpool:
                 check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
             if handler!=expected:raise SpoolDenied('only exact geographic dependency migration supported')
             validate_geo_dependency_transition(frozen,artifact_sha256=transition.artifact_sha256)
+            return frozen,data,handler
+        if frozen.schema_revision=='rkb-v4-sql001-014-v1':
+            from .kaggle_native_source_bindings import native_source_handler,validate_native_source_command
+            expected=native_source_handler(frozen.route,check_sha256=handler.check.definition_sha256,
+                apply_sha256=handler.apply.definition_sha256)
+            if handler!=expected:raise SpoolDenied('exact reviewed native source handler required')
+            validate_native_source_command(frozen)
             return frozen,data,handler
         if frozen.schema_revision in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
             from .kaggle_domain_bindings import current_handler,validate_current_command
@@ -476,7 +498,10 @@ class ControlSpool:
 
     @staticmethod
     def _resource_key(command,dependency):
-        if dependency is None:raise SpoolDenied('classified typed dependency required')
+        if dependency is None:
+            if command.kind=='schema_transition' and command.route=='source.native.upgrade.v1':
+                return 'schema:native-source-stage-activation-v1'
+            raise SpoolDenied('classified typed dependency required')
         if not dependency.resource_keys<=command.ids.keys():raise SpoolDenied('complete typed resource IDs required')
         if dependency.scope_class=='public_source':return _uuid(command.ids['source_id'])
         if dependency.scope_class=='case':return 'case:'+_uuid(command.ids['case_id'])
@@ -488,7 +513,7 @@ class ControlSpool:
         raise SpoolDenied('independent domain scope unavailable')
 
     def _stage(self,command,data,handler,database_generation):
-        dependency=_json(handler.dependency.wire())
+        dependency=_json(None if handler.dependency is None else handler.dependency.wire())
         # Reserve post-acceptance outcome and bounded native receipt/head/seal
         # metadata now, so budget exhaustion cannot strand a newly accepted op.
         reserved=len(data)+len(dependency)+self.max_outcome_bytes+32768
@@ -534,6 +559,15 @@ class ControlSpool:
             if frozen.person_id!=actor:raise SpoolDenied('command person does not authenticate its actor')
             return await self._write(self._stage,frozen,data,handler,database_generation)
 
+    async def stage_native_source_upgrade(self,context,command,*,database_generation):
+        self._active()
+        async with self._lock:
+            actor=await self._authorize(context)
+            frozen,data,handler=self._validate(command,database_generation)
+            if frozen.route!='source.native.upgrade.v1' or frozen.person_id!=actor:
+                raise SpoolDenied('native source migration requires current owner import actor')
+            return await self._write(self._stage,frozen,data,handler,database_generation)
+
     async def stage_story_editorial(self,context,command,*,database_generation):
         self._active()
         async with self._lock:
@@ -568,7 +602,7 @@ class ControlSpool:
         if command.operation_key!=row['operation_key'] or command.sequence!=row['sequence'] or command.person_id!=row['person_id'] or self._resource_key(command,self.registry.resolve(command).dependency)!=row['source_id']:
             raise SpoolConflict('stored operation identity differs')
         _,_,handler=self._validate(command,row['database_generation'])
-        if bytes(row['dependency_bytes'])!=_json(handler.dependency.wire()) or row['handler_sha256']!=handler.fingerprint:
+        if bytes(row['dependency_bytes'])!=_json(None if handler.dependency is None else handler.dependency.wire()) or row['handler_sha256']!=handler.fingerprint:
             raise SpoolConflict('stored original dependency/handler identity differs')
         apply=None;remote=None;accepted=None
         if row['seal_bytes'] is not None:accepted=_seal(row['seal_bytes'])

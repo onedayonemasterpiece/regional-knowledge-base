@@ -36,6 +36,7 @@ class StagedRegion(BaseModel):
 
 
 class StagedPage(BaseModel):
+    source_image_receipt_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     excluded_figure_regions: dict[str, str] = Field(default_factory=dict, max_length=100)
     source_material: Literal["unreviewed", "preview", "full_native", "visual_reviewed", "accepted_reuse"] = "unreviewed"
     source_review_note: str | None = Field(default=None, min_length=1, max_length=500)
@@ -223,6 +224,7 @@ def compile_model_stage(
                 layout_kind=page.layout_kind,
                 source_material=page.source_material,
                 source_review_note=page.source_review_note,
+                source_image_receipt_sha256=page.source_image_receipt_sha256,
                 excluded_figure_regions=page.excluded_figure_regions,
                 regions=staged_regions,
             )

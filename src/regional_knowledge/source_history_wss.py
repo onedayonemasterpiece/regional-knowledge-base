@@ -21,7 +21,7 @@ class WssNativeHistoryProofAdapter:
     """Concrete startup adapter; existing queue and private native observations."""
     def __init__(self,*,database,expected_catalog_sha256,expected_acl_sha256,expected_observer_sha256,
                  coverage_seconds=30,timeout_seconds=10,max_commands=2048,max_history_bytes=4*1024*1024,
-                 geo_bootstrap_operation_keys=(),geo_upgrade_pins=None):
+                 geo_bootstrap_operation_keys=(),geo_upgrade_pins=None,native_source_upgrade_pins=None):
         self.database=database;self.catalog=expected_catalog_sha256;self.acl=expected_acl_sha256
         self.observer=expected_observer_sha256;self.coverage_seconds=coverage_seconds
         self.timeout=timeout_seconds;self.max_commands=max_commands;self.max_bytes=max_history_bytes
@@ -29,6 +29,7 @@ class WssNativeHistoryProofAdapter:
             raise ValueError('independent native observer source pin required')
         self.geo_bootstrap_operation_keys=geo_bootstrap_operation_keys
         self.geo_upgrade_pins=geo_upgrade_pins
+        self.native_source_upgrade_pins=native_source_upgrade_pins
         self._bound=None
 
     def bind(self,*,spool,routes,binding_current,writer_generation):
@@ -38,24 +39,33 @@ class WssNativeHistoryProofAdapter:
             expected_catalog_sha256=self.catalog,expected_acl_sha256=self.acl,writer_generation=writer_generation,
             timeout_seconds=self.timeout,coverage_seconds=self.coverage_seconds,max_commands=self.max_commands,
             max_history_bytes=self.max_bytes,database=self.database,observer_sha256=self.observer,
-            geo_bootstrap_operation_keys=self.geo_bootstrap_operation_keys,geo_upgrade_pins=self.geo_upgrade_pins)
+            geo_bootstrap_operation_keys=self.geo_bootstrap_operation_keys,geo_upgrade_pins=self.geo_upgrade_pins,
+            native_source_upgrade_pins=self.native_source_upgrade_pins)
         return self._bound
 
 
 class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
-    def __init__(self,*args,database,observer_sha256,geo_bootstrap_operation_keys=(),cloud_prepare_seconds=60,geo_upgrade_pins=None,**kwargs):
+    def __init__(self,*args,database,observer_sha256,geo_bootstrap_operation_keys=(),cloud_prepare_seconds=60,geo_upgrade_pins=None,native_source_upgrade_pins=None,**kwargs):
         super().__init__(*args,**kwargs)
         if type(cloud_prepare_seconds) not in (int,float) or not 0<cloud_prepare_seconds<=60:
             raise ValueError('bounded cloud history preparation required')
         self.cloud_prepare_seconds=cloud_prepare_seconds
         self.database,self.observer_hash=database,observer_sha256
         self.geo_upgrade_pins=geo_upgrade_pins
+        self.native_source_upgrade_pins=native_source_upgrade_pins
         self.origin_closure=None
+        from .source_activation import ACTIVATION_REVISIONS
+        if native_source_upgrade_pins is not None:
+            from .kaggle_native_source_upgrade import NativeSourceUpgradePins,native_source_upgrade_handler
+            if (type(native_source_upgrade_pins) is not NativeSourceUpgradePins or geo_upgrade_pins is None
+                    or tuple(getattr(database,k) for k in ('schema_revision','function_revision','executor_revision'))!=ACTIVATION_REVISIONS.wire()
+                    or native_source_upgrade_handler(native_source_upgrade_pins) not in self.spool.registry.handlers.values()):
+                raise ValueError('fixed ordered native source closure transition required')
         if geo_upgrade_pins is not None:
             from .kaggle_geo_upgrade import GeoUpgradePins
             from .geo_manifest_commands import GEO_V2_REVISIONS
             if (type(geo_upgrade_pins) is not GeoUpgradePins or tuple(getattr(database,k) for k in
-                    ('schema_revision','function_revision','executor_revision'))!=GEO_V2_REVISIONS.wire()):
+                    ('schema_revision','function_revision','executor_revision'))!=(ACTIVATION_REVISIONS if native_source_upgrade_pins is not None else GEO_V2_REVISIONS).wire()):
                 raise ValueError('fixed geographic closure transition required')
             self.origin_closure=geo_upgrade_pins.origin_closure(self.spool.registry,self.routes)
         if (type(geo_bootstrap_operation_keys) is not tuple or len(geo_bootstrap_operation_keys)>256
@@ -71,21 +81,42 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
 
     def _closure_transition(self,known,observations,remote_outcomes,previous):
         if self.geo_upgrade_pins is None:return None
-        from .geo_manifest_commands import GEO_REVISIONS,GEO_V2_REVISIONS,validate_geo_dependency_transition
-        pins=self.geo_upgrade_pins
+        from .geo_manifest_commands import GEO_REVISIONS,GEO_V2_REVISIONS
+        from .source_activation import ACTIVATION_REVISIONS
+        old=previous.closure_transition if previous is not None and previous.verifier is self else None
+        native=self.native_source_upgrade_pins
+        if native is not None and old is not None and (len(old)!=2 or any(type(p) is not tuple for p in old)):
+            raise SpoolConflict('ordered native source closure proof shape differs')
+        geo=self._transition_proof(known,observations,remote_outcomes,previous,
+            pins=self.geo_upgrade_pins,route='geo.dependencies.upgrade.v2',before=GEO_REVISIONS,
+            after=GEO_V2_REVISIONS,old=old[0] if native is not None and old is not None else old)
+        if native is None:return geo
+        book=self._transition_proof(known,observations,remote_outcomes,previous,
+            pins=native,route='source.native.upgrade.v1',before=GEO_V2_REVISIONS,
+            after=ACTIVATION_REVISIONS,old=old[1] if old is not None else None)
+        if geo[2]>=book[2]:raise SpoolConflict('native source transition must follow applied geographic transition')
+        return geo,book
+
+    def _transition_proof(self,known,observations,remote_outcomes,previous,*,pins,route,before,after,old):
         closure_hash=_hash(_json(self.origin_closure))
         target_hash=_hash(_json(dict(catalog_sha256=self.catalog_hash,acl_sha256=self.acl_hash,
             registry_sha256=self.registry_hash,routes=sorted(self.routes))))
-        found=[value for value in known.values() if value[0].route=='geo.dependencies.upgrade.v2']
+        found=[value for value in known.values() if value[0].route==route
+            and observations.get(value[0].sequence,(None,))[0]=='applied']
         if not found:
-            proof=previous.closure_transition if previous is not None and previous.verifier is self else None
+            proof=old
             if (proof is None or len(proof)!=5 or proof[0]!=pins.artifact_sha256
                     or proof[3:]!=(closure_hash,target_hash) or previous.applied_sequence<proof[2]):
                 raise SpoolConflict('ordered geographic closure transition unproved')
             return proof
         if len(found)!=1:raise SpoolConflict('ambiguous geographic closure transition')
         command,handler,_=found[0]
-        validate_geo_dependency_transition(command,artifact_sha256=pins.artifact_sha256)
+        if route=='geo.dependencies.upgrade.v2':
+            from .geo_manifest_commands import validate_geo_dependency_transition
+            validate_geo_dependency_transition(command,artifact_sha256=pins.artifact_sha256)
+        else:
+            from .kaggle_native_source_upgrade import validate_native_source_upgrade
+            validate_native_source_upgrade(command,pins=pins)
         observed=observations.get(command.sequence);remote=remote_outcomes.get(command.sequence)
         if observed is None or observed[0]!='applied':
             raise SpoolConflict('geographic closure transition not remotely durable')
@@ -109,9 +140,9 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
             # operation stays in coverage.pending until Dataset promotion.
             value=json.loads(body)
         else:value=json.loads(base64.b64decode(json.loads(remote.data)['outcome_b64'],validate=True))
-        if (value.get('before')!=list(GEO_REVISIONS.wire()) or value.get('after')!=list(GEO_V2_REVISIONS.wire())
+        if (value.get('before')!=list(before.wire()) or value.get('after')!=list(after.wire())
                 or value.get('status')!='applied' or value.get('handler_sha256')!=handler.fingerprint
-                or handler.transition is None or handler.transition.target!=GEO_V2_REVISIONS):
+                or handler.transition is None or handler.transition.target!=after):
             raise SpoolConflict('geographic closure transition native outcome differs')
         return (pins.artifact_sha256,_hash(command.encode()),command.sequence,closure_hash,target_hash)
 
@@ -312,9 +343,9 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                                     'outcome_b64':base64.b64encode(body).decode(),'outcome_sha256':outcome[1],'outcome_length':outcome[2]}
                                 if (remote.data!=_json(expected_outcome) or len(body)!=outcome[2] or _hash(body)!=outcome[1]):raise SpoolConflict('remote outcome differs from native exact prefix')
                                 durable=True
-                            if h.dependency.scope_class=='public_source' and outcome[0]=='applied':origins.append(c.ids['source_id'])
+                            if h.dependency is not None and h.dependency.scope_class=='public_source' and outcome[0]=='applied':origins.append(c.ids['source_id'])
                         if not durable:pending.append((c.encode(),h.fingerprint,m))
-                        if h.dependency.scope_class!='public_source':continue
+                        if h.dependency is None or h.dependency.scope_class!='public_source':continue
                         source=c.ids['source_id'];old=changes.get(source)
                         changes[source]=SourceChange(source,c.sequence,_hash(c.encode()),bool(h.dependency.restriction or old and old.restriction),
                             bool(not durable or old and old.pending),False)
