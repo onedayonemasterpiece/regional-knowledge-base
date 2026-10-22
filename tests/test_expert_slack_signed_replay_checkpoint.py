@@ -167,7 +167,7 @@ async def test_signed_child_event_waits_for_remote_acceptance_and_dialog_head(en
             await control.verify_remote_intent(ids[key], command, await _seal(env, command))
         assert (await client.post(PATH, content=child_raw, headers=child_headers)).status_code == 200
         assert (await client.post(PATH, content=parent_raw, headers=parent_headers)).status_code == 200
-        assert control.claim(credentials, request_id=ids["Ev-2"]) == {"state": "empty"}
+        assert control.claim(credentials, request_id=ids["Ev-2"]) == {"state": "deferred"}
         first_claim = control.claim(credentials, request_id=ids["Ev-1"])
         assert first_claim["state"] == "leased"
         assert control.claim(credentials, request_id=ids["Ev-2"]) == {"state": "empty"}
