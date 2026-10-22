@@ -41,7 +41,10 @@ def source_bundle(repository):
         raise ValueError('immutable target source byte budget exceeded')
     manifest = {name:digest(data) for name,data in sorted(files.items())}
     bundle_id = digest(canonical(manifest))
-    relative = 'rkb-target-'+bundle_id
+    # A short directory label avoids repeating the complete manifest digest in
+    # every inventory path. Integrity still checks each file's full SHA-256;
+    # a label collision fails that check instead of accepting different bytes.
+    relative = 'rkb-target-'+bundle_id[:16]
     encoded = {name:base64.b64encode(data).decode('ascii') for name,data in sorted(files.items())}
     entries = [dict(name=relative+'/'+name,size=len(data),sha256=digest(data),role='code')
                for name,data in sorted(files.items())]
