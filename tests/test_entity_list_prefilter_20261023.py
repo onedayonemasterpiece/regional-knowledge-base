@@ -5,10 +5,12 @@ They do not start a Kaggle worker, apply SQL to live PG or stage content.
 """
 from contextlib import asynccontextmanager
 from pathlib import Path
-from uuid import UUID
+import os
 
+import psycopg
 import pytest
 import pytest_asyncio
+from psycopg.rows import tuple_row
 
 from regional_knowledge.entity_graph import GraphBundle
 from regional_knowledge.kaggle_apply import HandlerRegistry, HandlerSpec
@@ -24,7 +26,8 @@ from pg_schema_metadata import initialize_fixture_database
 from test_source_graph import material, PERSON
 from test_source_import import SOURCE
 from test_source_manifest import manifest_payload
-from test_source_story_native import connect, apply
+from test_source_story_native import apply
+from test_kaggle_public_illustration_native_read import _validated_ci_dsn
 from test_kaggle_apply import pinned
 from test_recovery_journal import fixture as journal_fixture
 from test_kaggle_source_graph_read import request as old_request, row as original_row
@@ -32,8 +35,8 @@ from test_kaggle_fact_read import Native
 
 ROOT = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.skipif(
-    not __import__('os').getenv('RKB_STORY_FIXTURE_SOCKET'),
-    reason='existing isolated PG17 fixture required',
+    not os.getenv('RKB_KAGGLE_TEST_DSN'),
+    reason='existing authorized GitHub Actions PG17 service only',
 )
 
 
@@ -79,12 +82,13 @@ def long_graph_command():
 @pytest_asyncio.fixture
 async def graph_sql22():
     """Full ordinary SQL001..022 prefix on a fresh authorized fixture DB."""
-    connection,fd=await connect()
+    connection=await psycopg.AsyncConnection.connect(
+        _validated_ci_dsn(),autocommit=True,row_factory=tuple_row)
     try:
         scripts=sorted((ROOT/'sql/kaggle').glob('[0-9][0-9][0-9]_*.sql'))
         assert [int(path.name[:3]) for path in scripts]==list(range(1,23))
         async with connection.transaction():
-            assert await (await connection.execute('SELECT current_database(),current_user')).fetchone()==('rkb','rkb_bootstrap')
+            assert await (await connection.execute('SELECT current_database(),current_user')).fetchone()==('rkb_graph_test','postgres')
             assert (await (await connection.execute('SHOW server_version_num')).fetchone())[0].startswith('17')
             assert await (await connection.execute("SELECT to_regnamespace('rkb_v4')")).fetchone()==(None,)
             await connection.execute('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public')
@@ -111,7 +115,6 @@ async def graph_sql22():
         async with connection.transaction():
             await connection.execute('DROP SCHEMA IF EXISTS rkb_v4 CASCADE')
         await connection.close()
-        __import__('os').close(fd)
 
 
 @pytest.mark.asyncio
