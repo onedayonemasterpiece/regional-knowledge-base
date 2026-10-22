@@ -628,9 +628,27 @@ def validate_receipt(value):
     return {**value, "corpus":valid_corpus(value["corpus"])}
 
 
+def assert_comparable_receipts(before, after) -> dict:
+    """Before/after MUST share the exact corpus profile and immutable fixture.
+
+    A first-book baseline cannot be misreported as the expanded comparison
+    cohort, even if its timings appear faster on fewer visible passages.
+    """
+    earlier, later = validate_receipt(before), validate_receipt(after)
+    if earlier["corpus"]["profile"] != later["corpus"]["profile"]:
+        raise ValueError("before_after_profile_changed")
+    if earlier["question_fixture_sha256"] != later["question_fixture_sha256"]:
+        raise ValueError("before_after_question_fixture_changed")
+    if earlier["corpus"] != later["corpus"]:
+        raise ValueError("before_after_corpus_or_version_changed")
+    return {"profile":earlier["corpus"]["profile"], "same_corpus":True,
+            "same_fixture":True, "not_production_scale_acceptance":True}
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--receipt",type=Path,required=True)
+    parser.add_argument("--before-receipt",type=Path)  # Optional matching before/after cross-run gate.
     parser.add_argument("--client",type=Path,required=True)
     parser.add_argument("--telemetry",type=Path,required=True)
     parser.add_argument("--report",type=Path,required=True)
@@ -641,7 +659,15 @@ def main(argv=None):
     if args.receipt.stat().st_size > 8192:
         raise ValueError("bounded workload receipt required")
     receipt=validate_receipt(json.loads(args.receipt.read_text()))
-    result,samples=analyze(_read_events(args.client),_read_events(args.telemetry))
+    if args.before_receipt is not None:
+        if args.before_receipt.stat().st_size > 8192:
+            raise ValueError("bounded before receipt required")
+        pair=assert_comparable_receipts(json.loads(args.before_receipt.read_text()),receipt)
+    else:
+        pair=None
+    result,samples=analyze(_read_events(args.client),_read_events(args.telemetry),
+                           profile=receipt["corpus"]["profile"])
+    result["before_after_match"]=pair
     result["corpus"]=receipt["corpus"]
     result["question_fixture_sha256"]=receipt["question_fixture_sha256"]
     result["runtime_owner_handoff_status"]="separate_operator_approval_required"
@@ -649,9 +675,12 @@ def main(argv=None):
     with args.raw.open("w") as output:
         for sample in samples:
             output.write(json.dumps(sample,sort_keys=True,separators=(",",":"))+"\n")
-    print(json.dumps({"status":result["conclusion"],
-        "serial_p95_ms":result["cohorts"]["serial"]["p95_wall_ms"],
-        "concurrent2_p95_ms":result["cohorts"]["concurrent2"]["p95_wall_ms"]},sort_keys=True))
+    print(json.dumps({"status":result["conclusion"], "profile":result["corpus_profile"],
+        "serial_success_only_p95_ms":result["cohorts"]["serial"]["success_only_p95_public_callback_ms"],
+        "concurrent2_success_only_p95_ms":result["cohorts"]["concurrent2"]["success_only_p95_public_callback_ms"],
+        "serial_timeout_rate":result["cohorts"]["serial"]["timeout_rate"],
+        "concurrent2_timeout_rate":result["cohorts"]["concurrent2"]["timeout_rate"]},
+        sort_keys=True))
 
 
 if __name__=="__main__":
