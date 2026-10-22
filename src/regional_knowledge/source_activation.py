@@ -91,10 +91,10 @@ def activation_handler(*, check_sha256, apply_sha256):
         dependency=ACTIVATION_DEPENDENCY)
 
 
-def validate_image_manifest(manifest, *, source_id, original, semantic, passages):
+def validate_image_manifest(manifest, *, source_id, original, semantic, passages, source_revision=1):
     from .original_intake import VerifiedOriginalReceipt
     _keys(manifest, 'codec source_id source_revision original_receipt_b64 metadata pages regions passages')
-    if manifest['codec'] != IMAGE_MANIFEST_CODEC or manifest['source_id'] != _uuid(source_id) or manifest['source_revision'] != 1:
+    if manifest['codec'] != IMAGE_MANIFEST_CODEC or manifest['source_id'] != _uuid(source_id) or manifest['source_revision'] != source_revision or type(source_revision) is not int or source_revision not in (1,2):
         raise ValueError('exact image-origin manifest identity required')
     raw = base64.b64decode(manifest['original_receipt_b64'], validate=True)
     receipt = VerifiedOriginalReceipt.from_wire(json.loads(raw))
@@ -180,7 +180,7 @@ def validate_image_manifest(manifest, *, source_id, original, semantic, passages
     return manifest
 
 
-def build_image_manifest(*, metadata, receipt, graph, semantic, passages, issued_images):
+def build_image_manifest(*, metadata, receipt, graph, semantic, passages, issued_images, source_revision=1):
     """No renderer, native text extraction, model inference or original fetch."""
     from .contracts import StartMetadataInput
     from .original_intake import VerifiedOriginalReceipt
@@ -204,14 +204,14 @@ def build_image_manifest(*, metadata, receipt, graph, semantic, passages, issued
             regions.append(dict(region_id=str(region.region_id), region_key=region.region_key, page_id=str(page.page_id), kind=region.kind.value,
                 bbox=region.bbox.model_dump(), reading_order=region.reading_order, column_id=region.column_id,
                 text_sha256=digest(region.source_text.encode()), source_text_provenance='model_transcription'))
-    manifest = dict(codec=IMAGE_MANIFEST_CODEC, source_id=receipt.source_id, source_revision=1,
+    manifest = dict(codec=IMAGE_MANIFEST_CODEC, source_id=receipt.source_id, source_revision=source_revision,
         original_receipt_b64=base64.b64encode(canonical(receipt.wire())).decode(),
         metadata={k:v for k,v in metadata.model_dump(mode='json').items() if k in ('title','authors','publication_year','language','catalog')},
         pages=pages, regions=sorted(regions,key=lambda r:r['region_id']),
         passages=[dict(passage_id=str(c.chunk_id),region_ids=list(map(str,c.region_ids)),
             footnote_region_ids=list(map(str,c.footnote_region_ids)),page_ids=list(map(str,c.page_ids)),
             source_spans=[s.model_dump(mode='json') for s in c.source_spans]) for c in graph.chunks])
-    return validate_image_manifest(manifest,source_id=receipt.source_id,original=receipt.original,semantic=semantic,passages=passages)
+    return validate_image_manifest(manifest,source_id=receipt.source_id,original=receipt.original,semantic=semantic,passages=passages,source_revision=source_revision)
 
 
 def validate_materialize_payload(payload):
