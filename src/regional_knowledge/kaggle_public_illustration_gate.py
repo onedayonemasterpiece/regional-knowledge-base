@@ -284,7 +284,7 @@ class PublicIllustrationOutputGate:
         bbox = item.get("bbox")
         if (type(bbox) is not dict or
                 set(bbox) != {"left", "top", "right", "bottom"} or
-                any(type(x) is not int or not 0 <= x <= 20000 for x in bbox.values()) or
+                any(type(x) is not int or not 0 <= x <= 1000 for x in bbox.values()) or
                 not bbox["left"] < bbox["right"] or not bbox["top"] < bbox["bottom"]):
             _fail("invalid_media_figure_bbox")
         for key_name, maximum in (("caption_region_ids", 50), ("nearby_region_ids", 100)):
@@ -293,13 +293,22 @@ class PublicIllustrationOutputGate:
                     or len(set(str(x) for x in refs)) != len(refs)
                     or any(not _uuid(ref) for ref in refs)):
                 _fail("invalid_public_figure_references")
-        for key_name, maximum in (
-            ("illustration_key", 256), ("kind", 80), ("caption_text", 16000),
-            ("visual_description", 8000), ("visual_description_language", 16),
-        ):
-            value = item.get(key_name)
-            if type(value) is not str or not 1 <= len(value) <= maximum:
-                _fail("invalid_public_figure_metadata")
+        key_value = item.get("illustration_key")
+        if (type(key_value) is not str or
+                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", key_value) is None
+                or item.get("kind") not in
+                    ("photo", "map", "drawing", "diagram", "facsimile", "other")
+                or type(item.get("caption_text")) is not str
+                or len(item["caption_text"]) > 16000):
+            _fail("invalid_public_figure_metadata")
+        description = item.get("visual_description")
+        description_language = item.get("visual_description_language")
+        if (description is not None and
+                (type(description) is not str or not 1 <= len(description) <= 2000)
+                or description_language is not None and
+                (type(description_language) is not str
+                 or len(description_language) > 80)):
+            _fail("invalid_public_figure_metadata")
         if item.get("display_rotation_degrees") not in (0, 90, 180, 270) or (
                 type(item.get("display_rotation_degrees")) is not int):
             _fail("invalid_public_figure_rotation")
