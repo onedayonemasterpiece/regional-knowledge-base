@@ -59,6 +59,13 @@ class OriginalIntakeController:
                 db.execute('ALTER TABLE rkb_original_intakes ADD COLUMN telegram_locator_json TEXT')
             if 'restore_json' not in {r['name'] for r in db.execute('PRAGMA table_info(rkb_original_intakes)')}:
                 db.execute('ALTER TABLE rkb_original_intakes ADD COLUMN restore_json TEXT')
+            db.execute('''CREATE TABLE IF NOT EXISTS rkb_original_revision2_rebind(
+                successor_ingestion_id TEXT PRIMARY KEY,source_id TEXT NOT NULL,
+                original_ingestion_id TEXT NOT NULL,actor TEXT NOT NULL,
+                original_receipt_sha256 TEXT NOT NULL,original_sha256 TEXT NOT NULL,
+                predecessor_command_sha256 TEXT NOT NULL,
+                processing_revision INTEGER NOT NULL CHECK(processing_revision=2),
+                UNIQUE(source_id,processing_revision))''')
 
     async def _authorize(self,context):
         actor=await self.spool._authorize(context)
@@ -234,6 +241,64 @@ class OriginalIntakeController:
         with self.queue.connect() as db:db.execute('UPDATE rkb_original_intakes SET receipt_json=? WHERE ingestion_id=?',
             (canonical(receipt.wire()).decode(),spec.ingestion_id))
         _LOG.info('original_intake state=verified run_id=%s ingestion_id=%s',binding.run_id,spec.ingestion_id)
+        return receipt
+
+    async def rebind_verified_revision2(self,context,*,source_id,original_ingestion_id,
+                                        successor_ingestion_id,original_sha256,
+                                        original_receipt_sha256,predecessor_command_sha256):
+        """Reuse the ONE owner-verified archived original for processing revision2.
+
+        The archived OriginalIntakeSpec/VerifiedOriginalReceipt remain immutable
+        revision1/old ingestion ID. A new processing ingestion_id is a separate
+        owner-bound reference, not another Telegram/HTTP download or file ID.
+        """
+        from .source_stage import _hash
+        uuid_value(source_id);uuid_value(original_ingestion_id);uuid_value(successor_ingestion_id)
+        if successor_ingestion_id==original_ingestion_id:raise OriginalIntakeError('original_successor_identity_required')
+        for key in (original_sha256,original_receipt_sha256,predecessor_command_sha256):_hash(key)
+        actor,binding=await self._authorize(context)
+        # Retain the real row/receipt rather than accepting an input-side
+        # locator, bare hash, or synthesized provider token as proof.
+        existing=self._row(actor,original_ingestion_id)
+        receipt=await self.verified(context,original_ingestion_id)
+        if receipt is None or (receipt.source_id,receipt.sha256,receipt.receipt_sha256)!=(
+                source_id,original_sha256,original_receipt_sha256):
+            raise OriginalIntakeError('original_accepted_revision2_receipt_changed')
+        await self._authorize(context)
+        with self.queue.connect() as db:
+            try:
+                db.execute('''INSERT OR IGNORE INTO rkb_original_revision2_rebind
+                    VALUES(?,?,?,?,?,?,?,2)''',(successor_ingestion_id,source_id,
+                    original_ingestion_id,actor,original_receipt_sha256,
+                    original_sha256,predecessor_command_sha256))
+            except Exception:
+                raise OriginalIntakeError('original_successor_rebind_conflict') from None
+            current=db.execute('''SELECT * FROM rkb_original_revision2_rebind
+                WHERE successor_ingestion_id=?''',(successor_ingestion_id,)).fetchone()
+        if current is None or tuple(current[k] for k in (
+                'source_id','original_ingestion_id','actor','original_receipt_sha256',
+                'original_sha256','predecessor_command_sha256','processing_revision'))!=(
+                source_id,original_ingestion_id,actor,original_receipt_sha256,
+                original_sha256,predecessor_command_sha256,2):
+            raise OriginalIntakeError('original_successor_rebind_conflict')
+        if not self.binding_current(binding):raise OriginalIntakeError('original_current_binding_required')
+        return receipt
+
+    async def inherited_verified(self,context,successor_ingestion_id,*,source_id):
+        """Readback of a stored owner-only rebind; never re-issue the original."""
+        actor,binding=await self._authorize(context)
+        uuid_value(successor_ingestion_id);uuid_value(source_id)
+        with self.queue.connect(write=False) as db:
+            row=db.execute('''SELECT * FROM rkb_original_revision2_rebind
+                WHERE successor_ingestion_id=? AND actor=? AND source_id=?''',
+                (successor_ingestion_id,actor,source_id)).fetchone()
+        if row is None:raise OriginalIntakeError('original_successor_rebind_not_found')
+        receipt=await self.verified(context,row['original_ingestion_id'])
+        if (receipt is None or receipt.source_id!=source_id
+                or receipt.sha256!=row['original_sha256']
+                or receipt.receipt_sha256!=row['original_receipt_sha256']
+                or not self.binding_current(binding)):
+            raise OriginalIntakeError('original_successor_rebind_changed')
         return receipt
 
     async def verified(self,context,ingestion_id):
