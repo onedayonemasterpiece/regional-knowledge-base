@@ -109,7 +109,7 @@ class WorkloadTests(unittest.IsolatedAsyncioTestCase):
         for edited,message in [
             (dict(gold,state="ocr_only"),"gold_profile_or_corpus_identity_changed"),
             (dict(gold,profile="comparison_corpus"),"gold_profile_or_corpus_identity_changed"),
-            (dict(gold,corpus_manifest_sha256="b"*64),"gold_profile_or_corpus_identity_changed"),
+            (dict(gold,corpus_manifest_sha256="a"*64),"gold_profile_or_corpus_identity_changed"),
         ]:
             with self.subTest(message=message):
                 with self.assertRaisesRegex(ValueError,message):
