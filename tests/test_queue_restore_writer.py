@@ -111,6 +111,17 @@ async def test_recovery_only_writer_fences_old_generation_and_acceptance_until_n
     assert e.q.accept_search_runtime(e.run,e.token,e.generation,value).ok
     e.q.heartbeat(e.run,e.token,ready=True,connection_generation=e.generation)
     assert not e.w.current(database_generation='synthetic-db',writer_generation='writer-2')
+    # A pointer newer than the recovered base is never replaced (no rollback).
+    newer=ObjectRef(e.j.prefix+'/snapshots/manifests/'+'e'*64,'e'*64,10,5)
+    async def pointer():return newer,None,{}
+    physical.current_pointer=pointer
+    with pytest.raises(StaleWriter,match='older than the current snapshot pointer'):
+        await e.w.activate_recovered(e.j,proof,e.b)
+    # A superseded pointer (e.g. Dataset1 after Dataset2 promotion) is replaced
+    # by its token alone; its old archive is not re-validated by the new transport.
+    async def superseded():return replace(newer,last_sequence=0),None,{}
+    async def unreadable():raise AssertionError('superseded base must not be re-validated')
+    physical.current_pointer=superseded;physical.current_snapshot=unreadable
     await e.w.activate_recovered(e.j,proof,e.b)
     assert e.w.current(database_generation='synthetic-db',writer_generation='writer-2')
 
