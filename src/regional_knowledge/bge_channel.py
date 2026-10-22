@@ -430,6 +430,9 @@ def channel_route(queue, *, read_telemetry=None):
                         if owner is not None:
                             confirmed=await owner.confirm_archive_auth(run_id,hello['runtime_incarnation'],generation,
                                 frame['status']=='authorized')
+                        logger.info(json.dumps({'event':'rkb1_archive_authorization',
+                            'run_id':run_id,'connection_generation':generation,
+                            'status':frame['status'],'confirmed':bool(confirmed)}))
                         if frame['status']=='authorized' and not confirmed:
                             await send('RKB1_BIND_PENDING')
                     elif frame['type'] == 'READY':
