@@ -104,6 +104,15 @@ class KaggleSourceImporter:
                 apply_sha256=native.apply.definition_sha256)
             if native!=expected:raise TypeError('one exact native source profile required')
             choices.append((ACTIVATION_REVISIONS,resolved_activation_command))
+        from .kaggle_native_revision2_upgrade import REVISION2_REVISIONS
+        from .source_activation import REVISION2_ACTIVATE_ROUTE
+        from .kaggle_native_source_bindings import revision2_native_handler
+        rev2=self.spool.registry.handlers.get(('domain_command',REVISION2_ACTIVATE_ROUTE,*REVISION2_REVISIONS.wire()))
+        if rev2 is not None:
+            expected=revision2_native_handler(REVISION2_ACTIVATE_ROUTE,
+                check_sha256=rev2.check.definition_sha256,apply_sha256=rev2.apply.definition_sha256)
+            if rev2!=expected:raise TypeError('one exact installed source revision2 handler required')
+            choices.append((REVISION2_REVISIONS,None))
         expected_database=getattr(getattr(config,'history_adapter',None),'database',None)
         if expected_database is not None:
             expected=tuple(getattr(expected_database,key) for key in ('schema_revision','function_revision','executor_revision'))
@@ -124,10 +133,21 @@ class KaggleSourceImporter:
             for name in ('native_proof_sha256', 'semantic_json'):
                 if name not in columns:
                     db.execute('ALTER TABLE rkb_source_intake_control ADD COLUMN '+name+' TEXT')
+            db.execute('''CREATE TABLE IF NOT EXISTS rkb_source_revision2_control(
+                ingestion_id TEXT PRIMARY KEY,source_id TEXT UNIQUE NOT NULL,person_id TEXT NOT NULL,
+                original_ingestion_id TEXT NOT NULL,predecessor_command_sha256 TEXT NOT NULL,
+                source_revision INTEGER NOT NULL CHECK(source_revision=2),
+                file_id TEXT NOT NULL,request_id TEXT NOT NULL,metadata_json TEXT NOT NULL,
+                rights_json TEXT NOT NULL,stage_json TEXT,research_json TEXT,phase TEXT NOT NULL,
+                frozen_sha256 TEXT,native_proof_sha256 TEXT,semantic_json TEXT,
+                created REAL NOT NULL,updated REAL NOT NULL)''')
         self.native_intake=None
         if self.import_revisions==ACTIVATION_REVISIONS:
             from .kaggle_native_source_intake import NativeSourceIntake
             self.native_intake=NativeSourceIntake(self)
+        elif self.import_revisions==REVISION2_REVISIONS:
+            from .kaggle_native_source_intake import NativeSourceRevision2Intake
+            self.native_intake=NativeSourceRevision2Intake(self)
 
     def _binding_current(self, binding):
         if not self.startup.binding_current(binding):
@@ -175,35 +195,43 @@ class KaggleSourceImporter:
             access.context, access.binding, render=render)
         return output
 
-    def _row(self, actor, ingestion_id=None, document_id=None):
+    def _row(self,actor,ingestion_id=None,document_id=None):
         if ingestion_id is None and document_id is None:
-            raise failure('ingestion_id_required', status='invalid_query')
-        column, identity = ('ingestion_id', uuid_value(ingestion_id)) if ingestion_id else ('source_id', uuid_value(document_id))
+            raise failure('ingestion_id_required',status='invalid_query')
+        col,identity=('ingestion_id',uuid_value(ingestion_id)) if ingestion_id else ('source_id',uuid_value(document_id))
         with self.queue.connect(write=False) as db:
-            row = db.execute(f'SELECT * FROM rkb_source_intake_control WHERE {column}=? AND person_id=?',
-                (identity, actor)).fetchone()
-            if row is None:
-                raise failure('owned_ingestion_required', status='denied')
-            if ingestion_id and document_id and row['source_id'] != uuid_value(document_id):
-                raise failure('ingestion_source_mismatch', status='invalid_query')
-            return dict(row)
+            # The successor wins only for this *same owned* accepted source;
+            # historical revision1 remains immutable and addressable by its
+            # original ingestion_id, including after new-chat continuation.
+            row=db.execute(f'''SELECT * FROM rkb_source_revision2_control
+                WHERE {col}=? AND person_id=?''',(identity,actor)).fetchone()
+            if row is not None:result=dict(row)
+            else:
+                row=db.execute(f'''SELECT * FROM rkb_source_intake_control
+                    WHERE {col}=? AND person_id=?''',(identity,actor)).fetchone()
+                if row is None:raise failure('owned_ingestion_required',status='denied')
+                result=dict(row);result['source_revision']=1
+        if ingestion_id and document_id and result['source_id']!=uuid_value(document_id):
+            raise failure('ingestion_source_mismatch',status='invalid_query')
+        return result
 
-    def _save(self, row, **changes):
-        allowed = {'stage_json', 'research_json', 'phase', 'frozen_sha256', 'native_proof_sha256', 'semantic_json'}
-        if not changes or set(changes) - allowed:
-            raise ValueError('bounded intake transition required')
-        changes['updated'] = self.queue.clock()
-        if any(isinstance(value, str) and len(value.encode()) > 1024 * 1024 for value in changes.values()):
+    def _save(self,row,**changes):
+        allowed={'stage_json','research_json','phase','frozen_sha256','native_proof_sha256','semantic_json'}
+        if not changes or set(changes)-allowed:raise ValueError('bounded source transition required')
+        changes['updated']=self.queue.clock()
+        if any(isinstance(value,str) and len(value.encode())>1024*1024 for value in changes.values()):
             raise failure('small_import_control_bound')
+        table='rkb_source_revision2_control' if row.get('source_revision',1)==2 else 'rkb_source_intake_control'
         with self.queue.connect() as db:
-            fields = ','.join(key+'=?' for key in changes)
-            db.execute(f'UPDATE rkb_source_intake_control SET {fields} WHERE ingestion_id=? AND person_id=?',
-                (*changes.values(), row['ingestion_id'], row['person_id']))
+            fields=','.join(k+'=?' for k in changes)
+            result=db.execute(f'UPDATE {table} SET {fields} WHERE ingestion_id=? AND person_id=?',
+                (*changes.values(),row['ingestion_id'],row['person_id']))
+            if result.rowcount!=1:raise failure('owned_ingestion_required',status='denied')
             self._budget(db)
-        if changes.get('phase',row['phase']) != row['phase']:
+        if changes.get('phase',row['phase'])!=row['phase']:
             _LOG.info('source_import_control ingestion_id=%s source_id=%s state=%s previous=%s',
                 row['ingestion_id'],row['source_id'],changes['phase'],row['phase'])
-        return self._row(row['person_id'], row['ingestion_id'])
+        return self._row(row['person_id'],row['ingestion_id'])
 
     @staticmethod
     def _budget(db):
@@ -211,23 +239,35 @@ class KaggleSourceImporter:
             length(CAST(rights_json AS BLOB))+coalesce(length(CAST(stage_json AS BLOB)),0)+
             coalesce(length(CAST(research_json AS BLOB)),0)+
             coalesce(length(CAST(semantic_json AS BLOB)),0)+2048),0) FROM rkb_source_intake_control''').fetchone()
-        if row[0] > MAX_CONTROL_ROWS or row[1] > MAX_CONTROL_BYTES:
+        successor=db.execute('''SELECT count(*),coalesce(sum(
+            length(CAST(metadata_json AS BLOB))+length(CAST(rights_json AS BLOB))
+            +coalesce(length(CAST(research_json AS BLOB)),0)
+            +coalesce(length(CAST(semantic_json AS BLOB)),0)+2048),0)
+            FROM rkb_source_revision2_control''').fetchone()
+        if row[0]+successor[0]>MAX_CONTROL_ROWS or row[1]+successor[1]>MAX_CONTROL_BYTES:
             raise failure('small_import_control_capacity')
 
     async def owned_row(self, principal, ingestion_id):
         async with self._access(principal) as access:
             row = await asyncio.to_thread(self._row, access.authority.person_id, ingestion_id)
             return {'id': row['ingestion_id'], 'owner_user_id': row['person_id'],
-                'document_id': row['source_id'], 'staged_revision': 1}
+                'document_id': row['source_id'], 'staged_revision': row.get('source_revision',1)}
 
     async def _receipt(self, access, row):
-        receipt = await self.originals.verified(access.context, row['ingestion_id'])
+        inherited=row.get('source_revision',1)==2
+        if inherited:
+            receipt=await self.originals.inherited_verified(access.context,row['ingestion_id'],
+                source_id=row['source_id'])
+        else:
+            receipt = await self.originals.verified(access.context, row['ingestion_id'])
         await self._check(access.authority, access.context, access.binding)
         if receipt is None:
             return None
         if (type(receipt) is not VerifiedOriginalReceipt or VerifiedOriginalReceipt.from_wire(receipt.wire()) != receipt
-                or receipt.source_id != row['source_id'] or receipt.ingestion_id != row['ingestion_id']
-                or receipt.request_id != str(uuid5(UUID(row['ingestion_id']), 'original:source-original:'+row['ingestion_id']))
+                or receipt.source_id != row['source_id']
+                or receipt.ingestion_id != (row['original_ingestion_id'] if inherited else row['ingestion_id'])
+                or receipt.request_id != str(uuid5(UUID(receipt.ingestion_id),
+                    'original:source-original:'+receipt.ingestion_id))
                 # Actor-verified, archived PDF receipts may retain a
                 # historical parser hash. Native restore/page dispatch
                 # independently permits only the exact old PDF executable;
