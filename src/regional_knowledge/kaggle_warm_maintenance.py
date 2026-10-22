@@ -1,14 +1,12 @@
-"""Narrow authenticated warm read-handler maintenance on the existing recovery WSS.
+"""Trusted controller stages bounded stateless Python over the existing WSS.
 
-This is NOT a public code-upload RPC: the existing controller must select a
-source-reviewed commit and immutable object, issue a scoped GET ticket, and
-hold the run-authenticated recovery compute permit. WSS carries only pins and
-the existing signed ticket; no Python source, local path, constructor, SQL or
-model/PG handle can be chosen by a user request.
+Run identity, reviewed source commit, exact SHA and slot generation remain
+required. This maintenance operation is not exposed by the product MCP.
 """
 from __future__ import annotations
 
 import inspect
+import hashlib
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -31,7 +29,8 @@ class WarmHandlerPatchApproval:
     """Trusted controller-issued pin; not a proof of upstream code review.
 
     The controller/deployer independently proves the exact reviewed commit.
-    This type only prevents an arbitrary path/body from crossing the WSS wire.
+    Used by the retained schema-bundle compatibility path; read-handler
+    staging now carries reviewed source inline.
     """
     blob: BlobRef
     reviewed_commit: str
@@ -58,21 +57,37 @@ class WarmHandlerPatchApproval:
             raise WarmMaintenanceRejected("read_handler_approval_invalid") from None
 
 
+def inline_handler_bytes(source,digest,reviewed_commit):
+    """Validate the trusted maintenance input before retaining or executing it."""
+    if (type(source) is not str or type(digest) is not str
+            or _SHA64.fullmatch(digest) is None or type(reviewed_commit) is not str
+            or _COMMIT40.fullmatch(reviewed_commit) is None):
+        raise WarmMaintenanceRejected("read_handler_approval_invalid")
+    try:
+        content=source.encode('utf-8')
+    except UnicodeError:
+        raise WarmMaintenanceRejected("read_handler_approval_invalid") from None
+    if not 1<=len(content)<=MAX_MODULE_BYTES:
+        raise WarmMaintenanceRejected("read_handler_artifact_budget")
+    if hashlib.sha256(content).hexdigest()!=digest:
+        raise WarmMaintenanceRejected("read_handler_bytes_mismatch")
+    return content
+
+
 class WarmHandlerMaintenance:
-    """Retained same-worker operation; downloads through the existing S3 ticket.
+    """Retained same-worker operation; stages inline reviewed handler bytes.
 
     Candidate construction and all resource/probe callbacks stay in the
     already running model-owning TargetRuntime. Only this stateless callback
     can change. A lost ACK leaves original operation UNKNOWN until an
     independent status readback proves the exact loaded SHA/generation.
     """
-    def __init__(self,*,slot:ReadHandlerSlot,download,workspace,constructor,self_test,probe,current):
-        if (type(slot) is not ReadHandlerSlot or not callable(download)
-                or not callable(workspace) or not callable(current) or type(constructor) is not dict
+    def __init__(self,*,slot:ReadHandlerSlot,workspace,constructor,self_test,probe,current):
+        if (type(slot) is not ReadHandlerSlot or not callable(workspace) or not callable(current) or type(constructor) is not dict
                 or not inspect.iscoroutinefunction(self_test)
                 or not inspect.iscoroutinefunction(probe)):
             raise TypeError("trusted retained warm handler maintenance owner required")
-        self.slot,self.download,self.workspace=slot,download,workspace
+        self.slot,self.workspace=slot,workspace
         self.constructor,self.self_test,self.probe=constructor,self_test,probe
         self.current=current  # retained exact WSS run/incarnation/generation gate
 
@@ -92,48 +107,32 @@ class WarmHandlerMaintenance:
             raise WarmMaintenanceRejected("read_handler_maintenance_arguments")
         self.current(frame)
         if phase=='read_handler_stage':
-            if set(args)!={'artifact','expected_loaded_sha256','expected_generation'}:
+            if set(args)!={'handler_source','handler_sha256','reviewed_commit',
+                    'expected_loaded_sha256','expected_generation'}:
                 raise WarmMaintenanceRejected("read_handler_maintenance_arguments")
             self._current(args['expected_loaded_sha256'],args['expected_generation'])
-            artifact=WarmHandlerPatchApproval.from_wire(args['artifact'])
-            if artifact.blob.size>MAX_MODULE_BYTES or not 1<=artifact.blob.size:
-                raise WarmMaintenanceRejected("read_handler_artifact_budget")
-            ticket=frame.get('download_ticket')
-            if type(ticket) is not dict:
-                raise WarmMaintenanceRejected("read_handler_transfer_required")
-            # download() is the retained NativeSnapshotTransfer adapter. It
-            # independently checks operation-key, HTTPS origin, conditional
-            # ETag, exact size/SHA and writes an owned O_EXCL private file.
-            source=self.download(artifact.blob,operation_key,
-                ticket=ticket,transfer_operation=operation_key)
-            if inspect.isawaitable(source):source=await source
-            source=Path(source)
+            content=inline_handler_bytes(args['handler_source'],args['handler_sha256'],args['reviewed_commit'])
+            if 'download_ticket' in frame:
+                raise WarmMaintenanceRejected("read_handler_maintenance_arguments")
             root=Path(self.workspace(operation_key,'read_handler'))
-            if (not root.is_absolute() or not source.is_absolute()
-                    or source.parent!=root.parent or root.exists()
-                    or root==root.parent or root.name in ('.','..')):
+            if (not root.is_absolute() or root.exists() or root==root.parent
+                    or root.name in ('.','..')):
                 raise WarmMaintenanceRejected("read_handler_private_workspace")
-            try:
-                self.current(frame)  # Revalidate AFTER potentially slow transfer.
-                self._current(args['expected_loaded_sha256'],args['expected_generation'])
-            except BaseException:
-                # The verified download target belongs to this exact private
-                # operation. A stale attachment must not retain disposable
-                # candidate bytes or execute any of them.
-                source.unlink(missing_ok=True)
-                raise
+            self.current(frame)
             root.mkdir(mode=0o700)
             target=root/'handler.py'
             try:
-                # Atomic rename inside the same private parent; stage() opens
-                # the SAME new file via O_NOFOLLOW and SHA-verifies its bytes.
-                os.rename(source,target)
+                descriptor=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+                with os.fdopen(descriptor,'wb') as output:
+                    output.write(content)
+                self.current(frame)
+                self._current(args['expected_loaded_sha256'],args['expected_generation'])
                 async def current_self_test(candidate):
                     self.current(frame)
                     await self.self_test(candidate)
                     self.current(frame)
                 return await self.slot.stage(path=target,trusted_root=root,
-                    expected_sha256=artifact.blob.sha256,
+                    expected_sha256=args['handler_sha256'],
                     compatibility=self.slot._compatibility,
                     constructor=self.constructor,self_test=current_self_test)
             except BaseException:
