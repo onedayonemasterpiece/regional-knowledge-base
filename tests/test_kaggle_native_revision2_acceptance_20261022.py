@@ -20,7 +20,7 @@ from psycopg.types.json import Jsonb
 import pytest
 
 from regional_knowledge.kaggle_apply import HandlerRegistry
-from regional_knowledge.recovery_journal import JournalConflict
+from regional_knowledge.recovery_journal import JournalConflict, StaleWriter
 from regional_knowledge.kaggle_native_source_upgrade import (
     NativeSourceMigration, native_source_upgrade_handler, resolved_native_source_upgrade,
 )
@@ -241,6 +241,11 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
 
         # Actual source SQL rejects a stale predecessor, wrong owner, edition,
         # original ingestion or a forged page/issued-image receipt.
+        assert await _check_stage(env,command)
+        # An accepted intent is not authority to apply under a retired or
+        # competing writer generation. The real PG writer fence must win.
+        with pytest.raises(StaleWriter):
+            await _accepted(env,command,writer="stale-revision2-writer")
         assert await _check_stage(env,command)
         stale=replace(command,expected_revisions={
             **dict(command.expected_revisions),"predecessor_command_sha256":"0"*64})
