@@ -105,22 +105,31 @@ async def test_sql017_installs_after_real_sql015_016_without_rewriting_prior_ddl
         await connection.execute((ROOT/'sql/kaggle/002_recovery.sql').read_text(),prepare=False)
     await initialize_database(connection,database_generation='rev2-fixture',writer_generation='writer-fixture',
         revisions=REVISION2_REVISIONS)
-    async with connection.transaction():
-        for seq in range(3,18):
-            found=list((ROOT/'sql/kaggle').glob(f'{seq:03d}_*.sql'))
-            assert len(found)==1, f'missing or duplicate pinned SQL{seq:03d}'
-            await connection.execute(found[0].read_text(),prepare=False)
-        relations=await(await connection.execute('''
-            SELECT count(*) FROM pg_catalog.pg_tables
-             WHERE schemaname='rkb_v4' AND tablename LIKE 'source_revision2_%'
-        ''')).fetchone()
-        assert relations is not None and relations[0]>=9
-        for name in ('check_source_stage_revision2_v1','apply_source_stage_revision2_v1',
-                     'prepare_source_revision2_activation_v1','install_source_revision2_vector_v1',
-                     'apply_source_activate_revision2_v1'):
-            found=await(await connection.execute(
-                "SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='rkb_v4' AND p.proname=%s",
-                (name,))).fetchone()
-            assert found==(1,)
-        # No v2 source was activated just because its migration installed.
-        assert await(await connection.execute('SELECT count(*) FROM rkb_v4.source_revision2_origins')).fetchone()==(0,)
+    import psycopg
+    with pytest.raises(psycopg.Rollback):
+        async with connection.transaction():
+            # SQL016's source-side grants require existing role names.
+            # These NOLOGIN fixture identities are created only inside an
+            # intentionally rolled-back CI transaction; no live grants.
+            for role in ('rkb_writer','rkb_reader'):
+                row=await(await connection.execute('SELECT 1 FROM pg_roles WHERE rolname=%s',(role,))).fetchone()
+                assert row is None, 'do not mutate a pre-existing role'
+                await connection.execute('CREATE ROLE '+role+' NOLOGIN')
+            for seq in range(3,18):
+                found=list((ROOT/'sql/kaggle').glob(f'{seq:03d}_*.sql'))
+                assert len(found)==1, f'missing or duplicate pinned SQL{seq:03d}'
+                await connection.execute(found[0].read_text(),prepare=False)
+            relations=await(await connection.execute('''
+                SELECT count(*) FROM pg_catalog.pg_tables
+                 WHERE schemaname='rkb_v4' AND tablename LIKE 'source_revision2_%'
+            ''')).fetchone()
+            assert relations is not None and relations[0]>=9
+            for name in ('check_source_stage_revision2_v1','apply_source_stage_revision2_v1',
+                         'prepare_source_revision2_activation_v1','install_source_revision2_vector_v1',
+                         'apply_source_activate_revision2_v1'):
+                found=await(await connection.execute(
+                    "SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='rkb_v4' AND p.proname=%s",
+                    (name,))).fetchone()
+                assert found==(1,)
+            assert await(await connection.execute('SELECT count(*) FROM rkb_v4.source_revision2_origins')).fetchone()==(0,)
+            raise psycopg.Rollback()
