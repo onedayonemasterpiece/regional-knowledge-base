@@ -30,6 +30,10 @@ class SourceGraphReadRequest(ReadIdentity):
     action:Literal['entity','list','mentions','aliases','relations','poi_facts']='entity'
     entity_id:str|None=None
     source_id:str|None=None
+    # Existing entity_list selectors; only a single accepted source is allowed.
+    kinds:tuple[Literal['person','organization','event','historical_thread','poi_ref'],...]|None=Field(
+        default=None,min_length=1,max_length=5)
+    query:Annotated[str,Field(max_length=200)]=''
     cursor:Annotated[str,Field(max_length=1600)]|None=None
     limit:Annotated[int,Field(ge=1,le=3)]=3
     actor:TrustedActorContext
@@ -44,6 +48,12 @@ class SourceGraphReadRequest(ReadIdentity):
         if self.action in ('list','poi_facts'):
             if self.source_id is None or self.entity_id is not None:raise ValueError('exact accepted source scope required')
         elif self.entity_id is None:raise ValueError('exact source entity UUID required')
+        if self.action!='list' and (self.kinds is not None or self.query):
+            raise ValueError('entity selectors require a source-scoped list')
+        if self.kinds is not None and len(set(self.kinds))!=len(self.kinds):
+            raise ValueError('duplicate entity kinds')
+        if self.query and (not self.query.strip() or len(self.query.encode('utf-8'))>512):
+            raise ValueError('bounded nonblank entity query required')
         return self
 
 
@@ -101,8 +111,31 @@ class SourceGraphReadResult(ReadIdentity):
 
 
 def _scope(request,observed):
-    return hashlib.sha256(canonical(dict(action=request.action,entity=request.entity_id,source=request.source_id,
-        actor=request.actor.model_dump(mode='json'),observed=observed))).hexdigest()
+    actor=request.actor.model_dump(mode='json')
+    if request.action=='list':
+        # context_ref is an ephemeral random authority handle minted afresh
+        # for EACH OAuth read. Binding a paginated list cursor to that handle
+        # makes the promised second MCP call impossible. Bind to the verified
+        # person/audience/auth epoch instead; reauthorization and the current
+        # source/grant checks still occur independently on every new read.
+        actor.pop('context_ref',None)
+    scope=dict(action=request.action,entity=request.entity_id,source=request.source_id,
+        actor=actor,observed=observed)
+    if request.kinds is not None or request.query:
+        scope.update(kinds=request.kinds,query=request.query)
+    return hashlib.sha256(canonical(scope)).hexdigest()
+
+
+def _matches_list(record,request):
+    data=record['data']
+    if request.kinds is not None and data.get('kind') not in request.kinds:return False
+    if not request.query:return True
+    needle=request.query.strip().casefold()
+    names=[data.get('canonical_label'),data['mention']['exact_source_spelling']]
+    aliases=data.get('aliases',[])
+    if type(aliases) is not list:raise ReadUnavailable('internal_error')
+    names.extend(a.get('value') for a in aliases if type(a) is dict)
+    return any(type(name) is str and needle in name.casefold() for name in names)
 
 
 def _cursor(scope,source,key):
@@ -161,18 +194,42 @@ async def execute_source_graph_read(request:SourceGraphReadRequest,*,acquire):
                         if request.cursor:
                             try:after=_after(request.cursor,scope)
                             except (ValueError,TypeError,KeyError):raise ReadUnavailable('invalid_input') from None
-                        await execute('SELECT * FROM rkb_v4.read_source_graph_v1(%s::uuid,%s::uuid,%s,%s::uuid,%s,%s)',
-                            (request.entity_id,request.source_id,request.action,*after,request.limit+1))
-                        rows=await cursor.fetchall()
-                        if len(rows)>request.limit+1:raise ReadUnavailable('internal_error')
-                        records=[];evidence=[];positions=[];used=0
-                        for row in rows[:request.limit]:
-                            record,item,position=_record(row,request)
-                            size=len(canonical(record))+len(canonical(item.model_dump(mode='json')))
-                            if used+size>240*1024:break
-                            records.append(record);evidence.append(item);positions.append(position);used+=size
+                        records=[];evidence=[];positions=[];used=0;next_cursor=None
+                        filtered=request.action=='list' and (request.kinds is not None or bool(request.query))
+                        # Existing indexed ACL-checked native keyset returns <=4
+                        # records at once. Scan at most eight pages in the same
+                        # read-only snapshot; an incomplete scan returns a cursor
+                        # rather than falsely claiming no matching entities.
+                        after_page=after
+                        for page in range(8 if filtered else 1):
+                            await execute('SELECT * FROM rkb_v4.read_source_graph_v1(%s::uuid,%s::uuid,%s,%s::uuid,%s,%s)',
+                                (request.entity_id,request.source_id,request.action,*after_page,request.limit+1))
+                            rows=await cursor.fetchall()
+                            if len(rows)>request.limit+1:raise ReadUnavailable('internal_error')
+                            for offset,row in enumerate(rows[:request.limit] if not filtered else rows):
+                                record,item,position=_record(row,request)
+                                if filtered and not _matches_list(record,request):
+                                    after_page=position
+                                    continue
+                                size=len(canonical(record))+len(canonical(item.model_dump(mode='json')))
+                                if used+size>240*1024:
+                                    if not records:raise ReadUnavailable('internal_error')
+                                    next_cursor=_cursor(scope,*after_page)
+                                    break
+                                records.append(record);evidence.append(item);positions.append(position);used+=size
+                                after_page=position
+                                if len(records)==request.limit:
+                                    if offset+1<len(rows) or len(rows)==request.limit+1:
+                                        next_cursor=_cursor(scope,*after_page)
+                                    break
+                            if len(records)==request.limit or next_cursor is not None:break
+                            if len(rows)<request.limit+1:break
+                            if page==7:next_cursor=_cursor(scope,*after_page)
+                        # Do not change the no-filter branch or its lookahead.
+                        if not filtered and len(rows)>len(records):
+                            next_cursor=_cursor(scope,*positions[-1]) if positions else None
                         return SourceGraphReadResult(**_identity(request),status='ok',records=tuple(records),evidence=tuple(evidence),
-                            next_cursor=_cursor(scope,*positions[-1]) if len(rows)>len(records) else None,
+                            next_cursor=next_cursor,
                             observed_data_seq=observed['data'],observed_projection_seq=observed['projection'],
                             observed_visibility_epoch=observed['visibility'],observed_database_generation=observed['database'])
     except ReadUnavailable as exc:return failed(exc.reason)
