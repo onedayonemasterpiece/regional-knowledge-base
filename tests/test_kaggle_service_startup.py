@@ -131,6 +131,23 @@ async def test_proof_refresh_failure_and_writer_change_close_routing(service):
 
 
 @pytest.mark.asyncio
+async def test_schema_promotion_rebuilds_retired_prefix_without_failed_delta_tick(service,monkeypatch):
+    s=service;startup=s.startup;s.adapter.available=True
+    async with startup.lifespan(None):
+        assert startup.reads_current()
+        binding=startup.binding
+        # promote_schema_context retires the old-schema native prefix while
+        # the verified source sequence and current attachment remain the same.
+        s.adapter._native_prefix=None
+        async def invalid_delta(binding):
+            raise RuntimeError('retained exact native source prefix unavailable')
+        monkeypatch.setattr(s.adapter,'extend',invalid_delta)
+        assert await startup.refresh()
+        assert startup.binding is binding and startup.reads_current()
+        assert s.adapter.calls[-1]==('restore',binding)
+
+
+@pytest.mark.asyncio
 async def test_full_and_live_source_calls_share_actual_admission_and_no_domain_fallback(service,monkeypatch):
     s=service;startup=s.startup;s.adapter.available=True
     monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.target.principal)
