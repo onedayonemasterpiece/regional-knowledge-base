@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   test:
@@ -42,4 +43,32 @@ jobs:
         with:
           name: combined-import-${{ matrix.python-version }}
           path: combined-import.xml
+          retention-days: 14
+
+  actual-launch-metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: src:tests
+      RKB_IMPORT_NATIVE_METADATA: metadata-proof/dependency-proof
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -e '.[dev,ingest,kaggle]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: rkb-import-dependencies
+          run-id: 39762610380
+          github-token: ${{ github.token }}
+          path: metadata-proof
+      - run: python -m pytest tests/test_import_actual_launch_metadata_shkiper.py -q -s --junitxml=actual-launch-metadata.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: actual-launch-metadata
+          path: actual-launch-metadata.xml
           retention-days: 14
