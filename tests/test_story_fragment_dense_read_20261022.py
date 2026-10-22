@@ -1,10 +1,11 @@
-"""Pending PR277 Story-fragment dense retrieval through actual PG17 and fused search.
+"""SQL019 Story-fragment dense retrieval through actual PG17 and fused search.
 
 All document/model vectors are deterministic **synthetic** unit vectors. This
 proves source/active scoping, candidate identity, saved body and branch wiring;
 it does NOT measure actual BGE relevance, HNSW recall or live p95.
 """
 import json
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
 
@@ -33,7 +34,7 @@ from test_source_story_fragments_20261022 import LONG_BODY, authored_batch
 from test_native_source_materializer import exact_batch
 
 ROOT = Path(__file__).resolve().parents[1]
-READ_SQL = ROOT / 'sql/kaggle/pending/story_fragment_dense_read_20261022.sql'
+READ_SQL = ROOT / 'sql/kaggle/019_story_fragment_dense_read.sql'
 FRAGMENT_SQL = ROOT / 'sql/kaggle/018_story_embedding_fragments.sql'
 GOOD = '[' + ','.join(['1'] + ['0'] * 1023) + ']'
 BAD = '[' + ','.join(['0', '1'] + ['0'] * 1022) + ']'
@@ -51,7 +52,7 @@ async def _prepare_reader(env):
     assert 'CREATE VIEW rkb_v4.story_embedding_fragments' in ordinary_sql18
     async with connection.transaction():
         # GH PG17 image fixture installs through SQL014. Apply ordinary
-        # SQL018 explicitly, followed by the unnumbered own read candidate.
+        # SQL018/019 explicitly to isolate the historical dense contracts.
         await connection.execute(ordinary_sql18, prepare=False)
         await connection.execute(READ_SQL.read_text(), prepare=False)
     handlers = []
@@ -61,9 +62,9 @@ async def _prepare_reader(env):
                           (ACTIVATE_ROUTE, 'source_activate_v1')):
         check = await pinned(connection, 'check_' + suffix)
         apply = await pinned(connection, 'apply_' + suffix)
-        handlers.append(native_source_handler(route,
+        handlers.append(replace(native_source_handler(route,
             check_sha256=check.definition_sha256,
-            apply_sha256=apply.definition_sha256))
+            apply_sha256=apply.definition_sha256),check=check,apply=apply))
     env['registry'] = HandlerRegistry(handlers)
     async with connection.transaction():
         proc = await (await connection.execute("""

@@ -1,8 +1,5 @@
--- PENDING READ INTEGRATION: no schema number and NOT installed by the runner.
--- Depends on PR283's ordinary sql/kaggle/018_story_embedding_fragments.sql
--- stacked after Shkiper's real SQL017, and existing editorial SQL009/014.
--- Shkiper alone assigns the next ordered migration version and coordinates
--- source bundle, GRANT/readiness, checkpoint and activation with PR2.
+-- Ordinary SQL019 extends SQL018's Story fragments through the same runner.
+-- Existing editorial SQL009/014 public function signatures are preserved.
 --
 -- Reuse the *same immutable* source_activation_vectors rows that PR277 writes.
 -- No new vector table, original-content copy, model, transport or scheduler.
