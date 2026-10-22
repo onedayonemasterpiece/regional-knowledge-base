@@ -258,6 +258,8 @@ def build_server(
     projects_hub_receiver=None,
     expert_evidence_receiver=None,
     expert_slack_ingress=None,
+    expert_claim_receiver=None,
+    expert_result_receiver=None,
 ) -> MCPServer:
     selected=backend_profile or os.getenv('RKB_BACKEND_PROFILE','').strip() or (
         'kaggle_source' if target_startup is not None else 'legacy')
@@ -490,6 +492,28 @@ def build_server(
                 or expert_slack_ingress.control.people is not target_startup.config.participants):
             raise RuntimeError('Slack ingress requires exact existing target control owners')
         mcp.custom_route(SLACK_PATH, methods=['POST'])(expert_slack_ingress.__call__)
+
+    # Claim and result staging are a single opt-in capability, bound only to
+    # an already provisioned original executor and exact signed ingress.
+    # No context: no route, no implicit credentials, no provider send.
+    if (expert_claim_receiver is None)!=(expert_result_receiver is None):
+        raise RuntimeError('expert executor routes require one complete context')
+    if expert_claim_receiver is not None:
+        from .expert_executor_workflow import (
+            BoundExpertClaimReceiver, ExpertExecutorResultReceiver,
+            PATH as RESULT_PATH,
+        )
+        from .expert_executor_claim_receiver import PATH as CLAIM_PATH
+        if (selected!='kaggle_source'
+                or type(expert_claim_receiver) is not BoundExpertClaimReceiver
+                or type(expert_result_receiver) is not ExpertExecutorResultReceiver
+                or expert_slack_ingress is None
+                or expert_claim_receiver.control is not expert_slack_ingress.control
+                or expert_result_receiver.control is not expert_slack_ingress.control
+                or expert_result_receiver.context.credentials is not expert_claim_receiver.credentials):
+            raise RuntimeError('expert executor routes must share signed ingress and context')
+        mcp.custom_route(CLAIM_PATH, methods=['POST'])(expert_claim_receiver.__call__)
+        mcp.custom_route(RESULT_PATH, methods=['POST'])(expert_result_receiver.__call__)
 
     @mcp.custom_route("/fast-tier/health", methods=["GET"])
     async def fast_tier_health(request: Request):
@@ -1425,7 +1449,8 @@ def build_server(
     return mcp
 
 
-def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=None) -> None:
+def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=None,
+         expert_executor_context=None) -> None:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("regional_knowledge.oauth_provider").setLevel(logging.INFO)
     logging.getLogger("regional_knowledge.reads").setLevel(logging.INFO)
@@ -1459,9 +1484,19 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
         from .expert_slack_composition import compose_expert_evidence_receiver
         expert_evidence_receiver=compose_expert_evidence_receiver(
             target_startup=target_startup,expert_slack_ingress=expert_slack_ingress)
+    expert_claim_receiver=expert_result_receiver=None
+    if expert_executor_context is not None:
+        if expert_slack_ingress is None or target_startup is None:
+            raise RuntimeError('expert executor context requires signed ingress and target')
+        from .expert_executor_workflow import compose_bound_expert_executor
+        expert_claim_receiver,expert_result_receiver=compose_bound_expert_executor(
+            target_startup=target_startup,expert_slack_ingress=expert_slack_ingress,
+            context=expert_executor_context)
     build_server(profile=profile,target_startup=target_startup,projects_hub_receiver=projects_hub_receiver,
         expert_slack_ingress=expert_slack_ingress,
-        expert_evidence_receiver=expert_evidence_receiver).run(
+        expert_evidence_receiver=expert_evidence_receiver,
+        expert_claim_receiver=expert_claim_receiver,
+        expert_result_receiver=expert_result_receiver).run(
         transport="streamable-http",
         stateless_http=True,
         json_response=True,
