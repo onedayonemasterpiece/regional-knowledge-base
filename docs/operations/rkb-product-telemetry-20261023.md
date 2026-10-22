@@ -10,7 +10,7 @@ QUERY_RESULT is transmitted without draining/serializing native read_events. Onc
 
 Controller search, Kaggle native search stages, outer authorized fetch and original acquire/archive/verify/pages all use monotonic durations. Native stage/seal/materialize call spans and confirmed activation apply are distinguished; time ranges overlap and must never be summed. Inter-host wall clocks do not establish end-to-end stage timings. Import `applied`/provider ACK is **not Saved**. Without independent Dataset coverage/readback this PR emits no invented Saved event.
 
-Only observable calls/actions are logged, never model private reasoning. Fields are allowlisted: event, phase, status, level, timing_semantics, duration_ms, trace_id, attempt_id, run_id, request_ref, operation_ref, connection_generation and turn_generation. request_ref/operation_ref are SHA-256. No query/book content, pages/originals, signed URLs, tokens, bearer, identities or CoT. Fields not on the whitelist are counted as failed, not accepted.
+Only observable calls/actions are logged, never model private reasoning. Fields are allowlisted: event, phase, status, level, timing_semantics, duration_ms, trace_id, attempt_id, run_id, request_ref, operation_ref, connection_generation and turn_generation. request_ref/operation_ref are SHA-256. No query/book content, pages/originals, signed URLs, tokens, bearer, identities or CoT. Fields not on the whitelist are silently removed, with a numeric ignored_fields count; their names/values never enter the file. Invalid known identifiers/metrics are rejected and counted as failed.
 
 ## Mode, bounded segments and archive
 
