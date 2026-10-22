@@ -29,6 +29,10 @@ async def attach_existing_reader(s, *, observed=None):
     q.expect_search_runtime(read_run,expected())
     q.launch_claim(read_run)
     q.launch_record(read_run,'fixture-reader/stable-slug',provider_version=8)
+    # A separately retained read run is not the writer's ROTATION successor.
+    # This is fixture-only control state, not a second provider launch.
+    with q.connect() as db:
+        db.execute('UPDATE control SET successor=NULL WHERE successor=?',(read_run,))
     generation=q.attach_channel(read_run,token,nonce,'reader-incarnation')['connection_generation']
     assert q.accept_search_runtime(read_run,token,generation,observed or observation()).ok
     q.heartbeat(read_run,token,ready=True,connection_generation=generation)
