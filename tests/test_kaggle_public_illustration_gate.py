@@ -22,7 +22,7 @@ from regional_knowledge.participant_contracts import ParticipantGrant
 from test_control_spool import env, SOURCE
 from test_read_authority import auth
 from test_source_read_gate import setup
-from test_participants import change
+from test_participants import change, people
 
 
 ILLUSTRATION = "20000000-0000-0000-0000-000000000002"
