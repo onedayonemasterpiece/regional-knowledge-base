@@ -58,8 +58,7 @@ BEGIN
  IF c->>'route'<>'source.activate.v1' THEN RETURN NULL;END IF;
  SELECT * INTO m FROM rkb_v4.source_illustration_candidates WHERE source_id=(c->'ids'->>'source_id')::uuid;
  IF NOT FOUND THEN RETURN NULL;END IF;
- IF jsonb_typeof(c->'schema_version') IS DISTINCT FROM 'number'
-  OR (c->>'schema_version')::integer<15 THEN RAISE EXCEPTION 'illustration activation version differs';END IF;
+ IF (SELECT schema_version FROM rkb_v4.recovery_state WHERE singleton)<15 THEN RAISE EXCEPTION 'illustration activation version differs';END IF;
  IF (SELECT count(*) FROM rkb_v4.source_illustrations WHERE source_id=m.source_id)<>jsonb_array_length(m.media->'illustrations')
   OR EXISTS(SELECT 1 FROM jsonb_array_elements(m.media->'illustrations') i WHERE NOT EXISTS(
    SELECT 1 FROM rkb_v4.source_illustrations x WHERE x.source_id=m.source_id AND x.data=i)) THEN RAISE EXCEPTION 'illustration projection missing';END IF;

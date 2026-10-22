@@ -287,13 +287,14 @@ class KaggleStoryEditorial:
 
     def _revisions(self,binding):
         with self.queue.connect(write=False) as db:
-            row=self.queue._runtime_row(db,binding.run_id);value=json.loads(row['expected_json'])
+            row=self.queue._runtime_row(db,binding.run_id)
+            value=self.queue._runtime_expected(row)
             if (row['accepted_generation']!=binding.connection_generation
-                    or value['database_generation']!=binding.database_generation):raise failure('target_runtime_changed')
-            observed=tuple(value[k] for k in ('schema_revision','function_revision','executor_revision'))
-        for revisions in (EDITORIAL_REVISIONS,DOMAIN_REVISIONS,ACTIVATION_REVISIONS):
-            if observed==revisions.wire():return revisions
-        raise failure('unsupported_editorial_revision')
+                    or value.database_generation!=binding.database_generation):raise failure('target_runtime_changed')
+        if value.schema_version>=14:return ACTIVATION_REVISIONS
+        if value.schema_version>=11:return DOMAIN_REVISIONS
+        if value.schema_version>=9:return EDITORIAL_REVISIONS
+        raise failure('unsupported_editorial_schema')
 
     async def aclose(self):
         for job in tuple(self._documents):self._release_document(job)

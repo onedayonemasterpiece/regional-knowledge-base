@@ -17,7 +17,8 @@ from psycopg import sql
 
 from regional_knowledge.bge_queue import BgeQueue
 from regional_knowledge.control_spool import ControlSpool, SOURCE_WITHDRAW, WITHDRAW_DEPENDENCY
-from regional_knowledge.kaggle_apply import HandlerRegistry, HandlerSpec, initialize_database
+from regional_knowledge.kaggle_apply import HandlerRegistry, HandlerSpec
+from pg_schema_metadata import initialize_fixture_database as initialize_database
 from regional_knowledge.kaggle_database_probe import NativeDatabaseProbe
 from regional_knowledge.kaggle_protocol import QueryResult, ItemDependencies
 from regional_knowledge.kaggle_public_backend import KaggleSourceBackend, current_binding, parse_passage_fetch_id
@@ -89,18 +90,13 @@ async def vertical(database, auth, tmp_path):
         with queue.connect(write=False) as db:
             run = db.execute('SELECT id FROM runs').fetchone()[0]
         nonce = queue.prepare_channel(run)
-        expected = SearchRuntimeExpectation({key: 'a' * 64 for key in RUNTIME_HASHES}, GENERATION,
-                                            VERSIONS.schema, VERSIONS.function, VERSIONS.executor, 0,schema_version=6)
+        expected = SearchRuntimeExpectation({key: 'a' * 64 for key in RUNTIME_HASHES}, GENERATION, 0, schema_version=6)
         queue.expect_search_runtime(run, expected)
         token = queue.launch_claim(run)
         queue.launch_record(run, 'fixture-owner/stable-slug', provider_version=7)
         admission = queue.configure_shared_reads(auth.resolver)
         generation = queue.attach_channel(run, token, nonce, 'fixture-incarnation')['connection_generation']
-        observed = dict(hashes=dict(expected.hashes), database_generation=GENERATION,
-            schema_revision=VERSIONS.schema, function_revision=VERSIONS.function,
-            executor_revision=VERSIONS.executor,schema_version=6, applied_seq=0, projection_seq=0,
-            visibility_epoch=0, text_search_ready=True, dense_search_ready=True,
-            archive_read_ready=False, proof_ready=None)
+        observed = dict(hashes=dict(expected.hashes), database_generation=GENERATION, schema_version=6, applied_seq=0, projection_seq=0, visibility_epoch=0, text_search_ready=True, dense_search_ready=True, archive_read_ready=False, proof_ready=None)
         assert queue.accept_search_runtime(run, token, generation, observed).ok
         queue.heartbeat(run, token, ready=True, connection_generation=generation)
         await admission.resource_state(run, token, generation,

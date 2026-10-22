@@ -42,8 +42,7 @@ async def test_empty_drill_proves_isolated_restore_and_owned_shutdown_without_se
             if self.process.returncode is None:
                 events.append('close-drill-B')
                 if shutdown[0]:self.process.returncode=0
-    async def probe(**kwargs):return b'catalog',dict(schema_version=db.schema_version,database_generation=db.database_generation,applied_seq=0,projection_seq=0,
-        text_search_ready=True,dense_search_ready=True,schema_revision=db.schema_revision,function_revision=db.function_revision,executor_revision=db.executor_revision)
+    async def probe(**kwargs):return b'catalog',dict(schema_version=db.schema_version, database_generation=db.database_generation, applied_seq=0, projection_seq=0, text_search_ready=True, dense_search_ready=True)
     async def sql_ready(connection):events.append('serving-A-readiness' if connection.serving else 'drill-B-readiness')
     binary=NativeBinary('/fixture/native',1,'a'*64,'postgres (PostgreSQL) 17.11')
     serving=NativeSnapshotFactory(tools=PhysicalPgTools(binary,binary,binary),database=db,identity=identity,registry=None,
@@ -72,7 +71,7 @@ async def test_empty_drill_proves_isolated_restore_and_owned_shutdown_without_se
         events.append('handover-B');restore_writer[0]=kwargs['new_writer']
     monkeypatch.setattr('regional_knowledge.kaggle_pg_snapshot_native.handover_writer',handover)
     versions=dict(server_version_num=170011,pgvector_version='0.8.2',schema_version=db.schema_version,model_sha256='a'*64,
-        tokenizer_sha256='b'*64,schema_revision=db.schema_revision,function_revision=db.function_revision,executor_revision=db.executor_revision)
+        tokenizer_sha256='b'*64)
     manifest=dict(blob=dict(key='private/blob',size=100,sha256='c'*64,native_version='"v1"'),applied_sequence=0,journal_head=None,
         writer_generation=db.writer_generation,system_identifier='actual-synthetic-system',unpacked_bytes=200,versions=versions)
     control=encode(dict(database_generation=db.database_generation,sequence=0,journal_head=None,heads=[],schema_version=db.schema_version))

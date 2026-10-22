@@ -103,7 +103,7 @@ class SourceRestoreCoordinator:
             if (expected.get('hashes',{}).get('launch_config')!=self.config.launch_config_sha256
                     or expected.get('database_generation')!=self.database.database_generation
                     or any(expected.get(key)!=getattr(self.database,key) for key in
-                        ('schema_revision','function_revision','executor_revision'))):
+                        ('schema_version',))):
                 raise SnapshotError('restore_pinned_launch_differs')
             return PreReadyRecoveryBinding(run['id'],run['runtime_incarnation'],run['connection_generation'],
                 self.database.database_generation,self.database.writer_generation),run['launch_nonce']

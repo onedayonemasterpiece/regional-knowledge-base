@@ -99,7 +99,7 @@ async def test_v2_uses_same_authorized_spool_remote_seal_and_captured_dispatch_p
     queue=BgeQueue(tmp_path/'queue.sqlite');_,journal=journal_fixture()
     database=SimpleNamespace(schema_revision=STORY_REVISIONS.schema,function_revision=STORY_REVISIONS.function,
         executor_revision=STORY_REVISIONS.executor)
-    registry=fixed_registry(database,[{'route':'source.import.v2','check_sha256':'1'*64,'apply_sha256':'2'*64}])
+    registry=fixed_registry(database,[{'route':'source.import.v2','check_sha256':'1'*64,'apply_sha256':'2'*64,'revisions':list(STORY_REVISIONS.wire())}])
     spool=ControlSpool(queue,people.registry,journal,registry)
     c=replace(command(),person_id=people.owner.subject)
     try:

@@ -192,7 +192,7 @@ class TargetRuntime:
         self.executed_source = executed_source
         self.pool_factory = pool_factory or AsyncConnectionPool
         self.owner = owner_factory(self.database)
-        self.probe = probe or native_probe_for_schema(self.database.schema_revision)
+        self.probe = probe or native_probe_for_schema()
         self.prepare_resident = prepare
         self.pool = None
         self.writer_pool = None
@@ -343,6 +343,8 @@ class TargetRuntime:
             object.__setattr__(cap,'database',database);object.__setattr__(cap,'control',canonical(control))
         if self.source_history_observer is not None:self.source_history_observer.database=database
         if self.prepared.source_handler is not None:self.prepared.source_handler.database=database
+        if self.read_handler_slot is not None:
+            self.read_handler_slot._compatibility=replace(self.read_handler_slot._compatibility,schema_version=version)
         hashes=dict(self.prepared.readiness.hashes);hashes['schema']=sha(canonical(version))
         self.prepared.readiness=CandidateReadiness(hashes=hashes,**fields)
         return self.prepared.readiness.to_wire()
@@ -423,19 +425,14 @@ class TargetRuntime:
             raise BootstrapUnavailable('target_database_binding_mismatch')
         # Same per-invocation context is used by telemetry's native adapter.
         handler = prepared.query_handler
-        if self.database.schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1','rkb-v4-sql001-014-v1'):
+        from dataclasses import is_dataclass
+        if self.database.schema_version>=9 and is_dataclass(handler):
             from dataclasses import replace
             handler=replace(handler,source_provenance=True)
         from .kaggle_warm_read import ReadHandlerCompatibility,ReadHandlerSlot
         self.read_handler_slot=ReadHandlerSlot(handler,
             loaded_sha256=readiness.hashes['code'],
-            compatibility=ReadHandlerCompatibility(
-                database_generation=readiness.database_generation,
-                schema_revision=readiness.schema_revision,
-                function_revision=readiness.function_revision,
-                executor_revision=readiness.executor_revision,
-                model_sha256=readiness.hashes['model'],
-                dependency_sha256=readiness.hashes['dependency']))
+            compatibility=ReadHandlerCompatibility(database_generation=readiness.database_generation, model_sha256=readiness.hashes['model'], dependency_sha256=readiness.hashes['dependency'],schema_version=readiness.schema_version))
         async def invoke(frame, *, encode):
             from .query_telemetry import ReadRuntime, bind_read_runtime
             with bind_read_runtime(ReadRuntime(run_id,runtime_incarnation)):

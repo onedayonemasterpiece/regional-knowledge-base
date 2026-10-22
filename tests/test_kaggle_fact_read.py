@@ -10,7 +10,9 @@ from psycopg.rows import tuple_row
 
 from regional_knowledge.kaggle_fact_contracts import (FactReadRequest, canonical,
     cursor_scope, decode_cursor, encode_cursor)
-from regional_knowledge.kaggle_fact_read import execute_fact_read, FACT_SCHEMA, FACT_FUNCTION
+from regional_knowledge.kaggle_fact_read import execute_fact_read
+from regional_knowledge.source_import_v3 import FACT_REVISIONS
+FACT_SCHEMA,FACT_FUNCTION=FACT_REVISIONS.schema,FACT_REVISIONS.function
 from regional_knowledge.story_contracts import StageEventDateInput, StageObservationInput
 
 SOURCE = '00000000-0000-0000-0000-000000000001'
@@ -76,7 +78,7 @@ class Native:
         self.statement = statement
 
     async def fetchone(self):
-        return self.revision if 'SELECT schema_revision' in self.statement else self.frontier
+        return ((int(self.revision[0].split('-')[3]),) if 'SELECT schema_version' in self.statement else self.frontier)
 
     async def fetchall(self):
         return self.rows
@@ -206,10 +208,9 @@ def test_measured_metadata_budget_is_shared_by_runtime_and_native_history_constr
     from regional_knowledge.kaggle_apply import HandlerRegistry
     from regional_knowledge.source_import_v3 import FACT_REVISIONS,source_import_v3_handler
     from test_kaggle_target_runtime import spec
-    for revision, rows in (('rkb-v4-sql001-011-v1',1376),(FACT_SCHEMA,576),('rkb-v4-sql001-007-v1',512),
-                           ('rkb-v4-sql001-006-v1',512),('unknown-later-schema',512)):
+    for revision in (6,7,8,11,17,18):
         base=spec(fresh=True).wire()
-        base['database']=replace(spec(fresh=True).database,schema_revision=revision).wire()
+        base['database']=replace(spec(fresh=True).database,schema_version=revision).wire()
         runtime=TargetRuntime({'target_runtime':base},executed_source='fixture',owner_factory=lambda database:None)
         observer=NativeSourceHistoryObserver(acquire=lambda:None,database=runtime.database,
             identity=('run','nonce','inc'),registry=HandlerRegistry([source_import_v3_handler(
@@ -224,6 +225,8 @@ def test_measured_metadata_budget_is_shared_by_runtime_and_native_history_constr
     ('rkb-v4-sql001-009-v1','rkb-v4-source-story-editorial-v4'),
     ('rkb-v4-sql001-010-v1','rkb-v4-source-story-cases-v5'),
     ('rkb-v4-sql001-011-v1','rkb-v4-source-story-cases-geo-v6'),
+    ('rkb-v4-sql001-017-v1','audit-only'),
+    ('rkb-v4-sql001-018-v1','audit-only'),
 ])
 async def test_reviewed_fact_projection_deployments_execute_exact_native_reader(revision):
     native=Native([row()],revision=revision)
@@ -233,13 +236,9 @@ async def test_reviewed_fact_projection_deployments_execute_exact_native_reader(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('revision',[
-    ('rkb-v4-sql001-011-v1','rkb-v4-source-story-facts-v3'),
-    ('rkb-v4-sql001-012-v1','rkb-v4-source-story-cases-geo-v6'),
-    ('rkb-v4-sql001-007-v1','rkb-v4-source-story-cases-geo-v6'),
-])
-async def test_unknown_or_mixed_fact_deployment_cannot_invoke_read_function(revision):
-    native=Native([row()],revision=revision)
+@pytest.mark.parametrize('revision',[(7,'audit-only'),(6,'audit-only')])
+async def test_older_schema_cannot_invoke_read_function(revision):
+    native=Native([row()],revision=(f'rkb-v4-sql001-{revision[0]:03d}-v1',revision[1]))
     result=await execute_fact_read(request(),acquire=native.acquire)
     assert result.status=='unavailable' and result.reason=='not_ready'
     assert not any('read_source_calendar_v1' in sql for sql,_ in native.calls)

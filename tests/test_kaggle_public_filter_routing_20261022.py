@@ -185,7 +185,7 @@ async def test_mcp_story_search_source_filter_is_preserved_by_query_and_output_g
 async def test_scoped_story_query_filters_before_every_native_rank_and_hydrate():
     class ExistingReadPool(FixtureConnection):
         async def fetchone(self):
-            return ('rkb-v4-sql001-014-v1',)
+            return (14,)
 
     connection = ExistingReadPool()
 

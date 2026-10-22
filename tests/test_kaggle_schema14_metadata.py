@@ -17,7 +17,7 @@ from regional_knowledge import kaggle_domain_schema as domain
 from regional_knowledge import kaggle_source_history_native as history
 from regional_knowledge.kaggle_owned_pg import (
     SQL_ARTIFACTS, DOMAIN_SQL_ARTIFACTS, IMAGE_SOURCE_SQL_ARTIFACTS, NATIVE_SOURCE_SQL_ARTIFACTS,
-    configure_native_roles, sql_artifacts,
+    configure_native_roles,
 )
 from test_kaggle_database_probe import Connection
 
@@ -74,7 +74,7 @@ async def test_history_selects_matching_provenance_without_changing_old_profile(
     async def release(session, *, abort):released.append(abort)
     monkeypatch.setattr(history, 'inspect_acl', inspect_acl)
     observer = object.__new__(history.NativeSourceHistoryObserver)
-    observer.database = NS(schema_revision=schema, database_generation='db')
+    observer.database = NS(schema_version=int(schema.split('-')[3]),database_generation='db')
     observer.max_commands = 100; observer.valid = lambda binding:True
     observer._release = release; observer.probe = read_probe; observer.acquire = None; observer._prefixes = {}
     session = NS(nonce=nonce, exhausted=True, mode='full', connection=NS(execute=execute),
@@ -84,16 +84,6 @@ async def test_history_selects_matching_provenance_without_changing_old_profile(
     assert any(story+'(' in sql for sql in statements)
     assert any(graph+'(' in sql for sql in statements)
     assert not any(('verify_source_story_origins_v3' if schema==SCHEMA else 'verify_source_story_origins_v4')+'(' in sql for sql in statements)
-
-
-def test_schema14_readers_accept_exact_profile_not_a_future_range():
-    from regional_knowledge.kaggle_editorial_read import EDITORIAL_SCHEMAS
-    from regional_knowledge.kaggle_fact_read import FACT_READ_REVISIONS
-    from regional_knowledge.kaggle_source_graph_read import SOURCE_GRAPH_READ_REVISIONS
-    assert SCHEMA in EDITORIAL_SCHEMAS
-    assert (SCHEMA,FUNCTION) in FACT_READ_REVISIONS and (SCHEMA,FUNCTION) in SOURCE_GRAPH_READ_REVISIONS
-    assert 'rkb-v4-sql001-015-v1' not in EDITORIAL_SCHEMAS
-    assert (SCHEMA,'wrong-function') not in FACT_READ_REVISIONS | SOURCE_GRAPH_READ_REVISIONS
 
 
 @pytest.mark.parametrize('layer', [13, 14])

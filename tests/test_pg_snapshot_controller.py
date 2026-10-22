@@ -89,8 +89,7 @@ async def test_snapshot_manifest_tail_remote_outcome_rollover_pointer_order(env,
              json.dumps(old_identity),'pending',1.,1.,1))
     await env.spool.mark_apply_sent(env.cmd.operation_key)
     monkeypatch.setitem(sys.modules,'regional_knowledge.kaggle_source_commands',SimpleNamespace(decode_receipt=decoder))
-    database=OwnedDatabase('VERIFIED_INITIALIZED','db-source','writer-2',VERSIONS.schema,VERSIONS.function,VERSIONS.executor,
-        '/kaggle/temp/restore/socket','rkb',ownership_evidence='synthetic-owned-restore')
+    database=OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', '/kaggle/temp/restore/socket', 'rkb', ownership_evidence='synthetic-owned-restore')
     proof=await controller.recover(base,b,database=database,expected_versions=versions(),
         expected_final_catalog_sha256=sha(b'catalog'),identity=('run','nonce','inc'),operation_key='recovery-1')
     assert native.events==['capture','prepare','apply','rollover-and-readiness']

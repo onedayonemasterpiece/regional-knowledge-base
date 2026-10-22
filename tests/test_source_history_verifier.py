@@ -50,7 +50,7 @@ class Pg:
 def verifier(e,pg,b,monkeypatch):
     class Probe:
         def __init__(self,**kwargs):pass
-        async def __call__(self,**kwargs):return b'catalog',{'database_generation':'db-source','applied_seq':pg.applied_seq,'schema_version':16}
+        async def __call__(self,**kwargs):return b'catalog',{'database_generation':'db-source','applied_seq':pg.applied_seq,'schema_version':module.latest_schema_version()}
     monkeypatch.setattr(module,'NativeDatabaseProbe',Probe)
     # Keep the real safe-attribute validation and exact native ACL hash check.
     expected=module._json(pg.acl)

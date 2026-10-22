@@ -8,7 +8,8 @@ stage(). No mutation executor, tokenizer, BGE model or PG pool is replaced.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from .kaggle_schema_migrate import latest_schema_version
 import hashlib
 from types import ModuleType
 import inspect
@@ -31,19 +32,17 @@ class WarmHandlerRejected(RuntimeError):
 @dataclass(frozen=True)
 class ReadHandlerCompatibility:
     database_generation: str
-    schema_revision: str
-    function_revision: str
-    executor_revision: str
     model_sha256: str
     dependency_sha256: str
+    schema_version: int = field(default_factory=latest_schema_version)
     codec: str = "rkb.query.v2"
 
     def __post_init__(self):
         if any(type(getattr(self, field)) is not str or not getattr(self, field)
-               for field in ("database_generation", "schema_revision",
-                             "function_revision", "executor_revision", "codec")):
+               for field in ("database_generation", "codec")):
             raise WarmHandlerRejected("read_handler_context_invalid")
-        if (_HEX64.fullmatch(self.model_sha256) is None
+        if (type(self.schema_version) is not int or self.schema_version<1
+                or _HEX64.fullmatch(self.model_sha256) is None
                 or _HEX64.fullmatch(self.dependency_sha256) is None
                 or self.codec != "rkb.query.v2"):
             raise WarmHandlerRejected("read_handler_context_invalid")
@@ -114,9 +113,7 @@ class ReadHandlerSlot:
                     loaded_kind='module' if self._active_module else 'verified_bundle',
                     generation=self._generation,
                     database_generation=self._compatibility.database_generation,
-                    schema_revision=self._compatibility.schema_revision,
-                    function_revision=self._compatibility.function_revision,
-                    executor_revision=self._compatibility.executor_revision,
+                    schema_version=self._compatibility.schema_version,
                     model_sha256=self._compatibility.model_sha256,
                     dependency_sha256=self._compatibility.dependency_sha256,
                     codec=self._compatibility.codec, inflight=self._inflight,

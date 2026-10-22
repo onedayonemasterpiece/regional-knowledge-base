@@ -216,4 +216,4 @@ class KaggleWorkerQuery:
             status='ok' if health.ready else 'unavailable',
             reason=None if health.ready else 'not_ready',health=health,
             observed_data_seq=health.applied_seq,observed_projection_seq=health.projection_seq,
-            observed_database_generation=request.database_generation if health.schema_revision is not None else None))
+            observed_database_generation=request.database_generation if health.schema_version is not None else None))

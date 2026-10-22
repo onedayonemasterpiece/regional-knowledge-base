@@ -14,7 +14,8 @@ from regional_knowledge.geo_manifest_commands import (GEO_REVISIONS,GEO_V2_REVIS
     geo_dependency_repair_commands,geo_manifest_handler,plan_geo_manifest)
 from regional_knowledge.geo_migration import canonical,sha
 from regional_knowledge.geo_whitelist import build_geo_whitelist
-from regional_knowledge.kaggle_apply import HandlerRegistry,initialize_database,PgFunction
+from regional_knowledge.kaggle_apply import HandlerRegistry, PgFunction
+from pg_schema_metadata import initialize_fixture_database as initialize_database
 from test_geo_migration import snapshot,uid
 from test_kaggle_apply import pinned
 from test_recovery_journal import fixture as journal_fixture

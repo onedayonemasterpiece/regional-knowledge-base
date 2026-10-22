@@ -406,9 +406,6 @@ class TargetServiceStartup:
             if self.config.writer_owner is not None:
                 await self.config.writer_owner.ensure_current(self.config.spool.journal)
             if not self.binding_current(binding):raise PermissionError('current writer binding unavailable')
-            if self.geo_installer is not None and self.geo_installer.needs_native_upgrade(binding):
-                self.coverage=None;self.gate.invalidate();self.geo_installer.kick(binding)
-                return False
             if binding==self.binding and self.coverage is not None and self.coverage.current():
                 coverage=self.coverage if self._coverage_idle() else await self.history.extend(self.binding)
             else:

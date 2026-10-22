@@ -104,10 +104,8 @@ class KaggleSourceImporter:
                 apply_sha256=native.apply.definition_sha256)
             if native!=expected:raise TypeError('one exact native source profile required')
             choices.append((ACTIVATION_REVISIONS,resolved_activation_command))
-        expected_database=getattr(getattr(config,'history_adapter',None),'database',None)
-        if expected_database is not None:
-            expected=tuple(getattr(expected_database,key) for key in ('schema_revision','function_revision','executor_revision'))
-            choices=[choice for choice in choices if choice[0].wire()==expected]
+        if native is not None:
+            choices=[(ACTIVATION_REVISIONS,resolved_activation_command)]
         if len(choices)!=1:
             raise TypeError('exact future source findings/narrative handler required before intake')
         self.import_revisions,self.import_command=choices[0]
@@ -139,9 +137,9 @@ class KaggleSourceImporter:
                 runtime = self.queue._runtime_row(db,binding.run_id)
                 if runtime is None:
                     return False
-                expected = json.loads(runtime['expected_json'])
-                return (expected['hashes']['launch_config'] == self.launch_config_sha256
-                    and tuple(expected[key] for key in ('schema_revision','function_revision','executor_revision')) == self.import_revisions.wire())
+                expected = self.queue._runtime_expected(runtime)
+                return (expected.hashes['launch_config'] == self.launch_config_sha256
+                    and expected.database_generation == binding.database_generation)
         except Exception:
             return False
 
@@ -671,13 +669,11 @@ class KaggleSourceImporter:
     def _revisions(self, binding):
         with self.queue.connect(write=False) as db:
             runtime = self.queue._runtime_row(db, binding.run_id)
-            expected = json.loads(runtime['expected_json'])
+            expected = self.queue._runtime_expected(runtime)
             if (runtime['accepted_generation'] != binding.connection_generation
-                    or expected['database_generation'] != binding.database_generation):
+                    or expected.database_generation != binding.database_generation):
                 raise failure('target_runtime_changed')
-            revisions=Revisions(*(expected[key] for key in ('schema_revision', 'function_revision', 'executor_revision')))
-            if revisions!=self.import_revisions:raise failure('target_runtime_changed')
-            return revisions
+            return self.import_revisions
 
     def _intake_coverage_current(self,binding):
         # New intake needs the actual startup capability installed by native

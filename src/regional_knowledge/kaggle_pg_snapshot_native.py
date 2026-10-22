@@ -317,7 +317,7 @@ class NativeSnapshotFactory:
         self.native_env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'}
         self.model_pins=None
         self.upload_ticket=upload_ticket
-        self.probe=probe or native_probe_for_schema(getattr(database,'schema_revision',None))
+        self.probe=probe or native_probe_for_schema()
         self._sessions=set();self._capabilities=set();self._owned_candidates=set()
         self._operations={}
         self._completed={};self._references={};self._finish_intents={}

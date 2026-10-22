@@ -271,9 +271,8 @@ async def test_real_source_owner_composition_retains_fixed_installer_and_waits_s
     private=tmp_path/'owner-private';private.mkdir(mode=0o700)
     path=private/'geo.json';path.write_bytes(canonical(manifest.wire()));path.chmod(0o600)
     keys=tuple('geo-bootstrap11:'+manifest.sha256+':'+str(n) for n in range(len(plan_geo_manifest(manifest).payloads)))
-    database=replace(spec(fresh=True).database,schema_revision=DOMAIN_REVISIONS.schema,
-        function_revision=DOMAIN_REVISIONS.function,executor_revision=DOMAIN_REVISIONS.executor)
-    registry=fixed_registry(database,[dict(route=route,check_sha256='a'*64,apply_sha256='b'*64)
+    database=replace(spec(fresh=True).database,schema_version=11)
+    registry=fixed_registry(database,[dict(route=route,check_sha256='a'*64,apply_sha256='b'*64,revisions=list(DOMAIN_REVISIONS.wire()))
         for route in ('source.import.v4','geo.manifest.install.v1')])
     history=WssNativeHistoryProofAdapter(database=database,expected_catalog_sha256='a'*64,
         expected_acl_sha256='b'*64,expected_observer_sha256='c'*64,geo_bootstrap_operation_keys=keys)

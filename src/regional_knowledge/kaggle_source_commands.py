@@ -132,7 +132,8 @@ def fixed_registry(database,entries):
     """Deployment pins only, never definitions or SQL supplied by a request."""
     from .kaggle_apply import DependencySpec
     handlers=[]
-    default_revisions=Revisions(database.schema_revision,database.function_revision,database.executor_revision)
+    from .source_activation import ACTIVATION_REVISIONS
+    default_revisions=ACTIVATION_REVISIONS
     if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=64:raise ValueError('fixed source registry required')
     for entry in entries:
         base={'route','check_sha256','apply_sha256'}

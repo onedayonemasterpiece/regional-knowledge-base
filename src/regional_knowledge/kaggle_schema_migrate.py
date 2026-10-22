@@ -37,8 +37,10 @@ def latest_schema_version():
     root=package.parent/'sql'
     if not root.is_dir():
         root=package.parent.parent/'sql/kaggle'
-    files={'sql/'+path.name:path.read_bytes() for path in root.glob('[0-9][0-9][0-9]_*.sql')}
-    return len(bundle_migrations(files))
+    versions=sorted(int(path.name[:3]) for path in root.glob('[0-9][0-9][0-9]_*.sql'))
+    if not versions or versions!=list(range(1,len(versions)+1)):
+        raise MigrationDenied('migration_prefix_invalid')
+    return len(versions)
 
 
 class MigrationDenied(RuntimeError):
@@ -168,6 +170,10 @@ async def migrate(connection, files: Mapping[str, bytes], *, before_file=None) -
                 if migration.version == 1:
                     await _create_ledger(connection)
                 await connection.execute(INSERT_SQL, (migration.version, migration.name, migration.sha256))
+                if (await _row(connection,"SELECT EXISTS(SELECT 1 FROM information_schema.columns "
+                        "WHERE table_schema='rkb_v4' AND table_name='recovery_state' AND column_name='schema_version')"))[0]:
+                    await connection.execute('UPDATE rkb_v4.recovery_state SET schema_version=%s WHERE singleton',
+                        (migration.version,))
             applied.append(migration.version)
             LOG.info("schema_migrate committed schema_version=%s", migration.version)
         return tuple(applied)

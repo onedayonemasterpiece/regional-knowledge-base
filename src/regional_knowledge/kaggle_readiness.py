@@ -116,9 +116,6 @@ class SearchRuntimeExpectation:
     """Small controller-owned run binding, never corpus or caller authority."""
     hashes: Mapping[str, str]
     database_generation: str
-    schema_revision: str
-    function_revision: str
-    executor_revision: str
     min_data_seq: int = 0
     schema_version: int = field(default_factory=latest_schema_version)
 
@@ -127,8 +124,7 @@ class SearchRuntimeExpectation:
                 or not isinstance(self.hashes, Mapping) or set(self.hashes) != RUNTIME_HASHES
                 or any(not isinstance(v, str) or not _HASH.fullmatch(v) for v in self.hashes.values())):
             raise ValueError('all six exact expected runtime hashes required')
-        for value in (self.database_generation, self.schema_revision,
-                      self.function_revision, self.executor_revision):
+        for value in (self.database_generation,):
             if not isinstance(value, str) or not 1 <= len(value.encode('utf-8')) <= 256:
                 raise ValueError('bounded expected runtime version required')
         if type(self.min_data_seq) is not int or not 0 <= self.min_data_seq < 2**63:
@@ -137,8 +133,7 @@ class SearchRuntimeExpectation:
 
     def wire(self):
         return {'hashes': dict(self.hashes), 'database_generation': self.database_generation,
-                'schema_revision': self.schema_revision, 'function_revision': self.function_revision,
-                'executor_revision': self.executor_revision, 'min_data_seq': self.min_data_seq,
+                'min_data_seq': self.min_data_seq,
                 'schema_version':self.schema_version}
 
 
@@ -150,8 +145,7 @@ def validate_search_runtime(expected: SearchRuntimeExpectation, observed: Mappin
     version, not from a readiness payload. Actual artifact/probe observation is
     the worker factory's responsibility; matching strings alone do not prove it.
     """
-    fields = {'hashes', 'database_generation', 'schema_revision', 'function_revision',
-              'executor_revision', 'applied_seq', 'projection_seq', 'visibility_epoch',
+    fields = {'hashes', 'database_generation', 'applied_seq', 'projection_seq', 'visibility_epoch',
               'text_search_ready', 'dense_search_ready', 'archive_read_ready', 'proof_ready','schema_version'}
     if (type(expected) is not SearchRuntimeExpectation or not isinstance(observed, Mapping)
             or set(observed) != fields):
@@ -162,7 +156,7 @@ def validate_search_runtime(expected: SearchRuntimeExpectation, observed: Mappin
     if (not isinstance(actual_hashes, dict) or set(actual_hashes) != RUNTIME_HASHES
             or any(not isinstance(v, str) or not _HASH.fullmatch(v) for v in actual_hashes.values())):
         raise ValueError('six observed runtime hashes required')
-    for key in ('database_generation', 'schema_revision', 'function_revision', 'executor_revision'):
+    for key in ('database_generation',):
         value = observed[key]
         if not isinstance(value, str) or not 1 <= len(value.encode('utf-8')) <= 256:
             raise ValueError('bounded observed runtime version required')

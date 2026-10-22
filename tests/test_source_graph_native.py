@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from regional_knowledge.kaggle_apply import HandlerRegistry,HandlerSpec,PgFunction,initialize_database,ApplyExecutionError
+from regional_knowledge.kaggle_apply import HandlerRegistry, HandlerSpec, PgFunction, ApplyExecutionError
+from pg_schema_metadata import initialize_fixture_database as initialize_database
 from regional_knowledge.kaggle_domain_bindings import DOMAIN_REVISIONS
 from regional_knowledge.source_import import IMPORT_PRECONDITIONS
 from regional_knowledge.source_import_v4 import IMPORT_V4_DEPENDENCY

@@ -143,7 +143,7 @@ async def test_native_editorial_manager_builds_schema14_intent_without_vector_or
         values=[]
         for raw in row:
             value=json.loads(raw)
-            value.update(dict(zip(('schema_revision','function_revision','executor_revision'),ACTIVATION_REVISIONS.wire())))
+            value.update(schema_version=14)
             values.append(json.dumps(value))
         db.execute('UPDATE bge_runtime_expectations SET expected_json=?,observed_json=? WHERE run_id=?',(*values,s.t.run))
     args=dict(story_id=STORY,expected_revision=1,idempotency_key='native14-access',

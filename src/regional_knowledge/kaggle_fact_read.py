@@ -14,18 +14,6 @@ from .kaggle_protocol import EvidenceItem, EvidenceMetadata, ItemDependencies, S
 from .kaggle_query import ReadUnavailable, _frontier, _identity
 from .story_contracts import StageEventDateInput, StageObservationInput
 
-FACT_SCHEMA = 'rkb-v4-sql001-008-v1'
-FACT_FUNCTION = 'rkb-v4-source-story-facts-v3'
-# These exact reviewed deployments preserve the immutable SQL008 reader
-# signatures and projection semantics. No numeric range or future revision
-# automatically gains compatibility.
-FACT_READ_REVISIONS = frozenset({
-    (FACT_SCHEMA,FACT_FUNCTION),
-    ('rkb-v4-sql001-009-v1','rkb-v4-source-story-editorial-v4'),
-    ('rkb-v4-sql001-010-v1','rkb-v4-source-story-cases-v5'),
-    ('rkb-v4-sql001-011-v1','rkb-v4-source-story-cases-geo-v6'),
-    ('rkb-v4-sql001-014-v1','rkb-v4-native-source-activation-v1'),
-})
 FACT_READER_FUNCTIONS = (
     'read_source_calendar_v1(text,integer,integer,uuid,integer,uuid,integer,integer)',
     'read_source_observations_v1(text,text,uuid,uuid,integer,integer)',
@@ -123,9 +111,9 @@ async def execute_fact_read(request: FactReadRequest, *, acquire):
                             await cursor.execute(statement, params)
 
                         await _frontier(cursor, execute, request, observed, require_dense=False)
-                        await execute('SELECT schema_revision,function_revision FROM rkb_v4.recovery_state WHERE singleton')
-                        revisions = tuple(await cursor.fetchone() or ())
-                        if revisions not in FACT_READ_REVISIONS:
+                        await execute('SELECT schema_version FROM rkb_v4.recovery_state WHERE singleton')
+                        installed=await cursor.fetchone()
+                        if not installed or type(installed[0]) is not int or installed[0]<8:
                             raise ReadUnavailable('not_ready')
                         scope = cursor_scope(request, observed)
                         after = ('00000000-0000-0000-0000-000000000000', -1, 0)
@@ -139,7 +127,7 @@ async def execute_fact_read(request: FactReadRequest, *, acquire):
                         if request.action == 'observation_compare':
                             # Both indexed observation lookups share the exact Story snapshot.
                             statement = ("SELECT rkb_v4.read_story_v1(%s,'get',NULL,0,1)"
-                                if revisions == (FACT_SCHEMA, FACT_FUNCTION) else
+                                if installed[0]<9 else
                                 "SELECT rkb_v4.read_editorial_story_v1(%s,NULL,'get',0,1,NULL)")
                             await execute(statement, (UUID(request.story_id),))
                             row = await cursor.fetchone()

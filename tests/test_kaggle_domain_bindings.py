@@ -32,7 +32,7 @@ def test_fixed_current_registry_and_wire_keep_full_current_tuple_and_payload():
         source_id=manifest_payload()['source_manifest']['source_id'],payload=manifest_payload())
     db=SimpleNamespace(schema_revision=DOMAIN_REVISIONS.schema,function_revision=DOMAIN_REVISIONS.function,
         executor_revision=DOMAIN_REVISIONS.executor)
-    registry=fixed_registry(db,[dict(route=c.route,check_sha256='a'*64,apply_sha256='b'*64)])
+    registry=fixed_registry(db,[dict(route=c.route,check_sha256='a'*64,apply_sha256='b'*64,revisions=list(DOMAIN_REVISIONS.wire()))])
     assert registry.resolve(c).revisions==DOMAIN_REVISIONS
     assert decode_command(c.encode()).encode()==c.encode()
 

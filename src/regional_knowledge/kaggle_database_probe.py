@@ -22,7 +22,7 @@ def native_probe_for_schema(schema_revision=None,*,timeout_seconds=2.0):
 
 
 def _state(state):
-    keys = ('database_generation','schema_revision','function_revision','executor_revision')
+    keys = ('database_generation',)
     if any(not isinstance(state.get(k),str) or not 1<=len(state[k].encode())<=256 for k in keys):
         raise DatabaseProbeUnavailable('database_state_invalid')
     if any(state.get(k) is not None and (type(state[k]) is not int or not 0<=state[k]<=2**63-1)
@@ -66,8 +66,6 @@ class NativeDatabaseProbe:
                             'server_version_num',current_setting('server_version_num')::integer,
                             'pgvector_version',(SELECT extversion FROM pg_extension WHERE extname='vector'),
                             'postgis_version',(SELECT extversion FROM pg_extension WHERE extname='postgis'),
-                            'schema_revision',s.schema_revision,'function_revision',s.function_revision,
-                            'executor_revision',s.executor_revision,
                             'applied_seq',s.applied_seq,'projection_seq',f.projection_seq,
                             'visibility_epoch',f.visibility_epoch,'text_search_ready',f.text_ready,
                             'dense_search_ready',f.dense_ready,'pending',f.pending_seq IS NOT NULL)::text
@@ -100,7 +98,7 @@ class NativeDatabaseProbe:
 # Bounded health operation over the same existing native PG acquisition.
 HEALTH_SQL = """SELECT
     CASE WHEN octet_length(s.database_generation)<=256 THEN s.database_generation END,
-    CASE WHEN octet_length(s.schema_revision)<=256 THEN s.schema_revision END,
+    s.schema_version,
     s.applied_seq,f.projection_seq,f.pending_seq IS NOT NULL
     FROM rkb_v4.recovery_state s CROSS JOIN rkb_v4.read_frontier f
     WHERE s.singleton AND f.singleton LIMIT 2"""
@@ -157,13 +155,13 @@ async def probe_sql_health(*, acquire, database_generation, min_data_seq, lease_
                             raise _HealthProbeFailure('pg_metadata_invalid')
                         generation, schema, applied, projection, pending = rows[0]
                         if (type(generation) is not str or not 1 <= len(generation.encode()) <= 256
-                                or type(schema) is not str or not 1 <= len(schema.encode()) <= 256
+                                or type(schema) is not int or schema<1
                                 or any(type(n) is not int or n < 0 for n in (applied, projection))
                                 or type(pending) is not bool):
                             raise _HealthProbeFailure('pg_metadata_invalid')
                         if generation != database_generation:
                             raise _HealthProbeFailure('pg_generation_mismatch')
-                        observed.update(schema_revision=schema, applied_seq=applied,
+                        observed.update(schema_version=schema, applied_seq=applied,
                                         projection_seq=projection, pending=pending)
                         if pending:
                             reason = 'pg_prior_write_pending'

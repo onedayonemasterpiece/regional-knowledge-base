@@ -129,8 +129,7 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
                 elif phase=='finish':
                     assert frame['arguments']['handle']=='native-retained-session'
                     value={'reference':'retained-native-capability'}
-                    ready=dict(hashes=dict(e.expected.hashes),database_generation='synthetic-db',schema_revision='s1',function_revision='f1',executor_revision='e1',
-                        schema_version=16,applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,archive_read_ready=None,proof_ready=None)
+                    ready=dict(hashes=dict(e.expected.hashes), database_generation='synthetic-db', schema_version=e.expected.schema_version, applied_seq=0, projection_seq=0, visibility_epoch=0, text_search_ready=True, dense_search_ready=True, archive_read_ready=None, proof_ready=None)
                     assert e.q.accept_search_runtime(e.run,e.token,e.generation,ready).ok
                     e.q.heartbeat(e.run,e.token,ready=True,connection_generation=e.generation)
                     assert not startup.config.writer_owner.current(database_generation='synthetic-db',writer_generation='writer-2')

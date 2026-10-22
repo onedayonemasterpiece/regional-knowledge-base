@@ -11,11 +11,8 @@ from psycopg.pq import TransactionStatus
 import pytest
 import pytest_asyncio
 
-from regional_knowledge.kaggle_apply import (
-    ApplyConflict, ApplyExecutionError, ApplyLimit, ApplyUnknown, HandlerRegistry,
-    HandlerSpec, PgFunction, Revisions, apply_accepted,
-    handover_writer, initialize_database,
-)
+from regional_knowledge.kaggle_apply import ApplyConflict, ApplyExecutionError, ApplyLimit, ApplyUnknown, HandlerRegistry, HandlerSpec, PgFunction, Revisions, apply_accepted, handover_writer
+from pg_schema_metadata import initialize_fixture_database as initialize_database
 from regional_knowledge.recovery_journal import JournalConflict, RecoveryJournal, StaleWriter
 from test_kaggle_pg_driver import connect, database, wait_for_lock_wait
 from test_recovery_journal import ConditionalMemoryStore, command

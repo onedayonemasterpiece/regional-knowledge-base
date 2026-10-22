@@ -46,17 +46,15 @@ async def test_actual_shared_worker_query_sql_roundtrip_and_separate_resource_re
         # actual loaded-model identity. Frontier values come from the real PG.
         async with env['connection'].transaction():
             row = await (await env['connection'].execute('''
-                SELECT s.database_generation,s.schema_revision,s.function_revision,s.executor_revision,
+                SELECT s.database_generation,s.schema_version,
                     s.applied_seq,f.projection_seq,f.visibility_epoch,f.text_ready,f.dense_ready
                 FROM rkb_v4.recovery_state s CROSS JOIN rkb_v4.read_frontier f
                 WHERE s.singleton AND f.singleton''')).fetchone()
-        fields = dict(zip(('database_generation', 'schema_revision', 'function_revision', 'executor_revision',
+        fields = dict(zip(('database_generation', 'schema_version',
             'applied_seq', 'projection_seq', 'visibility_epoch', 'text_search_ready', 'dense_search_ready'), row))
         hashes = {key: 'a' * 64 for key in RUNTIME_HASHES}
         proof = CandidateReadiness(hashes=hashes, **fields)
-        queue.expect_search_runtime(run, SearchRuntimeExpectation(hashes,
-            fields['database_generation'], fields['schema_revision'], fields['function_revision'],
-            fields['executor_revision'], fields['applied_seq']))
+        queue.expect_search_runtime(run, SearchRuntimeExpectation(hashes, fields['database_generation'], fields['applied_seq']))
     queue.launch_claim(run)
     queue.launch_record(run, 'fixture-owner/stable-slug', provider_version=7)
     admission = queue.configure_shared_reads(auth.resolver)

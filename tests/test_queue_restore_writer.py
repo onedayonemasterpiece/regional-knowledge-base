@@ -41,8 +41,7 @@ async def recovery_owner(owner):
     with q.connect() as db:
         run=q._new_run(db,q.clock());db.execute('UPDATE control SET current_run=? WHERE id=1',(run,))
     nonce=q.prepare_channel(run)
-    expected=SearchRuntimeExpectation({key:'a'*64 for key in ('code','model','launch_config','executed_source','dependency','schema')},
-        'synthetic-db','s1','f1','e1',0)
+    expected=SearchRuntimeExpectation({key: 'a' * 64 for key in ('code', 'model', 'launch_config', 'executed_source', 'dependency', 'schema')}, 'synthetic-db', 0)
     q.expect_search_runtime(run,expected);token=q.launch_claim(run);q.launch_record(run,'owner/stable-slug',provider_version=89)
     generation=q.attach_channel(run,token,nonce,'restored-incarnation')['connection_generation']
     await e.a.resource_state(run,token,generation,runtime_incarnation='restored-incarnation',state='idle')
@@ -102,12 +101,11 @@ async def test_recovery_only_writer_fences_old_generation_and_acceptance_until_n
     physical=PhysicalSnapshotRecovery(e.j,None,Native(),registry=None,history_verifier=None,
         maintenance_guard=guard,current=lambda b:e.w.recovery_current(b),private_storage_current=lambda:e.w.recovery_current(e.b))
     proof=ControllerRecoveryProof(physical,'actual-retained-native-reference',db,identity,e.plan.manifest,None,0,
-        b'{"schema_version":16}',e.b)
+        __import__('json').dumps({'schema_version':db.schema_version}).encode(),e.b)
     physical._proofs.add(proof)
     with pytest.raises(StaleWriter,match='verified target runtime'):
         await e.w.activate_recovered(e.j,proof,e.b)
-    value=dict(hashes=dict(e.expected.hashes),database_generation='synthetic-db',schema_revision='s1',function_revision='f1',executor_revision='e1',schema_version=16,
-        applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,archive_read_ready=None,proof_ready=None)
+    value=dict(hashes=dict(e.expected.hashes), database_generation='synthetic-db', schema_version=e.expected.schema_version, applied_seq=0, projection_seq=0, visibility_epoch=0, text_search_ready=True, dense_search_ready=True, archive_read_ready=None, proof_ready=None)
     assert e.q.accept_search_runtime(e.run,e.token,e.generation,value).ok
     e.q.heartbeat(e.run,e.token,ready=True,connection_generation=e.generation)
     assert not e.w.current(database_generation='synthetic-db',writer_generation='writer-2')

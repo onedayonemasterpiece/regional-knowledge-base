@@ -27,9 +27,6 @@ def digest(value):return hashlib.sha256(value).hexdigest()
 class BootstrapRuntimeExpectation:
     hashes: object
     database_generation: str
-    schema_revision: str
-    function_revision: str
-    executor_revision: str
     packages: object
     native_manifest_sha256: str
     sql_hashes: object
@@ -40,11 +37,10 @@ class BootstrapRuntimeExpectation:
         from .kaggle_readiness import SearchRuntimeExpectation
         hashes=dict(self.hashes)
         if set(hashes)!=ANCHORS:raise ValueError('four exact immutable bootstrap anchors required')
-        SearchRuntimeExpectation(dict(hashes,dependency='a'*64,schema='b'*64),self.database_generation,
-            self.schema_revision,self.function_revision,self.executor_revision,self.min_data_seq)
+        SearchRuntimeExpectation(dict(hashes, dependency='a' * 64, schema='b' * 64), self.database_generation, self.min_data_seq)
         if (self.min_data_seq!=0 or type(self.seconds) is not int or not 30<=self.seconds<=1800
                 or not re.fullmatch('[0-9a-f]{64}',self.native_manifest_sha256)
-                or not 1<=len(self.packages)<=64 or not 1<=len(self.sql_hashes)<=16
+                or not 1<=len(self.packages)<=64 or not 1<=len(self.sql_hashes)<=999
                 or any(type(k) is not str or type(v) is not str or not 1<=len(k)<=128 or not 1<=len(v)<=128
                     for k,v in self.packages.items())
                 or any(re.fullmatch('[0-9a-f]{64}',value) is None for value in self.sql_hashes.values())):
@@ -52,10 +48,12 @@ class BootstrapRuntimeExpectation:
         for name,value in (('hashes',hashes),('packages',self.packages),('sql_hashes',self.sql_hashes)):
             object.__setattr__(self,name,MappingProxyType(dict(value)))
 
+    @property
+    def schema_version(self):return len(self.sql_hashes)
+
     def wire(self):
         return dict(codec='rkb.bootstrap-expectation.v1',hashes=dict(self.hashes),
-            database_generation=self.database_generation,schema_revision=self.schema_revision,
-            function_revision=self.function_revision,executor_revision=self.executor_revision,
+            database_generation=self.database_generation,schema_version=len(self.sql_hashes),
             min_data_seq=self.min_data_seq,packages=dict(self.packages),native_manifest_sha256=self.native_manifest_sha256,
             sql_hashes=dict(self.sql_hashes),seconds=self.seconds)
 
@@ -63,6 +61,8 @@ class BootstrapRuntimeExpectation:
     def from_wire(cls,value):
         value=dict(value)
         if value.pop('codec',None)!='rkb.bootstrap-expectation.v1':raise ValueError('bootstrap expectation codec')
+        version=value.pop('schema_version',None)
+        if version!=len(value.get('sql_hashes',{})):raise ValueError('bootstrap SQL version differs')
         return cls(**value)
 
 
@@ -77,7 +77,7 @@ def verify_observation(plan,value):
     candidate=CandidateReadiness(**value['runtime_readiness'])
     if (any(candidate.hashes[k]!=v for k,v in plan.hashes.items())
             or any(getattr(candidate,k)!=getattr(plan,k) for k in
-                ('database_generation','schema_revision','function_revision','executor_revision'))
+                ('database_generation',))
             or candidate.applied_seq!=0 or candidate.projection_seq!=0
             or not candidate.text_search_ready or not candidate.dense_search_ready):
         raise ValueError('bootstrap anchors or empty native generation differ')
@@ -161,7 +161,7 @@ def finalize_bootstrap(queue,run_id,expected,*,observation_sha256,review_evidenc
         plan=BootstrapRuntimeExpectation.from_wire(json.loads(row['plan_json']))
         candidate=verify_observation(plan,json.loads(row['observation_json']))
         if (dict(expected.hashes)!=dict(candidate.hashes) or any(getattr(expected,k)!=getattr(plan,k) for k in
-                ('database_generation','schema_revision','function_revision','executor_revision','min_data_seq'))):
+                ('database_generation','schema_version','min_data_seq'))):
             raise ValueError('reviewed final pins differ from exact bootstrap evidence')
         db.execute('UPDATE bge_runtime_expectations SET expected_json=? WHERE run_id=?',(data,run_id))
         db.execute('UPDATE bge_runtime_bootstrap SET finalized=1,review_evidence=? WHERE run_id=?',(review_evidence,run_id))
@@ -187,7 +187,7 @@ def finalized_pins(queue,run_id,token,generation):
         candidate=verify_observation(BootstrapRuntimeExpectation.from_wire(json.loads(row['plan_json'])),value)
         expected=json.loads(runtime['expected_json'])
         if (expected['hashes']!=dict(candidate.hashes) or any(expected[k]!=getattr(candidate,k) for k in
-                ('database_generation','schema_revision','function_revision','executor_revision'))):
+                ('database_generation','schema_version',))):
             raise ValueError('finalized bootstrap pins changed')
         return dict(run_id=run_id,runtime_incarnation=run['runtime_incarnation'],
             provider_version=str(run['provider_version']),observation_sha256=row['observation_sha256'],hashes=expected['hashes'])

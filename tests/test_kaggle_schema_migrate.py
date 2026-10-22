@@ -20,7 +20,7 @@ def files():
 
 
 def test_verified_bundle_requires_unique_complete_numbered_prefix():
-    assert [m.version for m in bundle_migrations(files())] == list(range(1, 17))
+    assert [m.version for m in bundle_migrations(files())] == list(range(1,len(files())+1))
     for invalid in (
         {}, {"sql/002_gap.sql": b"SELECT 1"},
         {"sql/001_one.sql": b"SELECT 1", "sql/001_duplicate.sql": b"SELECT 2"},
@@ -63,7 +63,7 @@ async def test_pg17_fresh_baselines_noop_integrity_rollback_and_schema_equivalen
         await connection.execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
         artifacts = files()
         migrations = bundle_migrations(artifacts)
-        assert await migrate(connection, artifacts) == tuple(range(1, 17))
+        assert await migrate(connection, artifacts) == tuple(range(1,len(artifacts)+1))
         reference = await dump_schema()
         original_rows = await (await connection.execute(
             "SELECT * FROM rkb_v4.schema_migrations ORDER BY version")).fetchall()
@@ -76,14 +76,14 @@ async def test_pg17_fresh_baselines_noop_integrity_rollback_and_schema_equivalen
         with pytest.raises(MigrationDenied, match="migration_file_changed"):
             await migrate(connection, changed)
 
-        failing = dict(artifacts, **{"sql/017_failure.sql": (
+        failing = dict(artifacts, **{f"sql/{len(artifacts)+1:03d}_failure.sql": (
             b"CREATE TABLE rkb_v4.must_rollback(id int); SELECT 1/0;")})
         with pytest.raises(psycopg.errors.DivisionByZero):
             await migrate(connection, failing)
         assert (await (await connection.execute(
             "SELECT to_regclass('rkb_v4.must_rollback')")).fetchone()) == (None,)
         assert (await (await connection.execute(
-            "SELECT max(version) FROM rkb_v4.schema_migrations")).fetchone()) == (16,)
+            "SELECT max(version) FROM rkb_v4.schema_migrations")).fetchone()) == (len(artifacts),)
         # The failed runner released its session lock and left an idle connection.
         assert await migrate(connection, artifacts) == ()
 
@@ -100,9 +100,46 @@ async def test_pg17_fresh_baselines_noop_integrity_rollback_and_schema_equivalen
                     (singleton,database_generation,writer_generation,applied_seq,
                      schema_revision,function_revision,executor_revision)
                     VALUES(true,'fixture','fixture',0,%s,'fixture','fixture')""", (revision,))
-            assert await migrate(connection, artifacts) == tuple(range(baseline + 1, 17))
+            assert await migrate(connection, artifacts) == tuple(range(baseline+1,len(artifacts)+1))
             assert await migrate(connection, artifacts) == ()
             assert await dump_schema() == reference
+            assert await (await connection.execute(
+                "SELECT schema_version,applied_seq FROM rkb_v4.recovery_state WHERE singleton")).fetchone()==(len(artifacts),0)
+            assert await (await connection.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema='rkb_v4' "
+                "AND table_name='recovery_state' AND column_name IN "
+                "('schema_revision','function_revision','executor_revision')")).fetchall()==[]
+
+        # Additive DDL changes only the integer ledger. Existing v1 commands,
+        # canonical outcomes and ordinary writes keep their exact audit fields.
+        from regional_knowledge.kaggle_apply import HandlerRegistry,HandlerSpec,apply_accepted
+        from regional_knowledge.recovery_journal import RecoveryJournal
+        from test_recovery_journal import ConditionalMemoryStore
+        from test_kaggle_apply import DOMAIN_SQL,V1,item,pinned
+        await connection.execute(DOMAIN_SQL.split('CREATE FUNCTION rkb_v4.check_transition_v1')[0],prepare=False)
+        registry=HandlerRegistry([HandlerSpec('domain_command','fixture.item',V1,
+            await pinned(connection,'check_item_v1'),await pinned(connection,'apply_item_v1'),frozenset({'revision'}))])
+        journal=RecoveryJournal(ConditionalMemoryStore(),stream='schema-integer-audit')
+        first=item();original=first.encode()
+        seal=await journal.seal([first],predecessor=None,writer_generation='fixture')
+        async def apply(command,accepted):
+            return await apply_accepted(connection,journal=journal,seal=accepted,command=command,
+                database_generation='fixture',writer_generation='fixture',registry=registry)
+        receipt=await apply(first,seal)
+        before=await (await connection.execute('SELECT * FROM rkb_v4.read_frontier')).fetchall()
+        extended=dict(artifacts,**{f'sql/{len(artifacts)+1:03d}_probe_column.sql':
+            b'ALTER TABLE rkb_v4.sources ADD COLUMN schema_probe text;'})
+        assert await migrate(connection,extended)==(len(artifacts)+1,)
+        assert await (await connection.execute('SELECT * FROM rkb_v4.read_frontier')).fetchall()==before
+        duplicate=await apply(first,seal)
+        assert first.encode()==original and duplicate.outcome==receipt.outcome and duplicate.duplicate
+        second=item(2,revision='1')
+        second_seal=await journal.seal([second],predecessor=await journal.head(),writer_generation='fixture')
+        assert (await apply(second,second_seal)).status=='applied'
+        assert (first.schema_revision,first.function_revision,first.executor_revision)==(
+            second.schema_revision,second.function_revision,second.executor_revision)
+        assert await (await connection.execute(
+            'SELECT schema_version,applied_seq FROM rkb_v4.recovery_state WHERE singleton')).fetchone()==(len(extended),2)
     finally:
         if owned:
             await connection.execute("DROP SCHEMA IF EXISTS rkb_v4 CASCADE")

@@ -245,7 +245,7 @@ async def _settings(connection):
 
 async def _state(connection, database_generation: str, writer_generation: str | None = None):
     row = await (await connection.execute("""SELECT database_generation, writer_generation, applied_seq,
-        schema_revision, function_revision, executor_revision, last_migration_id, last_migration_hash
+        schema_version
         FROM rkb_v4.recovery_state WHERE singleton FOR UPDATE""")).fetchone()
     if row is None or row[0] != database_generation:
         raise ApplyConflict("original database generation is not the initialized target")
@@ -255,10 +255,11 @@ async def _state(connection, database_generation: str, writer_generation: str | 
 
 
 async def initialize_database(connection, *, database_generation: str, writer_generation: str,
-                              revisions: Revisions, applied_seq: int = 0) -> None:
+                              schema_version: int, applied_seq: int = 0) -> None:
     """Trusted one-time initialization, not an implicit migration or reset."""
     _text(database_generation)
     _text(writer_generation)
+    if type(schema_version) is not int or schema_version<1:raise ValueError("integer schema version required")
     if type(applied_seq) is not int or not 0 <= applied_seq < 2**63:
         raise ValueError("explicit bounded initial cursor required")
     async with _exclusive(connection):
@@ -269,9 +270,9 @@ async def initialize_database(connection, *, database_generation: str, writer_ge
                 raise ApplyConflict("database is already initialized; explicit upgrade required")
             await connection.execute("INSERT INTO rkb_v4.writer_generations(generation) VALUES (%s)", (writer_generation,))
             await connection.execute("""INSERT INTO rkb_v4.recovery_state
-                (singleton,database_generation,writer_generation,applied_seq,
-                 schema_revision,function_revision,executor_revision) VALUES (true,%s,%s,%s,%s,%s,%s)""",
-                (database_generation, writer_generation, applied_seq, *revisions.wire()))
+                (singleton,database_generation,writer_generation,applied_seq,schema_version)
+                 VALUES (true,%s,%s,%s,%s)""",
+                (database_generation,writer_generation,applied_seq,schema_version))
 
 
 async def handover_writer(connection, *, database_generation: str, expected_writer: str,
@@ -393,9 +394,8 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                 else:
                     if command.sequence != state[2] + 1:
                         raise ApplyConflict("applied cursor requires the exact next sequence")
-                    before = Revisions(*state[3:6])
-                    if before.wire() != (command.schema_revision, command.function_revision, command.executor_revision):
-                        raise ApplyConflict("command semantic revisions do not match ordered state")
+                    # Immutable v1 audit metadata; never compared with the PG schema.
+                    before=[command.schema_revision, command.function_revision, command.executor_revision]
                     handler = registry.resolve(command)
                     if set(command.expected_revisions) != handler.precondition_keys:
                         raise ApplyConflict("complete exact precondition key set is required")
@@ -422,7 +422,7 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                         "command_sha256": command_hash, "cursor": command.sequence, "status": status,
                         "ids": dict(command.ids), "request_id": command.request_id, "person_id": command.person_id,
                         "route": command.route, "logical_time": command.logical_time,
-                        "before": before.wire(), "after": after.wire(), "handler_sha256": handler.fingerprint,
+                        "before": before, "after": after, "handler_sha256": handler.fingerprint,
                         "result_b64": base64.b64encode(result).decode(), "result_sha256": _hash(result)})
                     if len(outcome) > max_outcome_bytes:
                         raise ApplyLimit("canonical outcome exceeds byte budget")

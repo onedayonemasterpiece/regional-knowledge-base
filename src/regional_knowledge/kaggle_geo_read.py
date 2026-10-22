@@ -9,7 +9,6 @@ import psycopg
 from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 
-from .geo_manifest_commands import GEO_REVISIONS
 from .geo_migration import exact_uuid,normalized,canonical
 from .kaggle_geo_contracts import (GeoReadRequest,GeoReadResult,GeoReadRecord,
     cursor_scope,decode_cursor,encode_cursor,decode_item)
@@ -43,8 +42,10 @@ async def execute_geo_read(request:GeoReadRequest,*,acquire):
                                 (str(max(1,int((deadline-asyncio.get_running_loop().time())*1000))),))
                             await cursor.execute(statement,params)
                         await _frontier(cursor,execute,request,observed,require_dense=False)
-                        await execute('SELECT schema_revision,function_revision FROM rkb_v4.recovery_state WHERE singleton')
-                        if await cursor.fetchone()!=(GEO_REVISIONS.schema,GEO_REVISIONS.function):raise ReadUnavailable('not_ready')
+                        await execute('SELECT schema_version FROM rkb_v4.recovery_state WHERE singleton')
+                        installed=await cursor.fetchone()
+                        if not installed or type(installed[0]) is not int or installed[0]<11:
+                            raise ReadUnavailable('not_ready')
                         scope=cursor_scope(request,observed);after=None
                         if request.cursor:
                             try:after=decode_cursor(request.cursor,scope)

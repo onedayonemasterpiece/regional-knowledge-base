@@ -113,7 +113,7 @@ class SqlHealthRequest(ReadIdentity):
 
 class SqlHealthObservation(Contract):
     sql_response: bool = False
-    schema_revision: Annotated[str,Field(min_length=1,max_length=256)] | None = None
+    schema_version: Annotated[int,Field(strict=True,ge=1)] | None = None
     applied_seq: Nonnegative | None = None
     projection_seq: Nonnegative | None = None
     pending: bool | None = None
@@ -124,7 +124,7 @@ class SqlHealthObservation(Contract):
 
     @property
     def ready(self):
-        return (self.sql_response and self.reason is None and self.schema_revision is not None
+        return (self.sql_response and self.reason is None and self.schema_version is not None
             and self.applied_seq is not None and self.projection_seq==self.applied_seq
             and self.pending is False)
 

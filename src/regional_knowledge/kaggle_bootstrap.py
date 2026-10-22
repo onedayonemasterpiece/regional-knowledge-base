@@ -304,9 +304,6 @@ class ResidentEncoder:
 class CandidateReadiness:
     hashes: object
     database_generation: str
-    schema_revision: str
-    function_revision: str
-    executor_revision: str
     applied_seq: int
     projection_seq: int | None
     visibility_epoch: int | None
@@ -320,7 +317,7 @@ class CandidateReadiness:
         hashes = dict(self.hashes)
         if (type(self.schema_version) is not int or self.schema_version<1
                 or set(hashes) != RUNTIME_HASHES or any(not isinstance(v, str) or re.fullmatch('[0-9a-f]{64}', v) is None for v in hashes.values())
-                or any(not _text(getattr(self, k)) for k in ('database_generation', 'schema_revision', 'function_revision', 'executor_revision'))
+                or any(not _text(getattr(self, k)) for k in ('database_generation',))
                 or type(self.applied_seq) is not int or not 0 <= self.applied_seq <= 2**63-1
                 or any(v is not None and (type(v) is not int or not 0 <= v <= 2**63-1) for v in (self.projection_seq, self.visibility_epoch))
                 or self.projection_seq is not None and self.projection_seq > self.applied_seq

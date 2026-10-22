@@ -7,7 +7,7 @@ from pathlib import Path
 import zlib
 
 from .bge_contract import REVISION, SPACE
-from .kaggle_owned_pg import SQL_ARTIFACTS, STORY_SQL_ARTIFACTS, FACT_SQL_ARTIFACTS, DOMAIN_SQL_ARTIFACTS, NATIVE_SOURCE_SQL_ARTIFACTS, sql_artifacts, canonical, digest
+from .kaggle_owned_pg import canonical,digest
 from .kaggle_readiness import SearchRuntimeExpectation, MAX_LAUNCH_CONFIG_BYTES
 from .kaggle_target_runtime import TargetLaunchSpec
 from .recovery_journal import RecoveryJournal
@@ -212,12 +212,7 @@ if __name__ == '__main__':
         from .kaggle_bootstrap_pins import BootstrapRuntimeExpectation,ANCHORS
         if target.stage0 is None or target.native_bundle is None:
             raise ValueError('bootstrap requires complete pinned native and package plan')
-        queue.expect_bootstrap_runtime(config['run_id'],BootstrapRuntimeExpectation(
-            {key:hashes[key] for key in ANCHORS},database.database_generation,database.schema_revision,
-            database.function_revision,database.executor_revision,target.stage0.packages,
-            target.native_bundle.manifest_sha256,intent['sql_hashes'],target.bootstrap_seconds,target.min_data_seq))
+        queue.expect_bootstrap_runtime(config['run_id'],BootstrapRuntimeExpectation({key: hashes[key] for key in ANCHORS}, database.database_generation, target.stage0.packages, target.native_bundle.manifest_sha256, intent['sql_hashes'], target.bootstrap_seconds, target.min_data_seq))
     else:
-        queue.expect_search_runtime(config['run_id'],SearchRuntimeExpectation(hashes,
-            database.database_generation,database.schema_revision,database.function_revision,
-            database.executor_revision,target.min_data_seq,schema_version=database.schema_version))
+        queue.expect_search_runtime(config['run_id'],SearchRuntimeExpectation(hashes, database.database_generation, target.min_data_seq, schema_version=database.schema_version))
     return source

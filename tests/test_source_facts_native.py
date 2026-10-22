@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from regional_knowledge.kaggle_apply import HandlerRegistry,initialize_database,ApplyExecutionError
+from regional_knowledge.kaggle_apply import HandlerRegistry, ApplyExecutionError
+from pg_schema_metadata import initialize_fixture_database as initialize_database
 from regional_knowledge.kaggle_database_probe import native_probe_for_schema
 from regional_knowledge.kaggle_fact_read import execute_fact_read
 from regional_knowledge.source_import_v3 import FACT_REVISIONS,source_import_v3_handler

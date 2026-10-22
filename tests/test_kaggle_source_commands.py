@@ -107,7 +107,7 @@ async def test_only_exact_remote_accepted_source_enters_durable_queue(accepted):
 @pytest.mark.asyncio
 async def test_worker_uses_captured_proof_and_fixed_registry_without_encode(accepted,monkeypatch):
     e=accepted;_,work,frame=await dispatch(e);calls=[]
-    database=replace(spec().database,schema_revision=VERSIONS.schema,function_revision=VERSIONS.function,executor_revision=VERSIONS.executor)
+    database=spec().database
     @asynccontextmanager
     async def acquire():
         calls.append('acquire');yield object()

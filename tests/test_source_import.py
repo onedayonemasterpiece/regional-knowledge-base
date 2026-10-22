@@ -11,7 +11,8 @@ import pytest
 import pytest_asyncio
 
 from regional_knowledge.bge_contract import REVISION,SPACE,TOKENIZER_SHA256
-from regional_knowledge.kaggle_apply import Revisions,HandlerRegistry,apply_accepted,initialize_database,ApplyExecutionError
+from regional_knowledge.kaggle_apply import Revisions, HandlerRegistry, apply_accepted, ApplyExecutionError
+from pg_schema_metadata import initialize_fixture_database as initialize_database
 from regional_knowledge.source_import import (
     SOURCE_IMPORT,IMPORT_DEPENDENCY,IMPORT_PRECONDITIONS,MAX_IMPORT_BYTES,
     resolved_import_command,validate_import_command,validate_import_payload,source_import_handler,

@@ -34,7 +34,7 @@ async def editorial(target,tmp_path):
         row=db.execute('SELECT expected_json,observed_json FROM bge_runtime_expectations WHERE run_id=?',(t.run,)).fetchone()
         values=[]
         for raw in row:
-            value=json.loads(raw);value.update(dict(zip(('schema_revision','function_revision','executor_revision'),DOMAIN_REVISIONS.wire())))
+            value=json.loads(raw);value.update(schema_version=11)
             values.append(json.dumps(value))
         db.execute('UPDATE bge_runtime_expectations SET expected_json=?,observed_json=? WHERE run_id=?',(*values,t.run))
     spool=ControlSpool(t.queue,t.auth.p.registry,RecoveryJournal(ConditionalMemoryStore(),stream='editorial-controller-test'),

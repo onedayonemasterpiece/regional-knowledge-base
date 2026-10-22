@@ -83,7 +83,6 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
         # A measured, exact-key GEO bootstrap is a separate bounded window.
         # Ordinary source/Story/Case commands never borrow this allowance.
         geo=(command.route=='geo.manifest.install.v1' and
-            command.schema_revision=='rkb-v4-sql001-011-v1' and
             command.operation_key in self.geo_bootstrap_operations)
         index=1 if geo else 0
         usage[index]+=size

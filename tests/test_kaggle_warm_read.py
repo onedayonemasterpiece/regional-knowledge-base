@@ -11,9 +11,7 @@ from regional_knowledge.kaggle_warm_read import (
 
 
 def context():
-    return ReadHandlerCompatibility(database_generation="db-v1", schema_revision="sql1",
-        function_revision="fn1", executor_revision="ex1", model_sha256="b"*64,
-        dependency_sha256="c"*64)
+    return ReadHandlerCompatibility(database_generation='db-v1', model_sha256='b' * 64, dependency_sha256='c' * 64)
 
 
 def staged_module(tmp_path, *, marker="new"):
@@ -79,9 +77,7 @@ async def test_bad_digest_does_not_execute_or_stage_untrusted_file(tmp_path):
     assert slot.receipt()["staged_sha256"] is None
     with pytest.raises(WarmHandlerRejected,match="incompatible"):
         await slot.stage(path=path,trusted_root=root,expected_sha256="e"*64,
-            compatibility=ReadHandlerCompatibility(database_generation="DIFFERENT",
-                schema_revision="sql1",function_revision="fn1",executor_revision="ex1",
-                model_sha256="b"*64,dependency_sha256="c"*64),
+            compatibility=ReadHandlerCompatibility(database_generation='DIFFERENT', model_sha256='b' * 64, dependency_sha256='c' * 64),
             constructor={"marker":"new"},self_test=good_stage)
     root.chmod(0o777)
     with pytest.raises(WarmHandlerRejected,match="invalid_file"):

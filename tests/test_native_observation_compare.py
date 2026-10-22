@@ -8,7 +8,7 @@ import pytest
 from starlette.requests import Request
 
 from regional_knowledge.kaggle_fact_contracts import FactReadRequest,FactReadResult
-from regional_knowledge.kaggle_fact_read import execute_fact_read,FACT_READ_REVISIONS
+from regional_knowledge.kaggle_fact_read import execute_fact_read
 from regional_knowledge.kaggle_protocol import encode_envelope,decode_envelope
 from regional_knowledge.observation_comparison import render_comparison
 from regional_knowledge.read_issuance import capture_read_output
@@ -53,7 +53,7 @@ def test_pair_requires_exact_distinct_ids_without_page_or_metric_filters(changes
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('revision',sorted(FACT_READ_REVISIONS))
+@pytest.mark.parametrize('revision',[(f'rkb-v4-sql001-{version:03d}-v1','audit-only') for version in (8,9,11,14,17,18)])
 async def test_pair_is_one_snapshot_two_primary_keys_and_no_encoding(revision):
     native=PairNative(revision=revision)
     result=await execute_fact_read(compare_request(),acquire=native.acquire)

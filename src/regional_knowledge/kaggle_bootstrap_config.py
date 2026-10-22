@@ -8,19 +8,17 @@ import hashlib
 import json
 from pathlib import Path
 
-from .kaggle_apply import Revisions
 from .kaggle_model_manifest import bge_model_manifest
 from .kaggle_native_bundle import NativeBundleSpec
 from .kaggle_owned_pg import OwnedDatabase
 from .kaggle_stage0 import Stage0Spec,Stage0Download
 from .kaggle_target_runtime import TargetLaunchSpec
 
-INITIAL_REVISIONS=Revisions('rkb-v4-sql001-006-v1','rkb-v4-source-import-v1','rkb-python-apply-v1')
 
 
 def build_bootstrap_target(*,wheel_lock,native_receipt,native_manifest_bytes,native_downloads,
                            database_generation,writer_generation,uid,gid,identity_evidence,
-                           seconds=1800,revisions=INITIAL_REVISIONS,original_intake=None):
+                           seconds=1800,original_intake=None):
     """Build full load_target_launch-compatible wire metadata with no guessed pins.
 
     uid/gid are explicit candidate numeric identities. Actual early observation
@@ -32,8 +30,7 @@ def build_bootstrap_target(*,wheel_lock,native_receipt,native_manifest_bytes,nat
     """
     if (type(wheel_lock) is not dict or wheel_lock.get('codec')!='rkb.candidate_wheel_lock.v1'
             or type(native_receipt) is not dict or native_receipt.get('codec')!='rkb.native_collection_artifacts.v1'
-            or type(native_manifest_bytes) is not bytes or not 1<=len(native_manifest_bytes)<=1536*1024
-            or type(revisions) is not Revisions):
+            or type(native_manifest_bytes) is not bytes or not 1<=len(native_manifest_bytes)<=1536*1024):
         raise ValueError('exact native and wheel input receipts required')
     bundle=NativeBundleSpec.from_wire(native_receipt['spec'])
     if hashlib.sha256(native_manifest_bytes).hexdigest()!=bundle.manifest_sha256:
@@ -50,10 +47,7 @@ def build_bootstrap_target(*,wheel_lock,native_receipt,native_manifest_bytes,nat
     root=Path('/kaggle/working');prefix=bundle.prefix(root)
     leaf='rkb-'+hashlib.sha256(database_generation.encode()).hexdigest()[:20]
     cluster=Path('/kaggle/temp')/leaf
-    database=OwnedDatabase(mode='NEW_EMPTY_GENERATION',database_generation=database_generation,
-        writer_generation=writer_generation,schema_revision=revisions.schema,function_revision=revisions.function,
-        executor_revision=revisions.executor,cluster=str(cluster),socket=str(cluster/'socket'),dbname='rkb',
-        uid=uid,gid=gid,native_paths={key:str(prefix/value) for key,value in relative.items()},ownership_evidence=identity_evidence)
+    database=OwnedDatabase(mode='NEW_EMPTY_GENERATION', database_generation=database_generation, writer_generation=writer_generation, cluster=str(cluster), socket=str(cluster / 'socket'), dbname='rkb', uid=uid, gid=gid, native_paths={key: str(prefix / value) for key, value in relative.items()}, ownership_evidence=identity_evidence)
     model_entries,model_downloads=bge_model_manifest()
     packages={};wheels=[];wheel_entries=[];wheel_downloads=[]
     for item in wheel_lock['packages']:

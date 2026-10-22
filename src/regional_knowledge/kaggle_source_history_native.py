@@ -20,7 +20,7 @@ from psycopg.pq import TransactionStatus
 
 from .kaggle_database_probe import native_probe_for_schema
 from .kaggle_source_acl import inspect_acl,NativeHistoryError
-from .kaggle_domain_schema import IMAGE_SOURCE_SCHEMA,TABLES_13,TABLES_14
+from .kaggle_domain_schema import TABLES_13,TABLES_14
 
 
 def canonical(v):return json.dumps(v,sort_keys=True,ensure_ascii=False,allow_nan=False,separators=(',',':')).encode()
@@ -60,7 +60,7 @@ class NativeSourceHistoryObserver:
             raise ValueError('bounded fixed native history owner required')
         self.acquire,self.database,self.identity,self.registry,self.current=acquire,database,identity,registry,current
         self.lease_seconds,self.max_commands=lease_seconds,max_commands
-        self.probe=probe or native_probe_for_schema(database.schema_revision)
+        self.probe=probe or native_probe_for_schema()
         self.code_hash=observer_fingerprint()
         self.registry_hash=digest(canonical(sorted(h.fingerprint for h in registry.handlers.values())))
         self._sessions={};self._prefixes={};self._lock=asyncio.Lock();self.generation=None
@@ -153,22 +153,22 @@ class NativeSourceHistoryObserver:
             await connection.execute('SET LOCAL search_path=pg_catalog')
             await connection.execute('LOCK TABLE rkb_v4.sources,rkb_v4.revisions,rkb_v4.active_revision,'
                 'rkb_v4.passage_search,rkb_v4.applied_ops,rkb_v4.recovery_state,rkb_v4.writer_generations IN SHARE MODE')
-            if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1',IMAGE_SOURCE_SCHEMA):
+            if self.database.schema_version>=7:
                 await connection.execute('LOCK TABLE rkb_v4.source_regions,rkb_v4.story_assertion_versions,'
                     'rkb_v4.stories,rkb_v4.story_versions,rkb_v4.story_variant_versions,rkb_v4.story_search,'
                     'rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
-            if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1',IMAGE_SOURCE_SCHEMA):
+            if self.database.schema_version>=8:
                 await connection.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
-            if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1',IMAGE_SOURCE_SCHEMA):
+            if self.database.schema_version>=11:
                 await connection.execute('LOCK TABLE rkb_v4.source_graph_documents,rkb_v4.source_entity_ids,'
                     'rkb_v4.source_entity_representations,rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,'
                     'rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,rkb_v4.source_entity_finding_links,'
                     'rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts IN SHARE MODE')
-            if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1',IMAGE_SOURCE_SCHEMA):
+            if self.database.schema_version>=9:
                 await connection.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
                     'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
                     'rkb_v4.editorial_story_receipts,rkb_v4.story_editor_grants,rkb_v4.editorial_story_search IN SHARE MODE')
-            if getattr(self.database,'schema_revision',None)==IMAGE_SOURCE_SCHEMA:
+            if self.database.schema_version>=14:
                 # Fixed deployment inventory only; no request-selected table or
                 # SQL. Keep accepted model inputs/origins stable through close.
                 await connection.execute('LOCK TABLE '+','.join('rkb_v4.'+name
@@ -237,19 +237,19 @@ class NativeSourceHistoryObserver:
             cursor=await session.connection.execute('SELECT EXISTS(SELECT 1 FROM rkb_v4.sources '
                 'WHERE NOT (source_id=ANY(%s::uuid[])))',(args['origin_ids'],))
             if await cursor.fetchone()!=(False,):raise NativeHistoryError('native_history_source_origin_uncovered')
-        if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1',IMAGE_SOURCE_SCHEMA):
+        if self.database.schema_version>=7:
             statement=('SELECT rkb_v4.verify_source_story_origins_v4(%s::uuid[])'
-                if self.database.schema_revision==IMAGE_SOURCE_SCHEMA else
+                if self.database.schema_version>=14 else
                 'SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])'
-                if self.database.schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1') else
+                if self.database.schema_version>=9 else
                 'SELECT rkb_v4.verify_source_story_origins_v2(%s::uuid[])'
-                if self.database.schema_revision=='rkb-v4-sql001-008-v1' else
+                if self.database.schema_version>=8 else
                 'SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])')
             cursor=await session.connection.execute(statement,(args['origin_ids'],))
             if await cursor.fetchone()!=(True,):raise NativeHistoryError('native_history_story_origin_uncovered')
-            if getattr(self.database,'schema_revision',None) in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1',IMAGE_SOURCE_SCHEMA):
+            if self.database.schema_version>=11:
                 statement=('SELECT rkb_v4.verify_source_graph_origins_v2(%s::uuid[])'
-                    if self.database.schema_revision==IMAGE_SOURCE_SCHEMA else
+                    if self.database.schema_version>=14 else
                     'SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])')
                 cursor=await session.connection.execute(statement,(args['origin_ids'],))
                 if await cursor.fetchone()!=(True,):raise NativeHistoryError('native_history_graph_origin_uncovered')

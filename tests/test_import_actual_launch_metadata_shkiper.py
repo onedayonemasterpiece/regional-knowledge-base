@@ -14,7 +14,7 @@ import pytest
 
 from regional_knowledge.kaggle_bootstrap_config import build_bootstrap_target
 from regional_knowledge.kaggle_original_native import OriginalIntakeConfig
-from regional_knowledge.kaggle_owned_pg import canonical, sql_artifacts
+from regional_knowledge.kaggle_owned_pg import canonical
 from regional_knowledge.kaggle_stage0_urls import PinnedStage0Object
 from regional_knowledge.kaggle_stage0 import Stage0Spec
 from regional_knowledge.kaggle_target_launch import persist_empty_intent
@@ -53,7 +53,6 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
         native_manifest_bytes=raw, native_downloads=native_downloads,
         database_generation='synthetic-import-envelope', writer_generation='writer-1',
         uid=65534, gid=65534, identity_evidence='synthetic metadata fixture, not native identity attestation',
-        revisions=ACTIVATION_REVISIONS,
         original_intake=OriginalIntakeConfig(('https://archive.fixture.invalid',), (('pymupdf','1.28.2'),)))
     if handler_profile=='current':
         target=replace(target,command_handlers=tuple(first_book_entries(ROOT)),telegram_runtime=True)
@@ -73,8 +72,7 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
     queue, run = queue_run(tmp_path)
     _, journal = journal_fixture()
     await persist_empty_intent(queue, run, target, launch_nonce=queue.prepare_channel(run),
-        recovery_journal=journal, sql_hashes={name:hashlib.sha256((ROOT/'sql/kaggle'/name).read_bytes()).hexdigest()
-            for name in sql_artifacts(target.database.schema_revision)})
+        recovery_journal=journal, sql_hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (ROOT/'sql/kaggle').glob('[0-9][0-9][0-9]_*.sql')})
     from regional_knowledge import kaggle_target_launch
     def measured(value):
         raw = canonical(value)
@@ -97,6 +95,6 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
         handler_count=len(target.command_handlers),handler_profile=handler_profile,
         launch_json_bytes=len(canonical(config)), notebook_source_bytes=len(source.encode()),
         actual_native_manifest_sha256=hashlib.sha256(raw).hexdigest(),
-        schema=target.database.schema_revision, identities_and_signed_urls='synthetic_only',
+        schema_version=target.database.schema_version, identities_and_signed_urls='synthetic_only',
         dependency_transport=dependency_transport,
         provider_effects=False, pg_or_model_executed=False)))

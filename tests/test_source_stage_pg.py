@@ -4,9 +4,8 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from regional_knowledge.kaggle_apply import (
-    Revisions, HandlerRegistry, ApplyExecutionError, apply_accepted, initialize_database,
-)
+from regional_knowledge.kaggle_apply import Revisions, HandlerRegistry, ApplyExecutionError, apply_accepted
+from pg_schema_metadata import initialize_fixture_database as initialize_database
 from regional_knowledge.source_stage import (
     STAGE_ROUTE, SEAL_ROUTE, STAGE_REVISIONS, ZERO_HASH, canonical, digest,
     stage_handler, resolved_stage_command, validate_stage_command, load_stage_batch,
