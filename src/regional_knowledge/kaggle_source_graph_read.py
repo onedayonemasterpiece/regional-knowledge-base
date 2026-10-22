@@ -131,7 +131,7 @@ def _matches_list(record,request):
     if request.kinds is not None and data.get('kind') not in request.kinds:return False
     if not request.query:return True
     needle=request.query.strip().casefold()
-    names=[data.get('canonical_label'),data.get('exact_source_spelling')]
+    names=[data.get('canonical_label'),data['mention']['exact_source_spelling']]
     aliases=data.get('aliases',[])
     if type(aliases) is not list:raise ReadUnavailable('internal_error')
     names.extend(a.get('value') for a in aliases if type(a) is dict)
