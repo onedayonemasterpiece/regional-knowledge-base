@@ -8,6 +8,7 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 
 from regional_knowledge.bge_queue import BgeQueue
+from regional_knowledge.kaggle_schema_migrate import latest_schema_version
 from regional_knowledge.kaggle_health import (
     HEALTH_SQL, DatabaseHealth, collect_health, probe_database_health,
 )
@@ -207,7 +208,7 @@ async def test_health_sql_on_existing_disposable_github_pg17(env):
     await publish(env)
     expected = TargetReadBinding('fixture-run', 'fixture-incarnation', 1, 'query-fixture', 5, '106')
     result = await probe_database_health(acquire=env['acquire'], binding=expected, binding_current=lambda _: True)
-    assert result.ready and result.schema_version == 1
+    assert result.ready and result.schema_version == latest_schema_version()
     assert result.applied_seq == result.projection_seq == 5
 
 

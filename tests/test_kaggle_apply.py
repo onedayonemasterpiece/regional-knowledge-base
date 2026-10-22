@@ -198,7 +198,7 @@ async def test_concurrent_duplicate_has_one_actual_handler_effect(env):
 
 @PG
 @pytest.mark.asyncio
-async def test_sequence_gap_semantic_mismatch_and_exact_ledger_conflicts(env):
+async def test_sequence_gap_unknown_handler_and_exact_ledger_conflicts(env):
     journal = env["journal"]
     one, two = item(), item(2, revision="1")
     seal = await journal.seal([one, two], predecessor=None, writer_generation="writer-1")
@@ -215,9 +215,9 @@ async def test_sequence_gap_semantic_mismatch_and_exact_ledger_conflicts(env):
     with pytest.raises(JournalConflict):
         await apply(env, changed, seal)
     await apply(env, two, seal)
-    wrong = item(3, revision="2", versions=V2)
+    wrong = item(3, revision="2", versions=Revisions("unregistered", "unregistered", "unregistered"))
     wrong_seal = await accepted(env, wrong)
-    with pytest.raises(ApplyConflict, match="semantic revisions"):
+    with pytest.raises(ApplyConflict, match="no exact semantic handler"):
         await apply(env, wrong, wrong_seal)
     assert (await facts(env["connection"]))[:3] == ((2, "s1", "f1", "e1"), 2, 2)
 
