@@ -165,6 +165,29 @@ class KaggleSourceBackend:
             raise TypeError("current canonical media gate and real image issuer required")
         self.public_media_gate = gate
 
+    def configure_native_media_wss(self, *, archive_scope, render_metadata,
+                                   validate_archive_state, reader_sha256):
+        """Compose exactly one media extension on the EXISTING source backend.
+
+        Owner-only: a registered native shared-read lane must already have its
+        exact approved SQL015/016 + same Telegram lease. This adapter creates
+        no second WSS transport, IAM, reader pool, session, renderer or issuer.
+        Until installed, the remote MEDIA_RESULT always fails closed.
+        """
+        from .kaggle_media_wss_bridge import NativeWssMediaBridge
+        from .kaggle_public_illustration_native_read import READ_SQL_SHA256
+        if (self.public_media_gate is not None or reader_sha256 != READ_SQL_SHA256):
+            raise TypeError("exact current native Media15 reader pin required")
+        bridge=NativeWssMediaBridge(backend=self,archive_scope=archive_scope)
+        gate=PublicIllustrationOutputGate(
+            authority=self.read_authority,source_gate=self.source_gate,
+            native_read=bridge.native_read, archive=bridge,
+            render_metadata=render_metadata,
+            validate_archive_state=validate_archive_state,
+            native_reader_sha256=READ_SQL_SHA256)
+        self.configure_public_illustrations(gate)
+        return gate
+
     @staticmethod
     def _render_issued_media(value: _GatedMedia) -> CallToolResult:
         if (type(value) is not _GatedMedia
