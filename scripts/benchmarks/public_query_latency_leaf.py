@@ -349,12 +349,16 @@ def analyze(client: Sequence[dict], telemetry: Sequence[dict]) -> tuple[dict, li
     latency or a hybrid success. Stage windows overlap and are NEVER summed.
     """
     clients = []
+    resources = {}
     for row in client:
         if row.get("event") == "public_client_sample":
             _validate_client(row)
             clients.append(dict(row))
         elif row.get("event") == "public_phase_resources":
-            _sanitize_existing(row)
+            value = _sanitize_existing(row)
+            if value["phase"] in resources:
+                raise ValueError("duplicate client process resource observation")
+            resources[value["phase"]] = value
         else:
             raise ValueError("unknown client observation")
     if len(clients) != TOTAL_CALLS:
@@ -408,7 +412,10 @@ def analyze(client: Sequence[dict], telemetry: Sequence[dict]) -> tuple[dict, li
                          e["loss_before"].get("failed",0) or
                          e["controller_loss_before"].get("dropped",0) or
                          e["controller_loss_before"].get("failed",0)) for e in native)
-        if controller is not None and controller["dispatch_state"]=="not_dispatched" and native:
+                native_terminal=next(e for e in native if e["event"]=="kaggle_read_adapter_terminal")
+                valid &= (native_terminal["status"],native_terminal["reason"]) == (
+                    controller["status"],controller["reason"])
+        if controller is not None and controller["dispatch_state"]=="not_dispatched" and by_native.get(sample["request_ref"]):
             valid=False
         stage = next((e["stages_ms"] for e in native
                       if e["event"]=="kaggle_read_completed"), {})
@@ -447,7 +454,9 @@ def analyze(client: Sequence[dict], telemetry: Sequence[dict]) -> tuple[dict, li
             "gate_closures":sum(x["dispatch_state"]!="dispatched" or not x["useful"] for x in rows),
             "controller_stages":{}, "native_stages":{},
             "client_cpu_ms_serial_only":pct([x["client_cpu_ms"] for x in rows if x["client_cpu_ms"] is not None],.5),
-            "client_rss_kib_p95":pct([x["client_rss_kib"] for x in rows if x["client_rss_kib"] is not None],.95)}
+            "client_rss_kib_p95":pct([x["client_rss_kib"] for x in rows if x["client_rss_kib"] is not None],.95),
+            "client_phase_cpu_total_ms":resources.get(phase,{}).get("client_process_cpu_ms"),
+            "client_phase_peak_rss_kib":resources.get(phase,{}).get("client_peak_rss_kib")}
         for result_key, source in (("controller_stages","controller_stages_ms"),
                                    ("native_stages","native_stages_ms")):
             keys=CONTROLLER_STAGES if result_key=="controller_stages" else STAGES
@@ -459,9 +468,18 @@ def analyze(client: Sequence[dict], telemetry: Sequence[dict]) -> tuple[dict, li
             len(rows)==len(CASE_IDS)*REPETITIONS_PER_CASE
             and groups[phase]["useful_hybrid"]==len(rows)
             and groups[phase]["observed_complete"]==len(rows))
+    # A silent reconnect or switch to another native worker invalidates A/B
+    # interpretation even if all individual stage records are otherwise valid.
+    owner_scope={(by_controller[(x["trace_id"],x["attempt_id"],x["request_ref"])]["runtime_ref"],
+                  by_controller[(x["trace_id"],x["attempt_id"],x["request_ref"])]["connection_generation"])
+                 for x in joint if not x["warmup"] and
+                 (x["trace_id"],x["attempt_id"],x["request_ref"]) in by_controller and
+                 by_controller[(x["trace_id"],x["attempt_id"],x["request_ref"])]["dispatch_state"]=="dispatched"}
+    summary["native_runtime_scope_stable"]=len(owner_scope)==1
     summary["cohorts"]=groups
     summary["conclusion"]=("CANDIDATE_BASELINE_MEASURED_NOT_INTEGRATION_ACCEPTANCE"
-        if all(g["valid_representative"] for g in groups.values())
+        if summary["native_runtime_scope_stable"] and all(
+            g["valid_representative"] for g in groups.values())
         else "INCONCLUSIVE_OR_NONREPRESENTATIVE")
     # Never infer usable-data quality from latency alone; owner must verify
     # independent evidence/gold coverage from accepted source revisions.
