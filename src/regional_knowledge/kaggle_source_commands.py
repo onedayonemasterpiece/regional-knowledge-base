@@ -139,7 +139,7 @@ def fixed_registry(database,entries):
     from .kaggle_apply import DependencySpec
     handlers=[]
     default_revisions=Revisions(database.schema_revision,database.function_revision,database.executor_revision)
-    if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=32:raise ValueError('fixed source registry required')
+    if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=64:raise ValueError('fixed source registry required')
     for entry in entries:
         base={'route','check_sha256','apply_sha256'}
         if not isinstance(entry,dict) or not base<=entry.keys() or set(entry)-base-{'revisions','artifact_sha256','native_source_upgrade'}:
