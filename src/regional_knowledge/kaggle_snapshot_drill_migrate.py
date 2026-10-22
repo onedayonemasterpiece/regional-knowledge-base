@@ -8,6 +8,7 @@ applied-prefix proof and current worker lease remain mandatory.
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 from pathlib import Path
 import secrets
@@ -230,7 +231,7 @@ class NativeDrillMigrate:
                 and (manifest['blob']['size'],manifest['blob']['sha256'])
                     ==(checkpoint.archive.size,checkpoint.archive.sha256)
                 and manifest['blob']['key'].rsplit('/',1)[-1]==checkpoint.archive.name)
-        except (ValueError,TypeError,KeyError,UnicodeError):
+        except (binascii.Error,ValueError,TypeError,KeyError,UnicodeError):
             valid=False
         if not valid:raise SnapshotError('drill_migrate_checkpoint_pin_changed')
         operation=args['restore_operation']
@@ -243,7 +244,7 @@ class NativeDrillMigrate:
                 raise SnapshotError('drill_migrate_operation_changed')
             for reference,proof in self.proofs.items():
                 if proof['operation']==operation:
-                    return dict(proof['wire'],reference=reference)
+                    return await self.verify_closed(reference,binding)
             raise SnapshotError('drill_migrate_unknown_requires_owner_cleanup')
         if self.intents or self.owner.prepared or self.owner.sessions or self.owner.factory._owned_candidates:
             raise SnapshotError('drill_migrate_competing_native_candidate')
