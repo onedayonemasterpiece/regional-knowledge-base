@@ -19,9 +19,10 @@ _LOG=logging.getLogger(__name__)
 
 
 class RecoveryPhaseDispatch:
-    def __init__(self,queue,*,database,identity,binding_current,timeout_seconds=900,snapshot_tickets=None,dataset_checkpoint=None):
+    def __init__(self,queue,*,database,identity,binding_current,timeout_seconds=900,snapshot_tickets=None,dataset_checkpoint=None,rebind_current=None):
         if (queue._shared_reads is None or getattr(queue,'_recovery_phases',None) is not None
-                or not callable(binding_current) or not isinstance(identity,tuple) or len(identity)!=3
+                or not callable(binding_current) or rebind_current is not None and not callable(rebind_current)
+                or not isinstance(identity,tuple) or len(identity)!=3
                 or type(timeout_seconds) not in (int,float) or not 0<timeout_seconds<=900):
             raise TypeError('configured current maintenance owner required')
         self.queue,self.database,self.identity=queue,database,identity
@@ -29,6 +30,7 @@ class RecoveryPhaseDispatch:
         self.snapshot_tickets=snapshot_tickets
         self.dataset_checkpoint=dataset_checkpoint
         self.schema_context=None
+        self.rebind_current=rebind_current
         self._bindings={};self._attachment_binding=None;self.closed=False
         queue._recovery_phases=self
 
@@ -205,9 +207,15 @@ class RecoveryPhaseDispatch:
         with self.queue.connect() as db:
             run=self._run(db,run_id,token,generation)
             job=db.execute("select * from jobs where id=? and kind='recovery_phase'",(frame['job_id'],)).fetchone()
-            if (job is None or job['run_id']!=run_id or job['claim']!=frame['claim']
-                    or not self.eligible(job,run,generation)):
+            if job is None or job['run_id']!=run_id or job['claim']!=frame['claim']:
                 raise StaleClaim('recovery assignment changed')
+            eligible=self.eligible(job,run,generation)
+            if not eligible and self.rebind_current is not None:
+                # A retained result can beat periodic startup maintenance to
+                # the new socket. Rebind before emitting any terminal stale ACK.
+                self.rebind_current()
+                eligible=self.eligible(job,run,generation)
+            if not eligible:raise StaleClaim('recovery assignment changed')
             if tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))!=self.identity:
                 raise PermissionError('recovery receipt runtime changed')
             self.queue.shared_reads.require_durable_resource(run_id,self.identity[2],generation,job['id'],

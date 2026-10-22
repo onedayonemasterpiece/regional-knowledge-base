@@ -161,7 +161,8 @@ class SourceRestoreCoordinator:
             transport=S3SnapshotTransport(self.journal.store)
         self.dispatch=RecoveryPhaseDispatch(self.queue,database=self.database,identity=identity,
             binding_current=self.current,timeout_seconds=self.config.seconds,snapshot_tickets=tickets,
-            dataset_checkpoint=self.config.dataset_checkpoint)
+            dataset_checkpoint=self.config.dataset_checkpoint,
+            rebind_current=lambda:self.startup.schema_migrations.resume_attachment())
         self.physical=PhysicalSnapshotRecovery(self.journal,transport,
             WssSnapshotPhases(self.dispatch,operation_key=self.config.operation_key),registry=self.startup.config.spool.registry,
             history_verifier=self.startup.history,maintenance_guard=self._maintenance,current=self.current,
