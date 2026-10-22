@@ -490,7 +490,18 @@ def prepare_stage0(prepared_model:dict,plan:dict,*,run_id=None)->dict:
             from .kaggle_environment import bootstrap_stage
             with bootstrap_stage(run_id,'stage0_download') if run_id is not None else nullcontext():
                 for item in spec.downloads:
-                    if _download(root_fd,item,opener,deadline):
+                    try:
+                        copied=_download(root_fd,item,opener,deadline)
+                    except Exception as error:
+                        if run_id is not None:
+                            status=getattr(error,'code',None)
+                            print(json.dumps(dict(event='stage0_download_failed',run_id=run_id,
+                                artifact_name=item.name,artifact_sha256=item.sha256,
+                                source_host=urlsplit(item.url).hostname,
+                                error_type=type(error).__name__,
+                                http_status=status if type(status) is int and 100<=status<=599 else None)),flush=True)
+                        raise
+                    if copied:
                         if _dataset_locator(item.url) is None:
                             downloaded+=item.size;downloaded_files+=1
                         else:
