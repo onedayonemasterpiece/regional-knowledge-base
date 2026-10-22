@@ -57,7 +57,7 @@ class Native:
         return 'opaque-native-capability-reference'
     async def verify_initialized(self,b,reference):
         assert reference=='opaque-native-capability-reference'
-        return dict(database=self.database,identity=['run','nonce','inc'],applied_sequence=1,schema_version=16)
+        return dict(database=self.database,identity=['run','nonce','inc'],applied_sequence=1,schema_version=self.database['schema_version'])
 
 
 @asynccontextmanager
@@ -90,8 +90,7 @@ async def test_snapshot_manifest_tail_remote_outcome_rollover_pointer_order(env,
     await env.spool.mark_apply_sent(env.cmd.operation_key)
     monkeypatch.setitem(sys.modules,'regional_knowledge.kaggle_source_commands',SimpleNamespace(decode_receipt=decoder))
     database=OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', '/kaggle/temp/restore/socket', 'rkb', ownership_evidence='synthetic-owned-restore')
-    proof=await controller.recover(base,b,database=database,expected_versions=versions(),
-        expected_final_catalog_sha256=sha(b'catalog'),identity=('run','nonce','inc'),operation_key='recovery-1')
+    proof=await controller.recover(base, b, database=database, expected_versions=versions(), identity=('run', 'nonce', 'inc'), operation_key='recovery-1')
     assert native.events==['capture','prepare','apply','rollover-and-readiness']
     assert proof.applied_sequence==1 and json.loads(proof.control)['heads'][0][0]==SOURCE
     restored=await env.spool.get(env.cmd.operation_key)

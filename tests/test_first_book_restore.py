@@ -28,6 +28,7 @@ from regional_knowledge.bge_queue import BgeQueue
 from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint, DatasetFile
 from regional_knowledge.kaggle_domain_bindings import CURRENT_ROUTES
 from regional_knowledge.kaggle_owned_pg import OwnedDatabase
+from regional_knowledge.kaggle_schema_migrate import latest_schema_version
 from regional_knowledge.kaggle_pg_snapshot_native import BlobRef, SnapshotError, encode, sha
 from regional_knowledge.kaggle_readiness import (
     RUNTIME_HASHES, RunIdentity, SearchRuntimeExpectation, validate_search_runtime,
@@ -193,11 +194,7 @@ async def scenario(e):
     e.spool.journal, e.spool.registry = journal, registry
     binding = SimpleNamespace(run_id='fixture-run', runtime_incarnation='fixture-incarnation',
                               connection_generation=1, database_generation='db-source')
-    history = WssSourceHistoryVerifier(e.spool, acquire=None, binding_current=lambda b: b is binding,
-        routes=routes, expected_schema_version=database.schema_version,
-        expected_acl_sha256=sha(b'synthetic-acl14'), writer_generation='writer-2',
-        database=database, observer_sha256='6' * 64,
-        geo_bootstrap_operation_keys=tuple(c.operation_key for c in commands))
+    history = WssSourceHistoryVerifier(e.spool, acquire=None, binding_current=lambda b: b is binding, routes=routes, expected_schema_version=database.schema_version, writer_generation='writer-2', database=database, observer_sha256='6' * 64, geo_bootstrap_operation_keys=tuple((c.operation_key for c in commands)))
     assert history.registry_hash != origin['registry_sha256']
     events = []
     class Native:
@@ -309,7 +306,7 @@ async def test_source_restore_observation_binds_final_launch_target_while_base_v
     nonce = queue.prepare_channel(run)
     admission = queue.configure_shared_reads(auth.resolver)
     revision = GEO_REVISIONS if initial_revision == 11 else final
-    expected = SearchRuntimeExpectation({key: 'a' * 64 for key in RUNTIME_HASHES}, 'db-source', 26, schema_version=initial_revision if initial_revision == 11 else 17)
+    expected = SearchRuntimeExpectation({key: 'a' * 64 for key in RUNTIME_HASHES}, 'db-source', 26, schema_version=initial_revision if initial_revision == 11 else latest_schema_version())
     queue.expect_search_runtime(run, expected)
     token = queue.launch_claim(run)
     queue.launch_record(run, 'fixture-owner/stable-slug', provider_version=1)

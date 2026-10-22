@@ -25,6 +25,8 @@ class Cursor:
         elif 'SELECT s.database_generation' in sql:self.rows=[('db-source','writer-1',self.pg.applied_seq)]
         elif sql.startswith('SELECT EXISTS'):self.rows=[(self.pg.nonempty,)]
         elif sql.startswith('SELECT sequence,'):self.rows=list(self.pg.receipts)
+        elif sql.startswith('SELECT rkb_v4.verify_source_graph_origins_'):self.rows=[(getattr(self.pg,'graph_valid',True),)]
+        elif sql.startswith('SELECT rkb_v4.verify_source_story_origins_'):self.rows=[(getattr(self.pg,'origin_valid',True),)]
         elif sql.startswith('SELECT %s'):self.rows=[args]
         else:self.rows=[]
     async def fetchone(self):return self.rows.pop(0) if self.rows else None
@@ -52,12 +54,7 @@ def verifier(e,pg,b,monkeypatch):
         def __init__(self,**kwargs):pass
         async def __call__(self,**kwargs):return b'catalog',{'database_generation':'db-source','applied_seq':pg.applied_seq,'schema_version':module.latest_schema_version()}
     monkeypatch.setattr(module,'NativeDatabaseProbe',Probe)
-    # Keep the real safe-attribute validation and exact native ACL hash check.
-    expected=module._json(pg.acl)
-    return NativeSourceHistoryVerifier(e.spool,acquire=pg.acquire,binding_current=lambda current:current is b,
-        routes={k:(lambda:None) for k in ('source.search','source.fetch','source.withdraw')},
-        expected_catalog_sha256=hashlib.sha256(b'catalog').hexdigest(),
-        expected_acl_sha256=hashlib.sha256(expected).hexdigest(),writer_generation='writer-1')
+    return NativeSourceHistoryVerifier(e.spool, acquire=pg.acquire, binding_current=lambda current: current is b, routes={k: lambda: None for k in ('source.search', 'source.fetch', 'source.withdraw')}, writer_generation='writer-1')
 
 
 @pytest.mark.asyncio

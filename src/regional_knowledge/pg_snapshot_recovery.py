@@ -127,7 +127,7 @@ class PhysicalSnapshotRecovery:
         return ObjectRef(key,sha(data),len(data),proof.applied_sequence)
 
     async def recover(self,manifest_ref,binding,*,database,expected_versions,identity,operation_key,
-                      expected_schema_version=None,expected_final_catalog_sha256=None):
+                      expected_schema_version=None):
         from .kaggle_pg_snapshot_native import compatible_versions
         self._authority(binding);validate_versions(expected_versions)
         expected_schema_version=database.schema_version if expected_schema_version is None else expected_schema_version

@@ -104,11 +104,11 @@ def test_inventory_names_match_exact_sql_artifact(layer):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not os.getenv('RKB_STORY_FIXTURE_SOCKET'), reason='explicit existing isolated PG17 fixture only')
-async def test_native_schema14_complete_catalog_measurement():
+async def test_native_schema14_integer_readiness_and_origin_verifiers():
     # The existing guard verifies the named fixture, network=none, <=256MiB,
     # private socket and rkb_bootstrap. This test starts no service or model.
     from test_source_story_native import connect
-    from regional_knowledge.kaggle_apply import initialize_database, Revisions
+    from pg_schema_metadata import initialize_fixture_database as initialize_database
     connection, fd = await connect()
     created = False
     try:
@@ -121,7 +121,7 @@ async def test_native_schema14_complete_catalog_measurement():
                 await connection.execute((ROOT/'sql/kaggle'/name).read_text(), prepare=False)
         created = True
         await initialize_database(connection, database_generation='image-metadata-fixture',
-            writer_generation='writer-1', revisions=Revisions(SCHEMA,FUNCTION,EXECUTOR))
+            writer_generation='writer-1',schema_version=14)
         async with connection.transaction():
             for name in IMAGE_SOURCE_SQL_ARTIFACTS[2:]:
                 await connection.execute((ROOT/'sql/kaggle'/name).read_text(), prepare=False)
@@ -131,12 +131,9 @@ async def test_native_schema14_complete_catalog_measurement():
             await connection.execute('INSERT INTO rkb_v4.schema_migrations VALUES(14)')
         @asynccontextmanager
         async def acquire():yield connection
-        # Default remains the production readiness budget. A bounded structural
-        # measurement may opt in separately; it is not a latency-gate PASS.
-        timeout = float(os.getenv("RKB_CATALOG_FIXTURE_TIMEOUT_SECONDS", "2"))
-        encoded, fields = await probe.native_probe_for_schema(SCHEMA, timeout_seconds=timeout)(acquire=acquire)
+        encoded, fields = await probe.NativeDatabaseProbe()(acquire=acquire)
         assert encoded==b'{}'
-        assert fields['schema_revision'] == SCHEMA and fields['applied_seq'] == 0
+        assert fields['applied_seq'] == 0
         assert fields['text_search_ready'] and fields['dense_search_ready']
         assert fields['schema_version']==14
         # Both new and legacy-only origin verifiers handle the empty fixture.

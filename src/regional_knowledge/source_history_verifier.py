@@ -77,7 +77,6 @@ def _case_projection(commands,applied,previous=None,*,after=0):
 class NativeSourceHistoryVerifier:
     def __init__(self, spool, *, acquire, binding_current, routes,
                  writer_generation, expected_schema_version=None,
-                 expected_catalog_sha256=None, expected_acl_sha256=None,
                  timeout_seconds=5, coverage_seconds=30, max_commands=2048,
                  max_history_bytes=4*1024*1024, clock=time.monotonic):
         if (acquire is None and type(self) is NativeSourceHistoryVerifier

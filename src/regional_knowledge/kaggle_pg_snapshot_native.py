@@ -554,7 +554,7 @@ class NativeSnapshotFactory:
         return receipt
 
     async def finish(self,session,*,expected_tail,final_head,control_bytes,
-                     expected_schema_version=None,expected_catalog_sha256=None):
+                     expected_schema_version=None):
         """Controller calls only after exact remote outcomes and old tail drain.
 
         The current authenticated control binding is the authority; supplied

@@ -119,9 +119,7 @@ async def vertical(database, auth, tmp_path):
         catalog, _ = await NativeDatabaseProbe()(acquire=acquire)
         async with admin.transaction():
             acl = await inspect_acl(admin)
-        verifier = NativeSourceHistoryVerifier(spool, acquire=acquire, binding_current=binding_current,
-            routes=routes,expected_schema_version=6, expected_catalog_sha256=hashlib.sha256(catalog).hexdigest(),
-            expected_acl_sha256=hashlib.sha256(acl).hexdigest(), writer_generation='writer-1')
+        verifier = NativeSourceHistoryVerifier(spool, acquire=acquire, binding_current=binding_current, routes=routes, expected_schema_version=6, writer_generation='writer-1')
         binding = current_binding(queue)
         assert (await verifier.establish_genesis(binding)).current()
 

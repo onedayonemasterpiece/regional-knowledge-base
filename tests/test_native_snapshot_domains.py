@@ -143,7 +143,7 @@ async def test_actual_physical_base_domain_tail_and_same_candidate_proof(native,
             receipts.append((command.sequence,replay['command_sha256'],replay['outcome_sha256']))
         head=await native['journal'].head();sequence=tail[-1].sequence
         final=encode(dict(json.loads(control),sequence=sequence,journal_head=head.reference.wire()))
-        cap=await restored.finish(session,expected_tail=tuple(receipts),final_head=head.reference.wire(),control_bytes=final,expected_catalog_sha256=sha(catalog))
+        cap=await restored.finish(session, expected_tail=tuple(receipts), final_head=head.reference.wire(), control_bytes=final)
         assert (await cap.verify_for(newdb,*identity))==newdb.connection()
         async with session.candidate.acquire() as connection:
             async with connection.transaction():

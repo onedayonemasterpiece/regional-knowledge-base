@@ -19,7 +19,7 @@ _LOG=logging.getLogger(__name__)
 
 class WssNativeHistoryProofAdapter:
     """Concrete startup adapter; existing queue and private native observations."""
-    def __init__(self,*,database,expected_observer_sha256,expected_catalog_sha256=None,expected_acl_sha256=None,
+    def __init__(self,*,database,expected_observer_sha256,
                  coverage_seconds=30,timeout_seconds=10,max_commands=2048,max_history_bytes=4*1024*1024,
                  geo_bootstrap_operation_keys=()):
         self.database=database

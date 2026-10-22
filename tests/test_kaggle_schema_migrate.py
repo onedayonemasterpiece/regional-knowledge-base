@@ -120,6 +120,7 @@ async def test_pg17_fresh_baselines_noop_integrity_rollback_and_schema_equivalen
         registry=HandlerRegistry([HandlerSpec('domain_command','fixture.item',V1,
             await pinned(connection,'check_item_v1'),await pinned(connection,'apply_item_v1'),frozenset({'revision'}))])
         journal=RecoveryJournal(ConditionalMemoryStore(),stream='schema-integer-audit')
+        await connection.execute("SELECT rkb_v4.publish_read_frontier('fixture','fixture',0,0,true,true)")
         first=item();original=first.encode()
         seal=await journal.seal([first],predecessor=None,writer_generation='fixture')
         async def apply(command,accepted):

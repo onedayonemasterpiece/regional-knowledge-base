@@ -30,8 +30,7 @@ async def test_same_owner_captures_drills_closes_then_publishes_under_unchanged_
         max_archive_bytes=128*1024**2,max_unpacked_bytes=256*1024**2,seconds=2)
     assert SourceSnapshotConfig.from_wire(config.wire()).wire()==config.wire()
     registry=fixed_registry(database,[dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64)])
-    history=WssNativeHistoryProofAdapter(database=database,expected_catalog_sha256='a'*64,expected_acl_sha256='b'*64,
-        expected_observer_sha256='c'*64)
+    history=WssNativeHistoryProofAdapter(database=database, expected_observer_sha256='c' * 64)
     startup=compose_source_service(queue=e.q,oauth_provider=e.auth.provider,participants=e.auth.p.registry,
         object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),stream=e.j.stream,registry=registry,history_adapter=history,
         run_id=e.run,database_generation='synthetic-db',writer_generation='writer-1',source_snapshot=config)

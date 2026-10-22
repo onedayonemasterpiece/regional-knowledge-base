@@ -51,10 +51,7 @@ def pair(e,*,lease_seconds=10,schema_revision=None,geo_bootstrap_operation_keys=
     native=NativeSourceHistoryObserver(acquire=pg.acquire,database=database,identity=('run','nonce','inc'),registry=e.registry,
         current=lambda key:key==('run','inc',1),probe=probe,lease_seconds=lease_seconds)
     native.attached(1)
-    verifier=WssSourceHistoryVerifier(e.spool,acquire=None,database=database,observer_sha256=native.code_hash,
-        binding_current=lambda current:current is b,routes={k:lambda:None for k in routes},
-        expected_schema_version=database.schema_version,expected_catalog_sha256=digest(b'catalog'),expected_acl_sha256=digest(canonical(pg.acl)),writer_generation='writer-1',
-        geo_bootstrap_operation_keys=geo_bootstrap_operation_keys)
+    verifier=WssSourceHistoryVerifier(e.spool, acquire=None, database=database, observer_sha256=native.code_hash, binding_current=lambda current: current is b, routes={k: lambda: None for k in routes}, expected_schema_version=database.schema_version, writer_generation='writer-1', geo_bootstrap_operation_keys=geo_bootstrap_operation_keys)
     calls=[]
     async def phase(binding,args):
         calls.append(args)
