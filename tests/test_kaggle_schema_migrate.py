@@ -100,7 +100,13 @@ async def test_pg17_fresh_baselines_noop_integrity_rollback_and_schema_equivalen
                     (singleton,database_generation,writer_generation,applied_seq,
                      schema_revision,function_revision,executor_revision)
                     VALUES(true,'fixture','fixture',0,%s,'fixture','fixture')""", (revision,))
-            assert await migrate(connection, artifacts) == tuple(range(baseline + 1, 17))
+            if baseline == 11:
+                assert await migrate(connection, artifacts, through_version=12) == (12,)
+                assert (await (await connection.execute(
+                    "SELECT max(version) FROM rkb_v4.schema_migrations")).fetchone()) == (12,)
+                assert await migrate(connection, artifacts) == (13,14,15,16)
+            else:
+                assert await migrate(connection, artifacts) == tuple(range(baseline + 1, 17))
             assert await migrate(connection, artifacts) == ()
             assert await dump_schema() == reference
     finally:

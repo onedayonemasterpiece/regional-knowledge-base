@@ -266,7 +266,13 @@ async def test_new_empty_prepare_before_configure_recovery_binds_same_warm_maint
             tokenizer=pinned(),telemetry=kw['telemetry']),candidate())
     runtime=TargetRuntime(config,executed_source='/fixture',
         owner_factory=Owner,pool_factory=Pool,prepare=prepare)
+    sql_root=tmp_path/'sql';sql_root.mkdir()
+    body=b'SELECT 1;'
+    (sql_root/'001_fixture.sql').write_bytes(body)
+    runtime.target['sql_root']=str(sql_root)
     encoder=SimpleNamespace(artifacts=SimpleNamespace(root=tmp_path,
+        entries=(SimpleNamespace(role='code',requirement=SimpleNamespace(
+            name='sql/001_fixture.sql',size=len(body),sha256=__import__('hashlib').sha256(body).hexdigest())),),
         role_hash=lambda roles:'f'*64))
     identity=dict(run_id=CONFIG['run_id'],launch_nonce=CONFIG['launch_nonce'],
                   runtime_incarnation='incarnation')

@@ -149,6 +149,33 @@ class SourceDatasetCheckpoints:
         async with self._refresh_lock:
             return await self._refresh(binding,planned_stop=planned_stop)
 
+    async def checkpoint_schema(self,binding,*,schema_version,operation_key,expected_sequence):
+        """Immediate forced checkpoint, including unchanged journal sequences.
+
+        The schema owner keeps its durable write barrier across this entire
+        call and only releases it after the existing native archive readback
+        and Dataset pointer promotion. Ordinary timed checkpoints cannot
+        interleave. The operation key survives lost publication responses.
+        """
+        async with self._refresh_lock:
+            proof=self.startup.history._coverage
+            if (proof is None or not proof.current() or proof.applied_sequence!=expected_sequence
+                    or proof.accepted_sequence!=expected_sequence
+                    or not self.startup.binding_current(binding)):
+                raise SnapshotError('migration_checkpoint_prefix_changed')
+            checkpoint,observed,manifest_ref,version=await self._capture_verify(
+                binding,operation_key,self.store.latest_checkpoint)
+            if checkpoint.base_sequence!=expected_sequence:
+                raise SnapshotError('migration_checkpoint_sequence_changed')
+            await asyncio.to_thread(self.store.promote,checkpoint,observed,manifest_ref=manifest_ref,
+                current=lambda:self.startup.binding_current(binding))
+            with self.startup.config.queue.connect() as db:
+                db.execute("UPDATE rkb_dataset_seed SET state='verified' WHERE operation_key=? AND version=?",
+                    (operation_key,version))
+            _LOG.info('schema_checkpoint_verified schema_version=%s dataset_version=%s base_sequence=%s',
+                schema_version,version,expected_sequence)
+            return checkpoint
+
     async def _refresh(self,binding,*,planned_stop=False):
         startup=self.startup;spool=startup.config.spool;queue=startup.config.queue
         latest=self.store.latest_checkpoint;proof=startup.history._coverage

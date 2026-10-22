@@ -315,6 +315,9 @@ class TargetServiceStartup:
                 raise ValueError('Dataset primary must own the existing checkpoint path exclusively')
             from .kaggle_dataset_checkpoint import SourceDatasetCheckpoints
             self.dataset_checkpoints=SourceDatasetCheckpoints(self)
+        from .kaggle_schema_owner import SourceSchemaMigrations
+        self.schema_migrations=SourceSchemaMigrations(self)
+        config.spool._schema_intake_guard=self.schema_migrations.intake_allowed
 
     def binding_current(self,binding):
         try:
@@ -329,7 +332,8 @@ class TargetServiceStartup:
         try:
             binding=current_binding(self.config.queue)
             snapshot=getattr(self,'snapshot',None)
-            return ((snapshot is None or snapshot.verified) and writer_generation==self.config.writer_generation and self.binding_current(binding)
+            schema=getattr(self,'schema_migrations',None)
+            return ((schema is None or schema.writes_allowed()) and (snapshot is None or snapshot.verified) and writer_generation==self.config.writer_generation and self.binding_current(binding)
                 and (binding.run_id,binding.runtime_incarnation,binding.connection_generation,binding.database_generation)
                 ==(run_id,runtime_incarnation,connection_generation,database_generation))
         except Exception:return False
@@ -402,6 +406,11 @@ class TargetServiceStartup:
             if not coverage.current() or not self.binding_current(self.binding):
                 raise PermissionError('native history proof no longer current')
             self.coverage=coverage
+            if self.schema_migrations.pending() is not None:
+                # Dataset upload/readback may take minutes; keep ordinary
+                # history/read coverage refreshing beside the same barrier.
+                self.schema_migrations.kick(self.binding)
+                return self.reads_current()
             if self.dataset_checkpoints is not None:
                 from .kaggle_dataset_checkpoint import CheckpointPending
                 try:
@@ -474,6 +483,7 @@ class TargetServiceStartup:
                 self._maintenance.cancel()
                 try:await self._maintenance
                 except asyncio.CancelledError:pass
+            await self.schema_migrations.aclose()
             if self.geo_installer is not None:await self.geo_installer.aclose()
             if self.snapshot is not None:await self.snapshot.aclose()
             if self.restorer is not None:await self.restorer.aclose()

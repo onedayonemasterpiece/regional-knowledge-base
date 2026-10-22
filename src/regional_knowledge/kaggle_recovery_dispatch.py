@@ -118,18 +118,20 @@ class RecoveryPhaseDispatch:
                 raise StaleClaim('recovery assignment changed')
             identity=json.loads(job['identity'])
             payload=dict(id=job_id,claim=job['claim'],kind='recovery_phase',**identity)
-        if identity['phase'] in ('prepare','drill_prepare','read_handler_stage','dataset_verify'):
+        if identity['phase'] in ('prepare','drill_prepare','read_handler_stage','schema_bundle_stage','dataset_verify'):
             # Kernel metadata readback drops Dataset version qualifiers.
             # Resolve an exact-version SDK download ticket instead of claiming
             # a mounted version observation from our own intended pin.
             if self.snapshot_tickets is None:
                 raise PermissionError('current signed artifact transfer owner required')
             from .kaggle_pg_snapshot_native import BlobRef
-            if identity['phase']=='read_handler_stage':
+            if identity['phase'] in ('read_handler_stage','schema_bundle_stage'):
                 from .kaggle_warm_maintenance import WarmHandlerPatchApproval
                 from .kaggle_warm_read import MAX_MODULE_BYTES
                 approval=WarmHandlerPatchApproval.from_wire(identity['arguments']['artifact'])
-                if not 1<=approval.blob.size<=MAX_MODULE_BYTES:
+                from .kaggle_schema_live import MAX_SQL_BUNDLE_BYTES
+                limit=MAX_SQL_BUNDLE_BYTES if identity['phase']=='schema_bundle_stage' else MAX_MODULE_BYTES
+                if not 1<=approval.blob.size<=limit:
                     raise SnapshotError('read_handler_artifact_budget')
                 artifact=approval.blob
             else:

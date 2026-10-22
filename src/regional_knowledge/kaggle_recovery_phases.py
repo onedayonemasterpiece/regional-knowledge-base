@@ -17,7 +17,7 @@ MAX_PHASE_RESULT_BYTES = 120 * 1024  # Reserve result envelope/claim identity by
 from .original_intake import PHASES as ORIGINAL_PHASES
 from .kaggle_snapshot_drill import DRILL_PHASES
 PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history',
-    'dataset_verify','read_handler_status','read_handler_stage','read_handler_activate','read_handler_rollback'})|ORIGINAL_PHASES|DRILL_PHASES
+    'dataset_verify','schema_bundle_stage','schema_migrate','read_handler_status','read_handler_stage','read_handler_activate','read_handler_rollback'})|ORIGINAL_PHASES|DRILL_PHASES
 
 
 def _download_ticket_matches(blob,ticket,dataset_checkpoint=None):
@@ -165,6 +165,7 @@ class WorkerRecoveryPhases:
         # pathname, module bytes or resource reference enters this WSS phase.
         self.read_handler_slot=None
         self.read_handler_control=None
+        self.schema_control=None
 
     async def wait_initialized(self,database,run_id,launch_nonce,runtime_incarnation):
         if database!=self.factory.database or (run_id,launch_nonce,runtime_incarnation)!=self.factory.identity:
@@ -182,7 +183,7 @@ class WorkerRecoveryPhases:
         if (not isinstance(frame,dict) or set(frame)-optional!=fields
                 or ('dataset_base' in frame)!=('dataset_observation' in frame)
                 or 'dataset_base' in frame and frame.get('phase')!='prepare'
-                or 'download_ticket' in frame and frame.get('phase') not in ('prepare','drill_prepare','read_handler_stage','dataset_verify') or frame['type']!='DISPATCH'
+                or 'download_ticket' in frame and frame.get('phase') not in ('prepare','drill_prepare','read_handler_stage','schema_bundle_stage','dataset_verify') or frame['type']!='DISPATCH'
                 or frame['protocol_version']!=2 or frame['kind']!='recovery_phase'
                 or frame['phase'] not in PHASES-{'source_history'}-ORIGINAL_PHASES or type(frame['connection_generation']) is not int
                 or frame['connection_generation']<1 or type(frame['dispatch_generation']) is not int
@@ -207,7 +208,8 @@ class WorkerRecoveryPhases:
                 if prior!=request:raise SnapshotError('recovery_phase_operation_changed')
                 if key in self._results:return self._results[key]
                 session=self._sessions.get(frame.get('arguments',{}).get('handle'))
-                if not (frame['phase']=='finish' and session in self.factory._finish_intents
+                if not (frame['phase'] in ('schema_migrate','schema_bundle_stage')
+                        or frame['phase']=='finish' and session in self.factory._finish_intents
                         or self.drill is not None and self.drill.can_reconcile(frame['phase'],frame['arguments'])):
                     raise SnapshotError('recovery_phase_unknown_requires_reconciliation')
             if len(self._requests)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
@@ -261,6 +263,20 @@ class WorkerRecoveryPhases:
     async def _execute(self,phase,args,key,binding,frame):
         from .kaggle_pg_snapshot_native import BlobRef
         if not isinstance(args,dict):raise SnapshotError('recovery_phase_arguments')
+        if phase in ('schema_bundle_stage','schema_migrate'):
+            from .kaggle_schema_live import LiveSchemaMigrations
+            from .kaggle_schema_migrate import MigrationDenied
+            from psycopg.errors import LockNotAvailable,QueryCanceled
+            if type(self.schema_control) is not LiveSchemaMigrations:
+                raise SnapshotError('migration_owner_unavailable')
+            try:
+                return await self.schema_control(phase,args,key,frame)
+            except (LockNotAvailable,QueryCanceled):
+                # The runner's transaction has rolled back. This is a known
+                # retryable refusal, distinct from a lost commit response.
+                return dict(status='rejected',reason='migration_lock_or_statement_timeout',retryable=True)
+            except MigrationDenied as error:
+                return dict(status='rejected',reason=str(error),retryable=False)
         if phase=='dataset_verify':
             from .kaggle_dataset_base import DatasetCheckpoint
             from .native_snapshot_transfer import SnapshotTicket,NativeSnapshotTransfer
