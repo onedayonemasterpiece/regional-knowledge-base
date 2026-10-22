@@ -1289,7 +1289,6 @@ def build_server(
             or story_candidates is not None
         ):
             payload = {
-                "entity_candidates": entity_candidates.model_dump(mode="json") if entity_candidates else None,
                 "story_candidates": [x.model_dump(mode="json") for x in (story_candidates or [])],
                 "pages": [
                     page.model_dump(mode="json", exclude_none=True)
@@ -1308,6 +1307,8 @@ def build_server(
                     for link in (poi_media_links or [])
                 ],
             }
+            if entity_candidates is not None:
+                payload["entity_candidates"] = entity_candidates.model_dump(mode="json")
         principal = _principal()
         stage_file_sha = None
         if file is not None and command == 'stage':
