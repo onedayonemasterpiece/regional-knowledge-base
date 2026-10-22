@@ -140,3 +140,26 @@ async def test_controller_holds_barrier_across_lost_checkpoint_and_restart_befor
     assert effects==[12] and checkpoints[0]==checkpoints[1]
     assert await restarted.advance(binding)
     assert effects==[12,13] and restarted.intake_allowed() and restarted.writes_allowed()
+
+
+@pytest.mark.asyncio
+async def test_schema_capture_releases_spool_lock_for_same_prefix_read_renewal(env):
+    from regional_knowledge.kaggle_dataset_checkpoint import _SchemaCycleCapture
+    active=[True]
+    owner=NS(pending=lambda:object() if active[0] else None,writes_allowed=lambda:not active[0])
+    renewed=NS(database_generation='db',current=lambda:True,accepted_sequence=0,applied_sequence=0)
+    startup=NS(config=NS(spool=env.spool,queue=env.q),schema_migrations=owner,
+        history=NS(_coverage=renewed),binding_current=lambda _:True,
+        restorer=NS(physical=NS(limits=NS(max_receipts=100))))
+    capture=object.__new__(_SchemaCycleCapture)
+    capture.startup=startup;capture.queue=env.q
+    old=NS(database_generation='db',current=lambda:False,accepted_sequence=0,applied_sequence=0)
+    async with capture.capture_guard('same-binding'):
+        assert not env.spool._lock.locked()
+        async with asyncio.timeout(1):
+            async with env.spool._lock:
+                assert capture._prefix_ready(old)
+    active[0]=False
+    with pytest.raises(SnapshotError,match='write_barrier_changed'):
+        async with capture.capture_guard('same-binding'):
+            raise AssertionError('must not capture without retained barrier')
