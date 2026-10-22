@@ -72,3 +72,48 @@ def required_native_source_capabilities(command):
         return required_capabilities(_view(command,CASE_REVISIONS))
     if command.route in ('story.edit.v1','story.access.v1'):return frozenset({'public_search'})
     return frozenset({'import'})
+
+
+
+def validate_revision2_native_command(command):
+    """Never reinterpret stored schema14 commands as schema17; no wire alias."""
+    from .kaggle_native_revision2_upgrade import REVISION2_REVISIONS
+    from .source_stage import (REVISION2_STAGE_ROUTE,REVISION2_SEAL_ROUTE,
+        validate_revision2_stage_command)
+    from .source_activation import (REVISION2_ACTIVATE_ROUTE,REVISION2_MATERIALIZE_ROUTE,
+        validate_revision2_activation_command)
+    if (type(command) is not ExactCommand
+            or (command.schema_revision,command.function_revision,command.executor_revision)!=REVISION2_REVISIONS.wire()):
+        raise ValueError('revision2 native command requires installed schema17')
+    if command.route in (REVISION2_STAGE_ROUTE,REVISION2_SEAL_ROUTE):
+        return validate_revision2_stage_command(command)
+    if command.route in (REVISION2_ACTIVATE_ROUTE,REVISION2_MATERIALIZE_ROUTE):
+        return validate_revision2_activation_command(command)
+    raise ValueError('not an explicit versioned source mutation')
+
+
+def revision2_native_handler(route,*,check_sha256,apply_sha256):
+    from .source_stage import REVISION2_STAGE_ROUTE,REVISION2_SEAL_ROUTE,revision2_stage_handler
+    from .source_activation import (REVISION2_ACTIVATE_ROUTE,REVISION2_MATERIALIZE_ROUTE,
+        revision2_activation_handler)
+    if route in (REVISION2_STAGE_ROUTE,REVISION2_SEAL_ROUTE):
+        return revision2_stage_handler(route=route,check_sha256=check_sha256,apply_sha256=apply_sha256)
+    if route in (REVISION2_ACTIVATE_ROUTE,REVISION2_MATERIALIZE_ROUTE):
+        return revision2_activation_handler(route=route,check_sha256=check_sha256,apply_sha256=apply_sha256)
+    raise ValueError('one of four accepted revision2 native routes required')
+
+
+def resolved_revision2_native_command(*,route,**arguments):
+    from .source_stage import (REVISION2_STAGE_ROUTE,REVISION2_SEAL_ROUTE,resolved_revision2_stage_command)
+    from .source_activation import (REVISION2_ACTIVATE_ROUTE,REVISION2_MATERIALIZE_ROUTE,
+        resolved_revision2_activation_command)
+    if route in (REVISION2_STAGE_ROUTE,REVISION2_SEAL_ROUTE):
+        return resolved_revision2_stage_command(route=route,**arguments)
+    if route in (REVISION2_ACTIVATE_ROUTE,REVISION2_MATERIALIZE_ROUTE):
+        return resolved_revision2_activation_command(route=route,**arguments)
+    raise ValueError('version2 native command route missing')
+
+
+def required_revision2_native_capabilities(command):
+    validate_revision2_native_command(command)
+    return frozenset({'import'})
