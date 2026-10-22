@@ -227,7 +227,8 @@ def test_sanitizer_sink_correlation_release_and_no_private_keys():
     class Sink:
         dropped = 0
         failed = 0
-        def try_emit(self, record):
+        def try_emit(self, record, *, level='standard'):
+            assert level == 'debug'
             records.append(record)
             return True
     assert emit(Sink(), observation())
@@ -235,9 +236,11 @@ def test_sanitizer_sink_correlation_release_and_no_private_keys():
     assert (record['run_id'], record['runtime_incarnation'],
             record['connection_generation'], record['release_sha256']) == (
             'fixture-run', 'fixture.incarnation', 3, 'a' * 64)
-    assert record['sample_seq'] == 1 and record['scope'] == 'own_cgroup'
-    assert record['loss_before'] == dict(controller_dropped=0, controller_failed=0,
-                                        worker_sampling_failed=0)
+    assert record['sample_seq'] == 1 and record['phase'] == 'resource'
+    assert record['event'] == 'resource.sample' and record['status'] == 'ok'
+    assert record['rss_bytes'] == 102400
+    assert record['cgroup_memory_current_bytes'] == 10000
+    assert record['worker_sampling_failed_total'] == 0
     assert 'private_text' not in json.dumps(record)
     assert not emit(Sink(), {'sample_seq': 3})  # Incomplete observation is not real.
     assert clean_resource_numbers({'rss_kib': False, 'memory_current_bytes': -1,
@@ -260,9 +263,13 @@ class SharedSinkFixture:
     def failed(self):
         return self.inner.failed
 
-    def try_emit(self, record):
+    def try_emit(self, record, *, level='standard'):
+        assert level == 'debug'
         before = self.dropped
-        self.inner._record(json.dumps(record))
+        event = dict(record, loss_before={'dropped': self.dropped,
+                                         'failed': self.failed},
+                     diagnostic_state='inconclusive' if self.dropped or self.failed else 'observed')
+        self.inner._record(json.dumps(event))
         return self.dropped == before
 
 
@@ -294,6 +301,6 @@ def test_failed_sink_is_counted_and_next_sample_reports_loss():
     assert telemetry.failed == 1
     assert emit(telemetry, observation(2))
     telemetry.inner._queue.join()
-    assert records[1]['loss_before']['controller_failed'] == 1
+    assert records[1]['loss_before']['failed'] == 1
     assert records[1]['diagnostic_state'] == 'inconclusive'
     assert 'sensitive' not in json.dumps(records)
