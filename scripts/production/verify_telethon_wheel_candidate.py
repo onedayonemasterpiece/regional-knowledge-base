@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from packaging.specifiers import SpecifierSet
 import re
 import shutil
 import subprocess
@@ -123,7 +124,7 @@ def acquire_verified(item: dict, destination: Path, cap: int) -> None:
 
 
 def clean_unpack(sdist: Path, dest: Path) -> Path:
-    dest.mkdir()
+    dest.mkdir(parents=True)
     with tarfile.open(sdist, "r:gz") as tar:
         members = tar.getmembers()
         if len(members) > 250:
@@ -247,6 +248,9 @@ def main() -> None:
             version, filename, expected = PINS.get(name, PYAES)
             meta = load_pypi(name, version)
             validate_dependencies(name, meta)
+            required_python = meta["info"].get("requires_python")
+            if required_python and f"{sys.version_info.major}.{sys.version_info.minor}" not in SpecifierSet(required_python):
+                raise RuntimeError(f"candidate does not support this CPython: {name}")
             required = "sdist" if name == "pyaes" else "bdist_wheel"
             asset = select(meta, filename, expected, required)
             if name == "pyaes" and any(
