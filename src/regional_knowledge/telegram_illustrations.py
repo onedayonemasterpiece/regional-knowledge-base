@@ -294,7 +294,7 @@ class NativeTelegramIllustrations:
                 if self._locator(after,locator['kind']) != locator:
                     raise IllustrationArchiveReadUnavailable('native_illustration_locator_changed')
                 self._current_proof(proof)
-                return NativeIllustrationIssuedBytes(proof=proof,data=bytes(content),
+                issued=NativeIllustrationIssuedBytes(proof=proof,data=bytes(content),
                     mime_type=mime,sha256=sha.hexdigest())
         except asyncio.CancelledError:
             raise
@@ -314,6 +314,11 @@ class NativeTelegramIllustrations:
                             await closer()
                     except Exception:
                         pass
+        # Async generator cleanup also awaits on the leased native client.
+        # Revocation/reconnect during close must invalidate even fully read
+        # and decoded pixels before any caller can receive them.
+        self._current_proof(proof)
+        return issued
 
     async def send_one(self, *, operation_key, crop, mime_type, kind, load, begin, register, complete):
         """One existing durable effect; callbacks use exact-key compare-and-set.
