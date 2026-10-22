@@ -38,7 +38,7 @@ CANDIDATE = """            async def dispatch():
                 nonlocal last_work, cancelled_work
                 resume_pending = True
                 while True:
-                    if not promoted:
+                    if not promoted or shared is None or probe_nonce is not None:
                         observed = await status()
                         await promote(observed)
 """
@@ -158,5 +158,8 @@ def test_exact_inert_patch_preserves_send_side_fences_and_protocol():
     assert changed.count("await queue_call(queue.channel_status, run_id, token, generation)") == 1
     assert changed.count("await shared.next_channel_work(run_id, token, generation)") == 1
     assert changed.count("await promote(observed)") == source.count("await promote(observed)")
+    # No optimization while a fresh resource challenge is unresolved or
+    # while the legacy queue lacks the independently fenced read snapshot.
+    assert "if not promoted or shared is None or probe_nonce is not None:" in changed
     # Same source except one dispatch-loop control guard.
     assert changed.replace(CANDIDATE,ORIGINAL)==source
