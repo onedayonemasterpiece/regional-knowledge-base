@@ -13,13 +13,13 @@ from regional_knowledge.source_activation import knowledge_bytes
 from regional_knowledge.source_stage import canonical, digest
 from regional_knowledge.story_contracts import StageStoryCandidateInput
 from test_native_source_materializer import PERSON, exact_batch
-from test_source_stage import SOURCE, original
-from test_source_activation import synthetic_knowledge, activation_payload
+from test_source_stage import SOURCE, original, seal
+from test_source_activation import activation_payload
 from test_source_activation_pg import (
     PG, image_pg, stage_all, prepare, install, accepted, stage_command, next_command,
     VECTOR,
 )
-from regional_knowledge.source_stage import SEAL_ROUTE, seal
+from regional_knowledge.source_stage import SEAL_ROUTE
 
 # 660 individually separated words fit the existing 4000-character Story.body
 # limit but exceed the protected 512-token encoder input.
@@ -60,10 +60,9 @@ def assert_complete_derived_fragments(variant, count_calls):
     assert all(f["fragment_id"] == str(uuid5(UUID(variant["variant_id"]),
                         f"fragment:{f['start']}:{f['end']}")) for f in fragments)
     assert "".join(LONG_BODY[f["start"]:f["end"]] for f in fragments) == LONG_BODY
-    assert [LONG_BODY[f["start"]:f["end"]] for f in fragments] == [
-        text for text in count_calls if text in {
-            LONG_BODY[f["start"]:f["end"]] for f in fragments
-        }]
+    assert all(f["input_tokens"] == len(LONG_BODY[f["start"]:f["end"]].split()) + 2
+               for f in fragments)
+    assert all(LONG_BODY[f["start"]:f["end"]] in count_calls for f in fragments)
 
 
 @pytest.mark.asyncio
@@ -89,7 +88,6 @@ async def test_long_body_kept_exact_but_each_vector_input_is_bounded():
 @pytest.mark.asyncio
 async def test_pg_long_body_exact_readback_and_replay_idempotency(image_pg):
     env = image_pg
-    chain, head, doc = synthetic_knowledge(page_count=1, story=True)
     # Keep the existing accepted page, region, finding and source edition. Only
     # replace the authored body and its derived fragment metadata.
     sample = authored_batch()
