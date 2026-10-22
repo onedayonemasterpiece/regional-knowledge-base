@@ -37,7 +37,15 @@ test/document leaf are changed beyond those dependencies. The existing
 controller's `kernel-metadata.json` currently has `dataset_sources: []`.
 The live owner must attach `list(target.stage0.dataset_sources)` alongside any
 other existing dependencies and check the exact Dataset version's readiness
-BEFORE launch claim/push. No busy wait or provider request is added here.
+BEFORE launch claim/push. `kaggle_stage0_dataset.probe_stage0_datasets(api, plan)`
+supplies the read-only preflight using the existing authenticated client and
+`KaggleDatasetPublisher.observe`: private metadata, ready status, bounded
+version-qualified file listing with pinned sizes, and a final stable observation.
+A newer ready version does not replace or invalidate an explicitly selected
+older immutable version. Only exact selected file metadata is checked; the
+worker verifies the actual SHA bytes. Fixed pending reasons do not echo SDK
+exceptions. The helper makes one bounded probe, never sleeps or submits effects;
+the existing controller must retry on a later throttled tick, before claim.
 Existing private launch configuration selects the Dataset locators. Do not
 replace the chosen Dataset slug on each upload, use signed S3 URLs for these
 files or make private artifacts public merely to satisfy the old HTTP path.
