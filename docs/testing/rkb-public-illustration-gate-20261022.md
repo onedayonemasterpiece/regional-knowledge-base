@@ -157,3 +157,55 @@ real role/function pin approval belong to the root integrator.
    remain unavailable. CI synthetic success and even a real PG SQL-compile
    fixture are not real archive/pixels, accepted ledger migration, Dataset
    persistence or deploy/live acceptance.
+
+
+## 22 October — clean Opus integration-target handoff
+
+Canonical integration branch: `integration/rkb-native-import-20261022`, initially
+`4e6a7b7ab0c90a9ff41effa37f25f92930041ccf`, **sole merge owner RKB-Opus**.
+This handoff consists only of independently reviewed RKB-Риф-owned source,
+tests, and this manifest:
+- Original PR219 output gate `e9e0d5587a7857dbca3909c46e4a0df06f3a2c22` →
+  exact gate git blob `5a1b78d7ca8ac7355eb971b892cfeae13e2b020a`.
+- Original PR222 native read source `0a169aefa51d7869d7b657e259432b107479ac41` →
+  exact reader git blob `b3ce02885fb33b1d2c6097b2313bf75ab2ee721f`.
+- Separate PR222 populated synthetic PG17 and archive-denial test revision
+  `7ec5bf739ba4bfe5e5d9117d67b2aa83009c4523` was verified in CI
+  `39751280849` (Python 3.12/3.13 each 2551 PASS/32 SKIP).
+- The canonical base does NOT yet contain SQL013, SQL014, SQL015 or SQL016.
+  Its test import was previously coupled to
+  `test_story_reconcile_ordered_013_016_pg` from another (unmerged) branch;
+  the clean handoff now uses a standalone fixed **test-only** DSN/ordered-file
+  validator and marks real PG tests `NOT RUN` when any exact SQL013–016
+  predecessor is missing. It never fabricates SQL015 or reports these
+  skips as successful Media15 installation. **Root must rerun populated PG
+  tests with all four real SQL migration artifacts on the accepted candidate**.
+  If all files are present but SHA014/015 differ, the assertions hard-fail.
+
+### Additional changed-boundary synthetic regressions
+
+All use the existing `ReadAuthority`, `SourceReadGate`,
+`ControlSpool` and real native reader class with fake PG/archive I/O only:
+
+- `test_native_media_final_issuance_refuses_real_source_withdrawal_pending_after_issue` —
+  actual local ControlSpool restriction after ready issue fences cached output.
+- `test_native_media_withdrawal_during_archive_await_prevents_second_read_and_public_ticket` —
+  a real staged source restriction during an archive await denies before emission.
+- `test_native_media_reconnect_rotates_exact_lease_identity_despite_equal_tuple` —
+  a newly owned binding with equal scalar fields is **not** the prior
+  retained session/current lease.
+- `test_native_media_archive_lease_lost_during_await_forces_second_native_read_denial` —
+  loss of existing native lease between first and second PostgreSQL snapshot
+  never releases an old ready frame.
+- `test_native_media_current_read_authority_revoke_at_last_renderer_before_emit` —
+  synchronous final actor fence rejects revoked current access without an
+  intervening await.
+
+These demonstrate denial conditions, not production provider success. The
+existing Media15 `status='ready'` row is **only native metadata**, never
+independent proof that actual image bytes or an archive-owned opaque artifact
+have been authorized, read and delivered. Real
+`illustration_fetch → ImageContent` still needs Opus-owned installed
+SQL013–016, private fixed reader grants, typed WSS, registered archive
+`observe` and real current-lease pixel delivery, plus compatible
+`read_issuance.refresh` handling and no-await final output fence.
