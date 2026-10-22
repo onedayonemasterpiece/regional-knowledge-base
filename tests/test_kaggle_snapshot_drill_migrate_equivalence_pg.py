@@ -22,6 +22,7 @@ from regional_knowledge.kaggle_database_probe import native_probe_for_schema
 from regional_knowledge.kaggle_source_acl import inspect_acl
 from test_kaggle_apply import PG
 from test_native_source_upgrade_pg import schema12,preflight,apply,DB,WRITER
+from test_kaggle_pg_driver import database  # transitive real PG17 pytest fixture
 from test_geo_migration import uid
 
 ROOT=Path(__file__).resolve().parents[1]
