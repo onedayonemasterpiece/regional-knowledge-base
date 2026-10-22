@@ -78,6 +78,27 @@ async def test_concrete_composition_reuses_actual_owners_and_journal_writer_fenc
     assert startup.config.writer_owner.closed and e.a._fd is None
 
 
+@pytest.mark.asyncio
+async def test_concrete_composition_binds_existing_rkb1_without_reading_credentials(owner,tmp_path,monkeypatch):
+    import json
+    from regional_knowledge.telegram_runtime_owners import configured_rkb1_source
+    from test_telegram_runtime_channel import locator
+    monkeypatch.setattr('regional_knowledge.telegram_runtime_owners.existing_rkb1_credentials',
+        lambda:pytest.fail('composition cannot acquire session credentials'))
+    path=tmp_path/'archive-locator.json';path.write_text(json.dumps(locator().wire()));path.chmod(0o600)
+    e=owner;source=configured_rkb1_source(e.q,str(path));history=HistoryAdapter();history.available=True
+    startup=compose_source_service(queue=e.q,oauth_provider=e.auth.provider,participants=e.auth.p.registry,
+        object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),stream=e.j.stream,registry=HandlerRegistry([handler()]),
+        history_adapter=history,run_id=e.run,database_generation='synthetic-db',writer_generation='writer-1',
+        telegram_runtime_source=source)
+    assert startup.config.telegram_runtime_source is source
+    assert e.q._telegram_runtime_source is source and source.startup is startup
+    async with startup.lifespan(None):assert startup.reads_current()
+    path.chmod(0o644)
+    with pytest.raises(ValueError,match='private Telegram locator'):
+        configured_rkb1_source(e.q,str(path))
+
+
 
 
 def test_private_slack_ingress_config_reuses_exact_target_owners_and_fails_closed(service,tmp_path):
