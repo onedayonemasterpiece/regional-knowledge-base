@@ -205,7 +205,10 @@ def refresh_native_graph_evidence(graph, replacement):
 
 
 class NativeSourceCompiler:
-    def __init__(self, *, count, current):
+    def __init__(self, *, count, current, source_revision=1):
+        if type(source_revision) is not int or source_revision not in (1,2):
+            raise ValueError('explicit supported native processing revision required')
+        self.source_revision=source_revision
         if not callable(count) or not callable(current):
             raise TypeError('retained resident tokenizer/current binding required')
         self.count,self.current=count,current
@@ -238,10 +241,13 @@ class NativeSourceCompiler:
         self._current()
         if type(batches) is not list or not 1<=len(batches)<=2500:
             raise failure('native_source_batch_chain_required')
-        graph=NativeStagedGraph(revision=1)
+        graph=NativeStagedGraph(revision=self.source_revision)
         source=None;previous=ZERO_HASH;images={};reviews={};candidates={};research=None
         for index,raw in enumerate(batches):
-            doc=validate_stage_payload(raw,source_id=source_id)
+            if self.source_revision==2:
+                from .source_stage import validate_revision2_stage_payload
+                doc=validate_revision2_stage_payload(raw,source_id=source_id)
+            else:doc=validate_stage_payload(raw,source_id=source_id)
             if doc['batch_index']!=index or doc['previous_batch_sha256']!=previous:
                 raise failure('native_source_batch_chain_changed')
             previous=digest(raw)
@@ -254,7 +260,7 @@ class NativeSourceCompiler:
             media=[_typed(StagePoiMediaLinkInput,m) for m in payload.get('poi_media_links',[])]
             if media or any(page.illustrations for page in pages):
                 raise failure('native_illustration_activation_unavailable')
-            partial=compile_model_stage(graph,document_id=source_id,revision=1,pages=pages,chunks=chunks,
+            partial=compile_model_stage(graph,document_id=source_id,revision=self.source_revision,pages=pages,chunks=chunks,
                 poi_facts=facts,poi_media_links=media)
             graph=merge_native_stage(graph,partial)
             bundle=_typed(GraphBundle,payload['entity_candidates']) if payload.get('entity_candidates') else None
@@ -293,20 +299,26 @@ class NativeSourceCompiler:
             locators=[pages[str(p)].printed_page_number or str(pages[str(p)].physical_page_index+1) for p in chunk.page_ids]
             passages.append(dict(passage_id=str(chunk.chunk_id),ordinal=ordinal,locator='pages '+', '.join(locators),
                 body=chunk.text,language=language,input_tokens=tokens))
-        row=dict(source_id=source_id,person_id=person_id,
+        row=dict(source_id=source_id,person_id=person_id,source_revision=self.source_revision,
             semantic_json=canonical(dict(candidates=candidates,page_reviews=reviews)).decode(),
             research_json=canonical({k:research[k] for k in ('state','continuation')}).decode())
         semantic,_=await self._semantic(row,graph,passages)
         self._current()
-        resolved=dict(codec=PROJECTION_CODEC,bibliography=source['bibliography'],revision=1,
+        resolved=dict(codec=PROJECTION_CODEC,bibliography=source['bibliography'],revision=self.source_revision,
             work_id=source['work_id'],edition_id=source['edition_id'],original=receipt.original,
             public_rights=source['public_rights'],
             model=dict(revision=REVISION,space=SPACE,tokenizer_sha256=TOKENIZER_SHA256,
                 dimension=DIMENSION,max_tokens=MAX_TOKENS),
             passages=passages,semantic=semantic,research=research,
             image_manifest=build_image_manifest(metadata=metadata,receipt=receipt,graph=graph,
-                semantic=semantic,passages=passages,issued_images=list(images.values())))
+                semantic=semantic,passages=passages,issued_images=list(images.values()),
+                source_revision=self.source_revision))
         if graph.entity_candidates or graph.poi_facts or any(f['entity_keys'] for f in semantic['findings']):
+            if self.source_revision==2:
+                # SQL017 retains attributed claims in immutable semantic, but
+                # v1 source_graph_documents is source-id keyed and cannot safely
+                # overwrite the old graph. A graph v2 extension is required.
+                raise failure('revision2_graph_projection_upgrade_required')
             resolved['source_graph']=resolve_native_source_graph(graph,source_id=source_id,person_id=person_id,
                 semantic=semantic,batch_count=len(batches))
         # Resource capacity is explicit; it is not the old32-page codec limit.
@@ -327,7 +339,8 @@ class NativeSourceCompiler:
             await self._counts([value.basic_variant.body for value in variants]) if variants else [], strict=True))
         for candidate in candidates:
             key = candidate.candidate_key
-            assertion_id = str(uuid5(UUID(row['source_id']), 'finding:'+key))
+            scope='finding:'+key if row.get('source_revision',1)==1 else 'revision2:finding:'+key
+            assertion_id = str(uuid5(UUID(row['source_id']),scope))
             evidence = []
             for ref in candidate.evidence_refs:
                 region = by_ref.get((ref.page_id, ref.region_key))
@@ -370,8 +383,8 @@ class NativeSourceCompiler:
             count = variant_counts[key]
             if not 1 <= count <= MAX_TOKENS:
                 raise failure('complete_narrative_input_exceeds_512_tokens', status='invalid_query')
-            variant_id = str(uuid5(UUID(row['source_id']), 'variant:'+key))
-            result['stories'].append(dict(story_id=str(uuid5(UUID(row['source_id']), 'story:'+key)),
+            variant_id = str(uuid5(UUID(row['source_id']),('variant:' if row.get('source_revision',1)==1 else 'revision2:variant:')+key))
+            result['stories'].append(dict(story_id=str(uuid5(UUID(row['source_id']),('story:' if row.get('source_revision',1)==1 else 'revision2:story:')+key)),
                 finding_ids=[assertion_id], title=candidate.title, summary=candidate.summary,
                 material_type=candidate.material_type, default_variant=dict(variant_id=variant_id, revision=1,
                     audience=variant.audience, format='story', language=variant.language, body=variant.body,
