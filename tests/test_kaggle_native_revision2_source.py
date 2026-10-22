@@ -133,3 +133,64 @@ async def test_sql017_installs_after_real_sql015_016_without_rewriting_prior_ddl
                 assert found==(1,)
             assert await(await connection.execute('SELECT count(*) FROM rkb_v4.source_revision2_origins')).fetchone()==(0,)
             raise psycopg.Rollback()
+
+
+
+@PG
+@pytest.mark.asyncio
+async def test_sql017_real_accepted_revision1_original_allows_only_exact_same_id_revision2_stage(image_pg):
+    """Use actual old accepted source SQL014; SQL017 is new and rolled back.
+
+    Checks a real PG17 accepted v1 image/archive origin and the SQL017 stage
+    precondition on immutable source data. This is not yet a full accepted
+    revision2 activation; that separate integration acceptance belongs to
+    Linza after source wiring.
+    """
+    import psycopg
+    from psycopg.types.json import Jsonb
+    from test_source_activation_pg import (
+        stage_all,prepare,stage_command,accepted,install,next_command
+    )
+    from test_source_activation import synthetic_knowledge,activation_payload
+    from test_source_stage import seal,SEAL_ROUTE,INGESTION
+    from regional_knowledge.source_stage import digest
+    env=image_pg
+    connection=env['connection']
+    chain,head,doc=synthetic_knowledge(1)
+    await stage_all(env,chain)
+    h=await prepare(env,chain,head,doc)
+    assert (await accepted(env,stage_command(seal(1,head),env['sequence']+1,SEAL_ROUTE))).status=='applied'
+    assert await install(env,h,0)==digest(doc['passages'][0]['body'].encode())
+    original_command=next_command(activation_payload(chain,head),env['sequence']+1,ordinal=0)
+    assert (await accepted(env,original_command)).status=='applied'
+    original_command=next_command(activation_payload(chain,head),env['sequence']+1)
+    assert (await accepted(env,original_command)).status=='applied'
+    source_id=SOURCE
+    old_sha=digest(original_command.encode())
+    data={**chain[0],'codec':REVISION2_BATCH_CODEC,
+        'source_revision':2,'prior_revision':1,
+        'ingestion_id':str(uuid4()),'original_ingestion_id':INGESTION,
+        'predecessor_command_sha256':old_sha}
+    command=resolved_revision2_native_command(route=REVISION2_STAGE_ROUTE,source_id=source_id,
+        payload=data,sequence=env['sequence']+1,operation_key='revision2-stage-real-pg',
+        request_id=str(uuid4()),person_id=PERSON,logical_time='2026-10-22T12:10:00Z')
+    with pytest.raises(psycopg.Rollback):
+        async with connection.transaction():
+            for role in ('rkb_reader','rkb_writer'):
+                assert await (await connection.execute('SELECT 1 FROM pg_roles WHERE rolname=%s',(role,))).fetchone() is None
+                await connection.execute('CREATE ROLE '+role+' NOLOGIN')
+            for file in ARTIFACTS:
+                await connection.execute((ROOT/'sql/kaggle'/file).read_text(),prepare=False)
+            row=await(await connection.execute('SELECT rkb_v4.check_source_stage_revision2_v1(%s,%s::jsonb,%s::jsonb,%s)',
+                (command.payload,Jsonb(dict(command.ids)),Jsonb(dict(command.expected_revisions)),command.logical_time))).fetchone()
+            assert row==(True,), 'v2 stage must validate real accepted v1 original at same source ID'
+            tampered={**data,'source':{**data['source'],'edition_id':str(uuid4())}}
+            counterfeit=resolved_revision2_native_command(route=REVISION2_STAGE_ROUTE,source_id=source_id,
+                payload=tampered,sequence=command.sequence+1,operation_key='revision2-tamper-real-pg',
+                request_id=str(uuid4()),person_id=PERSON,logical_time=command.logical_time)
+            row=await(await connection.execute('SELECT rkb_v4.check_source_stage_revision2_v1(%s,%s::jsonb,%s::jsonb,%s)',
+                (counterfeit.payload,Jsonb(dict(counterfeit.ids)),Jsonb(dict(counterfeit.expected_revisions)),counterfeit.logical_time))).fetchone()
+            assert row==(False,), 'wrong edition must never inherit archived book identity'
+            assert await(await connection.execute('SELECT revision FROM rkb_v4.active_revision WHERE source_id=%s',(source_id,))).fetchone()==(1,)
+            assert await(await connection.execute('SELECT count(*) FROM rkb_v4.source_revision2_origins')).fetchone()==(0,)
+            raise psycopg.Rollback()
