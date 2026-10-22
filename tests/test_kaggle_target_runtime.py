@@ -1,9 +1,12 @@
 """Synthetic source, journal and pool checks; no native PG/model/provider effects."""
 import ast
 import asyncio
+import base64
 from dataclasses import replace
 import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -56,6 +59,34 @@ def generate(queue,run,target):
     controller=module('bge_kaggle_controller')
     return controller.worker_source((ROOT/'scripts/production/bge_kaggle_worker.py').read_text(),
         queue,run,'fixture-token','https://fixture.example/bge-worker',transport='wss',target=target)
+
+
+def test_shipped_worker_constructs_runtime_without_repository_imports(tmp_path):
+    """An installed checkout must not conceal missing notebook-only modules."""
+    from regional_knowledge.kaggle_current_registry import registry_sha256
+    from regional_knowledge.kaggle_target_launch import source_bundle
+    _,files,_=source_bundle(ROOT)
+    for name,raw in files.items():
+        path=tmp_path/name
+        path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_bytes(base64.b64decode(raw,validate=True))
+    target=replace(spec(fresh=True),registry_sha256=registry_sha256())
+    child='''import json,sys
+from pathlib import Path
+root=Path(sys.argv[1]).resolve()
+sys.path.insert(0,str(root))
+from regional_knowledge.kaggle_target_runtime import TargetRuntime
+owner=object()
+runtime=TargetRuntime(json.loads(sys.stdin.read()),executed_source='isolated-fixture',owner_factory=lambda _:owner)
+assert runtime.owner is owner
+for name,module in tuple(sys.modules.items()):
+    if name=='regional_knowledge' or name.startswith('regional_knowledge.'):
+        assert Path(module.__file__).resolve().is_relative_to(root),name
+'''
+    result=subprocess.run([sys.executable,'-I','-c',child,str(tmp_path)],
+        input=json.dumps({'target_runtime':target.wire()}),capture_output=True,text=True,
+        cwd=tmp_path,timeout=30)
+    assert result.returncode==0,result.stderr
 
 
 def test_generated_target_persists_final_hash_outside_source_and_is_stable(tmp_path):
