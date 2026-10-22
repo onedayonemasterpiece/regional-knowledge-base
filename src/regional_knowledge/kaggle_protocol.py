@@ -457,9 +457,13 @@ def decode_envelope(data: bytes) -> Query | QueryResult | PassageReadRequest | P
                      parse_constant=_reject_constant)
     if not isinstance(raw, dict):
         raise ValueError("envelope must be an object")
-    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT", "STORY_READ_RESULT", "FACT_READ_RESULT", "SOURCE_READ_RESULT", "CASE_READ_RESULT", "GEO_READ_RESULT", "EDITORIAL_READ_RESULT", "SOURCE_GRAPH_READ_RESULT", "ACCEPTANCE_READ_RESULT") else QUERY_MAX_BYTES
+    limit = RESULT_MAX_BYTES if raw.get("type") in ("QUERY_RESULT", "PASSAGE_READ_RESULT", "STORY_READ_RESULT", "FACT_READ_RESULT", "SOURCE_READ_RESULT", "CASE_READ_RESULT", "GEO_READ_RESULT", "EDITORIAL_READ_RESULT", "SOURCE_GRAPH_READ_RESULT", "ACCEPTANCE_READ_RESULT", "ILLUSTRATION_READ_RESULT") else QUERY_MAX_BYTES
     if len(data) > limit:
         raise ValueError("query_too_large" if raw.get("type") == "QUERY" else "control frame too large")
+    if raw.get('type') in ('ILLUSTRATION_READ','ILLUSTRATION_READ_RESULT'):
+        from .kaggle_media_wss_contracts import IllustrationReadRequest, IllustrationReadResult
+        return (IllustrationReadRequest if raw['type']=='ILLUSTRATION_READ'
+                else IllustrationReadResult).model_validate_json(data)
     if raw.get('type') in ('ACCEPTANCE_READ','ACCEPTANCE_READ_RESULT'):
         from .kaggle_acceptance_contracts import AcceptanceReadRequest,AcceptanceReadResult
         return (AcceptanceReadRequest if raw['type']=='ACCEPTANCE_READ' else AcceptanceReadResult).model_validate_json(data)
