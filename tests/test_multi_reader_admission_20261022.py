@@ -186,3 +186,152 @@ async def test_public_search_routes_to_idle_reader_while_writer_claim_is_busy(ta
         if forwarded is not None:await release(s,reader,token,generation,forwarded)
         if held is not None:await release(s,s.run,s.token,s.generation,held)
         s.auth.resolver.release(context)
+
+@pytest.mark.asyncio
+async def test_writer_reconnect_only_cancels_writer_run_not_independent_inflight_reader(target):
+    """An unrelated writer generation cannot cancel another run's sent query."""
+    s=target
+    reader,token,generation=await attach_existing_reader(s)
+    await s.admission.resource_state(reader,token,generation,
+        runtime_incarnation='reader-incarnation',state='idle')
+    context=await s.auth.resolver.resolve_oauth(s.auth.tokens.access_token,
+        destination=s.auth.destination)
+    reader_work=None
+    try:
+        writer_ticket=await s.admission.begin_read(context,
+            query(context,'writer-reconnect',s.generation,min_seq=5),
+            dialog_ref='writer',deadline=time.monotonic()+1.95,run_id=s.run)
+        reader_ticket=await s.admission.begin_read(context,
+            query(context,'unaffected-reader',generation,min_seq=5),
+            dialog_ref='reader',deadline=time.monotonic()+1.95,run_id=reader)
+        reader_work=await s.queue.next_channel_work(reader,token,generation)
+        assert reader_work is not None
+        s.admission.mark_work_sent(reader_work)
+        new_generation=s.queue.attach_channel(s.run,s.token,s.nonce,'incarnation-a')['connection_generation']
+        await s.admission.resource_state(s.run,s.token,new_generation,
+            runtime_incarnation='incarnation-a',state='idle')
+        assert writer_ticket.result.cancelled()
+        assert not reader_ticket.result.done()
+        assert s.admission.status(reader)['resource']==reader_work.resource
+        assert await s.admission.finish_read(reader,token,generation,answer(reader_work))
+        assert (await reader_ticket.result).status=='ok'
+    finally:
+        if reader_work is not None:
+            await release(s,reader,token,generation,reader_work)
+        s.auth.resolver.release(context)
+
+
+@pytest.mark.asyncio
+async def test_writer_document_turn_keeps_pending_reader_person_fairness(target):
+    """Writer-local pruning must not forget a waiting independent reader actor."""
+    from test_read_authority import issue
+    s=target
+    reader,token,generation=await attach_existing_reader(s)
+    await s.admission.resource_state(reader,token,generation,
+        runtime_incarnation='reader-incarnation',state='idle')
+    person=await s.auth.resolver.resolve_oauth(s.auth.tokens.access_token,
+        destination=s.auth.destination)
+    other_tokens=await issue(s.auth.provider)
+    other=await s.auth.resolver.resolve_oauth(other_tokens.access_token,
+        destination=s.auth.destination)
+    assert person.person_id!=other.person_id
+    try:
+        first=await s.admission.begin_read(person,
+            query(person,'reader-turn',generation,min_seq=5),
+            dialog_ref='reader-1',deadline=time.monotonic()+1.95,run_id=reader)
+        work=await s.queue.next_channel_work(reader,token,generation)
+        s.admission.mark_work_sent(work)
+        assert await s.admission.finish_read(reader,token,generation,answer(work))
+        await first.result
+        await release(s,reader,token,generation,work)
+        assert s.admission._person_turn[person.person_id]>0
+        pending=await s.admission.begin_read(person,
+            query(person,'reader-waiting',generation,min_seq=5),
+            dialog_ref='reader-2',deadline=time.monotonic()+1.95,run_id=reader)
+        await s.admission.register_document_actor(s.auth.p.admin)
+        document=await s.queue.next_channel_work(s.run,s.token,s.generation)
+        assert document is not None and document.kind=='document'
+        assert person.person_id in s.admission._person_turn
+        assert not pending.result.done()
+        s.admission.cancel_read(pending)
+        s.admission.discard_unsent(document)
+    finally:
+        s.auth.resolver.release(person)
+        s.auth.resolver.release(other)
+
+
+@pytest.mark.asyncio
+async def test_provider_terminal_of_writer_does_not_cancel_other_reader_run(target):
+    from regional_knowledge.kaggle_readiness import RunIdentity, CapabilityReceipt, TerminalObservation
+    s=target
+    reader,token,generation=await attach_existing_reader(s)
+    await s.admission.resource_state(reader,token,generation,
+        runtime_incarnation='reader-incarnation',state='idle')
+    context=await s.auth.resolver.resolve_oauth(s.auth.tokens.access_token,
+        destination=s.auth.destination)
+    reader_work=None
+    try:
+        ticket=await s.admission.begin_read(context,
+            query(context,'reader-survives-writer-terminal',generation,min_seq=5),
+            dialog_ref='other-reader',deadline=time.monotonic()+1.95,run_id=reader)
+        reader_work=await s.queue.next_channel_work(reader,token,generation)
+        s.admission.mark_work_sent(reader_work)
+        expected=RunIdentity('fixture-owner/stable-slug','7',None,s.run,s.nonce,'incarnation-a')
+        caps=CapabilityReceipt('fixture','1','fixture','synthetic-evidence',
+            exact_status=True,status_identifies_execution=True)
+        s.queue.clock=lambda:1002.
+        terminal=TerminalObservation(expected,'complete',1001.,execution_binding_verified=True)
+        assert (await s.admission.confirm_terminal(expected,caps,terminal,max_age_seconds=10)).ok
+        assert not ticket.result.done()
+        assert s.admission.status(reader)['resource']==reader_work.resource
+        assert await s.admission.finish_read(reader,token,generation,answer(reader_work))
+        assert (await ticket.result).status=='ok'
+    finally:
+        s.auth.resolver.release(context)
+
+
+@pytest.mark.asyncio
+async def test_reader_lane_prune_requires_terminal_receipt_and_no_compute(target):
+    """Synthetic SQLite terminal fixture checks RAM eviction logic, NOT provider proof."""
+    s=target
+    reader,token,generation=await attach_existing_reader(s)
+    await s.admission.resource_state(reader,token,generation,
+        runtime_incarnation='reader-incarnation',state='idle')
+    s.admission._prune_terminal_reader_lanes()
+    assert reader in s.admission._reader_lanes
+    with s.queue.connect() as db:
+        db.execute("UPDATE runs SET status='expired',launch_state='terminal' WHERE id=?",(reader,))
+    s.admission._prune_terminal_reader_lanes()
+    assert reader in s.admission._reader_lanes  # label alone is not proof
+    with s.queue.connect() as db:
+        db.execute('INSERT INTO bge_provider_terminal_receipts(run_id,receipt_json) VALUES(?,?)',
+            (reader,'{"synthetic":true}'))
+    s.admission._prune_terminal_reader_lanes()
+    assert reader not in s.admission._reader_lanes
+
+
+@pytest.mark.asyncio
+async def test_sent_reader_unknown_compute_debt_survives_terminal_lane_prune(target):
+    """Even a synthetic terminal row may not silently discard a sent read claim."""
+    s=target
+    reader,token,generation=await attach_existing_reader(s)
+    await s.admission.resource_state(reader,token,generation,
+        runtime_incarnation='reader-incarnation',state='idle')
+    context=await s.auth.resolver.resolve_oauth(s.auth.tokens.access_token,
+        destination=s.auth.destination)
+    try:
+        ticket=await s.admission.begin_read(context,
+            query(context,'unknown-read-debt',generation,min_seq=5),
+            dialog_ref='debt',deadline=time.monotonic()+1.95,run_id=reader)
+        work=await s.queue.next_channel_work(reader,token,generation)
+        s.admission.mark_work_sent(work)
+        s.admission.cancel_read(ticket)
+        with s.queue.connect() as db:
+            db.execute("UPDATE runs SET status='expired',launch_state='terminal' WHERE id=?",(reader,))
+            db.execute('INSERT INTO bge_provider_terminal_receipts(run_id,receipt_json) VALUES(?,?)',
+                (reader,'{"synthetic":true}'))
+        s.admission._prune_terminal_reader_lanes()
+        assert s.admission.status(reader)['resource']==work.resource
+        assert s.admission.status(reader)['state']=='busy'
+    finally:
+        s.auth.resolver.release(context)

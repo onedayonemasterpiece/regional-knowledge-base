@@ -29,6 +29,7 @@ from .read_authority import ReadAuthority, VerifiedReadAuthority
 from .participants import RequestAuthority
 
 _LOG=logging.getLogger(__name__)
+_MAX_READER_LANES=32  # Bounded historical state; UNKNOWN claims must never be evicted.
 
 
 class AdmissionUnavailable(RuntimeError):
@@ -304,9 +305,39 @@ class SharedReadAdmission:
     def release_editorial_document(self,owner,job_id):
         if owner is self.queue._story_editorial:self._editorial_documents.discard(job_id)
 
+    def _prune_terminal_reader_lanes(self):
+        """Prune only provider-confirmed terminal runs with no outstanding work.
+
+        This is called when a *new* reader attaches, not on the read hotpath.
+        Unknown or sent compute is retained even if the consumer vanished.
+        """
+        active={key[0] for key in self._reads}
+        candidates=[run_id for run_id,lane in self._reader_lanes.items()
+                    if run_id not in active and lane.work is None and not lane.sent]
+        if not candidates:return
+        with self.queue.connect(write=False) as db:
+            for run_id in candidates:
+                retired=db.execute("""select 1 from runs r
+                    join bge_provider_terminal_receipts t on t.run_id=r.id
+                    where r.id=? and r.status='expired' and r.launch_state='terminal'""",
+                    (run_id,)).fetchone()
+                if retired is not None:self._reader_lanes.pop(run_id,None)
+
+    def _prune_fair_turns(self, extra_people=()):
+        """Keep shared actor turns for *all* lanes and trusted durable actors."""
+        active=set(self._documents)|set(self._commands)|set(extra_people)
+        active.update(r.authority.person_id for r in self._reads.values())
+        self._person_turn={p:n for p,n in self._person_turn.items() if p in active}
+        dialogs={(r.authority.person_id,r.dialog) for r in self._reads.values()}
+        self._dialog_turn={d:n for d,n in self._dialog_turn.items() if d in dialogs}
+
     def _observe_attachment(self, run, generation):
         attachment=(run['id'],generation,run['runtime_incarnation'])
         if not run['writer_slot']:
+            if run['id'] not in self._reader_lanes:
+                self._prune_terminal_reader_lanes()
+                if len(self._reader_lanes)>=_MAX_READER_LANES:
+                    raise AdmissionUnavailable('unreconciled reader lane capacity exhausted')
             lane=self._reader_lanes.setdefault(run['id'],_ReaderLane())
             if lane.attachment is not None and generation<lane.attachment[1]:
                 raise StaleAttachment('reader attachment observation regressed')
@@ -322,7 +353,12 @@ class SharedReadAdmission:
             raise StaleAttachment('attachment observation regressed')
         if self._attachment!=attachment:
             self._changed_slot()
-            for key in tuple(self._reads):self._cancel(key)
+            # Writer reconnection invalidates only this run (and a replaced
+            # previous writer). Independent read-only runs keep their tickets.
+            writer_runs={run['id']}
+            if self._attachment is not None:writer_runs.add(self._attachment[0])
+            for key in tuple(self._reads):
+                if key[0] in writer_runs:self._cancel(key)
             if self._work is not None and not self._sent:
                 self._work=None;self._state='unknown'
             self._attachment=attachment
@@ -550,6 +586,7 @@ class SharedReadAdmission:
             if read.deadline<=now or read.ticket.result.done():self._cancel(key)
         reads=[r for r in self._reads.values()
             if r.ticket.run_id==run_id and r.dispatched is None]
+        self._prune_fair_turns()
         if not reads:return None
         people={r.authority.person_id for r in reads}
         person=min(people,key=lambda p:(self._person_turn.get(p,0),p))
@@ -658,7 +695,7 @@ class SharedReadAdmission:
             # Person first, then dialog. Many dialogs cannot multiply a
             # person's share. Forced document turn bounds continuous read runs.
             people={r.authority.person_id for r in reads}|{d['actor'] for d in eligible}
-            self._person_turn={p:n for p,n in self._person_turn.items() if p in people}
+            self._prune_fair_turns(d['actor'] for d in eligible)
             if eligible and (resumed or self._read_streak>=self.max_read_streak):
                 selected_doc=eligible[0];read=None
             else:
@@ -707,8 +744,7 @@ class SharedReadAdmission:
                     work=ChannelWork(resource,document_payload=MappingProxyType({**payload,'texts':tuple(payload['texts'])}))
                 person=selected_doc['actor'];self._read_streak=0
             self._turn+=1;self._person_turn[person]=self._turn
-            dialogs={(r.authority.person_id,r.dialog) for r in self._reads.values()}
-            self._dialog_turn={d:n for d,n in self._dialog_turn.items() if d in dialogs}
+            self._prune_fair_turns(d['actor'] for d in eligible)
             self._work=work;self._sent=False;self._state='reserved'
             self._changed_slot()
             return work
@@ -822,7 +858,10 @@ class SharedReadAdmission:
             result=await asyncio.to_thread(self.queue._admission_terminal,expected,capabilities,observed,
                                           max_age_seconds=max_age_seconds)
             if result.ok:
-                for key in tuple(self._reads):self._cancel(key)
+                # Native terminal proof applies to the writer execution only.
+                # Other authenticated reader workers may still be serving.
+                for key in tuple(self._reads):
+                    if key[0]==expected.run_id:self._cancel(key)
                 self._work=None;self._sent=False;self._state='unknown';self._attachment=None
                 self._last_release=None
                 self._document_result=None
