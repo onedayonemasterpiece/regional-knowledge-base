@@ -34,6 +34,10 @@ def illustrated_batch(*, foreign_reference=False, changed_receipt=False, missing
         display_rotation_degrees=90, caption_region_keys=["caption-1"],
         nearby_region_keys=["body"])]
     reference = dict(page_id=page_id, illustration_key="picture")
+    # The printed caption is model-reviewed source text, so retain it in the
+    # same exact passage instead of dropping textual coverage during activation.
+    raw["model_payload"]["chunks"][0]["region_refs"].append(
+        dict(page_id=page_id, region_key="caption-1"))
     raw["model_payload"]["chunks"][0]["illustration_refs"] = [reference]
     raw["model_payload"]["poi_media_links"] = [dict(link_key="picture-place",
         poi_locator=dict(names=["Synthetic historic place"]), illustration_ref=reference,
