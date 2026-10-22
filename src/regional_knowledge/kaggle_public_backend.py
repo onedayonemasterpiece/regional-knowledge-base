@@ -374,7 +374,7 @@ class KaggleSourceBackend:
             raise ToolError('{"status":"unavailable","reason":"target_graph_exact_source_scope_required"}')
         return await self._search('',principal,evidence=True,graph_request=dict(
             source_id=document_ids[0],action='list',limit=limit,cursor=cursor,
-            kinds=tuple(kinds) if isinstance(kinds,(list,tuple)) else kinds,query=query))
+            kinds=(tuple(kinds) or None) if isinstance(kinds,(list,tuple)) else kinds,query=query))
 
     async def _search(self, query, principal, *, evidence, source_ids=None, limit=3, exact_locator=None,
                       story_request=None,fact_request=None,catalog_request=None,graph_request=None,kinds=('source',),trusted=None,story_cursor_generation=None):
