@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from regional_knowledge.kaggle_import_contracts import SourceResearchInput, TargetSourceImportInput
 
 
-ID = "11111111-1111-4111-8111-111111111111"
+ID = "abcdef12-3456-4abc-8def-123456789abc"
 
 
 def continuation(**arguments):
