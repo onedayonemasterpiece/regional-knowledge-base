@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 import sys
+import threading
 import time
 import types
 
@@ -53,6 +54,12 @@ INSTRUMENTED_STATUS = """            async def status():
                 if (caller == "dispatch" and promoted and probe_nonce is not None
                         and _probe_dispatch_event is not None):
                     _probe_dispatch_event.set()
+                if (caller == "dispatch" and promoted and shared is None
+                        and _legacy_dispatch_observed is not None):
+                    # Receiver/promotion can finish before this dispatch
+                    # iteration. Signal the REAL subsequent status call,
+                    # rather than assuming RESULT_ACK happened after it.
+                    _legacy_dispatch_observed.set()
                 if caller == "sender" and _sender_entered is not None:
                     _sender_entered.set()
                     if not await asyncio.to_thread(_sender_release.wait, 3):
@@ -62,7 +69,8 @@ INSTRUMENTED_STATUS = """            async def status():
 
 
 def candidate_route(*, fastpath: bool, observations: list, probe_event=None,
-                    sender_entered=None, sender_release=None):
+                    sender_entered=None, sender_release=None,
+                    legacy_dispatch_observed=None):
     """Build a temporary module; no global module, source or runtime patch."""
     source = Path(inspect.getfile(production)).read_text()
     if (source.count(CANDIDATE) != 1 or source.count(BEFORE_STATUS) != 1
@@ -77,6 +85,7 @@ def candidate_route(*, fastpath: bool, observations: list, probe_event=None,
     module.__dict__["sys"] = sys
     module.__dict__["_status_observations"] = observations
     module.__dict__["_probe_dispatch_event"] = probe_event
+    module.__dict__["_legacy_dispatch_observed"] = legacy_dispatch_observed
     module.__dict__["_sender_entered"] = sender_entered
     module.__dict__["_sender_release"] = sender_release
     exec(compile(source, module.__file__, "exec"), module.__dict__)
@@ -166,7 +175,9 @@ def test_legacy_nonshared_mode_keeps_status_on_promoted_dispatch(fastpath):
     from test_bge_channel import Queue as LegacyQueue
     legacy=LegacyQueue()
     observations=[]
-    route=candidate_route(fastpath=fastpath,observations=observations)
+    promoted_dispatch = threading.Event()
+    route=candidate_route(fastpath=fastpath,observations=observations,
+                          legacy_dispatch_observed=promoted_dispatch)
     with TestClient(Starlette(routes=[route(legacy)])) as app:
         with app.websocket_connect("/bge-worker/channel",
                 headers={"Authorization":"Bearer secret"}) as socket:
@@ -188,6 +199,11 @@ def test_legacy_nonshared_mode_keeps_status_on_promoted_dispatch(fastpath):
                 timings={"encoder_seconds":.01}))
             confirmed=socket.receive_json()
             assert confirmed["type"]=="RESULT_ACK" and confirmed["status"]=="accepted"
+            # Wait for the *actual* next promoted dispatch status while WSS
+            # and TestClient's event loop are still alive. The RESULT_ACK
+            # alone is not a causal barrier with the independent dispatch.
+            assert promoted_dispatch.wait(2), (
+                "promoted legacy dispatch did not perform its real status read")
     # No shared admission, so the original legacy per-iteration status
     # must remain present AFTER promotion in both source variants.
     assert any(caller=="dispatch" and promoted
