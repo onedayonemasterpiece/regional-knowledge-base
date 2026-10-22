@@ -336,11 +336,12 @@ def test_real_shared_product_telemetry_schema_when_companion_pr_is_present():
     assert record['run_id'] == 'fixture-run'
     assert record['runtime_incarnation'] == 'fixture.incarnation'
     assert record['sample_seq'] == 1 and record['release_sha256'] == 'a' * 64
-    assert record['rss_kib'] == 100 and record['pss_kib'] == 70
-    assert record['cgroup_memory_current_bytes'] == 10000
-    assert record['pg_master_rss_kib'] == 300
+    assert record['rss_kib'] == 100
+    assert record['memory_current_bytes'] == 10000
+    assert 'pg_master_rss_kib' not in record and 'pss_kib' not in record
     assert record['cpu_usage_delta_seconds'] == 1.5
-    assert record['worker_sampling_failed_total'] == 0
+    assert 'io_read_bytes' not in record
+    assert record['sampling_failures_total'] == 0
     assert 'private_text' not in json.dumps(record)
 
 
