@@ -57,7 +57,7 @@ def read_manifest(config):
 
 
 class SourceGeoInstaller:
-    def __init__(self,startup,config,*,upgrade_pins=None):
+    def __init__(self,startup,config,*,upgrade_pins=None,native_pins=None):
         if type(config) is not SourceGeoInstallConfig:raise TypeError('typed fixed GEO bootstrap configuration required')
         self.startup,self.config=startup,config
         self.spool=startup.config.spool;self.queue=startup.config.queue
@@ -69,6 +69,8 @@ class SourceGeoInstaller:
         self.keys=tuple('geo-bootstrap11:'+self.plan.manifest_id+':'+str(n) for n in range(len(self.plan.payloads)))
         self.effective_keys=self.keys
         self.upgrade_pins=upgrade_pins
+        self.native_pins=native_pins
+        if native_pins is not None and upgrade_pins is None:raise ValueError('native source upgrade follows the GEO dependency upgrade')
         self.upgrade_pending=False
         if upgrade_pins is not None:
             from .kaggle_geo_upgrade import GeoUpgradePins
@@ -116,6 +118,35 @@ class SourceGeoInstaller:
             expected=json.loads(row['expected_json'])
         return tuple(expected.get(k) for k in ('schema_revision','function_revision','executor_revision'))!=GEO_V2_REVISIONS.wire()
 
+    def native_upgrade_command(self,repair):
+        if self.native_pins is None:return None
+        from .kaggle_native_source_upgrade import resolved_native_source_upgrade
+        migration=repair[0]
+        return resolved_native_source_upgrade(pins=self.native_pins,sequence=repair[-1].sequence+1,
+            operation_key=migration.operation_key.rsplit(':',1)[0]+':native-source-upgrade',
+            request_id=migration.request_id,person_id=migration.person_id,logical_time=migration.logical_time)
+
+    async def _seal_native_upgrade(self,binding,repair,context):
+        """Stage+seal the ordered schema14 transition right after the GEO repair.
+
+        Like the repair it stays frozen here: only a schema14 restore replays it.
+        """
+        command=self.native_upgrade_command(repair)
+        if command is None:return repair[-1].sequence
+        try:entry=await self.spool.get(command.operation_key)
+        except SpoolError as exc:
+            if type(exc) is not SpoolError:raise
+            await self.spool.stage_native_source_upgrade(context,command,database_generation=binding.database_generation)
+            entry=await self.spool.get(command.operation_key)
+        if entry.command_bytes!=command.encode():raise SpoolConflict('retained native source upgrade intent changed')
+        if entry.accepted is None:
+            if entry.seal_state=='NOT_SENT':
+                await self.spool.seal(context,command.operation_key,writer_generation=self.startup.config.writer_generation,
+                    predecessor=await self.spool.journal.head())
+            else:
+                await self.spool.seal(context,command.operation_key,writer_generation=self.startup.config.writer_generation)
+        return command.sequence
+
     async def _dependency_repair(self,binding,commands,context):
         if self.upgrade_pins is None:return False
         outcomes={}
@@ -152,7 +183,8 @@ class SourceGeoInstaller:
                     writer_generation=self.startup.config.writer_generation)
                 return False
         if not native_ready:
-            _LOG.info('geo_bootstrap state=upgrade_prepared manifest_sha256=%s final_sequence=%s',self.plan.manifest_id,repair[-1].sequence)
+            final=await self._seal_native_upgrade(binding,repair,context)
+            _LOG.info('geo_bootstrap state=upgrade_prepared manifest_sha256=%s final_sequence=%s',self.plan.manifest_id,final)
             return False
         rejected=[command for command in commands if outcomes[command.operation_key]=='rejected_precondition']
         replacements={old.operation_key:new.operation_key for old,new in zip(rejected,repair[1:])}
