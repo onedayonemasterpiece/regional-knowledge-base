@@ -384,3 +384,82 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
                 await connection.execute("DROP OWNED BY "+",".join(roles))
                 for name in reversed(roles):
                     await connection.execute("DROP ROLE "+name)
+
+
+@pytest.mark.asyncio
+async def test_real_dataset_store_cannot_mark_revision2_activation_saved_before_exact_covered_version(tmp_path):
+    """Actual DatasetRecoveryStore, synthetic bounded native publisher/readback.
+
+    Unlike the SQL APPLIED receipt above, only native-verifiable exact captured
+    remote bytes transition to durable. This is NOT a real Kaggle Dataset or a
+    product Saved claim; the genuine importer remains responsible for checking
+    its activation outcome against this same guard.
+    """
+    from regional_knowledge.kaggle_dataset_base import DatasetFile
+    from regional_knowledge.kaggle_pg_snapshot_native import encode,sha as bytes_sha
+    from regional_knowledge.recovery_journal import ObjectRef, JournalConflict
+    from test_dataset_recovery_store import prepared
+
+    p=prepared(tmp_path)
+    store=p.store
+    key=p.prefix+"outcomes/revision2-activation-synthetic"
+    # Codec/command-like bytes are intentionally synthetic; the first test
+    # above independently executes actual PG journal/revision2 commands.
+    output=encode(dict(codec="rkb.outcome.v1",operation_key="revision2-activation",
+        command_sha256="a"*64,source_id=SOURCE,source_revision=2,
+        status="applied",database_generation="db",sequence=8))
+    assert await store.compare_and_swap(key,output,expected_token=None,
+                                        writer_generation="writer")
+    pending=await store.read(key,max_bytes=2048)
+    assert pending is not None and pending.token.startswith("pending:")
+    assert not store.remote_durable(key,output)
+    assert not store.remote_durable(key,output+b"tamper")
+    assert store.pending_outcomes()
+    # A lost API acknowledgment must reuse the identical pending key/bytes,
+    # not create a second release or a new outcome identity.
+    assert not await store.compare_and_swap(key,output,expected_token=None,
+                                            writer_generation="writer")
+
+    inventory=store.export_control()
+    control=encode(dict(codec="rkb.source-base-control.v1",
+                        database_generation="db",sequence=8))
+    manifest=encode(dict(database_generation="db",applied_sequence=8,
+        blob=dict(size=p.checkpoint.archive.size,
+                  sha256=p.checkpoint.archive.sha256),
+        source_control=dict(key=p.prefix+"source-base-control/"+bytes_sha(control),
+                            sha256=bytes_sha(control),length=len(control))))
+    checkpoint=replace(p.checkpoint,dataset_version=2,base_sequence=8,
+        manifest=DatasetFile("base-manifest.json",len(manifest),bytes_sha(manifest)),
+        control=DatasetFile("source-control.json",len(control),bytes_sha(control)),
+        journal=DatasetFile("journal-control.json",len(inventory),bytes_sha(inventory)))
+    manifest_ref=ObjectRef(
+        p.prefix+"snapshots/manifests/"+bytes_sha(manifest),
+        bytes_sha(manifest),len(manifest),8)
+
+    class ExactNativeReadback:
+        ref=p.publisher.ref
+        def read_control(self,file,*,version):
+            assert version==2
+            return {"journal-control.json":inventory,
+                    "base-manifest.json":manifest,
+                    "source-control.json":control}[file.name]
+
+    store.publisher=ExactNativeReadback()
+    attested=dict(dataset_ref=store.publisher.ref,dataset_version=2,
+        base_sequence=8,archive_sha256=checkpoint.archive.sha256,
+        archive_size=checkpoint.archive.size)
+    with pytest.raises(JournalConflict,match="native_snapshot_readback_changed"):
+        store.promote(checkpoint,dict(attested,archive_sha256="0"*64),
+                      manifest_ref=manifest_ref)
+    assert not store.remote_durable(key,output)
+    store.promote(checkpoint,attested,manifest_ref=manifest_ref)
+    assert store.remote_durable(key,output)
+    assert not store.remote_durable(key,output+b"tamper")
+    store.promote(checkpoint,attested,manifest_ref=manifest_ref)  # Lost ACK.
+    assert store.latest_checkpoint.dataset_version==2
+    assert store.remote_durable(key,output)
+    assert await store.compare_and_swap(
+        key,output+b"changed",expected_token=pending.token,
+        writer_generation="writer")
+    assert not store.remote_durable(key,output+b"changed")
+    assert not store.remote_durable(key,output)
