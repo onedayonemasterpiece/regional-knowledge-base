@@ -1,6 +1,6 @@
 # READY_ACK interleaving — diagnostic-only real WSS regression (2026-10-22)
 
-**Status: DIAGNOSTIC SOURCE PREPARED; ACTUAL EXECUTION NOT RUN.** Expected RED is a hypothesis until an actual test receipt exists; this is not an approved production fix. This source-only artifact is **separate from PR220**; no existing test, queue, WSS, readiness, heartbeat handler, scheduler, CI or runtime code is edited. Do **not** add it to the default mandatory pytest suite or claim it is a PASS simply because PR220's ordinary CI passed. The native integrator is stopped following denials; no work on its blocked files is authorized.
+**Status: ACTUAL DIAGNOSTIC RED REPRODUCED on unchanged WSS/queue (test-only); NOT a production fix.** Historical PR208/218 failure causality remains unproven; this test controls and proves one specific concurrency interleaving. This source-only artifact is **separate from PR220**; no existing test, queue, WSS, readiness, heartbeat handler, scheduler, CI or runtime code is edited. Do **not** add it to the default mandatory pytest suite or claim it is a PASS simply because PR220's ordinary CI passed. The native integrator is stopped following denials; no work on its blocked files is authorized.
 
 ## Source-level race (no claim of prior execution)
 
@@ -15,9 +15,21 @@ Current immutable production baseline: `bd138b2449f68cabb2cbfa3df552df8471f40c78
 
 This ordering is **possible from source**, not automatically the root cause of PR208/PR218 historical RED. The diagnostic test must execute it to claim a real reproduction.
 
-## Execution attempt and exact blocker
+## Actual executable RED receipt (test-only, not historical root-cause proof)
 
-An authorized isolated test environment was not reachable in this run: the **read-only** `Codex_DevCoveer.project_probe` for the RKB repository returned **`UNAVAILABLE: McpServerError: Connection failed`** before any test launch, worktree switch, dependency installation or mutation. This is **not** an access-denied receipt, not a diagnostic test result and not an actual RED. No alternate executor, GitHub Actions workflow edit, Dev PG, model or provider was used to work around it. GitHub source commit/diff verifies the new test/doc files only. The selector below must be explicitly run by an owner-approved existing test environment before declaring reproduction.
+Initial read-only DevCoveer project_probe transiently returned `UNAVAILABLE: McpServerError: Connection failed`. The SAME project_probe recovered; **no access denial occurred**. No alternate executor or blocked queue/runtime operation was attempted.
+
+A dedicated isolated handoff `src_0fb8ce3842e7ebacbc539762` was created from exactly `bd138b2449f68cabb2cbfa3df552df8471f40c78` with **only these two new files** (source patch SHA-256 `3cf6a4f73c7e15b02cf515a652c36c14925b652c505e0caba1e0d7477b5cdc86`, no production edits, zero unstaged/untracked). The test file SHA-256 was `2b6da493bc0d700bd05fe84a7824b15e602ab101828aa54836f84efca8d0035c` at execution.
+
+Authorized existing project `pytest` tool invocation under that isolated handoff:
+
+- `PYTHONPATH=src:tests PYTHONDONTWRITEBYTECODE=1 pytest -q -s tests/diagnostics/ready_ack_interleaving_diagnostic.py`.
+- `python_env=auto` reused system Python (reported executable `/usr/bin/python3`; installed package paths indicate Python 3.14), with **no install or provider actions**.
+- Exact direct operator receipt: `op_4471268bc1119c6f7f499cc9`, `exit_code=1`, `duration_ms=4539`, **1 FAILED** (explicit single test), `stderr=""`, untruncated.
+- The REAL WSS response sequence was `['runtime_not_ready', 'ready']`; the real old validator's captured result was `[('database_generation_mismatch',)]`. This was emitted **after** test-observed receiver replacement of the new valid proof and test-side release of old result.
+- The test's intentional hard failure message was: `PRODUCT INTERLEAVING REPRODUCED: stale negative READY_ACK from real dispatch before valid receiver READY_ACK`.
+- No official CI run or PG test acceptance is claimed for this explicitly selected diagnostic. PR220 remains unchanged. The result proves the **specific controlled schedule**; it does **not** independently identify the historical PR208/218 failure's exact schedule.
+
 
 ## Explicit selector, not default CI
 
@@ -44,4 +56,4 @@ No PostgreSQL, resident BGE/model, Kaggle, Telegram, credentials, external provi
 
 A reviewed native-integrator source fix must make each READY proof versioned/serialized with the promotion decision, including the reset of `runtime_blocked`, such that completion of an earlier proof **cannot emit a negative READY_ACK for a superseded generation/proof**. One valid outcome after an ordered newer READY; model-only and wrong-proof READY must remain denied, with no early search admission, no heartbeat-assisted proof bypass and no false `runtime_verified`. Re-test this exact selector and all existing WSS/queue tests; do not silently filter negative ACKs on the test client, add retry-to-green, or increase timeouts.
 
-Source-only finding remains distinct from any historical CI failure until reproducibly executed and archived. A failing diagnostic is **not** reason to change blocked native-integrator files without renewed owner authorization.
+This actual bounded diagnostic RED remains distinct from the **historical** PR208/PR218 CI failures, whose exact causality has not been independently replayed. The native integrator's production changes stay BLOCKED pending new explicit owner authorization; the test-only RED is not permission to change WSS/queue/heartbeat.
