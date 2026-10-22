@@ -34,6 +34,7 @@ def provider_error_facts(error):
 
 _PREPARATION_STEPS=frozenset({'not_started','create_private_folder',
     'verify_empty_journal_intent','verify_writer_binding','compose_notebook_source',
+    'prepare_successor','bind_successor_recovery',
     'write_private_notebook','write_private_metadata','provider_submission'})
 
 
@@ -273,7 +274,8 @@ def worker_source(template, queue, run_id, token, broker, *, transport='http', t
         return compose_target(template,config,target,queue=queue,repository=Path(__file__).resolve().parents[2])
     return template.replace('RUN_CONFIG = {}','RUN_CONFIG = '+repr(config),1)
 
-def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
+def main(*, target_spec=None, recovery_journal=None, target_config_path=None,
+         successor_source_config=None):
     logging.basicConfig(level=logging.INFO)
     target_config_path=target_config_path or os.getenv('RKB_BGE_TARGET_CONFIG','').strip()
     if target_config_path:
@@ -296,6 +298,11 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
         if re.fullmatch(r'gcr\.io/kaggle-images/python@sha256:[0-9a-f]{64}',image) is None:
             raise ValueError('target launch requires exact RKB_BGE_DOCKER_IMAGE digest')
     else:image=None
+    if successor_source_config is not None:
+        # Explicit already-loaded owner metadata, never credential discovery.
+        # Keep the original config as the immutable authority anchor across runs.
+        if type(successor_source_config) is not dict or target_spec is None:
+            raise ValueError('explicit restore source configuration and target required')
     for line in Path('/home/dev/.env').read_text().splitlines():
         if line.startswith(('KAGGLE_USERNAME=','KAGGLE_KEY=')):
             key,value=line.split('=',1);os.environ[key]=shlex.split(value)[0]
@@ -319,6 +326,8 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
             preparation_step='not_started'  # Fixed, low-cardinality diagnostic only.
             try:
                 if run['status']=='starting' and run['launch_state']=='pending':
+                    launch_target=target_spec
+                    successor_plan=None
                     dataset_sources=(target_spec.stage0.dataset_sources
                         if target_spec is not None and target_spec.stage0 is not None else ())
                     if dataset_sources:
@@ -339,29 +348,43 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                                     'run_id':run_id,'ready':dataset_probe.ready,'reason':dataset_probe.reason,
                                     'dataset_count':dataset_probe.dataset_count,'file_count':dataset_probe.file_count}))
                         if dataset_probe is None or not dataset_probe.ready:continue
+                    if successor_source_config is not None:
+                        from regional_knowledge.kaggle_cold_successor import prepare_successor
+                        # The original explicitly bound run uses its unchanged
+                        # target. Later demand requires a durable recovery plan.
+                        if run_id!=successor_source_config['run_id']:
+                            preparation_step='prepare_successor'
+                            successor_plan=prepare_successor(queue,run_id,target_spec,successor_source_config)
+                            launch_target=successor_plan.target
                     token=queue.launch_claim(run_id,provider_ref=ref)
                     if token is None:continue
                     boundary='launch_preparation'
                     preparation_step='create_private_folder'
                     folder=state/run_id;folder.mkdir(mode=0o700,exist_ok=True)
-                    if target_spec is not None and target_spec.database.mode=='NEW_EMPTY_GENERATION':
+                    if launch_target is not None and launch_target.database.mode=='NEW_EMPTY_GENERATION':
                         preparation_step='verify_empty_journal_intent'
                         import asyncio
                         from regional_knowledge.kaggle_target_launch import persist_empty_intent
                         nonce=queue.prepare_channel(run_id)
-                        asyncio.run(persist_empty_intent(queue,run_id,target_spec,launch_nonce=nonce,
+                        asyncio.run(persist_empty_intent(queue,run_id,launch_target,launch_nonce=nonce,
                             recovery_journal=recovery_journal,
-                            sql_hashes=target_sql_hashes(target_spec,Path(__file__).resolve().parents[2])))
-                    if target_spec is not None and target_spec.database.mode=='VERIFIED_INITIALIZED':
+                            sql_hashes=target_sql_hashes(launch_target,Path(__file__).resolve().parents[2])))
+                    if launch_target is not None and launch_target.database.mode=='VERIFIED_INITIALIZED':
                         # A restore target pins one writer generation minted for
                         # one run. A successor created by later demand (reboot,
                         # retire) cannot adopt a generation already used by that
                         # run; pushing would only burn a Kaggle session.
                         preparation_step='verify_writer_binding'
-                        require_writer_binding(queue,run_id,target_spec.database.writer_generation)
+                        require_writer_binding(queue,run_id,launch_target.database.writer_generation)
                     preparation_step='compose_notebook_source'
                     source=worker_source(template,queue,run_id,token,broker,
-                                         transport=os.getenv('RKB_BGE_TRANSPORT','http'),target=target_spec,provider_image=image)
+                                         transport=os.getenv('RKB_BGE_TRANSPORT','http'),target=launch_target,provider_image=image)
+                    if successor_plan is not None:
+                        preparation_step='bind_successor_recovery'
+                        from regional_knowledge.kaggle_cold_successor import finalize_successor
+                        finalize_successor(queue,successor_plan)
+                        logging.info(json.dumps({'event':'bge_successor_prepared','run_id':run_id,
+                            'submission_state':'not_sent','recovery_binding':'finalized'}))
                     preparation_step='write_private_notebook'
                     (folder/'main.py').write_text(source);(folder/'main.py').chmod(0o600)
                     metadata={'id':ref,'title':slug,'code_file':'main.py','language':'python','kernel_type':'script','is_private':True,'enable_gpu':False,'enable_tpu':False,'enable_internet':True,'dataset_sources':[],'competition_sources':[],'kernel_sources':[]}
