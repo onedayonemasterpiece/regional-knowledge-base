@@ -37,7 +37,7 @@ Candidate `768bca5c950507b053b157626e34c4ffcf6539af` passed CI39773458811:
 | PR223 Dataset receipt follow-up | `5fad3eb6c3e7b8a12ce2910e27adcaf6f830d4f7` | Metadata wheel-lock accepts exact Dataset placement | Clean; no package bytes/pins changed |
 | PR248 compatible importer input | `3e1f6c948d7b1bd937eb5b443b87c292a0faab5f` | Exact importer/test delta on native baseline6d51bfd; main PR248 head d8fc88a9b2933834fe7fd4963f5fd9e008f225ee | Clean; only2 paths, not the old whole importer |
 | PR249 | `fd7d564830178d7c71e54a0cd74f35591146483b` | Dispatch status fastpath after included PR239 | Clean; PR239 epoch fix retained |
-| PR250 | `1283b13efa5551ba550aa31e25862fcb6386ec85` | Inert authenticated executor claim receiver | Clean; new files, not mounted |
+| PR250 | `ba57b276293aaf88548c37d56b9dd99f9882cbe0` | Inert authenticated executor claim receiver | Clean; includes author's fixture import fix after initial1283b13; new files, not mounted |
 | PR251 | `ddb69be3ce1e09ba0a64bb158fabd821e9b85067` | Same-client leased native Telegram crop bytes | Clean; new native file/tests and owned media doc |
 
 PR246 source depends on already included PR242/243. Its earlier fbdafb5
