@@ -1,0 +1,957 @@
+{
+  "architecture": "amd64",
+  "codec": "rkb.native_package_lock.v1",
+  "dependency_edges": [
+    [
+      "djvulibre-bin",
+      "libc6"
+    ],
+    [
+      "djvulibre-bin",
+      "libdjvulibre21"
+    ],
+    [
+      "djvulibre-bin",
+      "libgcc-s1"
+    ],
+    [
+      "djvulibre-bin",
+      "libstdc++6"
+    ],
+    [
+      "djvulibre-bin",
+      "libtiff6"
+    ],
+    [
+      "djvulibre-bin",
+      "curl"
+    ],
+    [
+      "libc6",
+      "libgcc-s1"
+    ],
+    [
+      "libdjvulibre21",
+      "libc6"
+    ],
+    [
+      "libdjvulibre21",
+      "libgcc-s1"
+    ],
+    [
+      "libdjvulibre21",
+      "libjpeg8"
+    ],
+    [
+      "libdjvulibre21",
+      "libstdc++6"
+    ],
+    [
+      "libdjvulibre21",
+      "libdjvulibre-text"
+    ],
+    [
+      "libgcc-s1",
+      "gcc-14-base"
+    ],
+    [
+      "libgcc-s1",
+      "libc6"
+    ],
+    [
+      "libstdc++6",
+      "gcc-14-base"
+    ],
+    [
+      "libstdc++6",
+      "libc6"
+    ],
+    [
+      "libstdc++6",
+      "libgcc-s1"
+    ],
+    [
+      "libtiff6",
+      "libc6"
+    ],
+    [
+      "libtiff6",
+      "libdeflate0"
+    ],
+    [
+      "libtiff6",
+      "libjbig0"
+    ],
+    [
+      "libtiff6",
+      "libjpeg8"
+    ],
+    [
+      "libtiff6",
+      "liblerc4"
+    ],
+    [
+      "libtiff6",
+      "liblzma5"
+    ],
+    [
+      "libtiff6",
+      "libwebp7"
+    ],
+    [
+      "libtiff6",
+      "libzstd1"
+    ],
+    [
+      "libtiff6",
+      "zlib1g"
+    ],
+    [
+      "curl",
+      "libc6"
+    ],
+    [
+      "curl",
+      "libcurl4t64"
+    ],
+    [
+      "curl",
+      "zlib1g"
+    ],
+    [
+      "libjpeg8",
+      "libjpeg-turbo8"
+    ],
+    [
+      "libdeflate0",
+      "libc6"
+    ],
+    [
+      "libjbig0",
+      "libc6"
+    ],
+    [
+      "liblerc4",
+      "libc6"
+    ],
+    [
+      "liblerc4",
+      "libgcc-s1"
+    ],
+    [
+      "liblerc4",
+      "libstdc++6"
+    ],
+    [
+      "liblzma5",
+      "libc6"
+    ],
+    [
+      "libwebp7",
+      "libc6"
+    ],
+    [
+      "libwebp7",
+      "libsharpyuv0"
+    ],
+    [
+      "libzstd1",
+      "libc6"
+    ],
+    [
+      "zlib1g",
+      "libc6"
+    ],
+    [
+      "libcurl4t64",
+      "libbrotli1"
+    ],
+    [
+      "libcurl4t64",
+      "libc6"
+    ],
+    [
+      "libcurl4t64",
+      "libgssapi-krb5-2"
+    ],
+    [
+      "libcurl4t64",
+      "libidn2-0"
+    ],
+    [
+      "libcurl4t64",
+      "libldap2"
+    ],
+    [
+      "libcurl4t64",
+      "libnghttp2-14"
+    ],
+    [
+      "libcurl4t64",
+      "libpsl5t64"
+    ],
+    [
+      "libcurl4t64",
+      "librtmp1"
+    ],
+    [
+      "libcurl4t64",
+      "libssh-4"
+    ],
+    [
+      "libcurl4t64",
+      "libssl3t64"
+    ],
+    [
+      "libcurl4t64",
+      "libzstd1"
+    ],
+    [
+      "libcurl4t64",
+      "zlib1g"
+    ],
+    [
+      "libjpeg-turbo8",
+      "libc6"
+    ],
+    [
+      "libsharpyuv0",
+      "libc6"
+    ],
+    [
+      "libbrotli1",
+      "libc6"
+    ],
+    [
+      "libgssapi-krb5-2",
+      "libkrb5-3"
+    ],
+    [
+      "libgssapi-krb5-2",
+      "libc6"
+    ],
+    [
+      "libgssapi-krb5-2",
+      "libcom-err2"
+    ],
+    [
+      "libgssapi-krb5-2",
+      "libk5crypto3"
+    ],
+    [
+      "libgssapi-krb5-2",
+      "libkrb5support0"
+    ],
+    [
+      "libidn2-0",
+      "libc6"
+    ],
+    [
+      "libidn2-0",
+      "libunistring5"
+    ],
+    [
+      "libldap2",
+      "libc6"
+    ],
+    [
+      "libldap2",
+      "libgnutls30t64"
+    ],
+    [
+      "libldap2",
+      "libsasl2-2"
+    ],
+    [
+      "libnghttp2-14",
+      "libc6"
+    ],
+    [
+      "libpsl5t64",
+      "libidn2-0"
+    ],
+    [
+      "libpsl5t64",
+      "libc6"
+    ],
+    [
+      "libpsl5t64",
+      "libunistring5"
+    ],
+    [
+      "librtmp1",
+      "libc6"
+    ],
+    [
+      "librtmp1",
+      "libgmp10"
+    ],
+    [
+      "librtmp1",
+      "libgnutls30t64"
+    ],
+    [
+      "librtmp1",
+      "libhogweed6t64"
+    ],
+    [
+      "librtmp1",
+      "libnettle8t64"
+    ],
+    [
+      "librtmp1",
+      "zlib1g"
+    ],
+    [
+      "libssh-4",
+      "libc6"
+    ],
+    [
+      "libssh-4",
+      "libgssapi-krb5-2"
+    ],
+    [
+      "libssh-4",
+      "libssl3t64"
+    ],
+    [
+      "libssh-4",
+      "zlib1g"
+    ],
+    [
+      "libssl3t64",
+      "libc6"
+    ],
+    [
+      "libkrb5-3",
+      "libkrb5support0"
+    ],
+    [
+      "libkrb5-3",
+      "libc6"
+    ],
+    [
+      "libkrb5-3",
+      "libcom-err2"
+    ],
+    [
+      "libkrb5-3",
+      "libk5crypto3"
+    ],
+    [
+      "libkrb5-3",
+      "libkeyutils1"
+    ],
+    [
+      "libkrb5-3",
+      "libssl3t64"
+    ],
+    [
+      "libcom-err2",
+      "libc6"
+    ],
+    [
+      "libk5crypto3",
+      "libc6"
+    ],
+    [
+      "libk5crypto3",
+      "libkrb5support0"
+    ],
+    [
+      "libkrb5support0",
+      "libc6"
+    ],
+    [
+      "libunistring5",
+      "libc6"
+    ],
+    [
+      "libgnutls30t64",
+      "libc6"
+    ],
+    [
+      "libgnutls30t64",
+      "libgmp10"
+    ],
+    [
+      "libgnutls30t64",
+      "libhogweed6t64"
+    ],
+    [
+      "libgnutls30t64",
+      "libidn2-0"
+    ],
+    [
+      "libgnutls30t64",
+      "libnettle8t64"
+    ],
+    [
+      "libgnutls30t64",
+      "libp11-kit0"
+    ],
+    [
+      "libgnutls30t64",
+      "libtasn1-6"
+    ],
+    [
+      "libgnutls30t64",
+      "libunistring5"
+    ],
+    [
+      "libsasl2-2",
+      "libsasl2-modules-db"
+    ],
+    [
+      "libsasl2-2",
+      "libc6"
+    ],
+    [
+      "libsasl2-2",
+      "libssl3t64"
+    ],
+    [
+      "libgmp10",
+      "libc6"
+    ],
+    [
+      "libhogweed6t64",
+      "libc6"
+    ],
+    [
+      "libhogweed6t64",
+      "libgmp10"
+    ],
+    [
+      "libhogweed6t64",
+      "libnettle8t64"
+    ],
+    [
+      "libnettle8t64",
+      "libc6"
+    ],
+    [
+      "libkeyutils1",
+      "libc6"
+    ],
+    [
+      "libp11-kit0",
+      "libc6"
+    ],
+    [
+      "libp11-kit0",
+      "libffi8"
+    ],
+    [
+      "libtasn1-6",
+      "libc6"
+    ],
+    [
+      "libsasl2-modules-db",
+      "libc6"
+    ],
+    [
+      "libsasl2-modules-db",
+      "libdb5.3t64"
+    ],
+    [
+      "libffi8",
+      "libc6"
+    ],
+    [
+      "libdb5.3t64",
+      "libc6"
+    ]
+  ],
+  "metadata": [
+    {
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "release": "noble",
+      "sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "release": "noble",
+      "sha256": "687ffc969e7700137677b9cfe2f614ee2d638052a91a7c9bf31f3f6a3040a99a"
+    },
+    {
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "release": "noble",
+      "sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b"
+    },
+    {
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "release": "noble",
+      "sha256": "534f85129132bab9e6e3be6b578b2a716186be083bc72ebad5b2c3c58346503f"
+    },
+    {
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "release": "noble",
+      "sha256": "8159809327f001cd59d7655c23479311eb2e12c95f33fa5625931cf97dd4b76d"
+    },
+    {
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "release": "noble",
+      "sha256": "ea513faa34525c68c9a2a75242acb5818fe3c43c60a81ace8e11a150915fe21f"
+    }
+  ],
+  "native_execution_verified": false,
+  "packages": [
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/c/curl/curl_8.5.0-2ubuntu10.16_amd64.deb",
+      "name": "curl",
+      "sha256": "3c5ca6af64370cfb0fac85876d8025563005cbd399fcaf7e34bbde9051058ae0",
+      "size": 226386,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/c/curl/curl_8.5.0-2ubuntu10.16_amd64.deb",
+      "version": "8.5.0-2ubuntu10.16"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/universe/d/djvulibre/djvulibre-bin_3.5.28-2ubuntu0.24.04.2_amd64.deb",
+      "name": "djvulibre-bin",
+      "sha256": "1daf34345f8e0a9c27b5cb72c4007324df00514dfe97eaedaa5aceee4be183da",
+      "size": 294252,
+      "source_sha256": "534f85129132bab9e6e3be6b578b2a716186be083bc72ebad5b2c3c58346503f",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/d/djvulibre/djvulibre-bin_3.5.28-2ubuntu0.24.04.2_amd64.deb",
+      "version": "3.5.28-2ubuntu0.24.04.2"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/g/gcc-14/gcc-14-base_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "name": "gcc-14-base",
+      "sha256": "b95c172411a7fdae70307cf33a9f5320ba5e056b556454543dd5b679d5ce1c4f",
+      "size": 51014,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/gcc-14-base_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "version": "14.2.0-4ubuntu2~24.04.1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/b/brotli/libbrotli1_1.1.0-2build2_amd64.deb",
+      "name": "libbrotli1",
+      "sha256": "74492419b8fda803774b8c9acef6afc5d2f9ff31782635aae212906adae7b277",
+      "size": 330730,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/b/brotli/libbrotli1_1.1.0-2build2_amd64.deb",
+      "version": "1.1.0-2build2"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/g/glibc/libc6_2.39-0ubuntu8.9_amd64.deb",
+      "name": "libc6",
+      "sha256": "ff5557d99b51f761c4b7c92368b9cc45565eda17df9bf9eb4b134d09825008be",
+      "size": 3264314,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/glibc/libc6_2.39-0ubuntu8.9_amd64.deb",
+      "version": "2.39-0ubuntu8.9"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/e/e2fsprogs/libcom-err2_1.47.0-2.4~exp1ubuntu4.1_amd64.deb",
+      "name": "libcom-err2",
+      "sha256": "7ab24d3057dabf86db8f771ad6e43f073ed86b6b950d6e8ba22cb9fe6707bbc9",
+      "size": 22982,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/libcom-err2_1.47.0-2.4~exp1ubuntu4.1_amd64.deb",
+      "version": "1.47.0-2.4~exp1ubuntu4.1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/c/curl/libcurl4t64_8.5.0-2ubuntu10.16_amd64.deb",
+      "name": "libcurl4t64",
+      "sha256": "8196381b41f0078083a2a52b43f7e7ca9b0b79e5325451bf3948e4af7693cd8d",
+      "size": 344412,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/c/curl/libcurl4t64_8.5.0-2ubuntu10.16_amd64.deb",
+      "version": "8.5.0-2ubuntu10.16"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/d/db5.3/libdb5.3t64_5.3.28+dfsg2-7_amd64.deb",
+      "name": "libdb5.3t64",
+      "sha256": "a78a25c8fad8fdd0b7bc6b297da5d5685579be1e57732aa47870830e4a13161e",
+      "size": 734100,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/d/db5.3/libdb5.3t64_5.3.28+dfsg2-7_amd64.deb",
+      "version": "5.3.28+dfsg2-7"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/libd/libdeflate/libdeflate0_1.19-1build1.1_amd64.deb",
+      "name": "libdeflate0",
+      "sha256": "8e7dfa9e63a9b5058071b84da48bb2e30dea07de169e80fbc759fe0e68639269",
+      "size": 43914,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libd/libdeflate/libdeflate0_1.19-1build1.1_amd64.deb",
+      "version": "1.19-1build1.1"
+    },
+    {
+      "architecture": "all",
+      "filename": "pool/main/d/djvulibre/libdjvulibre-text_3.5.28-2ubuntu0.24.04.2_all.deb",
+      "name": "libdjvulibre-text",
+      "sha256": "0b8dbc6fd1548d29a6576828fe54da3ce2413d6ccb5f1df8a120509a7bdcc073",
+      "size": 51058,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/d/djvulibre/libdjvulibre-text_3.5.28-2ubuntu0.24.04.2_all.deb",
+      "version": "3.5.28-2ubuntu0.24.04.2"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/d/djvulibre/libdjvulibre21_3.5.28-2ubuntu0.24.04.2_amd64.deb",
+      "name": "libdjvulibre21",
+      "sha256": "8c2eb3077774c276c04510e386b231ecf5e4722168f754c436a6131a29221f11",
+      "size": 638310,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/d/djvulibre/libdjvulibre21_3.5.28-2ubuntu0.24.04.2_amd64.deb",
+      "version": "3.5.28-2ubuntu0.24.04.2"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/libf/libffi/libffi8_3.4.6-1build1_amd64.deb",
+      "name": "libffi8",
+      "sha256": "637e6a7744de08cd331a41f4efd0d24e6ea9064843dea9d1c6ca87bdb5f038a2",
+      "size": 24718,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libf/libffi/libffi8_3.4.6-1build1_amd64.deb",
+      "version": "3.4.6-1build1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/g/gcc-14/libgcc-s1_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "name": "libgcc-s1",
+      "sha256": "aa7fadbe33b78bcf99885318040601c550c208929565b179891d9a3cc2aa68cd",
+      "size": 78392,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgcc-s1_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "version": "14.2.0-4ubuntu2~24.04.1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/g/gmp/libgmp10_6.3.0+dfsg-2ubuntu6.1_amd64.deb",
+      "name": "libgmp10",
+      "sha256": "285f8a505dfa8e1b33f357a9d8d3477ad35bf18c0b34771a6df4c25923f3ae0d",
+      "size": 253460,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gmp/libgmp10_6.3.0+dfsg-2ubuntu6.1_amd64.deb",
+      "version": "2:6.3.0+dfsg-2ubuntu6.1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/g/gnutls28/libgnutls30t64_3.8.3-1.1ubuntu3.6_amd64.deb",
+      "name": "libgnutls30t64",
+      "sha256": "b8944756260c5ea6b7fac019745f931f905aa7a4df0763676b1b25c911b692e2",
+      "size": 1002902,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gnutls28/libgnutls30t64_3.8.3-1.1ubuntu3.6_amd64.deb",
+      "version": "3.8.3-1.1ubuntu3.6"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/k/krb5/libgssapi-krb5-2_1.20.1-6ubuntu2.10_amd64.deb",
+      "name": "libgssapi-krb5-2",
+      "sha256": "0d4a0187bcdbbe3e6a10bfa574100087d12052d0d0ef28614fd6210021c587b2",
+      "size": 142830,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libgssapi-krb5-2_1.20.1-6ubuntu2.10_amd64.deb",
+      "version": "1.20.1-6ubuntu2.10"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/n/nettle/libhogweed6t64_3.9.1-2.2build1_amd64.deb",
+      "name": "libhogweed6t64",
+      "sha256": "594a82d7b70ecff393753ee0ab6611b0b18226c4f922d27ccb3f66caeae3d5d1",
+      "size": 198540,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/n/nettle/libhogweed6t64_3.9.1-2.2build1_amd64.deb",
+      "version": "3.9.1-2.2build1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/libi/libidn2/libidn2-0_2.3.7-2build1.1_amd64.deb",
+      "name": "libidn2-0",
+      "sha256": "46bfd10df095a23b65f58115de47a547c9a2d14627749bd0423ae78c14be77d3",
+      "size": 66242,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libi/libidn2/libidn2-0_2.3.7-2build1.1_amd64.deb",
+      "version": "2.3.7-2build1.1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/j/jbigkit/libjbig0_2.1-6.1ubuntu2_amd64.deb",
+      "name": "libjbig0",
+      "sha256": "074a760a86213a1286ad60f56394c90885cf45af070626a88c480d90b78c175a",
+      "size": 29668,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/j/jbigkit/libjbig0_2.1-6.1ubuntu2_amd64.deb",
+      "version": "2.1-6.1ubuntu2"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/libj/libjpeg-turbo/libjpeg-turbo8_2.1.5-2ubuntu2_amd64.deb",
+      "name": "libjpeg-turbo8",
+      "sha256": "f68b5b23bc8a1688fb787d2aed7e2cdf895a73022f6a5025e183162dac4500b2",
+      "size": 149982,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libj/libjpeg-turbo/libjpeg-turbo8_2.1.5-2ubuntu2_amd64.deb",
+      "version": "2.1.5-2ubuntu2"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/libj/libjpeg8-empty/libjpeg8_8c-2ubuntu11_amd64.deb",
+      "name": "libjpeg8",
+      "sha256": "4d6ed682972bddf62af158a06d68a0dda497e421423b7ca92fb450b3d9ceaac9",
+      "size": 2148,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libj/libjpeg8-empty/libjpeg8_8c-2ubuntu11_amd64.deb",
+      "version": "8c-2ubuntu11"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/k/krb5/libk5crypto3_1.20.1-6ubuntu2.10_amd64.deb",
+      "name": "libk5crypto3",
+      "sha256": "273f7cc95a68d927d7f71c3e78b7717a16a8d86e646a206bae7bf797150ae9db",
+      "size": 81944,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libk5crypto3_1.20.1-6ubuntu2.10_amd64.deb",
+      "version": "1.20.1-6ubuntu2.10"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/k/keyutils/libkeyutils1_1.6.3-3build1_amd64.deb",
+      "name": "libkeyutils1",
+      "sha256": "0679f198b0128179e46cdf956fb2022c23c758664c00bc8efa0382d509683a8a",
+      "size": 9490,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/keyutils/libkeyutils1_1.6.3-3build1_amd64.deb",
+      "version": "1.6.3-3build1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/k/krb5/libkrb5-3_1.20.1-6ubuntu2.10_amd64.deb",
+      "name": "libkrb5-3",
+      "sha256": "60b48c5a3233f1d8caba30d6573edc8e131911ab6d63adcd664f7cbe62708362",
+      "size": 347568,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libkrb5-3_1.20.1-6ubuntu2.10_amd64.deb",
+      "version": "1.20.1-6ubuntu2.10"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/k/krb5/libkrb5support0_1.20.1-6ubuntu2.10_amd64.deb",
+      "name": "libkrb5support0",
+      "sha256": "9224ede3246a82a845ea97652ecfae57f88e8d8f520d8a186f9157167574fb34",
+      "size": 34942,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libkrb5support0_1.20.1-6ubuntu2.10_amd64.deb",
+      "version": "1.20.1-6ubuntu2.10"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/o/openldap/libldap2_2.6.10+dfsg-0ubuntu0.24.04.1_amd64.deb",
+      "name": "libldap2",
+      "sha256": "7f3f8e565401256f21d5aa562c9f92dbb63537b73aaea6283e4db5264f1598f4",
+      "size": 197620,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/o/openldap/libldap2_2.6.10+dfsg-0ubuntu0.24.04.1_amd64.deb",
+      "version": "2.6.10+dfsg-0ubuntu0.24.04.1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/l/lerc/liblerc4_4.0.0+ds-4ubuntu2_amd64.deb",
+      "name": "liblerc4",
+      "sha256": "f1b9dbfa28c56564f6b544f3757f5f3f4d549ce9962f39e897812c23b0a5d0e7",
+      "size": 179378,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/lerc/liblerc4_4.0.0+ds-4ubuntu2_amd64.deb",
+      "version": "4.0.0+ds-4ubuntu2"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/x/xz-utils/liblzma5_5.6.1+really5.4.5-1ubuntu0.4_amd64.deb",
+      "name": "liblzma5",
+      "sha256": "5bcf5da2339331e21d3f42a831e82c61c54c6b2f29804010e8d59abd0ae52167",
+      "size": 127704,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/x/xz-utils/liblzma5_5.6.1+really5.4.5-1ubuntu0.4_amd64.deb",
+      "version": "5.6.1+really5.4.5-1ubuntu0.4"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/n/nettle/libnettle8t64_3.9.1-2.2build1_amd64.deb",
+      "name": "libnettle8t64",
+      "sha256": "4cac2064e2984c4bc5a31659d4f00c7efe0c4b691559d536dd726c05d3632a57",
+      "size": 181546,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/n/nettle/libnettle8t64_3.9.1-2.2build1_amd64.deb",
+      "version": "3.9.1-2.2build1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/n/nghttp2/libnghttp2-14_1.59.0-1ubuntu0.4_amd64.deb",
+      "name": "libnghttp2-14",
+      "sha256": "73adcbb9df32cd7c9d46b1c7598bbbbcf249be705d62d966694cfc9976a15dfe",
+      "size": 74590,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/n/nghttp2/libnghttp2-14_1.59.0-1ubuntu0.4_amd64.deb",
+      "version": "1.59.0-1ubuntu0.4"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/p/p11-kit/libp11-kit0_0.25.3-4ubuntu2.2_amd64.deb",
+      "name": "libp11-kit0",
+      "sha256": "e7c58aeac19d89f5f1492dfaa52b8623bcd56edc40983f5243ad56d94f477bf2",
+      "size": 297270,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/p/p11-kit/libp11-kit0_0.25.3-4ubuntu2.2_amd64.deb",
+      "version": "0.25.3-4ubuntu2.2"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/libp/libpsl/libpsl5t64_0.21.2-1.1build1_amd64.deb",
+      "name": "libpsl5t64",
+      "sha256": "a6c85d1303ae90b6a3209d73c4f047f82c27cdc963c48adfd95dd7abca64f039",
+      "size": 57072,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libp/libpsl/libpsl5t64_0.21.2-1.1build1_amd64.deb",
+      "version": "0.21.2-1.1build1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/r/rtmpdump/librtmp1_2.4+20151223.gitfa8646d.1-2build7_amd64.deb",
+      "name": "librtmp1",
+      "sha256": "967a39dbc14236d1580ede01d80fd78444668572e716734e1ac66c175052594e",
+      "size": 56342,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/r/rtmpdump/librtmp1_2.4+20151223.gitfa8646d.1-2build7_amd64.deb",
+      "version": "2.4+20151223.gitfa8646d.1-2build7"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/c/cyrus-sasl2/libsasl2-2_2.1.28+dfsg1-5ubuntu3.1_amd64.deb",
+      "name": "libsasl2-2",
+      "sha256": "eda097f98dcb3a08b9ce157d6191d140e4885c1cba47b683c94b8ca45e88f458",
+      "size": 53194,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/c/cyrus-sasl2/libsasl2-2_2.1.28+dfsg1-5ubuntu3.1_amd64.deb",
+      "version": "2.1.28+dfsg1-5ubuntu3.1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/c/cyrus-sasl2/libsasl2-modules-db_2.1.28+dfsg1-5ubuntu3.1_amd64.deb",
+      "name": "libsasl2-modules-db",
+      "sha256": "1f13548b1774cd9c70c50b8c3267204a101334a4d2f979338896ba5a4c6f81b8",
+      "size": 20354,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/c/cyrus-sasl2/libsasl2-modules-db_2.1.28+dfsg1-5ubuntu3.1_amd64.deb",
+      "version": "2.1.28+dfsg1-5ubuntu3.1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/libw/libwebp/libsharpyuv0_1.3.2-0.4build3_amd64.deb",
+      "name": "libsharpyuv0",
+      "sha256": "4e1763494e5b9d34192313aa88e38201fc67b3f13ea96ca268d26401a3002791",
+      "size": 15786,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libw/libwebp/libsharpyuv0_1.3.2-0.4build3_amd64.deb",
+      "version": "1.3.2-0.4build3"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/libs/libssh/libssh-4_0.10.6-2ubuntu0.5_amd64.deb",
+      "name": "libssh-4",
+      "sha256": "2448ce5f99e49721d12f8b227f2472dd08ed7a78184dd819fd03a42693024a16",
+      "size": 191284,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libs/libssh/libssh-4_0.10.6-2ubuntu0.5_amd64.deb",
+      "version": "0.10.6-2ubuntu0.5"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/o/openssl/libssl3t64_3.0.13-0ubuntu3.16_amd64.deb",
+      "name": "libssl3t64",
+      "sha256": "219f43b1cd836a4da550938db5fda93160d269d39a4edcf1f1ce698a470db797",
+      "size": 1945300,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl3t64_3.0.13-0ubuntu3.16_amd64.deb",
+      "version": "3.0.13-0ubuntu3.16"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/g/gcc-14/libstdc++6_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "name": "libstdc++6",
+      "sha256": "a51f8de7829211db961a31f02158058ad1a95f92ac6d0a5dff6350e2821c54c0",
+      "size": 792064,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libstdc++6_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "version": "14.2.0-4ubuntu2~24.04.1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/libt/libtasn1-6/libtasn1-6_4.19.0-3ubuntu0.24.04.2_amd64.deb",
+      "name": "libtasn1-6",
+      "sha256": "f82c9ad142f952ea523bda5bfca7bb0802af3a50b8c0f0dd9ec18cdfa104bde7",
+      "size": 44468,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libt/libtasn1-6/libtasn1-6_4.19.0-3ubuntu0.24.04.2_amd64.deb",
+      "version": "4.19.0-3ubuntu0.24.04.2"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/t/tiff/libtiff6_4.5.1+git230720-4ubuntu2.5_amd64.deb",
+      "name": "libtiff6",
+      "sha256": "564cdf59dda5e1a826c51b5868ee2785fffa26ee5a7bad95bc5e8c8224c931b8",
+      "size": 199612,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/t/tiff/libtiff6_4.5.1+git230720-4ubuntu2.5_amd64.deb",
+      "version": "4.5.1+git230720-4ubuntu2.5"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/libu/libunistring/libunistring5_1.1-2build1.1_amd64.deb",
+      "name": "libunistring5",
+      "sha256": "203d7657b5f54633fba1a9c9b784d556ef83c9f6787b3185ba55a88e07b865a3",
+      "size": 535554,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libu/libunistring/libunistring5_1.1-2build1.1_amd64.deb",
+      "version": "1.1-2build1.1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/libw/libwebp/libwebp7_1.3.2-0.4build3_amd64.deb",
+      "name": "libwebp7",
+      "sha256": "c86f6439f0bbc531f7199794654231f3b29327d6585958511b958795d51c2484",
+      "size": 230220,
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libw/libwebp/libwebp7_1.3.2-0.4build3_amd64.deb",
+      "version": "1.3.2-0.4build3"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/libz/libzstd/libzstd1_1.5.5+dfsg2-2build1.1_amd64.deb",
+      "name": "libzstd1",
+      "sha256": "dfcf25061e07aad7efd3f4f880ba5ad4d4d09ebe7fc8cc77ab6b8a161d6d4727",
+      "size": 299472,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libz/libzstd/libzstd1_1.5.5+dfsg2-2build1.1_amd64.deb",
+      "version": "1.5.5+dfsg2-2build1.1"
+    },
+    {
+      "architecture": "amd64",
+      "filename": "pool/main/z/zlib/zlib1g_1.3.dfsg-3.1ubuntu2.2_amd64.deb",
+      "name": "zlib1g",
+      "sha256": "84b9cf5752b29c9f92c27cd4c4ba9bbcc70b5ccf9b1b515421a28ae23212e273",
+      "size": 62988,
+      "source_sha256": "934d20b52eaa42099427739da88e8f250f03af387f29b169b780aa6a9071640b",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/z/zlib/zlib1g_1.3.dfsg-3.1ubuntu2.2_amd64.deb",
+      "version": "1:1.3.dfsg-3.1ubuntu2.2"
+    }
+  ],
+  "release": "noble",
+  "roots": {
+    "djvulibre-bin": "3.5.28-2ubuntu0.24.04.2"
+  },
+  "target_abi_observed": false,
+  "total_download_bytes": 13986116
+}

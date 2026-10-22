@@ -1,0 +1,70 @@
+name: rkb-import-djvu-smoke
+
+on:
+  push:
+    branches: [chatgpt/rkb-import-dependencies-20261022]
+    paths:
+      - .github/workflows/rkb-import-djvu-smoke.yml
+      - scripts/production/verify_import_djvu_smoke.py
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  decode:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: src
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/checkout@v4
+        with:
+          ref: 622e5b8e591f6ecf36404078eb41fb659b9e2cae
+          path: .ci-djvu-contract
+          persist-credentials: false
+          sparse-checkout: src/regional_knowledge/kaggle_djvu_elf.py
+          sparse-checkout-cone-mode: false
+      - name: Reuse exact reviewed ELF validator
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          raw = Path('.ci-djvu-contract/src/regional_knowledge/kaggle_djvu_elf.py').read_bytes()
+          assert hashlib.sha256(raw).hexdigest() == '904b782aabd7af8a798c608655ed4671d60249ffc370ba0501d80081b2db96b9'
+          Path('src/regional_knowledge/kaggle_djvu_elf.py').write_bytes(raw)
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: rkb-import-dependencies
+          run-id: 39762610380
+          github-token: ${{ github.token }}
+          path: decoder-proof
+      - name: Install fixture encoder only on GitHub runner
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends djvulibre-bin
+      - name: Install exact existing Stage0 zstd wheel for Python 3.13 extraction
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock = json.loads(Path('scripts/production/manifests/kaggle-cp313-x86_64-pdf-wheels.json').read_text())
+          row = next(p for p in lock['packages'] if p['package'] == 'zstandard')
+          assert row['version'] == '0.25.0'
+          Path('decoder-zstd.txt').write_text('zstandard @ ' + row['url'] + ' --hash=sha256:' + row['sha256'] + '\n')
+          PY
+          python -m pip install --no-deps --require-hashes -r decoder-zstd.txt
+      - name: Decode known colors using exact assembled ddjvu and pinned loader
+        run: python scripts/production/verify_import_djvu_smoke.py decoder-proof/dependency-proof
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rkb-import-djvu-smoke
+          path: decoder-proof/dependency-proof/synthetic-*
+          retention-days: 14
