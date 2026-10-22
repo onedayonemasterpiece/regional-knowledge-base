@@ -28,6 +28,10 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_BUNDLE_JSON_BYTES = 3 * 1024 * 1024
 MAX_NOTEBOOK_SOURCE_BYTES = 1_000_000
+# Complete first-book launch: 55 wheels, native/source inventory and all 33
+# historical/current handlers measured 74,550 bytes. This is generated launch
+# metadata; the separate target-file, WSS frame and source budgets stay bounded.
+MAX_LAUNCH_CONFIG_BYTES = 96 * 1024
 
 
 def source_bundle(repository):
@@ -125,14 +129,14 @@ def compose_target(template,config,target,*,queue,repository):
     runtime_wire.pop('stage0',None)  # One copy, consumed only by load_encoder.
     # The complete external+source inventory is verified once in prepared_model.
     # Runtime consumes that retained VerifiedArtifacts object, never this second
-    # copy. Keep the complete launch under64KiB as the domain closure grows.
+    # copy. The complete launch has its own finite metadata budget below.
     runtime_wire.pop('artifacts',None)
     config.update(shared_reads=True,prepared_model=dict(root=str(root),entries=entries,
         max_total_bytes=sum(e['size'] for e in entries)),target_runtime=dict(
         **runtime_wire,sql_root=str(root/relative/'sql'),initialization_intent=intent))
     if target.stage0 is not None:
         config['stage0']=target.stage0.wire()
-    if len(canonical(config))>65536:
+    if len(canonical(config))>MAX_LAUNCH_CONFIG_BYTES:
         raise ValueError('bounded complete target launch configuration required')
     # This extractor only writes predetermined bounded source files. It runs
     # before control; model imports, pool creation and initdb occur after ATTACH.
