@@ -264,7 +264,7 @@ def native_illustration_projection(graph, resolved):
             visual_description_provenance=figure.visual_description_provenance,
             visual_description_language=figure.visual_description_language,
             display_rotation_degrees=figure.display_rotation_degrees,
-            caption_text='\\n'.join(caption),crop_binding=crop)
+            caption_text='\n'.join(caption),crop_binding=crop)
     passages={p['passage_id'] for p in resolved['passages']}
     passage_links=[]
     for chunk in graph.chunks:
