@@ -179,7 +179,10 @@ async def test_native_shared_media_lease_lost_before_worker_pixels_denies_withou
         update={"compute_claim":"actual-claim"}).model_dump(mode="json")
     output=await handler(frame,encode=fake_encode,lease_current=lambda:lease[0])
     assert output["status"]=="unavailable"
-    assert "pixels_b64" not in output
+    # The typed failure schema retains an explicit null slot; no pixel
+    # bytes, SHA or private locator may be returned for an unavailable read.
+    assert output["pixels_b64"] is None
+    assert output["pixels_sha256"] is None
     assert pool.acquire_calls==0 and "iter-download" not in client.events
 
 
