@@ -17,6 +17,9 @@ from regional_knowledge.dataset_recovery_store import DatasetRecoveryStore
 from regional_knowledge.kaggle_importer import canonical, digest
 from regional_knowledge.recovery_journal import RemoteOutcomeReceipt
 from test_kaggle_source_importer import intake, start
+from test_kaggle_public_backend import target  # transitive real queue/ASGI fixture
+from test_read_authority import auth  # imported fixture name required by pytest
+from test_participants import people  # imported fixture name required by pytest
 
 
 class NativePeer:
