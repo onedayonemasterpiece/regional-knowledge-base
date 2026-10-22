@@ -402,23 +402,6 @@ class ControlSpool:
         _bounded(command.operation_key,4096)
         frozen,data=_snapshot(command,self.max_command_bytes)
         handler=self.registry.resolve(frozen)
-        if frozen.route=='source.native.upgrade.v1':
-            from .kaggle_native_source_upgrade import native_source_transition_handler,validate_native_source_upgrade
-            if handler.transition is None:raise SpoolDenied('fixed native source migration required')
-            expected=native_source_transition_handler(artifact_sha256=handler.transition.artifact_sha256,
-                check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
-            if handler!=expected:raise SpoolDenied('exact native source migration handler required')
-            validate_native_source_upgrade(frozen,artifact_sha256=handler.transition.artifact_sha256)
-            return frozen,data,handler
-        if frozen.route=='geo.dependencies.upgrade.v2':
-            from .geo_manifest_commands import geo_dependency_transition_handler,validate_geo_dependency_transition
-            transition=handler.transition
-            if transition is None:raise SpoolDenied('installed geographic migration artifact required')
-            expected=geo_dependency_transition_handler(artifact_sha256=transition.artifact_sha256,
-                check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
-            if handler!=expected:raise SpoolDenied('only exact geographic dependency migration supported')
-            validate_geo_dependency_transition(frozen,artifact_sha256=transition.artifact_sha256)
-            return frozen,data,handler
         if frozen.schema_revision=='rkb-v4-sql001-014-v1':
             from .kaggle_native_source_bindings import native_source_handler,validate_native_source_command
             expected=native_source_handler(frozen.route,check_sha256=handler.check.definition_sha256,
@@ -463,7 +446,7 @@ class ControlSpool:
         if frozen.route=='source.import.v4':
             from .source_import_v4 import validate_import_v4_command,IMPORT_V4_DEPENDENCY
             from .source_import import IMPORT_PRECONDITIONS
-            if handler.dependency!=IMPORT_V4_DEPENDENCY or handler.transition is not None or handler.precondition_keys!=IMPORT_PRECONDITIONS:
+            if handler.dependency!=IMPORT_V4_DEPENDENCY or handler.precondition_keys!=IMPORT_PRECONDITIONS:
                 raise SpoolDenied('only exact installed fresh9 import supported')
             validate_import_v4_command(frozen)
             return frozen,data,handler
@@ -479,14 +462,14 @@ class ControlSpool:
                 from .source_import_v3 import (SOURCE_IMPORT_V3 as SOURCE_IMPORT,
                     IMPORT_V3_DEPENDENCY as IMPORT_DEPENDENCY,validate_import_v3_command as validate_import_command)
             if (frozen.kind!='domain_command' or frozen.route!=SOURCE_IMPORT
-                    or handler.dependency!=IMPORT_DEPENDENCY or handler.transition is not None
+                    or handler.dependency!=IMPORT_DEPENDENCY
                     or handler.precondition_keys!=IMPORT_PRECONDITIONS):
                 raise SpoolDenied('only pinned canonical source import intent is supported')
             _uuid(frozen.person_id);_uuid(frozen.ids.get('source_id'))
             validate_import_command(frozen)
             return frozen,data,handler
         if (frozen.kind!='domain_command' or frozen.route!=SOURCE_WITHDRAW
-                or handler.dependency!=WITHDRAW_DEPENDENCY or handler.transition is not None
+                or handler.dependency!=WITHDRAW_DEPENDENCY
                 or handler.precondition_keys!=frozenset({'eligibility_revision'})
                 or set(frozen.ids)!={'source_id'} or set(frozen.expected_revisions)!={'eligibility_revision'}
                 or frozen.payload!=WITHDRAW_PAYLOAD):
@@ -501,8 +484,6 @@ class ControlSpool:
     @staticmethod
     def _resource_key(command,dependency):
         if dependency is None:
-            if command.kind=='schema_transition' and command.route=='source.native.upgrade.v1':
-                return 'schema:native-source-stage-activation-v1'
             raise SpoolDenied('classified typed dependency required')
         if not dependency.resource_keys<=command.ids.keys():raise SpoolDenied('complete typed resource IDs required')
         if dependency.scope_class=='public_source':return _uuid(command.ids['source_id'])
@@ -559,15 +540,6 @@ class ControlSpool:
             frozen,data,handler=self._validate(command,database_generation)
             if frozen.route not in ('source.import.v1','source.import.v2','source.import.v3','source.import.v4'):raise SpoolDenied('import intake requires import route')
             if frozen.person_id!=actor:raise SpoolDenied('command person does not authenticate its actor')
-            return await self._write(self._stage,frozen,data,handler,database_generation)
-
-    async def stage_native_source_upgrade(self,context,command,*,database_generation):
-        self._active()
-        async with self._lock:
-            actor=await self._authorize(context)
-            frozen,data,handler=self._validate(command,database_generation)
-            if frozen.route!='source.native.upgrade.v1' or frozen.person_id!=actor:
-                raise SpoolDenied('native source migration requires current owner import actor')
             return await self._write(self._stage,frozen,data,handler,database_generation)
 
     async def stage_story_editorial(self,context,command,*,database_generation):

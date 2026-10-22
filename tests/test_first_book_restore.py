@@ -27,7 +27,6 @@ from regional_knowledge.kaggle_apply import ApplyReceipt, HandlerRegistry
 from regional_knowledge.bge_queue import BgeQueue
 from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint, DatasetFile
 from regional_knowledge.kaggle_domain_bindings import CURRENT_ROUTES
-from regional_knowledge.kaggle_geo_upgrade import GeoUpgradePins
 from regional_knowledge.kaggle_owned_pg import OwnedDatabase
 from regional_knowledge.kaggle_pg_snapshot_native import BlobRef, SnapshotError, encode, sha
 from regional_knowledge.kaggle_readiness import (
@@ -72,7 +71,7 @@ def original_commands(person):
 def outcome(command, registry, *, rejected=False):
     handler = registry.resolve(command)
     before = [command.schema_revision, command.function_revision, command.executor_revision]
-    after = list(handler.transition.target.wire()) if handler.transition and not rejected else before
+    after = before
     status = 'rejected_precondition' if rejected else 'applied'
     body = encode(dict(codec='rkb.applied-outcome.v1', operation_key=command.operation_key,
         command_sha256=sha(command.encode()), cursor=command.sequence, status=status,
@@ -91,7 +90,6 @@ async def guard(binding):
 
 async def scenario(e):
     # These are actual reviewed PR212 classes, not local substitute transitions.
-    upgrade = importlib.import_module('regional_knowledge.kaggle_native_source_upgrade')
     activation = importlib.import_module('regional_knowledge.source_activation')
     final = activation.ACTIVATION_REVISIONS
     root = package_root()
@@ -202,7 +200,6 @@ async def scenario(e):
         expected_acl_sha256=sha(b'synthetic-acl14'), writer_generation='writer-2',
         database=database, observer_sha256='6' * 64,
         geo_bootstrap_operation_keys=tuple(c.operation_key for c in commands))
-    assert history.origin_closure is None
     assert history.registry_hash != origin['registry_sha256']
     events = []
     class Native:
@@ -228,7 +225,6 @@ async def scenario(e):
             assert spec.fingerprint == args['handler_sha256']
             receipt = outcome(command, registry)
             self.ledger[command.sequence] = receipt
-            assert spec.transition is None
             events.append(('apply',command.sequence,self.schema_version))
             return receipt_wire(receipt)
         async def finish(self, b, handle, **args):
@@ -256,7 +252,7 @@ async def scenario(e):
 
 def test_first_book_context_ships_actual_import_and_telegram_modules():
     _, files, _ = source_bundle(package_root())
-    required={'kaggle_source_materializer','kaggle_native_source_upgrade','source_activation','telegram_runtime_channel'}
+    required={'kaggle_source_materializer','source_activation','telegram_runtime_channel'}
     assert {f'regional_knowledge/{name}.py' for name in required} <= files.keys()
 
 
@@ -311,7 +307,6 @@ def test_launch_target14_is_expected_final_state_and_never_accepts_origin11_read
 @pytest.mark.asyncio
 @pytest.mark.parametrize('initial_revision', [11, 14])
 async def test_source_restore_observation_binds_final_launch_target_while_base_versions_stay11(auth, tmp_path, initial_revision):
-    upgrade = importlib.import_module('regional_knowledge.kaggle_native_source_upgrade')
     final = importlib.import_module('regional_knowledge.source_activation').ACTIVATION_REVISIONS
     queue = BgeQueue(tmp_path / 'first-context-queue.sqlite', clock=lambda: 1000.)
     queue.enqueue(auth.p.owner.subject, 'fixture-demand', ['synthetic'], kind='document')
@@ -333,9 +328,7 @@ async def test_source_restore_observation_binds_final_launch_target_while_base_v
     try:
         database = OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', *final.wire(),
             '/kaggle/temp/compat/socket', 'rkb', ownership_evidence='fixture-native-target')
-        pins = GeoUpgradePins(*('b' * 64 for _ in range(7)))
-        native = upgrade.NativeSourceUpgradePins(*('c' * 64 for _ in range(4)))
-        versions = dict(server_version_num=170011, pgvector_version='0.8.2', catalog_sha256=pins.origin_catalog_sha256,
+        versions = dict(server_version_num=170011, pgvector_version='0.8.2', catalog_sha256='b'*64,
             model_sha256='d' * 64, tokenizer_sha256='e' * 64, schema_revision=GEO_REVISIONS.schema,
             function_revision=GEO_REVISIONS.function, executor_revision=GEO_REVISIONS.executor)
         manifest = ObjectRef(journal.prefix + '/snapshots/manifests/' + 'f' * 64, 'f' * 64, 100, 20)
@@ -346,7 +339,7 @@ async def test_source_restore_observation_binds_final_launch_target_while_base_v
                                       ('https://storage.googleapis.com',), dataset_checkpoint=checkpoint)
         startup = SimpleNamespace(config=SimpleNamespace(writer_owner=writer,
             history_adapter=SimpleNamespace(database=database), spool=SimpleNamespace(journal=journal),
-            queue=queue, geo_dependency_upgrade=pins, native_source_upgrade=native),
+            queue=queue),
             history=SimpleNamespace(catalog_hash='4' * 64))
         coordinator = SourceRestoreCoordinator(startup, restore)
         if initial_revision == 11:

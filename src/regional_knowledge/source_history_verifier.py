@@ -55,7 +55,6 @@ class _Coverage:
     applied_sequence: int
     pending: tuple = ()
     case_state: object = None
-    closure_transition: tuple | None = None
 
     def current(self):
         v = self.verifier
@@ -121,9 +120,8 @@ class NativeSourceHistoryVerifier:
     def _verify_genesis(self,data,generation,*,expected_closure=None):
         """Known genesis facts are immutable; producer code is provenance.
 
-        A stateless verifier correction may read the fixed v1/v2 codecs. It
-        does not authorize changing original handlers, native catalog or ACLs.
-        Those require an explicit ordered closure transition, not a hash waiver.
+        A compatible verifier reads v1/v2 metadata without comparing catalog
+        or ACL fingerprints. Exact stream/generation/sequence remain bound.
         """
         try:
             value=json.loads(data)
@@ -148,7 +146,7 @@ class NativeSourceHistoryVerifier:
                     or not isinstance(producer,str)
                     or len(producer)!=64 or set(producer)-set('0123456789abcdef')):raise ValueError
         except (ValueError,TypeError,KeyError):
-            raise SpoolConflict('genesis facts or original closure differ; explicit migration required') from None
+            raise SpoolConflict('genesis facts differ') from None
         return value
 
     def _classify(self,raw,reference):
@@ -161,12 +159,7 @@ class NativeSourceHistoryVerifier:
         try:command,_,handler=self.spool._validate(command,'history-classification')
         except (ValueError,TypeError):raise SpoolConflict('unclassified accepted source dependency') from None
         dep=handler.dependency
-        if (dep is None and command.route=='source.native.upgrade.v1'
-                and handler.transition is not None):
-            # _validate above checked the exact pinned schema transition and actor.
-            return command,handler,reference
-        if dep is None or (handler.transition is not None and command.route!='geo.dependencies.upgrade.v2'):
-            raise SpoolConflict('unclassified accepted source dependency')
+        if dep is None:raise SpoolConflict('unclassified accepted source dependency')
         if dep.scope_class=='public_source':
             expected_route=('source.import' if command.route.startswith('source.import.') else
                 {'source.withdraw.v1':'source.withdraw','story.edit.v1':'story.edit','story.access.v1':'story.access'}.get(command.route))

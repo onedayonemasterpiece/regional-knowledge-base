@@ -75,7 +75,7 @@ async def installation(target,tmp_path,request):
     spool=ControlSpool(t.queue,t.auth.p.registry,RecoveryJournal(ConditionalMemoryStore(),stream='geo-install-unit'),registry)
     startup=SimpleNamespace(config=SimpleNamespace(spool=spool,queue=t.queue,participants=t.auth.p.registry,
         oauth_provider=t.auth.provider,writer_owner=object(),writer_generation='writer-1',
-        source_snapshot=object(),source_restore=None,geo_manifest_operation_keys=keys),
+        source_snapshot=object(),source_restore=None,geo_manifest_operation_keys=keys,history_adapter=SimpleNamespace(database=SimpleNamespace(schema_version=11))),
         binding=current_binding(t.queue),snapshot=SimpleNamespace(verified=False),closed=False,geo_installer=None)
     startup.binding_current=lambda b:b==startup.binding
     startup.reads_current=lambda:startup.snapshot.verified and startup.coverage.current()
@@ -97,29 +97,6 @@ async def installation(target,tmp_path,request):
     owner=SourceGeoInstaller(startup,config);startup.geo_installer=owner
     yield SimpleNamespace(t=t,data=data,manifest=manifest,owner=owner,startup=startup,spool=spool,config=config,keys=keys)
     await owner.aclose();await startup.source_dispatch.aclose();spool.close()
-
-
-@pytest.mark.asyncio
-async def test_restore_only_upgrade_continues_only_after_verified_recovery(installation,monkeypatch):
-    s=installation;s.startup.snapshot.verified=True
-    await s.owner.advance(s.startup.binding)  # Existing real spool reserves original commands.
-    monkeypatch.setattr(s.owner,'needs_native_upgrade',lambda binding:True)
-    s.startup.snapshot=None;s.startup.restorer=SimpleNamespace(complete=False)
-    calls=[]
-    async def continue_repair(binding,commands,context):
-        assert binding==s.startup.binding and len(commands)==len(s.keys)
-        assert s.spool.participants.require(context,'import')==s.spool.participants.owner
-        calls.append(tuple(command.operation_key for command in commands))
-        return False
-    monkeypatch.setattr(s.owner,'_dependency_repair',continue_repair)
-    assert not await s.owner.advance(s.startup.binding)
-    assert not calls
-    s.startup.restorer.complete=True
-    assert not await s.owner.advance(s.startup.binding)
-    assert calls==[s.keys]
-    s.startup.binding_current=lambda binding:False
-    assert not await s.owner.advance(s.startup.binding)
-    assert calls==[s.keys]
 
 
 @pytest.mark.asyncio

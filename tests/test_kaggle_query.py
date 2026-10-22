@@ -13,7 +13,6 @@ import pytest_asyncio
 from regional_knowledge.bge_contract import REVISION, SPACE, TOKENIZER_SHA256
 from regional_knowledge.kaggle_apply import (
     Revisions, initialize_database, apply_accepted, HandlerRegistry, HandlerSpec, ApplyExecutionError,
-    MigrationTransition,
 )
 from regional_knowledge.kaggle_protocol import (
     ItemDependencies, Query, QueryFilters, SourceDependency, encode_envelope, decode_envelope,
@@ -174,7 +173,7 @@ async def publish(env, seq=5):
         await admin.execute("SELECT rkb_v4.publish_read_frontier('query-fixture','writer-1',%s,%s,true,true)", (epoch, seq))
 
 
-async def actual_apply(env, *, activate=False, reject=False, preparation="next", semantic_transition=False):
+async def actual_apply(env, *, activate=False, reject=False, preparation="next"):
     """Real accepted journal + pinned PG handler, not manual ledger/cursor writes."""
     admin = env["admin"]
     async with admin.transaction():
@@ -211,18 +210,11 @@ async def actual_apply(env, *, activate=False, reject=False, preparation="next",
             (p bytea, ids jsonb, expected jsonb, logical_time text) RETURNS bytea
             LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
             BEGIN {body} RETURN 'exact outcome'::bytea; END $$;""", prepare=False)
-    transition = None
     payload = b"accepted atomic activation body"
     kind = "domain_command"
-    if semantic_transition:
-        kind = "schema_transition"
-        digest = "1" * 64
-        transition = MigrationTransition("semantic-v2", digest, None, Revisions("s2", "f2", "e2"))
-        payload = json.dumps(dict(migration_id="semantic-v2", artifact_sha256=digest, predecessor=None),
-                             sort_keys=True, separators=(",", ":")).encode()
     registry = HandlerRegistry([HandlerSpec(kind, "fixture.frontier", Revisions("s1", "f1", "e1"),
         await pinned(admin, f"frontier_check_{seq}"), await pinned(admin, f"frontier_apply_{seq}"),
-        frozenset({"allow"}), transition)])
+        frozenset({"allow"}))])
     cmd = command(seq, kind=kind, route="fixture.frontier", schema_revision="s1", function_revision="f1",
                   executor_revision="e1", ids={}, expected_revisions={"allow": "no" if reject else "yes"}, payload=payload)
     journal = RecoveryJournal(ConditionalMemoryStore(), stream=f"atomic-frontier-{seq}")
@@ -302,12 +294,6 @@ async def test_dirty_early_old_cursor_publish_cannot_enable_automatic_carry(env)
     assert result.reason == "not_ready" and not result.evidence
 
 
-@PG
-@pytest.mark.asyncio
-async def test_semantic_transition_does_not_automatically_claim_projection_readiness(env):
-    await publish(env)
-    await actual_apply(env, semantic_transition=True)
-    assert await frontier_facts(env) == (6, 5, False, False, 0, None, 1, 1)
 
 
 @PG

@@ -107,23 +107,6 @@ class PgFunction:
 
 
 @dataclass(frozen=True)
-class MigrationTransition:
-    migration_id: str
-    artifact_sha256: str
-    predecessor: str | None
-    target: Revisions
-    preserve_read_frontier: bool = False
-
-    def __post_init__(self):
-        _text(self.migration_id)
-        _digest(self.artifact_sha256)
-        if self.predecessor is not None:
-            _text(self.predecessor)
-        if type(self.preserve_read_frontier) is not bool:
-            raise ValueError('explicit trusted projection compatibility required')
-
-
-@dataclass(frozen=True)
 class DependencySpec:
     """Static operation write scope; read dependencies are a separate concern.
 
@@ -165,7 +148,6 @@ class HandlerSpec:
     check: PgFunction
     apply: PgFunction
     precondition_keys: frozenset[str]
-    transition: MigrationTransition | None = None
     dependency: DependencySpec | None = None
 
     def __post_init__(self):
@@ -175,8 +157,8 @@ class HandlerSpec:
             raise ValueError("precondition keys must be a bounded immutable set")
         for key in self.precondition_keys:
             _text(key)
-        if (self.kind == "schema_transition") != (self.transition is not None):
-            raise ValueError("schema transitions require an exact trusted transition artifact")
+        if self.kind not in {'domain_command','durable_intake','control','provider_intent'}:
+            raise ValueError("SQL migrations belong to the verified migration runner")
         if self.dependency is not None and (not isinstance(self.dependency,DependencySpec)
                 or self.dependency.operation!=self.route):
             raise ValueError('dependency metadata must bind the exact handler operation')
@@ -187,18 +169,10 @@ class HandlerSpec:
 
     @property
     def fingerprint(self) -> str:
-        transition = self.transition
-        data={"key": self.key, "check": (self.check.name, self.check.definition_sha256),
-                            "apply": (self.apply.name, self.apply.definition_sha256),
-                            "preconditions": sorted(self.precondition_keys),
-                            "transition": None if transition is None else (
-                                transition.migration_id, transition.artifact_sha256,
-                                transition.predecessor, transition.target.wire())}
-        # Preserve historical fingerprints exactly when this new metadata is
-        # absent. New scope semantics require their own versioned handler key.
+        data={"key":self.key,"check":(self.check.name,self.check.definition_sha256),
+            "apply":(self.apply.name,self.apply.definition_sha256),
+            "preconditions":sorted(self.precondition_keys),"transition":None}
         if self.dependency is not None:data['dependency']=self.dependency.wire()
-        if transition is not None and transition.preserve_read_frontier:
-            data['preserve_read_frontier']=True
         return _hash(_json(data))
 
 
@@ -425,13 +399,6 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                     handler = registry.resolve(command)
                     if set(command.expected_revisions) != handler.precondition_keys:
                         raise ApplyConflict("complete exact precondition key set is required")
-                    transition = handler.transition
-                    if transition is not None:
-                        expected = {"migration_id": transition.migration_id,
-                                    "artifact_sha256": transition.artifact_sha256,
-                                    "predecessor": transition.predecessor}
-                        if command.payload != _json(expected) or state[6] != transition.predecessor:
-                            raise ApplyConflict("migration artifact/predecessor differs from trusted transition")
                     stage = 'function_pins'
                     await _definition(connection, handler.check, precondition=True)
                     await _definition(connection, handler.apply, precondition=False)
@@ -441,12 +408,6 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                     if checked is None or type(checked[0]) is not bool:
                         raise ApplyConflict("precondition function must return one boolean")
                     status = "applied" if checked[0] else "rejected_precondition"
-                    frontier=None
-                    if checked[0] and transition is not None and transition.preserve_read_frontier:
-                        frontier=await(await connection.execute('''SELECT projection_seq,visibility_epoch,
-                            text_ready,dense_ready,pending_seq FROM rkb_v4.read_frontier
-                            WHERE singleton FOR UPDATE''')).fetchone()
-                        if frontier is None:raise ApplyConflict('trusted migration requires existing read frontier')
                     result = b""
                     after = before
                     if checked[0]:
@@ -457,7 +418,6 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                         if row is None or row[1] is None:
                             raise ApplyLimit("handler outcome is absent or exceeds budget")
                         result = bytes(row[1])
-                        after = transition.target if transition else before
                     outcome = _json({"codec": "rkb.applied-outcome.v1", "operation_key": command.operation_key,
                         "command_sha256": command_hash, "cursor": command.sequence, "status": status,
                         "ids": dict(command.ids), "request_id": command.request_id, "person_id": command.person_id,
@@ -472,18 +432,8 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                         (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                         (command.operation_key, command.sequence, encoded, command_hash, seal.manifest.sha256,
                          database_generation, writer_generation, status, outcome, digest, handler.fingerprint))
-                    migration_id = transition.migration_id if transition and checked[0] else state[6]
-                    migration_hash = transition.artifact_sha256 if transition and checked[0] else state[7]
-                    await connection.execute("""UPDATE rkb_v4.recovery_state SET applied_seq=%s,
-                        schema_revision=%s,function_revision=%s,executor_revision=%s,
-                        last_migration_id=%s,last_migration_hash=%s WHERE singleton""",
-                        (command.sequence, *after.wire(), migration_id, migration_hash))
-                    if frontier is not None and frontier[0]==state[2] and frontier[4] is None:
-                        # Only deployment-declared compatible migrations may
-                        # carry an already current projection across revisions.
-                        # Dirty/lagged/false readiness is never upgraded here.
-                        await connection.execute('SELECT rkb_v4.publish_read_frontier(%s,%s,%s,%s,%s,%s)',
-                            (database_generation,writer_generation,frontier[1],command.sequence,frontier[2],frontier[3]))
+                    await connection.execute("UPDATE rkb_v4.recovery_state SET applied_seq=%s WHERE singleton",
+                        (command.sequence,))
                     receipt = ApplyReceipt(database_generation, command.operation_key, command.sequence,
                                            command_hash, status, outcome, digest, False)
                 stage = 'commit'

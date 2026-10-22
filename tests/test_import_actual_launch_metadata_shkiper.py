@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
                     reason='explicit exact assembled native artifact metadata required')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('dependency_transport',['https','dataset'])
-@pytest.mark.parametrize('handler_profile',['baseline','ordered33'])
+@pytest.mark.parametrize('handler_profile',['baseline','current'])
 async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path, monkeypatch,dependency_transport,handler_profile):
     artifact = Path(os.environ['RKB_IMPORT_NATIVE_METADATA'])
     raw = (artifact / 'native-manifest.json').read_bytes()
@@ -55,9 +55,9 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
         uid=65534, gid=65534, identity_evidence='synthetic metadata fixture, not native identity attestation',
         revisions=ACTIVATION_REVISIONS,
         original_intake=OriginalIntakeConfig(('https://archive.fixture.invalid',), (('pymupdf','1.28.2'),)))
-    if handler_profile=='ordered33':
+    if handler_profile=='current':
         target=replace(target,command_handlers=tuple(first_book_entries(ROOT)),telegram_runtime=True)
-        assert len(target.command_handlers)==33
+        assert len(target.command_handlers)==13
     private_names = {row['name'] for row in native['artifacts']} | {'wheels/pyaes-1.6.1-py3-none-any.whl'}
     downloads = []
     for row in target.stage0.downloads:

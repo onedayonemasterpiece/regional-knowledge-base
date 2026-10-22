@@ -11,11 +11,10 @@ import pytest_asyncio
 import psycopg
 
 from regional_knowledge.geo_manifest_commands import (GEO_REVISIONS,GEO_V2_REVISIONS,
-    geo_dependency_repair_commands,geo_dependency_transition_handler,geo_manifest_handler,plan_geo_manifest)
+    geo_dependency_repair_commands,geo_manifest_handler,plan_geo_manifest)
 from regional_knowledge.geo_migration import canonical,sha
 from regional_knowledge.geo_whitelist import build_geo_whitelist
-from regional_knowledge.kaggle_apply import HandlerRegistry,initialize_database
-from regional_knowledge.kaggle_geo_upgrade import NativeGeoMigration
+from regional_knowledge.kaggle_apply import HandlerRegistry,initialize_database,PgFunction
 from test_geo_migration import snapshot,uid
 from test_kaggle_apply import pinned
 from test_recovery_journal import fixture as journal_fixture
@@ -83,35 +82,24 @@ async def test_native_place_preserves_more_than_64_provenance_dependencies(nativ
     assert rejected is not None, 'schema11 must reproduce the retained precondition rejection'
     artifact=(ROOT/'sql/kaggle/012_geo_dependency_bound.sql').read_bytes()
     connection=native['connection']
-    artifact_sha=hashlib.sha256(artifact).hexdigest()
-    # Fixture preflight derives the independently declared definition pins, then
-    # removes every new function before exercising the real native installer.
     async with connection.transaction():
         await connection.execute(artifact.decode(),prepare=False)
-        migration=geo_dependency_transition_handler(artifact_sha256=artifact_sha,
-            check_sha256=(await pinned(connection,'check_geo_dependencies_v2_transition')).definition_sha256,
-            apply_sha256=(await pinned(connection,'apply_geo_dependencies_v2_transition')).definition_sha256)
-        upgraded=geo_manifest_handler(revisions=GEO_V2_REVISIONS,
+        upgraded=geo_manifest_handler(revisions=GEO_REVISIONS,
             check_sha256=(await pinned(connection,'check_geo_manifest_install_v2')).definition_sha256,
             apply_sha256=(await pinned(connection,'apply_geo_manifest_install_v2')).definition_sha256)
-        raise psycopg.Rollback()
-    native['registry']=HandlerRegistry([*native['registry'].handlers.values(),migration,upgraded])
-    repair=geo_dependency_repair_commands(resolved,settled_outcomes=outcomes,artifact_sha256=artifact_sha)
-    installer=NativeGeoMigration(sql_root=ROOT/'sql/kaggle',registry=native['registry'],database_generation=native['generation'])
-    await installer.prepare(connection,repair[0],migration)
-    await installer.prepare(connection,repair[0],migration)  # Lost install ACK: exact readback, no second DDL.
-    for command in repair:
-        assert (await apply(native,command)).status=='applied'
-        if command.kind=='schema_transition':
-            async with connection.transaction():
-                assert await(await connection.execute('SELECT projection_seq,text_ready,dense_ready FROM rkb_v4.read_frontier')).fetchone()==(command.sequence,True,True)
+        upgraded=replace(upgraded,
+            check=PgFunction('check_geo_manifest_install_v2',upgraded.check.definition_sha256),
+            apply=PgFunction('apply_geo_manifest_install_v2',upgraded.apply.definition_sha256))
+    native['registry']=HandlerRegistry([upgraded])
+    repair=geo_dependency_repair_commands(resolved,settled_outcomes=outcomes)
+    assert all(command.kind=='domain_command' for command in repair)
+    for command in repair:assert (await apply(native,command)).status=='applied'
     async with connection.transaction():
         retained=await(await connection.execute('SELECT status,outcome_bytes FROM rkb_v4.applied_ops WHERE operation_key=%s',
             (rejected.operation_key,))).fetchone()
     assert retained[0]=='rejected_precondition' and bytes(retained[1])==rejected.outcome
     duplicate=await apply(native,next(c for c in resolved if c.operation_key==rejected.operation_key))
     assert duplicate.duplicate and duplicate.outcome==rejected.outcome
-    await installer.prepare(connection,repair[0],migration)  # Already applied migration and later tail.
     stored=await(await native['connection'].execute(
         "SELECT data->'dependencies' FROM rkb_v4.geo_manifest_items WHERE manifest_id=%s AND item_key=%s",
         (manifest.sha256,place.key))).fetchone()

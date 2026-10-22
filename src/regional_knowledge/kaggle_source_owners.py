@@ -26,7 +26,7 @@ from .queue_writer import QueueWriterAuthority
 
 def compose_source_service(*,queue,oauth_provider,participants,object_store,stream,registry,
                            history_adapter,run_id,database_generation,writer_generation,
-                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=(),source_restore=None,source_snapshot=None,geo_bootstrap=None,geo_dependency_upgrade=None,dataset_seed=None,native_source_upgrade=None):
+                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=(),source_restore=None,source_snapshot=None,geo_bootstrap=None,dataset_seed=None):
     """Reuse the actual owner objects; returns the real server.main input.
 
     object_store is the already configured S3ObjectStore authority/client, not
@@ -71,7 +71,7 @@ def compose_source_service(*,queue,oauth_provider,participants,object_store,stre
         return TargetServiceStartup(TargetServiceConfig(oauth_provider,participants,queue,spool,history_adapter,
             writer_generation,writer.current,destination_ref=destination_ref,writer_owner=writer,
             geo_manifest_operation_keys=geo_manifest_operation_keys,source_restore=source_restore,source_snapshot=source_snapshot,geo_bootstrap=geo_bootstrap,
-            geo_dependency_upgrade=geo_dependency_upgrade,dataset_seed=dataset_seed,native_source_upgrade=native_source_upgrade,**import_options))
+            dataset_seed=dataset_seed,**import_options))
     except BaseException:
         if spool is not None:spool.close()
         if writer is not None:writer.close()
@@ -170,7 +170,7 @@ def configured_source_service():
         return result
     value=json.loads(data,object_pairs_hook=unique)
     fields={'codec','run_id','stream','database','command_handlers','observer_sha256'}
-    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys','source_restore','source_snapshot','geo_bootstrap','geo_dependency_upgrade','dataset_seed','native_source_upgrade','catalog_sha256','acl_sha256'}
+    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys','source_restore','source_snapshot','geo_bootstrap','dataset_seed'}
             or value['codec']!='rkb.source-service.v1'):
         raise ValueError('exact source owner configuration required')
     if 'geo_manifest_operation_keys' in value and type(value['geo_manifest_operation_keys']) is not list:
@@ -198,11 +198,8 @@ def configured_source_service():
         from dataclasses import replace
         database=replace(database,schema_version=observed.get('schema_version',database.schema_version))
     registry=fixed_registry(database,value['command_handlers'])
-    upgrade=None
-    native_upgrade=None
     history=WssNativeHistoryProofAdapter(database=database,expected_observer_sha256=value['observer_sha256'],
-        geo_bootstrap_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),
-)
+        geo_bootstrap_operation_keys=tuple(value.get('geo_manifest_operation_keys',())))
     import_owners=None
     if 'source_import' in value:
         from .kaggle_import_composition import SourceImportOwners
@@ -227,4 +224,4 @@ def configured_source_service():
         object_store=object_store,stream=value['stream'],registry=registry,history_adapter=history,
         run_id=value['run_id'],database_generation=database.database_generation,writer_generation=database.writer_generation,
         source_import=import_owners,geo_manifest_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),source_restore=restore,source_snapshot=snapshot,geo_bootstrap=geo_bootstrap,
-        geo_dependency_upgrade=upgrade,dataset_seed=dataset_seed,native_source_upgrade=native_upgrade)
+        dataset_seed=dataset_seed)

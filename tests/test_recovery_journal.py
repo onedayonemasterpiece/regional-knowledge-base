@@ -415,7 +415,7 @@ async def test_generic_false_cas_with_unchanged_head_is_unknown_not_definitive_c
 @pytest.mark.asyncio
 async def test_exact_group_roundtrip_duplicate_and_continuity():
     store, journal = fixture()
-    commands = [command(), command(2, kind="schema_transition", payload=b"exact migration-v2 SQL")]
+    commands = [command(), command(2,payload=b"exact second data command")]
     receipt = await seal(journal, commands)
     original_head = await journal.head()
     assert await seal(journal, commands) == receipt
