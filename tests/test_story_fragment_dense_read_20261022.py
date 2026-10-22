@@ -44,10 +44,15 @@ OTHER_SOURCE = '00000000-0000-0000-0000-000000000099'
 
 async def _prepare_reader(env):
     connection = env['connection']
+    # Enforce the actual published SQL017 → ordinary018 source stack, not the
+    # old draft pending file or a fabricated migration replacement.
+    assert (ROOT / 'sql/kaggle/017_schema_version.sql').is_file()
+    ordinary_sql18 = FRAGMENT_SQL.read_text()
+    assert 'CREATE VIEW rkb_v4.story_embedding_fragments' in ordinary_sql18
     async with connection.transaction():
         # GH PG17 image fixture installs through SQL014. Apply ordinary
         # SQL018 explicitly, followed by the unnumbered own read candidate.
-        await connection.execute(FRAGMENT_SQL.read_text(), prepare=False)
+        await connection.execute(ordinary_sql18, prepare=False)
         await connection.execute(READ_SQL.read_text(), prepare=False)
     handlers = []
     for route, suffix in ((STAGE_ROUTE, 'source_stage_v2'),
