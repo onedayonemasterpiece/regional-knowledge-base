@@ -1,8 +1,24 @@
 # RKB — продуктовый план и общий чеклист поставки
 
-**Project manager: dot.** Версия 1.2: автономный выбор следующей работы уточнён 22.10.2026, 11:02 UTC; ownership/next ledger обновлён13:05 UTC; source receipts — срез12:19 UTC; прежний M2/M8 owner ledger — срез11:16 UTC; остальные назначения/блокеры — срез10:47 UTC; технический evidence-срез §2 — 10:29–10:31 UTC. Это рабочий план достижения полного результата, **не новый аудит и не текстовый пилот**. dot поддерживает приоритеты, владельцев, блокеры и доказательства; исполнители предлагают поправки по своим вехам, не останавливая независимую разработку.
+**Project manager: dot.** Версия 1.2: автономный выбор следующей работы уточнён 22.10.2026, 11:02 UTC; оперативная координация и bounded first-book operator обновлены13:49 UTC; source receipts — срез12:19 UTC; прежний M2/M8 owner ledger — срез11:16 UTC; остальные назначения/блокеры — срез10:47 UTC; технический evidence-срез §2 — 10:29–10:31 UTC. Это рабочий план достижения полного результата, **не новый аудит и не текстовый пилот**. dot поддерживает приоритеты, владельцев, блокеры и доказательства; исполнители предлагают поправки по своим вехам, не останавливая независимую разработку.
 
 **Сейчас принято реальных книг: 0.** Работающий Kaggle и зелёные component tests — важные предпосылки, но не приёмка импорта, изображений, рассказов или продукта. Процент готовности не рассчитываем по числу PR/тестов.
+
+## Действующая координация и первый реальный импорт — 13:49 UTC
+
+**Основной Slack thread теперь [RKB — продолжение](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792676544802199)**, root `1792676544.802199`. Владелец создал его взамен недоступного общего чата. Все новые назначения, questions/results, self-claims и handoffs — туда. Прежний thread ниже сохраняется только как история/evidence; действующие source scopes и три обязательных документа не отменены.
+
+**Этот блок имеет приоритет над прежними записями «Opus sole live» и «Шкипер только source» ровно для указанного bounded first-book шага.** Canonical merge authority не перераспределяется этим планом. Opus не запущен; ждать его, revision2, Expert или cold-successor completion для первой книги не требуется.
+
+| Владелец / текущий статус | Разрешённый текущий шаг | Следующий результат / граница доказательства |
+|---|---|---|
+| **Шкипер — единственный bounded runtime/operator first-book schema14/revision1; `in_progress` по явному ACK** | [Назначение1792676720.306619](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792676720306619), [ACK1792676742.298699](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792676742298699): actual running release/process, competition/queue/UNKNOWN readback → штатная установка exact reviewed first-book набора → profile/import context, существующий original и owner lease | После реально установленного контекста передать Книге **owner-issued ingestion_id/status**. Не подменять installed receipt зелёным source CI. Сохранять current release/ancestry всех работающих релизов, writer/storage guards и no duplicate push |
+| **Книга / модельное чтение; dot сохраняет PM и ответственность reader-пути** | До owner-issued ID — `blocked` на installed import context. После передачи: status → реальные pages/pixels → model facts/Story.body либо обоснованный gap + continuation → validate/finalize | Exact remote Dataset Saved и обычный source/body/pixels readback по совместным M2–M4 gates. Оригинал уже есть, повторный upload не нужен. Выполнение чтения/семантики не заявлено по одному profile/search |
+| **Остальные исполнители** | Непересекающиеся действующие source scopes и самостоятельный pull-work продолжаются | Не ждут нового задания dot, Opus или first-book finish, если собственная задача независима. Второй runtime/operator/notebook не создают |
+
+**Фактическая граница книги сейчас:** profile работает, search ready seq20; import/catalog unavailable, ingestion_id **не выдан**. Наблюдённый installed `4e6a7b7` не доказывает schema14 readiness. Поэтому книга остаётся **BLOCKED / 0 accepted**, хотя runtime/operator работа Шкипера начата. Ни installation PASS, ни accepted book/Saved этим обновлением не объявляются.
+
+Ограничение SOURCE-ONLY для Шкипера снято **только** на проверку/штатную установку first-book profile/import/original-lease и выдачу настоящего ID. Это не разрешение новых credentials/grants, data reset, обхода tool denial, ослабления storage/writer checks, второго push при UNKNOWN или параллельного notebook. При неизвестном исходе сначала original operation/readback, не новый запуск. Прежние сложные review и canonical решения Opus остаются; ожидание незапущенного Opus не является blocker этого переданного шага.
 
 ## Правило для каждого исполнителя: бери следующую свободную работу, не жди dot
 
@@ -12,17 +28,17 @@
 
 Если blocked, назови точную зависимость, кто/что её снимает, и последний доказанный результат; **возьми другую полезную свободную задачу**, не ожидая молча нового назначения и не повторяя проверки без новой информации. По завершении передай exact commit/PR/evidence, освободи пути и объяви следующий выбранный результат. Нельзя создавать искусственный «прогресс» вспомогательными тестами, когда свободна нужная продуктовая реализация.
 
-**Границы неизменны:** self-pull не выдаёт live/merge/provider/security/grant/destructive полномочия, не отменяет existing approvals и не открывает другой репозиторий. Opus остаётся единственным merge/live owner; занятые файлы передаются по release → exact-scope ACK. Рутинную передачу hunk обсуждаем с integration/file owner, не требуем повторного продуктового разрешения владельца.
+**Границы неизменны:** self-pull не выдаёт live/merge/provider/security/grant/destructive полномочия, не отменяет existing approvals и не открывает другой репозиторий. Canonical merge остаётся у Opus; для live действует точное bounded first-book исключение Шкипера в актуальном блоке13:49, все прочие live scopes не расширены. Занятые файлы передаются по release → exact-scope ACK. Рутинную передачу hunk обсуждаем с integration/file owner, не требуем повторного продуктового разрешения владельца.
 
-Общий источник состояния остаётся **этот GitHub-план**. Self-claim/handback/status/next queue фиксируется scoped PR **только к соответствующим строкам** либо комментарием в PR238; комментарий считается видимым оперативным claim до внесения dot в таблицу. При одновременном редактировании документа предпочитай комментарий, не перезаписывай чужие строки. dot сводит изменения, поддерживает приоритеты и разрешает конфликты; не создаётся параллельный PM-документ или второй реестр назначений. Три обязательных документа ниже входят в каждое самостоятельно выбранное назначение.
+Все ссылки на «общий coordination thread» в правилах означают **новый основной thread1792676544.802199**. Общий источник состояния остаётся **этот GitHub-план**. Self-claim/handback/status/next queue фиксируется scoped PR **только к соответствующим строкам** либо комментарием в PR238; комментарий считается видимым оперативным claim до внесения dot в таблицу. При одновременном редактировании документа предпочитай комментарий, не перезаписывай чужие строки. dot сводит изменения, поддерживает приоритеты и разрешает конфликты; не создаётся параллельный PM-документ или второй реестр назначений. Три обязательных документа ниже входят в каждое самостоятельно выбранное назначение.
 
 **Инструктаж ≠ подтверждённое прочтение.** План разослан владельцу и команде, запрошен один ACK/поправки каждого. Первоначальный plan ACK подтверждён у **Шкипера** (Slack1792665556.821389); свежий bounded thread после1792669652.725409 содержит повторный ACK Шкипера, Кварца по PR238@3108882 и pinned docs, а также source-scope ACK Рифа. RKB-Импорт/Линза позднее подтвердили exact scope и чтение PR238@8100520 в receipt1792671504.522529/1792671491.162839 (проверены12:18); это не ACK последующих редакций. Прошлые заявления о начале чтения не заменяют новый scope/result evidence. Не говорить «все ознакомились» по факту отправки. Каждый исполнитель при ближайшем update подтверждает чтение актуального плана и этого правила; dot собирает недостающие ACK, не останавливая уже разрешённую работу.
 
-## Рабочие переходы без ожидания Opus — действуют с 11:52 UTC, evidence обновлено12:19
+## Source-переходы с 11:52 UTC, evidence12:19; runtime exception — блок13:49 выше
 
 **Сбой первого раунда признан:** общая фраза «возьми следующий пункт» не сработала, потому что source-задачи фактически упирались в отсутствующего Opus. Исправление — ниже уже выделены исполнимые исходные изменения и следующий переход. Это текущий operational ledger; старые очереди ниже остаются датированным evidence, а не альтернативными блокирующими назначениями.
 
-**Два независимых состояния:** `source in_progress → source verified/PR → следующий source leaf` и `awaiting canonical merge/live acceptance`. Ожидание второго **не блокирует первое**. В изолированной собственной ветке можно собрать совместимый candidate, исправить код, проверить и открыть PR→integration без Opus. Только canonical integration merge, deployment, provider effects и установленная E2E остаются у Opus. Диагностический combined candidate не становится вторым release owner.
+**Два независимых состояния:** `source in_progress → source verified/PR → следующий source leaf` и `awaiting canonical merge/live acceptance`. Ожидание второго **не блокирует первое**. В изолированной собственной ветке можно собрать совместимый candidate, исправить код, проверить и открыть PR→integration без Opus. Canonical integration merge остаётся у Opus; прежнее общее live-ограничение для source-команды уточнено **bounded first-book operator передачей Шкиперу13:49 выше**. Для остальных effects/live нет новых полномочий. Диагностический combined candidate не становится вторым release owner.
 
 Основание текущих scopes — [распределение dot](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792669652725409). Обновление source scope1792670205.549679: controller preclaim metadata выделен Шкиперу; WSS сериализуется Линза → health Шкипер → media Риф, либо точный согласованный combined handoff. Это source-only, не canonical merge/live.
 
@@ -115,6 +131,8 @@ Pin требований: `bd138b2449f68cabb2cbfa3df552df8471f40c78`. Этот �
 
 ## 2. Где мы действительно находимся
 
+**Исторический technical evidence-срез10:29–10:31; актуальный first-book operator/state — блок13:49 выше.**
+
 Каноническая ветка — `integration/rkb-native-import-20261022`; исходный SHA `4e6a7b7ab0c90a9ff41effa37f25f92930041ccf`, SHA базы этого doc-only branch **`1c6cf0e66ed3c75b3677cb034e87ed1b316e99f8`** после PR229. При создании PR238 GitHub уже показал target **`b932c15ef133d668a0eaa3570cc895e750876c77`**; историческая база не названа текущим HEAD. Ветки исполнителей направляются PR в integration, **не main**. Только Opus сливает и управляет live.
 
 | Наблюдение / вход | Что доказано | Что НЕ доказано / ближайшая зависимость |
@@ -129,7 +147,7 @@ Pin требований: `bd138b2449f68cabb2cbfa3df552df8471f40c78`. Этот �
 | [PR236 Quartz](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/236), head655a2a | GitHub39762654094 SUCCESS:2461PASS/32SKIP обе Python; real Dataset-bound writer/signed ingress classes | Старый39761936577 RED на da1b511 исправлен только fixture signed retry order, не runtime bug. Native/provider boundaries synthetic, не live Dataset adoption; PR226 отдельный leaf |
 | [PR230 Linza](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/230), current3a417be4; [PR232](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/232),87269af | First-book gold/workload и reconnect regression; PR230 full39761688016 SUCCESS на current3a417be4; PR232 сохраняет отдельный RED READY race, не продуктовый PASS | Gold/live quality не пройдены; latency source fix — отдельная активная обязанность, не закрытая этими тестами |
 
-Текущий координационный источник: [общий Slack thread](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792577182627799), прочитан ограниченный свежий диапазон с1792663059.059128 до конца доступных сообщений. Статусы меняются: при следующем handoff перепроверить exact HEAD/checks, не копировать эту таблицу как вечный live report.
+Исторический координационный источник: [прежний Slack thread](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792577182627799), прочитан ограниченный свежий диапазон с1792663059.059128 до конца доступных сообщений. Статусы меняются: при следующем handoff перепроверить exact HEAD/checks, не копировать эту таблицу как вечный live report.
 
 **Первый оригинал уже одобрен:** Гаузе,174 страницы,12 752 172 bytes, SHA256 `10328207e2664aabef78201fb997e18f3ea8e48f8d7d56a98f3d6832b21ddb65`. Не просить повторную загрузку без установленной потери/истечения реального ref. **В10:44 provider readback подтвердил доступность того же полного оригинала и download SHA; повторная загрузка от владельца не нужна.** Пустой target book_find в10:36 означает «ещё не импортировано», не потерю оригинала. До модельного чтения dot получает этот проверенный оригинал по поддержанному private client path; наличие provider объекта не равно уже просмотренным страницам. Сохранять тот же import operation; книга, private resource IDs/URLs и её частный текст не публикуются в GitHub.
 
@@ -145,7 +163,7 @@ Pin требований: `bd138b2449f68cabb2cbfa3df552df8471f40c78`. Этот �
 **Принимаем по evidence:** actual private transfer/SDK/stop capabilities; PG17/pinned pgvector/PostGIS+BGE, SQL/BGE/readiness отдельно от Telegram readiness; одна verified authority, одна model instance; DBG-1–9/11–13 применительно к включаемому пути, DUR/FEN/REC. До unresolved coverage — pending, никаких ложных accepted/Saved или provider effects с незакреплённым intent. Runtime skill install/read receipt обязателен.
 
 ### [ ] M2. Одобренная книга принята целиком, а Saved можно восстановить
-**Статус:** `blocked` M1. **Ответственный:** Opus — интеграция и разрешённый live; **Модельное чтение/первый MCP импорт:** dot; **приёмка:** Линза.
+**Статус:** `blocked` на installed import context/owner-issued ID; bounded runtime подготовка `in_progress`. **Единственный runtime/operator first-book schema14/revision1:** Шкипер, явный ACK13:45. **Модельное чтение:** Книга, dot ведёт PM/reader-path; **приёмка:** Линза. Canonical merge не перераспределён; Opus/revision2/Expert не prerequisite первого импорта.
 
 **Следующий результат:** первый end-to-end импорт уже одобренного Гаузе: source identity/edition → model reading → pages/stage/validate/finalize → точный durable receipt. Не называть первые страницы полной принятой книгой. Затем отдельный настоящий DjVu подтверждает сохранение этого формата.
 
