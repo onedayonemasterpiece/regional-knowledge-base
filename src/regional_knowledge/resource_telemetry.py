@@ -37,8 +37,16 @@ RESOURCE_INTEGERS = frozenset({
 RESOURCE_LATEST = RESOURCE_NUMBERS - {'sample_seq', 'sample_time_unix_ms',
                                       'sampling_failures_total'}
 
-# Shared ProductTelemetry accepts these fixed units directly; do not double
-# the event with secondary byte aliases or any process/environment strings.
+# Small standard-log core. Detailed optional /proc/PSS/PG/throttle/IO values
+# remain in the freshest authenticated heartbeat diagnostics, not in the
+# historical sink or a second logging service.
+_SINK_CORE = frozenset({
+    'rss_kib', 'cpu_seconds', 'cgroup_version',
+    'cpu_usage_delta_seconds', 'cpu_utilization_cores',
+    'memory_current_bytes', 'memory_limit_bytes',
+    'memory_events_oom', 'memory_events_oom_kill',
+    'sampling_failures_total',
+})
 _MAX_BYTES = 1600  # File sink reserves up to 2048B for its own envelope.
 
 
@@ -95,7 +103,9 @@ def emit_resource_sample(collector, diagnostics, *, run_id, incarnation,
             'connection_generation': generation,
             'received_unix_ms': received_unix_ms,
             'scope': 'own_cgroup' if 'cgroup_version' in values else 'process_only',
-            **values,  # One fixed numerical whitelist; absent really is unknown.
+            'sample_seq': values['sample_seq'],
+            'sample_time_unix_ms': values['sample_time_unix_ms'],
+            **{key: value for key, value in values.items() if key in _SINK_CORE},
         }
         if type(release) is str and re.fullmatch('[0-9a-f]{64}', release):
             event['release_sha256'] = release
