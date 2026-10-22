@@ -221,6 +221,28 @@ class BgeQueue:
         if useful:db.execute('update runs set useful=? where id=?',(now,run_id))
         return run_id
 
+    def recover_not_sent_startup(self):
+        """Operator-only: reopen a BLOCKED demand whose exhausted budget was all not-sent.
+
+        Allowed only when the latest MAX_STARTUP_FAILURES runs are known
+        not-sent launch failures (no provider version) and no run has an
+        unknown provider outcome. Anything that might have reached Kaggle
+        keeps the demand blocked. Returns the evidence or raises.
+        """
+        with self.connect() as db:
+            control=db.execute('select startup_state from control where id=1').fetchone()
+            if control['startup_state']!='blocked':raise ValueError('startup demand is not blocked')
+            recent=db.execute('select id,status,launch_state,provider_version from runs order by started desc limit ?',
+                (MAX_STARTUP_FAILURES,)).fetchall()
+            unknown=db.execute("select 1 from runs where launch_state in ('dispatching','dispatched') "
+                "and status in ('starting','ready','draining') limit 1").fetchone()
+            if (len(recent)<MAX_STARTUP_FAILURES or unknown is not None
+                    or any(r['launch_state']!='failed' or r['provider_version'] is not None for r in recent)):
+                raise ValueError('blocked demand is not provably not-sent')
+            ref='rkb:startup:v1:'+str(uuid.uuid4())
+            db.execute("update control set startup_ref=?,startup_state='pending',startup_failures=0 where id=1",(ref,))
+            return {'startup_ref':ref,'not_sent_runs':[r['id'] for r in recent]}
+
     def request_startup(self):
         """One persisted cold demand, independent of a particular run's TTL.
 

@@ -17,14 +17,33 @@ from pathlib import Path
 RUN_FIELDS = ('run_id', 'writer_generation', 'launch_config_sha256', 'operation_key')
 
 
-def successor_configs(target, service, *, run_id, writer_generation, launch_config_sha256, release_sha):
-    """Previous verified configs with only the run-bound fields replaced."""
+def successor_configs(target, service, *, run_id, writer_generation, launch_config_sha256, release_sha,
+                      checkpoint=None):
+    """Previous verified configs with only the run-bound fields replaced.
+
+    checkpoint is the store's verified promoted Dataset checkpoint (wire). It
+    replaces the restore base consistently: target/service checkpoint, the
+    target read floor and the source restore manifest reference.
+    """
     target = json.loads(json.dumps(target))
     service = json.loads(json.dumps(service))
     if service.get('codec') != 'rkb.source-service.v1' or 'source_restore' not in service:
         raise ValueError('previous verified source-service restore config required')
     if target['database']['database_generation'] != service['database']['database_generation']:
         raise ValueError('previous target and source-service differ')
+    if checkpoint is not None and checkpoint != target.get('dataset_checkpoint'):
+        restore = service['source_restore']
+        if (checkpoint['database_generation'] != target['database']['database_generation']
+                or target.get('dataset_checkpoint') != restore.get('dataset_checkpoint')
+                or checkpoint['base_sequence'] < target['dataset_checkpoint']['base_sequence']):
+            raise ValueError('promoted checkpoint must extend the same restore base')
+        manifest = checkpoint['manifest']
+        restore['manifest'] = dict(key=restore['manifest']['key'].rsplit('/', 1)[0] + '/' + manifest['sha256'],
+                                   last_sequence=checkpoint['base_sequence'], length=manifest['size'],
+                                   sha256=manifest['sha256'])
+        restore['dataset_checkpoint'] = checkpoint
+        target['dataset_checkpoint'] = checkpoint
+        target['min_data_seq'] = checkpoint['base_sequence']
     target['database']['writer_generation'] = writer_generation
     service['run_id'] = run_id
     service['database']['writer_generation'] = writer_generation
@@ -53,6 +72,15 @@ def pending_successor(queue):
     return run_id, writer_generation
 
 
+def verified_latest_checkpoint(queue):
+    """The store's promoted checkpoint (latest_json is written only after native verify)."""
+    with queue.connect(write=False) as db:
+        rows = db.execute('select checkpoint_json,latest_json from rkb_dataset_recovery_store').fetchall()
+    if len(rows) != 1:
+        raise ValueError('exactly one Dataset recovery store required')
+    return json.loads(rows[0][1] or rows[0][0])
+
+
 def write_private(path, value):
     path.write_text(json.dumps(value, sort_keys=True, separators=(',', ':')))
     path.chmod(0o600)
@@ -64,6 +92,8 @@ def main(argv=None):
     parser.add_argument('--release-sha', required=True)
     parser.add_argument('--broker', required=True)
     parser.add_argument('--docker-image', required=True)
+    parser.add_argument('--recover-not-sent-startup', action='store_true',
+                        help='reopen a BLOCKED demand only if every exhausted attempt was provably not sent')
     args = parser.parse_args(argv)
     source = Path(__file__).resolve().parents[2]
     spec = importlib.util.spec_from_file_location('rkb_controller', source / 'scripts/production/bge_kaggle_controller.py')
@@ -72,14 +102,17 @@ def main(argv=None):
     from regional_knowledge.bge_queue import BgeQueue
     from regional_knowledge.kaggle_launch_config import load_target_launch
     queue = BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
+    if args.recover_not_sent_startup:
+        print(json.dumps({'recovered_startup': queue.recover_not_sent_startup()}))
     run_id, writer_generation = pending_successor(queue)
+    checkpoint = verified_latest_checkpoint(queue)
     previous_service = next(args.previous.glob('source-service-*.json'))
-    target = json.loads((args.previous / 'target.json').read_text())
+    previous_target = json.loads((args.previous / 'target.json').read_text())
     service = json.loads(previous_service.read_text())
     out = args.previous.parent / f'verified-restore-{args.release_sha[:12]}-{run_id[:8]}'
     out.mkdir(mode=0o700)
-    target, _ = successor_configs(target, service, run_id=run_id, writer_generation=writer_generation,
-                                  launch_config_sha256='0' * 64, release_sha=args.release_sha)
+    target, _ = successor_configs(previous_target, service, run_id=run_id, writer_generation=writer_generation,
+                                  launch_config_sha256='0' * 64, release_sha=args.release_sha, checkpoint=checkpoint)
     write_private(out / 'target.json', target)
     token = (queue.path.parent / 'bge-worker-credentials' / run_id).read_text()
     template = (source / 'scripts/production/bge_kaggle_worker.py').read_text()
@@ -90,8 +123,9 @@ def main(argv=None):
     del token
     with queue.connect(write=False) as db:
         expected = json.loads(queue._runtime_row(db, run_id)['expected_json'])
-    _, service = successor_configs(target, service, run_id=run_id, writer_generation=writer_generation,
-                                   launch_config_sha256=expected['hashes']['launch_config'], release_sha=args.release_sha)
+    _, service = successor_configs(previous_target, service, run_id=run_id, writer_generation=writer_generation,
+                                   launch_config_sha256=expected['hashes']['launch_config'], release_sha=args.release_sha,
+                                   checkpoint=checkpoint)
     service_path = out / f'source-service-{run_id}.json'
     write_private(service_path, service)
     print(json.dumps({'run_id': run_id, 'target': str(out / 'target.json'), 'source_service': str(service_path)}))
