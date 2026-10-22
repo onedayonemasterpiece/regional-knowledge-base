@@ -469,8 +469,24 @@ def analyze(client: Sequence[dict], telemetry: Sequence[dict]) -> tuple[dict, li
     return summary,joint
 
 
+def validate_receipt(value):
+    if (type(value) is not dict or set(value) !=
+            {"codec","status","question_fixture_sha256","corpus","calls","warmups","elapsed_seconds"}
+            or value["codec"] != "rkb.public-query-telemetry-run.v1"
+            or value["status"] != "public_query_callbacks_invoked_not_authority_proof"
+            or type(value["question_fixture_sha256"]) is not str
+            or HEX64.fullmatch(value["question_fixture_sha256"]) is None
+            or type(value["calls"]) is not int or value["calls"] != TOTAL_CALLS
+            or type(value["warmups"]) is not int or value["warmups"] !=
+                len(CASE_IDS)*len(COHORTS)*WARMUPS_PER_CASE
+            or not _number(value["elapsed_seconds"])):
+        raise ValueError("complete exact workload receipt required")
+    return {**value, "corpus":valid_corpus(value["corpus"])}
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--receipt",type=Path,required=True)
     parser.add_argument("--client",type=Path,required=True)
     parser.add_argument("--telemetry",type=Path,required=True)
     parser.add_argument("--report",type=Path,required=True)
@@ -478,7 +494,13 @@ def main(argv=None):
     args=parser.parse_args(argv)
     if args.report==args.raw or args.report in (args.client,args.telemetry):
         parser.error("separate output path required")
+    if args.receipt.stat().st_size > 8192:
+        raise ValueError("bounded workload receipt required")
+    receipt=validate_receipt(json.loads(args.receipt.read_text()))
     result,samples=analyze(_read_events(args.client),_read_events(args.telemetry))
+    result["corpus"]=receipt["corpus"]
+    result["question_fixture_sha256"]=receipt["question_fixture_sha256"]
+    result["runtime_owner_handoff_status"]="separate_operator_approval_required"
     args.report.write_text(json.dumps(result,sort_keys=True,indent=2)+"\n")
     with args.raw.open("w") as output:
         for sample in samples:
