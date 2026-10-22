@@ -1,0 +1,62 @@
+name: rkb-telethon-wheel-candidate
+
+on:
+  push:
+    branches:
+      - chatgpt/rkb-linza-telethon-wheel-lock-20261022
+    paths:
+      - .github/workflows/rkb-telethon-wheel-candidate.yml
+      - scripts/production/verify_telethon_wheel_candidate.py
+
+permissions:
+  contents: read
+
+jobs:
+  verify-candidate:
+    name: candidate CPython ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    env:
+      SOURCE_DATE_EPOCH: "1700000000"
+      PYTHONHASHSEED: "0"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_INPUT: "1"
+    steps:
+      - name: Read pinned source (no credentials)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select exact GitHub-hosted interpreter
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install pinned build tooling only on GitHub-hosted runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s python -m pip install --no-input \
+            'pip==25.2' 'setuptools==80.9.0' 'wheel==0.45.1' 'packaging==25.0'
+          python -m pip --version
+          python -c 'import setuptools,wheel,packaging; print("BUILDER",setuptools.__version__,wheel.__version__,packaging.__version__)'
+      - name: Verify official PyPI JSON and sdist SHA, then build twice and smoke offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p candidate-proof
+          timeout 210s python scripts/production/verify_telethon_wheel_candidate.py \
+            --output "candidate-proof/cp${{ matrix.python }}" \
+            --base-revision "${{ github.sha }}" \
+            2>&1 | tee "candidate-proof/cp${{ matrix.python }}-summary.log"
+      - name: Save bounded evidence and wheel bytes (never to git)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rkb-telethon-wheel-candidate-py${{ matrix.python }}
+          path: candidate-proof/
+          if-no-files-found: warn
+          retention-days: 14
