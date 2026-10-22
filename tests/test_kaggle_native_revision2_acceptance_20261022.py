@@ -363,7 +363,7 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
         activated=resolved_revision2_native_command(
             route=REVISION2_ACTIVATE_ROUTE,source_id=SOURCE,payload={
                 **v2_projection,"codec":REVISION2_ACTIVATION_CODEC},
-            sequence=env["sequence"]+1,operation_key=f"revision2-activation:{v2_ingestion}",
+            sequence=env["sequence"]+1,operation_key="revision2-accepted-noncanonical-key",
             request_id=REQUEST,person_id=PERSON,logical_time=TIME)
         active=await _accepted(env,activated)
         assert active.status=="applied" and not active.duplicate
@@ -406,12 +406,17 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
             assert prior_story==(body1,)
             origin=await (await connection.execute(
                 "SELECT source_id,revision,ingestion_id,origin_ingestion_id,"
-                "predecessor_command_sha256 FROM rkb_v4.source_revision2_origins WHERE source_id=%s",
+                "predecessor_command_sha256,operation_key,accepted_sequence,"
+                "command_sha256 FROM rkb_v4.source_revision2_origins WHERE source_id=%s",
                 (SOURCE,))).fetchone()
-            # psycopg returns PostgreSQL uuid columns as UUID, not strings.
-            # Compare exact native typed identity; never coerce away it.
+            # The SQL017 AFTER-applied_ops trigger must capture the REAL
+            # accepted identity, NOT infer 'revision2-activation:<ingestion>'.
+            # psycopg UUID columns are typed UUIDs rather than str.
             assert origin==(UUID(SOURCE),2,UUID(v2_ingestion),UUID(INGESTION),
-                            digest(original_activation.encode()))
+                            digest(original_activation.encode()),
+                            activated.operation_key,activated.sequence,
+                            digest(activated.encode()))
+            assert activated.operation_key != f"revision2-activation:{v2_ingestion}"
         # One PK source ID across revisions; no second archived original.
         assert env["sequence"]>=before_seq+3
     finally:
