@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 import math
 import time
 
-from .kaggle_health_native import HEALTH_SQL, _budget, probe_sql_health
+from .kaggle_database_probe import HEALTH_SQL, _health_budget as _budget, probe_sql_health
 
 from .kaggle_public_backend import TargetReadBinding, TargetUnavailable, current_binding
 

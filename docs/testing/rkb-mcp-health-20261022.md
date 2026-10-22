@@ -60,12 +60,12 @@ metadata; a disconnect between the queue snapshot and runtime-row read suppresse
 the PostgreSQL observation with `attachment_changed`. This is still explicitly
 a heartbeat observation, not a fresh SQL response.
 
-`kaggle_health_native.py` contains the same fixed read-only SQL probe without
+The existing native-safe `kaggle_database_probe.py` contains the same fixed read-only SQL probe without
 controller/MCP imports. Its caller supplies the existing acquisition, expected
 database generation/minimum sequence and a current authenticated lease callback.
 It returns sanitized observation fields, not a new identity or capability.
 The controller wrapper retains the exact existing TargetReadBinding and DTO.
-The integration owner adds this single module to the existing native bundle and
-dispatches through the existing authenticated WSS handler; no new pool or route
+The integration owner dispatches through the existing authenticated WSS handler;
+the probe module is already included in the native bundle. No new pool or route
 is introduced. A fresh-process import check blocks controller/MCP modules, and
 server-side statement cancellation maps to the fixed `pg_timeout` reason.
