@@ -27,6 +27,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .contracts import Principal
 from .read_authority import ReadAuthority, VerifiedReadAuthority
 from .source_read_gate import SourceReadGate, binding_key
 
@@ -147,7 +148,7 @@ class IssuedPublicIllustration:
     ticket: PublicMediaTicket
 
 
-@dataclass
+@dataclass(frozen=True)
 class _Retained:
     actor: VerifiedReadAuthority
     binding: Any
@@ -155,6 +156,8 @@ class _Retained:
     source_facts: Any
     archive_proof: ArchiveOpaqueProof
     frame: PublicIllustrationFrame
+    issued: IssuedPublicIllustration
+    canonical_frame_bytes: bytes
     expires_at: float
 
 
@@ -382,6 +385,38 @@ class PublicIllustrationOutputGate:
         if not self.source_gate.spool.facts_current(facts):
             _fail("media_source_fence_changed")
 
+    def _actor_current_sync(self, actor: VerifiedReadAuthority) -> bool:
+        """Reapply the EXISTING ReadAuthority.recheck identity/expiry/_state
+        checks synchronously at the final serialization boundary.
+
+        ReadAuthority.recheck is async; calling it before the last renderer
+        callback is insufficient. Its _state is already a synchronous
+        canonical read of participant role/revision and OAuth-family scope.
+        No alternate grant cache, IAM, bearer handling or new authority.
+        """
+        try:
+            if type(actor) is not VerifiedReadAuthority or actor.expires_at <= self.authority.clock():
+                return False
+            with self.authority._contexts_lock:
+                if self.authority._contexts.get(actor.context_ref) is not actor:
+                    return False
+            principal = Principal(
+                subject=actor.person_id, client_id=actor.client_id,
+                issuer=actor.issuer, access_token="")
+            current = self.authority._state(
+                principal, actor.route, actor.link_id,
+                actor.link_revision, actor.oauth_family_ref)
+            if (current.revision != actor.auth_revision
+                    or "public_search" not in current.capabilities):
+                return False
+            with self.authority._contexts_lock:
+                return (self.authority._contexts.get(actor.context_ref) is actor
+                        and actor.expires_at > self.authority.clock())
+        except Exception:
+            # Any missing/stale resolver state remains a denial, never cached
+            # permission. No provider/private error text enters the frame.
+            return False
+
     async def issue(self, *, verified: VerifiedReadAuthority,
                     binding: Any, source_id: str,
                     illustration_id: str) -> IssuedPublicIllustration:
@@ -462,14 +497,29 @@ class PublicIllustrationOutputGate:
                 _fail("untrusted_public_media_renderer")
             frame = PublicIllustrationFrame(metadata=metadata,
                 artifact=PublicOpaqueArtifact(ref=proof.ref))
+            # Pydantic frozen=True is shallow; public dicts and nested lists
+            # stay mutable. Bind the EXACT canonical issued frame bytes and
+            # the returned IssuedPublicIllustration object's frame identity.
+            # Final synchronous issuance compares both after every caller
+            # mutation, so no swapped or injected private content can pass.
+            canonical_frame = _canonical(frame.model_dump(mode="json"))
+            if len(canonical_frame) > 128 * 1024:
+                _fail("public_media_frame_too_large")
             ticket = PublicMediaTicket()
+            issued = IssuedPublicIllustration(frame, ticket)
+            # The preliminary admission check preceded several awaits.
+            # This second synchronous check and insertion have NO await and
+            # cannot overbook retained tickets under concurrent issue().
+            self._expire()
+            if len(self._tickets) >= self.capacity:
+                _fail("media_output_ticket_capacity")
             self._tickets[ticket] = _Retained(
                 verified, binding, key, final_facts, proof, frame,
-                self.clock() + self.ttl)
+                issued, canonical_frame, self.clock() + self.ttl)
             if not self.issuance_current(ticket):
                 self.release(ticket)
                 _fail("media_output_fence_changed")
-            return IssuedPublicIllustration(frame, ticket)
+            return issued
         except asyncio.CancelledError:
             raise
         except PublicMediaUnavailable:
@@ -493,13 +543,22 @@ class PublicIllustrationOutputGate:
         if retained is None or retained.expires_at <= self.clock():
             return False
         try:
+            if (not self._actor_current_sync(retained.actor)
+                    or retained.issued.ticket is not ticket
+                    or retained.issued.frame is not retained.frame
+                    or type(retained.frame) is not PublicIllustrationFrame
+                    or _canonical(retained.frame.model_dump(mode="json"))
+                        != retained.canonical_frame_bytes):
+                return False
             return bool(
                 binding_key(retained.binding) == retained.binding_identity
                 and self.source_gate.binding_current(retained.binding) is True
                 and self.source_gate.spool.facts_current(retained.source_facts)
                 and retained.archive_proof.owner is self.archive
                 and self.archive.issuance_current(retained.archive_proof) is True)
-        except (ValueError, TypeError, AttributeError, PermissionError):
+        except Exception:
+            # The final gate returns only a boolean. Never leak native/actor
+            # state or serialization errors to a public media frame.
             return False
 
     def release(self, ticket: PublicMediaTicket):
