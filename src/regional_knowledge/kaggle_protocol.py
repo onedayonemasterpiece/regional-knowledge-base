@@ -98,6 +98,65 @@ class CancelQuery(ReadIdentity):
     reason: Literal["caller_cancelled", "deadline_exceeded", "turn_replaced", "disconnected"]
 
 
+class SqlHealthRequest(ReadIdentity):
+    """Fixed metadata read admitted with the existing verified actor/channel."""
+    type: Literal['SQL_HEALTH'] = 'SQL_HEALTH'
+    protocol_version: Literal[2] = PROTOCOL_VERSION
+    operation: Literal['sql_health'] = 'sql_health'
+    operation_version: Literal[1] = 1
+    database_generation: Identifier
+    actor: TrustedActorContext
+    min_data_seq: Nonnegative
+    deadline_ms: Annotated[int, Field(gt=0, le=2000)]
+    compute_claim: Identifier | None = None
+
+
+class SqlHealthObservation(Contract):
+    sql_response: bool = False
+    schema_revision: Annotated[str,Field(min_length=1,max_length=256)] | None = None
+    applied_seq: Nonnegative | None = None
+    projection_seq: Nonnegative | None = None
+    pending: bool | None = None
+    reason: Literal['pg_binding_changed','pg_lease_invalid','pg_metadata_invalid',
+        'pg_generation_mismatch','pg_prior_write_pending','pg_projection_lag',
+        'pg_sequence_behind','pg_timeout','pg_query_failed'] | None = None
+    elapsed_ms: Annotated[float,Field(ge=0,allow_inf_nan=False)] = 0
+
+    @property
+    def ready(self):
+        return (self.sql_response and self.reason is None and self.schema_revision is not None
+            and self.applied_seq is not None and self.projection_seq==self.applied_seq
+            and self.pending is False)
+
+
+class SqlHealthResult(ReadIdentity):
+    type: Literal['SQL_HEALTH_RESULT'] = 'SQL_HEALTH_RESULT'
+    protocol_version: Literal[2] = PROTOCOL_VERSION
+    status: Literal['ok','unavailable','invalid_query','denied','cancelled']
+    evidence: tuple = Field(default=(),max_length=0)
+    observed_data_seq: Nonnegative | None = None
+    observed_projection_seq: Nonnegative | None = None
+    observed_visibility_epoch: Nonnegative | None = None
+    observed_database_generation: Identifier | None = None
+    reason: Literal['not_ready','deadline_exceeded','disconnected','caller_cancelled',
+        'turn_replaced','query_too_large','invalid_input','access_denied','internal_error'] | None = None
+    health: SqlHealthObservation | None = None
+
+    @model_validator(mode='after')
+    def health_semantics(self):
+        if self.status=='ok':
+            if (self.reason is not None or self.health is None or not self.health.ready
+                    or self.observed_database_generation is None
+                    or self.observed_data_seq!=self.health.applied_seq
+                    or self.observed_projection_seq!=self.health.projection_seq):
+                raise ValueError('complete current SQL health required')
+        elif self.reason is None:
+            raise ValueError('explicit health failure reason required')
+        elif self.health is not None and self.health.ready:
+            raise ValueError('unavailable response cannot claim ready SQL health')
+        return self
+
+
 class SourceDependency(Contract):
     source_id: Identifier
     content_revision: Annotated[int, Field(ge=1)]
@@ -370,7 +429,7 @@ class Hello(Contract):
     proof_ready: bool | None
 
 
-Envelope = Annotated[Query | QueryResult | PassageReadRequest | PassageReadResult | StoryReadRequest | StoryReadResult | CancelQuery | Hello, Field(discriminator="type")]
+Envelope = Annotated[Query | QueryResult | PassageReadRequest | PassageReadResult | StoryReadRequest | StoryReadResult | SqlHealthRequest | SqlHealthResult | CancelQuery | Hello, Field(discriminator="type")]
 _ADAPTER = TypeAdapter(Envelope)
 
 
