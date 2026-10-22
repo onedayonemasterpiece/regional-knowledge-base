@@ -26,7 +26,7 @@ from .queue_writer import QueueWriterAuthority
 
 def compose_source_service(*,queue,oauth_provider,participants,object_store,stream,registry,
                            history_adapter,run_id,database_generation,writer_generation,
-                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=(),source_restore=None,source_snapshot=None,geo_bootstrap=None,geo_dependency_upgrade=None,dataset_seed=None,native_source_upgrade=None):
+                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=(),source_restore=None,source_snapshot=None,geo_bootstrap=None,geo_dependency_upgrade=None,dataset_seed=None,native_source_upgrade=None,successor_source_json=None):
     """Reuse the actual owner objects; returns the real server.main input.
 
     object_store is the already configured S3ObjectStore authority/client, not
@@ -71,7 +71,8 @@ def compose_source_service(*,queue,oauth_provider,participants,object_store,stre
         return TargetServiceStartup(TargetServiceConfig(oauth_provider,participants,queue,spool,history_adapter,
             writer_generation,writer.current,destination_ref=destination_ref,writer_owner=writer,
             geo_manifest_operation_keys=geo_manifest_operation_keys,source_restore=source_restore,source_snapshot=source_snapshot,geo_bootstrap=geo_bootstrap,
-            geo_dependency_upgrade=geo_dependency_upgrade,dataset_seed=dataset_seed,native_source_upgrade=native_source_upgrade,**import_options))
+            geo_dependency_upgrade=geo_dependency_upgrade,dataset_seed=dataset_seed,native_source_upgrade=native_source_upgrade,
+            successor_source_json=successor_source_json,**import_options))
     except BaseException:
         if spool is not None:spool.close()
         if writer is not None:writer.close()
@@ -177,6 +178,14 @@ def configured_source_service():
         raise ValueError('exact GEO manifest operation key list required')
     queue_path=os.getenv('RKB_BGE_QUEUE_PATH','').strip()
     if not queue_path or not Path(queue_path).is_file():raise ValueError('existing configured queue required')
+    original_value=value
+    queue=BgeQueue(queue_path)
+    if 'source_restore' in value:
+        from .kaggle_cold_successor import successor_source_config
+        # Select the finalized per-run checkpoint BEFORE constructing its
+        # Dataset store. Reopening the old checkpoint after a verified promotion
+        # would correctly fail instead of recovering the current generation.
+        value=successor_source_config(queue,value,allow_pending=True)
     # Existing fixed app constructors require existing OAuth state/key and
     # canonical participant DB. They never mint a credential or create a user.
     from .personal_auth_cli import _runtime
@@ -224,8 +233,9 @@ def configured_source_service():
     if 'dataset_seed' in value:
         from .kaggle_dataset_seed import DatasetSeedConfig
         dataset_seed=DatasetSeedConfig.from_wire(value['dataset_seed'])
-    return compose_source_service(queue=BgeQueue(queue_path),oauth_provider=provider,participants=people,
+    return compose_source_service(queue=queue,oauth_provider=provider,participants=people,
         object_store=object_store,stream=value['stream'],registry=registry,history_adapter=history,
         run_id=value['run_id'],database_generation=database.database_generation,writer_generation=database.writer_generation,
         source_import=import_owners,geo_manifest_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),source_restore=restore,source_snapshot=snapshot,geo_bootstrap=geo_bootstrap,
-        geo_dependency_upgrade=upgrade,dataset_seed=dataset_seed,native_source_upgrade=native_upgrade)
+        geo_dependency_upgrade=upgrade,dataset_seed=dataset_seed,native_source_upgrade=native_upgrade,
+        successor_source_json=json.dumps(original_value,sort_keys=True,separators=(',',':')) if restore is not None else None)
