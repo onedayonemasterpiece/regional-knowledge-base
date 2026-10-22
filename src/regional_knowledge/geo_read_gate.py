@@ -78,12 +78,27 @@ class GeoReadGate:
             and self.binding_current(binding))
 
     def supported(self):
+        from .source_activation import ACTIVATION_REVISIONS
+        from .kaggle_native_source_bindings import native_source_handler
         for handler in self.spool.registry.handlers.values():
-            if handler.route=='geo.manifest.install.v1' and handler.revisions==GEO_REVISIONS:
+            if handler.route!='geo.manifest.install.v1':continue
+            if handler.revisions==GEO_REVISIONS:
                 expected=geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256=handler.check.definition_sha256,
                     apply_sha256=handler.apply.definition_sha256)
-                if handler==expected:return True
+            elif handler.revisions==ACTIVATION_REVISIONS:
+                expected=native_source_handler(handler.route,check_sha256=handler.check.definition_sha256,
+                    apply_sha256=handler.apply.definition_sha256)
+            else:continue
+            if handler==expected:return True
         return False
+
+    @staticmethod
+    def _manifest_command(command):
+        from .source_activation import ACTIVATION_REVISIONS
+        if command.schema_revision==ACTIVATION_REVISIONS.schema:
+            from .kaggle_native_source_bindings import validate_native_source_command
+            return validate_native_source_command(command)
+        return validate_geo_manifest_command(command)
 
     async def establish(self,operation_keys,*,binding):
         """Maintenance-only proof extraction from this actual spool/journal/native prefix.
@@ -103,7 +118,7 @@ class GeoReadGate:
                     if (entry.seal_state!='ACCEPTED' or entry.apply_state!='APPLIED' or entry.outcome_state!='DURABLE'
                             or entry.accepted is None or entry.apply_receipt is None or entry.remote_outcome is None
                             or entry.database_generation!=binding.database_generation):raise SourceGateDenied('GEO outcome not durable')
-                    payload=validate_geo_manifest_command(c)
+                    payload=self._manifest_command(c)
                     handler=self.spool.registry.resolve(c)
                     if entry.handler_sha256!=handler.fingerprint:raise SourceGateDenied('GEO handler changed')
                     digest=await self.spool.journal.verify_accepted(entry.accepted,c)

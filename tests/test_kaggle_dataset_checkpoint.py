@@ -64,7 +64,7 @@ async def test_work_cycle_waits_for_quiet_then_resumes_published_version_after_l
     startup=NS(config=NS(queue=p.q,spool=NS(journal=NS(store=store,prefix=p.prefix.rstrip('/'))),
         source_restore=NS(versions=versions),history_adapter=NS(database=NS(**versions))),
         history=NS(_coverage=proof,catalog_hash=versions['catalog_sha256']),
-        restorer=NS(dispatch=NS(request=request)))
+        restorer=NS(dispatch=NS(request=request)),binding_current=lambda binding:True)
     owner=SourceDatasetCheckpoints(startup,clock=lambda:clock[0])
     assert not await owner.refresh('binding')
     clock[0]=29
@@ -114,3 +114,191 @@ async def test_capture_materializes_crash_gap_outcome_before_export_and_keeps_it
     assert key in {o['key'] for o in json.loads(p.store.export_control())['objects']}
     with p.q.connect(write=False) as db:
         assert db.execute('SELECT outcome_state FROM rkb_control_operations').fetchone()[0]=='NOT_SENT'
+
+
+def control_cycle(tmp_path,monkeypatch,*,interval=900):
+    """Real capture, tickets, store and owner; only native/provider I/O is fake."""
+    import asyncio
+    from regional_knowledge.kaggle_dataset_checkpoint import _WorkCycleCapture
+    from regional_knowledge.kaggle_dataset_publisher import DatasetUpload
+    from regional_knowledge.recovery_journal import RecoveryJournal
+    p=prepared(tmp_path);p.clock=[0.];p.alive=True;p.calls=[];p.uploads={};p.saved={}
+    p.fail_finalize=False;p.fail_verify=False;p.bad_verify=False;p.on_verify=None
+    p.q.clock=lambda:0.
+    p.binding=NS(run_id='run',runtime_incarnation='inc',writer_generation='writer')
+    with p.q.connect() as db:
+        db.execute('CREATE TABLE runs(id TEXT,started REAL)')
+        db.execute("INSERT INTO runs VALUES('run',0)")
+        db.execute('CREATE TABLE rkb_control_spool_meta(id INTEGER PRIMARY KEY,sequence INTEGER)')
+        db.execute('INSERT INTO rkb_control_spool_meta VALUES(1,7)')
+        db.execute('CREATE TABLE rkb_control_operations(operation_key TEXT,sequence INTEGER,seal_state TEXT,'
+            'apply_state TEXT,outcome_state TEXT,outcome_sha256 TEXT)')
+        db.execute('CREATE TABLE rkb_control_source_heads(source_id TEXT,sequence INTEGER,command_sha256 TEXT,'
+            'restriction INTEGER,pending INTEGER,unknown INTEGER)')
+    versions=dict(server_version_num=170010,pgvector_version='0.8.2',catalog_sha256='a'*64,
+        model_sha256='b'*64,tokenizer_sha256='c'*64,schema_revision='schema11',
+        function_revision='geo6',executor_revision='executor1')
+    p.proof=NS(applied_sequence=7,accepted_sequence=7,current=lambda:True,head=None,
+        pending=(),database_generation='db')
+    original=p.publisher
+    class Publisher:
+        ref=original.ref
+        def reserve(self,*,name,size,sha256,now):
+            return DatasetUpload(name,size,sha256,'token-'+sha256,'https://storage.googleapis.com/fixture')
+        def observe(self):return max(p.saved,default=1)
+        def finalize(self,*,files,operation,previous_version):
+            p.calls.append('finalize')
+            assert previous_version==self.observe()
+            version=previous_version+1
+            p.saved[version]=(operation,files,{f.name:p.uploads.get(f.name) for f in files})
+            if p.fail_finalize:
+                p.fail_finalize=False;raise TimeoutError('provider committed; response lost')
+            return version
+        def reconcile(self,*,files,operation,expected_version):
+            p.calls.append('reconcile')
+            saved=p.saved.get(expected_version)
+            return bool(saved and (operation,files)==saved[:2])
+        def read_control(self,file,*,version):
+            if version==1:return original.read_control(file,version=version)
+            data=p.saved[version][2][file.name]
+            assert (len(data),sha(data))==(file.size,file.sha256)
+            return data
+    p.store.publisher=Publisher()
+    async def capture(batch,physical,bridge,binding,sequence):
+        p.calls.append('capture')
+        ticket=await batch.tickets.issue_upload(binding,batch.config.operation_key+':archive',
+            size=20,sha256=sha(b'fixture archive'))
+        return dict(database_generation='db',writer_generation='writer',applied_sequence=sequence,
+            versions=versions,blob=dict(key=ticket.key,size=ticket.size,sha256=ticket.sha256,native_version='fixture'))
+    monkeypatch.setattr(_WorkCycleCapture,'_capture',capture)
+    monkeypatch.setattr('regional_knowledge.kaggle_dataset_seed._put_control',
+        lambda grant,data:p.uploads.__setitem__(grant.name,data))
+    async def request(binding,phase,args,**kwargs):
+        assert phase=='dataset_verify';p.calls.append('verify')
+        if p.fail_verify:
+            p.fail_verify=False;raise TimeoutError('native readback response lost')
+        if p.on_verify is not None:await p.on_verify()
+        cp=args['checkpoint'];archive=cp['archive']
+        return dict(dataset_ref=Publisher.ref,dataset_version=cp['dataset_version'],
+            base_sequence=cp['base_sequence'],archive_sha256='0'*64 if p.bad_verify else archive['sha256'],
+            archive_size=archive['size'])
+    spool=NS(journal=RecoveryJournal(p.store,stream='stream'),_lock=asyncio.Lock(),_source_covered_sequence=7)
+    p.startup=NS(config=NS(queue=p.q,spool=spool,writer_owner=p.guard,writer_generation='writer',
+        source_restore=NS(versions=versions),history_adapter=NS(database=NS(**versions))),
+        history=NS(_coverage=p.proof,catalog_hash='a'*64,acl_hash='d'*64,registry_hash='e'*64,routes=()),
+        restorer=NS(complete=True,physical=NS(journal=spool.journal,
+            limits=NS(max_receipts=100,max_control_bytes=1024*1024)),dispatch=NS(request=request)),
+        binding_current=lambda binding:p.alive and binding is p.binding)
+    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],interval_seconds=interval)
+    return p
+
+
+async def put_control(p,name='one',data=b'pending'):
+    key=p.prefix+'control/expert-requests/'+name+'/result'
+    old=await p.store.read(key,max_bytes=1024)
+    assert await p.store.compare_and_swap(key,data,expected_token=old.token if old else None,writer_generation='writer')
+    return key
+
+
+@pytest.mark.asyncio
+async def test_control_bytes_at_unchanged_pg_cursor_are_grouped_not_per_write_or_tick(tmp_path,monkeypatch):
+    p=control_cycle(tmp_path,monkeypatch)
+    assert not await p.owner.refresh(p.binding,planned_stop=True) and not p.calls
+    p.clock[0]=1000
+    keys=[await put_control(p,str(i)) for i in range(3)]
+    assert not await p.owner.refresh(p.binding) and not p.calls
+    p.clock[0]=1029
+    assert not await p.owner.refresh(p.binding) and not p.calls
+    p.clock[0]=1031
+    assert await p.owner.refresh(p.binding)
+    assert p.store.latest_checkpoint.dataset_version==2
+    assert p.store.latest_checkpoint.base_sequence==7
+    assert all(p.store.remote_durable(key,b'pending') for key in keys)
+    assert p.store.pending_control() is None and p.calls==['capture','finalize','verify']
+    assert not await p.owner.refresh(p.binding,planned_stop=True)
+    assert p.calls==['capture','finalize','verify']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('lost',['finalize','verify'])
+async def test_control_only_lost_ack_resumes_same_operation_version_after_restart(tmp_path,monkeypatch,lost):
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    p=control_cycle(tmp_path,monkeypatch);key=await put_control(p)
+    setattr(p,'fail_'+lost,True)
+    await p.owner.refresh(p.binding);p.clock[0]=31
+    with pytest.raises(CheckpointPending):await p.owner.refresh(p.binding)
+    assert not p.store.remote_durable(key,b'pending') and p.store.latest_checkpoint.dataset_version==1
+    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0])
+    assert await p.owner.refresh(p.binding)
+    assert p.store.remote_durable(key,b'pending') and p.store.latest_checkpoint.dataset_version==2
+    assert p.calls.count('capture')==p.calls.count('finalize')==1
+    assert not await p.owner.refresh(p.binding) and len(p.saved)==1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('late_data',[b'new bytes',b'pending'])
+async def test_late_control_cas_after_capture_remains_pending_for_next_group(tmp_path,monkeypatch,late_data):
+    p=control_cycle(tmp_path,monkeypatch);key=await put_control(p)
+    other=await put_control(p,'other')
+    async def late():
+        p.on_verify=None
+        await put_control(p,data=late_data)
+    p.on_verify=late
+    await p.owner.refresh(p.binding);p.clock[0]=31
+    assert await p.owner.refresh(p.binding)
+    assert p.store.latest_checkpoint.dataset_version==2
+    assert not p.store.remote_durable(key,late_data) and p.store.remote_durable(other,b'pending')
+    assert p.store.pending_control() is not None
+    p.clock[0]=32
+    assert not await p.owner.refresh(p.binding) and p.calls.count('capture')==1
+    p.clock[0]=63
+    assert await p.owner.refresh(p.binding)
+    assert p.store.latest_checkpoint.dataset_version==3 and p.store.remote_durable(key,late_data)
+    assert p.calls.count('capture')==2
+
+
+@pytest.mark.asyncio
+async def test_new_control_write_restarts_quiet_window_but_periodic_bound_still_applies(tmp_path,monkeypatch):
+    p=control_cycle(tmp_path,monkeypatch,interval=60);await put_control(p)
+    await p.owner.refresh(p.binding)
+    for tick in (20,40):
+        p.clock[0]=tick;await put_control(p,data=str(tick).encode())
+        assert not await p.owner.refresh(p.binding) and not p.calls
+    p.clock[0]=61
+    assert await p.owner.refresh(p.binding)
+    assert p.store.latest_checkpoint.dataset_version==2 and p.calls.count('capture')==1
+
+
+@pytest.mark.asyncio
+async def test_control_native_failure_preserves_current_proof_and_retry_uses_same_package(tmp_path,monkeypatch):
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    p=control_cycle(tmp_path,monkeypatch);key=await put_control(p);p.bad_verify=True
+    await p.owner.refresh(p.binding);p.clock[0]=31
+    with pytest.raises(CheckpointPending):await p.owner.refresh(p.binding)
+    assert p.startup.history._coverage is p.proof and p.proof.current()
+    assert not p.store.remote_durable(key,b'pending') and p.store.latest_checkpoint.dataset_version==1
+    p.bad_verify=False
+    assert await p.owner.refresh(p.binding)
+    assert p.calls.count('capture')==1 and p.store.remote_durable(key,b'pending')
+
+
+@pytest.mark.asyncio
+async def test_retired_writer_cannot_capture_or_promote_and_overlapping_tick_does_not_duplicate(tmp_path,monkeypatch):
+    import asyncio
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    p=control_cycle(tmp_path,monkeypatch);key=await put_control(p)
+    await p.owner.refresh(p.binding);p.clock[0]=31;p.alive=False
+    with pytest.raises(CheckpointPending):await p.owner.refresh(p.binding)
+    assert not p.calls
+    p.alive=True;entered=asyncio.Event();release=asyncio.Event()
+    async def retire():
+        entered.set();await release.wait();p.alive=False
+    p.on_verify=retire
+    first=asyncio.create_task(p.owner.refresh(p.binding));await entered.wait()
+    assert not await p.owner.refresh(p.binding,planned_stop=True)
+    release.set()
+    with pytest.raises(CheckpointPending):await first
+    assert p.store.latest_checkpoint.dataset_version==1 and not p.store.remote_durable(key,b'pending')
+    p.alive=True;p.on_verify=None
+    assert await p.owner.refresh(p.binding)
+    assert p.store.latest_checkpoint.dataset_version==2 and p.calls.count('capture')==1

@@ -93,6 +93,7 @@ class BgeWssTransport:
         self.source_handler = None
         self.source_history_handler=None
         self.original_intake_handler=None
+        self.telegram_binding_task=None
         self._connection_generation=None
         if recovery_handler is not None and (not shared or not (inspect.iscoroutinefunction(recovery_handler)
                 or inspect.iscoroutinefunction(getattr(recovery_handler,'__call__',None)))):
@@ -187,6 +188,11 @@ class BgeWssTransport:
 
     @staticmethod
     def _unavailable(frame, reason):
+        if frame.get('type')=='SQL_HEALTH':
+            return {'type':'SQL_HEALTH_RESULT','protocol_version':2,
+                **{key:frame[key] for key in ('request_id','connection_generation','turn_generation')},
+                'status':'unavailable','evidence':[],'observed_data_seq':None,
+                'observed_projection_seq':None,'reason':reason}
         exact=frame.get('type') in ('PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ','ACCEPTANCE_READ')
         return {'type': 'ACCEPTANCE_READ_RESULT' if frame.get('type')=='ACCEPTANCE_READ' else 'SOURCE_GRAPH_READ_RESULT' if frame.get('type')=='SOURCE_GRAPH_READ' else 'EDITORIAL_READ_RESULT' if frame.get('type')=='EDITORIAL_READ' else 'CASE_READ_RESULT' if frame.get('type')=='CASE_READ' else 'GEO_READ_RESULT' if frame.get('type')=='GEO_READ' else 'SOURCE_READ_RESULT' if frame.get('type')=='SOURCE_READ' else 'FACT_READ_RESULT' if frame.get('type')=='FACT_READ' else 'STORY_READ_RESULT' if frame.get('type')=='STORY_READ' else 'PASSAGE_READ_RESULT' if exact else 'QUERY_RESULT', 'protocol_version': 2,
             **{key: frame[key] for key in ('request_id', 'connection_generation', 'turn_generation')},
@@ -194,9 +200,9 @@ class BgeWssTransport:
             'observed_data_seq': None, 'observed_projection_seq': None, 'reason': reason}
 
     def _validate_query(self, frame):
-        exact=frame.get('type') in ('PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ','ACCEPTANCE_READ')
+        exact=frame.get('type') in ('SQL_HEALTH','PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ','ACCEPTANCE_READ')
         if exact:
-            from regional_knowledge.kaggle_protocol import decode_envelope,PassageReadRequest,StoryReadRequest
+            from regional_knowledge.kaggle_protocol import decode_envelope,PassageReadRequest,StoryReadRequest,SqlHealthRequest
             from regional_knowledge.kaggle_fact_contracts import FactReadRequest
             from regional_knowledge.kaggle_source_read import SourceReadRequest
             from regional_knowledge.kaggle_case_contracts import CaseReadRequest
@@ -204,7 +210,7 @@ class BgeWssTransport:
             from regional_knowledge.kaggle_source_graph_read import SourceGraphReadRequest
             from regional_knowledge.kaggle_acceptance_contracts import AcceptanceReadRequest
             from regional_knowledge.kaggle_geo_contracts import GeoReadRequest
-            if not isinstance(decode_envelope(json.dumps(frame,allow_nan=False).encode()),AcceptanceReadRequest if frame.get('type')=='ACCEPTANCE_READ' else SourceGraphReadRequest if frame.get('type')=='SOURCE_GRAPH_READ' else EditorialReadRequest if frame.get('type')=='EDITORIAL_READ' else CaseReadRequest if frame.get('type')=='CASE_READ' else GeoReadRequest if frame.get('type')=='GEO_READ' else SourceReadRequest if frame.get('type')=='SOURCE_READ' else FactReadRequest if frame.get('type')=='FACT_READ' else StoryReadRequest if frame.get('type')=='STORY_READ' else PassageReadRequest):
+            if not isinstance(decode_envelope(json.dumps(frame,allow_nan=False).encode()),SqlHealthRequest if frame.get('type')=='SQL_HEALTH' else AcceptanceReadRequest if frame.get('type')=='ACCEPTANCE_READ' else SourceGraphReadRequest if frame.get('type')=='SOURCE_GRAPH_READ' else EditorialReadRequest if frame.get('type')=='EDITORIAL_READ' else CaseReadRequest if frame.get('type')=='CASE_READ' else GeoReadRequest if frame.get('type')=='GEO_READ' else SourceReadRequest if frame.get('type')=='SOURCE_READ' else FactReadRequest if frame.get('type')=='FACT_READ' else StoryReadRequest if frame.get('type')=='STORY_READ' else PassageReadRequest):
                 raise ValueError('shared exact read contract')
         if (len(json.dumps(frame, allow_nan=False).encode()) > 16384
                 or not all(self._identifier(frame.get(key)) for key in ('request_id', 'compute_claim'))
@@ -217,6 +223,12 @@ class BgeWssTransport:
             raise ValueError('shared QUERY contract')
 
     def _validate_query_result(self, frame, result):
+        if frame.get('type')=='SQL_HEALTH':
+            from regional_knowledge.kaggle_protocol import decode_envelope,SqlHealthResult
+            typed=decode_envelope(json.dumps(result,allow_nan=False).encode())
+            if type(typed) is not SqlHealthResult or self._read_identity(result)!=self._read_identity(frame):
+                raise ValueError('SQL health result identity/type mismatch')
+            return result
         if frame.get('type') in ('PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ','ACCEPTANCE_READ'):
             from regional_knowledge.kaggle_protocol import decode_envelope,PassageReadResult,StoryReadResult
             from regional_knowledge.kaggle_fact_contracts import FactReadResult
@@ -257,7 +269,14 @@ class BgeWssTransport:
             deadline = asyncio.get_running_loop().time() + frame['deadline_ms'] / 1000
             try:
                 async with asyncio.timeout_at(deadline):
-                    result = await self.query_handler(frame, encode=encode)
+                    if frame.get('type')=='SQL_HEALTH':
+                        def lease_current():
+                            return (self.resource is resource and self.read_frame is frame
+                                and not self.read_discard
+                                and self._connection_generation==frame['connection_generation'])
+                        result=await self.query_handler(frame,encode=encode,lease_current=lease_current)
+                    else:
+                        result = await self.query_handler(frame, encode=encode)
                 if asyncio.get_running_loop().time() >= deadline:
                     result = self._unavailable(frame, 'deadline_exceeded')
                 result = self._validate_query_result(frame, result)
@@ -411,10 +430,22 @@ class BgeWssTransport:
                 read_sent = result
                 await put(result, priority=1)
 
+        ready_confirmed=False
+        telegram_request_pending=False
+        async def request_telegram():
+            nonlocal telegram_request_pending
+            owner=getattr(self.original_intake_handler,'telegram_channel',None)
+            if (ready_confirmed and owner is not None and not owner.current()
+                    and owner.failed_generation!=generation and not telegram_request_pending
+                    and (self.telegram_binding_task is None or self.telegram_binding_task.done())):
+                telegram_request_pending=True
+                await put({'type':'RKB1_BIND_REQUEST','retained_client':owner.retained_client})
+
         async def heartbeat():
             while True:
                 await asyncio.sleep(self.heartbeat_seconds)
                 await put({'type': 'HEARTBEAT', 'diagnostics': await asyncio.to_thread(self.diagnostics)})
+                await request_telegram()
 
         async def states():
             ready_sent = False
@@ -459,6 +490,7 @@ class BgeWssTransport:
                     result_sent = (self.pending['job_id'], self.pending['claim'])
 
         async def reader():
+            nonlocal ready_confirmed, telegram_request_pending
             while True:
                 frame = await receive()
                 if type(frame.get('connection_generation')) is not int or frame['connection_generation'] != generation:
@@ -480,7 +512,7 @@ class BgeWssTransport:
                     if (self.read_frame is not None
                             and self._read_identity(frame) == self._read_identity(self.read_frame)):
                         self._cancel_read()
-                elif self.shared_reads and kind in ('QUERY','PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ','ACCEPTANCE_READ'):
+                elif self.shared_reads and kind in ('QUERY','SQL_HEALTH','PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ','ACCEPTANCE_READ'):
                     self._validate_query(frame)
                     if (self.read_frame is not None
                             and frame['compute_claim'] == self.read_frame['compute_claim']
@@ -580,7 +612,39 @@ class BgeWssTransport:
                         self._accept_bootstrap_pins(frame,generation,welcome.get('provider_version'))
                     elif frame.get('status')!='observed_not_ready':
                         raise ValueError('bootstrap acknowledgment status')
+                elif kind=='RKB1_BIND_PENDING':
+                    telegram_request_pending=False
+                    owner=getattr(self.original_intake_handler,'telegram_channel',None)
+                    if owner is not None:owner.authorized_generation=None
+                elif kind=='RKB1_BIND_GRANT':
+                    owner=getattr(self.original_intake_handler,'telegram_channel',None)
+                    if not ready_confirmed or owner is None or not telegram_request_pending:
+                        raise ValueError('unexpected Telegram binding')
+                    if type(frame.get('challenge')) is not str or not 32<=len(frame['challenge'])<=128:
+                        raise ValueError('invalid Telegram binding challenge')
+                    telegram_request_pending=False
+                    if self.telegram_binding_task is not None and not self.telegram_binding_task.done():
+                        raise ValueError('duplicate Telegram binding')
+                    async def bind_and_report(owner,grant):
+                        outcome='unavailable'
+                        try:
+                            await owner.receive(grant)
+                            if owner.current():outcome='authorized'
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            pass  # Only the fixed status travels; provider errors can contain secrets.
+                        finally:
+                            for key in ('bundle_b64','api_id','api_hash'):grant.pop(key,None)
+                        await put({'type':'RKB1_BIND_RESULT','status':outcome,'challenge':grant['challenge']})
+                    self.telegram_binding_task=asyncio.create_task(bind_and_report(owner,frame))
+                    def observed_binding(task):
+                        if not task.cancelled():task.exception()
+                    self.telegram_binding_task.add_done_callback(observed_binding)
                 elif kind=='READY_ACK':
+                    if frame.get('status')=='ready':
+                        ready_confirmed=True
+                        await request_telegram()
                     if self.bootstrap_only and frame.get('status')=='ready':
                         self.bootstrap_finalized=True
                         self._lifetime_timeout.reschedule(self._overall_deadline)
@@ -601,6 +665,9 @@ class BgeWssTransport:
                 task.result()
         finally:
             if self._connection_generation==generation:self._connection_generation=None
+            if self.telegram_binding_task is not None and not self.telegram_binding_task.done():
+                self.telegram_binding_task.cancel()
+                await asyncio.gather(self.telegram_binding_task,return_exceptions=True)
             if self.recovery_attachment is not None:self.recovery_attachment.detached(generation)
             if self.source_history_handler is not None:self.source_history_handler.detached(generation)
             if self.original_intake_handler is not None:self.original_intake_handler.detached(generation)

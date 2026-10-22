@@ -31,6 +31,7 @@ from .local_e5 import LocalE5Embedder
 from .auth import JwtResourceVerifier
 from .backend import KnowledgeBackend
 from .kaggle_import_contracts import TargetSourceImportInput
+from .contracts import TelegramOriginalInput
 from .contracts import (
     BookFindOutput,
     BookIngestOutput,
@@ -198,6 +199,7 @@ class KnowledgeMCPServer(MCPServer):
         if getattr(self,'_target_catalog_available',False):
             allowed.add('book_find')
         if getattr(self,'_target_source_profile',False):allowed.add('startup_status')
+        if getattr(self,'_target_media_available',False):allowed.add('illustration_fetch')
         if getattr(self,'_target_source_profile',False) and name not in allowed:
             raise ToolError('{"status":"unavailable","reason":"target_domain_unavailable"}')
         from .read_issuance import capture_read_output, bind_request_output
@@ -258,6 +260,9 @@ def build_server(
     projects_hub_receiver=None,
     expert_evidence_receiver=None,
     expert_slack_ingress=None,
+    expert_claim_receiver=None,
+    expert_result_receiver=None,
+    expert_recovery_receiver=None,
 ) -> MCPServer:
     selected=backend_profile or os.getenv('RKB_BACKEND_PROFILE','').strip() or (
         'kaggle_source' if target_startup is not None else 'legacy')
@@ -443,6 +448,10 @@ def build_server(
         embedded_provider.register_routes(mcp)
 
     mcp._target_source_profile=selected=='kaggle_source'
+    # Do not advertise an image result without the trusted, installed native
+    # source gate AND its independent real archive byte-issuer owner.
+    mcp._target_media_available=(selected=='kaggle_source'
+        and getattr(backend,'public_media_gate',None) is not None)
     mcp._target_import_available = selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None
     mcp._target_story_available = (selected=='kaggle_source' and target_startup.gate.story_supported())
     mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
@@ -490,6 +499,36 @@ def build_server(
                 or expert_slack_ingress.control.people is not target_startup.config.participants):
             raise RuntimeError('Slack ingress requires exact existing target control owners')
         mcp.custom_route(SLACK_PATH, methods=['POST'])(expert_slack_ingress.__call__)
+
+    # Claim and result staging are a single opt-in capability, bound only to
+    # an already provisioned original executor and exact signed ingress.
+    # No context: no route, no implicit credentials, no provider send.
+    if ((expert_claim_receiver is None)!=(expert_result_receiver is None)
+            or (expert_claim_receiver is None)!=(expert_recovery_receiver is None)):
+        raise RuntimeError('expert executor routes require one complete context')
+    if expert_claim_receiver is not None:
+        from .expert_executor_workflow import (
+            BoundExpertClaimReceiver, ExpertExecutorResultReceiver,
+            PATH as RESULT_PATH,
+        )
+        from .expert_executor_claim_receiver import PATH as CLAIM_PATH
+        from .expert_executor_recovery_receiver import (
+            ExpertExecutorRecoveryReceiver, PATH as RECOVERY_PATH,
+        )
+        if (selected!='kaggle_source'
+                or type(expert_claim_receiver) is not BoundExpertClaimReceiver
+                or type(expert_result_receiver) is not ExpertExecutorResultReceiver
+                or type(expert_recovery_receiver) is not ExpertExecutorRecoveryReceiver
+                or expert_slack_ingress is None
+                or expert_claim_receiver.control is not expert_slack_ingress.control
+                or expert_result_receiver.control is not expert_slack_ingress.control
+                or expert_recovery_receiver.control is not expert_slack_ingress.control
+                or expert_result_receiver.context is not expert_recovery_receiver.context
+                or expert_result_receiver.context.credentials is not expert_claim_receiver.credentials):
+            raise RuntimeError('expert executor routes must share signed ingress and context')
+        mcp.custom_route(CLAIM_PATH, methods=['POST'])(expert_claim_receiver.__call__)
+        mcp.custom_route(RESULT_PATH, methods=['POST'])(expert_result_receiver.__call__)
+        mcp.custom_route(RECOVERY_PATH, methods=['POST'])(expert_recovery_receiver.__call__)
 
     @mcp.custom_route("/fast-tier/health", methods=["GET"])
     async def fast_tier_health(request: Request):
@@ -1073,6 +1112,11 @@ def build_server(
 
     @mcp.tool(title='Read an authorized illustration', description='Return the canonical source crop and labelled caption/model-observation metadata. Model observation is not printed evidence. No OCR or inference.', annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
     async def illustration_fetch(id: str) -> list[TextContent | ImageContent]:
+        if selected == 'kaggle_source':
+            # EXISTING tool name, but the installed target may only disclose
+            # pixels after its current native gate and final MCP issuance.
+            # Never fall back to the unrelated legacy Supabase/Vibe reader.
+            return await backend.illustration_fetch(id, _principal())
         import base64
         from .illustrations import fetch_crop
         metadata, data, mime = await fetch_crop(backend, _principal(), id)
@@ -1213,7 +1257,10 @@ def build_server(
         entity_candidates: GraphBundle | None = None,
         story_candidates: Annotated[list[StageStoryCandidateInput], Field(max_length=12)] | None = None,
         source_import: TargetSourceImportInput | None = None,
+        telegram_original: TelegramOriginalInput | None = None,
     ) -> BookIngestOutput:
+        if telegram_original is not None and (selected != 'kaggle_source' or command != 'start' or file is not None):
+            raise ToolError('telegram_original_requires_target_start_without_attachment')
         payload: dict[str, Any] | None = None
         if metadata is not None:
             if metadata.source_import is not None:
@@ -1287,6 +1334,8 @@ def build_server(
             import_options['source_import'] = source_import
         if stage_file_sha and selected == 'kaggle_source':
             import_options['stage_file_sha256'] = stage_file_sha
+        if telegram_original is not None:
+            file = telegram_original.locator()
         result = await backend.book_ingest(
             command=command,
             principal=principal,
@@ -1425,7 +1474,8 @@ def build_server(
     return mcp
 
 
-def main(*,target_startup=None,projects_hub_receiver=None) -> None:
+def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=None,
+         expert_executor_context=None) -> None:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("regional_knowledge.oauth_provider").setLevel(logging.INFO)
     logging.getLogger("regional_knowledge.reads").setLevel(logging.INFO)
@@ -1441,7 +1491,40 @@ def main(*,target_startup=None,projects_hub_receiver=None) -> None:
             raise RuntimeError('PH receiver requires explicit target composition')
         from .projects_hub_reader import ProjectsHubReader
         projects_hub_receiver=ProjectsHubReader.from_file(reader_config,backend=target_startup.backend)
-    build_server(profile=profile,target_startup=target_startup,projects_hub_receiver=projects_hub_receiver).run(
+    slack_config=os.getenv('RKB_EXPERT_SLACK_INGRESS_CONFIG','').strip()
+    if slack_config:
+        if expert_slack_ingress is not None:
+            raise RuntimeError('Slack ingress has more than one configured owner')
+        if target_startup is None:
+            raise RuntimeError('Slack ingress requires the existing target startup')
+        from .kaggle_source_owners import configured_expert_slack_ingress
+        expert_slack_ingress=configured_expert_slack_ingress(target_startup,slack_config)
+    # Install the delegated read receiver ONLY alongside the signed ingress and
+    # against precisely the same existing target/Participants/spool authority.
+    # This does not register an executor, grant, provider sender or second IAM.
+    expert_evidence_receiver=None
+    if expert_slack_ingress is not None:
+        if target_startup is None:
+            raise RuntimeError('expert read requires existing target startup')
+        from .expert_slack_composition import compose_expert_evidence_receiver
+        expert_evidence_receiver=compose_expert_evidence_receiver(
+            target_startup=target_startup,expert_slack_ingress=expert_slack_ingress)
+    expert_claim_receiver=expert_result_receiver=expert_recovery_receiver=None
+    if expert_executor_context is not None:
+        if expert_slack_ingress is None or target_startup is None:
+            raise RuntimeError('expert executor context requires signed ingress and target')
+        from .expert_executor_workflow import compose_bound_expert_executor
+        expert_claim_receiver,expert_result_receiver=compose_bound_expert_executor(
+            target_startup=target_startup,expert_slack_ingress=expert_slack_ingress,
+            context=expert_executor_context)
+        from .expert_executor_recovery_receiver import ExpertExecutorRecoveryReceiver
+        expert_recovery_receiver=ExpertExecutorRecoveryReceiver(expert_result_receiver.context)
+    build_server(profile=profile,target_startup=target_startup,projects_hub_receiver=projects_hub_receiver,
+        expert_slack_ingress=expert_slack_ingress,
+        expert_evidence_receiver=expert_evidence_receiver,
+        expert_claim_receiver=expert_claim_receiver,
+        expert_result_receiver=expert_result_receiver,
+        expert_recovery_receiver=expert_recovery_receiver).run(
         transport="streamable-http",
         stateless_http=True,
         json_response=True,

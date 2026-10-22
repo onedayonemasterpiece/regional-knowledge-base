@@ -1,0 +1,43 @@
+name: rkb-intake-boundary-candidate
+
+on:
+  push:
+    branches: [chatgpt/rkb-intake-boundary-candidate-20261022]
+    paths-ignore: ["docs/**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: src:tests
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies only on GitHub-hosted runner
+        run: python -m pip install -e '.[dev,ingest,kaggle]'
+      - name: Test actual intake, journal and checkpoint boundaries with synthetic I/O
+        run: |
+          python -m pytest -q -ra -p no:cacheprovider --junitxml=intake-boundary.xml \
+            tests/test_kaggle_native_intake_checkpoint_boundary.py \
+            tests/test_dataset_recovery_store.py::test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and_lost_ack_is_idempotent \
+            tests/test_kaggle_dataset_checkpoint.py::test_capture_materializes_crash_gap_outcome_before_export_and_keeps_it_pending \
+            tests/test_kaggle_dataset_checkpoint.py::test_work_cycle_waits_for_quiet_then_resumes_published_version_after_lost_native_readback
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rkb-intake-boundary
+          path: intake-boundary.xml
+          retention-days: 14

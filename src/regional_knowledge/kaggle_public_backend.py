@@ -8,13 +8,15 @@ from __future__ import annotations
 import asyncio
 import base64
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 import time
 from urllib.parse import quote
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import CallToolResult, ImageContent, TextContent
 
 from .contracts import EvidenceSearchOutput, FetchOutput, ReadTrace, SearchOutput, SearchResult, BookFindOutput, StartupStatus
 from .kaggle_protocol import Query, QueryFilters, TrustedActorContext, PassageContinuation, PassageReadRequest, StoryReadRequest
@@ -25,6 +27,9 @@ from .query_telemetry import ReadRuntime
 from .read_authority import TrustedReadDestination, VerifiedReadAuthority
 from .kaggle_editorial_contracts import EditorialReadRequest,EditorialReadResult,editorial_cursor,parse_editorial_cursor
 from .read_issuance import retain_read_output
+from .kaggle_public_illustration_gate import (
+    PublicIllustrationOutputGate, IssuedPublicIllustration, IssuedArtifactBytes,
+)
 from .read_telemetry import ReadTelemetry
 
 
@@ -59,6 +64,35 @@ def parse_passage_fetch_id(value: str) -> PassageContinuation:
 class PublicQueryInvalid(ValueError):
     pass
 
+
+_MEDIA_ID = "rkb:illustration:v1:"
+
+
+def _media_selector(value):
+    """Paired untrusted IDs only; an illustration ID alone is not a source ACL."""
+    if type(value) is not str or not value.startswith(_MEDIA_ID) or len(value) > 125:
+        raise PublicQueryInvalid("exact paired source and illustration selector required")
+    fields = value[len(_MEDIA_ID):].split(":")
+    if len(fields) != 2:
+        raise PublicQueryInvalid("exact paired source and illustration selector required")
+    try:
+        source_id, illustration_id = (str(UUID(value)) for value in fields)
+    except (TypeError, ValueError):
+        raise PublicQueryInvalid("canonical media selectors required") from None
+    if fields != [source_id, illustration_id]:
+        raise PublicQueryInvalid("canonical media selectors required")
+    return source_id, illustration_id
+
+
+@dataclass(frozen=True)
+class _GatedMedia:
+    """Request-local immutable bytes, never a user-returned artifact capability."""
+    issued: IssuedPublicIllustration
+    pixels: IssuedArtifactBytes | None = None
+
+    @property
+    def ticket(self):
+        return self.issued.ticket
 
 
 @dataclass(frozen=True)
@@ -111,6 +145,121 @@ class KaggleSourceBackend:
             raise ValueError('one canonical controller read authority required')
         self.destination = TrustedReadDestination('mcp', 'personal', destination_ref)
         self.read_telemetry = read_telemetry or ReadTelemetry()
+        # Only the single native/root owner can bind a trusted Media15 gate.
+        # No WSS, pool, PG role or archive client is constructed here.
+        self.public_media_gate = None
+
+    def configure_public_illustrations(self, gate: PublicIllustrationOutputGate):
+        """Owner-only explicit composition; unconfigured target stays CLOSED.
+
+        The root must supply a real current PG reader, installed SQL015,
+        independently leased archive observer AND a real byte issuer returning
+        IssuedArtifactBytes bound to its owner-held ArchiveOpaqueProof.
+        Merely setting SQL availability='ready' never enables this route.
+        """
+        if (type(gate) is not PublicIllustrationOutputGate
+                or gate.authority is not self.read_authority
+                or gate.source_gate is not self.source_gate
+                or not callable(getattr(gate.archive, "read_issued_bytes", None))
+                or self.public_media_gate is not None):
+            raise TypeError("current canonical media gate and real image issuer required")
+        self.public_media_gate = gate
+
+    @staticmethod
+    def _render_issued_media(value: _GatedMedia) -> CallToolResult:
+        if (type(value) is not _GatedMedia
+                or type(value.issued) is not IssuedPublicIllustration
+                or type(value.pixels) is not IssuedArtifactBytes
+                or value.pixels.proof.ref != value.issued.frame.artifact.ref
+                or hashlib.sha256(value.pixels.data).hexdigest() != value.pixels.sha256):
+            raise PermissionError("current exact archive image bytes required")
+        # Metadata is already the existing media owner's allowlisted renderer
+        # and is bound to immutable canonical frame bytes in its output gate.
+        return CallToolResult(content=[
+            TextContent(type="text", text=value.issued.frame.model_dump_json()),
+            ImageContent(type="image", data=base64.b64encode(
+                value.pixels.data).decode("ascii"), mimeType=value.pixels.mime_type),
+        ])
+
+    async def illustration_fetch(self, locator, principal):
+        """The EXISTING MCP illustration_fetch tool, target-native-only path.
+
+        Never fall back to legacy Supabase/Vibe for an unavailable Kaggle source.
+        The first stage authorizes and retains current source and archive proof,
+        then emits only a harmless placeholder inside request-local capture.
+        The existing ASGI final-issuance middleware owns real pixel read,
+        refreshed SQL/actor/lease proof and final no-await ImageContent send.
+        """
+        try:
+            source_id, illustration_id = _media_selector(locator)
+        except PublicQueryInvalid:
+            raise ToolError('{"status":"invalid_query","reason":"invalid_illustration_locator"}') from None
+        gate = self.public_media_gate
+        if gate is None:
+            raise ToolError('{"status":"unavailable","reason":"media_owner_not_registered"}')
+        verified = None
+        issued = None
+        retained = False
+        try:
+            # Exactly the same verified OAuth resolver/destination/current
+            # source-history owners as the existing search/fetch routes.
+            verified = await self.read_authority.resolve_oauth(
+                principal.access_token, destination=self.destination)
+            await self.read_authority.require(verified, "public_search")
+            startup = getattr(self, "startup", None)
+            if startup is not None and not startup.reads_current():
+                raise PermissionError("source history unavailable")
+            binding = await asyncio.to_thread(current_binding, self.worker_queue)
+            if self.source_gate.binding_current(binding) is not True:
+                raise PermissionError("target binding changed")
+            issued = await gate.issue(verified=verified, binding=binding,
+                                      source_id=source_id, illustration_id=illustration_id)
+            async def refresh(previous):
+                # The middleware never reuses cached pixels: invalidate the
+                # prior ticket BEFORE awaiting fresh native/archival read.
+                gate.release(previous.ticket)
+                fresh = None
+                try:
+                    async with asyncio.timeout(8):
+                        fresh = await gate.issue(
+                            verified=verified, binding=binding,
+                            source_id=source_id, illustration_id=illustration_id)
+                        image = await gate.read_issued_bytes(fresh)
+                    if not gate.issuance_current(fresh.ticket):
+                        raise PermissionError("media changed after pixel read")
+                    return _GatedMedia(fresh, image)
+                except BaseException:
+                    if fresh is not None:
+                        gate.release(fresh.ticket)
+                    raise
+
+            placeholder = [
+                TextContent(type="text",
+                    text='{"status":"unavailable","reason":"final_media_issuance_pending"}')
+            ]
+            # The placeholder never contains pixels. Only guarded ASGI rerender
+            # can include ImageContent; without request-local capture, DENY.
+            if not retain_read_output(gate, _GatedMedia(issued),
+                   self._render_issued_media,
+                   on_refresh=refresh,
+                   on_release=lambda: self.read_authority.release(verified)):
+                raise PermissionError("current public media output boundary required")
+            retained = True
+            return placeholder
+        except asyncio.CancelledError:
+            raise
+        except ToolError:
+            raise
+        except PermissionError:
+            raise ToolError('{"status":"denied","reason":"access_denied"}') from None
+        except Exception:
+            raise ToolError('{"status":"unavailable","reason":"media_not_ready"}') from None
+        finally:
+            if not retained:
+                if issued is not None:
+                    gate.release(issued.ticket)
+                if verified is not None:
+                    self.read_authority.release(verified)
 
     def binding_current(self, binding):
         try:
@@ -383,7 +532,7 @@ class KaggleSourceBackend:
         """MCP read-only continuation: freshly authorized, never auto-retries the query."""
         if type(startup_ref) is not str:
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
-        authority=None
+        authority=None;health_binding=None
         try:
             authority=await self.read_authority.resolve_oauth(principal.access_token,destination=self.destination)
             await self.read_authority.require(authority,'public_search')
@@ -397,6 +546,53 @@ class KaggleSourceBackend:
                 except TargetUnavailable:
                     observed.update(status='unavailable',reason='target_not_ready')
             await self.read_authority.recheck(authority)
+            from .kaggle_health import heartbeat_health, collect_health, DatabaseHealth
+            try:
+                if observed['status']=='ready':
+                    from .kaggle_protocol import SqlHealthRequest, SqlHealthResult
+                    async def native_probe(binding):
+                        nonlocal health_binding
+                        health_binding=binding
+                        deadline=time.monotonic()+2
+                        request=SqlHealthRequest(request_id=uuid4().hex,
+                            connection_generation=binding.connection_generation,turn_generation=0,
+                            database_generation=binding.database_generation,min_data_seq=binding.min_data_seq,
+                            deadline_ms=2000,
+                            actor=TrustedActorContext(person_id=authority.person_id,audience=authority.destination.key,
+                                auth_epoch=authority.auth_revision,visibility_epoch=0,context_ref=authority.context_ref))
+                        ticket=None
+                        try:
+                            ticket=await self.worker_queue.shared_reads.begin_read(authority,request,
+                                dialog_ref=authority.destination.key,deadline=deadline)
+                            try:result=await asyncio.shield(ticket.result)
+                            except asyncio.CancelledError:
+                                if asyncio.current_task().cancelling():raise
+                                await self.read_authority.recheck(authority)
+                                if time.monotonic()>=deadline:
+                                    return DatabaseHealth(binding,reason='pg_timeout')
+                                raise TargetUnavailable('SQL health request attachment changed') from None
+                            if type(result) is not SqlHealthResult:
+                                raise TargetUnavailable('SQL health response type differs')
+                            if result.health is None:
+                                return DatabaseHealth(binding,reason='pg_timeout'
+                                    if result.reason=='deadline_exceeded' else 'pg_query_failed')
+                            if (result.health.schema_revision is not None
+                                    and result.observed_database_generation!=binding.database_generation):
+                                raise TargetUnavailable('SQL health generation differs')
+                            return DatabaseHealth(binding,**result.health.model_dump())
+                        finally:
+                            if ticket is not None:self.worker_queue.shared_reads.cancel_read(ticket)
+                    observed['health']=await collect_health(queue=self.worker_queue,native_probe=native_probe)
+                else:
+                    observed['health']=await asyncio.to_thread(heartbeat_health,self.worker_queue)
+            except Exception:
+                observed['health']={'codec':'rkb.health.v1','reason':'health_probe_unavailable','read_ready':False}
+            await self.read_authority.recheck(authority)
+            if health_binding is not None and observed['health'].get('read_ready'):
+                try:still_current=current_binding(self.worker_queue)==health_binding
+                except TargetUnavailable:still_current=False
+                if not still_current:
+                    observed['health'].update(postgres=None,read_ready=False,reason='attachment_changed')
             return StartupStatus.model_validate(observed)
         except (ValueError,TypeError):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None

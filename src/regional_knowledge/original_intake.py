@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 from uuid import UUID
+import math
 
 PHASES=frozenset({'original_acquire','original_archive','original_verify','original_pages'})
 
@@ -134,6 +135,36 @@ class NativePagesProof:
     @property
     def sha256(self):return digest(canonical(dict(original_receipt_sha256=self.original_receipt_sha256,
         pages=list(self.pages))))
+
+
+def issued_image_receipt(receipt, page):
+    """Small exact image provenance; never certifies model text as native text.
+
+    Called only after the controller verifies the authenticated page response
+    and actual derivative bytes. Native-text continuation is deliberately absent.
+    """
+    if type(receipt) is not VerifiedOriginalReceipt or type(page) is not dict:
+        raise OriginalIntakeError('original_image_receipt_invalid')
+    from uuid import uuid5
+    index=page.get('physical_page_index')
+    if (type(index) is not int or not 0<=index<receipt.page_count
+            or page.get('page_id')!=str(uuid5(UUID(receipt.source_id),f'page:1:{index}'))
+            or page.get('original_sha256')!=receipt.sha256
+            or page.get('parser_sha256')!=receipt.parser_sha256
+            or page.get('mime_type')!='image/jpeg'):
+        raise OriginalIntakeError('original_image_receipt_invalid')
+    for key in ('width','height'):
+        if type(page.get(key)) not in (int,float) or not math.isfinite(page[key]) or not 0<page[key]<=100000:
+            raise OriginalIntakeError('original_image_receipt_invalid')
+    hash_value(page.get('image_sha256'))
+    render=page.get('preview_render')
+    if type(render) is not dict or len(canonical(render))>4096:
+        raise OriginalIntakeError('original_image_receipt_invalid')
+    value=dict(codec='rkb.issued-source-image.v1',original_receipt_sha256=receipt.receipt_sha256,
+        page_id=page['page_id'],physical_page_index=index,original_sha256=receipt.sha256,
+        parser_sha256=receipt.parser_sha256,width=page['width'],height=page['height'],
+        image_sha256=page['image_sha256'],mime_type=page['mime_type'],preview_render=render)
+    return dict(value,source_image_receipt_sha256=digest(canonical(value)))
 
 
 def encode_page_cursor(page,cursor):

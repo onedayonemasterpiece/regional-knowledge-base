@@ -26,7 +26,7 @@ from .queue_writer import QueueWriterAuthority
 
 def compose_source_service(*,queue,oauth_provider,participants,object_store,stream,registry,
                            history_adapter,run_id,database_generation,writer_generation,
-                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=(),source_restore=None,source_snapshot=None,geo_bootstrap=None,geo_dependency_upgrade=None,dataset_seed=None):
+                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=(),source_restore=None,source_snapshot=None,geo_bootstrap=None,geo_dependency_upgrade=None,dataset_seed=None,native_source_upgrade=None):
     """Reuse the actual owner objects; returns the real server.main input.
 
     object_store is the already configured S3ObjectStore authority/client, not
@@ -71,13 +71,83 @@ def compose_source_service(*,queue,oauth_provider,participants,object_store,stre
         return TargetServiceStartup(TargetServiceConfig(oauth_provider,participants,queue,spool,history_adapter,
             writer_generation,writer.current,destination_ref=destination_ref,writer_owner=writer,
             geo_manifest_operation_keys=geo_manifest_operation_keys,source_restore=source_restore,source_snapshot=source_snapshot,geo_bootstrap=geo_bootstrap,
-            geo_dependency_upgrade=geo_dependency_upgrade,dataset_seed=dataset_seed,**import_options))
+            geo_dependency_upgrade=geo_dependency_upgrade,dataset_seed=dataset_seed,native_source_upgrade=native_source_upgrade,**import_options))
     except BaseException:
         if spool is not None:spool.close()
         if writer is not None:writer.close()
         if created and admission is not None:
             admission.close();queue._shared_reads=None
         raise
+
+
+def configured_expert_slack_ingress(target_startup, config_path):
+    """Opt-in signed Slack route using the existing Dev person and spool owners.
+
+    The installed signing secret is read only for an explicitly configured
+    route. Neither this factory nor the HTTP ingress seals expert requests:
+    until a separate remote-intent reconciler exists, valid messages remain
+    received/503 and cannot be dispatched or counted as Saved.
+    """
+    import re
+    from .expert_request_control import TargetExpertRequestControl
+    from .expert_slack_ingress import ExpertSlackIngress
+
+    if type(target_startup) is not TargetServiceStartup:
+        raise TypeError('Slack ingress requires the exact target startup')
+
+    def private_bytes(value, maximum):
+        if (type(value) is not str or not 1 <= len(value) <= 1024
+                or not Path(value).is_absolute()):
+            raise ValueError('absolute private Slack config path required')
+        fd = os.open(value, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_mode & 0o077
+                    or not 1 <= before.st_size <= maximum):
+                raise ValueError('private Slack config file required')
+            raw = os.read(fd, maximum + 1)
+            after = os.fstat(fd)
+            if (len(raw) != before.st_size or os.read(fd, 1)
+                    or (after.st_size, after.st_mtime_ns) !=
+                    (before.st_size, before.st_mtime_ns)):
+                raise ValueError('Slack config changed during read')
+            return raw
+        finally:
+            os.close(fd)
+
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError('duplicate Slack config field')
+            value[key] = item
+        return value
+
+    value = json.loads(private_bytes(config_path, 4096), object_pairs_hook=unique)
+    required = {'codec', 'app_id', 'team_id', 'bot_user_id',
+                'allowed_channels', 'signing_secret_file'}
+    if (type(value) is not dict or set(value) != required
+            or value['codec'] != 'rkb.expert-slack-ingress.v1'
+            or type(value['app_id']) is not str
+            or re.fullmatch(r'A[A-Z0-9]+', value['app_id']) is None
+            or type(value['team_id']) is not str
+            or re.fullmatch(r'T[A-Z0-9]+', value['team_id']) is None
+            or type(value['bot_user_id']) is not str
+            or re.fullmatch(r'[UW][A-Z0-9]+', value['bot_user_id']) is None
+            or type(value['allowed_channels']) is not list
+            or len(value['allowed_channels']) > 32
+            or any(type(channel) is not str
+                   or re.fullmatch(r'[CG][A-Z0-9]+', channel) is None
+                   for channel in value['allowed_channels'])
+            or len(set(value['allowed_channels'])) != len(value['allowed_channels'])):
+        raise ValueError('exact Slack ingress config required')
+    signing_secret = private_bytes(value['signing_secret_file'], 257).decode('ascii').removesuffix('\n')
+    control = TargetExpertRequestControl(
+        target_startup.config.participants, target_startup.config.spool,
+        app_id=value['app_id'], team_id=value['team_id'],
+        bot_user_id=value['bot_user_id'],
+        allowed_channels=tuple(value['allowed_channels']))
+    return ExpertSlackIngress(control, signing_secret=signing_secret)
 
 
 def configured_source_service():
@@ -100,7 +170,7 @@ def configured_source_service():
         return result
     value=json.loads(data,object_pairs_hook=unique)
     fields={'codec','run_id','stream','database','command_handlers','catalog_sha256','acl_sha256','observer_sha256'}
-    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys','source_restore','source_snapshot','geo_bootstrap','geo_dependency_upgrade','dataset_seed'}
+    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys','source_restore','source_snapshot','geo_bootstrap','geo_dependency_upgrade','dataset_seed','native_source_upgrade'}
             or value['codec']!='rkb.source-service.v1'):
         raise ValueError('exact source owner configuration required')
     if 'geo_manifest_operation_keys' in value and type(value['geo_manifest_operation_keys']) is not list:
@@ -125,10 +195,15 @@ def configured_source_service():
     if 'geo_dependency_upgrade' in value:
         from .kaggle_geo_upgrade import GeoUpgradePins
         upgrade=GeoUpgradePins.from_wire(value['geo_dependency_upgrade'])
+    native_upgrade=None
+    if 'native_source_upgrade' in value:
+        from .kaggle_native_source_upgrade import NativeSourceUpgradePins
+        native_upgrade=NativeSourceUpgradePins.from_wire(value['native_source_upgrade'])
     history=WssNativeHistoryProofAdapter(database=database,expected_catalog_sha256=value['catalog_sha256'],
         expected_acl_sha256=value['acl_sha256'],expected_observer_sha256=value['observer_sha256'],
         geo_bootstrap_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),
-        geo_upgrade_pins=upgrade if database.schema_revision=='rkb-v4-sql001-012-v1' else None)
+        geo_upgrade_pins=upgrade if database.schema_revision in ('rkb-v4-sql001-012-v1','rkb-v4-sql001-014-v1') else None,
+        native_source_upgrade_pins=native_upgrade if database.schema_revision=='rkb-v4-sql001-014-v1' else None)
     import_owners=None
     if 'source_import' in value:
         from .kaggle_import_composition import SourceImportOwners
@@ -153,4 +228,4 @@ def configured_source_service():
         object_store=object_store,stream=value['stream'],registry=registry,history_adapter=history,
         run_id=value['run_id'],database_generation=database.database_generation,writer_generation=database.writer_generation,
         source_import=import_owners,geo_manifest_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),source_restore=restore,source_snapshot=snapshot,geo_bootstrap=geo_bootstrap,
-        geo_dependency_upgrade=upgrade,dataset_seed=dataset_seed)
+        geo_dependency_upgrade=upgrade,dataset_seed=dataset_seed,native_source_upgrade=native_upgrade)

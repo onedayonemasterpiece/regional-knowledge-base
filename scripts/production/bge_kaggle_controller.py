@@ -307,6 +307,7 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
     if not broker.startswith('https://'):raise RuntimeError('HTTPS broker required')
     state=queue.path.parent/'bge-launches';state.mkdir(mode=0o700,exist_ok=True)
     probed={}
+    dataset_probe_at=None;dataset_probe=None
     while True:
         reconcile_provider_history(api,queue,current_only=True)
         runs=queue.maintenance()
@@ -318,6 +319,26 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
             preparation_step='not_started'  # Fixed, low-cardinality diagnostic only.
             try:
                 if run['status']=='starting' and run['launch_state']=='pending':
+                    dataset_sources=(target_spec.stage0.dataset_sources
+                        if target_spec is not None and target_spec.stage0 is not None else ())
+                    if dataset_sources:
+                        # Dataset publication/indexing must finish BEFORE any
+                        # launch claim or private notebook/provider submission.
+                        # Retry through the existing loop, not a blocking wait.
+                        now=time.monotonic()
+                        if dataset_probe_at is None or now-dataset_probe_at>=30:
+                            from regional_knowledge.kaggle_stage0_dataset import probe_stage0_datasets
+                            dataset_probe_at=now
+                            try:dataset_probe=probe_stage0_datasets(api,target_spec.stage0)
+                            except Exception as error:
+                                dataset_probe=None
+                                logging.warning(json.dumps({'event':'bge_dataset_preflight_failed',
+                                    'run_id':run_id,'submission_state':'not_sent','error_type':type(error).__name__}))
+                            if dataset_probe is not None:
+                                logging.info(json.dumps({'event':'bge_dataset_preflight',
+                                    'run_id':run_id,'ready':dataset_probe.ready,'reason':dataset_probe.reason,
+                                    'dataset_count':dataset_probe.dataset_count,'file_count':dataset_probe.file_count}))
+                        if dataset_probe is None or not dataset_probe.ready:continue
                     token=queue.launch_claim(run_id,provider_ref=ref)
                     if token is None:continue
                     boundary='launch_preparation'
@@ -344,6 +365,7 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                     preparation_step='write_private_notebook'
                     (folder/'main.py').write_text(source);(folder/'main.py').chmod(0o600)
                     metadata={'id':ref,'title':slug,'code_file':'main.py','language':'python','kernel_type':'script','is_private':True,'enable_gpu':False,'enable_tpu':False,'enable_internet':True,'dataset_sources':[],'competition_sources':[],'kernel_sources':[]}
+                    metadata['dataset_sources']=list(dataset_sources)
                     # Dataset restore uses a version-qualified native download;
                     # provider mount metadata does not attest its exact version.
                     if image is not None:
