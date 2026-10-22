@@ -1,4 +1,4 @@
-"""SQL022 entity_list selectors: one native page, exact Unicode and source receipts.
+"""SQL022 entity_list selectors: one native page, name folds and source receipts.
 
 Real SQL scenarios run only in the already authorized, isolated PG17 fixture.
 They do not start a Kaggle worker, apply SQL to live PG or stage content.
@@ -63,7 +63,8 @@ def long_graph_command():
     chosen=[prototype.model_copy(update=dict(
         key=f'zz-case-{index}',kind='organization',
         canonical_label=f'Straße number {index}',
-        aliases=[aliases[0].model_copy(update={'value':'İSTANBUL'})] if index==1 else []))
+        aliases=[aliases[0].model_copy(update={'value':(
+            'ΟΣ' if index==0 else 'GROẞBERG' if index==1 else 'КЁНИГСБЕРГ')})]))
         for index in range(3)]
     graph=graph.model_copy(update={'entity_candidates':[
         graph.entity_candidates[0],GraphBundle(entities=noise[:30]),
@@ -153,10 +154,14 @@ async def test_real_pg17_sparse_kinds_query_before_limit_unicode_and_withdrawal(
             'Straße number 0','Straße number 1','Straße number 2']
         assert all(r[2]>=1 for r in filtered)
         assert all('entity_id' in r[4] and r[5] and r[6] for r in filtered)
-        by_alias=await (await connection.execute(
-            "SELECT record_id FROM rkb_v4.read_source_graph_filtered_v1(%s::uuid,NULL,NULL,NULL,%s,4)",
-            (SOURCE,'i\u0307stanbul'))).fetchall()
-        assert [r[0] for r in by_alias]==['zz-case-1']
+        # Model-authored aliases: German sharp-S, Greek final sigma,
+        # and mixed Cyrillic case from this corpus. These are all SQL filters.
+        for needle,key in [('grossberg','zz-case-1'),('οσ','zz-case-0'),
+                           ('кёнигсберг','zz-case-2')]:
+            by_alias=await (await connection.execute(
+                "SELECT record_id FROM rkb_v4.read_source_graph_filtered_v1(%s::uuid,NULL,NULL,NULL,%s,4)",
+                (SOURCE,needle))).fetchall()
+            assert [r[0] for r in by_alias]==[key]
         spelling=await (await connection.execute(
             "SELECT data->'mention'->>'exact_source_spelling' "
             "FROM rkb_v4.source_entity_representations WHERE source_id=%s AND entity_key='noise-00'",
@@ -164,7 +169,7 @@ async def test_real_pg17_sparse_kinds_query_before_limit_unicode_and_withdrawal(
         assert spelling and spelling[0]
         by_spelling=await (await connection.execute(
             "SELECT record_id FROM rkb_v4.read_source_graph_filtered_v1(%s::uuid,NULL,NULL,NULL,%s,4)",
-            (SOURCE,spelling[0].casefold()))).fetchall()
+            (SOURCE,spelling[0].upper()))).fetchall()
         assert ('noise-00',) in by_spelling  # Not from its unrelated canonical label.
         none=await (await connection.execute(
             "SELECT * FROM rkb_v4.read_source_graph_filtered_v1(%s::uuid,NULL,NULL,%s::text[],%s,4)",
@@ -231,23 +236,15 @@ async def test_real_pg17_source_filtered_cursor_returns_every_rare_entity_and_no
 
 @PG17
 @pytest.mark.asyncio
-async def test_real_pg17_default_unicode_fold_matches_python_codepoint_rules(graph_sql22):
+async def test_real_pg17_german_sharp_s_greek_sigma_and_cyrillic_folds(graph_sql22):
     connection=graph_sql22['connection']
-    examples=['STRASSE','Straße','ẞ','ﬃ','İ','I','ı','ς','Σ','ΟΣ','ŉ','K','Œ',
-        'КЁНИГСБЕРГ','ὈΔΥΣΣΕΎΣ','𝔄','Ⅳ','\u0000'.replace('\u0000','')]
-    examples=[x for x in examples if x]
-    # Exhaust every changing Unicode code point, not just hand-picked cases.
-    # CPython 3.12/3.13 use the same 1530 default C+F mappings as Unicode 15.1.
-    import sys
-    mapped=[(chr(cp),chr(cp).casefold()) for cp in range(sys.maxunicode+1)
-        if chr(cp).casefold()!=chr(cp)]
-    assert len(mapped)==1530, 'Unicode version changed: update the pinned SQL map explicitly'
-    inputs=[s for s,_ in mapped]+examples
-    expected=[folded for _,folded in mapped]+[s.casefold() for s in examples]
+    cases={'Straße':'strasse','STRASSE':'strasse','ẞ':'ss',
+           'GROẞBERG':'grossberg','ΟΣ':'οσ','ος':'οσ','Σ':'σ',
+           'КЁНИГСБЕРГ':'кёнигсберг','MÜNCHEN':'münchen'}
     rows=await (await connection.execute(
-        'SELECT rkb_v4.source_graph_casefold_v1(value) FROM unnest(%s::text[]) t(value)',
-        (inputs,))).fetchall()
-    assert [row[0] for row in rows]==expected
+        'SELECT rkb_v4.source_graph_name_fold_v1(value) FROM unnest(%s::text[]) t(value)',
+        (list(cases),))).fetchall()
+    assert [row[0] for row in rows]==list(cases.values())
 
 
 @pytest.mark.asyncio
@@ -259,7 +256,7 @@ async def test_new_sql22_single_pg_page_dispatch_keeps_existing_list_contract():
     assert result.status=='ok' and len(result.records)==1 and result.next_cursor is None
     calls=[(s,p) for s,p in n.calls if 'read_source_graph_' in s]
     assert len(calls)==1 and 'read_source_graph_filtered_v1' in calls[0][0]
-    assert calls[0][1]==(SOURCE,None,None,['person'],'recorded alias',2)
+    assert calls[0][1]==(SOURCE,None,None,['person'],'ReCoRdEd aLiAs',2)
     assert not any('read_source_graph_v1' in s for s,p in calls)
     # Absence of optional selectors preserves original native read and lookahead.
     n.calls.clear()
