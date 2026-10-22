@@ -22,37 +22,6 @@ from test_kaggle_native_source_importer import (
 )
 
 
-async def _pending_after_applied_but_no_remote_outcome(s, result, *,
-                                                       expected_route, expected_ordinal,
-                                                       expected_operations):
-    """Real controller must NOT advance or publish Saved on PG-only APPLIED."""
-    entry = await pending(s, result)
-    key = entry.command.operation_key
-    original = entry.command_bytes
-    assert entry.command.route == expected_route
-    if expected_ordinal is not None:
-        assert json.loads(entry.command.payload)["ordinal"] == expected_ordinal
-    assert operation_count(s) == expected_operations
-    # Existing source fixture records a synthetic committed native PG receipt
-    # through the real ControlSpool; publish=False withholds remote outcome.
-    await finish(s, result, publish=False, total_inputs=expected_ordinal or 2)
-    applied = await s.spool.get(key)
-    assert applied.apply_receipt is not None
-    assert applied.outcome_state != "DURABLE"
-    assert state(s, result)["pending_operation_key"] == key
-
-    receipt = await call(s, result, "status")
-    assert receipt.state == "processing", receipt
-    assert operation_count(s) == expected_operations
-    assert state(s, result)["pending_operation_key"] == key
-    assert (await pending(s, result)).command_bytes == original
-    assert (await pending(s, result)).outcome_state != "DURABLE"
-    # A status poll is not permission to create a new stable ordinal/sequence.
-    assert not any(e.command.route == ACTIVATE_ROUTE for e in (
-        await s.spool.get(k) for k in _keys(s)))
-    return key
-
-
 def _keys(s):
     with s.t.queue.connect(write=False) as db:
         return [row[0] for row in db.execute(
