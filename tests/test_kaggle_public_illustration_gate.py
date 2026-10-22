@@ -188,9 +188,18 @@ async def test_valid_existing_authority_and_archive_opaque_artifact_is_only_publ
     assert gate.issuance_current(output.ticket)
     text = output.frame.model_dump_json()
     for private in ("crop_binding","original_sha256","chat_id","topic_id",
-                    "media_id","message_id","photo","document","archive_scope",
+                    "media_id","message_id","archive_scope",
                     "archive_chat_id","credential","http://","https://"):
         assert private not in text
+    import json
+    def keys(value):
+        if type(value) is dict:
+            return set(value) | set().union(*(keys(v) for v in value.values()))
+        if type(value) is list:
+            return set().union(*(keys(v) for v in value))
+        return set()
+    assert not keys(json.loads(text)) & {"photo","document","chat_id","topic_id",
+                                         "media_id","message_id","crop_binding"}
     gate.release(output.ticket)
     assert not gate.issuance_current(output.ticket)
 
