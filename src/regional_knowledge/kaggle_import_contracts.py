@@ -57,8 +57,8 @@ class SourceResearchInput(ImportInput):
             raise ValueError('pending research requires a canonical ingestion ID') from None
         if 'cursor' in arguments:
             cursor = arguments['cursor']
-            if (type(cursor) is not str or not 1 <= len(cursor) <= 256
-                    or any(ord(char) < 32 or ord(char) > 126 for char in cursor)):
+            if (cursor is not None and (type(cursor) is not str or not 1 <= len(cursor) <= 256
+                    or any(ord(char) < 32 or ord(char) > 126 for char in cursor))):
                 raise ValueError('pending research requires a bounded page cursor')
         if 'batch_size' in arguments and (type(arguments['batch_size']) is not int
                                          or arguments['batch_size'] != 1):
