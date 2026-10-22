@@ -1,0 +1,47 @@
+name: rkb-public-query-latency-leaf
+
+on:
+  push:
+    branches: [chatgpt/rkb-linza-public-query-latency-20261022]
+    paths:
+      - scripts/benchmarks/public_query_latency_leaf.py
+      - tests/test_public_query_latency_leaf.py
+      - docs/testing/rkb-public-query-latency-workload-20261022.md
+      - docs/testing/rkb-first-book-acceptance-matrix-20261022.md
+      - .github/workflows/rkb-public-query-latency-leaf.yml
+
+permissions:
+  contents: read
+
+jobs:
+  bounded-synthetic-telemetry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check syntax without any project/model install
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/benchmarks/public_query_latency_leaf.py tests/test_public_query_latency_leaf.py
+      - name: Test real event schemas, join, privacy, gate and stages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p synthetic-receipt
+          git rev-parse HEAD | tee synthetic-receipt/exact-head.txt
+          printf "SYNTHETIC_ONLY_NOT_KAGGLE_BASELINE\n" > synthetic-receipt/scope.txt
+          timeout 75s python -m unittest discover -s tests -p 'test_public_query_latency_leaf.py' -v 2>&1 | tee synthetic-receipt/public-query-leaf-tests.log
+      - name: Store bounded synthetic test receipt (no user content)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rkb-public-query-latency-leaf-synthetic
+          path: synthetic-receipt/
+          if-no-files-found: warn
+          retention-days: 14
