@@ -37,41 +37,9 @@ RESOURCE_INTEGERS = frozenset({
 RESOURCE_LATEST = RESOURCE_NUMBERS - {'sample_seq', 'sample_time_unix_ms',
                                       'sampling_failures_total'}
 
-# The Trassa shared ProductTelemetry has one flat bounded numeric allowlist.
-# Units are explicit; no host/notebook capacity is inferred. New fields must be
-# admitted exclusively by its resource.sample schema, not by generic records.
-_KIB_TO_BYTES = {
-    'rss_kib': 'rss_bytes',
-    'hwm_kib': 'hwm_bytes',
-    'pss_kib': 'pss_bytes',
-    'pg_master_rss_kib': 'pg_master_rss_bytes',
-    'pg_master_hwm_kib': 'pg_master_hwm_bytes',
-    'pg_master_pss_kib': 'pg_master_pss_bytes',
-}
-_DIRECT_METRICS = {
-    'cpu_seconds': 'cpu_seconds',
-    'pid': 'worker_pid',
-    'pg_master_cpu_seconds': 'pg_master_cpu_seconds',
-    'pg_master_pid': 'pg_master_pid',
-    'cgroup_version': 'cgroup_version',
-    'cpu_quota_us': 'cpu_quota_us',
-    'cpu_period_us': 'cpu_period_us',
-    'cpu_usage_usec': 'cpu_usage_usec',
-    'cpu_nr_throttled': 'cpu_nr_throttled',
-    'cpu_throttled_usec': 'cpu_throttled_usec',
-    'cpu_usage_delta_seconds': 'cpu_usage_delta_seconds',
-    'cpu_throttled_delta_seconds': 'cpu_throttled_delta_seconds',
-    'cpu_utilization_cores': 'cpu_utilization_cores',
-    'memory_current_bytes': 'cgroup_memory_current_bytes',
-    'memory_limit_bytes': 'cgroup_memory_limit_bytes',
-    'memory_events_high': 'cgroup_memory_events_high',
-    'memory_events_max': 'cgroup_memory_events_max',
-    'memory_events_oom': 'cgroup_memory_events_oom',
-    'memory_events_oom_kill': 'cgroup_memory_events_oom_kill',
-    'io_read_bytes': 'io_read_bytes',
-    'io_write_bytes': 'io_write_bytes',
-}
-_MAX_BYTES = 1600  # Shared file sink permits 2048 bytes including its envelope.
+# Shared ProductTelemetry accepts these fixed units directly; do not double
+# the event with secondary byte aliases or any process/environment strings.
+_MAX_BYTES = 1600  # File sink reserves up to 2048B for its own envelope.
 
 
 def clean_resource_numbers(value):
@@ -125,21 +93,12 @@ def emit_resource_sample(collector, diagnostics, *, run_id, incarnation,
                        or 'memory_current_bytes' not in values else 'ok'),
             'run_id': run_id, 'runtime_incarnation': incarnation,
             'connection_generation': generation,
-            'sample_seq': values['sample_seq'],
-            'sample_time_unix_ms': values['sample_time_unix_ms'],
             'received_unix_ms': received_unix_ms,
-            'worker_sampling_failed_total': values.get('sampling_failures_total', 0),
+            'scope': 'own_cgroup' if 'cgroup_version' in values else 'process_only',
+            **values,  # One fixed numerical whitelist; absent really is unknown.
         }
         if type(release) is str and re.fullmatch('[0-9a-f]{64}', release):
             event['release_sha256'] = release
-        for key, destination in _KIB_TO_BYTES.items():
-            number = values.get(key)
-            if number is not None and number < 2**53:
-                event[destination] = number * 1024
-        for key, destination in _DIRECT_METRICS.items():
-            if key in values:
-                event[destination] = values[key]
-        # A small flat product record fits the shared sink's hard JSONL bound.
         if len(json.dumps(event, allow_nan=False, separators=(',', ':')).encode()) > _MAX_BYTES:
             return False
         return collector.try_emit(event, level='debug') is True
