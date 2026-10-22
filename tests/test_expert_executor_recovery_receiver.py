@@ -171,3 +171,35 @@ def test_main_exposes_recovery_only_with_existing_bound_executor_context(
     installed=captured[-1][0].streamable_http_app(
         stateless_http=True,json_response=True)
     assert PATH in {r.path for r in installed.routes}
+
+
+@pytest.mark.asyncio
+async def test_corrupt_covered_native_receipt_is_persistence_pending_not_client_error(env,tmp_path):
+    """Local corrupted original bytes must never become delivered or retryable."""
+    a=attached(env,tmp_path)
+    entry,delivery,outbound,args=await _unknown_after_covered_send(a)
+    receipt=receipt_for(a,outbound)
+    await delivery.stage_dataset_native_receipt(a.credentials,entry['request_id'],receipt)
+    promote(a,5)
+    ctl,reopened=lose_local_and_reopen(a)
+    # Synthetic disk corruption of a covered immutable receipt, not a guard
+    # bypass or new provider outcome. The store must reject altered bytes.
+    key=ctl.dataset_records.effect_key(entry['request_id'],'receipt')
+    with env.q.connect() as db:
+        db.execute(
+            'UPDATE rkb_dataset_recovery_objects SET data=? '
+            'WHERE storage=? AND key=?',
+            (b'{}',a.saved.store.storage_identity,key))
+    receiver=ExpertExecutorRecoveryReceiver(ExpertExecutorContext(
+        a.credentials,reopened))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app(receiver),client=('127.0.0.1',9001)),
+        base_url='http://127.0.0.1'
+    ) as client:
+        response=await client.post(PATH,json=_request(entry['request_id']),
+            headers=_headers(a.credentials))
+        assert response.status_code==503
+        assert response.json()=={'error':'recovery_pending'}
+        assert ctl.claim(a.credentials)=={'state':'empty'}
+        row=ctl._row(entry['request_id'])
+        assert row['state']=='unknown' and row['delivery_receipt'] is None
