@@ -1,54 +1,32 @@
 -- Additive 018: complete authored Story.body and exact bounded derived vectors.
 -- SQL001-017 remain byte-identical; rollout requires reviewed migration/registry wiring.
 -- There is no new model, scheduler, codec transport, or writer authority.
--- The existing story_search/editorial_story_search keep the complete body and
--- a representative first-fragment embedding; the indexed derived table carries
--- every additional vector with exact variant/revision/character offsets.
-CREATE TABLE rkb_v4.story_embedding_fragments (
- variant_id uuid NOT NULL,revision bigint NOT NULL,
- fragment_ordinal integer NOT NULL CHECK(fragment_ordinal>=0),
- fragment_id uuid NOT NULL UNIQUE,
- start_offset integer NOT NULL CHECK(start_offset>=0),
- end_offset integer NOT NULL CHECK(end_offset>start_offset),
- input_tokens integer NOT NULL CHECK(input_tokens BETWEEN 1 AND 512),
- input_sha256 text NOT NULL CHECK(input_sha256 ~ '^[0-9a-f]{64}$'),
- embedding public.vector(1024) NOT NULL CHECK(abs(public.vector_norm(embedding)-1.0)<=0.002),
- PRIMARY KEY(variant_id,revision,fragment_ordinal),
- FOREIGN KEY(variant_id,revision) REFERENCES rkb_v4.story_variant_versions(variant_id,revision)
-);
-CREATE INDEX story_embedding_fragments_dense ON rkb_v4.story_embedding_fragments
- USING hnsw(embedding public.vector_cosine_ops);
-CREATE TRIGGER immutable_story_embedding_fragments BEFORE UPDATE OR DELETE
- ON rkb_v4.story_embedding_fragments FOR EACH ROW EXECUTE FUNCTION rkb_v4.reject_revision_update();
-CREATE TRIGGER story_embedding_fragment_writer_fence BEFORE INSERT OR UPDATE OR DELETE
- ON rkb_v4.story_embedding_fragments FOR EACH STATEMENT EXECUTE FUNCTION rkb_v4.lock_read_fence_writer();
-
-CREATE FUNCTION rkb_v4.capture_story_embedding_fragments_v1() RETURNS trigger
- LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
-DECLARE source uuid;f jsonb;fragment_ordinal integer;start_pos integer;end_pos integer;
-BEGIN
- IF NOT NEW.data ? 'fragments' THEN RETURN NULL;END IF;
- SELECT source_id INTO STRICT source FROM rkb_v4.stories WHERE story_id=NEW.story_id;
- FOR f,fragment_ordinal IN
-  SELECT value,(ordinality-1)::integer
-  FROM jsonb_array_elements(NEW.data->'fragments') WITH ORDINALITY
- LOOP
-  start_pos:=(f->>'start')::integer;end_pos:=(f->>'end')::integer;
-  INSERT INTO rkb_v4.story_embedding_fragments
-   (variant_id,revision,fragment_ordinal,fragment_id,start_offset,end_offset,
-    input_tokens,input_sha256,embedding)
-  SELECT NEW.variant_id,NEW.revision,fragment_ordinal,(f->>'fragment_id')::uuid,
-    start_pos,end_pos,(f->>'input_tokens')::integer,v.input_sha256,v.embedding
-  FROM rkb_v4.source_activation_vectors v
-  WHERE v.source_id=source AND v.input_id=(f->>'fragment_id')::uuid
+-- Existing story_search/editorial_story_search keep complete text and a
+-- representative first-fragment embedding. Every additional vector stays in
+-- the existing immutable native vector slots; this view maps their offsets.
+-- Dense search adoption of additional slots is a separate occupied read hunk.
+-- Reuse the immutable source_activation_vectors table, not a duplicate
+-- vector store or another persistence/trigger path. A PG17 SECURITY INVOKER
+-- view exposes stable variant/revision/character spans only when their hashes
+-- match the exact installed original input. Full Story.body remains in the
+-- already-existing immutable variant and editorial tables.
+CREATE VIEW rkb_v4.story_embedding_fragments WITH (security_invoker=true) AS
+ SELECT b.variant_id,b.revision,b.story_id,s.source_id,
+   (f.n-1)::integer AS fragment_ordinal,
+   (f.x->>'fragment_id')::uuid AS fragment_id,
+   (f.x->>'start')::integer AS start_offset,
+   (f.x->>'end')::integer AS end_offset,
+   (f.x->>'input_tokens')::integer AS input_tokens,
+   v.input_sha256,v.embedding
+ FROM rkb_v4.story_variant_versions b
+ JOIN rkb_v4.stories s ON s.story_id=b.story_id
+ CROSS JOIN LATERAL jsonb_array_elements(b.data->'fragments') WITH ORDINALITY f(x,n)
+ JOIN rkb_v4.source_activation_vectors v ON v.source_id=s.source_id
+   AND v.input_id=(f.x->>'fragment_id')::uuid
    AND v.input_sha256=encode(sha256(convert_to(
-    substring(NEW.body FROM start_pos+1 FOR end_pos-start_pos),'UTF8')),'hex');
-  IF NOT FOUND THEN RAISE EXCEPTION 'native story fragment vector missing or changed';END IF;
- END LOOP;
- RETURN NULL;
-END $$;
-CREATE TRIGGER capture_story_embedding_fragments AFTER INSERT ON rkb_v4.story_variant_versions
- FOR EACH ROW EXECUTE FUNCTION rkb_v4.capture_story_embedding_fragments_v1();
+    substring(b.body FROM (f.x->>'start')::integer+1
+      FOR (f.x->>'end')::integer-(f.x->>'start')::integer),'UTF8')),'hex')
+ WHERE b.data ? 'fragments';
 
 CREATE FUNCTION rkb_v4.source_activation_total_inputs_v2(doc jsonb) RETURNS integer
  LANGUAGE sql IMMUTABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
@@ -348,8 +326,7 @@ EXCEPTION WHEN data_exception OR no_data_found OR too_many_rows THEN RETURN fals
 END $$;
 
 REVOKE ALL ON rkb_v4.story_embedding_fragments FROM PUBLIC;
-REVOKE ALL ON FUNCTION rkb_v4.capture_story_embedding_fragments_v1(),
- rkb_v4.source_activation_total_inputs_v2(jsonb),
+REVOKE ALL ON FUNCTION rkb_v4.source_activation_total_inputs_v2(jsonb),
  rkb_v4.check_source_activation_semantic_v1(bytea,jsonb,jsonb,text),
  rkb_v4.source_activation_input_v1(uuid,integer),
  rkb_v4.apply_source_materialize_v1(bytea,jsonb,jsonb,text),
