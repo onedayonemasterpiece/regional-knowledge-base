@@ -411,3 +411,116 @@ async def test_unexpected_native_or_archive_exception_is_redacted_not_propagated
         await issue(gate,verified,binding)
     assert "PRIVATE-TELEGRAM" not in str(exc.value)
     assert str(exc.value)=="media_native_or_archive_unavailable"
+
+
+# Independent reviewer NO-GO: RED on exact frozen a0e195f before any gate edit.
+@pytest.mark.asyncio
+async def test_frozen_red_final_issuance_blocks_injected_private_metadata(env, auth):
+    gate, native, archive, verified, binding = await make_gate(env, auth)
+    issued = await issue(gate, verified, binding)
+    assert gate.issuance_current(issued.ticket)
+    issued.frame.metadata["archive_locator"] = {"chat_id": -100234, "message_id": 16}
+    assert not gate.issuance_current(issued.ticket), "retained frame mutation must invalidate permission"
+
+
+@pytest.mark.asyncio
+async def test_frozen_red_final_issuance_blocks_nested_bbox_and_list_mutation(env, auth):
+    gate, native, archive, verified, binding = await make_gate(env, auth)
+    issued = await issue(gate, verified, binding)
+    issued.frame.metadata["bbox"]["left"] = 777
+    issued.frame.metadata["caption_region_ids"].append(SOURCE)
+    assert not gate.issuance_current(issued.ticket), "deep metadata mutation must invalidate bytes"
+
+
+@pytest.mark.asyncio
+async def test_frozen_red_final_issuance_blocks_frame_replacement(env, auth):
+    gate, native, archive, verified, binding = await make_gate(env, auth)
+    issued = await issue(gate, verified, binding)
+    forged = issued.frame.model_copy(update={
+        "metadata": {**issued.frame.metadata, "archive_locator": {"chat_id": -100234}}
+    })
+    # Even a frozen dataclass can be replaced via object.__setattr__.
+    object.__setattr__(issued, "frame", forged)
+    assert not gate.issuance_current(issued.ticket), "ticket must bind the exact issued frame"
+
+
+@pytest.mark.asyncio
+async def test_frozen_red_final_issuance_blocks_released_verified_actor(env, auth):
+    gate, native, archive, verified, binding = await make_gate(env, auth)
+    issued = await issue(gate, verified, binding)
+    auth.resolver.release(verified)
+    assert not gate.issuance_current(issued.ticket), "released verified identity is no longer current"
+
+
+@pytest.mark.asyncio
+async def test_frozen_red_final_issuance_blocks_expired_oauth_context(env, auth):
+    gate, native, archive, verified, binding = await make_gate(env, auth)
+    issued = await issue(gate, verified, binding)
+    # Existing OAuth clock differs from gate's monotonic ticket clock.
+    auth.now[0] = verified.expires_at
+    assert not gate.issuance_current(issued.ticket), "expired OAuth is not a valid media grant"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capability", ["public_search", "case_read"])
+async def test_frozen_red_final_issuance_blocks_revised_current_role_or_epoch(env, auth, capability):
+    gate, native, archive, verified, binding = await make_gate(env, auth)
+    issued = await issue(gate, verified, binding)
+    change(auth.p, ParticipantGrant(capability=capability, granted=False,
+                                    reason="synthetic authorization revision after output"))
+    assert not gate.issuance_current(issued.ticket), "participant revision must be current"
+
+
+@pytest.mark.asyncio
+async def test_frozen_red_issue_refuses_context_expired_during_last_sync_renderer(env, auth):
+    gate, native, archive, verified, binding = await make_gate(env, auth)
+    def renderer(item, *, status):
+        # No await after this callback: final synchronous issuance must catch it.
+        auth.now[0] = verified.expires_at
+        return media_renderer(item, status=status)
+    gate.render_metadata = renderer
+    with pytest.raises(PublicMediaUnavailable):
+        await issue(gate, verified, binding)
+    assert not gate._tickets
+
+
+@pytest.mark.asyncio
+async def test_final_monotonic_ticket_ttl_actually_expires(env, auth):
+    gate, native, archive, verified, binding = await make_gate(env, auth)
+    now = [100.0]
+    gate.clock = lambda: now[0]
+    issued = await issue(gate, verified, binding)
+    assert gate.issuance_current(issued.ticket)
+    now[0] += gate.ttl
+    assert not gate.issuance_current(issued.ticket)
+
+
+@pytest.mark.asyncio
+async def test_frozen_red_simultaneous_issue_does_not_exceed_single_ticket_capacity(env, auth):
+    gate, native, archive, verified, binding = await make_gate(env, auth)
+    gate.capacity = 1
+    first = native
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    count = 0
+
+    async def barrier_reader(*args):
+        nonlocal count
+        count += 1
+        if count <= 2:
+            if count == 2:
+                entered.set()
+            await release.wait()
+        return await first(*args)
+
+    gate.native_read = barrier_reader
+    a = asyncio.create_task(issue(gate, verified, binding))
+    b = asyncio.create_task(issue(gate, verified, binding))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+    finally:
+        release.set()
+    outcomes = await asyncio.gather(a, b, return_exceptions=True)
+    delivered = [x for x in outcomes if not isinstance(x, BaseException)]
+    assert len(delivered) == 1, "two concurrent awaits must not bypass ticket capacity"
+    assert len(gate._tickets) == 1
