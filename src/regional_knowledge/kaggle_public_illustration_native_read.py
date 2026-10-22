@@ -21,8 +21,7 @@ from uuid import UUID
 from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 
-from .kaggle_public_illustration_gate import NativeMediaSnapshot, _canonical
-from .source_read_gate import binding_key
+from .kaggle_media_native_contracts import NativeMediaSnapshot, canonical_media as _canonical, native_binding_key as binding_key
 
 SQL014_SHA256 = "5f8257e9fe58e2e2bdd00f67042ad17b8db007c7873dcc04f52d53be3523e855"
 SQL015_SHA256 = "7faacbf7fbb2b99f0dbdbd4339dea5138f134347e31a6be09577dff35be8c773"
