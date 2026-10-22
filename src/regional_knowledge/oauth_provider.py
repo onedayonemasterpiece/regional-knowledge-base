@@ -54,6 +54,25 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _native_loopback_redirect(value: str) -> bool:
+    """RFC 8252 loopback callback of a native client on the user's machine (e.g. Claude Code).
+
+    Only http://localhost or http://127.0.0.1 with an explicit unprivileged
+    port and the exact /callback path; no userinfo, query or fragment. The
+    authorization code can only reach the browser host itself; PKCE and the
+    owner login/consent pages are unchanged.
+    """
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
+            and parsed.netloc in {f"localhost:{port}", f"127.0.0.1:{port}"}
+            and port is not None and 1024 <= port <= 65535 and parsed.path == "/callback"
+            and not parsed.query and not parsed.fragment and len(value) <= 64)
+
+
 def _random() -> str:
     return secrets.token_urlsafe(32)
 
@@ -269,7 +288,7 @@ class RegionalOAuthProvider(PersonalOAuthMixin, ServiceOAuthMixin):
         self._admission_count = 0
 
     def _redirect_allowed(self, value: str) -> bool:
-        if value in self.redirect_uris:
+        if value in self.redirect_uris or _native_loopback_redirect(value):
             return True
         try:
             parsed = urlsplit(value)
@@ -320,7 +339,7 @@ class RegionalOAuthProvider(PersonalOAuthMixin, ServiceOAuthMixin):
         if not redirects or any(not self._redirect_allowed(value) for value in redirects):
             raise RegistrationError(
                 error="invalid_redirect_uri",
-                error_description="only registered ChatGPT or Grok HTTPS callbacks are allowed",
+                error_description="only registered ChatGPT/Grok HTTPS or native loopback callbacks are allowed",
             )
         if client_info.token_endpoint_auth_method not in {
             "client_secret_basic",

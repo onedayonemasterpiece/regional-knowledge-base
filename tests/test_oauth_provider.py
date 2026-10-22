@@ -355,3 +355,53 @@ async def test_grok_registration_rejects_unsafe_callbacks(tmp_path: Path, redire
     client = _dynamic_client(redirect_uri=redirect)
     with pytest.raises(RegistrationError):
         await provider.register_client(client)
+
+
+@pytest.mark.parametrize("redirect", ["http://localhost:54545/callback", "http://127.0.0.1:33418/callback"])
+def test_native_loopback_client_login_consent_returns_code_only_to_loopback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, redirect: str,
+) -> None:
+    """RFC 8252 native client (Claude Code): public client, PKCE, owner login and consent unchanged."""
+    provider = _provider(tmp_path)
+    native = OAuthClientInformationFull(
+        client_id=str(uuid4()), redirect_uris=[AnyUrl(redirect)], token_endpoint_auth_method="none",
+        grant_types=["authorization_code", "refresh_token"], response_types=["code"],
+        scope=KNOWLEDGE_SCOPE, application_type="native",
+    )
+    asyncio.run(provider.register_client(native))
+    consent = asyncio.run(provider.authorize(native, _params(redirect_uri=redirect)))
+    request_id = parse_qs(urlsplit(consent).query)["id"][0]
+    monkeypatch.setenv("RKB_AUTH_MODE", "embedded")
+    server = build_server(backend=UnavailableBackend(), issuer=provider.issuer,
+                          resource_url=provider.resource, oauth_provider=provider)
+    origin = urlsplit(redirect)
+    with TestClient(server.streamable_http_app(), base_url=provider.origin) as client:
+        client.get(consent)
+        login = client.post("/oauth/login", data={
+            "id": request_id, "csrf": client.cookies.get("__Host-rkb_csrf"),
+            "secret": "owner-login-secret-12345",
+        }, headers={"Origin": provider.origin}, follow_redirects=False)
+        assert login.status_code == 303
+        csp = client.get(login.headers["location"]).headers["content-security-policy"]
+        assert f"form-action 'self' http://{origin.hostname}:{origin.port};" in csp
+        accepted = client.post("/oauth/consent", data={
+            "id": request_id, "csrf": client.cookies.get("__Host-rkb_csrf"), "decision": "allow",
+        }, headers={"Origin": provider.origin}, follow_redirects=False)
+        assert accepted.status_code == 303
+        callback = urlsplit(accepted.headers["location"])
+        assert (callback.scheme, callback.netloc, callback.path) == ("http", origin.netloc, "/callback")
+        assert "code" in parse_qs(callback.query)
+
+
+@pytest.mark.parametrize("redirect", [
+    "http://localhost/callback", "http://localhost:80/callback", "http://localhost:54545/other",
+    "https://localhost:54545/callback", "http://evil.example:54545/callback",
+    "http://localhost.evil.example:54545/callback", "http://127.0.0.2:54545/callback",
+    "http://user@localhost:54545/callback", "http://localhost:54545/callback?next=https://evil.example",
+    "http://localhost:54545/callback#frag", "http://[::1]:54545/callback", "http://10.0.0.1:54545/callback",
+])
+@pytest.mark.asyncio
+async def test_native_loopback_registration_rejects_non_loopback_or_unsafe_callbacks(tmp_path: Path, redirect: str) -> None:
+    provider = _provider(tmp_path)
+    with pytest.raises(RegistrationError):
+        await provider.register_client(_dynamic_client(redirect_uri=redirect))
