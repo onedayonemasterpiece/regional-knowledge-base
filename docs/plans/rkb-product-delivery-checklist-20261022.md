@@ -12,6 +12,8 @@
 
 `совместимый integration + recovery/GEO prerequisites → модель читает одобренный оригинал → source-bound facts + body при достаточном эпизоде ИЛИ justified needs_context + reachable frontier → atomic source activation → durable Saved → ordinary search/fetch/body/actual illustrations readback → post-acceptance continuation → restart/recovery readback → quality/latency/scale`
 
+**Совместная приёмка M2–M4:** persisted/Saved означает доказанную сохранность конкретного payload/outcome, а не автоматическую accepted retrieval readiness. Источник становится accepted/retrieval-ready только после source/index gates и natural/paraphrased/relevant cross-language per-book проверки точной candidate/active revision. Facts/body либо justified frontier создаются в том же чтении и activation, а M3/M4 после Saved проверяют обычную выдачу. Это не последовательная очередь «сначала принять пустую книгу, потом добавить знания» и не цикл зависимостей.
+
 Recovery-предпосылки проверяются **до** первого Saved; восстановление именно принятой книги — **после** него. Каналы/экспертные и публичные поверхности разрабатываются параллельно, но не исчезают из полного результата.
 
 ### Три обязательных документа для КАЖДОГО назначения
