@@ -287,6 +287,22 @@ class PublicIllustrationOutputGate:
                 any(type(x) is not int or not 0 <= x <= 20000 for x in bbox.values()) or
                 not bbox["left"] < bbox["right"] or not bbox["top"] < bbox["bottom"]):
             _fail("invalid_media_figure_bbox")
+        for key_name, maximum in (("caption_region_ids", 50), ("nearby_region_ids", 100)):
+            refs = item.get(key_name)
+            if (type(refs) is not list or len(refs) > maximum
+                    or len(set(str(x) for x in refs)) != len(refs)
+                    or any(not _uuid(ref) for ref in refs)):
+                _fail("invalid_public_figure_references")
+        for key_name, maximum in (
+            ("illustration_key", 256), ("kind", 80), ("caption_text", 16000),
+            ("visual_description", 8000), ("visual_description_language", 16),
+        ):
+            value = item.get(key_name)
+            if type(value) is not str or not 1 <= len(value) <= maximum:
+                _fail("invalid_public_figure_metadata")
+        if item.get("display_rotation_degrees") not in (0, 90, 180, 270) or (
+                type(item.get("display_rotation_degrees")) is not int):
+            _fail("invalid_public_figure_rotation")
         crop = self._binding(row)
         if (item.get("illustration_id") != illustration_id
                 or item.get("page_id") != page.get("page_id")
@@ -451,6 +467,10 @@ class PublicIllustrationOutputGate:
             raise
         except (PermissionError, ValueError, TypeError, KeyError, AttributeError):
             _fail("media_permission_or_native_read_unavailable")
+        except Exception:
+            # Never reflect native/archival provider exception text or private
+            # locator/credentials into a public MCP error.
+            _fail("media_native_or_archive_unavailable")
 
     def _expire(self):
         now = self.clock()
