@@ -407,7 +407,12 @@ class TargetServiceStartup:
                 await self.config.writer_owner.ensure_current(self.config.spool.journal)
             if not self.binding_current(binding):raise PermissionError('current writer binding unavailable')
             if binding==self.binding and self.coverage is not None and self.coverage.current():
-                coverage=self.coverage if self._coverage_idle() else await self.history.extend(self.binding)
+                if getattr(self.history,'_native_prefix',False) is None:
+                    # A schema promotion deliberately retires the native prefix.
+                    # Delta verification cannot use it; rebuild in this tick.
+                    coverage=await self.history.restore(self.binding)
+                else:
+                    coverage=self.coverage if self._coverage_idle() else await self.history.extend(self.binding)
             else:
                 self.coverage=None;self.gate.invalidate();self.binding=binding
                 if self.geo_gate is not None:self.geo_gate.invalidate()
