@@ -97,8 +97,10 @@ must verify this helper repair; the preceding failure is retained as evidence.
 ## Explicit exclusions and next boundaries
 
 - No canonical integration, service, notebook, Dataset or provider mutation.
-- Health/WSS dispatch is deferred to a separate handoff; no latency patch was
-  applied. PR240 contains an inert proposal, not an installed source fix.
+- Health SQL/WSS dispatch is included via verified PR253. Linza's actual PR249
+  source fastpath is included after PR239; old PR240 remains an inert historical
+  proposal. The subsequent media-only WSS scope is explicitly handed to Rif;
+  his source work does not mean it is already deployed.
 - PR245 composition and Quartz's PR247 expert-only `server.main` mounting hunk
   are present in the diagnostic source. Installed read/send remains unverified.
 - PR241's Dev archive bridge remains gated: Rif's PR251 native same-client bytes
