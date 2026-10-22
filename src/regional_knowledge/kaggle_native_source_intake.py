@@ -44,10 +44,14 @@ def _timed_native_phase(phase):
                 status = 'cancelled'
                 raise
             finally:
-                # Ingestion ID is hashed; person/source/research are never logged.
-                ref = hashlib.sha256(str(row['ingestion_id']).encode()).hexdigest()
-                emit_product_event({'event':'import.phase','phase':phase,'status':status,
-                    'operation_ref':ref,'duration_ms':(time.monotonic()-started)*1000})
+                # A malformed observer input must not replace the domain
+                # result, cancellation or exception being returned.
+                try:
+                    ref = hashlib.sha256(str(row['ingestion_id']).encode()).hexdigest()
+                    emit_product_event({'event':'import.phase','phase':phase,'status':status,
+                        'operation_ref':ref,'duration_ms':(time.monotonic()-started)*1000})
+                except Exception:
+                    pass
         return observed
     return decorate
 
