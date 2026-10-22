@@ -37,13 +37,13 @@ diff --git a/src/regional_knowledge/bge_channel.py b/src/regional_knowledge/bge_
                  while True:
 -                    observed = await status()
 -                    await promote(observed)
-+                    if not promoted:
++                    if not promoted or shared is None or probe_nonce is not None:
 +                        observed = await status()
 +                        await promote(observed)
                      if shared is not None:
 ```
 
-**When not yet promoted**, readiness validation is unchanged.
+**When not yet promoted, in legacy nonshared mode, or while a fresh resource probe is outstanding**, the periodic `status()` validation is unchanged; the duplicate check is removed only for already-promoted shared reads whose loop actually calls fenced `next_channel_work`.
 On promotion/state change the receiver and existing channel generation
 fences remain. Opus must review against **his current PR239 HEAD**
 and preserve its proof-epoch race correction. Do not force/cherry-pick
