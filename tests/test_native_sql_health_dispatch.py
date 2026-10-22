@@ -19,7 +19,7 @@ from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
 from regional_knowledge.read_authority import TrustedReadDestination
 from test_kaggle_worker_query import pinned,forbidden_encode
 from test_kaggle_health import Native
-from test_kaggle_public_backend import target,work,release
+from test_kaggle_public_backend import target,release
 from test_bge_runtime_readiness import run,shared_channel_run,observation
 from test_read_authority import auth
 from test_participants import people,change
@@ -148,7 +148,20 @@ async def test_existing_public_status_uses_native_admitted_health_and_sanitizes_
         return result
     monkeypatch.setattr(s.auth.resolver,'recheck',recheck)
     pending=asyncio.create_task(s.backend.startup_status(startup_ref,s.principal))
-    dispatched=await work(s)
+    # Status resolves/rechecks real OAuth before it enters shared admission.
+    # The search fixture's200ms poll predates that extra status roundtrip.
+    dispatched=None;until=time.monotonic()+1.5
+    while time.monotonic()<until:
+        if pending.done():
+            early=await pending
+            pytest.fail(f'status returned before native dispatch: {early.status}')
+        dispatched=await s.queue.next_channel_work(s.run,s.token,s.generation)
+        if dispatched is not None:
+            assert dispatched.kind=='read'
+            s.admission.mark_work_sent(dispatched)
+            break
+        await asyncio.sleep(.005)
+    assert dispatched is not None,'native SQL health never reached existing admission'
     assert type(dispatched.query) is SqlHealthRequest
     native=Native()
     wire=await KaggleWorkerQuery(acquire=native.acquire,tokenizer=pinned())(
