@@ -199,6 +199,7 @@ class KnowledgeMCPServer(MCPServer):
         if getattr(self,'_target_catalog_available',False):
             allowed.add('book_find')
         if getattr(self,'_target_source_profile',False):allowed.add('startup_status')
+        if getattr(self,'_target_media_available',False):allowed.add('illustration_fetch')
         if getattr(self,'_target_source_profile',False) and name not in allowed:
             raise ToolError('{"status":"unavailable","reason":"target_domain_unavailable"}')
         from .read_issuance import capture_read_output, bind_request_output
@@ -444,6 +445,10 @@ def build_server(
         embedded_provider.register_routes(mcp)
 
     mcp._target_source_profile=selected=='kaggle_source'
+    # Do not advertise an image result without the trusted, installed native
+    # source gate AND its independent real archive byte-issuer owner.
+    mcp._target_media_available=(selected=='kaggle_source'
+        and getattr(backend,'public_media_gate',None) is not None)
     mcp._target_import_available = selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None
     mcp._target_story_available = (selected=='kaggle_source' and target_startup.gate.story_supported())
     mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
@@ -1074,6 +1079,11 @@ def build_server(
 
     @mcp.tool(title='Read an authorized illustration', description='Return the canonical source crop and labelled caption/model-observation metadata. Model observation is not printed evidence. No OCR or inference.', annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
     async def illustration_fetch(id: str) -> list[TextContent | ImageContent]:
+        if selected == 'kaggle_source':
+            # EXISTING tool name, but the installed target may only disclose
+            # pixels after its current native gate and final MCP issuance.
+            # Never fall back to the unrelated legacy Supabase/Vibe reader.
+            return await backend.illustration_fetch(id, _principal())
         import base64
         from .illustrations import fetch_crop
         metadata, data, mime = await fetch_crop(backend, _principal(), id)
