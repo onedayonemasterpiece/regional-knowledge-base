@@ -20,7 +20,7 @@ from regional_knowledge.expert_request_control import ExecutorCredentials
 from regional_knowledge.participant_contracts import AccountUnlink
 from test_control_spool import env
 from test_expert_request_control import _prepare,_event
-from test_participants import change
+from test_participants import people, change
 
 
 def _app(control):
