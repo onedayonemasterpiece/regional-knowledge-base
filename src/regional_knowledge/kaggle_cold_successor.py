@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import hashlib
 import json
+import os
+import stat
 import uuid
 
 from .kaggle_launch_config import target_launch_from_wire
@@ -17,6 +19,32 @@ from .kaggle_target_runtime import TargetLaunchSpec
 
 def _encoded(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+
+def read_source_config(path):
+    """Explicit private metadata path; no environment or credential discovery."""
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result: raise ValueError('duplicate source configuration field')
+            result[key] = value
+        return result
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_mode & 0o077 or not 1 <= before.st_size <= 65536:
+            raise ValueError('private bounded source configuration required')
+        data = os.read(fd, 65537)
+        after = os.fstat(fd)
+        if (len(data) != before.st_size or os.read(fd, 1)
+                or (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns)):
+            raise ValueError('source configuration changed during read')
+    finally: os.close(fd)
+    value = json.loads(data, object_pairs_hook=unique,
+        parse_constant=lambda _: (_ for _ in ()).throw(ValueError('finite source configuration required')))
+    if type(value) is not dict or value.get('codec') != 'rkb.source-service.v1':
+        raise ValueError('exact source service configuration required')
+    return value
 
 
 @dataclass(frozen=True)

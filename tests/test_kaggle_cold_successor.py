@@ -77,6 +77,7 @@ async def test_real_main_prepares_exact_successor_once_and_begin_restore_keeps_a
     monkeypatch.setenv('RKB_BGE_TRANSPORT', 'wss')
     monkeypatch.setenv('RKB_BGE_DOCKER_IMAGE', 'gcr.io/kaggle-images/python@sha256:'+'a'*64)
     monkeypatch.delenv('RKB_BGE_TARGET_CONFIG', raising=False)
+    monkeypatch.delenv('RKB_BGE_SUCCESSOR_SOURCE_CONFIG', raising=False)
     class StopLoop(BaseException): pass
     def stop(seconds): raise StopLoop
     monkeypatch.setattr(module.time, 'sleep', stop)
@@ -95,7 +96,8 @@ async def test_real_main_prepares_exact_successor_once_and_begin_restore_keeps_a
         row = db.execute('SELECT * FROM rkb_writer_control').fetchone()
         assert row['run_id'] == e.run and not row['active']  # metadata never grants authority
     token = (e.q.path.parent/'bge-worker-credentials'/run).read_text()
-    nonce = e.q.prepare_channel(run)
+    with e.q.connect(write=False) as db:
+        nonce = db.execute('SELECT launch_nonce FROM runs WHERE id=?', (run,)).fetchone()[0]
     generation = e.q.attach_channel(run, token, nonce, 'cold-incarnation')['connection_generation']
     await e.a.resource_state(run, token, generation, runtime_incarnation='cold-incarnation', state='idle')
     writer = QueueWriterAuthority(e.q, run_id=run, database_generation=plan.target.database.database_generation,
@@ -127,3 +129,54 @@ async def test_unresolved_old_execution_and_changed_plan_never_mint_replacement(
     with pytest.raises(ValueError, match='not finalized'): successor_source_config(e.q, source)
     with e.q.connect() as db:
         assert db.execute('SELECT count(*) FROM rkb_writer_generations').fetchone()[0]==1
+
+
+@pytest.mark.asyncio
+async def test_running_owner_adoption_preserves_public_routes_spool_auth_and_storage(owner):
+    from regional_knowledge.kaggle_source_owners import compose_source_service
+    from regional_knowledge.kaggle_source_commands import fixed_registry
+    from regional_knowledge.kaggle_successor_adoption import adopt_prepared_successor
+    from regional_knowledge.source_history_wss import WssNativeHistoryProofAdapter
+    from test_kaggle_target_runtime import generate
+    e=owner; source=source_config(e);source.pop('source_import')
+    registry=fixed_registry(target().database,
+        [dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64)])
+    history=WssNativeHistoryProofAdapter(database=target().database,
+        expected_catalog_sha256='a'*64,expected_acl_sha256='b'*64,expected_observer_sha256='c'*64)
+    startup=compose_source_service(queue=e.q,oauth_provider=e.auth.provider,participants=e.auth.p.registry,
+        object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),stream=e.j.stream,registry=registry,
+        history_adapter=history,run_id=e.run,database_generation='synthetic-db',writer_generation='writer-1',
+        source_restore=SourceRestoreConfig.from_wire(source['source_restore']),successor_source_json=json.dumps(source))
+    kept=(startup.backend,startup.config.spool,startup.authority,startup.admission,
+        dict(startup.routes),startup.source_dispatch)
+    try:
+        run=await terminal_then_demand(e)
+        plan=prepare_successor(e.q,run,target(),source)
+        token=e.q.launch_claim(run,provider_ref='owner/stable-slug')
+        generated=generate(e.q,run,plan.target)
+        assert run in generated
+        bound=finalize_successor(e.q,plan)
+        assert await adopt_prepared_successor(startup)
+        assert not await adopt_prepared_successor(startup)  # same retained owner, no replacement loop
+        assert (startup.backend,startup.config.spool,startup.authority,startup.admission,
+            dict(startup.routes),startup.source_dispatch)==kept
+        assert startup.history.routes==startup.routes
+        assert startup.restorer.config.wire()==bound['source_restore']
+        assert startup.config.spool.journal.store.client is e.c
+        assert startup.config.spool.journal.store.bucket==e.s.bucket
+        assert startup.config.writer_owner._store_identity==e.w._store_identity
+        assert not startup.reads_current() and startup.coverage is None
+        with e.q.connect(write=False) as db:
+            nonce=db.execute('SELECT launch_nonce FROM runs WHERE id=?',(run,)).fetchone()[0]
+        e.q.launch_record(run,'owner/stable-slug',provider_version=89)
+        gen=e.q.attach_channel(run,token,nonce,'cold-adopted-incarnation')['connection_generation']
+        await e.a.resource_state(run,token,gen,runtime_incarnation='cold-adopted-incarnation',state='idle')
+        binding=PreReadyRecoveryBinding(run,'cold-adopted-incarnation',gen,
+            'synthetic-db',plan.target.database.writer_generation)
+        await startup.config.writer_owner.begin_restore(startup.config.spool.journal,binding,
+            plan=startup.restorer.config)
+        assert startup.config.writer_owner.recovery_current(binding) and not startup.reads_current()
+    finally:
+        await startup.restorer.aclose()
+        await startup.source_dispatch.aclose()
+        startup.config.spool.close();startup.config.writer_owner.close()

@@ -298,6 +298,12 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None,
         if re.fullmatch(r'gcr\.io/kaggle-images/python@sha256:[0-9a-f]{64}',image) is None:
             raise ValueError('target launch requires exact RKB_BGE_DOCKER_IMAGE digest')
     else:image=None
+    successor_path=os.getenv('RKB_BGE_SUCCESSOR_SOURCE_CONFIG','').strip()
+    if successor_path:
+        if successor_source_config is not None:
+            raise ValueError('one explicit successor source configuration required')
+        from regional_knowledge.kaggle_cold_successor import read_source_config
+        successor_source_config=read_source_config(successor_path)
     if successor_source_config is not None:
         # Explicit already-loaded owner metadata, never credential discovery.
         # Keep the original config as the immutable authority anchor across runs.

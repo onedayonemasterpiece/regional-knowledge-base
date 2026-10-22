@@ -10,6 +10,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import logging
+import json
 import math
 import time
 from typing import Callable, Mapping, Protocol, runtime_checkable
@@ -79,8 +80,15 @@ class TargetServiceConfig:
     native_source_upgrade: object = None
     dataset_seed: object = None
     telegram_runtime_source: object = None
+    successor_source_json: str | None = None
 
     def __post_init__(self):
+        if self.successor_source_json is not None:
+            if type(self.successor_source_json) is not str or not 1<=len(self.successor_source_json.encode())<=65536:
+                raise ValueError('bounded original successor source configuration required')
+            value=json.loads(self.successor_source_json)
+            if type(value) is not dict or value.get('codec')!='rkb.source-service.v1' or self.source_restore is None:
+                raise ValueError('explicit verified restore source configuration required')
         if (not isinstance(self.oauth_provider,RegionalOAuthProvider)
                 or not isinstance(self.participants,Participants)
                 or not isinstance(self.queue,BgeQueue) or not isinstance(self.spool,ControlSpool)
@@ -382,6 +390,9 @@ class TargetServiceStartup:
                     pending=db.execute('SELECT 1 FROM rkb_writer_control WHERE run_id=? AND writer_generation=? AND publication_json IS NOT NULL',
                         (owner.run_id,self.config.writer_generation)).fetchone()
                 if pending:await owner.reconcile(self.config.spool.journal.store)
+            if self.config.successor_source_json is not None:
+                from .kaggle_successor_adoption import adopt_prepared_successor
+                await adopt_prepared_successor(self)
             if self.restorer is not None and not self.restorer.complete:
                 await self.restorer.refresh()
             binding=await asyncio.to_thread(current_binding,self.config.queue)
