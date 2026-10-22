@@ -291,6 +291,55 @@ class KaggleSourceImporter:
         return self._output(row,'processing','Original acquisition and verified durable readback pending',
             'wait',source_archive_status='pending')
 
+    async def _native_research_status(self, access, row, output):
+        """Expose the SAME accepted model's exact page continuation on status.
+
+        A finalized source is not automatically a completed investigation.
+        This is a read-only, retained owner MCP output; the old source is
+        neither restaged nor given a new activation/revision or inference.
+        """
+        await self._check(access.authority, access.context, access.binding)
+        if (output.state != 'finalized' or output.ingestion_id != row['ingestion_id']
+                or output.document_id != row['source_id']):
+            raise failure('native_research_status_identity_changed')
+        current = await asyncio.to_thread(self._row, row['person_id'], row['ingestion_id'])
+        if current['phase'] != 'finalized':
+            raise failure('native_research_terminal_state_changed')
+        if not current['research_json']:
+            raise failure('native_research_accepted_frontier_missing')
+        try:
+            research = SourceResearchInput.model_validate_json(current['research_json'])
+        except (ValueError, TypeError):
+            raise failure('native_research_accepted_frontier_invalid') from None
+        if research.state == 'complete':
+            if research.continuation:
+                raise failure('native_research_accepted_frontier_invalid')
+            return output
+        step = research.continuation
+        args = step.get('arguments')
+        if (step.get('tool') != 'book_pages' or type(args) is not dict
+                or set(args) - {'ingestion_id', 'cursor', 'batch_size'}
+                or args.get('ingestion_id') != row['ingestion_id']):
+            raise failure('native_research_continuation_unreachable')
+        cursor = args.get('cursor')
+        if ('cursor' in args and cursor is not None and
+                (type(cursor) is not str or not 1 <= len(cursor) <= 256
+                 or any(ord(char) < 32 or ord(char) > 126 for char in cursor))):
+            raise failure('native_research_continuation_unreachable')
+        if 'batch_size' in args and (type(args['batch_size']) is not int or args['batch_size'] != 1):
+            raise failure('native_research_continuation_unreachable')
+        # Recover an exact existing owner-bound archived original instead of
+        # asking the user to upload it again. The actual next book_pages call
+        # independently checks current actor, source, render/pixel provenance.
+        if await self._receipt(access, current) is None:
+            raise failure('native_research_archived_original_unavailable')
+        await self._check(access.authority, access.context, access.binding)
+        return output.model_copy(update={
+            'next_action': 'continue_pages', 'next_cursor': cursor,
+            'message': output.message + '; model-authored source research remains pending: '
+                       'resume the saved book_pages continuation with this ingestion_id',
+            'warnings': list(dict.fromkeys([*output.warnings, 'model_authored_research_pending']))})
+
     async def _native_proof(self, access, row, receipt, graph):
         proof = await self.originals.native_pages(access.context, row['ingestion_id'])
         await self._check(access.authority, access.context, access.binding)
@@ -737,6 +786,9 @@ class KaggleSourceImporter:
                             receipt = await self._receipt(access, row)
                             output = self._output(row,'staged','Review actual original pages and stage source-backed chunks',
                                 'continue_pages',next_cursor='0',source_archive_status='verified') if receipt else self._original_pending(row,status)
+                if (command == 'status' and getattr(self, 'native_intake', None) is not None
+                        and output.state == 'finalized'):
+                    output = await self._native_research_status(access, row, output)
                 if stage_file_sha256 is not None:
                     if (command != 'stage' or type(stage_file_sha256) is not str or len(stage_file_sha256) != 64
                             or set(stage_file_sha256) - set('0123456789abcdef')):
