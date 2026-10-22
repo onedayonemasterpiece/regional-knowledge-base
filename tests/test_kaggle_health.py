@@ -28,6 +28,7 @@ class Native:
     row_factory = tuple_row
 
     def __init__(self, rows=None, delay=False):
+        self.row_factory = tuple_row
         self.info = SimpleNamespace(transaction_status=TransactionStatus.IDLE)
         self.rows = rows if rows is not None else [('synthetic-db', 'rkb-v4-sql001-014-v1', 5, 5, False)]
         self.sql = []
