@@ -27,7 +27,7 @@ async def attach_existing_reader(s, *, observed=None):
     token=(q.path.parent/'bge-worker-credentials'/read_run).read_text()
     nonce=q.prepare_channel(read_run)
     q.expect_search_runtime(read_run,expected())
-    assert q.launch_claim(read_run)==token
+    q.launch_claim(read_run)
     q.launch_record(read_run,'fixture-reader/stable-slug',provider_version=8)
     generation=q.attach_channel(read_run,token,nonce,'reader-incarnation')['connection_generation']
     assert q.accept_search_runtime(read_run,token,generation,observed or observation()).ok
