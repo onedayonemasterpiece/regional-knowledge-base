@@ -39,7 +39,8 @@ async def schema12(database):
         await c.execute('SELECT rkb_v4.publish_read_frontier(%s,%s,0,0,true,true)',(DB,WRITER))
     old=geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256=(await pinned(c,'check_geo_manifest_install_v1')).definition_sha256,
         apply_sha256=(await pinned(c,'apply_geo_manifest_install_v1')).definition_sha256)
-    _,journal=journal_fixture();env=dict(connection=c,journal=journal,registry=HandlerRegistry([old]))
+    store,journal=journal_fixture();store.writer=WRITER
+    env=dict(connection=c,journal=journal,registry=HandlerRegistry([old]))
     data=snapshot();template=data['mentions'][0]
     data['mentions'].extend(dict(template,id=uid(1000+n)) for n in range(81))
     data['expected_counts']=data['expected_counts'].model_copy(update={'mentions':83})
