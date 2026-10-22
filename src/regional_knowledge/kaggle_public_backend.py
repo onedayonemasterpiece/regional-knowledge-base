@@ -168,6 +168,7 @@ def verified_read_bindings(queue):
                     if (observed['database_generation']!=writer.database_generation
                             or observed['schema_version']!=baseline['schema_version']
                             or observed['applied_seq']<required or observed['projection_seq']<required
+                            or observed['visibility_epoch']<baseline['visibility_epoch']
                             or any(observed['hashes'].get(k)!=baseline['hashes'].get(k)
                                    for k in ('code','executed_source','dependency','model','schema'))):
                         continue
