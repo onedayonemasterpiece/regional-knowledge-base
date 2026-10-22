@@ -167,3 +167,60 @@ def test_invalid_config_and_failed_global_sink_do_not_throw(monkeypatch):
     monkeypatch.setattr(telemetry, "get_product_telemetry",
                         lambda: (_ for _ in ()).throw(OSError(errno.ENOSPC, "no disk")))
     assert telemetry.emit_product_event(event()) is False
+
+
+def test_actual_resource_schema_routes_numbers_into_single_sink():
+    records = []
+    sink = telemetry.ProductTelemetry(mode="standard", sink=records.append)
+    event = {"event":"resource.sample", "phase":"resource", "status":"ok",
+             "run_id":"run-fixture", "runtime_incarnation":"incarnation-fixture",
+             "release_sha256":"e"*64, "connection_generation":3,
+             "sample_seq":10, "sample_time_unix_ms":1700000000000,
+             "scope":"own_cgroup", "rss_kib":128, "pss_kib":75,
+             "cpu_seconds":3.5, "cgroup_version":2,
+             "cpu_usage_usec":50000, "memory_current_bytes":8192,
+             "cpu_utilization_cores":1.2, "memory_events_oom":1,
+             "io_read_bytes":16384, "sampling_failures_total":0}
+    assert sink.try_emit(event)
+    sink._queue.join()
+    assert records and all(records[0][key] == value for key,value in event.items())
+    assert records[0]["schema"] == "rkb.product.telemetry.v1"
+    assert records[0]["diagnostic_state"] == "observed"
+    assert not sink.try_emit(dict(event, cgroup_version=7))
+    assert not sink.try_emit(dict(event, private_argv="contains credentials"))
+    assert not sink.try_emit(dict(event, rss_kib=float('nan')))
+
+
+def test_server_binds_product_sink_to_resource_channel_when_supported(monkeypatch):
+    import regional_knowledge.server as server_module
+    import regional_knowledge.bge_broker as broker
+    import regional_knowledge.bge_channel as channel
+    captured = {}
+    sink = telemetry.ProductTelemetry(sink=lambda record: None)
+    monkeypatch.setattr(telemetry, "_instance", sink)
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    monkeypatch.delenv("RKB_BGE_QUEUE_PATH", raising=False)
+    monkeypatch.setattr(broker, "register_routes", lambda *args: None)
+
+    def fake_channel(queue, *, read_telemetry=None, product_telemetry=None):
+        captured.update(queue=queue, read_telemetry=read_telemetry,
+                        product_telemetry=product_telemetry)
+        return lambda scope, receive, send: None
+
+    monkeypatch.setattr(channel, "channel_route", fake_channel)
+
+    class Backend:
+        worker_queue = object()
+
+        async def search(self, query, principal, **kwargs):
+            from regional_knowledge.contracts import SearchOutput
+            return SearchOutput(results=[])
+
+        async def search_evidence(self, query, principal, **kwargs):
+            from regional_knowledge.contracts import EvidenceSearchOutput
+            return EvidenceSearchOutput(evidence=[])
+
+    server = server_module.build_server(Backend(), profile="live")
+    assert captured["product_telemetry"] is sink
+    assert captured["read_telemetry"] is not None
+    assert getattr(server, "_bge_channel_route", None) is not None
