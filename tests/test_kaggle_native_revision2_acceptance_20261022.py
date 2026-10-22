@@ -282,8 +282,11 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
                 "SELECT count(*) FROM rkb_v4.source_revision2_origins"
             )).fetchone()==(0,)
 
-        async def count_inputs(texts):
-            return [max(4,len(item.split())) for item in texts]
+        async def count_inputs(text):
+            # NativeSourceCompiler._counts calls the configured counter
+            # once PER textual input, not with a list of inputs.
+            assert isinstance(text,str) and text
+            return max(4,len(text.split()))
         compiler=NativeSourceCompiler(count=count_inputs,current=lambda:True,
                                      source_revision=2)
         resolved=await compiler.compile([canonical(doc)],source_id=SOURCE,
