@@ -36,6 +36,7 @@ async def test_native_restore_n_minus_two_migrates_before_tail_and_readiness():
         assert await (await connection.execute("SELECT rolname FROM pg_roles WHERE rolname='rkb_writer'")).fetchall()==[]
         owned=True
         await connection.execute('CREATE ROLE rkb_writer NOLOGIN')
+        await connection.execute('CREATE ROLE rkb_reader NOLOGIN')
         await connection.execute('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public')
         artifacts=files()
         older={name:body for name,body in artifacts.items() if int(name[4:7])<=14}
@@ -67,4 +68,5 @@ async def test_native_restore_n_minus_two_migrates_before_tail_and_readiness():
         if owned:
             await connection.execute('DROP SCHEMA IF EXISTS rkb_v4 CASCADE')
             await connection.execute('DROP ROLE rkb_writer')
+            await connection.execute('DROP ROLE rkb_reader')
         await connection.close()
