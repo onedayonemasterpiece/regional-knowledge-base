@@ -139,16 +139,16 @@ BEGIN
   OR d->>'batch_index' !~ '^(0|[1-9][0-9]{0,3})$'
   OR (d->>'batch_index')::integer>2499 THEN RETURN false;END IF;
  idx:=(d->>'batch_index')::integer;previous:=d->>'previous_batch_sha256';
- IF expected IS DISTINCT FROM jsonb_build_object('active_revision','1','stage_head',previous,
-       'predecessor_command_sha256',d->>'predecessor_command_sha256',
-       'owner_person_id',prior.person_id::text) THEN RETURN false;END IF;
  SELECT a.revision,o.original_sha256,o.edition_id,i.command_sha256,i.person_id,i.ingestion_id,
   v.accepted,v.withdrawn INTO prior FROM rkb_v4.active_revision a
   JOIN rkb_v4.sources v USING(source_id)
   JOIN rkb_v4.source_import_origins o ON o.source_id=a.source_id
   JOIN rkb_v4.source_image_origins i ON i.source_id=a.source_id
   WHERE a.source_id=wanted;
- IF NOT FOUND OR prior.revision<>1 OR NOT prior.accepted OR prior.withdrawn
+ IF NOT FOUND OR expected IS DISTINCT FROM jsonb_build_object('active_revision','1',
+       'stage_head',previous,'predecessor_command_sha256',d->>'predecessor_command_sha256',
+       'owner_person_id',prior.person_id::text) THEN RETURN false;END IF;
+ IF prior.revision<>1 OR NOT prior.accepted OR prior.withdrawn
   OR prior.person_id::text IS DISTINCT FROM expected->>'owner_person_id'
   OR prior.command_sha256 IS DISTINCT FROM d->>'predecessor_command_sha256'
   OR prior.ingestion_id::text IS DISTINCT FROM d->>'original_ingestion_id' THEN RETURN false; END IF;
