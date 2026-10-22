@@ -26,6 +26,8 @@ from .story_contracts import UpsertVariant
 from .source_import import _text,_uuid
 from .story_editorial import ROLES,EDITORIAL_REVISIONS,resolved_story_edit_command,resolved_story_access_command
 from .kaggle_domain_bindings import DOMAIN_REVISIONS,resolved_current_story_edit_command,resolved_current_story_access_command
+from .source_activation import ACTIVATION_REVISIONS
+from .kaggle_native_source_bindings import new_native_command
 
 
 def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
@@ -261,12 +263,14 @@ class KaggleStoryEditorial:
                                 if scope['pending'] or scope['unknown'] or scope['accepted_sequence']!=scope['sequence'] or sequence!=scope['accepted_sequence']:
                                     raise failure('prior_write_pending')
                                 revisions=self._revisions(access['binding'])
-                                builder=(resolved_current_story_edit_command if operation is not None else resolved_current_story_access_command) if revisions==DOMAIN_REVISIONS else (
+                                builder=(resolved_current_story_edit_command if operation is not None else resolved_current_story_access_command) if revisions in (DOMAIN_REVISIONS,ACTIVATION_REVISIONS) else (
                                     resolved_story_edit_command if operation is not None else resolved_story_access_command)
                                 c=builder(sequence=sequence+1,operation_key=key,request_id='editorial-'+str(uuid4()),person_id=actor,
                                     logical_time=datetime.now(timezone.utc).isoformat(),source_id=r['source']['source_id'],story_id=story_id,
                                     expected_revision=expected_revision,source_revision=r['source']['content_revision'],eligibility_revision=r['source']['eligibility_revision'],
                                     **(dict(operation=operation,reason=reason,embedding=vector,input_tokens=tokens) if operation is not None else dict(grantee_user_id=grantee_user_id,capability=capability)))
+                                # Only this newly resolved intent is adapted; stored entries keep their original bytes.
+                                if revisions==ACTIVATION_REVISIONS:c=new_native_command(c)
                                 frozen,data,handler=self.spool._validate(c,access['binding'].database_generation)
                                 await self.spool.authorize_command(access['context'],frozen)
                                 entry=await self.spool._write(self.spool._stage,frozen,data,handler,access['binding'].database_generation)
@@ -287,8 +291,9 @@ class KaggleStoryEditorial:
             if (row['accepted_generation']!=binding.connection_generation
                     or value['database_generation']!=binding.database_generation):raise failure('target_runtime_changed')
             observed=tuple(value[k] for k in ('schema_revision','function_revision','executor_revision'))
-        if observed not in (EDITORIAL_REVISIONS.wire(),DOMAIN_REVISIONS.wire()):raise failure('unsupported_editorial_revision')
-        return DOMAIN_REVISIONS if observed==DOMAIN_REVISIONS.wire() else EDITORIAL_REVISIONS
+        for revisions in (EDITORIAL_REVISIONS,DOMAIN_REVISIONS,ACTIVATION_REVISIONS):
+            if observed==revisions.wire():return revisions
+        raise failure('unsupported_editorial_revision')
 
     async def aclose(self):
         for job in tuple(self._documents):self._release_document(job)

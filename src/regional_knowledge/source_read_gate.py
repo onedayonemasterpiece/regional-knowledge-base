@@ -120,7 +120,18 @@ class SourceReadGate:
                 if handler==expected:return True
         return self.catalog_supported()
 
+    def _native_activation_supported(self):
+        from .source_activation import ACTIVATION_REVISIONS,ACTIVATE_ROUTE
+        from .kaggle_native_source_bindings import native_source_handler
+        for handler in self.spool.registry.handlers.values():
+            if handler.route==ACTIVATE_ROUTE and handler.revisions==ACTIVATION_REVISIONS:
+                expected=native_source_handler(ACTIVATE_ROUTE,
+                    check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
+                if handler==expected:return True
+        return False
+
     def catalog_supported(self):
+        if self._native_activation_supported():return True
         from .source_import_v4 import SOURCE_IMPORT_V4,source_import_v4_handler
         from .story_editorial import EDITORIAL_REVISIONS
         from .kaggle_domain_bindings import DOMAIN_REVISIONS,current_handler
@@ -138,6 +149,8 @@ class SourceReadGate:
         if not self.catalog_supported():return False
         from .story_editorial import EDITORIAL_REVISIONS,editorial_handler
         from .kaggle_domain_bindings import DOMAIN_REVISIONS,current_handler
+        from .source_activation import ACTIVATION_REVISIONS
+        from .kaggle_native_source_bindings import native_source_handler
         found={}
         for handler in self.spool.registry.handlers.values():
             if handler.route not in ('story.edit.v1','story.access.v1'):continue
@@ -145,11 +158,15 @@ class SourceReadGate:
                 expected=editorial_handler(route=handler.route,check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
             elif handler.revisions==DOMAIN_REVISIONS:
                 expected=current_handler(handler.route,check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
+            elif handler.revisions==ACTIVATION_REVISIONS:
+                expected=native_source_handler(handler.route,check_sha256=handler.check.definition_sha256,apply_sha256=handler.apply.definition_sha256)
             else:continue
             if handler==expected:found[handler.route]=handler.revisions
-        return len(found)==2 and len(set(found.values()))==1
+        return (len(found)==2 and len(set(found.values()))==1
+            and (ACTIVATION_REVISIONS not in found.values() or self._native_activation_supported()))
 
     def graph_supported(self):
+        if self._native_activation_supported():return True
         from .kaggle_domain_bindings import DOMAIN_REVISIONS
         from .source_import_v4 import IMPORT_V4_DEPENDENCY
         from .source_import import IMPORT_PRECONDITIONS

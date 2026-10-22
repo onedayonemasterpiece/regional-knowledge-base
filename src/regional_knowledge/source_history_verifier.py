@@ -160,6 +160,10 @@ class NativeSourceHistoryVerifier:
         try:command,_,handler=self.spool._validate(command,'history-classification')
         except (ValueError,TypeError):raise SpoolConflict('unclassified accepted source dependency') from None
         dep=handler.dependency
+        if (dep is None and command.route=='source.native.upgrade.v1'
+                and handler.transition is not None):
+            # _validate above checked the exact pinned schema transition and actor.
+            return command,handler,reference
         if dep is None or (handler.transition is not None and command.route!='geo.dependencies.upgrade.v2'):
             raise SpoolConflict('unclassified accepted source dependency')
         if dep.scope_class=='public_source':
@@ -344,7 +348,7 @@ class NativeSourceHistoryVerifier:
                                             raise SpoolConflict('incremental remote outcome differs')
                                         durable=True
                                 if not durable:pending.append((c.encode(),h.fingerprint,m))
-                                if h.dependency.scope_class!='public_source':continue
+                                if h.dependency is None or h.dependency.scope_class!='public_source':continue
                                 source=c.ids['source_id'];previous=by_source.get(source)
                                 by_source[source]=SourceChange(source,max(c.sequence,previous.sequence if previous else 0),
                                     _hash(c.encode()) if previous is None or c.sequence>=previous.sequence else previous.command_sha256,
@@ -629,7 +633,7 @@ class NativeSourceHistoryVerifier:
                                     # from exact remote outcome durability below.
                                     if command.sequence in successful_imports:
                                         imported.append(command.ids['source_id'])
-                                if handler.dependency.scope_class!='public_source':continue
+                                if handler.dependency is None or handler.dependency.scope_class!='public_source':continue
                                 source=command.ids['source_id']; prior=changes.get(source)
                                 changes[source]=SourceChange(source,command.sequence,_hash(command.encode()),
                                     bool(handler.dependency.restriction or prior and prior.restriction),

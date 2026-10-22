@@ -230,6 +230,9 @@ class StageIllustrationInput(BaseModel):
 
 
 class StagePageInput(BaseModel):
+    # Echo the trusted image issuance returned by book_pages. This binds the
+    # selected pixels, not a claim that the supplied transcription is native.
+    source_image_receipt_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     # Same-pass semantic episode review; true with no candidates is an explicit
     # reviewed-empty page, not a claim that all possible stories were found.
     story_candidates_reviewed: bool = False
@@ -511,6 +514,26 @@ class ChatFile(BaseModel):
     file_id: str
     mime_type: str | None = None
     file_name: str | None = None
+
+
+class TelegramOriginalInput(BaseModel):
+    """Exact registered document metadata; never credentials or a download URL."""
+    model_config = {'extra': 'forbid', 'strict': True}
+    chat_id: int
+    topic_id: int
+    message_id: int
+    document_id: int
+    sha256: str
+    size: int
+
+    def locator(self):
+        from .telegram_original import TelegramOriginalLocator
+        return TelegramOriginalLocator.from_wire(self.model_dump())
+
+    @model_validator(mode='after')
+    def validate_locator(self):
+        self.locator()
+        return self
 
 
 class Principal(BaseModel):

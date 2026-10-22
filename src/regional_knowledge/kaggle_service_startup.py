@@ -76,7 +76,9 @@ class TargetServiceConfig:
     source_snapshot: object = None
     geo_bootstrap: object = None
     geo_dependency_upgrade: object = None
+    native_source_upgrade: object = None
     dataset_seed: object = None
+    telegram_runtime_source: object = None
 
     def __post_init__(self):
         if (not isinstance(self.oauth_provider,RegionalOAuthProvider)
@@ -109,6 +111,11 @@ class TargetServiceConfig:
                 or any(type(key) is not str or not 1<=len(key.encode())<=256 for key in self.geo_manifest_operation_keys)
                 or len(self.geo_manifest_operation_keys)==1):
             raise ValueError('bounded exact GEO manifest operation keys required')
+        if self.native_source_upgrade is not None:
+            from .kaggle_native_source_upgrade import NativeSourceUpgradePins,native_source_upgrade_handler
+            if (type(self.native_source_upgrade) is not NativeSourceUpgradePins or self.geo_dependency_upgrade is None
+                    or native_source_upgrade_handler(self.native_source_upgrade) not in self.spool.registry.handlers.values()):
+                raise ValueError('exact ordered native source upgrade and retained registry required')
         if self.geo_dependency_upgrade is not None:
             from .kaggle_geo_upgrade import GeoUpgradePins
             if type(self.geo_dependency_upgrade) is not GeoUpgradePins or self.geo_bootstrap is None:
@@ -257,6 +264,13 @@ class TargetServiceStartup:
             self.source_dispatch=bridge
         else:
             self.source_dispatch=AcceptedSourceDispatch(config.spool,binding_current=self.command_binding_current)
+        if config.telegram_runtime_source is not None:
+            from .telegram_runtime_channel import Rkb1ChannelSource
+            owner=config.telegram_runtime_source
+            if type(owner) is not Rkb1ChannelSource or owner.queue is not config.queue:
+                raise TypeError('same owned RKB1 source required')
+            owner.bind(self)
+            config.queue._telegram_runtime_source=owner
         self.importer = None
         if config.import_originals is not None:
             from .kaggle_importer import KaggleSourceImporter

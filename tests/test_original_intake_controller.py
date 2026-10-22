@@ -25,7 +25,8 @@ from test_recovery_s3 import BotoFailure
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('continued',[False,True])
-async def test_existing_queue_receipts_url_privacy_and_native_original_readback(owner,native,continued):
+@pytest.mark.parametrize('telegram',[False,True])
+async def test_existing_queue_receipts_url_privacy_and_native_original_readback(owner,native,continued,telegram):
     e,n=owner,native
     if continued:
         import base64
@@ -103,7 +104,14 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
                 resource_kind='document',resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
     task=asyncio.create_task(peer())
     try:
-        file=ChatFile(download_url='https://attachment.invalid/private',file_id='file',mime_type='application/pdf')
+        if telegram:
+            from test_telegram_original import Client, locator
+            from regional_knowledge.telegram_original import NativeTelegramOriginalDownloader
+            client=Client(PDF);file=locator(PDF)
+            n.handler.telegram_downloader=NativeTelegramOriginalDownloader(client=client,
+                chat_id=file.chat_id,topic_id=file.topic_id,current=lambda:True)
+        else:
+            file=ChatFile(download_url='https://attachment.invalid/private',file_id='file',mime_type='application/pdf')
         status=await controller.begin(e.auth.p.admin,operation_id='original-fixture',source_id=SOURCE,ingestion_id=INGEST,
             file=file,max_bytes=len(PDF))
         assert not status.verified and phases==['original_acquire'] and not uploads
@@ -116,10 +124,30 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
         assert len(native_reads)==1 and not dev_body_reads
         assert (await controller.begin(e.auth.p.admin,operation_id='original-fixture',source_id=SOURCE,ingestion_id=INGEST,
             file=file,max_bytes=len(PDF))).receipt==status.receipt
-        assert n.download.calls==1
+        assert n.download.calls==(0 if telegram else 1)
+        if telegram:
+            assert client.fetches==1 and client.iterator.closed
+            from dataclasses import replace
+            with pytest.raises(OriginalIntakeError,match='operation_changed'):
+                await controller.begin(e.auth.p.admin,operation_id='original-fixture',source_id=SOURCE,ingestion_id=INGEST,
+                    file=replace(file,message_id=file.message_id+1),max_bytes=len(PDF))
+            assert client.fetches==1
         batch=await controller.pages(e.auth.p.admin,INGEST)
         assert batch.pages[0].data==IMAGE and batch.pages[0].native_text=='actual fixture span'
         assert batch.next_cursor.startswith('pc1.') if continued else batch.next_cursor is None
+        # A first image is usable without fetching the rest of native text.
+        # The metadata is durable across a controller restart and cannot mint
+        # evidence for another page or a caller-supplied image hash.
+        image_ref=batch.pages[0].native_text_info['source_image_receipt_sha256']
+        before_phases=tuple(phases)
+        restarted=OriginalIntakeController(queue=e.q,spool=spool,participants=e.auth.p.registry,
+            object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),binding_current=current,
+            current_binding=lambda:current_binding(e.q),allowed_origins=frozenset({'https://archive.invalid'}))
+        issued=await restarted.selected_image_receipts(e.auth.p.admin,INGEST,((0,image_ref),))
+        assert issued[0]['image_sha256']==digest(IMAGE)
+        assert 'native_text' not in issued[0] and tuple(phases)==before_phases
+        with pytest.raises(OriginalIntakeError,match='receipt_changed'):
+            await restarted.selected_image_receipts(e.auth.p.admin,INGEST,((0,'f'*64),))
         proof=await controller.native_pages(e.auth.p.admin,INGEST)
         assert proof.original_receipt_sha256==status.receipt.receipt_sha256
         assert proof.pages[0]['original_sha256']==digest(PDF)
@@ -155,6 +183,7 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
                 raise
         n.handler.parser=actual_djvu_inspection
         unsupported=str(uuid5(UUID(INGEST),'djvu-intake'))
+        file=ChatFile(download_url='https://attachment.invalid/private',file_id='djvu-fixture',mime_type='image/vnd.djvu')
         rejected=await controller.begin(e.auth.p.admin,operation_id='unsupported-djvu',source_id=str(uuid5(UUID(SOURCE),'djvu')),
             ingestion_id=unsupported,file=file,max_bytes=len(PDF))
         assert rejected.state=='rejected' and rejected.reason=='original_djvu_invalid'

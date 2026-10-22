@@ -135,3 +135,77 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
     store.promote(checkpoint,expected,manifest_ref=ref)  # Lost promotion ACK.
     assert not store.remote_durable(key,b'after checkpoint')
     assert not store.remote_durable(key,b'captured')
+
+
+@pytest.mark.asyncio
+async def test_control_inventory_revision_is_exact_and_excludes_other_namespaces(tmp_path):
+    p=prepared(tmp_path);store=p.store
+    assert store.pending_control() is None
+    assert await store.put_if_absent(p.prefix+'outcomes/one',b'pending outcome')
+    assert store.pending_outcomes() and store.pending_control() is None
+    key=p.prefix+'control/expert-requests/one/result'
+    assert await store.compare_and_swap(key,b'exact bytes',expected_token=None,writer_generation='writer')
+    first=store.pending_control();obj=await store.read(key,max_bytes=100)
+    assert first==store.pending_control()
+    assert not await store.compare_and_swap(key,b'no CAS',expected_token=None,writer_generation='writer')
+    assert first==store.pending_control()
+    assert await store.compare_and_swap(key,obj.data,expected_token=obj.token,writer_generation='writer')
+    assert first!=store.pending_control()  # Late same-byte write has a new CAS identity.
+
+
+@pytest.mark.asyncio
+async def test_export_is_canonical_and_bounded_across_pages(tmp_path,monkeypatch):
+    import regional_knowledge.dataset_recovery_store as module
+    from regional_knowledge.recovery_journal import JournalLimit
+    p=prepared(tmp_path);store=p.store
+    monkeypatch.setattr(module,'CONTROL_PAGE_SIZE',2)
+    for n in range(5):
+        assert await store.put_if_absent(p.prefix+'control/expert-requests/'+str(n)+'/result',b'bytes')
+    assert await store.put_if_absent(p.prefix+'snapshots/private',b'not exported')
+    raw=store.export_control();value=json.loads(raw)
+    assert raw==encode(value)
+    assert not any('/snapshots/' in item['key'] for item in value['objects'])
+    assert len([item for item in value['objects'] if '/control/' in item['key']])==5
+    assert store.pending_control() is not None
+    monkeypatch.setattr(module,'MAX_CONTROL_OBJECTS',4)
+    with pytest.raises(JournalLimit,match='inventory_budget'):store.export_control()
+    with pytest.raises(JournalLimit,match='inventory_budget'):store.pending_control()
+    monkeypatch.setattr(module,'MAX_CONTROL_OBJECTS',10000)
+    monkeypatch.setattr(module,'MAX_CONTROL_BYTES',len(raw)-1)
+    with pytest.raises(JournalLimit,match='control_budget'):store.export_control()
+
+
+@pytest.mark.asyncio
+async def test_promotion_fences_writer_retirement_and_competing_pointer_after_readback(tmp_path):
+    from dataclasses import replace
+    from regional_knowledge.recovery_journal import JournalConflict
+    p=prepared(tmp_path);store=p.store
+    key=p.prefix+'control/expert-requests/one/result'
+    assert await store.compare_and_swap(key,b'pending',expected_token=None,writer_generation='writer')
+    journal=store.export_control()
+    checkpoint=replace(p.checkpoint,dataset_version=2,
+        journal=DatasetFile('journal-control.json',len(journal),sha(journal)))
+    original=p.publisher;state={'current':True,'compete':False}
+    class Publisher:
+        ref=original.ref
+        def read_control(self,file,*,version):
+            assert version==2
+            if file.name=='journal-control.json':return journal
+            result=original.read_control(file,version=1)
+            if file.name=='source-control.json':
+                state['current']=False
+                if state['compete']:
+                    with p.q.connect() as db:
+                        db.execute('UPDATE rkb_dataset_recovery_store SET latest_json=? WHERE storage=?',
+                            (json.dumps(replace(checkpoint,dataset_version=3).wire()),store.storage_identity))
+            return result
+    store.publisher=Publisher()
+    native=dict(dataset_ref=Publisher.ref,dataset_version=2,base_sequence=7,
+        archive_sha256=checkpoint.archive.sha256,archive_size=checkpoint.archive.size)
+    with pytest.raises(JournalConflict,match='writer_changed'):
+        store.promote(checkpoint,native,manifest_ref=p.ref,current=lambda:state['current'])
+    assert store.latest_checkpoint.dataset_version==1 and not store.remote_durable(key,b'pending')
+    state.update(current=True,compete=True)
+    with pytest.raises(JournalConflict,match='promotion_predecessor'):
+        store.promote(checkpoint,native,manifest_ref=p.ref,current=lambda:state['current'])
+    assert store.latest_checkpoint.dataset_version==3 and not store.remote_durable(key,b'pending')

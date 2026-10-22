@@ -40,6 +40,7 @@ class TargetLaunchSpec:
     original_intake: object = None
     recovery: object = None
     dataset_checkpoint: object = None
+    telegram_runtime: bool = False
 
     def __post_init__(self):
         if type(self.database) is not OwnedDatabase:
@@ -115,6 +116,13 @@ class TargetLaunchSpec:
                 raise ValueError('original parser must be in dependency attestation')
             if self.stage0 is None or any(self.stage0.packages.get(k)!=v for k,v in self.original_intake.parser_packages):
                 raise ValueError('original parser requires exact Stage0 wheel closure')
+        if type(self.telegram_runtime) is not bool:
+            raise TypeError('explicit Telegram runtime opt-in required')
+        if self.telegram_runtime:
+            if (self.original_intake is None or self.stage0 is None
+                    or 'Telethon' not in self.dependency_packages
+                    or not self.stage0.packages.get('Telethon')):
+                raise ValueError('Telegram requires pinned Stage0 dependency and original intake')
         if self.native_bundle is not None:
             from .kaggle_native_bundle import NativeBundleSpec
             if type(self.native_bundle) is not NativeBundleSpec:
@@ -165,6 +173,7 @@ class TargetLaunchSpec:
             stage0=self.stage0.wire() if self.stage0 is not None else None,
             native_bundle=self.native_bundle.wire() if self.native_bundle is not None else None,
             bootstrap_only=self.bootstrap_only,bootstrap_seconds=self.bootstrap_seconds,
+            telegram_runtime=self.telegram_runtime,
             original_intake=self.original_intake.wire() if self.original_intake is not None else None,
             **(dict(recovery=self.recovery.wire()) if self.recovery is not None else {}),
             **(dict(dataset_checkpoint=self.dataset_checkpoint.wire()) if self.dataset_checkpoint is not None else {}))
@@ -173,7 +182,8 @@ class TargetLaunchSpec:
 class TargetRuntime:
     """One owned pool/PG/model preparation across WSS reconnects, on one loop."""
     def __init__(self, config, *, executed_source, pool_factory=None, owner_factory=OwnedPostgres,
-                 probe=None, prepare=prepare_resident_runtime, restored_database=None, recovery_worker=None):
+                 probe=None, prepare=prepare_resident_runtime, restored_database=None, recovery_worker=None,
+                 telegram_original_downloader=None, telegram_illustrations=None):
         from psycopg_pool import AsyncConnectionPool
         self.config = config
         target = config['target_runtime']
@@ -188,6 +198,19 @@ class TargetRuntime:
         self.writer_pool = None
         self.prepared = None
         self.source_history_observer=None
+        from .telegram_original import NativeTelegramOriginalDownloader
+        if telegram_original_downloader is not None and type(telegram_original_downloader) is not NativeTelegramOriginalDownloader:
+            raise TypeError('existing owner Telegram downloader required')
+        self.telegram_original_downloader=telegram_original_downloader
+        # Root injects the existing archive owner's SAME leased Telethon
+        # client; no second credential/client/pool/session is opened here.
+        if telegram_illustrations is not None:
+            from .telegram_illustrations import NativeTelegramIllustrations
+            if (type(telegram_illustrations) is not NativeTelegramIllustrations
+                    or (telegram_original_downloader is not None and
+                        telegram_illustrations.client is not telegram_original_downloader._client)):
+                raise TypeError('same retained Telegram archive client required')
+        self.telegram_illustrations=telegram_illustrations
         self.original_intake_handler=None
         self.read_handler_slot=None  # Same model/pool retained across compatible patch.
         self.identity = None
@@ -247,6 +270,11 @@ class TargetRuntime:
             current=lambda frame:worker.factory._current((
                 frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])))
 
+    def _native_source_materializer(self,encoder):
+        if self.database.schema_revision!='rkb-v4-sql001-014-v1':return None
+        from .kaggle_source_materializer import resident_source_materializer
+        return resident_source_materializer(encoder,current=lambda:not self.closed)
+
     async def configure_recovery(self,encoder,*,run_id,launch_nonce,runtime_incarnation,
                                  native_bundle,tools,native_uid,native_gid,current,
                                  workspace_private_current,workspace,upload=None,download=None,
@@ -281,9 +309,10 @@ class TargetRuntime:
             native_gid=native_gid,current=current,workspace_private_current=workspace_private_current,
             upload=upload,download=download,workspace=workspace,limits=limits,
             ticket_channel=ticket_channel,transfer=transfer,acquire=acquire,model_pins=model_pins,
-            **({'sql_root':self.target['sql_root']} if any(e.get('route')=='geo.dependencies.upgrade.v2'
+            **({'sql_root':self.target['sql_root']} if any(e.get('route') in ('geo.dependencies.upgrade.v2','source.native.upgrade.v1')
                 for e in self.target['command_handlers']) else {}),
-            **({'dataset_checkpoint':self.target['dataset_checkpoint']} if self.target.get('dataset_checkpoint') is not None else {}))
+            **({'dataset_checkpoint':self.target['dataset_checkpoint']} if self.target.get('dataset_checkpoint') is not None else {}),
+            source_materializer=self._native_source_materializer(encoder))
         self.recovery_worker=worker
         self._bind_read_handler_maintenance()
         self._recovery_available.set()
@@ -367,9 +396,23 @@ class TargetRuntime:
             raise BootstrapUnavailable('target_database_binding_mismatch')
         # Same per-invocation context is used by telemetry's native adapter.
         handler = prepared.query_handler
-        if self.database.schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+        if self.database.schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1','rkb-v4-sql001-014-v1'):
             from dataclasses import replace
             handler=replace(handler,source_provenance=True)
+        # Use the SINGLE prepared resident PG pool/model worker. Native media
+        # is opt-in only when the actual SQL015/016 role and same-client archive
+        # owner are installed; unrelated schema14 health stays unchanged.
+        if (self.telegram_illustrations is not None
+                and self.database.schema_revision in (
+                    'rkb-v4-sql001-015-v1','rkb-v4-sql001-016-v1')):
+            from dataclasses import replace
+            def current_media(b):
+                return (not self.closed and self.identity ==
+                        (b.run_id,self.config['launch_nonce'],b.runtime_incarnation)
+                        and b.database_generation == self.database.database_generation
+                        and self.telegram_illustrations.current() is True)
+            handler=replace(handler,media_archive=self.telegram_illustrations,
+                            media_binding_current=current_media)
         from .kaggle_warm_read import ReadHandlerCompatibility,ReadHandlerSlot
         self.read_handler_slot=ReadHandlerSlot(handler,
             loaded_sha256=readiness.hashes['code'],
@@ -388,7 +431,7 @@ class TargetRuntime:
         if self.target.get('command_handlers'):
             from .kaggle_source_commands import fixed_registry,WorkerSourceExecutor
             transition_prepare=None
-            if any(e.get('route')=='geo.dependencies.upgrade.v2' for e in self.target['command_handlers']):
+            if any(e.get('route') in ('geo.dependencies.upgrade.v2','source.native.upgrade.v1') for e in self.target['command_handlers']):
                 transition_prepare=getattr(getattr(self.recovery_worker,'factory',None),'prepare_transition',None)
                 if not callable(transition_prepare):
                     raise BootstrapUnavailable('target_ordered_migration_owner_required')
@@ -398,7 +441,7 @@ class TargetRuntime:
             source_handler=WorkerSourceExecutor(acquire=self.writer_pool.connection,
                 registry=fixed_registry(self.database,self.target['command_handlers']),database=self.database,
                 run_id=run_id,launch_nonce=launch_nonce,runtime_incarnation=runtime_incarnation,
-                prepare_transition=transition_prepare)
+                prepare_transition=transition_prepare,materializer=self._native_source_materializer(encoder))
             from contextlib import asynccontextmanager
             from .kaggle_source_history_native import NativeSourceHistoryObserver
             @asynccontextmanager
@@ -425,13 +468,19 @@ class TargetRuntime:
             workspace=tempfile.mkdtemp(prefix='rkb-original-',dir=ensure_private_runtime_root())
             try:
                 original_handler=NativeOriginalIntake(config=OriginalIntakeConfig.from_wire(self.target['original_intake']),
-                    database=self.database,identity=identity,workspace=workspace,current=lambda binding:
+                    database=self.database,identity=identity,workspace=workspace,
+                    telegram_downloader=self.telegram_original_downloader,current=lambda binding:
                         not self.closed and binding[:2]==(run_id,runtime_incarnation))
             except BaseException:
                 import shutil
                 await asyncio.to_thread(shutil.rmtree,workspace)
                 raise
             self.original_intake_handler=original_handler
+            if self.target.get('telegram_runtime'):
+                from .telegram_runtime_channel import NativeRkb1Channel
+                original_handler.telegram_channel=NativeRkb1Channel(intake=original_handler,
+                    dependency_current=lambda:self.prepared is not None and not self.closed)
+
         from .query_telemetry import drain_native_read_events
         self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler,original_handler,
             read_event_drain=lambda frame:drain_native_read_events(read_events,frame))
