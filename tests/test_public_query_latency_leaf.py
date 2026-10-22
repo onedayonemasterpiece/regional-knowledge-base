@@ -304,6 +304,15 @@ class CensorAndProfileTests(unittest.IsolatedAsyncioTestCase):
         changed_revision=dict(receipt,corpus=dict(receipt["corpus"],visibility_epoch=99))
         with self.assertRaisesRegex(ValueError,"before_after_corpus_or_version_changed"):
             leaf.assert_comparable_receipts(receipt,changed_revision)
+        # The intended source optimization changes code SHA and may use a
+        # different operator handoff. It MUST preserve the same data corpus.
+        reviewed_fix=dict(receipt,corpus=dict(receipt["corpus"],
+            release_sha="d"*40,owner_handoff_ref="synthetic-second-owner-slot"))
+        comparison=leaf.assert_comparable_receipts(receipt,reviewed_fix)
+        self.assertTrue(comparison["release_changed"])
+        self.assertEqual(comparison["before_release_sha"],"c"*40)
+        self.assertEqual(comparison["after_release_sha"],"d"*40)
+        self.assertTrue(comparison["same_corpus"])
 
     async def test_changed_profile_mid_run_rejected_without_faking_baseline(self):
         observations=0
