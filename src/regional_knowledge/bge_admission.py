@@ -47,6 +47,7 @@ class ReadTicket:
     connection_generation: int
     turn_generation: int
     result: asyncio.Future = field(repr=False, compare=False)
+    run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,23 @@ class _Read:
     on_dispatch: object = None
 
 
+@dataclass
+class _ReaderLane:
+    """One RAM read-only slot per authenticated non-writer run.
+
+    The persistent writer/command owner remains the existing shared singleton.
+    On controller restart this slot is UNKNOWN until the same worker supplies
+    its actual current state or a fresh resource probe.
+    """
+    attachment: tuple | None = None
+    state: str = 'unknown'
+    work: ChannelWork | None = None
+    sent: bool = False
+    last_release: ResourceClaim | None = None
+    probe: tuple | None = None
+    slot_version: object = field(default_factory=object)
+
+
 def _identity(value):
     if not isinstance(value,str) or not 1<=len(value)<=256 or len(value.encode())>256:
         raise ValueError('bounded internal identity required')
@@ -125,6 +143,8 @@ class SharedReadAdmission:
         self._sent=False
         self._slot_version=object()
         self._probe=None
+        self._reader_lanes={}
+        self._reader_turn=0
         self._person_turn={}
         self._dialog_turn={}
         self._turn=0
@@ -177,11 +197,11 @@ class SharedReadAdmission:
         self._cancel_ticket(ticket)
 
     def _cancel_ticket(self, ticket):
-        key=(ticket.connection_generation,ticket.request_id)
+        key=(ticket.run_id,ticket.connection_generation,ticket.request_id)
         read=self._reads.get(key)
         if read is not None and read.ticket is ticket:self._cancel(key)
 
-    async def begin_read(self, authority, query, *, dialog_ref, deadline, on_dispatch=None):
+    async def begin_read(self, authority, query, *, dialog_ref, deadline, on_dispatch=None, run_id=None):
         self._active();_identity(dialog_ref)
         now=self.clock()
         if (not isinstance(deadline,(float,int)) or isinstance(deadline,bool)
@@ -206,9 +226,14 @@ class SharedReadAdmission:
         self._require_acceptance(authority,query)
         self._active()
         if self.clock()>=deadline:raise AdmissionUnavailable('read deadline elapsed')
-        if self._attachment is None or query.connection_generation!=self._attachment[1]:
-            raise StaleAttachment('read requires the current reconciled channel')
-        key=(query.connection_generation,query.request_id)
+        if run_id is None:
+            run_id=self._attachment[0] if self._attachment is not None else None
+        attachment=(self._attachment if self._attachment is not None
+                    and self._attachment[0]==run_id else
+                    self._reader_lanes.get(run_id).attachment if run_id in self._reader_lanes else None)
+        if attachment is None or query.connection_generation!=attachment[1]:
+            raise StaleAttachment('read requires its own reconciled channel')
+        key=(run_id,query.connection_generation,query.request_id)
         if key in self._reads:raise ValueError('duplicate active read identity')
         if len(self._reads)>=self.max_reads:raise AdmissionLimit('read_capacity')
         person_reads=[r for r in self._reads.values() if r.authority.person_id==authority.person_id]
@@ -216,7 +241,7 @@ class SharedReadAdmission:
         if sum(r.dialog==dialog_ref for r in person_reads)>=self.max_dialog_reads:
             raise AdmissionLimit('dialog_read_capacity')
         future=asyncio.get_running_loop().create_future()
-        ticket=ReadTicket(query.request_id,query.connection_generation,query.turn_generation,future)
+        ticket=ReadTicket(query.request_id,query.connection_generation,query.turn_generation,future,run_id)
         timer=asyncio.get_running_loop().call_later(max(0,deadline-self.clock()),self._cancel,key)
         self._reads[key]=_Read(ticket,authority,query,dialog_ref,float(deadline),timer,
                               on_dispatch=on_dispatch)
@@ -281,6 +306,18 @@ class SharedReadAdmission:
 
     def _observe_attachment(self, run, generation):
         attachment=(run['id'],generation,run['runtime_incarnation'])
+        if not run['writer_slot']:
+            lane=self._reader_lanes.setdefault(run['id'],_ReaderLane())
+            if lane.attachment is not None and generation<lane.attachment[1]:
+                raise StaleAttachment('reader attachment observation regressed')
+            if lane.attachment!=attachment:
+                lane.slot_version=object();lane.probe=None
+                for key in tuple(self._reads):
+                    if key[0]==run['id']:self._cancel(key)
+                if lane.work is not None and not lane.sent:
+                    lane.work=None;lane.state='unknown'
+                lane.attachment=attachment
+            return
         if self._attachment is not None and self._attachment[0]==run['id'] and generation<self._attachment[1]:
             raise StaleAttachment('attachment observation regressed')
         if self._attachment!=attachment:
@@ -298,9 +335,13 @@ class SharedReadAdmission:
         run,owner,docs,resumed=await asyncio.to_thread(self.queue._admission_snapshot,run_id,token,generation,
                                                     document_actors=tuple(self._documents),command_actors=tuple(self._commands),
                                                     editorial_documents=tuple(self._editorial_documents))
-        if owner['run_id'] is not None and (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation']):
-            raise StaleAttachment('prior compute resource remains unknown')
-        if (observe and self._work is not None and self._sent
+        if run['writer_slot']:
+            if owner['run_id'] is not None and (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation']):
+                raise StaleAttachment('prior compute resource remains unknown')
+        elif (run['status']!='ready' or run['provider_version'] is None
+                or not run['runtime_verified']):
+            raise StaleAttachment('reader runtime not verified')
+        if (run['writer_slot'] and observe and self._work is not None and self._sent
                 and self._work.resource.run_id!=run_id):
             prior=self._work.resource
             # The standalone provider reconciler may have retired the old
