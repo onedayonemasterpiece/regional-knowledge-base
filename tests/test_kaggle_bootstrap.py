@@ -216,6 +216,31 @@ async def test_prepare_uses_existing_owned_lease_and_hashes_actual_observations(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('config_bytes',[65537,boot.MAX_LAUNCH_CONFIG_BYTES,boot.MAX_LAUNCH_CONFIG_BYTES+1])
+async def test_resident_observer_uses_the_shared_generated_launch_bound(artifacts,config_bytes):
+    from regional_knowledge.kaggle_target_launch import MAX_LAUNCH_CONFIG_BYTES
+    assert MAX_LAUNCH_CONFIG_BYTES==boot.MAX_LAUNCH_CONFIG_BYTES==96*1024
+    encoder,_=resident(artifacts)
+    config={'padding':'x'*(config_bytes-len(b'{"padding":""}'))}
+    encoded=json.dumps(config,sort_keys=True,separators=(',',':')).encode()
+    assert len(encoded)==config_bytes
+    probes=[]
+    async def probe(*,acquire):
+        probes.append(True)
+        return b'actual fixture catalog',observation()
+    kwargs=dict(acquire=lambda:None,probe_database=probe,launch_config=config,
+        executed_source=artifacts.source,source_binding_verified=True,dependency_packages=('pytest',))
+    if config_bytes>MAX_LAUNCH_CONFIG_BYTES:
+        with pytest.raises(boot.BootstrapUnavailable,match='launch_config_bound'):
+            await boot.prepare_resident_runtime(encoder,**kwargs)
+        assert not probes
+    else:
+        prepared=await boot.prepare_resident_runtime(encoder,**kwargs)
+        assert prepared.readiness.hashes['launch_config']==hashlib.sha256(encoded).hexdigest()
+        assert probes==[True]
+
+
+@pytest.mark.asyncio
 async def test_missing_loaded_code_binding_and_unready_probe_never_make_ready(artifacts, monkeypatch):
     encoder, _ = resident(artifacts)
     async def probe(*, acquire):
