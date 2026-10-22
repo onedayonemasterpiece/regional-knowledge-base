@@ -89,6 +89,41 @@ def test_expired_real_run_cannot_become_wss_query_after_fastpath(shared_channel_
                for caller,_,_ in observations)
 
 
+def test_expired_run_between_reservation_and_sender_fresh_status_cannot_hit_wire(
+    shared_channel_run, auth
+):
+    """Actual work is reserved; WSS sender must revalidate before QUERY send."""
+    queue, run_id, token, nonce = shared_channel_run
+    reached, release = threading.Event(), threading.Event()
+    observations=[]
+    route=candidate_route(fastpath=True, observations=observations,
+                          sender_entered=reached, sender_release=release)
+    try:
+        with TestClient(Starlette(routes=[route(queue)])) as app:
+            with app.websocket_connect("/bge-worker/channel",
+                    headers={"Authorization":"Bearer "+token}) as socket:
+                generation=_attach(socket,run_id,token,nonce)
+                _send(socket,generation,"RESOURCE_STATE",state="idle")
+                _ready(socket,generation)
+                ticket=_begin(app,queue,generation,auth,name="lease-expires-before-send")
+                assert reached.wait(3), "real WSS sender never reached fresh-status fence"
+                assert any(caller=="sender" and promoted
+                           for caller,promoted,_ in observations)
+                with queue.connect(write=False) as db:
+                    started=db.execute(
+                        "SELECT started FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+                queue.clock=lambda:started+MAX_LIFETIME+1
+                release.set()
+                # Source code has already made a compute reservation. If the
+                # sender freshness check vanished, QUERY could escape here.
+                with pytest.raises(WebSocketDisconnect) as disconnected:
+                    socket.receive_json()
+                assert disconnected.value.code==4403
+                assert not ticket.result.done() or ticket.result.cancelled()
+    finally:
+        release.set()
+
+
 def test_revoked_actor_denied_by_real_admission_before_any_query(
     shared_channel_run, auth
 ):
