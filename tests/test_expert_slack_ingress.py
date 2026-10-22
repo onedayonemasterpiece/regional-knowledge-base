@@ -153,3 +153,84 @@ async def test_server_route_inert_until_exact_same_target_ingress_optin(service)
         stateless_http=True,json_response=True)
     assert not any(route.path==PATH for route in absent.routes)
     assert any(route.path==PATH for route in configured.routes)
+
+
+@pytest.mark.asyncio
+async def test_server_main_optional_slack_signed_ingress_stays_received_without_remote_intent(
+        service, tmp_path, monkeypatch):
+    """Real main -> build_server route; no installed Slack, PG, provider or seal."""
+    import socket
+    import time
+    import regional_knowledge.server as server
+
+    startup=service.startup
+    _,_,verified_link=_prepare(SimpleNamespace(
+        p=service.target.auth.p,spool=service.config.spool))
+    monkeypatch.setenv('RKB_MCP_PROFILE','live')
+    monkeypatch.delenv('RKB_PROJECTS_HUB_READER_CONFIG',raising=False)
+    monkeypatch.delenv('RKB_EXPERT_SLACK_INGRESS_CONFIG',raising=False)
+    servers=[]
+    monkeypatch.setattr(server.KnowledgeMCPServer,'run',
+                        lambda self,**kwargs:servers.append(self))
+
+    server.main(target_startup=startup)
+    absent=servers.pop().streamable_http_app(stateless_http=True,json_response=True)
+    assert not any(route.path==PATH for route in absent.routes)
+
+    secret=tmp_path/'fake-signing-secret'
+    secret.write_text(SECRET);secret.chmod(0o600)
+    config=tmp_path/'slack-ingress.json'
+    config.write_text(json.dumps({
+        'codec':'rkb.expert-slack-ingress.v1',
+        'app_id':'A111','team_id':'T111','bot_user_id':'UBOT',
+        'allowed_channels':['C111'],
+        'signing_secret_file':str(secret)},sort_keys=True))
+    config.chmod(0o600)
+    monkeypatch.setenv('RKB_EXPERT_SLACK_INGRESS_CONFIG',str(config))
+    # No remote journal writer is authorized by this composition slice.
+    async def forbidden_seal(*args,**kwargs):
+        pytest.fail('Slack ingress must not remotely accept a control command')
+    monkeypatch.setattr(startup.config.spool.journal,'seal',forbidden_seal)
+    server.main(target_startup=startup)
+    configured=servers.pop().streamable_http_app(stateless_http=True,json_response=True)
+    assert sum(route.path==PATH for route in configured.routes)==1
+
+    def forbid_network(*args,**kwargs):
+        pytest.fail('synthetic ASGI Slack ingress must not contact a network')
+    monkeypatch.setattr(socket.socket,'connect',forbid_network)
+    monkeypatch.setattr(socket,'create_connection',forbid_network)
+    body,_=_event()
+    raw,headers=signed(body,stamp=str(int(time.time())))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=configured),
+                                 base_url='http://test') as client:
+        for _ in range(2):
+            response=await client.post(PATH,content=raw,headers=headers)
+            assert response.status_code==503
+            assert response.json()=={'error':'remote_intent_pending'}
+            assert response.headers['Retry-After']=='1'
+            assert 'request_id' not in response.text
+
+        with service.target.auth.p.corpus.connect() as db:
+            rows=db.execute('SELECT event_id,state,remote_command_hash,link_id,dialog_seq '
+                            'FROM rkb_expert_requests').fetchall()
+            assert len(rows)==1
+            assert rows[0]['state']=='received' and rows[0]['remote_command_hash'] is None
+            assert rows[0]['link_id']==verified_link.link_id
+            assert rows[0]['dialog_seq']==1
+
+        bot=json.loads(raw);bot['event']['user']='UBOT'
+        bot_raw,bot_headers=signed(bot,stamp=str(int(time.time())))
+        ignored=await client.post(PATH,content=bot_raw,headers=bot_headers)
+        assert ignored.status_code==200 and ignored.json()=={'ok':True}
+
+        unsigned=dict(headers,**{'X-Slack-Signature':'v0='+'0'*64})
+        denied=await client.post(PATH,content=raw,headers=unsigned)
+        assert denied.status_code==403
+
+        unknown=json.loads(raw);unknown['event']['user']='UUNKNOWN'
+        unknown_raw,unknown_headers=signed(unknown,stamp=str(int(time.time())))
+        denied=await client.post(PATH,content=unknown_raw,headers=unknown_headers)
+        assert denied.status_code==403
+
+    with service.target.auth.p.corpus.connect() as db:
+        assert db.execute('SELECT count(*) FROM rkb_expert_requests').fetchone()[0]==1
