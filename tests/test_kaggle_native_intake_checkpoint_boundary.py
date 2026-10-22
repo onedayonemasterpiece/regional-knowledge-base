@@ -124,7 +124,7 @@ async def test_native_ordinal_progress_waits_for_remote_outcome_not_only_applied
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('barrier', ('unpublished_outcome', 'intake_coverage'))
+@pytest.mark.parametrize('barrier', ('unpublished_outcome', 'history_facts_pending', 'intake_coverage'))
 async def test_stage_exact_has_its_own_pending_and_coverage_allocation_guards(
     native_intake, barrier,
 ):
@@ -155,8 +155,21 @@ async def test_stage_exact_has_its_own_pending_and_coverage_allocation_guards(
         assert applied.outcome_state == 'DURABLE'
         await call(s, result, 'status')
         assert (await s.spool.scope_state())['pending'] is False
-        s.geo_state['current'] = False
-        assert not s.importer._intake_coverage_current(s.startup.binding)
+        if barrier == 'history_facts_pending':
+            from regional_knowledge.control_spool import SourceChange
+            # Synthetic native-history observation enters the actual compact
+            # recovery projection. No read_facts method or flag is replaced.
+            s.spool._replace_source_heads([SourceChange(result.document_id,
+                first.command.sequence, first.command_sha256, False, True, False)])
+            facts = await s.spool.read_facts(None)
+            assert (await s.spool.scope_state())['pending'] is False
+            assert facts.pending and not facts.unknown
+            assert facts.scope_sequence <= facts.covered_sequence
+            assert s.spool.facts_current(facts)
+            assert s.importer._intake_coverage_current(s.startup.binding)
+        else:
+            s.geo_state['current'] = False
+            assert not s.importer._intake_coverage_current(s.startup.binding)
         expected_reason = 'source_history_unavailable'
 
     row = s.importer._row(s.principal.subject, result.ingestion_id)

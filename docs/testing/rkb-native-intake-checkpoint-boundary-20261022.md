@@ -44,15 +44,18 @@ Own writable branch `chatgpt/rkb-intake-checkpoint-boundary-20261022` starts at
 the unchanged Linza leaf9699e260205e40f86c49ed426482269baa9a7bd2. It changes only
 this report and the adjacent test file. The two terminal assertions now await
 entries into an ordinary list: `all` cannot consume the original asynchronous
-generator expression. Two additional cases directly exercise actual
+generator expression. Three additional cases directly exercise actual
 `NativeSourceIntake._stage_exact` under real owner access after an actual
 ControlSpool apply: unpublished outcome sets both real `scope.pending` and
 `read_facts.pending` and prevents allocation; after publication, loss of the
 existing synthetic GEO proof makes `_intake_coverage_current` false and also
-prevents allocation. No `_drive` replacement, source guard patch or private
+prevents allocation. A separate native-history-pending case uses the real
+`ControlSpool._replace_source_heads` recovery projection: local scope is clear,
+coverage is current and facts are contiguous, but real `read_facts.pending`
+still refuses allocation. No `_drive` replacement, source guard patch or private
 storage-identity reset is used.
 
-These four new/updated cases remain **NOT RUN until the integration owner
+These five new/updated cases remain **NOT RUN until the integration owner
 provides a compatible writable candidate/test slot**. The branch's main base
 does not contain the native14 fixture, so execution against it would be an
 unrelated import failure, not a meaningful RED result. Frozen5f63/e58 and the
