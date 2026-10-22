@@ -21,6 +21,13 @@ retained factory and startup fence are not yet connected. The retained JUnit
 receipt is `compat-integration-f3548.xml` in the managed task evidence directory.
 No source in that handoff was changed by the test run.
 
+The follow-up adds three rejection cases with internally hash-consistent Dataset
+metadata but unreviewed origin ACL, registry or routes. Result on the same frozen
+handoff: **2 failed, 8 passed in 5.50 seconds**; receipt
+`compat-integration-origin-negative.xml`. The original positive restore must
+pass alongside these negative cases after the fix. Their current rejection
+alone does not prove the fix: the existing guard also rejects valid old control.
+
 ## Versions and authority at each boundary
 
 | Boundary | Required state |

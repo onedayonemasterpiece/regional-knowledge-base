@@ -86,7 +86,7 @@ async def guard(binding):
     yield
 
 
-async def scenario(e):
+async def scenario(e, *, control_override=None):
     # These are actual reviewed PR212 classes, not local substitute transitions.
     upgrade = importlib.import_module('regional_knowledge.kaggle_native_source_upgrade')
     activation = importlib.import_module('regional_knowledge.source_activation')
@@ -148,7 +148,7 @@ async def scenario(e):
         executor_revision=GEO_REVISIONS.executor)
     control = encode(dict(codec='rkb.source-base-control.v1', stream=original.stream,
         database_generation='db-source', sequence=20, journal_head=boundary.reference.wire(),
-        heads=[], **origin))
+        heads=[], **dict(origin, **(control_override or {}))))
     ckey = original.prefix + '/source-base-control/' + sha(control)
     blob = BlobRef('dataset-blobs/fixture/pg-fixture.blob', len(b'archive-not-downloaded'),
                    sha(b'archive-not-downloaded'), 'fixture-version')
@@ -296,6 +296,25 @@ async def test_target14_cannot_relabel_the_schema11_dataset_manifest(env):
         await s.physical.recover(s.manifest, s.binding, database=s.database, expected_versions=wrong,
             expected_final_catalog_sha256=s.history.catalog_hash,
             identity=('fixture-run', 'fixture-nonce', 'fixture-incarnation'), operation_key='wrong-origin')
+    assert not s.events and not s.native.finished
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('control_override', [
+    {'acl_sha256': sha(b'unreviewed-origin-acl')},
+    {'registry_sha256': sha(b'unreviewed-origin-registry')},
+    {'routes': ['source.search']},
+], ids=['acl', 'registry', 'routes'])
+async def test_dataset_control_must_match_reviewed_origin_closure(env, control_override):
+    # These bytes have matching manifest hashes: integrity alone is insufficient.
+    # Accepting a legacy closure must still require its reviewed authority pins.
+    s = await scenario(env, control_override=control_override)
+    with pytest.raises(SnapshotError, match='snapshot_source_control_binding'):
+        await s.physical.recover(s.manifest, s.binding, database=s.database,
+            expected_versions=s.versions, expected_final_catalog_sha256=s.history.catalog_hash,
+            identity=('fixture-run', 'fixture-nonce', 'fixture-incarnation'),
+            operation_key='unreviewed-origin-control')
     assert not s.events and not s.native.finished
 
 
