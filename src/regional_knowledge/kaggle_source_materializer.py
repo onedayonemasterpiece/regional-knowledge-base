@@ -510,16 +510,14 @@ class NativeSourceMaterializer:
         """
         from .kaggle_native_source_bindings import validate_revision2_native_command
         from .source_stage import load_revision2_stage_batch
-        from .source_activation import (REVISION2_MATERIALIZE_ROUTE,REVISION2_SEAL_ROUTE)
-        from .source_activation import validate_revision2_activation_command
-        from .bge_contract import validate_vector
+        from .source_activation import REVISION2_MATERIALIZE_ROUTE
+        from .source_stage import REVISION2_SEAL_ROUTE
         doc=validate_revision2_native_command(command)
         self._current()
-        if doc['materializer_sha256'] != materializer_fingerprint() if 'materializer_sha256' in doc else False:
+        if ('materializer_sha256' in doc
+                and doc['materializer_sha256']!=materializer_fingerprint()):
             raise PermissionError('exact revision2 materializer pin changed')
         wanted=command.ids['source_id']
-        if command.route == 'source.stage.seal.v2':
-            from .source_activation import REVISION2_SEAL_ROUTE as dummy
         if command.route == 'source.stage.seal.v2':
             # The accepted seal has no native model call outside the retained
             # accepted source. Prepare on first explicit seal/materialize only.
