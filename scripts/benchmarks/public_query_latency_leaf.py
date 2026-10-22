@@ -22,6 +22,7 @@ import resource
 import statistics
 import sys
 import time
+from uuid import UUID
 
 CASE_IDS = tuple(f"q{i:02}" for i in range(1, 9))
 COHORTS = (("serial", 1), ("concurrent2", 2))
@@ -34,6 +35,8 @@ PUBLIC_SERVER_QUERY_DEADLINE_S = 2.0
 PUBLIC_MCP_P95_SLO_MS = 1500
 RUN_TIMEOUT_S = 450.0
 PROFILES = frozenset({"limited_first_book", "comparison_corpus"})
+GOLD_BASES = frozenset({"human_reviewed_source_text", "human_reviewed_actual_pixels",
+                        "approved_story_body", "owner_verified_bibliography"})
 MAX_LINES = 2048
 MAX_LINE_BYTES = 8192
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -122,6 +125,62 @@ def valid_corpus(value: object) -> dict:
     elif value["accepted_source_count"] < 2 or value["visible_passage_count"] < 32:
         raise ValueError("comparison_corpus_requires_two_sources_and_32_passages")
     return dict(value)
+
+
+
+def verify_query_gold_fixture(questions: Mapping[str,str], corpus: dict, fixture: dict) -> str:
+    """Pure metadata gate on eight owner-reviewed source-evidence fixtures.
+
+    Does not grant live access, inspect private evidence, fetch pixels, or
+    declare evidence quality from OCR/metadata. The operator separately
+    checks the actual results against these reviewed exact gold locators.
+    Only the digest of this metadata is retained in the workload receipt.
+    """
+    required={"codec","state","profile","corpus_manifest_sha256",
+              "database_generation_ref","source_edition_sha256",
+              "review_receipt_sha256","cases"}
+    if type(fixture) is not dict or set(fixture)!=required:
+        raise ValueError("exact owner-approved source gold metadata required")
+    if (fixture["codec"]!="rkb.first-book-query-gold.v1"
+            or fixture["state"]!="human_reviewed"
+            or fixture["profile"]!=corpus["profile"]
+            or fixture["corpus_manifest_sha256"]!=corpus["corpus_manifest_sha256"]
+            or fixture["database_generation_ref"]!=corpus["database_generation_ref"]):
+        raise ValueError("gold_profile_or_corpus_identity_changed")
+    for key in ("source_edition_sha256","review_receipt_sha256"):
+        if type(fixture[key]) is not str or HEX64.fullmatch(fixture[key]) is None:
+            raise ValueError("gold immutable edition/review binding required")
+    cases=fixture["cases"]
+    if (type(cases) is not list or len(cases)!=len(CASE_IDS)
+            or [item.get("case_id") if type(item) is dict else None for item in cases]!=list(CASE_IDS)):
+        raise ValueError("exact eight owner-reviewed question cases required")
+    keys={"case_id","question_sha256","source_id","source_revision",
+          "evidence_locator_sha256","gold_basis","review_receipt_sha256"}
+    for case in cases:
+        if type(case) is not dict or set(case)!=keys:
+            raise ValueError("unrecognized or private gold case field")
+        case_id=case["case_id"]
+        if (type(case["question_sha256"]) is not str
+                or case["question_sha256"]!=sha256(questions[case_id].encode("utf-8")).hexdigest()):
+            raise ValueError("gold question bytes do not match owner fixture")
+        try:
+            valid_id=type(case["source_id"]) is str and str(UUID(case["source_id"]))==case["source_id"]
+        except (ValueError,TypeError,AttributeError):
+            valid_id=False
+        if (not valid_id or type(case["source_revision"]) is not int
+                or not 1<=case["source_revision"]<2**63):
+            raise ValueError("gold canonical source/revision missing")
+        locators=case["evidence_locator_sha256"]
+        if (type(locators) is not list or not 1<=len(locators)<=5
+                or len(set(locators))!=len(locators)
+                or any(type(v) is not str or HEX64.fullmatch(v) is None for v in locators)):
+            raise ValueError("gold exact evidence locator digests required")
+        if (case["gold_basis"] not in GOLD_BASES
+                or type(case["review_receipt_sha256"]) is not str
+                or HEX64.fullmatch(case["review_receipt_sha256"]) is None):
+            raise ValueError("OCR-only or unreviewed gold is not admissible")
+    return sha256(json.dumps(fixture,sort_keys=True,separators=(",",":"),
+                             ensure_ascii=False,allow_nan=False).encode("utf-8")).hexdigest()
 
 
 def pct(samples: Sequence[float], proportion: float) -> float | None:
@@ -318,7 +377,8 @@ def _sanitize_existing(record: dict) -> dict | None:
 async def run_public_workload(questions: Mapping[str, str],
                               query_public: Callable[[str], Awaitable[object]],
                               corpus_readback: Callable[[], Awaitable[dict]],
-                              emit: Callable[[dict], None]) -> dict:
+                              emit: Callable[[dict], None],
+                              *, gold_manifest: dict | None = None) -> dict:
     """Existing authenticated public MCP callback; never installs a transport.
 
     A 3s caller timeout starts *after* the local semaphore. The raw sample
@@ -333,6 +393,7 @@ async def run_public_workload(questions: Mapping[str, str],
     fixture_hash = sha256(json.dumps([questions[k] for k in CASE_IDS],
         ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
     before = valid_corpus(await asyncio.wait_for(corpus_readback(), CALL_TIMEOUT_S))
+    gold_ref = verify_query_gold_fixture(questions, before, gold_manifest)
     raw = []
     def record(value):
         raw.append(value)
@@ -400,7 +461,7 @@ async def run_public_workload(questions: Mapping[str, str],
         raise RuntimeError("corpus/profile/version changed during workload; samples are not comparable")
     return dict(codec="rkb.public-query-telemetry-run.v1",
         status="public_query_callbacks_invoked_not_authority_proof",
-        question_fixture_sha256=fixture_hash, corpus=before,
+        question_fixture_sha256=fixture_hash, gold_fixture_sha256=gold_ref, corpus=before,
         calls=len([x for x in raw if x["event"]=="public_client_sample"]),
         warmups=len([x for x in raw if x["event"]=="public_client_sample" and x["warmup"]]),
         elapsed_seconds=round(time.monotonic()-started,3))
@@ -621,11 +682,13 @@ def analyze(client: Sequence[dict], telemetry: Sequence[dict],
 
 def validate_receipt(value):
     if (type(value) is not dict or set(value) !=
-            {"codec","status","question_fixture_sha256","corpus","calls","warmups","elapsed_seconds"}
+            {"codec","status","question_fixture_sha256","gold_fixture_sha256","corpus","calls","warmups","elapsed_seconds"}
             or value["codec"] != "rkb.public-query-telemetry-run.v1"
             or value["status"] != "public_query_callbacks_invoked_not_authority_proof"
             or type(value["question_fixture_sha256"]) is not str
             or HEX64.fullmatch(value["question_fixture_sha256"]) is None
+            or type(value["gold_fixture_sha256"]) is not str
+            or HEX64.fullmatch(value["gold_fixture_sha256"]) is None
             or type(value["calls"]) is not int or value["calls"] != TOTAL_CALLS
             or type(value["warmups"]) is not int or value["warmups"] !=
                 len(CASE_IDS)*len(COHORTS)*WARMUPS_PER_CASE
@@ -645,6 +708,8 @@ def assert_comparable_receipts(before, after) -> dict:
         raise ValueError("before_after_profile_changed")
     if earlier["question_fixture_sha256"] != later["question_fixture_sha256"]:
         raise ValueError("before_after_question_fixture_changed")
+    if earlier["gold_fixture_sha256"] != later["gold_fixture_sha256"]:
+        raise ValueError("before_after_gold_fixture_changed")
     # A reviewed read-handler source fix may change loaded release SHA, and
     # separate owner-approved read slots have distinct handoff references.
     # Both are recorded independently; the *book corpus/version* must not drift.
@@ -685,6 +750,8 @@ def main(argv=None):
     result["before_after_match"]=pair
     result["corpus"]=receipt["corpus"]
     result["question_fixture_sha256"]=receipt["question_fixture_sha256"]
+    result["gold_fixture_sha256"]=receipt["gold_fixture_sha256"]
+    result["quality_gold_comparison"]="owner_result_vs_reviewed_locator_pending"
     result["runtime_owner_handoff_status"]="separate_operator_approval_required"
     args.report.write_text(json.dumps(result,sort_keys=True,indent=2)+"\n")
     with args.raw.open("w") as output:
