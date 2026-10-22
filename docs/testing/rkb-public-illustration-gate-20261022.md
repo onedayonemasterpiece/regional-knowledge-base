@@ -536,3 +536,101 @@ evidence, not a claim of bitwise identity to pre-upload pixels when Telegram
 legitimately recompresses photo; choose document when exact resolution
 requires it and bind upload bytes digest in a reviewed durable receipt if
 bitwise matching is required.
+
+
+## 22 October — native-safe media WSS source composition (PR257)
+
+Source-only health-release handoff: dot/Шкипер
+`1792672623.404559`, `1792672986.976979`, exact immutable compatible base
+`0c7237366dbce727c88b6ca83d0dcd952b869818`, green health PR253
+`592a2a2a3e87ebe64d9d5b166898aeb5c31b1ce4`. The full updated owner
+delivery plan is PR238@2d9a959 and the three pinned implementation/owner/
+acceptance docs remain mandatory. This separate source PR is NOT canonical
+integration merge, native install, real Telegram read, real PDF/DjVu
+page/crop, accepted Dataset Saved, or model ImageContent acceptance.
+
+**Native import boundary corrected:** the existing
+`kaggle_public_illustration_native_read.py` previously imported
+`kaggle_public_illustration_gate.NativeMediaSnapshot/_canonical` and
+`source_read_gate.binding_key` from Dev/MCP-auth classes. Both now import
+the **same stdlib-only**
+`kaggle_media_native_contracts.NativeMediaSnapshot/canonical_media/native_binding_key`.
+The existing Dev public gate re-exports that SAME DTO. Fresh subprocess
+tests prohibit imports of ReadAuthority, server, SourceReadGate, Dev gate and
+MCP when importing native media modules; this must remain green before
+including the reader in a native bundle. No second DTO proof format or IAM.
+
+**Existing WSS/worker path:** a native private
+`ILLUSTRATION_READ` / `ILLUSTRATION_READ_RESULT` is dispatched through
+unchanged `BgeQueue.shared_reads`, existing actor-scoped
+`ReadAuthority.require`, current attached generation and BGE WSS transport.
+Only media clauses were added to `kaggle_protocol`, `bge_admission`,
+`bge_channel`, `bge_wss_transport` and `kaggle_worker_query`; Shkiper
+SQL_HEALTH/current lease/health readiness/startup status and Linza
+dispatch/promote are UNCHANGED. The worker reuses its initialized
+`self.acquire` PG reader pool and the same externally injected
+`NativeTelegramIllustrations`/underlying leased Telegram client.
+`TargetRuntime(...,telegram_illustrations=existing_owner)` accepts that
+existing owner and rejects a mismatch with the original intake client's
+retained instance; the media read slot is only selected after actual
+`rkb-v4-sql001-015-v1` or `rkb-v4-sql001-016-v1` installation.
+No archive client/login/session is created here; if no existing native
+owner/Media15 schema, WSS media responses fail as `unavailable`, never
+invented `ready`.
+
+**Three internal read actions use the SAME typed WSS channel:**
+
+1. `snapshot`: private one-source/illustration accepted SQL015+014
+   `NativeMediaSnapshot` returned only to the Dev gate's private native
+   reader, with exact source/facts/projection and crop/digest checks.
+2. `observe`: repeat native one-transaction source check and
+   `NativeTelegramIllustrations.read_opaque` real
+   `get_messages` under current lease, then report private exact
+   snapshot/crop hash. Dev constructs an **independent**
+   `ArchiveOpaqueProof` with an unguessable non-bearer ref, and retains its
+   exact object identity, actor, source, archive scope, binding generation
+   and 10s deadline. Native proof Python object identity is NEVER serialized.
+3. `pixels`: receive only the verified Dev-retained
+   `source_id/illustration_id/expected_crop_sha256` and original bound
+   verified actor/generation through the existing request admission. Native
+   worker *again* reads SQL, observes the registered Telegram locator and
+   calls the SAME client's `read_issued_bytes`; checks SHA, lease and source
+   once more **after** the external byte await; returns strictly bounded
+   base64 image, exact MIME/SHA/source frontier. Dev verifies typed native
+   request/result identity, source/crop/version/lease/actor, binds decoded
+   bytes to the ORIGINAL Dev-held `ArchiveOpaqueProof`, then PR241 public
+   output gate performs its own actor+current PG post-await read and
+   synchronous final ASGI `issuance_current` before one ImageContent send.
+   No recovery SnapshotTicketChannel or separate transfer was reused.
+
+**Actual byte budget:** original private Telegram native downloader caps its
+raw `read_issued_bytes` at 256 KiB. A 256 KiB binary payload expands to
+349,528 base64 chars and **cannot** fit in the existing WSS
+`RESULT_MAX_BYTES=262144`. The media-only WSS DTO therefore caps
+`MEDIA_MAX_INLINE_BYTES=160*1024` (218,456 base64 chars), verifies
+round-trip exact SHA/base64 and aggregate `encode_envelope` <=262144.
+The existing native 256 KiB cap is still independent; 160–256 KiB native
+pixels must FAIL as `unavailable:size_bound`, not silently truncate,
+recompress or lie that ImageContent was delivered. Any future larger
+transfer requires an *already authorized*, separately reviewed existing
+carrier; current Dataset recovery upload tickets cannot be repurposed.
+Current Dev final MCP body has its own 512 KiB bound.
+
+**Native-safe/actual-class tests:** unit/changed-boundary tests exercise
+native worker's actual PG reader and `NativeTelegramIllustrations` with
+fake external PG/Telethon methods, exact decoder/worker
+`ILLUSTRATION_READ` payloads and injected native binding; real
+`BgeQueue.shared_reads`/ReadAuthority/SourceReadGate/
+`KaggleSourceBackend` and actual MCP/ASGI final read are exercised with
+fake remote worker I/O. No external PG/provider/Telegram credentials or
+live sending. Capture and cite only CI from the final SHA, not provisional
+PASS or fake native product readiness.
+
+**Outstanding sole Opus installed evidence:** one approved native bundle
+containing this controller-import-free DTO/reader/worker and Media15 source
+pins; actual SQL015/016 installed role/grants/corpus, verified exclusive
+native Telegram client, bounded native return via real WSS (no injected
+fake remote worker), and actual ChatGPT PDF/DjVu page→model bbox→Telegram
+archive saved locator→MCP ImageContent pixels readback, including
+revoke/reconnect/UNKNOWN negatives. Full facts, Story.body and continuation
+are independent mandatory requirements.
