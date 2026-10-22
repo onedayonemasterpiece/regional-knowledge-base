@@ -129,6 +129,35 @@ def decode_receipt(value):
 
 
 
+def read_historical_contract(data,registry):
+    """Read v1 evidence without installing or executing a historical handler."""
+    from dataclasses import replace
+    command=decode_command(data)
+    handler=registry.handlers.get(command.route)
+    if handler is None and command.route in ('source.import.v1','source.import.v2','source.import.v3'):
+        from .source_activation import ACTIVATE_ROUTE
+        handler=registry.handlers.get(ACTIVATE_ROUTE)
+    if handler is None or handler.kind!=command.kind:raise ValueError('unsupported historical command contract')
+    dependency=handler.dependency
+    if dependency is not None and dependency.operation!=command.route:
+        dependency=replace(dependency,operation=command.route)
+    return command,handler,dependency
+
+
+def verify_historical_receipt(command,recorded_hash,receipt):
+    """The original canonical receipt, never the current implementation hash."""
+    try:
+        decoded,value=decode_receipt(receipt_wire(receipt))
+        audit=[command.schema_revision,command.function_revision,command.executor_revision]
+        return (value['handler_sha256']==recorded_hash and value['before']==value['after']==audit
+            and decoded.command_sha256==digest(command.encode())
+            and decoded.operation_key==command.operation_key and decoded.sequence==command.sequence
+            and value['route']==command.route and value['request_id']==command.request_id
+            and value['person_id']==command.person_id and value['logical_time']==command.logical_time
+            and value['ids']==dict(command.ids))
+    except (ValueError,TypeError,KeyError):return False
+
+
 class ControllerAcceptedProof:
     """A single TLS-controller-attested command/seal; not a remote journal store.
 

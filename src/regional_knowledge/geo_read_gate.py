@@ -120,7 +120,10 @@ class GeoReadGate:
                             or entry.database_generation!=binding.database_generation):raise SourceGateDenied('GEO outcome not durable')
                     payload=self._manifest_command(c)
                     handler=self.spool.registry.resolve(c)
-                    if entry.handler_sha256!=handler.fingerprint:raise SourceGateDenied('GEO handler changed')
+                    if entry.handler_sha256!=handler.fingerprint:
+                        from .kaggle_source_commands import verify_historical_receipt
+                        if not verify_historical_receipt(c,entry.handler_sha256,entry.apply_receipt):
+                            raise SourceGateDenied('GEO historical handler receipt differs')
                     digest=await self.spool.journal.verify_accepted(entry.accepted,c)
                     if digest!=entry.command_sha256:raise SourceGateDenied('GEO accepted bytes differ')
                     receipt=entry.apply_receipt

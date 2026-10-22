@@ -114,11 +114,13 @@ async def scenario(e):
     await original._fenced_exact(original.prefix+'/source-genesis/'+sha(b'db-source'),genesis,
         expected_token=None,writer_generation='writer-1',limit=8192)
     accepted = {}
+    e.spool.journal=original;e.spool.registry=original_registry
     for command in commands:
-        seal = await original.seal([command], predecessor=await original.head(), writer_generation='writer-1')
+        await e.spool.stage_domain_command(e.p.admin,command,database_generation='db-source')
+        seal=await e.spool.seal(e.p.admin,command.operation_key,predecessor=await original.head(),writer_generation='writer-1')
         accepted[command.sequence] = seal
-        await original.record_outcome(seal, command=command, database_generation='db-source',
-            outcome=original_receipts[command.sequence].outcome, writer_generation='writer-1')
+        await e.spool.record_apply(command.operation_key,original_receipts[command.sequence])
+        await e.spool.publish_outcome(command.operation_key,writer_generation='writer-1')
     boundary = await original.head()
     prefix_rows = tuple((c.sequence, c.operation_key, sha(c.encode()), original_registry.resolve(c).fingerprint,
         accepted[c.sequence].manifest.sha256, original_receipts[c.sequence].status,
@@ -195,9 +197,10 @@ async def scenario(e):
     from regional_knowledge.kaggle_native_source_bindings import new_native_command
     tail=tuple(new_native_command(replace(commands[n-1],sequence=21+i,operation_key='ordinary-repair-'+str(n)))
         for i,n in enumerate(sorted(rejected)))
+    e.spool.journal,e.spool.registry=journal,registry
     for command in tail:
-        await journal.seal([command], predecessor=await journal.head(), writer_generation='writer-2')
-    e.spool.journal, e.spool.registry = journal, registry
+        await e.spool.stage_domain_command(e.p.admin,command,database_generation='db-source')
+        await e.spool.seal(e.p.admin,command.operation_key,predecessor=await journal.head(),writer_generation='writer-2')
     binding = SimpleNamespace(run_id='fixture-run', runtime_incarnation='fixture-incarnation',
                               connection_generation=1, database_generation='db-source',min_data_seq=0,provider_version='1')
     history = WssSourceHistoryVerifier(e.spool, acquire=None, binding_current=lambda b: b is binding, routes=routes, expected_schema_version=database.schema_version, writer_generation='writer-2', database=database, observer_sha256='6' * 64, geo_bootstrap_operation_keys=tuple((c.operation_key for c in commands)))
@@ -450,6 +453,11 @@ async def test_dataset2_history_verifies_original_receipts_with_only_current_rou
         assert set(registry.handlers)=={handler.route for handler in registry.handlers.values()}
         assert len(registry.handlers)==13
         assert all(s.native.ledger[n]==receipt for n,receipt in s.original_receipts.items())
+        for command in s.originals:
+            retained=await env.spool.get(command.operation_key)
+            assert retained.command_bytes==command.encode()
+            assert retained.apply_receipt.outcome==s.original_receipts[command.sequence].outcome
+            assert retained.outcome_state=='DURABLE'
         # A current registry is not permission to relabel the old PG receipt.
         from regional_knowledge.control_spool import SpoolConflict
         row=list(pg.receipts[0]);row[3]='f'*64;pg.receipts[0]=tuple(row)

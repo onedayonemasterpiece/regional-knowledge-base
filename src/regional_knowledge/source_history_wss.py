@@ -235,7 +235,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                             remote=remote_outcomes.get(seq)
                             try:body=base64.b64decode(json.loads(remote.data)['outcome_b64'],validate=True) if remote is not None else b''
                             except (ValueError,KeyError,TypeError):raise SpoolConflict('historical outcome unavailable') from None
-                            if not _receipt_handler_matches(c,h,hh,body,status):
+                            if not _receipt_handler_matches(c,h,hh,body,status,generation):
                                 raise SpoolConflict('native historical handler receipt differs')
                             observations[seq]=(status,oh,length);after=seq
                         if page.get('after')!=after or type(page.get('done')) is not bool:

@@ -36,22 +36,13 @@ def _hash(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def _receipt_handler_matches(command,handler,recorded_hash,outcome,status):
+def _receipt_handler_matches(command,handler,recorded_hash,outcome,status,database_generation):
     if recorded_hash==handler.fingerprint:return True
-    # An applied receipt binds its original immutable handler audit. It does
-    # not require an executable copy of that historical implementation.
-    try:
-        value=json.loads(outcome)
-        return (_json(value)==outcome and value.get('codec')=='rkb.applied-outcome.v1'
-            and value.get('handler_sha256')==recorded_hash and value.get('status')==status
-            and value.get('before')==[command.schema_revision,command.function_revision,command.executor_revision]
-            and value.get('after')==value.get('before')
-            and value.get('command_sha256')==_hash(command.encode())
-            and value.get('operation_key')==command.operation_key
-            and value.get('cursor')==command.sequence and value.get('route')==command.route
-            and value.get('request_id')==command.request_id and value.get('person_id')==command.person_id
-            and value.get('logical_time')==command.logical_time and value.get('ids')==dict(command.ids))
-    except (ValueError,TypeError,UnicodeError):return False
+    from .kaggle_apply import ApplyReceipt
+    from .kaggle_source_commands import verify_historical_receipt
+    receipt=ApplyReceipt(database_generation,command.operation_key,command.sequence,_hash(command.encode()),
+        status,outcome,_hash(outcome),True)
+    return verify_historical_receipt(command,recorded_hash,receipt)
 
 
 from .kaggle_source_acl import ACL_SQL,NativeHistoryError,inspect_acl as _native_inspect_acl
@@ -176,15 +167,12 @@ class NativeSourceHistoryVerifier:
         command=_command(raw)
         try:
             if historical:
-                from .kaggle_source_commands import decode_command
-                command=decode_command(raw)
-                if command.route in ('source.import.v1','source.import.v2','source.import.v3'):
-                    from .source_activation import ACTIVATE_ROUTE
-                    handler=self.spool.registry.handlers.get(command.route) or self.spool.registry.handlers[ACTIVATE_ROUTE]
-                else:handler=self.spool.registry.resolve(command)
-            else:command,_,handler=self.spool._validate(command,'history-classification')
+                from .kaggle_source_commands import read_historical_contract
+                command,handler,dep=read_historical_contract(raw,self.spool.registry)
+            else:
+                command,_,handler=self.spool._validate(command,'history-classification')
+                dep=handler.dependency
         except (ValueError,TypeError,KeyError):raise SpoolConflict('unclassified accepted source dependency') from None
-        dep=handler.dependency
         if dep is None:raise SpoolConflict('unclassified accepted source dependency')
         if dep.scope_class=='public_source':
             expected_route=('source.import' if command.route.startswith('source.import.') else
@@ -632,7 +620,7 @@ class NativeSourceHistoryVerifier:
                                             or command_bytes is None or bytes(command_bytes)!=command.encode()
                                             or _hash(bytes(outcome))!=oh):
                                         raise SpoolConflict('native exact applied outcome differs')
-                                    if not _receipt_handler_matches(command,handler,hh,bytes(outcome),status):
+                                    if not _receipt_handler_matches(command,handler,hh,bytes(outcome),status,generation):
                                         raise SpoolConflict('native historical handler receipt differs')
                                     used+=len(outcome)
                                     if used>self.max_history_bytes:raise SpoolConflict('native outcome history budget exceeded')
