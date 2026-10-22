@@ -116,6 +116,30 @@ def test_real_kaggle_json_upload_origin_is_supported():
     assert value.size==56_422_400
 
 
+def test_handler_link_requires_owned_private_exact_handler_version(monkeypatch):
+    from dataclasses import replace
+    from regional_knowledge.kaggle_dataset_base import DatasetFile
+    api=FakeApi();api.version=7
+    p=KaggleDatasetPublisher(api,provider_ref='owner/rkb-read-handler-artifacts',owner='owner')
+    file=DatasetFile('handler-'+('a'*64)+'.blob',123,'a'*64);calls=[]
+    def link(self,file,*,version):
+        calls.append((file,version));return 'native-only-url','native-etag'
+    monkeypatch.setattr(KaggleDatasetPublisher,'_native_download_link',link)
+    assert p.handler_download_link(file,version=7)==('native-only-url','native-etag')
+    with pytest.raises(DatasetPublicationError,match='unavailable'):
+        p.handler_download_link(file,version=8)
+    api.private=False
+    with pytest.raises(DatasetPublicationError,match='private_version_unproven'):
+        p.handler_download_link(file,version=7)
+    for bad in (replace(file,name='sql-'+('a'*64)+'.blob'),replace(file,size=512*1024+1)):
+        with pytest.raises(DatasetPublicationError,match='scope'):
+            p.handler_download_link(bad,version=7)
+    primary=KaggleDatasetPublisher(api,provider_ref='owner/rkb-pg-checkpoints',owner='owner')
+    with pytest.raises(DatasetPublicationError,match='scope'):
+        primary.handler_download_link(file,version=7)
+    assert calls==[(file,7)] and api.mutations==[]
+
+
 def test_403_requires_independent_owned_inventory_absence():
     api, p, files = setup()
     def denied(request):

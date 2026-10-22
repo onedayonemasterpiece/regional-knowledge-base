@@ -24,6 +24,40 @@ class Queue:
 
 
 @pytest.mark.asyncio
+async def test_reviewed_handler_blob_uses_own_dataset_without_checkpoint_change(tmp_path,monkeypatch):
+    from regional_knowledge.kaggle_dataset_publisher import KaggleDatasetPublisher
+    queue=Queue(tmp_path/'queue.sqlite')
+    binding=NS(run_id='run',runtime_incarnation='inc',writer_generation='writer')
+    calls=[]
+    @asynccontextmanager
+    async def guard(generation):
+        assert generation=='writer'
+        yield
+    def link(self,file,*,version):
+        calls.append((self.owner,self.slug,file.name,version))
+        return 'https://storage.googleapis.com/handler?private=grant','handler-etag'
+    monkeypatch.setattr(KaggleDatasetPublisher,'handler_download_link',link,raising=False)
+    issuer=DatasetSnapshotTicketIssuer(queue,NS(owner='fixture-owner',api=object()),
+        current=lambda b:b is binding,writer_guard=guard,clock=lambda:100)
+    original_checkpoint=object();issuer.download_checkpoint=original_checkpoint
+    name='handler-'+('a'*64)+'.blob'
+    blob=BlobRef('dataset-handlers/rkb-read-handler-artifacts/7/'+name,123,'a'*64,'handler-etag')
+    ticket=await issuer.issue_download(binding,'read-handler-reviewed',blob)
+    assert (ticket.key,ticket.size,ticket.sha256)==(blob.key,blob.size,blob.sha256)
+    assert dict(ticket.headers)=={'If-Match':'handler-etag'}
+    assert calls==[('fixture-owner','rkb-read-handler-artifacts',name,7)]
+    assert issuer.download_checkpoint is original_checkpoint
+    with pytest.raises(DatasetPublicationError):
+        await issuer.issue_download(NS(run_id='other'),'read-handler-reviewed',blob)
+    with pytest.raises(DatasetPublicationError):
+        await issuer.issue_download(binding,'changed-etag',replace(blob,native_version='other'))
+    for key in ('dataset-handlers/rkb-pg-checkpoints/7/'+name,
+                'dataset-handlers/rkb-read-handler-artifacts/7/sql-'+('a'*64)+'.blob'):
+        with pytest.raises(DatasetPublicationError):
+            await issuer.issue_download(binding,'wrong-scope',replace(blob,key=key))
+
+
+@pytest.mark.asyncio
 async def test_existing_channel_ticket_replays_same_grant_and_scope(tmp_path):
     queue = Queue(tmp_path/'queue.sqlite')
     binding = NS(run_id='run', runtime_incarnation='inc', writer_generation='writer')

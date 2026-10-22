@@ -18,6 +18,8 @@ import shlex
 
 from .native_snapshot_transfer import origin
 
+HANDLER_DATASET_SLUG='rkb-read-handler-artifacts'
+
 
 class DatasetPublicationError(RuntimeError):
     pass
@@ -168,10 +170,25 @@ class KaggleDatasetPublisher:
 
     def snapshot_download_link(self,file,*,version):
         """Resolve a native-only download capability; consume no archive body."""
-        from kagglesdk.datasets.types.dataset_api_service import ApiDownloadDatasetRequest
         if (not file.name.startswith('pg-') or not file.name.endswith('.blob')
                 or type(version) is not int or version<1):
             raise DatasetPublicationError('dataset_archive_read_scope')
+        return self._native_download_link(file,version=version)
+
+    def handler_download_link(self,file,*,version):
+        """Exact reviewed read code, outside the primary checkpoint Dataset."""
+        from .kaggle_warm_read import MAX_MODULE_BYTES
+        if (self.slug!=HANDLER_DATASET_SLUG or type(version) is not int or version<1
+                or re.fullmatch('handler-'+re.escape(file.sha256)+r'\.blob',file.name) is None
+                or not 1<=file.size<=MAX_MODULE_BYTES):
+            raise DatasetPublicationError('dataset_handler_artifact_scope')
+        observed=self.observe()  # Confirm this is still an owned private Dataset.
+        if observed is None or observed<version:
+            raise DatasetPublicationError('dataset_handler_artifact_unavailable')
+        return self._native_download_link(file,version=version)
+
+    def _native_download_link(self,file,*,version):
+        from kagglesdk.datasets.types.dataset_api_service import ApiDownloadDatasetRequest
         request=ApiDownloadDatasetRequest()
         request.owner_slug,request.dataset_slug=self.owner,self.slug
         request.file_name,request.dataset_version_number,request.raw=file.name,version,True

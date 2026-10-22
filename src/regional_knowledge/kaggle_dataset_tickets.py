@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 
 from .kaggle_dataset_publisher import DatasetPublicationError, DatasetUpload
@@ -80,6 +81,8 @@ class DatasetSnapshotTicketIssuer:
 
     async def issue_download(self,binding,operation_key,ref):
         from .kaggle_dataset_base import DatasetCheckpoint
+        if ref.key.startswith('dataset-handlers/'):
+            return await self._handler_download(binding,operation_key,ref)
         checkpoint=getattr(self,'download_checkpoint',None)
         if (type(checkpoint) is not DatasetCheckpoint or not self.current(binding)
                 or (ref.key.rsplit('/',1)[-1],ref.size,ref.sha256)!=(
@@ -92,3 +95,24 @@ class DatasetSnapshotTicketIssuer:
             if not self.current(binding):raise DatasetPublicationError('dataset_capture_writer_changed')
             return SnapshotTicket('GET',hashlib.sha256(operation_key.encode()).hexdigest(),ref.key,
                 ref.size,ref.sha256,self.clock()+600,url,(('If-Match',etag),))
+
+    async def _handler_download(self,binding,operation_key,ref):
+        from .kaggle_dataset_base import DatasetFile
+        from .kaggle_dataset_publisher import HANDLER_DATASET_SLUG,KaggleDatasetPublisher
+        from .kaggle_warm_read import MAX_MODULE_BYTES
+        parts=ref.key.split('/')
+        if (not self.current(binding) or len(parts)!=4 or parts[1]!=HANDLER_DATASET_SLUG
+                or re.fullmatch(r'[1-9][0-9]{0,8}',parts[2]) is None
+                or re.fullmatch('handler-'+re.escape(ref.sha256)+r'\.blob',parts[3]) is None
+                or not 1<=ref.size<=MAX_MODULE_BYTES):
+            raise DatasetPublicationError('dataset_handler_artifact_scope')
+        publisher=KaggleDatasetPublisher(self.publisher.api,
+            provider_ref=self.publisher.owner+'/'+HANDLER_DATASET_SLUG,owner=self.publisher.owner)
+        generation=getattr(binding,'writer_generation',None) or self.guard.writer_generation
+        async with self.guard(generation):
+            url,etag=await asyncio.to_thread(publisher.handler_download_link,
+                DatasetFile(parts[3],ref.size,ref.sha256),version=int(parts[2]))
+            if not self.current(binding) or etag!=ref.native_version:
+                raise DatasetPublicationError('dataset_handler_artifact_changed')
+            return SnapshotTicket('GET',hashlib.sha256(operation_key.encode()).hexdigest(),
+                ref.key,ref.size,ref.sha256,self.clock()+600,url,(('If-Match',etag),))
