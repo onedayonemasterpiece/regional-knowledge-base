@@ -1,7 +1,7 @@
 import importlib.util
 import json
+import io
 from pathlib import Path
-from unittest.mock import Mock
 
 import pytest
 
@@ -77,25 +77,23 @@ def test_native_union_preserves_base_and_refuses_hidden_upgrade():
         m.merge_native(base, extra)
 
 
-def test_elf_requires_pinned_loader_and_recursive_libraries(tmp_path, monkeypatch):
+def test_interrupted_download_retries_without_accepting_partial_bytes(tmp_path, monkeypatch):
     m = packaging()
-    paths = ['usr/bin/ddjvu', 'lib64/ld-linux-x86-64.so.2', 'usr/lib/libdjvulibre.so.21', 'usr/lib/libc.so.6']
-    rows = []
-    for name in paths:
-        path = tmp_path / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(name.encode())
-        rows.append(dict(path=name, size=len(name), sha256=m.digest(name.encode())))
-    def readelf(args, **kwargs):
-        name = str(Path(args[-1]).relative_to(tmp_path))
-        output = {'usr/bin/ddjvu': '[Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]\n(NEEDED) Shared library: [libdjvulibre.so.21]',
-                  'usr/lib/libdjvulibre.so.21': '(NEEDED) Shared library: [libc.so.6]'}.get(name, '')
-        return Mock(stdout=output)
-    monkeypatch.setattr(m.subprocess, 'run', readelf)
-    receipt = m.elf_closure(tmp_path, dict(files=rows))
-    assert set(receipt['files']) == set(paths)
-    assert receipt['ambient_libraries_used'] is False
-    with pytest.raises(ValueError, match='missing pinned path'):
-        m.elf_closure(tmp_path, dict(files=[r for r in rows if not r['path'].startswith('lib64/')]))
-    with pytest.raises(ValueError, match='DT_NEEDED missing'):
-        m.elf_closure(tmp_path, dict(files=[r for r in rows if r['path'] != 'usr/lib/libc.so.6']))
+    class Response(io.BytesIO):
+        def geturl(self):
+            return 'https://fixtures.invalid/package.deb'
+    calls = []
+    def request(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise TimeoutError('synthetic interrupted transfer')
+        return Response(b'complete')
+    monkeypatch.setattr(m, 'urlopen', request)
+    monkeypatch.setattr(m.time, 'sleep', lambda _: None)
+    target = tmp_path / 'package.deb'
+    result = m.download('https://fixtures.invalid/package.deb', target, maximum=100,
+                        expected_size=8, expected_sha=m.digest(b'complete'))
+    assert len(calls) == 2 and result['size'] == 8
+    assert target.read_bytes() == b'complete'
+    assert not target.with_name('package.deb.partial').exists()
+

@@ -16,9 +16,12 @@ that exact closure without resolving moving metadata again.
 
 The existing assembler retains the PG native data and libraries and adds
 ddjvu plus loader/library paths. The existing safe extractor materializes and
-checks the manifest on the disposable GitHub runner. A bounded `readelf`
-walk verifies ddjvu's PT_INTERP and recursive DT_NEEDED against manifest-pinned
-files; host `ldd`, ambient libraries and maintainer scripts are never used.
+checks the manifest on the disposable GitHub runner. The existing `kaggle_djvu_elf.pinned_djvu_elf_closure` verifies ddjvu's
+PT_INTERP, explicit pinned loader and recursive DT_NEEDED. CI overlays only
+that unchanged file from the reviewed leaf622e5b8e591f6ecf36404078eb41fb659b9e2cae,
+SHA256904b782aabd7af8a798c608655ed4671d60249ffc370ba0501d80081b2db96b9,
+identical to frozen e58. No duplicate ELF parser, host `ldd`, ambient library
+resolution or maintainer scripts are used.
 This proves a byte-bound ELF closure, not Kaggle execution or decoding quality.
 If the complete closure exceeds the existing 96-package bound, CI saves the
 exact lock and explicit unresolved bound receipt; it never removes packages or

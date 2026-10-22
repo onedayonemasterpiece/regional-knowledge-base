@@ -11,8 +11,8 @@ import hashlib
 import json
 import lzma
 from pathlib import Path
-import re
-import subprocess
+import time
+from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
@@ -82,21 +82,36 @@ def merge_wheels(base, candidate, placement=None):
 
 def download(url, path, *, maximum, expected_sha=None, expected_size=None):
     secure_url(url)
-    h = hashlib.sha256()
-    count = 0
-    with urlopen(url, timeout=45) as response, path.open('xb') as target:
-        secure_url(response.geturl())
-        while data := response.read(1024 * 1024):
-            count += len(data)
-            if count > maximum:
-                raise ValueError('download byte bound exceeded')
-            h.update(data)
-            target.write(data)
-    if expected_sha is not None and h.hexdigest() != expected_sha:
-        raise ValueError('download SHA mismatch')
-    if expected_size is not None and count != expected_size:
-        raise ValueError('download size mismatch')
-    return dict(url=url, size=count, sha256=h.hexdigest())
+    if path.exists():
+        raise ValueError('download output already exists')
+    partial = path.with_name(path.name + '.partial')
+    for attempt in range(1, 4):
+        h = hashlib.sha256()
+        count = 0
+        print(json.dumps(dict(event='dependency_download_start', file=path.name, attempt=attempt)), flush=True)
+        try:
+            with urlopen(url, timeout=60) as response, partial.open('xb') as target:
+                secure_url(response.geturl())
+                while data := response.read(65536):
+                    count += len(data)
+                    if count > maximum:
+                        raise ValueError('download byte bound exceeded')
+                    h.update(data)
+                    target.write(data)
+            if expected_sha is not None and h.hexdigest() != expected_sha:
+                raise ValueError('download SHA mismatch')
+            if expected_size is not None and count != expected_size:
+                raise ValueError('download size mismatch')
+            partial.rename(path)
+            print(json.dumps(dict(event='dependency_download_verified', file=path.name, size=count)), flush=True)
+            return dict(url=url, size=count, sha256=h.hexdigest())
+        except (TimeoutError, URLError, ConnectionError) as error:
+            partial.unlink(missing_ok=True)
+            print(json.dumps(dict(event='dependency_download_retry', file=path.name,
+                                  attempt=attempt, error_type=type(error).__name__)), flush=True)
+            if attempt == 3:
+                raise
+            time.sleep(attempt * 2)
 
 
 def merge_native(base, extra):
@@ -139,50 +154,22 @@ def capture_djvu(root):
             sha = digest(plain.read_bytes())
             snapshots.append(PackageSnapshot(plain, 'noble', 'https://archive.ubuntu.com/ubuntu/', sha))
             receipts.append(receipt | dict(uncompressed_sha256=sha, uncompressed_size=size))
+            save(root / 'metadata-receipts.json', receipts)
     save(root / 'metadata-receipts.json', receipts)
     return resolve_native_closure(snapshots, release='noble', roots={'djvulibre-bin': DJVU_VERSION})
 
 
-def elf_closure(prefix, manifest):
-    """Inspect PT_INTERP/DT_NEEDED against bundled files, never use host ldd."""
-    files = {p['path']: p for p in manifest['files']}
-    libraries = {}
-    for name in files:
-        libraries.setdefault(Path(name).name, []).append(name)
-    queue = ['usr/bin/ddjvu']
-    seen = {}
-    while queue:
-        name = queue.pop()
-        if name in seen:
-            continue
-        if name not in files:
-            raise ValueError('ELF closure missing pinned path: ' + name)
-        path = prefix / name
-        raw = path.read_bytes()
-        if digest(raw) != files[name]['sha256'] or len(raw) != files[name]['size']:
-            raise ValueError('ELF inspection bytes differ from manifest')
-        result = subprocess.run(['readelf', '--program-headers', '--dynamic', str(path)],
-                                check=True, capture_output=True, text=True, timeout=15)
-        interpreters = re.findall(r'Requesting program interpreter: ([^\]]+)', result.stdout)
-        needed = re.findall(r'\(NEEDED\).*?\[([^\]]+)\]', result.stdout)
-        bound = []
-        for dependency in needed:
-            options = libraries.get(dependency, [])
-            if not options:
-                raise ValueError('ELF DT_NEEDED missing: ' + dependency)
-            hashes = {files[p]['sha256'] for p in options}
-            if len(hashes) != 1:
-                raise ValueError('ambiguous bundled ELF library: ' + dependency)
-            bound.append(sorted(options)[0])
-        for interpreter in interpreters:
-            bound.append(interpreter.lstrip('/'))
-        seen[name] = dict(sha256=files[name]['sha256'], interpreter=interpreters,
-                          needed=needed, resolved=bound)
-        queue.extend(bound)
-    if not seen['usr/bin/ddjvu']['interpreter']:
-        raise ValueError('ddjvu pinned ELF loader required')
-    return dict(codec='rkb.native_elf_closure.v1', root='usr/bin/ddjvu', files=seen,
-                ambient_libraries_used=False, native_execution_verified=False)
+def elf_closure(bundle):
+    """Reuse the reviewed DjVu leaf validator against the actual verified bundle."""
+    from regional_knowledge.kaggle_djvu_elf import pinned_djvu_elf_closure
+    binary, loader, library_path = pinned_djvu_elf_closure(bundle)
+    return dict(codec='rkb.native_elf_closure.v1',
+                binary=str(Path(binary).relative_to(bundle.prefix)),
+                loader=str(Path(loader).relative_to(bundle.prefix)),
+                library_path=[str(Path(p).relative_to(bundle.prefix)) for p in library_path.split(':')],
+                verifier_source_sha256='904b782aabd7af8a798c608655ed4671d60249ffc370ba0501d80081b2db96b9',
+                recursive_dt_needed_verified=True, ambient_libraries_used=False,
+                native_execution_verified=False)
 
 
 def main():
@@ -223,8 +210,7 @@ def main():
     native.TRUSTED_ROOT = root
     bundle = native.prepare_native_bundle(root, receipt['spec']['manifest_name'],
         receipt['spec']['manifest_sha256'], identity=PLATFORM, inventory=receipt['artifacts'])
-    manifest = json.loads((root / receipt['spec']['manifest_name']).read_text())
-    save(root / 'ddjvu-elf-closure.json', elf_closure(bundle.prefix, manifest))
+    save(root / 'ddjvu-elf-closure.json', elf_closure(bundle))
     print(json.dumps(dict(status='PACKAGED_NOT_DEPLOYED', packages=len(packages),
                          pyaes_hosting='UNRESOLVED' if placement is None else 'SUPPLIED')))
 
