@@ -9,7 +9,7 @@ import shutil
 
 from .kaggle_pg_snapshot_native import NativeSnapshotFactory,SnapshotError,BlobRef,encode,sha
 
-DRILL_PHASES=frozenset({'drill_prepare','drill_finish','drill_close','drill_verify'})
+DRILL_PHASES=frozenset({'drill_prepare','drill_finish','drill_close','drill_verify','drill_migrate'})
 
 
 def drill_database(database,identity):
@@ -28,7 +28,7 @@ class _NativeDrillProof:
 
 
 class EmptySnapshotDrill:
-    def __init__(self,serving,*,download,workspace):
+    def __init__(self,serving,*,download,workspace,sql_root=None,native_pins=None):
         if type(serving) is not NativeSnapshotFactory:raise TypeError('retained serving native owner required')
         self.serving,self.download,self.workspace=serving,download,workspace
         database=drill_database(serving.database,serving.identity)
@@ -38,8 +38,13 @@ class EmptySnapshotDrill:
             limits=serving.limits,connect=serving.connect,spawn=serving.spawn,probe=serving.probe)
         self.factory.native_env=dict(serving.native_env);self.factory.model_pins=serving.model_pins
         self.sessions={};self.proofs={};self.closing={};self.prepared={}
+        self.factory.dataset_checkpoint=getattr(serving,'dataset_checkpoint',None)
+        from .kaggle_snapshot_drill_migrate import NativeDrillMigrate
+        self.migrator=None if sql_root is None and native_pins is None else NativeDrillMigrate(
+            self,sql_root=sql_root,native_pins=native_pins)
 
     def can_reconcile(self,phase,args):
+        if phase=='drill_migrate':return self.migrator is not None and self.migrator.can_reconcile(args)
         if phase=='drill_finish':
             session=self.sessions.get(args.get('handle'))
             return session in self.factory._finish_intents
@@ -50,6 +55,9 @@ class EmptySnapshotDrill:
         self.serving._current(binding)
         if type(args) is not dict:raise SnapshotError('drill_fixed_arguments')
         if phase=='drill_prepare':return await self._prepare(args,key,binding,frame)
+        if phase=='drill_migrate':
+            if self.migrator is None:raise SnapshotError('drill_migrate_fixed_owner_unavailable')
+            return await self.migrator(args,key,binding,frame)
         if phase=='drill_finish':
             if set(args)!={'handle','control_b64','catalog_sha256'}:raise SnapshotError('drill_fixed_arguments')
             session=self.sessions.get(args['handle'])
@@ -61,6 +69,8 @@ class EmptySnapshotDrill:
                 control_bytes=control,expected_catalog_sha256=args['catalog_sha256'])
             return {'reference':self.factory.reference(cap)}
         if set(args)!={'reference'}:raise SnapshotError('drill_fixed_arguments')
+        if self.migrator is not None and args['reference'] in self.migrator.proofs:
+            return await self.migrator.verify_closed(args['reference'],binding)
         if phase=='drill_close':return await self._close(args['reference'],binding)
         proof=self.proofs.get(args['reference'])
         if proof is None or proof.owner is not self or not proof.closed or proof.candidate.process.returncode is None:
@@ -143,6 +153,7 @@ class EmptySnapshotDrill:
         return dict(proof.wire,reference=reference)
 
     async def aclose(self):
+        if self.migrator is not None:await self.migrator.aclose()
         for candidate in tuple(self.factory._owned_candidates):
             await candidate.aclose();self.factory._owned_candidates.discard(candidate)
         self.factory._capabilities.clear()
