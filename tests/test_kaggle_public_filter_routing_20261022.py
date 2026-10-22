@@ -23,6 +23,8 @@ from regional_knowledge.server import build_server
 from test_kaggle_fact_read import Native
 from test_kaggle_pg_search import FixtureConnection
 from test_kaggle_public_backend import target, work, release
+from test_read_authority import auth
+from test_participants import people
 from test_kaggle_source_graph_backend import configured
 from test_kaggle_source_graph_read import row
 from test_kaggle_story_read import record
