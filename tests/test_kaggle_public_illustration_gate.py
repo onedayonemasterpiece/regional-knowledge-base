@@ -349,3 +349,29 @@ async def test_unwired_or_wrong_authority_sourcegate_fails_closed_before_call(en
         await gate.issue(verified=replace_model(verified,person_id=SOURCE),
                          binding=binding,source_id=SOURCE,illustration_id=ILLUSTRATION)
     assert not gate._tickets
+
+
+@pytest.mark.asyncio
+async def test_nested_bbox_private_metadata_cannot_cross_serializer(env, auth):
+    x=snapshot()
+    x.item["bbox"]["chat_id"]=-100234
+    x.manifest_region["bbox"]["chat_id"]=-100234
+    x.item["crop_binding"]["bbox"]["chat_id"]=-100234
+    x.public_row["data"]["bbox"]["chat_id"]=-100234
+    gate,native,archive,verified,binding=await make_gate(env,auth,x)
+    with pytest.raises(PublicMediaUnavailable,match="invalid_media_figure_bbox"):
+        await issue(gate,verified,binding)
+    assert not gate._tickets
+
+
+@pytest.mark.asyncio
+async def test_renderer_cannot_change_caption_without_private_field_leak(env,auth):
+    gate,native,archive,verified,binding=await make_gate(env,auth)
+    def changed_caption(item,*,status):
+        result=media_renderer(item,status=status)
+        result["caption_text"]="Other model statement"
+        return result
+    gate.render_metadata=changed_caption
+    with pytest.raises(PublicMediaUnavailable,match="untrusted_public_media_renderer"):
+        await issue(gate,verified,binding)
+    assert not gate._tickets
