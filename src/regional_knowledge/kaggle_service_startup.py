@@ -19,7 +19,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from .bge_queue import BgeQueue
 from .control_spool import ControlSpool
-from .kaggle_public_backend import KaggleSourceBackend, TargetReadBinding, TargetUnavailable, current_binding
+from .kaggle_public_backend import KaggleSourceBackend, TargetReadBinding, TargetUnavailable, current_binding, binding_is_current_reader
 from .kaggle_source_commands import AcceptedSourceDispatch
 from .oauth_provider import RegionalOAuthProvider
 from .participants import Participants
@@ -328,7 +328,7 @@ class TargetServiceStartup:
     def binding_current(self,binding):
         try:
             return (not self.closed and type(binding) is TargetReadBinding
-                and current_binding(self.config.queue)==binding
+                and binding_is_current_reader(self.config.queue,binding)
                 and self.config.writer_current(database_generation=binding.database_generation,
                     writer_generation=self.config.writer_generation))
         except Exception:return False
