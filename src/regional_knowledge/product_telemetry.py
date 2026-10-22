@@ -46,11 +46,7 @@ _RESOURCE_FIELDS = frozenset({
     "memory_current_bytes", "memory_limit_bytes", "memory_events_high",
     "memory_events_max", "memory_events_oom", "memory_events_oom_kill",
     "io_read_bytes", "io_write_bytes", "sample_seq", "sample_time_unix_ms",
-    "sampling_failures_total", "received_unix_ms",
-    # Narrow compatibility aliases only; never allow arbitrary metadata.
-    "cpu_percent", "rss_bytes", "pss_bytes", "shared_bytes",
-    "cgroup_memory_current_bytes", "cgroup_memory_limit_bytes",
-    "cgroup_memory_max_bytes", "read_queue_depth", "process_count"
+    "sampling_failures_total", "received_unix_ms"
 })
 _RESOURCE_INTEGER_FIELDS = frozenset({
     "pid", "pg_master_pid", "cpu_threads", "cgroup_version", "cpu_quota_us",
