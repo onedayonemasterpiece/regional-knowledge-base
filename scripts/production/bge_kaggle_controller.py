@@ -223,6 +223,20 @@ def require_writer_binding(queue, run_id, writer_generation):
         raise ValueError('restore writer generation belongs to another run')
 
 
+def saved_kernel_ref(value):
+    """Same owner/slug identity in Kaggle's save forms: 'o/s', '/o/s', '/code/o/s'."""
+    if type(value) is not str:return None
+    value=value.strip('/')
+    return value.removeprefix('code/') if value.count('/')==2 else value
+
+
+def ref_shape(value, ref):
+    """Non-identifying shape of a provider ref for diagnostics."""
+    if type(value) is not str:return type(value).__name__
+    owner,slug=ref.split('/',1)
+    return value.replace(slug,'<slug>').replace(owner,'<owner>')[:80]
+
+
 def target_sql_hashes(target, repository):
     """Pin exactly the migration prefix the native initializer will execute."""
     from regional_knowledge.kaggle_owned_pg import sql_artifacts, digest
@@ -341,7 +355,10 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                     boundary='save_kernel'
                     preparation_step='provider_submission'
                     saved=api.kernels_push(str(folder),timeout=11*3600)
-                    if saved.error or saved.ref!=ref or saved.version_number<1:
+                    if saved.error or saved_kernel_ref(saved.ref)!=ref or saved.version_number<1:
+                        logging.warning(json.dumps({'event':'bge_save_receipt_mismatch','run_id':run_id,
+                            'error_present':bool(saved.error),'ref_shape':ref_shape(saved.ref,ref),
+                            'version_positive':type(saved.version_number) is int and saved.version_number>0}))
                         raise RuntimeError('kaggle_save_receipt_invalid')
                     queue.launch_record(run_id,ref,provider_version=saved.version_number)
                     logging.info(json.dumps({'event':'bge_dispatched','run_id':run_id,'provider_ref':ref,'provider_version':saved.version_number,'cpu_only':True}))

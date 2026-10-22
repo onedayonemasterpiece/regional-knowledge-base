@@ -313,3 +313,12 @@ def test_dead_run_recovery_phases_are_not_startup_demand_or_capacity(tmp_path):
     assert q.enqueue('actor','doc-1',['text'],kind='document')
     with q.connect(write=False) as db:
         assert db.execute("select count(*) from runs where status='starting'").fetchone()[0]==1
+
+
+def test_saved_kernel_ref_accepts_only_the_same_owner_slug_forms():
+    module=controller()
+    for value in ('owner/rkb-bge-m3-cpu','/owner/rkb-bge-m3-cpu','/code/owner/rkb-bge-m3-cpu','code/owner/rkb-bge-m3-cpu/'):
+        assert module.saved_kernel_ref(value)=='owner/rkb-bge-m3-cpu'
+    for value in ('other/rkb-bge-m3-cpu','/code/owner/other','/code/other/owner/rkb-bge-m3-cpu',None,''):
+        assert module.saved_kernel_ref(value)!='owner/rkb-bge-m3-cpu'
+    assert module.ref_shape('/code/owner/rkb-bge-m3-cpu','owner/rkb-bge-m3-cpu')=='/code/<owner>/<slug>'

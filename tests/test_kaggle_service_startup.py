@@ -324,3 +324,44 @@ async def test_pending_dataset_checkpoint_keeps_verified_reads_open(service):
             async def refresh(self,binding):raise RuntimeError('post-promotion settle failed')
         startup.dataset_checkpoints=Broken()
         assert not await startup.refresh() and not startup.reads_current()
+
+
+@pytest.mark.asyncio
+async def test_idle_unchanged_prefix_skips_redundant_extend_until_margin(service):
+    s=service;startup=s.startup;s.adapter.available=True
+    now=[100.]
+    async with startup.lifespan(None):
+        assert startup.reads_current()
+        spool=startup.config.spool;proof=s.adapter.proof
+        proof.verifier=SimpleNamespace(clock=lambda:now[0],timeout_seconds=10)
+        proof.deadline=now[0]+30;proof.pending=()
+        proof.accepted_sequence=proof.applied_sequence=spool._source_covered_sequence
+        calls=len(s.adapter.calls)
+        assert await startup.refresh() and startup.reads_current()
+        assert len(s.adapter.calls)==calls  # unchanged prefix, ample deadline
+        now[0]+=15  # inside 2*refresh+timeout of the deadline
+        assert await startup.refresh() and s.adapter.calls[-1][0]=='extend'
+        now[0]=100.;calls=len(s.adapter.calls)
+        proof.accepted_sequence+=1  # new accepted command not yet applied
+        assert await startup.refresh() and len(s.adapter.calls)==calls+1
+
+
+@pytest.mark.asyncio
+async def test_unchanged_geo_denial_is_not_retried_every_tick(service,monkeypatch):
+    import regional_knowledge.kaggle_service_startup as module
+    s=service;startup=s.startup;s.adapter.available=True
+    class Gate:
+        _manifest=None;calls=0
+        async def establish(self,keys,*,binding):
+            Gate.calls+=1;raise RuntimeError('synthetic GEO outcome not durable')
+        def invalidate(self):pass
+    clock=[1000.];monkeypatch.setattr(module.time,'monotonic',lambda:clock[0])
+    async with startup.lifespan(None):
+        startup.geo_gate=Gate()
+        assert await startup.refresh() and Gate.calls==1
+        assert await startup.refresh() and Gate.calls==1  # same inputs: no spool-locked re-read
+        clock[0]+=module.GEO_RETRY_SECONDS
+        assert await startup.refresh() and Gate.calls==2  # bounded periodic retry
+        startup.config.spool._source_covered_sequence+=1
+        assert await startup.refresh() and Gate.calls==3  # new spool sequence retries at once
+        assert startup.reads_current()
