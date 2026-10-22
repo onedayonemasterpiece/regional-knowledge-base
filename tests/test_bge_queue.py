@@ -18,6 +18,29 @@ def test_atomic_start_and_durable_replayed_job(tmp_path):
     with pytest.raises(PermissionError):queue.result('other',ids[0])
     with pytest.raises(ValueError):queue.enqueue('actor','same',['changed'])
 
+
+def test_planned_idle_drain_preserves_provider_reservation_and_pending_work(tmp_path):
+    queue=BgeQueue(tmp_path/'queue.sqlite');job=queue.enqueue('actor','work',['query'])
+    run,token=run_details(queue)
+    queue.launch_claim(run,provider_ref='owner/notebook')
+    queue.launch_record(run,'owner/notebook',provider_version=112)
+    queue.heartbeat(run,token,ready=True)
+    with pytest.raises(PermissionError):
+        queue.request_idle_drain(run,provider_ref='owner/notebook',provider_version=113)
+    claimed=queue.claim(run,token)
+    assert not queue.request_idle_drain(run,provider_ref='owner/notebook',provider_version=112)
+    queue.complete(run,token,job,claimed['claim'],SPACE,[[1]+[0]*1023],{})
+    pending=queue.enqueue('actor','next',['next query'])
+    assert queue.request_idle_drain(run,provider_ref='owner/notebook',provider_version=112)
+    assert queue.claim(run,token) is None
+    queue.maintenance()
+    with queue.connect(write=False) as db:
+        row=db.execute('SELECT status,launch_state FROM runs WHERE id=?',(run,)).fetchone()
+        assert tuple(row)==('expired','dispatched')
+        assert not db.execute('SELECT 1 FROM bge_provider_terminal_receipts WHERE run_id=?',(run,)).fetchone()
+    assert queue.result('actor',pending)['state']=='pending'
+    assert queue.result('actor',job)['state']=='done'
+
 def test_useful_lease_heartbeat_does_not_extend_it(tmp_path):
     now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
     queue.enqueue('actor','one',['query']);run,token=run_details(queue)
