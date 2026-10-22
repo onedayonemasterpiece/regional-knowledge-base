@@ -25,6 +25,23 @@ Operator must first provide exact accepted source/edition and independently huma
 
 The manifest **must not be created from synthetic text/locator fixtures for production use**. It is never written to Git or raw latency logs. The leaf emits only `gold_fixture_sha256` in the run receipt, and before/after comparison refuses changes in question or gold manifest SHA. Correct source-revision/locator quality of actual returned evidence is verified separately by the authorized operator; a fast hybrid response without true expected evidence is not a useful product answer.
 
+## Separate readiness / Saved receipts before any timed query
+
+In addition to the human-reviewed eight-query gold, the operator passes four
+**different** nonsecret milestone attestations under `gold_manifest.readiness`:
+`notebook_state=running` with exact run-ref hash;
+`pg_state=restored` with current database generation/schema/applied/projection;
+`route_state=usable` with already observed authorized public-read trace digest;
+and `import_state=Saved` with exact source revision/edition and a
+**remotely durable** outcome receipt digest. A running notebook, successful
+PG restore, working read route, and truly Saved accepted source are **not
+interchangeable**. If any is unverified or mismatched, the existing
+`run_public_workload` stops before calling `query_public`. This is a
+source-integrity assertion on owner-provided observations, not a new
+status API/secret lookup/permission grant or a live acceptance certificate.
+Unit tests use explicitly synthetic refs for rejection logic; real
+readbacks remain unavailable until Opus handoff.
+
 ## Bounded workload and exact timeouts
 
 The same **eight owner-frozen source-grounded positive questions** `q01`…`q08` appear in both A/B observations, with aggregate canonical question SHA-256 and exact human-reviewed gold manifest digest saved; actual question/evidence content stays private. For each cohort (serial concurrency **1**, then bounded concurrent **2**), each question has **2 serial warmups** and **6 measured repeats**: **32 warmups + 96 measured = 128 requests** total, max entire run **450 seconds**. No extra alias calls, automatic retries, client sessions or hidden BGE/PG bypass. Errors and gate closures remain in the measured denominator.
