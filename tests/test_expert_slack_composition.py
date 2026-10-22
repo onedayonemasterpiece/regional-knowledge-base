@@ -19,7 +19,9 @@ from regional_knowledge.read_issuance import ReadIssuanceMiddleware
 from regional_knowledge.server import build_server
 from test_control_spool import env
 from test_expert_request_control import _prepare, _event
-from test_kaggle_public_backend import target, settle, release
+from test_kaggle_public_backend import target, release
+from test_source_read_gate import item, SOURCE
+from regional_knowledge.kaggle_protocol import QueryResult
 from test_read_authority import auth
 from test_participants import people
 from test_kaggle_service_startup import service
@@ -146,7 +148,19 @@ async def test_signed_ingress_remote_journal_then_same_person_delegated_read(ser
             assert issued.query.actor.person_id != s.target.auth.p.owner.subject
             assert issued.query.request_id == request_id
             assert issued.query.turn_generation == lease['generation']
-            await settle(s.target, issued)
+            # This composition uses the real target SourceReadGate, not the
+            # public adapter's simplified fake gate. Return source-bound
+            # dependency evidence, as the existing startup test does.
+            verified = QueryResult(
+                request_id=issued.query.request_id,
+                connection_generation=s.target.generation,
+                turn_generation=issued.query.turn_generation,
+                status='ok', mode='hybrid',
+                observed_data_seq=5, observed_projection_seq=5,
+                observed_database_generation='synthetic-db',
+                observed_visibility_epoch=0, evidence=(item(SOURCE),))
+            assert await s.startup.admission.finish_read(
+                s.target.run, s.target.token, s.target.generation, verified)
             response = await task
             assert response.status_code == 200
             answer = response.json()
@@ -154,6 +168,6 @@ async def test_signed_ingress_remote_journal_then_same_person_delegated_read(ser
             assert answer['request_id'] == request_id
             assert not answer['context_gap']
             assert len(answer['evidence']) == 1
-            assert answer['evidence'][0]['text'] == 'Evidence'
+            assert answer['evidence'][0]['text'] == 'synthetic evidence'
             assert not s.target.auth.resolver._contexts
             await release(s.target, issued)
