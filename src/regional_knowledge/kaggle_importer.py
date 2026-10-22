@@ -41,6 +41,7 @@ _LOG = logging.getLogger(__name__)
 MAX_BYTES = 128 * 1024 * 1024
 MAX_PAGES = 2500
 MAX_PASSAGES = 32
+MAX_STAGE_PASSAGES = 100
 MAX_BODY_BYTES = 65536
 MAX_CONTROL_BYTES = 8 * 1024 * 1024
 MAX_CONTROL_ROWS = 32
@@ -95,6 +96,14 @@ class KaggleSourceImporter:
             (SOURCE_IMPORT_V4,DOMAIN_V2_REVISIONS,IMPORT_V4_DEPENDENCY,resolved_current_import_v4_command))
             if (handler:=self.spool.registry.handlers.get(('domain_command',route,*versions.wire()))) is not None
             and handler.dependency == dependency]
+        from .source_activation import ACTIVATION_REVISIONS,ACTIVATE_ROUTE,resolved_activation_command
+        from .kaggle_native_source_bindings import native_source_handler
+        native=self.spool.registry.handlers.get(('domain_command',ACTIVATE_ROUTE,*ACTIVATION_REVISIONS.wire()))
+        if native is not None:
+            expected=native_source_handler(ACTIVATE_ROUTE,check_sha256=native.check.definition_sha256,
+                apply_sha256=native.apply.definition_sha256)
+            if native!=expected:raise TypeError('one exact native source profile required')
+            choices.append((ACTIVATION_REVISIONS,resolved_activation_command))
         expected_database=getattr(getattr(config,'history_adapter',None),'database',None)
         if expected_database is not None:
             expected=tuple(getattr(expected_database,key) for key in ('schema_revision','function_revision','executor_revision'))
@@ -115,6 +124,10 @@ class KaggleSourceImporter:
             for name in ('native_proof_sha256', 'semantic_json'):
                 if name not in columns:
                     db.execute('ALTER TABLE rkb_source_intake_control ADD COLUMN '+name+' TEXT')
+        self.native_intake=None
+        if self.import_revisions==ACTIVATION_REVISIONS:
+            from .kaggle_native_source_intake import NativeSourceIntake
+            self.native_intake=NativeSourceIntake(self)
 
     def _binding_current(self, binding):
         if not self.startup.binding_current(binding):
@@ -254,6 +267,10 @@ class KaggleSourceImporter:
                     raise failure('existing_file_intake_differs', status='invalid_query')
                 row = dict(prior)
             else:
+                if self.native_intake is not None and db.execute(
+                        "SELECT 1 FROM rkb_source_intake_control WHERE person_id=? AND phase NOT IN ('finalized','failed') LIMIT 1",
+                        (actor,)).fetchone():
+                    raise failure('another_native_ingestion_active')
                 source_id, ingestion_id, request_id = (str(uuid4()) for _ in range(3))
                 now = self.queue.clock()
                 db.execute('''INSERT INTO rkb_source_intake_control(ingestion_id,source_id,person_id,file_id,
@@ -280,6 +297,10 @@ class KaggleSourceImporter:
             'continue_pages', next_cursor='0', source_archive_status='verified')
 
     def _original_pending(self,row,status):
+        if status.reason == 'original_telegram_binding_required':
+            return self._output(row,'processing',
+                'The owned Kaggle runtime requires its existing authorized Telegram archive client binding',
+                'blocker',source_archive_status='pending',warnings=[status.reason])
         if status.reason == 'original_attachment_retry_same_file_required':
             return self._output(row,'processing',
                 'Resume book_ingest(start) with the same file_id, metadata and rights, and a refreshed attachment URL',
@@ -318,6 +339,30 @@ class KaggleSourceImporter:
         return proof
 
     @staticmethod
+    def _uses_issued_images(pages):
+        return any(page.source_image_receipt_sha256 is not None for page in pages)
+
+    async def _issued_images(self,access,row,receipt,pages):
+        # These receipts bind actual issued pixels to this exact original.
+        # The model's source_text/bbox remain explicitly model-authored. They
+        # are not compared with (or labelled as) a native-text extraction.
+        if any(page.source_image_receipt_sha256 is None
+                or page.source_material!='visual_reviewed' or not page.source_review_note
+                for page in pages):
+            raise failure('stage_requires_reviewed_issued_image',status='invalid_query')
+        for offset in range(0,len(pages),8):
+            selected=pages[offset:offset+8]
+            issued=await self.originals.selected_image_receipts(access.context,row['ingestion_id'],
+                tuple((page.physical_page_index,page.source_image_receipt_sha256) for page in selected))
+            await self._check(access.authority,access.context,access.binding)
+            if len(issued)!=len(selected) or any(
+                    value['original_receipt_sha256']!=receipt.receipt_sha256
+                    or value['page_id']!=str(page.page_id)
+                    or value['source_image_receipt_sha256']!=page.source_image_receipt_sha256
+                    for page,value in zip(selected,issued,strict=True)):
+                raise failure('source_image_provenance_changed')
+
+    @staticmethod
     def _operation(row):
         return 'source-import:'+row['ingestion_id']
 
@@ -331,6 +376,7 @@ class KaggleSourceImporter:
             raise
 
     async def _stage(self, access, row, payload, source_import):
+        if self.native_intake is not None:return await self.native_intake.stage(access,row,payload,source_import)
         receipt = await self._receipt(access, row)
         if receipt is None:
             return self._output(row, 'processing', 'Original verification pending', 'wait')
@@ -338,6 +384,8 @@ class KaggleSourceImporter:
             raise failure('accepted_import_is_immutable')
         if not payload:
             raise failure('model_authored_stage_required', status='invalid_query')
+        if len(canonical(payload))>1024*1024:
+            raise failure('stage_envelope_bound',status='invalid_query')
         if (source_import is not None and source_import.public_rights is not None
                 and canonical(source_import.public_rights.model_dump(mode='json')).decode() != row['rights_json']):
             raise failure('original_public_rights_basis_is_immutable', status='invalid_query')
@@ -347,9 +395,15 @@ class KaggleSourceImporter:
         pages = [StagePageInput.model_validate(value) for value in payload.get('pages', [])]
         chunks = [StageChunkInput.model_validate(value) for value in payload.get('chunks', [])]
         poi_facts=[StagePoiFactInput.model_validate(value) for value in payload.get('poi_facts',[])]
-        if len(pages) > 8 or len(chunks) > MAX_PASSAGES or any(page.illustrations for page in pages):
+        if (len(pages)>8 or len(chunks)>MAX_STAGE_PASSAGES or len(payload.get('story_candidates',[]))>12
+                or any(page.illustrations for page in pages)):
             raise failure('target_small_text_stage_only')
         graph = StagedGraph.model_validate_json(row['stage_json']) if row['stage_json'] else StagedGraph(revision=1)
+        image_mode=self._uses_issued_images(pages) or self._uses_issued_images(graph.pages)
+        if image_mode:
+            if any(page.source_image_receipt_sha256 is None for page in graph.pages):
+                raise failure('source_provenance_mode_changed',status='invalid_query')
+            await self._issued_images(access,row,receipt,pages)
         partial = compile_model_stage(graph, document_id=row['source_id'], revision=1, pages=pages, chunks=chunks,poi_facts=poi_facts)
         graph = merge_stage(graph, partial)
         if payload.get('entity_candidates'):
@@ -358,10 +412,14 @@ class KaggleSourceImporter:
             validate_staged_bundle(bundle,graph)
             if graph_digest(bundle.model_dump(mode='json')) not in {graph_digest(b.model_dump(mode='json')) for b in graph.entity_candidates}:
                 graph=graph.model_copy(update={'entity_candidates':[*graph.entity_candidates,bundle]})
-        if len(graph.entity_candidates)>32 or len(graph.poi_facts)>32:raise failure('source_graph_stage_bound',status='invalid_query')
-        if len(graph.pages) > MAX_PAGES or len(graph.chunks) > MAX_PASSAGES:
+        if (len(poi_facts)>32 or len((payload.get('entity_candidates') or {}).get('entities',[]))>32
+                or (not image_mode and (len(graph.entity_candidates)>32 or len(graph.poi_facts)>32))):
+            raise failure('source_graph_stage_bound',status='invalid_query')
+        if len(graph.pages)>MAX_PAGES or (not image_mode and len(graph.chunks)>MAX_PASSAGES):
             raise failure('small_source_stage_bound')
-        proof = await self._native_proof(access, row, receipt, graph)
+        # Image mode validates only the selected batch above. No implicit call
+        # to book_pages/native_pages, including on resume or exact replay.
+        proof = None if image_mode else await self._native_proof(access,row,receipt,graph)
         semantic = json.loads(row['semantic_json']) if row['semantic_json'] else {'candidates': {}, 'page_reviews': {}}
         for value in payload.get('story_candidates', []):
             candidate = StageStoryCandidateInput.model_validate(value)
@@ -370,7 +428,7 @@ class KaggleSourceImporter:
             semantic['candidates'][candidate.candidate_key] = candidate.model_dump(mode='json')
         for page in pages:
             semantic['page_reviews'][page.page_id] = bool(page.knowledge_reviewed and page.story_candidates_reviewed)
-        if len(semantic['candidates']) > 12:
+        if not image_mode and len(semantic['candidates']) > 12:
             raise failure('small_source_semantic_bound')
         research = source_import.research if source_import is not None else None
         research_bytes = canonical(research.model_dump(mode='json')).decode() if research else row['research_json']
@@ -381,7 +439,7 @@ class KaggleSourceImporter:
                     or args.get('ingestion_id') != row['ingestion_id']):
                 raise failure('research_requires_reachable_owned_page_continuation', status='invalid_query')
         row = await asyncio.to_thread(self._save, row, stage_json=graph.model_dump_json(),
-            research_json=research_bytes, phase='staging', native_proof_sha256=proof.sha256,
+            research_json=research_bytes, phase='staging', native_proof_sha256=proof.sha256 if proof else None,
             semantic_json=canonical(semantic).decode())
         return self._output(row, 'staged', 'Model-authored source stage retained; validate complete source coverage', 'validate',
             source_archive_status='verified')
@@ -390,6 +448,13 @@ class KaggleSourceImporter:
         if row['stage_json'] is None or row['research_json'] is None:
             raise failure('source_stage_and_model_authored_research_required', status='invalid_query')
         graph = StagedGraph.model_validate_json(row['stage_json'])
+        if self._uses_issued_images(graph.pages):
+            await self._issued_images(access,row,receipt,graph.pages)
+            # source-manifest.v1 declares exact native-block offsets and PDF
+            # <=32 pages. Never smuggle model text or a larger source through
+            # its frozen accepted-command semantics. The native batch/activate
+            # revision is a separate explicit capability, not an inferred pin.
+            raise failure('source_image_activation_revision_required')
         await self._native_proof(access, row, receipt, graph)
         validation = validate_graph(graph, expected_page_count=receipt.page_count)
         if not validation.ready:
@@ -503,6 +568,7 @@ class KaggleSourceImporter:
         return result, narrative_inputs
 
     async def _validate(self, access, row):
+        if self.native_intake is not None:return await self.native_intake.validate(access,row)
         receipt = await self._receipt(access, row)
         if receipt is None:
             return self._output(row, 'processing', 'Original verification pending', 'wait')
@@ -607,6 +673,7 @@ class KaggleSourceImporter:
             return entry
 
     async def _finalize(self, access, row):
+        if self.native_intake is not None:return await self.native_intake.finalize(access,row)
         entry = await self._entry(row)
         if entry is None:
             if not self._intake_coverage_current(access.binding):
@@ -727,6 +794,8 @@ class KaggleSourceImporter:
                             output = await self._stage(access, row, payload, source_import)
                         elif command == 'validate':
                             output = await self._validate(access, row)
+                        elif self.native_intake is not None and command=='status':
+                            output=await self.native_intake.status(access,row)
                         elif command == 'finalize' or await self._entry(row) is not None or row['phase'] == 'embedding':
                             output = await self._finalize(access, row)
                         elif row['phase']=='validated':

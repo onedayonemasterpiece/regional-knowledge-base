@@ -14,7 +14,8 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 from psycopg.errors import QueryCanceled
 from .kaggle_domain_schema import (TABLES_9,FUNCTIONS_9,TRIGGERS_9,TABLES_10,FUNCTIONS_10,TRIGGERS_10,
-    TABLES_11,FUNCTIONS_11,TRIGGERS_11)
+    TABLES_11,FUNCTIONS_11,TRIGGERS_11,FUNCTIONS_12,TABLES_13,FUNCTIONS_13,TRIGGERS_13,
+    TABLES_14,FUNCTIONS_14,TRIGGERS_14,IMAGE_SOURCE_SCHEMA)
 
 
 class DatabaseProbeUnavailable(RuntimeError):
@@ -145,16 +146,19 @@ def _json(value):
 
 
 def native_probe_for_schema(schema_revision, *, timeout_seconds=2.0):
-    """Measured metadata budget only; selecting it grants no database readiness.
+    """Bounded metadata budget only; selecting it grants no database readiness.
 
     The exact PG17.11 fresh8 fixture measured545 records/218231 bytes.576 gives
     31 records of fixed headroom. Existing schema6/7 and unrecognized revisions
     retain512. The complete001..011 PG17.11 graph fixture measured1329 records /
     606416 bytes before role hardening; explicit11 uses1376. Byte/definition limits are unchanged.
+    Schema14 uses the existing hard row ceiling while its combined native
+    fixture is measured; this is not a claimed resource/performance acceptance.
     """
     return NativeDatabaseProbe(timeout_seconds=timeout_seconds,
         schema_revision=schema_revision,
-        max_catalog_rows=(1408 if schema_revision=='rkb-v4-sql001-012-v1' else
+        max_catalog_rows=(2048 if schema_revision==IMAGE_SOURCE_SCHEMA else
+            1408 if schema_revision=='rkb-v4-sql001-012-v1' else
             1376 if schema_revision=='rkb-v4-sql001-011-v1' else
             576 if schema_revision=='rkb-v4-sql001-008-v1' else 512))
 
@@ -248,15 +252,18 @@ class NativeDatabaseProbe:
                             state = json.loads(row[0])
                             fields = self._state(state)
                             if (bool(STORY_TABLES.intersection(observed['tables'])) !=
-                                    (state['schema_revision'] in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'))):
+                                    (state['schema_revision'] in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1',IMAGE_SOURCE_SCHEMA))):
                                 raise DatabaseProbeUnavailable('database_story_revision_mismatch')
                             if (bool(FACT_TABLES.intersection(observed['tables'])) !=
-                                    (state['schema_revision'] in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1'))):
+                                    (state['schema_revision'] in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1',IMAGE_SOURCE_SCHEMA))):
                                 raise DatabaseProbeUnavailable('database_fact_revision_mismatch')
                             for layer,known in ((9,TABLES_9),(10,TABLES_10),(11,TABLES_11)):
-                                required=state['schema_revision'] in {f'rkb-v4-sql001-{n:03d}-v1' for n in range(layer,12)}
+                                required=state['schema_revision'] in {f'rkb-v4-sql001-{n:03d}-v1' for n in range(layer,12)}|{IMAGE_SOURCE_SCHEMA}
                                 if bool(known.intersection(observed['tables']))!=required:
                                     raise DatabaseProbeUnavailable('database_domain_revision_mismatch')
+                            for known in (TABLES_13,TABLES_14):
+                                if bool(known.intersection(observed['tables']))!=(state['schema_revision']==IMAGE_SOURCE_SCHEMA):
+                                    raise DatabaseProbeUnavailable('database_image_source_revision_mismatch')
                             add('semantics','current',{key:state[key] for key in (
                                 'schema_revision','function_revision','executor_revision','last_migration_id','last_migration_hash')})
             return prefix + b','.join(records) + suffix, fields
@@ -283,7 +290,8 @@ class NativeDatabaseProbe:
             required_triggers=required_triggers|FACT_TRIGGERS
         extra_functions={}
         for known_tables,known_functions,known_triggers in ((TABLES_9,FUNCTIONS_9,TRIGGERS_9),
-                (TABLES_10,FUNCTIONS_10,TRIGGERS_10),(TABLES_11,FUNCTIONS_11,TRIGGERS_11)):
+                (TABLES_10,FUNCTIONS_10,TRIGGERS_10),(TABLES_11,FUNCTIONS_11,TRIGGERS_11),
+                (TABLES_13,FUNCTIONS_13,TRIGGERS_13),(TABLES_14,FUNCTIONS_14,TRIGGERS_14)):
             if known_tables.intersection(observed['tables']):
                 tables=tables|known_tables;functions=functions|known_functions.keys()
                 required_triggers=required_triggers|known_triggers
@@ -295,6 +303,9 @@ class NativeDatabaseProbe:
                 'rkb_v4.check_geo_dependencies_v2_transition(bytea,jsonb,jsonb,text)':('boolean',False),
                 'rkb_v4.apply_geo_dependencies_v2_transition(bytea,jsonb,jsonb,text)':('bytea',False)}
             functions=functions|upgrades.keys();extra_functions.update(upgrades)
+        if (TABLES_13|TABLES_14).intersection(observed['tables']):
+            functions=functions|FUNCTIONS_12.keys()
+            extra_functions.update(FUNCTIONS_12)
         env = observed['environment'].get('runtime',{})
         if (type(env.get('server_version_num')) is not int or env['server_version_num']//10000 != 17
                 or env.get('vector_version') != '0.8.2' or env.get('vector_schema') != 'public'

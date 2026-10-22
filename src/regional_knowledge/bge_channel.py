@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import math
+import secrets
 from itertools import count
 
 import anyio
@@ -132,6 +133,9 @@ def channel_route(queue, *, read_telemetry=None):
             cancelled_work = None
             ready = False
             promoted = False
+            ready_ack_sent = False
+            telegram_inflight = False
+            telegram_challenge = None
             pins_announced = False
             runtime_readiness = None
             runtime_blocked = None
@@ -149,6 +153,7 @@ def channel_route(queue, *, read_telemetry=None):
                 await asyncio.wait_for(outgoing.put((priority, next(sequence), frame, encoded, work)), SEND_TIMEOUT_SECONDS)
 
             async def sender():
+                nonlocal ready_ack_sent, telegram_inflight, telegram_challenge
                 while True:
                     priority, _, frame, encoded, work = await outgoing.get()
                     if work is not None:
@@ -173,7 +178,34 @@ def channel_route(queue, *, read_telemetry=None):
                                                     'run_id': run_id, 'connection_generation': generation,
                                                     'reason': 'claim_changed'}))
                             continue
-                    await asyncio.wait_for(socket.send_text(encoded), SEND_TIMEOUT_SECONDS)
+                    if frame.get('type')=='RKB1_BIND_GRANT':
+                        observed=await status()
+                        owner=getattr(queue,'_telegram_runtime_source',None)
+                        permitted=(ready_ack_sent and owner is not None
+                            and all(observed.get(k) for k in ('ready','active','runtime_verified'))
+                            and observed.get('provider_version') is not None
+                            and await queue_call(owner.lease.current,run_id,hello['runtime_incarnation'])
+                            and owner.current(run_id,hello['runtime_incarnation'],generation))
+                        if not permitted:
+                            # Current socket gets an explicit retryable answer, never a silent drop.
+                            frame.clear()
+                            frame.update(type='RKB1_BIND_PENDING',protocol_version=2,connection_generation=generation)
+                            encoded=json.dumps(frame,separators=(',',':'))
+                        else:
+                            # Publish correlation before send awaits: a fast valid RESULT is allowed.
+                            telegram_challenge=secrets.token_urlsafe(24)
+                            frame['challenge']=telegram_challenge
+                            encoded=json.dumps(frame,allow_nan=False,separators=(',',':'))
+                    if frame.get('type')=='RKB1_BIND_PENDING':
+                        telegram_inflight=False;telegram_challenge=None
+                    try:
+                        await asyncio.wait_for(socket.send_text(encoded), SEND_TIMEOUT_SECONDS)
+                    finally:
+                        if frame.get('type')=='RKB1_BIND_GRANT':
+                            for key in ('bundle_b64','api_id','api_hash'):frame.pop(key,None)
+                        encoded=None
+                    if frame.get('type')=='READY_ACK' and frame.get('status')=='ready':
+                        ready_ack_sent=True
 
             async def status():
                 return await queue_call(queue.channel_status, run_id, token, generation)
@@ -291,7 +323,7 @@ def channel_route(queue, *, read_telemetry=None):
                     await asyncio.sleep(RECONCILE_SECONDS)
 
             async def receiver():
-                nonlocal ready, promoted, probe_nonce, runtime_readiness, runtime_blocked
+                nonlocal ready, promoted, probe_nonce, runtime_readiness, runtime_blocked, telegram_inflight, telegram_challenge
                 while True:
                     message = await socket.receive()
                     if message['type'] == 'websocket.disconnect':
@@ -359,6 +391,39 @@ def channel_route(queue, *, read_telemetry=None):
                         ready=True;runtime_blocked=None
                         await send('BOOTSTRAP_ACK',observation_sha256=receipt,status='observed_not_ready')
                         await promote(observed)
+                    elif frame['type']=='RKB1_BIND_REQUEST':
+                        _fields(frame,(*common,'retained_client'))
+                        if type(frame['retained_client']) is not bool:raise ValueError('telegram_request_fields')
+                        if telegram_inflight:raise ValueError('telegram_request_already_pending')
+                        telegram_inflight=True
+                        owner=getattr(queue,'_telegram_runtime_source',None)
+                        grant=None
+                        if (ready_ack_sent and owner is not None
+                                and all(observed.get(k) for k in ('ready','active','runtime_verified'))
+                                and observed.get('provider_version') is not None):
+                            try:
+                                async with asyncio.timeout(5):
+                                    grant=await owner.grant(run_id,hello['runtime_incarnation'],generation,
+                                        retained_client=frame['retained_client'])
+                            except Exception:
+                                grant=None
+                        if grant is None:await send('RKB1_BIND_PENDING')
+                        else:await send('RKB1_BIND_GRANT',**grant)
+                    elif frame['type']=='RKB1_BIND_RESULT':
+                        _fields(frame,(*common,'status','challenge'))
+                        if (not telegram_inflight or telegram_challenge is None
+                                or type(frame['challenge']) is not str
+                                or not secrets.compare_digest(frame['challenge'],telegram_challenge)
+                                or frame['status'] not in ('authorized','unavailable')):
+                            raise ValueError('unexpected_telegram_binding_result')
+                        telegram_inflight=False;telegram_challenge=None
+                        owner=getattr(queue,'_telegram_runtime_source',None)
+                        confirmed=False
+                        if owner is not None:
+                            confirmed=await owner.confirm_archive_auth(run_id,hello['runtime_incarnation'],generation,
+                                frame['status']=='authorized')
+                        if frame['status']=='authorized' and not confirmed:
+                            await send('RKB1_BIND_PENDING')
                     elif frame['type'] == 'READY':
                         _fields(frame, (*common, 'space', 'model_revision'), ('runtime_readiness',))
                         if frame['space'] != SPACE or frame['model_revision'] != REVISION:

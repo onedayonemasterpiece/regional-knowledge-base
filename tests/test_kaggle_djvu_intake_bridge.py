@@ -175,7 +175,7 @@ async def test_legacy_stored_intake_retries_same_exact_operation_after_bounds_up
         db.execute("""CREATE TABLE rkb_original_intakes(
             ingestion_id TEXT PRIMARY KEY,actor TEXT NOT NULL,operation_id TEXT NOT NULL,
             spec_json TEXT NOT NULL,storage_sha256 TEXT NOT NULL,acquisition_json TEXT,
-            receipt_json TEXT,failure_code TEXT,restore_json TEXT,
+            receipt_json TEXT,failure_code TEXT,restore_json TEXT,telegram_locator_json TEXT,
             UNIQUE(actor,operation_id))""")
     op = "source-original:" + INGEST
     old = OriginalIntakeSpec(SOURCE, INGEST, str(uuid5(UUID(INGEST), "original:" + op)),

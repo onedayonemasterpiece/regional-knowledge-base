@@ -125,3 +125,136 @@ installed PDF library on generated synthetic 10-page and truncated-text fixtures
 No real provider
 download, archive write, PG startup, model load or semantic import acceptance is
 claimed by these tests.
+
+
+
+## Direct Telegram PDF ingress (source seam, not a live credential binding)
+
+`book_ingest(start, telegram_original=...)` is an alternative to the existing
+`file` attachment, only on the configured Kaggle source profile. Do not combine
+both. The strict metadata object contains `chat_id`, `topic_id`, `message_id`,
+`document_id`, `sha256`, and `size`. A Vibe archive entry or topic link is not a
+complete locator; resolve the exact document from authoritative archive metadata.
+No session, token, API hash, download URL, bytes or arbitrary path is accepted.
+The existing owner-personal import authorization and public-rights requirements
+still apply. The normal attachment/fileParams path is unchanged.
+
+The locator becomes immutable original-acquire arguments under the existing
+queue/WSS request hash. The original spec and all historical PDF/parser receipt
+codecs remain unchanged. The native worker uses a separate
+`NativeTelegramOriginalDownloader`, borrowing an already-authorized Telethon
+client from the existing runtime owner, never creating or logging in a session.
+The configured archive chat/topic must match; the run's exclusive session lease
+and the current WSS writer binding must remain current before and during the
+transfer. A bounded 64 KiB stream goes directly from Telegram to the private
+Kaggle workspace. Exact message/document/topic, expected source SHA/size, PDF
+magic and the existing pinned parser are checked. Partial files are removed on
+failure/cancellation. No original bytes are returned through Dev or Vibe.
+
+Composition is intentionally explicit: the authorized runtime owner supplies
+`TargetRuntime(..., telegram_original_downloader=NativeTelegramOriginalDownloader(
+client=existing_owned_client, chat_id=registered_chat, topic_id=registered_topic,
+current=exclusive_session_lease_is_current))`. The downloader borrows the client;
+it does not connect/disconnect it, discover credentials, infer a lease, or mutate
+archive permissions. An absent binding returns
+`original_telegram_binding_required`, not a fabricated successful import.
+The operator must provide the existing service credential/session capability,
+its current exclusive ownership proof and the registered archive scope. This
+patch does not establish any of those from the mere presence of an environment
+variable, create a Telegram authorization, or activate a live notebook.
+
+This is **ingress only**. The existing archive/verification, retained-file
+restore, staging and durability mechanisms are preserved, including their
+currently declared limits. It does not replace persistence with Telegram or
+claim a complete Gause import/search, large-book activation, or Dataset durability.
+Tests use synthetic Telegram/parser/storage peers, not a private book or provider.
+
+## Selected-image staging and explicit native continuation
+
+`book_pages` now returns `native_text_info.source_image_receipt_sha256`, an exact
+binding of the issued image, original receipt, physical page identity, parser
+and render geometry. The controller persists only this small metadata record;
+it is neither extracted text nor pixels. Echo the hash in the corresponding
+`StagePageInput.source_image_receipt_sha256`, with `source_material=visual_reviewed`
+and a substantive `source_review_note`. The hash proves which image was issued,
+not that a human/model actually read it or that its transcription is correct.
+
+This selected-image mode accepts model-authored regions, text and geometry
+without comparing them with a native text layer. Staging reads only already
+issued receipts, never calls `book_pages` or scans the rest of the book. A
+missing/mismatched image, another original, unreviewed input or a revoked owner
+authority fails closed. Receipts survive controller restart; exact batch retry
+uses the existing deterministic page/region/chunk identities and stage merge.
+Eight pages, 100 chunks, 12 story candidates and 1 MiB JSON are batch envelopes,
+not whole-book truncation limits. On legacy profiles the existing bounded control-storage budget still applies;
+only the explicit schema14 profile below uses native PG staging.
+
+On legacy profiles, source-manifest.v1 and accepted source.import.v2–v4 keep
+native-block provenance and their historical single-command limits. An image
+stage on those profiles still returns `source_image_activation_revision_required`
+before embedding/acceptance. Old accepted bytes are not upgraded or relabelled.
+
+### Schema14 native source profile (implemented source, not a live rollout)
+
+The exact new profile is `rkb-v4-sql001-014-v1` /
+`rkb-v4-native-source-activation-v1` / `rkb-python-apply-native-source-v1`.
+It uses the same authenticated owner MCP entrypoint, original issuance authority,
+ControlSpool, remote acceptance/outcome journal, shared compute admission and
+native PG writer. There is no second model/service/queue.
+
+1. `stage` accepts up to eight **already issued** page images and bounded
+   model-authored content. The exact versioned batch includes the original,
+   metadata, public-rights declaration, image receipts and research continuation.
+   Batches chain by immutable hash and ordinal in native PG. Dev keeps compact
+   progress plus the existing exact durable command spool, not an accumulated
+   semantic graph, a complete book download or document vectors. Exact retries
+   retain their original key; UNKNOWN acceptance is read back, not resequenced.
+   Reissued identical pages can add chunks; an explicit corrected transcription
+   replaces dependent projected material but never erases accepted batch bytes.
+2. `validate` invokes native deterministic semantic/tokenizer preflight **before**
+   sealing. It checks complete original-page coverage, exact selected provenance,
+   supported semantic inputs and every complete BGE input's 512-token bound.
+   Known invalid input yields a durable rejected-precondition receipt while
+   leaving staging open for a corrected batch; an unchanged rejected head is
+   not blindly retried. No model reading, OCR, rendering or inference is invented.
+3. Explicit `finalize` begins materialization. Each accepted
+   `source.materialize.v1` command computes at most **one** input using the same
+   verified resident BGE/tokenizer. The vector is installed directly into native
+   PG, never sent through Dev. Polling resumes one ordinal, retains UNKNOWN and
+   reconciles an already installed vector without another forward. No PG
+   connection/transaction is held across tokenizer/model awaits. Shared admission
+   can schedule reads between commands. `status` alone does not invent finalize.
+4. After every input has an exact applied outcome, `source.activate.v1` atomically
+   installs public sources/passages/stories/facts/graph and image-origin proofs.
+   Intermediate stages/candidates/vectors are private writer tables, not search
+   results. The image manifest expressly calls supplied text
+   `model_transcription`; it never asserts native block offsets. Native readers
+   select the new verifier only under the exact schema14 profile. `Saved` /
+   `finalized` is returned only after remote durability of the activation outcome.
+
+SQL001–012 and old codecs/functions stay unchanged; additive SQL013/014 and
+versioned helper functions provide the new profile. Installing it into an existing
+live database requires its separately authorized, verified schema transition;
+shipping this source does not mutate an installed worker or claim live migration.
+Notebook packaging and native recovery retain the materializer and exact source
+hash; accepted materializer pins cannot silently use changed lowering code.
+Canonical knowledge records exclude only rebuildable embedding floats, never
+model-selected text or evidence. Restore recomputes vectors from exact accepted
+inputs with the pinned resident model, not another model-reading pass.
+
+Per-batch JSON has a 700 KiB source payload ceiling to fit the unchanged 1 MiB
+accepted-command envelope after encoding. The chain permits up to 2,500 batches /
+original pages, native compilation has a 128 MiB raw-input resource ceiling and
+32 MiB canonical projection ceiling, and at most 280,000 derived inputs. These
+are explicit resource refusals, not silent truncation or raised legacy codec caps.
+This text/story/fact/graph slice rejects nonempty illustration/media/article
+activation that it cannot faithfully lower. Those components remain explicit
+unsupported input, not silently dropped content or a claim of complete book parity.
+Native inputs with unknown nested semantic fields are likewise rejected.
+
+The 174-page regression uses actual typed receipt/page-count contracts and
+synthetic metadata/text, not the private book, real Telegram or Kaggle. It
+checks multi-batch staging, exact retry and no hidden page acquisition. New
+disposable-PG fixtures exercise public activation/search with synthetic unit
+vectors, separately from actual resident-BGE/live acceptance. Client-supplied pages outside `book_pages` still
+need their own trusted issuance binding; a caller-created hash is not evidence.
