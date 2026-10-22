@@ -103,6 +103,7 @@ class SourceDatasetCheckpoints:
             raise TypeError('existing Dataset journal and bounded checkpoint interval required')
         self.interval,self.clock=interval_seconds,clock
         self.dirty_since=None;self.last_sequence=None;self.last_change=self.clock()
+        self.last_control=None;self._refresh_lock=asyncio.Lock()
         with startup.config.queue.connect() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS rkb_dataset_seed(
                 operation_key TEXT PRIMARY KEY,provider_ref TEXT NOT NULL,
@@ -141,6 +142,14 @@ class SourceDatasetCheckpoints:
         return checkpoint,observed,manifest_ref,version
 
     async def refresh(self,binding,*,planned_stop=False):
+        """Checkpoint pending work; True retains the did-publish contract."""
+        # The existing refresh owner may be called by shutdown and maintenance
+        # concurrently. A second caller never starts another capture.
+        if self._refresh_lock.locked():return False
+        async with self._refresh_lock:
+            return await self._refresh(binding,planned_stop=planned_stop)
+
+    async def _refresh(self,binding,*,planned_stop=False):
         startup=self.startup;spool=startup.config.spool;queue=startup.config.queue
         latest=self.store.latest_checkpoint;proof=startup.history._coverage
         with queue.connect(write=False) as db:
@@ -158,12 +167,15 @@ class SourceDatasetCheckpoints:
                 planned_stop=planned_stop or (run is not None and queue.clock()-run['started']>=MAX_LIFETIME-600)
         if retained is None:
             late_outcomes=self.store.pending_outcomes()
+            try:control=self.store.pending_control()
+            except Exception as exc:raise CheckpointPending(type(exc).__name__) from exc
             if (proof is None or proof.applied_sequence<latest.base_sequence
-                    or proof.applied_sequence==latest.base_sequence and not late_outcomes):
-                self.dirty_since=None;return False
-            if self.dirty_since is None:self.dirty_since=self.clock()
-            if self.last_sequence!=proof.applied_sequence:
-                self.last_sequence=proof.applied_sequence;self.last_change=self.clock()
+                    or proof.applied_sequence==latest.base_sequence and not (late_outcomes or control)):
+                self.dirty_since=None;self.last_control=None;return False
+            if self.dirty_since is None:
+                self.dirty_since=self.clock();self.last_change=self.clock()
+            if self.last_sequence!=proof.applied_sequence or self.last_control!=control:
+                self.last_sequence=proof.applied_sequence;self.last_control=control;self.last_change=self.clock()
             batch_complete=(meta is not None and meta['sequence']==proof.applied_sequence
                 and proof.accepted_sequence==proof.applied_sequence)
             # Save at a drained work-cycle boundary, periodically, or before a
@@ -174,8 +186,10 @@ class SourceDatasetCheckpoints:
                 latest.database_generation,proof.applied_sequence]))
         else:operation=retained['operation_key']
         try:
+            if not startup.binding_current(binding):raise SnapshotError('dataset_checkpoint_writer_changed')
             checkpoint,observed,manifest_ref,version=await self._capture_verify(binding,operation,latest)
-            await asyncio.to_thread(self.store.promote,checkpoint,observed,manifest_ref=manifest_ref)
+            await asyncio.to_thread(self.store.promote,checkpoint,observed,manifest_ref=manifest_ref,
+                current=lambda:startup.binding_current(binding))
         except asyncio.CancelledError:raise
         except Exception as exc:
             raise CheckpointPending(type(exc).__name__,
