@@ -1,8 +1,9 @@
 """Queue one schema update for the existing API/controller; never start a notebook.
 
-Run from the deployed source with its normal PYTHONPATH. The optional artifact
-file contains only the existing immutable blob/reviewed-commit approval, never
-SQL, a URL or provider credentials. The API retains all writer/phase authority.
+Run from the deployed source with its normal PYTHONPATH. --sql-files contains a
+JSON map of new sql/NNN_name.sql files to UTF-8 SQL text. The authenticated
+controller sends it through schema_migrate; the worker verifies the manifest
+and applied-file ledger. The API retains all writer/phase authority.
 """
 import argparse
 import json
@@ -18,7 +19,9 @@ def main():
     parser.add_argument('--queue',default=os.getenv('RKB_BGE_QUEUE_PATH'))
     parser.add_argument('--target-version',required=True,type=int)
     parser.add_argument('--bundle-sha256',required=True)
-    parser.add_argument('--artifact-approval',type=Path)
+    delivery=parser.add_mutually_exclusive_group()
+    delivery.add_argument('--artifact-approval',type=Path)
+    delivery.add_argument('--sql-files',type=Path)
     args=parser.parse_args()
     if not args.queue or not Path(args.queue).is_file():
         parser.error('the existing configured queue is required')
@@ -32,8 +35,9 @@ def main():
     if row is None:
         parser.error('a current ready writer without unresolved publication is required')
     artifact=json.loads(args.artifact_approval.read_text()) if args.artifact_approval else None
+    sql_files=json.loads(args.sql_files.read_text()) if args.sql_files else None
     operation=request_migration(queue,target_schema_version=args.target_version,
-        bundle_sha256=args.bundle_sha256,artifact=artifact,**dict(row))
+        bundle_sha256=args.bundle_sha256,artifact=artifact,sql_files=sql_files,**dict(row))
     print(json.dumps(dict(operation_key=operation,status='requested')))
 
 

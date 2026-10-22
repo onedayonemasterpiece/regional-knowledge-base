@@ -1,7 +1,8 @@
 """Native-only fixed recovery phases on the existing document compute permit.
 
-The configured owner retains native sessions and capabilities. JSON references
-only select those retained objects; neither paths nor SQL are accepted on wire.
+The configured owner retains native sessions and capabilities. The authenticated
+controller may deliver numbered SQL files for schema_migrate; other phases only
+select retained objects and never accept arbitrary paths or executable code.
 """
 from __future__ import annotations
 
