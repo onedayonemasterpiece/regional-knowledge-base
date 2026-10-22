@@ -304,3 +304,66 @@ def test_failed_sink_is_counted_and_next_sample_reports_loss():
     assert records[1]['loss_before']['failed'] == 1
     assert records[1]['diagnostic_state'] == 'inconclusive'
     assert 'sensitive' not in json.dumps(records)
+
+
+def test_real_shared_product_telemetry_schema_when_companion_pr_is_present():
+    """PR301 stacked on PR303 must pass the actual sink's numeric allowlist.
+
+    Separately, PR301's base-main CI can run without the companion module.
+    Joint CI is required before either PR is considered integrated/READY.
+    """
+    product = pytest.importorskip('regional_knowledge.product_telemetry')
+    received = []
+    shared = product.ProductTelemetry(mode='debug', capacity=2, sink=received.append)
+    observation_data = dict(observation(), cpu_seconds=2.5, pss_kib=70,
+        cpu_quota_us=200000, cpu_period_us=100000,
+        cpu_usage_delta_seconds=1.5, cpu_utilization_cores=.75,
+        memory_events_oom=1, io_read_bytes=123, pg_master_rss_kib=300)
+    assert emit(shared, observation_data)
+    shared._queue.join()
+    assert len(received) == 1
+    record = received[0]
+    assert record['schema'] == 'rkb.product.telemetry.v1'
+    assert record['event'] == 'resource.sample' and record['level'] == 'debug'
+    assert record['run_id'] == 'fixture-run'
+    assert record['runtime_incarnation'] == 'fixture.incarnation'
+    assert record['sample_seq'] == 1 and record['release_sha256'] == 'a' * 64
+    assert record['rss_bytes'] == 102400 and record['pss_bytes'] == 70 * 1024
+    assert record['cgroup_memory_current_bytes'] == 10000
+    assert record['pg_master_rss_bytes'] == 300 * 1024
+    assert record['cpu_usage_delta_seconds'] == 1.5
+    assert record['worker_sampling_failed_total'] == 0
+    assert 'private_text' not in json.dumps(record)
+
+
+def test_real_shared_sink_full_and_failed_never_hold_resource_producer():
+    product = pytest.importorskip('regional_knowledge.product_telemetry')
+    entered, release = threading.Event(), threading.Event()
+    def blocked(_):
+        entered.set()
+        release.wait(2)
+    shared = product.ProductTelemetry(mode='debug', capacity=1, sink=blocked)
+    try:
+        assert emit(shared, observation(1))
+        assert entered.wait(1)
+        assert emit(shared, observation(2))
+        assert not emit(shared, observation(3))
+        assert shared.counters()['dropped'] == 1
+    finally:
+        release.set()
+        shared._queue.join()
+    seen = []
+    def broken(record):
+        seen.append(record)
+        raise PermissionError('sink unavailable')
+    failed = product.ProductTelemetry(mode='debug', capacity=1, sink=broken)
+    assert emit(failed, observation(1))
+    failed._queue.join()
+    assert failed.counters()['failed'] == 1
+    assert failed.counters()['sink_disabled'] is True
+    assert not emit(failed, observation(2))
+    assert failed.counters()['dropped'] >= 1
+    # Default standard mode does not implicitly enable debug publication.
+    standard = product.ProductTelemetry(mode='standard', capacity=1, sink=seen.append)
+    assert not emit(standard, observation(1))
+    assert standard.counters()['emitted'] == 0
