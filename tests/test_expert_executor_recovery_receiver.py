@@ -151,7 +151,11 @@ async def test_recovery_requires_current_registered_service_and_strict_input(env
             headers=_headers(a.credentials))).status_code==400
         assert (await client.post(PATH,content=b'x'*(MAX_BODY+1),
             headers=_headers(a.credentials))).status_code==413
-    assert a.ctl._row(entry['request_id'])['state']=='pending'
+    # accepted(a) has legitimately claimed the first original generation.
+    # Malformed/forged status checks must leave that same lease untouched.
+    row=a.ctl._row(entry['request_id'])
+    assert row['state']=='leased' and row['generation']==1
+    assert row['delivery_attempt']==0 and row['result_json'] is None
 
 
 def test_main_exposes_recovery_only_with_existing_bound_executor_context(
