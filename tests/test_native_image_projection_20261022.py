@@ -14,6 +14,8 @@ from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler
 from regional_knowledge.source_stage import canonical, digest
 from test_native_source_materializer import PERSON, exact_batch
 from test_source_stage import SOURCE, original
+from test_source_activation_pg import image_pg_sql18, image_pg
+from test_kaggle_pg_driver import database
 
 
 def illustrated_batch(*, foreign_reference=False, changed_receipt=False, missing_page=False):
@@ -93,7 +95,6 @@ async def test_native_image_projection_rejects_changed_or_cross_page_source(case
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("database")
 async def test_pg_sql015_native_prepares_exact_illustration_candidate(image_pg_sql18):
     """SQL015 checks the actual accepted page+crop and durable preparation.
 
