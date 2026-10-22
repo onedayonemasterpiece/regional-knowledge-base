@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from io import BytesIO
 import json
 import re
 import time
@@ -26,6 +27,7 @@ from typing import Any, Awaitable, Callable, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+from PIL import Image, UnidentifiedImageError
 
 from .contracts import Principal
 from .read_authority import ReadAuthority, VerifiedReadAuthority
@@ -137,6 +139,21 @@ class ArchiveOpaqueProof:
     owner: object = field(repr=False, compare=False)
 
 
+@dataclass(frozen=True)
+class IssuedArtifactBytes:
+    """Private bytes returned by the EXISTING, independent archive issuer only.
+
+    A caller string/ref is not proof. The archive owner must return the exact
+    owner-held ArchiveOpaqueProof object and immutable SHA-bound real crop bytes.
+    Nothing in this structure is exposed as a public frame or locator.
+    """
+
+    proof: ArchiveOpaqueProof
+    data: bytes = field(repr=False)
+    mime_type: str
+    sha256: str
+
+
 @dataclass(frozen=True, eq=False)
 class PublicMediaTicket:
     pass
@@ -155,6 +172,7 @@ class _Retained:
     binding_identity: tuple
     source_facts: Any
     archive_proof: ArchiveOpaqueProof
+    source_snapshot: NativeMediaSnapshot = field(repr=False)
     frame: PublicIllustrationFrame
     issued: IssuedPublicIllustration
     canonical_frame_bytes: bytes
@@ -514,7 +532,7 @@ class PublicIllustrationOutputGate:
             if len(self._tickets) >= self.capacity:
                 _fail("media_output_ticket_capacity")
             self._tickets[ticket] = _Retained(
-                verified, binding, key, final_facts, proof, frame,
+                verified, binding, key, final_facts, proof, second, frame,
                 issued, canonical_frame, self.clock() + self.ttl)
             if not self.issuance_current(ticket):
                 self.release(ticket)
@@ -530,6 +548,76 @@ class PublicIllustrationOutputGate:
             # Never reflect native/archival provider exception text or private
             # locator/credentials into a public MCP error.
             _fail("media_native_or_archive_unavailable")
+
+
+    async def read_issued_bytes(self, issued: IssuedPublicIllustration) -> IssuedArtifactBytes:
+        """Bound real image bytes, not SQL ready or a user supplied artifact ref.
+
+        Only the independently authorized existing archive owner can satisfy
+        archive.read_issued_bytes(retained.archive_proof). Root must install that
+        owner (with actual leased observe/pixel delivery) before enabling tool.
+        Recheck current actor/history/reader after *every* awaited boundary,
+        including fresh native PG readback AFTER the image-byte download.
+        """
+        if type(issued) is not IssuedPublicIllustration:
+            _fail("media_issued_output_required")
+        retained = self._tickets.get(issued.ticket)
+        if (retained is None or retained.issued is not issued
+                or not self.issuance_current(issued.ticket)):
+            _fail("media_output_fence_changed")
+        owner_read = getattr(self.archive, "read_issued_bytes", None)
+        if not callable(owner_read):
+            _fail("media_actual_archive_bytes_issuer_missing")
+        try:
+            blob = await owner_read(retained.archive_proof)
+            await self._after_await(retained.actor, retained.binding, retained.binding_identity)
+            self._source_current(retained.source_facts, retained.binding,
+                                 retained.binding_identity)
+            if (type(blob) is not IssuedArtifactBytes
+                    or blob.proof is not retained.archive_proof
+                    or type(blob.data) is not bytes
+                    or not 1 <= len(blob.data) <= 256 * 1024
+                    or blob.mime_type not in ("image/png", "image/jpeg", "image/webp")
+                    or not _digest(blob.sha256)
+                    or _sha(blob.data) != blob.sha256):
+                _fail("media_issued_bytes_binding_changed")
+            # MIME and dimensions are evidence about actual encoded pixels,
+            # not an image filename, provider locator or model-authored label.
+            with Image.open(BytesIO(blob.data)) as decoded:
+                expected = {"PNG": "image/png", "JPEG": "image/jpeg",
+                            "WEBP": "image/webp"}.get(decoded.format)
+                width, height = decoded.size
+                if (expected != blob.mime_type
+                        or not 1 <= width <= 20000
+                        or not 1 <= height <= 20000):
+                    _fail("media_issued_pixels_invalid")
+                decoded.verify()
+            latest = await self.native_read(
+                retained.source_snapshot.source_id,
+                retained.source_snapshot.illustration_id,
+                retained.actor.person_id, retained.binding)
+            await self._after_await(retained.actor, retained.binding, retained.binding_identity)
+            if latest != retained.source_snapshot:
+                _fail("media_source_changed_during_image_download")
+            self._proof(latest,
+                        source_id=retained.source_snapshot.source_id,
+                        illustration_id=retained.source_snapshot.illustration_id,
+                        expected_key=retained.binding_identity)
+            facts = await self.source_gate.spool.read_facts(
+                (latest.source_id,), (latest.source_id,))
+            await self._after_await(retained.actor, retained.binding, retained.binding_identity)
+            self._history(facts, latest, retained.binding_identity)
+            self._source_current(facts, retained.binding, retained.binding_identity)
+            if not self.issuance_current(issued.ticket):
+                _fail("media_output_fence_changed")
+            return blob
+        except asyncio.CancelledError:
+            raise
+        except PublicMediaUnavailable:
+            raise
+        except Exception:
+            # Never reflect private archive/client/PG exception strings.
+            _fail("media_actual_archive_bytes_unavailable")
 
     def _expire(self):
         now = self.clock()
