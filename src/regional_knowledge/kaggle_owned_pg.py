@@ -39,8 +39,11 @@ EDITORIAL_SQL_ARTIFACTS=FACT_SQL_ARTIFACTS+('009_story_editorial.sql',)
 CASE_SQL_ARTIFACTS=EDITORIAL_SQL_ARTIFACTS+('010_disagreement_cases.sql',)
 DOMAIN_SQL_ARTIFACTS=CASE_SQL_ARTIFACTS+('011_geo_identity_manifest.sql',)
 DOMAIN_V2_SQL_ARTIFACTS=DOMAIN_SQL_ARTIFACTS+('012_geo_dependency_bound.sql',)
+IMAGE_SOURCE_SQL_ARTIFACTS=DOMAIN_V2_SQL_ARTIFACTS+('013_source_stage.sql','014_source_stage_activation.sql')
+NATIVE_SOURCE_SQL_ARTIFACTS=IMAGE_SOURCE_SQL_ARTIFACTS
 
 def sql_artifacts(schema_revision):
+    if schema_revision=='rkb-v4-sql001-014-v1':return IMAGE_SOURCE_SQL_ARTIFACTS
     if schema_revision=='rkb-v4-sql001-012-v1':return DOMAIN_V2_SQL_ARTIFACTS
     if schema_revision=='rkb-v4-sql001-011-v1':return DOMAIN_SQL_ARTIFACTS
     if schema_revision=='rkb-v4-sql001-010-v1':return CASE_SQL_ARTIFACTS
@@ -66,7 +69,7 @@ async def configure_native_roles(admin,*,selected_sql,dbname):
     """
     selected_sql=tuple(selected_sql)
     if selected_sql not in (SQL_ARTIFACTS,STORY_SQL_ARTIFACTS,FACT_SQL_ARTIFACTS,
-            EDITORIAL_SQL_ARTIFACTS,CASE_SQL_ARTIFACTS,DOMAIN_SQL_ARTIFACTS,DOMAIN_V2_SQL_ARTIFACTS):
+            EDITORIAL_SQL_ARTIFACTS,CASE_SQL_ARTIFACTS,DOMAIN_SQL_ARTIFACTS,DOMAIN_V2_SQL_ARTIFACTS,IMAGE_SOURCE_SQL_ARTIFACTS):
         raise ValueError('exact reviewed native SQL prefix required')
     if type(dbname) is not str or not re.fullmatch(r'[a-z][a-z0-9_]{0,62}',dbname):
         raise ValueError('exact owned native database name required')
@@ -116,6 +119,9 @@ async def configure_native_roles(admin,*,selected_sql,dbname):
         await admin.execute('GRANT SELECT ON '+','.join('rkb_v4.'+name for name in sorted(TABLES_11))+' TO rkb_reader')
         domain_functions+=('read_source_graph_v1(uuid,uuid,text,uuid,text,integer)','read_geo_identity_v1(uuid,uuid,text,text,text,integer,uuid,integer)',
             'read_geo_members_v1(uuid,uuid,text,text,integer)')
+    # Schema14 reuses the same accepted-source metadata/projection readers.
+    # Raw model batches, private candidates and activation mutation functions
+    # are writer-only; never grant them through the public reader profile.
     for signature in READER_FUNCTIONS+(STORY_READER_FUNCTIONS if len(selected_sql)>=7 else ())+fact_functions+domain_functions:
         await admin.execute('GRANT EXECUTE ON FUNCTION rkb_v4.'+signature+' TO rkb_reader')
     await admin.execute(sql.SQL('REVOKE ALL ON DATABASE {} FROM PUBLIC').format(sql.Identifier(dbname)))

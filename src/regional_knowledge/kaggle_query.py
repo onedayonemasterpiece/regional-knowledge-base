@@ -315,7 +315,19 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
                             raise ReadUnavailable("evidence_withdrawn")
                         hit = SearchEvidence(str(row[0]), str(row[1]), *row[2:6])
                         if source_provenance:
-                            await execute('SELECT metadata FROM rkb_v4.source_passage_metadata_v1(%s::uuid[])',([locator.passage_id],))
+                            # This revision is read from the checked active
+                            # source row above, NOT caller-supplied SQL or an
+                            # unverified model/source label. SQL017 installs
+                            # the versioned v2 provenance function alongside
+                            # immutable v1. Retain historical hydration as-is.
+                            active_revision=row[2]
+                            if active_revision==1:
+                                source_metadata_sql='SELECT metadata FROM rkb_v4.source_passage_metadata_v1(%s::uuid[])'
+                            elif active_revision==2:
+                                source_metadata_sql='SELECT metadata FROM rkb_v4.source_passage_metadata_v2(%s::uuid[])'
+                            else:
+                                raise ReadUnavailable('not_ready')
+                            await execute(source_metadata_sql,([locator.passage_id],))
                             metadata=await cursor.fetchone()
                             if metadata is None or type(metadata[0]) is not dict:
                                 raise ReadUnavailable('not_ready')

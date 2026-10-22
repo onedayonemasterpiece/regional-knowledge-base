@@ -2,7 +2,7 @@ name: rkb-mcp-health
 
 on:
   push:
-    branches: [chatgpt/rkb-mcp-health-20261022]
+    branches: [chatgpt/rkb-mcp-health-20261022, chatgpt/rkb-health-public-receipt-20261022]
 
 permissions:
   contents: read

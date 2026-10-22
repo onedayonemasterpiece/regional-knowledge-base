@@ -40,9 +40,15 @@ def decode_command(data):
             'logical_time','schema_revision','function_revision','executor_revision','ids','expected_revisions','kind')},
             payload=base64.b64decode(value['payload_b64'],validate=True))
         if command.encode()!=data:raise ValueError
-        if command.route=='geo.dependencies.upgrade.v2':
+        if command.route=='source.native.upgrade.v1':
+            from .kaggle_native_source_upgrade import validate_native_source_upgrade
+            validate_native_source_upgrade(command,artifact_sha256=json.loads(command.payload)['artifact_sha256'])
+        elif command.route=='geo.dependencies.upgrade.v2':
             from .geo_manifest_commands import validate_geo_dependency_transition
             validate_geo_dependency_transition(command,artifact_sha256=json.loads(command.payload)['artifact_sha256'])
+        elif command.schema_revision=='rkb-v4-sql001-014-v1':
+            from .kaggle_native_source_bindings import validate_native_source_command
+            validate_native_source_command(command)
         elif command.schema_revision in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
             from .kaggle_domain_bindings import validate_current_command
             validate_current_command(command)
@@ -136,20 +142,46 @@ def fixed_registry(database,entries):
     if not isinstance(entries,(list,tuple)) or not 1<=len(entries)<=32:raise ValueError('fixed source registry required')
     for entry in entries:
         base={'route','check_sha256','apply_sha256'}
-        if not isinstance(entry,dict) or not base<=entry.keys() or set(entry)-base-{'revisions','artifact_sha256'}:
+        if not isinstance(entry,dict) or not base<=entry.keys() or set(entry)-base-{'revisions','artifact_sha256','native_source_upgrade','native_revision2_upgrade'}:
             raise ValueError('fixed source registry pins required')
         revisions=default_revisions
         if 'revisions' in entry:
             wire=entry['revisions']
             if type(wire) not in (list,tuple) or len(wire)!=3:raise ValueError('exact historical handler revisions required')
             revisions=Revisions(*wire)
-        if entry['route']=='geo.dependencies.upgrade.v2':
+        if entry['route']=='source.native.upgrade.v1':
+            from .kaggle_native_source_upgrade import NativeSourceUpgradePins,native_source_upgrade_handler
+            pins=NativeSourceUpgradePins.from_wire(entry.get('native_source_upgrade'))
+            handler=native_source_upgrade_handler(pins)
+            if (revisions!=handler.revisions or entry.get('artifact_sha256')!=pins.artifact_sha256
+                    or entry['check_sha256']!=pins.transition_check_sha256 or entry['apply_sha256']!=pins.transition_apply_sha256):
+                raise ValueError('exact native source migration artifact required')
+        elif entry['route']=='source.revision2.upgrade.v1':
+            from .kaggle_native_revision2_upgrade import NativeRevision2UpgradePins,revision2_upgrade_handler
+            pins=NativeRevision2UpgradePins.from_wire(entry.get('native_revision2_upgrade'))
+            handler=revision2_upgrade_handler(pins)
+            if (revisions!=handler.revisions or entry.get('artifact_sha256')!=pins.artifact_sha256
+                    or entry['check_sha256']!=pins.transition_check_sha256
+                    or entry['apply_sha256']!=pins.transition_apply_sha256):
+                raise ValueError('exact revision2 migration manifest required')
+        elif 'native_source_upgrade' in entry or 'native_revision2_upgrade' in entry:
+            raise ValueError('source migration pins may not authorize ordinary routes')
+        elif entry['route']=='geo.dependencies.upgrade.v2':
             from .geo_manifest_commands import GEO_REVISIONS,geo_dependency_transition_handler
             if revisions!=GEO_REVISIONS or 'artifact_sha256' not in entry:raise ValueError('exact geographic migration artifact required')
             handler=geo_dependency_transition_handler(artifact_sha256=entry['artifact_sha256'],
                 check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
         elif 'artifact_sha256' in entry:
             raise ValueError('artifact pin only supported for the fixed geographic migration')
+        elif revisions.schema=='rkb-v4-sql001-017-v1':
+            from .kaggle_native_source_bindings import revision2_native_handler
+            from .kaggle_native_revision2_upgrade import REVISION2_REVISIONS
+            if revisions!=REVISION2_REVISIONS:raise ValueError('exact source successor revision required')
+            handler=revision2_native_handler(entry['route'],check_sha256=entry['check_sha256'],
+                apply_sha256=entry['apply_sha256'])
+        elif revisions.schema=='rkb-v4-sql001-014-v1':
+            from .kaggle_native_source_bindings import native_source_handler
+            handler=native_source_handler(entry['route'],check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'])
         elif revisions.schema in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
             from .kaggle_domain_bindings import current_handler
             handler=current_handler(entry['route'],check_sha256=entry['check_sha256'],apply_sha256=entry['apply_sha256'],revisions=revisions)
@@ -205,10 +237,12 @@ class ControllerAcceptedProof:
 
 
 class WorkerSourceExecutor:
-    def __init__(self,*,acquire,registry,database,run_id,launch_nonce,runtime_incarnation,prepare_transition=None):
+    def __init__(self,*,acquire,registry,database,run_id,launch_nonce,runtime_incarnation,prepare_transition=None,materializer=None):
         if prepare_transition is not None and not callable(prepare_transition):
             raise TypeError('trusted native transition preparation required')
         self.acquire,self.registry,self.database=acquire,registry,database
+        if materializer is not None and not callable(materializer):raise TypeError('retained native materializer required')
+        self.materializer=materializer
         self.identity=(run_id,launch_nonce,runtime_incarnation)
         self.prepare_transition=prepare_transition
 
@@ -233,6 +267,21 @@ class WorkerSourceExecutor:
         handler=self.registry.resolve(command)
         if frame.get('handler_sha256')!=handler.fingerprint:
             raise PermissionError('source registry binding mismatch')
+        if ((command.schema_revision=='rkb-v4-sql001-014-v1'
+                and command.route in ('source.materialize.v1','source.stage.seal.v1'))
+            or (command.schema_revision=='rkb-v4-sql001-017-v1'
+                and command.route == 'source.materialize.v2')):
+            if self.materializer is None:raise ValueError('native source materializer unavailable')
+            # Verify this captured authenticated accepted intent BEFORE private
+            # candidate effects, then apply canonical outcome in its own tx.
+            await proof.verify_accepted(seal,command)
+            from .kaggle_source_materializer import SourceMaterializationRejected
+            try:
+                await self.materializer(command,acquire=self.acquire,database=self.database)
+            except SourceMaterializationRejected:
+                # Deterministic invalid model input produces an ordinary
+                # rejected-precondition receipt, not a fabricated completion.
+                pass
         async with self.acquire() as connection:
             if handler.transition is not None and self.prepare_transition is not None:
                 await self.prepare_transition(connection,command,handler)

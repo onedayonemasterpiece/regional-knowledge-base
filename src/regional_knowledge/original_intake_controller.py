@@ -10,11 +10,12 @@ from uuid import UUID,uuid5
 
 from .backend import RenderedPage,RenderedPageBatch
 from .contracts import ChatFile
+from .telegram_original import TelegramOriginalLocator
 from .kaggle_recovery_dispatch import RecoveryPhaseDispatch
 from .native_snapshot_transfer import SnapshotTicket,origin
 from .original_intake import (OriginalIntakeSpec,OriginalIntakeStatus,VerifiedOriginalReceipt,
     OriginalIntakeError,OriginalIntakeRejected,TERMINAL_REJECTIONS,NativePagesProof,PHASES,canonical,digest,text,uuid_value,
-    decode_page_cursor,encode_page_cursor,assemble_native_page)
+    decode_page_cursor,encode_page_cursor,assemble_native_page,issued_image_receipt)
 from .recovery_s3 import _blocking,_missing
 
 _LOG=logging.getLogger(__name__)
@@ -43,14 +44,28 @@ class OriginalIntakeController:
         self._private={};self._lock=asyncio.Lock();self._page_proofs={};self._page_chunks={}
         self._storage=digest(canonical([self.store.client.meta.endpoint_url,self.store.bucket]))
         with queue.connect() as db:
+            # Only bounded image identity metadata, not page text or pixels.
+            # It survives controller restart so stage retry needs no re-render.
+            db.execute('''CREATE TABLE IF NOT EXISTS rkb_original_image_issuance(
+                ingestion_id TEXT NOT NULL,physical_page_index INTEGER NOT NULL,
+                receipt_json TEXT NOT NULL,PRIMARY KEY(ingestion_id,physical_page_index))''')
             db.execute('''CREATE TABLE IF NOT EXISTS rkb_original_intakes(
                 ingestion_id TEXT PRIMARY KEY,actor TEXT NOT NULL,operation_id TEXT NOT NULL,
                 spec_json TEXT NOT NULL,storage_sha256 TEXT NOT NULL,acquisition_json TEXT,receipt_json TEXT,
                 UNIQUE(actor,operation_id))''')
             if 'failure_code' not in {r['name'] for r in db.execute('PRAGMA table_info(rkb_original_intakes)')}:
                 db.execute('ALTER TABLE rkb_original_intakes ADD COLUMN failure_code TEXT')
+            if 'telegram_locator_json' not in {r['name'] for r in db.execute('PRAGMA table_info(rkb_original_intakes)')}:
+                db.execute('ALTER TABLE rkb_original_intakes ADD COLUMN telegram_locator_json TEXT')
             if 'restore_json' not in {r['name'] for r in db.execute('PRAGMA table_info(rkb_original_intakes)')}:
                 db.execute('ALTER TABLE rkb_original_intakes ADD COLUMN restore_json TEXT')
+            db.execute('''CREATE TABLE IF NOT EXISTS rkb_original_revision2_rebind(
+                successor_ingestion_id TEXT PRIMARY KEY,source_id TEXT NOT NULL,
+                original_ingestion_id TEXT NOT NULL,actor TEXT NOT NULL,
+                original_receipt_sha256 TEXT NOT NULL,original_sha256 TEXT NOT NULL,
+                predecessor_command_sha256 TEXT NOT NULL,
+                processing_revision INTEGER NOT NULL CHECK(processing_revision=2),
+                UNIQUE(source_id,processing_revision))''')
 
     async def _authorize(self,context):
         actor=await self.spool._authorize(context)
@@ -81,6 +96,11 @@ class OriginalIntakeController:
     async def dispatch_transfer(self,identity,binding):
         if identity['phase'] not in PHASES or not self.binding_current(binding):raise PermissionError('original transfer binding unavailable')
         if identity['phase']=='original_pages':return {}
+        if identity['phase']=='original_acquire' and set(identity['arguments'])=={'spec','telegram_locator'}:
+            # The immutable document locator is already in the request hash;
+            # no ephemeral URL/session or separate private transfer is needed.
+            TelegramOriginalLocator.from_wire(identity['arguments']['telegram_locator'])
+            return None
         private=self._private.get(identity['operation_key'])
         if private is None:raise OriginalIntakeError('original_ephemeral_ticket_requires_retry')
         return private
@@ -94,7 +114,7 @@ class OriginalIntakeController:
         if 'error' in value:
             code=value.get('error')
             if value.get('terminal') is True and code in TERMINAL_REJECTIONS:raise OriginalIntakeRejected(code)
-            if code in ('original_retained_bytes_unavailable','original_djvu_decoder_required'):
+            if code in ('original_retained_bytes_unavailable','original_djvu_decoder_required','original_telegram_binding_required'):
                 raise OriginalIntakeError(code)
             raise OriginalIntakeError('original_native_receipt_unavailable')
         return value
@@ -153,14 +173,17 @@ class OriginalIntakeController:
     async def begin(self,context,*,operation_id,source_id,ingestion_id,file,max_bytes=128*1024*1024):
         actor,binding=await self._authorize(context)
         text(operation_id);uuid_value(source_id);uuid_value(ingestion_id)
-        if not isinstance(file,ChatFile):raise OriginalIntakeError('original_chat_file_required')
+        telegram=type(file) is TelegramOriginalLocator
+        if not isinstance(file,ChatFile) and not telegram:raise OriginalIntakeError('original_chat_file_required')
+        locator_json=canonical(file.wire()).decode() if telegram else None
         if type(max_bytes) is not int or not 1<=max_bytes<=self.max_bytes:raise OriginalIntakeError('original_byte_bound')
         # The caller may now offer a larger size/page budget, but it must
         # never mutate an already persisted operation's canonical input.
         # Historical 2MiB/32-page jobs remain valid exact replay inputs.
         request_id=str(uuid5(UUID(ingestion_id),'original:'+operation_id))
         spec=OriginalIntakeSpec(source_id,ingestion_id,request_id,file.file_id,
-            file_name=file.file_name,mime_type=file.mime_type,max_bytes=max_bytes)
+            file_name=file.file_name,mime_type=file.mime_type,max_bytes=max_bytes,
+            **(dict(expected_sha256=file.sha256,expected_size=file.size) if telegram else {}))
         async with self._lock:
             with self.queue.connect() as db:
                 prior=db.execute('SELECT * FROM rkb_original_intakes WHERE ingestion_id=?',(ingestion_id,)).fetchone()
@@ -168,6 +191,8 @@ class OriginalIntakeController:
                     stored=OriginalIntakeSpec.from_wire(json.loads(prior['spec_json']))
                     if (prior['actor']!=actor or prior['operation_id']!=operation_id
                             or prior['storage_sha256']!=self._storage
+                            or prior['telegram_locator_json']!=locator_json
+                            or telegram and (stored.expected_sha256,stored.expected_size)!=(spec.expected_sha256,spec.expected_size)
                             or (stored.source_id,stored.ingestion_id,stored.request_id,stored.file_id,
                                 stored.file_name,stored.mime_type)!=(source_id,ingestion_id,request_id,
                                     file.file_id,file.file_name,file.mime_type)
@@ -175,14 +200,17 @@ class OriginalIntakeController:
                         raise OriginalIntakeError('original_operation_changed')
                     spec=stored
                 else:
-                    db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,operation_id,spec_json,storage_sha256) VALUES(?,?,?,?,?)',
-                        (ingestion_id,actor,operation_id,canonical(spec.wire()).decode(),self._storage))
+                    db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,operation_id,spec_json,storage_sha256,telegram_locator_json) VALUES(?,?,?,?,?,?)',
+                        (ingestion_id,actor,operation_id,canonical(spec.wire()).decode(),self._storage,locator_json))
             row=self._row(actor,ingestion_id)
             try:
                 if row['failure_code'] is not None:return OriginalIntakeStatus(ingestion_id,'rejected',reason=row['failure_code'])
                 if row['receipt_json'] is not None:return await self.status(context,ingestion_id)
                 if row['acquisition_json'] is None:
-                    record=await self._phase(binding,'original_acquire',{'spec':spec.wire()},{'download_url':str(file.download_url)})
+                    args={'spec':spec.wire()}
+                    if telegram:args['telegram_locator']=file.wire()
+                    record=await self._phase(binding,'original_acquire',args,
+                        None if telegram else {'download_url':str(file.download_url)})
                     if record.get('spec')!=spec.wire():raise OriginalIntakeError('original_acquisition_changed')
                     with self.queue.connect() as db:db.execute('UPDATE rkb_original_intakes SET acquisition_json=? WHERE ingestion_id=?',
                         (canonical(record).decode(),ingestion_id))
@@ -191,6 +219,10 @@ class OriginalIntakeController:
                 return OriginalIntakeStatus(ingestion_id,'verified',receipt)
             except asyncio.CancelledError:raise
             except OriginalIntakeRejected as exc:return self._reject(ingestion_id,exc.code)
+            except OriginalIntakeError as exc:
+                if str(exc)=='original_telegram_binding_required':
+                    return OriginalIntakeStatus(ingestion_id,'pending',reason=str(exc))
+                return OriginalIntakeStatus(ingestion_id,'pending',reason='original_intake_unknown_retry_same_operation')
             except Exception:
                 _LOG.warning('original_intake state=pending run_id=%s ingestion_id=%s reason=receipt_unresolved',binding.run_id,ingestion_id)
                 return OriginalIntakeStatus(ingestion_id,'pending',reason='original_intake_unknown_retry_same_operation')
@@ -211,6 +243,64 @@ class OriginalIntakeController:
         _LOG.info('original_intake state=verified run_id=%s ingestion_id=%s',binding.run_id,spec.ingestion_id)
         return receipt
 
+    async def rebind_verified_revision2(self,context,*,source_id,original_ingestion_id,
+                                        successor_ingestion_id,original_sha256,
+                                        original_receipt_sha256,predecessor_command_sha256):
+        """Reuse the ONE owner-verified archived original for processing revision2.
+
+        The archived OriginalIntakeSpec/VerifiedOriginalReceipt remain immutable
+        revision1/old ingestion ID. A new processing ingestion_id is a separate
+        owner-bound reference, not another Telegram/HTTP download or file ID.
+        """
+        from .source_stage import _hash
+        uuid_value(source_id);uuid_value(original_ingestion_id);uuid_value(successor_ingestion_id)
+        if successor_ingestion_id==original_ingestion_id:raise OriginalIntakeError('original_successor_identity_required')
+        for key in (original_sha256,original_receipt_sha256,predecessor_command_sha256):_hash(key)
+        actor,binding=await self._authorize(context)
+        # Retain the real row/receipt rather than accepting an input-side
+        # locator, bare hash, or synthesized provider token as proof.
+        existing=self._row(actor,original_ingestion_id)
+        receipt=await self.verified(context,original_ingestion_id)
+        if receipt is None or (receipt.source_id,receipt.sha256,receipt.receipt_sha256)!=(
+                source_id,original_sha256,original_receipt_sha256):
+            raise OriginalIntakeError('original_accepted_revision2_receipt_changed')
+        await self._authorize(context)
+        with self.queue.connect() as db:
+            try:
+                db.execute('''INSERT OR IGNORE INTO rkb_original_revision2_rebind
+                    VALUES(?,?,?,?,?,?,?,2)''',(successor_ingestion_id,source_id,
+                    original_ingestion_id,actor,original_receipt_sha256,
+                    original_sha256,predecessor_command_sha256))
+            except Exception:
+                raise OriginalIntakeError('original_successor_rebind_conflict') from None
+            current=db.execute('''SELECT * FROM rkb_original_revision2_rebind
+                WHERE successor_ingestion_id=?''',(successor_ingestion_id,)).fetchone()
+        if current is None or tuple(current[k] for k in (
+                'source_id','original_ingestion_id','actor','original_receipt_sha256',
+                'original_sha256','predecessor_command_sha256','processing_revision'))!=(
+                source_id,original_ingestion_id,actor,original_receipt_sha256,
+                original_sha256,predecessor_command_sha256,2):
+            raise OriginalIntakeError('original_successor_rebind_conflict')
+        if not self.binding_current(binding):raise OriginalIntakeError('original_current_binding_required')
+        return receipt
+
+    async def inherited_verified(self,context,successor_ingestion_id,*,source_id):
+        """Readback of a stored owner-only rebind; never re-issue the original."""
+        actor,binding=await self._authorize(context)
+        uuid_value(successor_ingestion_id);uuid_value(source_id)
+        with self.queue.connect(write=False) as db:
+            row=db.execute('''SELECT * FROM rkb_original_revision2_rebind
+                WHERE successor_ingestion_id=? AND actor=? AND source_id=?''',
+                (successor_ingestion_id,actor,source_id)).fetchone()
+        if row is None:raise OriginalIntakeError('original_successor_rebind_not_found')
+        receipt=await self.verified(context,row['original_ingestion_id'])
+        if (receipt is None or receipt.source_id!=source_id
+                or receipt.sha256!=row['original_sha256']
+                or receipt.receipt_sha256!=row['original_receipt_sha256']
+                or not self.binding_current(binding)):
+            raise OriginalIntakeError('original_successor_rebind_changed')
+        return receipt
+
     async def verified(self,context,ingestion_id):
         actor,binding=await self._authorize(context);row=self._row(actor,ingestion_id)
         if row['receipt_json'] is None:return None
@@ -229,6 +319,8 @@ class OriginalIntakeController:
             record=json.loads(row['acquisition_json']) if row['acquisition_json'] else None
             if record is None:
                 spec=json.loads(row['spec_json']);args={'spec':spec}
+                if row['telegram_locator_json'] is not None:
+                    args['telegram_locator']=TelegramOriginalLocator.from_wire(json.loads(row['telegram_locator_json'])).wire()
                 key=digest(canonical(dict(phase='original_acquire',args=args)))
                 with self.queue.connect(write=False) as db:
                     job=db.execute('SELECT * FROM jobs WHERE actor=? AND idempotency=?',
@@ -293,12 +385,52 @@ class OriginalIntakeController:
             raise OriginalIntakeError('original_page_fragment_changed')
         chunks[part_key]=raw
         self._assemble_available(ingestion_id,index,chunks)
+        issued=self._record_issued_image(receipt,page)
         next_cursor=(encode_page_cursor(index,page['next_native']) if page['next_native'] is not None
             else str(index+1) if index+1<receipt.page_count else None)
         return RenderedPageBatch((RenderedPage(page['page_id'],index,None,'image/jpeg',data,
             page['native_text'],tuple(page['native_blocks']),dict(page['native_text_info'],
-                original_sha256=record['sha256'],page_receipt_sha256=page['page_receipt_sha256'])),),
+                original_sha256=record['sha256'],page_receipt_sha256=page['page_receipt_sha256'],
+                source_image_receipt_sha256=issued['source_image_receipt_sha256'],
+                image_sha256=issued['image_sha256'])),),
             next_cursor)
+
+    def _record_issued_image(self,receipt,page):
+        issued=issued_image_receipt(receipt,page)
+        raw=canonical(issued).decode()
+        with self.queue.connect() as db:
+            previous=db.execute('SELECT receipt_json FROM rkb_original_image_issuance '
+                'WHERE ingestion_id=? AND physical_page_index=?',
+                (receipt.ingestion_id,issued['physical_page_index'])).fetchone()
+            if previous is not None and previous['receipt_json']!=raw:
+                raise OriginalIntakeError('original_issued_image_changed')
+            db.execute('INSERT OR IGNORE INTO rkb_original_image_issuance VALUES(?,?,?)',
+                (receipt.ingestion_id,issued['physical_page_index'],raw))
+        return issued
+
+    async def selected_image_receipts(self,context,ingestion_id,selections):
+        """Read only already issued pages; never download, render or scan a book."""
+        actor,_=await self._authorize(context)
+        self._row(actor,ingestion_id)
+        receipt=await self.verified(context,ingestion_id)
+        if receipt is None or type(selections) is not tuple or not 1<=len(selections)<=8:
+            raise OriginalIntakeError('original_selected_image_bound')
+        result=[];seen=set()
+        with self.queue.connect(write=False) as db:
+            for index,expected in selections:
+                if type(index) is not int or not 0<=index<receipt.page_count or index in seen:
+                    raise OriginalIntakeError('original_selected_image_bound')
+                seen.add(index)
+                row=db.execute('SELECT receipt_json FROM rkb_original_image_issuance '
+                    'WHERE ingestion_id=? AND physical_page_index=?',(ingestion_id,index)).fetchone()
+                if row is None:raise OriginalIntakeError('original_source_image_not_issued')
+                value=json.loads(row['receipt_json'])
+                if (value!=issued_image_receipt(receipt,value)
+                        or value['source_image_receipt_sha256']!=expected):
+                    raise OriginalIntakeError('original_source_image_receipt_changed')
+                result.append(value)
+        await self._authorize(context)
+        return tuple(result)
 
     def _assemble_available(self,ingestion_id,index,chunks):
         cursor=dict(block=0,offset=0,text=0);parts=[];seen=set()

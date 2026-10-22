@@ -28,6 +28,7 @@ async def test_dataset_pending_migration_proves_native_closure_but_keeps_outcome
     assert await p.store.compare_and_swap(key,envelope,expected_token=None,writer_generation='writer')
     verifier=WssSourceHistoryVerifier.__new__(WssSourceHistoryVerifier)
     verifier.geo_upgrade_pins=NS(artifact_sha256='d'*64);verifier.origin_closure={}
+    verifier.native_source_upgrade_pins=None
     verifier.catalog_hash='a'*64;verifier.acl_hash='b'*64;verifier.registry_hash='c'*64;verifier.routes={}
     verifier.database=NS(database_generation='db')
     verifier.spool=NS(journal=NS(prefix=p.prefix.rstrip('/'),store=p.store))
