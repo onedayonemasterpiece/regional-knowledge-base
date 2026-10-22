@@ -66,7 +66,8 @@ def fixture():
     pins=NativeSourceUpgradePins(*["c"*64]*4)
     migrate=NativeDrillMigrate(owner,sql_root=Path("/fixture/native/sql"),native_pins=pins)
     args=dict(manifest_b64=base64.b64encode(raw_manifest).decode(),
-        manifest_ref={"sha256":sha(raw_manifest)},blob=blob,
+        manifest_ref={"key":"snapshots/manifests/"+sha(raw_manifest),
+            "sha256":sha(raw_manifest),"length":len(raw_manifest),"last_sequence":20},blob=blob,
         control_b64=base64.b64encode(raw_control).decode(),
         expected_versions=versions,database=database.wire(),
         identity=list(factory.identity),restore_operation="one-original-operation")
@@ -80,7 +81,10 @@ async def test_checkpoint_pin_fails_before_download_or_native_candidate(monkeypa
     m.owner.download=forbidden
     m._artifacts=forbidden
     for override in (
-        {"manifest_ref":{"sha256":"f"*64}},
+        {"manifest_ref":{**args["manifest_ref"],"sha256":"f"*64}},
+        {"manifest_ref":{**args["manifest_ref"],"length":args["manifest_ref"]["length"]+1}},
+        {"manifest_ref":{**args["manifest_ref"],"last_sequence":21}},
+        {"manifest_ref":{"sha256":args["manifest_ref"]["sha256"]}},
         {"database":{"owned":"serving"}},
         {"identity":["other","nonce","inc"]},
         {"blob":{**args["blob"],"size":101}},
@@ -138,3 +142,34 @@ async def test_denied_artifact_pin_does_not_download(monkeypatch):
     with pytest.raises(SnapshotError,match="registry_unavailable"):
         await m(args,"stable-key",("run","inc",1),{"download_ticket":{"exact":"synthetic"}})
     assert counters["download"]==0 and not m.intents
+
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_candidate_shutdown_never_returns_digest_or_reissues_restore(monkeypatch):
+    """Failed cleanup retains UNKNOWN and never supplies a launch catalog pin."""
+    m,args,counters,candidate,calls=fixture()
+    m._artifacts=lambda: ((),None,None)
+    async def measured(*args,**kwargs):
+        counters["measured"]+=1
+        return dict(catalog_sha256="d"*64,acl_sha256="e"*64,
+            original_applied_prefix_sha256="f"*64,base_sequence=20)
+    m.measure_candidate=measured
+    async def unconfirmed():
+        counters["closed"]+=1
+        # A stopped-service ACK is NOT proof that the postgres process exited.
+        candidate.process.returncode=None
+    candidate.aclose=unconfirmed
+    with pytest.raises(SnapshotError,match="owned_shutdown_unknown"):
+        await m(args,"original-key",("run","inc",1),
+            {"download_ticket":{"exact":"synthetic"}})
+    assert not m.proofs
+    assert candidate in m.candidates and candidate in m.owner.factory._owned_candidates
+    with pytest.raises(SnapshotError,match="unknown_requires_owner_cleanup"):
+        await m(args,"original-key",("run","inc",2),
+            {"download_ticket":{"exact":"synthetic"}})
+    assert counters["prepared"]==counters["download"]==counters["measured"]==1
+    assert counters["closed"]>=2
+    candidate.process.returncode=0
+    await m.aclose()
+    assert not m.candidates and candidate not in m.owner.factory._owned_candidates
