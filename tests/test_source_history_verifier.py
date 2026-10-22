@@ -50,7 +50,7 @@ class Pg:
 def verifier(e,pg,b,monkeypatch):
     class Probe:
         def __init__(self,**kwargs):pass
-        async def __call__(self,**kwargs):return b'catalog',{'database_generation':'db-source','applied_seq':pg.applied_seq}
+        async def __call__(self,**kwargs):return b'catalog',{'database_generation':'db-source','applied_seq':pg.applied_seq,'schema_version':16}
     monkeypatch.setattr(module,'NativeDatabaseProbe',Probe)
     # Keep the real safe-attribute validation and exact native ACL hash check.
     expected=module._json(pg.acl)
@@ -73,7 +73,7 @@ async def test_genesis_requires_empty_native_and_remote_and_immutable_exact_chec
     assert env.spool.facts_current(await env.spool.read_facts(None))
     assert any('LOCK TABLE' in sql for sql in pg.sql)
     checkpoint=env.store.objects[v._checkpoint_key('db-source')]
-    assert b'rkb.source-genesis.v2' in checkpoint.data
+    assert b'rkb.source-genesis.v3' in checkpoint.data
     restored=await v.restore(b)
     assert restored is not proof and not proof.current() and restored.current()
 
@@ -94,16 +94,16 @@ async def test_restore_replays_full_classified_chain_and_keeps_unapplied_restric
 
 
 @pytest.mark.asyncio
-async def test_native_role_membership_privilege_and_acl_drift_invalidate(env,monkeypatch):
+async def test_history_ignores_acl_hash_while_role_safety_diagnostic_remains_available(env,monkeypatch):
     pg=Pg();b=binding();v=verifier(env,pg,b,monkeypatch)
     await v.establish_genesis(b)
     pg.acl.append(('membership','rkb_bootstrap:rkb_reader','[false,false,true]'))
-    with pytest.raises(SpoolConflict):await v.restore(b)
+    assert (await v.restore(b)).current()
     pg.acl.pop()
     attrs=json.loads(pg.acl[1][2]);attrs[0]=True
     pg.acl[1]=('role','rkb_writer',json.dumps(attrs))
     with pytest.raises(SpoolConflict):await inspect_acl(pg)
-    assert env.spool._source_anchor is None
+    assert env.spool._source_anchor is not None
 
 
 @pytest.mark.asyncio
@@ -215,13 +215,13 @@ async def test_incremental_native_exact_prefix_and_remote_outcomes_settle_retain
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('legacy',[True,False])
-async def test_compatible_verifier_fix_preserves_genesis_but_original_closure_is_not_waived(env,monkeypatch,legacy):
+async def test_legacy_closure_metadata_is_ignored_but_genesis_identity_remains_bound(env,monkeypatch,legacy):
     pg=Pg();b=binding();v=verifier(env,pg,b,monkeypatch)
     await v.establish_genesis(b)
     checkpoint_key=v._checkpoint_key('db-source')
     if legacy:
         value={'codec':'rkb.source-genesis.v1','stream':env.journal.stream,'database_generation':'db-source',
-            'sequence':0,'catalog_sha256':v.catalog_hash,'acl_sha256':v.acl_hash,'registry_sha256':v.registry_hash,
+            'sequence':0,'catalog_sha256':'a'*64,'acl_sha256':'b'*64,'registry_sha256':v.registry_hash,
             'routes':sorted(v.routes),'verifier_sha256':v.verifier_hash}
         env.store.write(checkpoint_key,module._json(value))
     await accept(env)
@@ -231,6 +231,9 @@ async def test_compatible_verifier_fix_preserves_genesis_but_original_closure_is
     assert restored.accepted_sequence==1 and env.store.objects[checkpoint_key].data==original
     changed=json.loads(original)
     if legacy:changed['registry_sha256']='f'*64
-    else:changed['origin_closure']['registry_sha256']='f'*64
+    else:changed['schema_version']=1
     env.store.write(checkpoint_key,module._json(changed))
-    with pytest.raises(SpoolConflict,match='explicit migration'):await v.restore(b)
+    assert (await v.restore(b)).accepted_sequence==1
+    changed['database_generation']='other'
+    env.store.write(checkpoint_key,module._json(changed))
+    with pytest.raises(SpoolConflict):await v.restore(b)

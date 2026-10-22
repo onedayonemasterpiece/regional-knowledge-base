@@ -70,9 +70,7 @@ class SourceSnapshotCoordinator:
         self.queue=startup.config.queue;self.writer=startup.config.writer_owner
         self.journal=startup.config.spool.journal;self.database=startup.config.history_adapter.database
         if (self.writer is None or self.database.mode!='NEW_EMPTY_GENERATION'
-                or any(config.versions[key]!=getattr(self.database,key) for key in
-                ('schema_revision','function_revision','executor_revision'))
-                or config.versions['catalog_sha256']!=startup.history.catalog_hash):
+                or config.versions.get('schema_version')!=self.database.schema_version):
             raise ValueError('snapshot owner must match actual source service closure')
         self.task=None;self.reference=None;self.closed=False;self.verified=False;self._proofs=set();self.dispatch=None;self.physical=None;self._owns_dispatch=False
         with self.queue.connect() as db:
@@ -204,7 +202,7 @@ class SourceSnapshotCoordinator:
             expected_versions=dict(self.config.versions),database=database.wire(),identity=list(identity),
             restore_operation=sha(encode([self.config.operation_key,'empty-drill']))))
         finished=await self._phase(binding,'drill_finish',dict(handle=prepared['handle'],
-            control_b64=base64.b64encode(raw).decode(),catalog_sha256=self.config.versions['catalog_sha256']))
+            control_b64=base64.b64encode(raw).decode(),schema_version=self.config.versions['schema_version']))
         closed=await self._phase(binding,'drill_close',dict(reference=finished['reference']))
         self._check_drill(closed,reference,identity)
         proof=DrilledBaseProof(self,reference,closed['reference'],sha(encode({k:v for k,v in closed.items() if k!='reference'})),identity,binding)
@@ -216,7 +214,7 @@ class SourceSnapshotCoordinator:
         if (type(value) is not dict or value.get('codec')!='rkb.empty-base-drill.v1'
                 or value.get('database')!=self.database.wire() or value.get('drill_database')!=drill_database(self.database,identity).wire()
                 or value.get('identity')!=list(identity) or value.get('manifest_sha256')!=reference.sha256
-                or value.get('applied_sequence')!=0 or value.get('catalog_sha256')!=self.config.versions['catalog_sha256']
+                or value.get('applied_sequence')!=0 or value.get('schema_version')!=self.config.versions['schema_version']
                 or value.get('versions')!=dict(self.config.versions)
                 or any(type(value.get(k)) is not int or value[k]<1 for k in ('disk_free_before','owned_peak_bytes_bound'))):
             raise SnapshotError('first_snapshot_native_drill_proof_differs')

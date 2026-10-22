@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from regional_knowledge import kaggle_bootstrap as boot
+from regional_knowledge.kaggle_schema_migrate import latest_schema_version
 from regional_knowledge.kaggle_readiness import ArtifactRequirement, RUNTIME_HASHES
 from test_bge_wss_worker import CONFIG, module
 from test_bge_shared_worker import Peer, query, result
@@ -36,7 +37,8 @@ class SyntheticTokenizer:
 def observation(**changes):
     values = dict(database_generation='synthetic-db', schema_revision='s1', function_revision='f1',
         executor_revision='e1', applied_seq=5, projection_seq=5, visibility_epoch=3,
-        text_search_ready=True, dense_search_ready=True, archive_read_ready=None, proof_ready=None)
+        text_search_ready=True, dense_search_ready=True, archive_read_ready=None, proof_ready=None,
+        schema_version=latest_schema_version())
     values.update(changes)
     return values
 
@@ -202,7 +204,7 @@ async def test_prepare_uses_existing_owned_lease_and_hashes_actual_observations(
     wire = prepared.readiness.to_wire()
     assert set(wire['hashes']) == RUNTIME_HASHES and leased == ['enter', 'cleanup']
     assert wire['hashes']['executed_source'] == hashlib.sha256(artifacts.source.read_bytes()).hexdigest()
-    assert wire['hashes']['schema'] == hashlib.sha256(b'native catalog snapshot s1').hexdigest()
+    assert wire['hashes']['schema'] == hashlib.sha256(json.dumps(wire['schema_version']).encode()).hexdigest()
     assert 'synthetic-secret' not in json.dumps(wire) and str(artifacts.root) not in json.dumps(wire)
     assert prepared.query_handler.acquire is acquire
     artifacts.source.write_bytes(b'# changed actual source\n')

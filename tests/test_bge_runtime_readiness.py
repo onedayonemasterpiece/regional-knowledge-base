@@ -25,7 +25,7 @@ def expected():
 def observation(**updates):
     value = dict(hashes=dict(expected().hashes), database_generation='synthetic-db',
         schema_revision='s1', function_revision='f1', executor_revision='e1',
-        applied_seq=5, projection_seq=5, visibility_epoch=0,
+        schema_version=expected().schema_version, applied_seq=5, projection_seq=5, visibility_epoch=0,
         text_search_ready=True, dense_search_ready=True,
         archive_read_ready=False, proof_ready=None)
     return value | updates
@@ -58,7 +58,7 @@ def test_each_loaded_hash_must_match_controller_expectation(key):
     ({'dense_search_ready': False}, 'runtime_not_ready'),
     ({'text_search_ready': False}, 'runtime_not_ready'),
     ({'database_generation': 'other'}, 'database_generation_mismatch'),
-    ({'function_revision': 'f2'}, 'semantic_revision_mismatch'),
+    ({'schema_version': expected().schema_version - 1}, 'schema_version_mismatch'),
 ])
 def test_real_search_readiness_not_model_only(update, issue):
     assert issue in validate_search_runtime(expected(), observation(**update), IDENTITY).issues
@@ -292,3 +292,31 @@ def test_stale_readiness_evaluation_never_answers_a_newer_ready(shared_channel_r
             assert socket.receive_json()['status'] == 'runtime_not_ready'
             send_ready(observation())
             assert socket.receive_json()['status'] == 'ready'
+
+
+def test_live_schema_version_survives_reconnect_without_replacing_launch_anchors(run):
+    import hashlib
+    import json
+    queue, ident, token, nonce = run
+    generation=queue.attach_channel(ident,token,nonce,'incarnation')['connection_generation']
+    assert queue.accept_search_runtime(ident,token,generation,observation()).ok
+    version=expected().schema_version+2
+    migrated=observation(schema_version=version,hashes=dict(expected().hashes,
+        schema=hashlib.sha256(json.dumps(version).encode()).hexdigest()))
+    with queue.connect() as db:
+        original=queue._runtime_row(db,ident)['expected_json']
+        current=db.execute('SELECT * FROM runs WHERE id=?',(ident,)).fetchone()
+        bad=dict(migrated,hashes=dict(migrated['hashes'],model='f'*64))
+        with pytest.raises(ValueError,match='retained runtime'):
+            queue._promote_schema_runtime(db,current,generation,bad,target_version=version)
+        queue._promote_schema_runtime(db,current,generation,migrated,target_version=version)
+        assert queue._runtime_row(db,ident)['expected_json']==original
+    assert queue.accept_search_runtime(ident,token,generation,migrated).ok
+    again=queue.attach_channel(ident,token,nonce,'incarnation')['connection_generation']
+    assert not queue.accept_search_runtime(ident,token,again,observation()).ok
+    assert queue.accept_search_runtime(ident,token,again,migrated).ok
+    with queue.connect() as db:
+        current=db.execute('SELECT * FROM runs WHERE id=?',(ident,)).fetchone()
+        with pytest.raises(ValueError,match='backward'):
+            queue._promote_schema_runtime(db,current,again,observation(),target_version=version-2)
+        assert queue._runtime_row(db,ident)['expected_json']==original

@@ -215,9 +215,7 @@ def test_measured_metadata_budget_is_shared_by_runtime_and_native_history_constr
             identity=('run','nonce','inc'),registry=HandlerRegistry([source_import_v3_handler(
                 revisions=FACT_REVISIONS,check_sha256='a'*64,apply_sha256='b'*64)]),current=lambda binding:False)
         assert runtime.probe==observer.probe==native_probe_for_schema(revision)
-        assert runtime.probe.max_catalog_rows==rows
-        assert runtime.probe.max_catalog_bytes==1024*1024
-        assert runtime.probe.max_definition_bytes==65536
+        assert runtime.probe.timeout_seconds==2.0
 
 
 @pytest.mark.asyncio

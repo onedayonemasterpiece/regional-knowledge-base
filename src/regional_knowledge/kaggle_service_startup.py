@@ -10,6 +10,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import logging
+import json
 import math
 import time
 from typing import Callable, Mapping, Protocol, runtime_checkable
@@ -18,7 +19,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from .bge_queue import BgeQueue
 from .control_spool import ControlSpool
-from .kaggle_public_backend import KaggleSourceBackend, TargetReadBinding, current_binding
+from .kaggle_public_backend import KaggleSourceBackend, TargetReadBinding, TargetUnavailable, current_binding
 from .kaggle_source_commands import AcceptedSourceDispatch
 from .oauth_provider import RegionalOAuthProvider
 from .participants import Participants
@@ -319,6 +320,23 @@ class TargetServiceStartup:
         self.schema_migrations=SourceSchemaMigrations(self)
         config.spool._schema_intake_guard=self.schema_migrations.intake_allowed
 
+    def promote_schema_context(self,version):
+        """The authenticated migration result advances metadata in this owner."""
+        from dataclasses import replace
+        from .kaggle_pg_snapshot_native import encode
+        adapter=self.config.history_adapter
+        database=replace(adapter.database,schema_version=version)
+        adapter.database=database
+        self.history.database=database;self.history.schema_version=version
+        self.history._native_prefix=None
+        self.restorer.database=database
+        self.restorer.dispatch.database=database
+        proof=self.restorer.proof
+        if proof is not None:
+            control=json.loads(proof.control);control['schema_version']=version
+            object.__setattr__(proof,'database',database)
+            object.__setattr__(proof,'control',encode(control))
+
     def binding_current(self,binding):
         try:
             return (not self.closed and type(binding) is TargetReadBinding
@@ -389,7 +407,14 @@ class TargetServiceStartup:
                 if pending:await owner.reconcile(self.config.spool.journal.store)
             if self.restorer is not None and not self.restorer.complete:
                 await self.restorer.refresh()
-            binding=await asyncio.to_thread(current_binding,self.config.queue)
+            try:
+                binding=await asyncio.to_thread(current_binding,self.config.queue)
+            except TargetUnavailable:
+                # The migrated worker can reconnect before its lost receipt
+                # advances our observed version. Reconcile that original job
+                # through existing pre-ready authority, then resume READY.
+                self.schema_migrations.resume_attachment()
+                raise
             if self.config.writer_owner is not None:
                 await self.config.writer_owner.ensure_current(self.config.spool.journal)
             if not self.binding_current(binding):raise PermissionError('current writer binding unavailable')

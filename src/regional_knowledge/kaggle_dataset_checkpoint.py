@@ -82,7 +82,7 @@ class _WorkCycleCapture(SourceDatasetSeed):
         data=encode(dict(codec='rkb.source-base-control.v1',stream=physical.journal.stream,
             database_generation=proof.database_generation,sequence=proof.applied_sequence,
             journal_head=proof.head.reference.wire() if proof.head else None,
-            catalog_sha256=history.catalog_hash,acl_sha256=history.acl_hash,
+            schema_version=history.schema_version,
             registry_sha256=history.registry_hash,routes=sorted(history.routes),
             heads=[list(row[:4])+[0,0] for row in rows]))
         if len(data)>physical.limits.max_control_bytes:raise SnapshotError('dataset_checkpoint_control_budget')
@@ -141,10 +141,10 @@ class SourceDatasetCheckpoints:
                 state TEXT NOT NULL,package_json TEXT,version INTEGER)''')
 
     def _versions(self):
-        result=dict(self.startup.config.source_restore.versions)
+        result={key:value for key,value in self.startup.config.source_restore.versions.items()
+            if key in ('server_version_num','pgvector_version','postgis_version','model_sha256','tokenizer_sha256','protocol_version')}
         database=self.startup.config.history_adapter.database
-        result.update(catalog_sha256=self.startup.history.catalog_hash,
-            **{key:getattr(database,key) for key in ('schema_revision','function_revision','executor_revision')})
+        result.update(schema_version=self.startup.history.schema_version)
         return result
 
     async def _capture_verify(self,binding,operation,latest,*,schema=False):

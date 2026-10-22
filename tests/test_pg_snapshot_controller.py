@@ -19,7 +19,7 @@ from test_participants import people
 
 
 def versions():
-    return dict(server_version_num=170006,pgvector_version='0.8.2',catalog_sha256=sha(b'catalog'),
+    return dict(schema_version=16,server_version_num=170006,pgvector_version='0.8.2',catalog_sha256=sha(b'catalog'),
         model_sha256='1'*64,tokenizer_sha256='2'*64,schema_revision=VERSIONS.schema,
         function_revision=VERSIONS.function,executor_revision=VERSIONS.executor)
 
@@ -57,7 +57,7 @@ class Native:
         return 'opaque-native-capability-reference'
     async def verify_initialized(self,b,reference):
         assert reference=='opaque-native-capability-reference'
-        return dict(database=self.database,identity=['run','nonce','inc'],applied_sequence=1,catalog_sha256=sha(b'catalog'))
+        return dict(database=self.database,identity=['run','nonce','inc'],applied_sequence=1,schema_version=16)
 
 
 @asynccontextmanager

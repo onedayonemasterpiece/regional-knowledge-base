@@ -11,7 +11,7 @@ import pytest
 
 from regional_knowledge.bge_queue import BgeQueue
 from regional_knowledge.kaggle_bootstrap import PreparedRuntime
-from regional_knowledge.kaggle_owned_pg import OwnedDatabase, OwnedPostgres, SQL_ARTIFACTS, digest
+from regional_knowledge.kaggle_owned_pg import OwnedDatabase, OwnedPostgres, SQL_ARTIFACTS, digest, canonical
 from regional_knowledge.kaggle_target_launch import persist_empty_intent
 from regional_knowledge.kaggle_target_runtime import TargetLaunchSpec, TargetRuntime
 from regional_knowledge.recovery_journal import JournalUnknown
@@ -53,7 +53,7 @@ def queue_run(tmp_path):
 
 
 def hashes():
-    return {name:digest((ROOT/'sql/kaggle'/name).read_bytes()) for name in SQL_ARTIFACTS}
+    return {path.name:digest(path.read_bytes()) for path in sorted((ROOT/'sql/kaggle').glob('[0-9][0-9][0-9]_*.sql'))}
 
 
 def generate(queue,run,target):
@@ -91,7 +91,8 @@ def test_generated_target_persists_final_hash_outside_source_and_is_stable(tmp_p
         expected=json.loads(db.execute('SELECT expected_json FROM bge_runtime_expectations WHERE run_id=?',(run,)).fetchone()[0])
     assert expected['hashes']['executed_source']==hashlib.sha256(source.encode()).hexdigest()
     assert expected['hashes']['executed_source'] not in source
-    assert expected['hashes']['schema']=='a'*64 and expected['hashes']['dependency']=='f'*64
+    assert expected['hashes']['schema']==digest(canonical(spec().database.schema_version))
+    assert expected['hashes']['dependency']=='f'*64
     assert module('bge_kaggle_controller').source_run_id(source)==run
     with pytest.raises(ValueError,match='immutable'):
         generate(queue,run,replace(spec(),dependency_sha256='0'*64))
@@ -175,7 +176,7 @@ async def test_controller_intent_includes_the_selected_native_story_migration(tm
         function_revision=STORY_REVISIONS.function,executor_revision=STORY_REVISIONS.executor))
     _,journal=journal_fixture()
     selected=controller().target_sql_hashes(target,ROOT)
-    assert tuple(selected)==STORY_SQL_ARTIFACTS
+    assert selected==hashes()
     await persist_empty_intent(queue,run,target,launch_nonce=queue.prepare_channel(run),
         recovery_journal=journal,sql_hashes=selected)
     # Without migration 007 in the controller's intent the real composer
@@ -587,3 +588,28 @@ async def test_runtime_extracts_bundle_after_encoder_and_forwards_retained_recei
     await runtime.prepare(encoder,**args);await runtime.prepare(None,**args)
     await runtime.aclose()
     assert events==['extract','owned','pool','close']
+
+
+@pytest.mark.asyncio
+async def test_live_version_promotion_retains_prepared_query_pg_pool_and_models():
+    from types import SimpleNamespace as NS
+    from test_kaggle_bootstrap import observation
+    owner=object.__new__(TargetRuntime)
+    database=spec().database
+    owner.database=database
+    pool=owner.pool=NS(connection=object())
+    async def query_handler(*args,**kwargs):pass
+    prepared=owner.prepared=PreparedRuntime(query_handler,candidate())
+    worker=owner.recovery_worker=NS(factory=NS(_capabilities=set()),schema_control=NS(files={'verified':'bytes'}))
+    owner.source_history_observer=NS(database=database)
+    async def probe(*,acquire):
+        assert acquire is pool.connection
+        return b'{}',observation(schema_version=database.schema_version+1)
+    owner.probe=probe
+    result=await owner._promote_schema_version(database.schema_version+1)
+    assert owner.pool is pool and owner.prepared is prepared and prepared.query_handler is query_handler
+    assert result['schema_version']==database.schema_version+1
+    assert worker.factory.database is owner.database is worker.schema_control.database
+    assert owner.source_history_observer.database is owner.database
+    assert worker.factory.schema_files is worker.schema_control.files
+    assert all(result['hashes'][key]==candidate().hashes[key] for key in result['hashes'] if key!='schema')

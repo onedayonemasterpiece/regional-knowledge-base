@@ -19,7 +19,7 @@ from regional_knowledge.kaggle_owned_pg import (
     SQL_ARTIFACTS, DOMAIN_SQL_ARTIFACTS, IMAGE_SOURCE_SQL_ARTIFACTS, NATIVE_SOURCE_SQL_ARTIFACTS,
     configure_native_roles, sql_artifacts,
 )
-from test_kaggle_database_probe import Connection, catalog
+from test_kaggle_database_probe import Connection
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,91 +28,15 @@ FUNCTION = 'rkb-v4-native-source-activation-v1'
 EXECUTOR = 'rkb-python-apply-native-source-v1'
 
 
-def image_catalog():
-    observed = catalog()
-    signatures = {}
-    for name in probe.STORY_FUNCTIONS | probe.FACT_FUNCTIONS:
-        stem = name.split('.', 1)[1].split('(', 1)[0]
-        is_set = stem.startswith(('story_lexical_', 'story_dense_', 'story_hydrate_',
-            'read_source_calendar_', 'read_source_observations_', 'read_source_assertions_'))
-        result = ('record' if is_set else 'boolean' if stem.startswith(('check_', 'verify_'))
-            else 'bytea' if stem.startswith('apply_') else 'jsonb' if stem in ('read_story_v1', 'source_fact_proofs_v1')
-            else 'trigger')
-        signatures[name] = (result, is_set)
-    tables = probe.STORY_TABLES | probe.FACT_TABLES
-    triggers = probe.STORY_TRIGGERS | probe.FACT_TRIGGERS
-    for layer in (9, 10, 11, 13, 14):
-        tables |= getattr(domain, f'TABLES_{layer}')
-        triggers |= getattr(domain, f'TRIGGERS_{layer}')
-        signatures.update(getattr(domain, f'FUNCTIONS_{layer}'))
-    signatures.update(domain.FUNCTIONS_12)
-    observed['tables'].update({name:dict(kind='r') for name in tables})
-    observed['functions'].update({name:dict(kind='f', returns_set=is_set, result=result,
-        security_definer=False, definition='CREATE FUNCTION synthetic schema14')
-        for name,(result,is_set) in signatures.items()})
-    observed['triggers'].update({table+':'+name:dict(table=table, name=name, internal=False, enabled='O')
-        for table,name in triggers})
-    for name,table,method in (
-        ('story_search_dense','story_search','hnsw'), ('story_search_fts','story_search','gin'),
-        ('source_event_day','source_event_dates','btree'), ('source_event_source','source_event_dates','btree'),
-        ('source_observation_metric','source_observations','btree'), ('source_observation_source','source_observations','btree')):
-        observed['indexes'][name] = dict(table=table, method=method, valid=True, ready=True, live=True)
-    return observed
-
-
-def test_explicit_profile_keeps_old_prefixes_and_hard_budgets():
-    assert sql_artifacts('rkb-v4-sql001-011-v1') == DOMAIN_SQL_ARTIFACTS
-    assert sql_artifacts('unknown-future-schema') == SQL_ARTIFACTS
-    assert NATIVE_SOURCE_SQL_ARTIFACTS == IMAGE_SOURCE_SQL_ARTIFACTS
-    assert sql_artifacts(SCHEMA) == DOMAIN_SQL_ARTIFACTS + (
-        '012_geo_dependency_bound.sql', '013_source_stage.sql', '014_source_stage_activation.sql')
-    assert probe.native_probe_for_schema('rkb-v4-sql001-011-v1').max_catalog_rows == 1376
-    assert probe.native_probe_for_schema('rkb-v4-sql001-008-v1').max_catalog_rows == 576
-    assert probe.native_probe_for_schema('unknown-future-schema').max_catalog_rows == 512
-    selected = probe.native_probe_for_schema(SCHEMA)
-    assert selected.max_catalog_rows <= 2048
-    assert selected.max_catalog_bytes == 1024*1024 and selected.max_definition_bytes == 65536
-
 
 @pytest.mark.asyncio
-async def test_complete_schema14_catalog_and_wrong_profile_refusal():
-    connection = Connection()
-    connection.catalog = image_catalog()
-    connection.state.update(schema_revision=SCHEMA, function_revision=FUNCTION, executor_revision=EXECUTOR)
-    encoded, fields = await probe.native_probe_for_schema(SCHEMA)(acquire=connection.acquire)
-    assert fields['schema_revision'] == SCHEMA
-    assert json.loads(encoded)['format'] == 'rkb-native-catalog-v1'
-    connection.state['schema_revision'] = 'rkb-v4-sql001-011-v1'
-    with pytest.raises(probe.DatabaseProbeUnavailable, match='image_source_revision_mismatch'):
-        await probe.native_probe_for_schema(SCHEMA)(acquire=connection.acquire)
-    connection.state['schema_revision'] = SCHEMA
-    for name in domain.TABLES_13:
-        del connection.catalog['tables'][name]
-    with pytest.raises(probe.DatabaseProbeUnavailable, match='image_source_revision_mismatch'):
-        await probe.native_probe_for_schema(SCHEMA)(acquire=connection.acquire)
-
-
-@pytest.mark.parametrize('signature', sorted(domain.FUNCTIONS_12 | domain.FUNCTIONS_13 | domain.FUNCTIONS_14))
-def test_each_fixed_stage_activation_function_is_required(signature):
-    observed = image_catalog()
-    probe.NativeDatabaseProbe._validate_catalog(observed)
-    del observed['functions'][signature]
-    with pytest.raises(probe.DatabaseProbeUnavailable, match='functions_incomplete'):
-        probe.NativeDatabaseProbe._validate_catalog(observed)
-
-
-@pytest.mark.parametrize('layer', [13, 14])
-def test_new_immutable_tables_and_triggers_are_not_optional(layer):
-    observed = image_catalog()
-    table = sorted(getattr(domain, f'TABLES_{layer}'))[0]
-    del observed['tables'][table]
-    with pytest.raises(probe.DatabaseProbeUnavailable, match='schema_incomplete'):
-        probe.NativeDatabaseProbe._validate_catalog(observed)
-    observed = image_catalog()
-    table,name = sorted(getattr(domain, f'TRIGGERS_{layer}'))[0]
-    observed['triggers'][table+':'+name]['enabled'] = 'D'
-    with pytest.raises(probe.DatabaseProbeUnavailable, match='triggers_not_ready'):
-        probe.NativeDatabaseProbe._validate_catalog(observed)
+async def test_readiness_uses_ledger_instead_of_legacy_profile_or_catalog_inventory():
+    connection=Connection()
+    connection.state.update(schema_version=14,schema_revision=SCHEMA,function_revision=FUNCTION,executor_revision=EXECUTOR)
+    encoded,fields=await probe.native_probe_for_schema(SCHEMA)(acquire=connection.acquire)
+    assert encoded==b'{}' and fields['schema_version']==14
+    connection.state['schema_revision']='obsolete-legacy-string'
+    assert (await probe.native_probe_for_schema('another-legacy-string')(acquire=connection.acquire))[1]['schema_version']==14
 
 
 @pytest.mark.asyncio
@@ -145,7 +69,7 @@ async def test_history_selects_matching_provenance_without_changing_old_profile(
         statements.append(statement)
         return Cursor((False,) if 'SELECT EXISTS' in statement else (nonce,) if statement=='SELECT %s::text' else (True,))
     async def inspect_acl(connection):return b'acl'
-    async def read_probe(**kwargs):return b'catalog', dict(applied_seq=7, database_generation='db')
+    async def read_probe(**kwargs):return b'catalog', dict(schema_version=16,applied_seq=7, database_generation='db')
     released = []
     async def release(session, *, abort):released.append(abort)
     monkeypatch.setattr(history, 'inspect_acl', inspect_acl)
@@ -154,7 +78,7 @@ async def test_history_selects_matching_provenance_without_changing_old_profile(
     observer.max_commands = 100; observer.valid = lambda binding:True
     observer._release = release; observer.probe = read_probe; observer.acquire = None; observer._prefixes = {}
     session = NS(nonce=nonce, exhausted=True, mode='full', connection=NS(execute=execute),
-        binding=('run','inc',1), sequence=7, closure=[history.digest(b'catalog'), history.digest(b'acl')])
+        binding=('run','inc',1), sequence=7, closure=[16])
     result = await observer._close(session, dict(action='close', session='session', nonce=nonce, origin_ids=[]))
     assert result['applied_sequence'] == 7 and released == [False]
     assert any(story+'(' in sql for sql in statements)
@@ -212,17 +136,19 @@ async def test_native_schema14_complete_catalog_measurement():
             for name in IMAGE_SOURCE_SQL_ARTIFACTS[2:]:
                 await connection.execute((ROOT/'sql/kaggle'/name).read_text(), prepare=False)
             await connection.execute("SELECT rkb_v4.publish_read_frontier('image-metadata-fixture','writer-1',0,0,true,true)")
+        async with connection.transaction():
+            await connection.execute('CREATE TABLE rkb_v4.schema_migrations(version integer PRIMARY KEY)')
+            await connection.execute('INSERT INTO rkb_v4.schema_migrations VALUES(14)')
         @asynccontextmanager
         async def acquire():yield connection
         # Default remains the production readiness budget. A bounded structural
         # measurement may opt in separately; it is not a latency-gate PASS.
         timeout = float(os.getenv("RKB_CATALOG_FIXTURE_TIMEOUT_SECONDS", "2"))
         encoded, fields = await probe.native_probe_for_schema(SCHEMA, timeout_seconds=timeout)(acquire=acquire)
-        records = json.loads(encoded)['records']
+        assert encoded==b'{}'
         assert fields['schema_revision'] == SCHEMA and fields['applied_seq'] == 0
         assert fields['text_search_ready'] and fields['dense_search_ready']
-        assert len(records) <= 2048 and len(encoded) <= 1024*1024
-        print('schema14_native_catalog_records=', len(records), 'bytes=', len(encoded))
+        assert fields['schema_version']==14
         # Both new and legacy-only origin verifiers handle the empty fixture.
         async with connection.transaction():
             for name in ('verify_source_image_origins_v1','verify_source_story_origins_v4',

@@ -565,6 +565,35 @@ class BgeQueue:
         from .kaggle_bootstrap_pins import finalized_pins
         return finalized_pins(self,run_id,token,generation)
 
+    @staticmethod
+    def _runtime_expected(row):
+        from dataclasses import replace
+        from .kaggle_readiness import SearchRuntimeExpectation
+        expected=SearchRuntimeExpectation(**json.loads(row['expected_json']))
+        prior=json.loads(row['observed_json']) if row['observed_json'] else None
+        version=prior.get('schema_version',expected.schema_version) if prior else expected.schema_version
+        hashes=dict(expected.hashes)
+        if version!=expected.schema_version:hashes['schema']=hashlib.sha256(json.dumps(version).encode()).hexdigest()
+        return replace(expected,hashes=hashes,schema_version=version)
+
+    def _promote_schema_runtime(self,db,run,generation,observation,*,target_version):
+        """Called only for the authenticated, claimed schema_migrate result."""
+        from dataclasses import replace
+        from .kaggle_readiness import RunIdentity,validate_search_runtime
+        row=self._runtime_row(db,run['id'])
+        if row is None:raise ValueError('current verified runtime required')
+        expected=self._runtime_expected(row)
+        if type(target_version) is not int or target_version<expected.schema_version:
+            raise ValueError('schema runtime version cannot move backward')
+        hashes=dict(expected.hashes);hashes['schema']=hashlib.sha256(json.dumps(target_version).encode()).hexdigest()
+        expected=replace(expected,hashes=hashes,schema_version=target_version)
+        identity=RunIdentity(run['provider_ref'],str(run['provider_version']),None,
+            run['id'],run['launch_nonce'],run['runtime_incarnation'])
+        if not validate_search_runtime(expected,observation,identity).ok:
+            raise ValueError('migrated readiness differs from the retained runtime')
+        db.execute('UPDATE bge_runtime_expectations SET observed_json=?,accepted_generation=? WHERE run_id=?',
+            (json.dumps(observation,sort_keys=True,separators=(',',':')),generation,run['id']))
+
     def _runtime_check(self, db, run, generation, observation):
         from .kaggle_readiness import (SearchRuntimeExpectation, RunIdentity, Validation,
                                        validate_search_runtime)
@@ -574,7 +603,7 @@ class BgeQueue:
             return Validation(('bootstrap_finalization_required',))
         if run['provider_version'] is None or not run['provider_ref']:
             return Validation(('provider_pending',))
-        expected=SearchRuntimeExpectation(**json.loads(row['expected_json']))
+        expected=self._runtime_expected(row)
         identity=RunIdentity(run['provider_ref'],str(run['provider_version']),None,
             run['id'],run['launch_nonce'],run['runtime_incarnation'])
         return validate_search_runtime(expected,observation,identity)

@@ -37,6 +37,7 @@ class EmptySnapshotDrill:
             workspace_private_current=serving.workspace_private_current,native_uid=serving.native_uid,native_gid=serving.native_gid,
             limits=serving.limits,connect=serving.connect,spawn=serving.spawn,probe=serving.probe)
         self.factory.native_env=dict(serving.native_env);self.factory.model_pins=serving.model_pins
+        self.factory.schema_files=serving.schema_files
         self.sessions={};self.proofs={};self.closing={};self.prepared={}
 
     def can_reconcile(self,phase,args):
@@ -51,28 +52,28 @@ class EmptySnapshotDrill:
         if type(args) is not dict:raise SnapshotError('drill_fixed_arguments')
         if phase=='drill_prepare':return await self._prepare(args,key,binding,frame)
         if phase=='drill_finish':
-            if set(args)!={'handle','control_b64','catalog_sha256'}:raise SnapshotError('drill_fixed_arguments')
+            if set(args)!={'handle','control_b64','schema_version'}:raise SnapshotError('drill_fixed_arguments')
             session=self.sessions.get(args['handle'])
             if session is None:raise SnapshotError('drill_retained_session_unknown')
             session.binding=binding
             control=base64.b64decode(args['control_b64'],validate=True)
             if control!=session.control:raise SnapshotError('drill_empty_control_changed')
             cap=await self.factory.finish(session,expected_tail=(),final_head=None,
-                control_bytes=control,expected_catalog_sha256=args['catalog_sha256'])
+                control_bytes=control,expected_schema_version=args['schema_version'])
             return {'reference':self.factory.reference(cap)}
         if set(args)!={'reference'}:raise SnapshotError('drill_fixed_arguments')
         if phase=='drill_close':return await self._close(args['reference'],binding)
         proof=self.proofs.get(args['reference'])
         if proof is None or proof.owner is not self or not proof.closed or proof.candidate.process.returncode is None:
             raise SnapshotError('drill_shutdown_proof_unknown')
-        await self._serving(binding,proof.wire['catalog_sha256'],proof.wire['system_identifier'])
+        await self._serving(binding,proof.wire['schema_version'],proof.wire['system_identifier'])
         return dict(proof.wire,reference=args['reference'])
 
-    async def _serving(self,binding,catalog_hash,system_identifier):
+    async def _serving(self,binding,schema_version,system_identifier):
         self.serving._current(binding)
         if not callable(self.serving.acquire):raise SnapshotError('drill_serving_connection_unavailable')
         catalog,fields=await self.serving.probe(acquire=self.serving.acquire)
-        if (sha(catalog)!=catalog_hash or fields['database_generation']!=self.serving.database.database_generation
+        if (fields['schema_version']!=schema_version or fields['database_generation']!=self.serving.database.database_generation
                 or fields['applied_seq']!=0 or fields['projection_seq']!=0
                 or not fields['text_search_ready'] or not fields['dense_search_ready']):
             raise SnapshotError('drill_serving_empty_frontier_changed')
@@ -99,7 +100,7 @@ class EmptySnapshotDrill:
                 or manifest.get('writer_generation')!=self.serving.database.writer_generation):
             raise SnapshotError('drill_empty_base_required')
         if self.prepared:raise SnapshotError('drill_candidate_already_owned')
-        await self._serving(binding,args['expected_versions']['catalog_sha256'],manifest['system_identifier'])
+        await self._serving(binding,args['expected_versions']['schema_version'],manifest['system_identifier'])
         free=shutil.disk_usage(Path(self.factory.database.socket).parent.parent).free
         needed=args['blob']['size']+manifest['unpacked_bytes']
         if free<needed:raise SnapshotError('drill_disk_budget')
@@ -124,7 +125,7 @@ class EmptySnapshotDrill:
             manifest,free=next(iter(self.prepared.values()))
             proof=_NativeDrillProof(self,cap._candidate,dict(codec='rkb.empty-base-drill.v1',
                 database=self.serving.database.wire(),drill_database=self.factory.database.wire(),identity=list(self.serving.identity),
-                manifest_sha256=cap.manifest['sha256'],applied_sequence=0,catalog_sha256=json.loads(cap.control)['catalog_sha256'],
+                manifest_sha256=cap.manifest['sha256'],applied_sequence=0,schema_version=json.loads(cap.control)['schema_version'],
                 versions=dict(manifest['versions']),system_identifier=manifest['system_identifier'],
                 disk_free_before=free,owned_peak_bytes_bound=2*(manifest['blob']['size']+manifest['unpacked_bytes'])))
             self.closing[reference]=proof
@@ -139,7 +140,7 @@ class EmptySnapshotDrill:
                 if cap._candidate is proof.candidate:await cap.aclose()
         existing=next((ref for ref,p in self.proofs.items() if p is proof),None)
         reference=existing or secrets.token_urlsafe(24);self.proofs[reference]=proof
-        await self._serving(binding,proof.wire['catalog_sha256'],proof.wire['system_identifier'])
+        await self._serving(binding,proof.wire['schema_version'],proof.wire['system_identifier'])
         return dict(proof.wire,reference=reference)
 
     async def aclose(self):

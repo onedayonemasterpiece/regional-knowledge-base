@@ -169,8 +169,8 @@ def configured_source_service():
             result[key]=value
         return result
     value=json.loads(data,object_pairs_hook=unique)
-    fields={'codec','run_id','stream','database','command_handlers','catalog_sha256','acl_sha256','observer_sha256'}
-    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys','source_restore','source_snapshot','geo_bootstrap','geo_dependency_upgrade','dataset_seed','native_source_upgrade'}
+    fields={'codec','run_id','stream','database','command_handlers','observer_sha256'}
+    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys','source_restore','source_snapshot','geo_bootstrap','geo_dependency_upgrade','dataset_seed','native_source_upgrade','catalog_sha256','acl_sha256'}
             or value['codec']!='rkb.source-service.v1'):
         raise ValueError('exact source owner configuration required')
     if 'geo_manifest_operation_keys' in value and type(value['geo_manifest_operation_keys']) is not list:
@@ -190,17 +190,17 @@ def configured_source_service():
     object_store=_object_store_from_env()
     if type(object_store) is not S3ObjectStore:raise ValueError('existing configured native S3 authority required')
     database=OwnedDatabase(**value['database'])
+    queue=BgeQueue(queue_path)
+    with queue.connect(write=False) as db:
+        runtime=queue._runtime_row(db,value['run_id'])
+        observed=json.loads(runtime['observed_json']) if runtime is not None and runtime['observed_json'] else None
+    if observed is not None and observed.get('database_generation')==database.database_generation:
+        from dataclasses import replace
+        database=replace(database,schema_version=observed.get('schema_version',database.schema_version))
     registry=fixed_registry(database,value['command_handlers'])
     upgrade=None
-    if 'geo_dependency_upgrade' in value:
-        from .kaggle_geo_upgrade import GeoUpgradePins
-        upgrade=GeoUpgradePins.from_wire(value['geo_dependency_upgrade'])
     native_upgrade=None
-    if 'native_source_upgrade' in value:
-        from .kaggle_native_source_upgrade import NativeSourceUpgradePins
-        native_upgrade=NativeSourceUpgradePins.from_wire(value['native_source_upgrade'])
-    history=WssNativeHistoryProofAdapter(database=database,expected_catalog_sha256=value['catalog_sha256'],
-        expected_acl_sha256=value['acl_sha256'],expected_observer_sha256=value['observer_sha256'],
+    history=WssNativeHistoryProofAdapter(database=database,expected_observer_sha256=value['observer_sha256'],
         geo_bootstrap_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),
         geo_upgrade_pins=upgrade,
         native_source_upgrade_pins=native_upgrade if database.schema_revision=='rkb-v4-sql001-014-v1' else None)
@@ -224,7 +224,7 @@ def configured_source_service():
     if 'dataset_seed' in value:
         from .kaggle_dataset_seed import DatasetSeedConfig
         dataset_seed=DatasetSeedConfig.from_wire(value['dataset_seed'])
-    return compose_source_service(queue=BgeQueue(queue_path),oauth_provider=provider,participants=people,
+    return compose_source_service(queue=queue,oauth_provider=provider,participants=people,
         object_store=object_store,stream=value['stream'],registry=registry,history_adapter=history,
         run_id=value['run_id'],database_generation=database.database_generation,writer_generation=database.writer_generation,
         source_import=import_owners,geo_manifest_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),source_restore=restore,source_snapshot=snapshot,geo_bootstrap=geo_bootstrap,

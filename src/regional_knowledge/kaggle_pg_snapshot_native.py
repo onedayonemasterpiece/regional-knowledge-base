@@ -65,16 +65,26 @@ def _hash(value):
 
 
 def validate_versions(versions):
-    required={'server_version_num','pgvector_version','catalog_sha256','model_sha256','tokenizer_sha256',
-        'schema_revision','function_revision','executor_revision'}
-    if not isinstance(versions,dict) or set(versions)!=required:
+    required={'server_version_num','pgvector_version','model_sha256','tokenizer_sha256'}
+    legacy={'catalog_sha256','acl_sha256','schema_revision','function_revision','executor_revision'}
+    if not isinstance(versions,dict) or not required<=set(versions) or set(versions)-required-legacy-{'schema_version','postgis_version','protocol_version'}:
         raise SnapshotError('snapshot_exact_runtime_versions_required')
     if (type(versions['server_version_num']) is not int or versions['server_version_num']//10000!=17
             or versions['pgvector_version']!='0.8.2'
-            or any(not isinstance(versions[k],str) or not 1<=len(versions[k].encode())<=256
-                for k in ('schema_revision','function_revision','executor_revision'))):
+            or 'schema_version' in versions and (type(versions['schema_version']) is not int or versions['schema_version']<1)):
         raise SnapshotError('snapshot_native_version_mismatch')
-    for k in ('catalog_sha256','model_sha256','tokenizer_sha256'):_hash(versions[k])
+    for k in ('model_sha256','tokenizer_sha256'):_hash(versions[k])
+
+
+def compatible_versions(base,expected):
+    validate_versions(base);validate_versions(expected)
+    # Physical compatibility is PG major plus native/model/protocol versions.
+    # An older schema is upgraded from its verified files before tail replay.
+    return (base['server_version_num']//10000==expected['server_version_num']//10000
+        and all(base.get(key)==expected.get(key) for key in (
+            'pgvector_version','postgis_version','model_sha256','tokenizer_sha256','protocol_version'))
+        and ('schema_version' not in base or 'schema_version' not in expected
+             or base['schema_version']<=expected['schema_version']))
 
 
 @dataclass(frozen=True)
@@ -334,9 +344,9 @@ class NativeSnapshotFactory:
         async with asyncio.timeout(self.limits.timeout_seconds):
             await self.tools.verify(self._run)
             catalog,fields=await self.probe(acquire=self.acquire)
-            if (sha(catalog)!=versions['catalog_sha256'] or fields['database_generation']!=self.database.database_generation
+            if (fields['schema_version']!=versions.get('schema_version') or fields['database_generation']!=self.database.database_generation
                     or fields['applied_seq']!=expected_sequence
-                    or any(fields[k]!=versions[k] for k in ('schema_revision','function_revision','executor_revision'))):
+                    ):
                 raise SnapshotError('native_backup_current_prefix')
             root=await _blocking(self._workspace,workspace,self.limits.max_unpacked_bytes*2)
             async with self.acquire() as connection:
@@ -346,7 +356,8 @@ class NativeSnapshotFactory:
                     system_identifier=(await cursor.fetchone())[0]
                     cursor=await connection.execute('SELECT current_setting(\'server_version_num\')::integer,'
                         'writer_generation FROM rkb_v4.recovery_state WHERE singleton')
-                    if await cursor.fetchone()!=(versions['server_version_num'],self.database.writer_generation):
+                    observed=await cursor.fetchone()
+                    if observed is None or observed[0]//10000!=17 or observed[1]!=self.database.writer_generation:
                         raise SnapshotError('native_backup_version_or_writer')
                     cursor=await connection.execute('SELECT datname FROM pg_database WHERE NOT datistemplate '
                         'ORDER BY datname COLLATE "C" LIMIT 4')
@@ -450,17 +461,15 @@ class NativeSnapshotFactory:
         if sha(manifest_bytes)!=expected_manifest_sha256:raise SnapshotError('native_restore_manifest_hash')
         m=json.loads(manifest_bytes)
         if (encode(m)!=manifest_bytes or m.get('codec')!='rkb.pg-physical-base.v1'
-                or m.get('versions')!=expected_versions or m.get('database_generation')!=self.database.database_generation
+                or not compatible_versions(m.get('versions'),expected_versions) or m.get('database_generation')!=self.database.database_generation
                 or m.get('writer_generation')==self.database.writer_generation
                 or len(manifest_bytes)>self.limits.max_control_bytes
                 or len(control_bytes)>self.limits.max_control_bytes
                 or sha(control_bytes)!=m['source_control']['sha256']):
             raise SnapshotError('native_restore_manifest_binding')
         blob=BlobRef(**m['blob'])
-        for name in ('pg_basebackup','pg_verifybackup','postgres'):
-            actual=asdict(getattr(self.tools,name));original=m['native_tools'][name]
-            if any(actual[k]!=original.get(k) for k in ('size','sha256','version_output')):
-                raise SnapshotError('native_restore_stage0_inventory_differs')
+        # Current executables are verified against the loaded bundle below.
+        # Snapshot binary hashes are provenance; PG17 patch releases may differ.
         if (blob.size>self.limits.max_archive_bytes or m['unpacked_bytes']>self.limits.max_unpacked_bytes
                 or m['file_count']>self.limits.max_files):raise SnapshotError('native_restore_artifact_budget')
         if len(self._owned_candidates)>=2:raise SnapshotError('native_restore_candidate_capacity')
@@ -489,14 +498,6 @@ class NativeSnapshotFactory:
                         async with candidate.acquire():pass
                         break
                     except psycopg.OperationalError:await asyncio.sleep(.1)
-            base_probe=self.probe
-            if not self._custom_probe and expected_versions['schema_revision']!=self.database.schema_revision:
-                base_probe=native_probe_for_schema(expected_versions['schema_revision'])
-            catalog,fields=await base_probe(acquire=candidate.acquire)
-            if (sha(catalog)!=expected_versions['catalog_sha256']
-                    or fields['database_generation']!=self.database.database_generation
-                    or fields['applied_seq']!=m['applied_sequence']):
-                raise SnapshotError('native_restore_internal_cursor')
             async with candidate.acquire() as connection:
                 async with connection.transaction():
                     await connection.execute("SET LOCAL statement_timeout='2000ms'")
@@ -506,6 +507,11 @@ class NativeSnapshotFactory:
                         raise SnapshotError('native_restore_applied_prefix')
                     cursor=await connection.execute('SELECT writer_generation FROM rkb_v4.recovery_state WHERE singleton')
                     if await cursor.fetchone()!=(m['writer_generation'],):raise SnapshotError('native_restore_original_writer')
+                    cursor=await connection.execute('SELECT database_generation,applied_seq '
+                        'FROM rkb_v4.recovery_state WHERE singleton')
+                    if await cursor.fetchone()!=(self.database.database_generation,m['applied_sequence']):
+                        raise SnapshotError('native_restore_internal_cursor')
+            await self._upgrade_restored(candidate,m)
             original=replace(self.database,writer_generation=m['writer_generation'])
             options={} if self.prepare_transition is None else {'prepare_transition':self.prepare_transition}
             executor=self.executor_factory(acquire=candidate.acquire,registry=self.registry,database=original,
@@ -515,6 +521,29 @@ class NativeSnapshotFactory:
             return session
         except BaseException:
             await candidate.aclose();self._owned_candidates.discard(candidate);raise
+
+    async def _upgrade_restored(self,candidate,manifest):
+        """Verified physical bytes/cursor precede DDL; replay follows this call."""
+        files=getattr(self,'schema_files',None)
+        if files is None:raise SnapshotError('native_restore_migration_bundle_required')
+        from .kaggle_schema_migrate import migrate
+        from .kaggle_owned_pg import configure_migration_defaults
+        async with candidate.acquire() as connection:
+            async with connection.transaction():
+                # New checkpoints bind their ledger version; old Dataset2 has
+                # no integer and is established by the runner's fixed baseline.
+                declared=manifest['versions'].get('schema_version')
+                if declared is not None:
+                    actual=await (await connection.execute(
+                        'SELECT max(version) FROM rkb_v4.schema_migrations')).fetchone()
+                    if actual!=(declared,):raise SnapshotError('native_restore_base_schema_version')
+                await configure_migration_defaults(connection)
+            await migrate(connection,files)
+        _,fields=await self.probe(acquire=candidate.acquire)
+        if (fields['schema_version']!=self.database.schema_version
+                or fields['database_generation']!=self.database.database_generation
+                or fields['applied_seq']!=manifest['applied_sequence']):
+            raise SnapshotError('native_restore_migrated_version_or_cursor')
 
     async def apply(self,session,frame):
         if session not in self._sessions:raise SnapshotError('native_restore_session_unknown')
@@ -528,7 +557,8 @@ class NativeSnapshotFactory:
         else:raise SnapshotError('native_restore_receipt_order')
         return receipt
 
-    async def finish(self,session,*,expected_tail,final_head,control_bytes,expected_catalog_sha256):
+    async def finish(self,session,*,expected_tail,final_head,control_bytes,
+                     expected_schema_version=None,expected_catalog_sha256=None):
         """Controller calls only after exact remote outcomes and old tail drain.
 
         The current authenticated control binding is the authority; supplied
@@ -536,12 +566,13 @@ class NativeSnapshotFactory:
         as standalone JSON permission.
         """
         expected_tail=tuple(tuple(item) for item in expected_tail)
+        expected_schema_version=self.database.schema_version if expected_schema_version is None else expected_schema_version
         if len(control_bytes)>self.limits.max_control_bytes:raise SnapshotError('native_restore_metadata_budget')
         completed=self._completed.get(session)
         if completed is not None:
             if (completed.control!=control_bytes or completed.journal_head!=final_head
                     or expected_tail!=tuple(session.receipts)
-                    or json.loads(completed.control).get('catalog_sha256')!=expected_catalog_sha256):
+                    or json.loads(completed.control).get('schema_version')!=expected_schema_version):
                 raise SnapshotError('native_restore_finish_request_changed')
             self._current(session.binding)
             object.__setattr__(completed,'_binding',session.binding)
@@ -554,10 +585,10 @@ class NativeSnapshotFactory:
         control=json.loads(control_bytes)
         if (encode(control)!=control_bytes or control.get('database_generation')!=self.database.database_generation
                 or control.get('sequence')!=final_sequence or control.get('journal_head')!=final_head
-                or control.get('catalog_sha256')!=expected_catalog_sha256):
+                or control.get('schema_version')!=expected_schema_version):
             raise SnapshotError('native_restore_final_control_binding')
         intent=sha(encode(dict(expected_tail=expected_tail,final_head=final_head,
-            control_sha256=sha(control_bytes),catalog_sha256=expected_catalog_sha256)))
+            control_sha256=sha(control_bytes),schema_version=expected_schema_version)))
         prior=self._finish_intents.get(session)
         if prior is not None and prior!=intent:raise SnapshotError('native_restore_finish_request_changed')
         self._finish_intents[session]=intent
@@ -578,28 +609,12 @@ class NativeSnapshotFactory:
                     expected_writer=session.manifest['writer_generation'],new_writer=self.database.writer_generation)
             else:raise SnapshotError('native_restore_writer_changed')
         catalog,fields=await self.probe(acquire=session.candidate.acquire)
-        if (sha(catalog)!=expected_catalog_sha256 or fields['database_generation']!=self.database.database_generation
+        if (fields['schema_version']!=expected_schema_version or fields['database_generation']!=self.database.database_generation
                 or fields['applied_seq']!=final_sequence
-                or fields['projection_seq']!=final_sequence or not fields['text_search_ready'] or not fields['dense_search_ready']
-                or any(fields[k]!=getattr(self.database,k) for k in ('schema_revision','function_revision','executor_revision'))):
-            # The real ordered transition is the only faithful measurement of a
-            # Kaggle-specific final catalog/ACL. Report digests only (never the
-            # catalog bytes) to the kernel log, then fail closed exactly as before.
-            acl_sha256=None
-            try:
-                from .kaggle_source_acl import inspect_acl
-                async with session.candidate.acquire() as connection:
-                    async with connection.transaction():
-                        await connection.execute("SET TRANSACTION READ ONLY")
-                        await connection.execute("SET LOCAL statement_timeout='2000ms'")
-                        acl_sha256=sha(await inspect_acl(connection))
-            except Exception:
-                pass
+                or fields['projection_seq']!=final_sequence or not fields['text_search_ready'] or not fields['dense_search_ready']):
             print(json.dumps(dict(event='native_restore_final_observation',
-                observed_catalog_sha256=sha(catalog),expected_catalog_sha256=expected_catalog_sha256,
-                observed_acl_sha256=acl_sha256,applied_seq=fields['applied_seq'],
-                schema_revision=fields['schema_revision'],function_revision=fields['function_revision'],
-                executor_revision=fields['executor_revision'])),flush=True)
+                schema_version=fields['schema_version'],expected_schema_version=expected_schema_version,
+                applied_seq=fields['applied_seq'])),flush=True)
             raise SnapshotError('native_restore_final_readiness')
         async with session.candidate.acquire() as connection:
             async with connection.transaction():
@@ -629,7 +644,7 @@ class NativeSnapshotFactory:
         object.__setattr__(cap,'_binding',binding)
         await self.verify_initialized(cap,self.database,self.identity)
         return {'database':self.database.wire(),'identity':list(self.identity),
-            'applied_sequence':cap.applied_sequence,'catalog_sha256':json.loads(cap.control)['catalog_sha256']}
+            'applied_sequence':cap.applied_sequence,'schema_version':json.loads(cap.control)['schema_version']}
 
     async def verify_initialized(self,cap,database,identity):
         if (type(cap) is not VerifiedInitializedDatabase or cap not in self._capabilities
@@ -637,7 +652,7 @@ class NativeSnapshotFactory:
             raise SnapshotError('native_restore_capability_unknown')
         self._current(cap._binding)
         catalog,fields=await self.probe(acquire=cap._candidate.acquire)
-        if (sha(catalog)!=json.loads(cap.control)['catalog_sha256'] or fields['database_generation']!=database.database_generation
+        if (fields['schema_version']!=json.loads(cap.control)['schema_version'] or fields['database_generation']!=database.database_generation
                 or fields['applied_seq']!=cap.applied_sequence
                 or fields['projection_seq']!=cap.applied_sequence or not fields['text_search_ready'] or not fields['dense_search_ready']):
             raise SnapshotError('native_restore_adoption_state_changed')

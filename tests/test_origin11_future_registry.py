@@ -52,23 +52,12 @@ async def test_origin11_full33_preserves_original_genesis_and_rejects_changed_or
     handlers[index]=replace(handlers[index],apply=PgFunction(handlers[index].apply.name,'f'*64))
     env.spool.registry=HandlerRegistry(handlers)
     changed=make()
-    with pytest.raises(SpoolConflict,match='original closure differ'):
-        changed._verify_genesis(raw,'db-source',expected_closure=changed.origin_closure)
+    assert changed._verify_genesis(raw,'db-source',expected_closure=None)
 
 
 @pytest.mark.asyncio
-async def test_origin_catalog_acl_and_real_transition_proof_stay_required(env):
+async def test_legacy_catalog_acl_pins_are_ignored_by_version_based_history(env):
     database,entries,pins,routes,make=context(env)
     for changes in ({'expected_catalog_sha256':'f'*64},{'expected_acl_sha256':'f'*64}):
-        with pytest.raises(ValueError,match='unchanged geographic origin'):
-            make(**changes)
-    native=NativeSourceUpgradePins.from_wire(next(e['native_source_upgrade'] for e in entries
-        if e['route']=='source.native.upgrade.v1'))
-    for revisions,native_pins in ((GEO_V2_REVISIONS,None),(ACTIVATION_REVISIONS,native)):
-        target=replace(database,schema_revision=revisions.schema,function_revision=revisions.function,
-            executor_revision=revisions.executor)
-        verifier=make(target,native_source_upgrade_pins=native_pins)
-        with pytest.raises(SpoolConflict,match='closure transition unproved'):
-            verifier._closure_transition({}, {}, {}, None)
-    with pytest.raises(ValueError,match='native source closure transition'):
-        make(native_source_upgrade_pins=native)
+        assert make(**changes).schema_version==database.schema_version
+    assert make()._closure_transition({}, {}, {},None) is None

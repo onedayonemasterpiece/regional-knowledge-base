@@ -340,7 +340,7 @@ class WorkerRecoveryPhases:
         expected={'capture':{'versions','expected_sequence'},
             'prepare':{'manifest_b64','manifest_ref','blob','control_b64','expected_versions','database','identity','restore_operation'},
             'apply':{'handle','command_b64','accepted','handler_sha256','original_pg_writer'},
-            'finish':{'handle','expected_tail','final_head','control_b64','expected_catalog_sha256'},
+            'finish':{'handle','expected_tail','final_head','control_b64','expected_schema_version'},
             'verify':{'reference'}}[phase]
         if set(args)!=expected:raise SnapshotError('recovery_phase_arguments')
         if phase=='capture':
@@ -414,7 +414,7 @@ class WorkerRecoveryPhases:
         if phase=='finish':
             session=self._session(args,binding)
             cap=await self.factory.finish(session,expected_tail=args['expected_tail'],final_head=args['final_head'],
-                control_bytes=unb64(args['control_b64']),expected_catalog_sha256=args['expected_catalog_sha256'])
+                control_bytes=unb64(args['control_b64']),expected_schema_version=args['expected_schema_version'])
             self._initialized=cap;self._ready.set()
             return {'reference':self.factory.reference(cap)}
         return await self.factory.verify_reference(binding,args['reference'])

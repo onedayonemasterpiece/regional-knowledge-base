@@ -19,20 +19,28 @@ _LOG=logging.getLogger(__name__)
 
 
 class RecoveryPhaseDispatch:
-    def __init__(self,queue,*,database,identity,binding_current,timeout_seconds=900,snapshot_tickets=None,dataset_checkpoint=None):
+    def __init__(self,queue,*,database,identity,binding_current,timeout_seconds=900,snapshot_tickets=None,dataset_checkpoint=None,rebind_current=None):
         if (queue._shared_reads is None or getattr(queue,'_recovery_phases',None) is not None
-                or not callable(binding_current) or not isinstance(identity,tuple) or len(identity)!=3
+                or not callable(binding_current) or rebind_current is not None and not callable(rebind_current)
+                or not isinstance(identity,tuple) or len(identity)!=3
                 or type(timeout_seconds) not in (int,float) or not 0<timeout_seconds<=900):
             raise TypeError('configured current maintenance owner required')
         self.queue,self.database,self.identity=queue,database,identity
         self.binding_current,self.timeout=binding_current,timeout_seconds
         self.snapshot_tickets=snapshot_tickets
         self.dataset_checkpoint=dataset_checkpoint
+        self.schema_context=None
+        self.rebind_current=rebind_current
         self._bindings={};self._attachment_binding=None;self.closed=False
         queue._recovery_phases=self
 
     def current(self,binding):
         return (not self.closed and self.queue._recovery_phases is self and self.binding_current(binding))
+
+    def bind_attachment(self,binding):
+        if not self.current(binding):raise PermissionError('current maintenance binding required')
+        self._attachment_binding=binding
+        self.queue.shared_reads._event.set()
 
     def _run(self,db,run_id,token,generation):
         q=self.queue;run=q._authorize(db,run_id,token,q.clock());q._dispatch_authorize(run,generation)
@@ -90,7 +98,7 @@ class RecoveryPhaseDispatch:
         # jobs of this exact runtime after socket or API-only reconnect.
         # eligible() validates each immutable persisted job; admission still
         # reconciles its actual compute claim before any resend.
-        self._attachment_binding=binding
+        self.bind_attachment(binding)
         if phase not in PHASES or not isinstance(operation_key,str) or not 1<=len(operation_key.encode())<=256:
             raise SnapshotError('recovery_phase_contract')
         if phase=='schema_migrate':
@@ -199,9 +207,15 @@ class RecoveryPhaseDispatch:
         with self.queue.connect() as db:
             run=self._run(db,run_id,token,generation)
             job=db.execute("select * from jobs where id=? and kind='recovery_phase'",(frame['job_id'],)).fetchone()
-            if (job is None or job['run_id']!=run_id or job['claim']!=frame['claim']
-                    or not self.eligible(job,run,generation)):
+            if job is None or job['run_id']!=run_id or job['claim']!=frame['claim']:
                 raise StaleClaim('recovery assignment changed')
+            eligible=self.eligible(job,run,generation)
+            if not eligible and self.rebind_current is not None:
+                # A retained result can beat periodic startup maintenance to
+                # the new socket. Rebind before emitting any terminal stale ACK.
+                self.rebind_current()
+                eligible=self.eligible(job,run,generation)
+            if not eligible:raise StaleClaim('recovery assignment changed')
             if tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))!=self.identity:
                 raise PermissionError('recovery receipt runtime changed')
             self.queue.shared_reads.require_durable_resource(run_id,self.identity[2],generation,job['id'],
@@ -215,7 +229,14 @@ class RecoveryPhaseDispatch:
                 if job['result']!=encoded:raise SnapshotError('recovery_receipt_changed')
                 status='duplicate'
             elif job['state']!='claimed':raise StaleClaim('recovery assignment no longer claimed')
-            else:db.execute("update jobs set state='done',result=?,updated=? where id=?",(encoded,self.queue.clock(),job['id']))
+            if identity['phase']=='schema_migrate' and receipt['value'].get('readiness') is not None:
+                if receipt['value'].get('schema_version')!=identity['arguments']['target_schema_version']:
+                    raise SnapshotError('migration_result_version_changed')
+                self.queue._promote_schema_runtime(db,run,generation,receipt['value']['readiness'],
+                    target_version=identity['arguments']['target_schema_version'])
+                if self.schema_context is None:raise SnapshotError('migration_context_promotion_unavailable')
+                self.schema_context(receipt['value']['schema_version'])
+            if status=='accepted':db.execute("update jobs set state='done',result=?,updated=? where id=?",(encoded,self.queue.clock(),job['id']))
         self.queue._notify_result(frame['job_id'])
         _LOG.info('recovery_phase_settled run_id=%s phase=%s status=%s',run_id,receipt['phase'],status)
         return dict(job_id=frame['job_id'],claim=frame['claim'],status=status)

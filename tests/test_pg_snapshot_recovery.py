@@ -146,14 +146,14 @@ async def test_native_replay_exact_receipts_precede_rollover_and_adoption(monkey
         sequence[0]+=1;events.append(('apply',sequence[0]))
         return {'sequence':sequence[0],'command_sha256':str(sequence[0])*64,'outcome_sha256':'a'*64}
     async def probe(**kwargs):return b'catalog',dict(database_generation='db',applied_seq=sequence[0],
-        projection_seq=sequence[0],text_search_ready=True,dense_search_ready=True,
+        schema_version=16,projection_seq=sequence[0],text_search_ready=True,dense_search_ready=True,
         schema_revision='s',function_revision='f',executor_revision='e')
     async def rollover(connection,**kwargs):
         events.append(('rollover',sequence[0]));assert sequence[0]==2;writer[0]='new'
     async def readiness(connection):events.append(('readiness',sequence[0]))
     monkeypatch.setattr(native,'handover_writer',rollover)
     binary=NativeBinary('/synthetic/native',1,'1'*64,'pg_tool (PostgreSQL) 17.6')
-    database=SimpleNamespace(database_generation='db',writer_generation='new',schema_revision='s',
+    database=SimpleNamespace(schema_version=16,database_generation='db',writer_generation='new',schema_revision='s',
         function_revision='f',executor_revision='e',connection=lambda **kwargs:{'host':'private','user':'rkb_reader'})
     factory=native.NativeSnapshotFactory(tools=PhysicalPgTools(binary,binary,binary),database=database,
         identity=('run','nonce','inc'),registry=object(),executor_factory=lambda **kwargs:executor,
@@ -163,12 +163,12 @@ async def test_native_replay_exact_receipts_precede_rollover_and_adoption(monkey
     session=native._NativeSession(candidate,{'applied_sequence':0,'writer_generation':'old'},b'{}',binding,executor,[])
     factory._sessions.add(session)
     await factory.apply(session,{});await factory.apply(session,{})
-    control=native.encode({'database_generation':'db','sequence':2,'journal_head':None,'catalog_sha256':sha(b'catalog')})
+    control=native.encode({'database_generation':'db','sequence':2,'journal_head':None,'schema_version':16})
     with pytest.raises(SnapshotError,match='tail_receipts_differ'):
-        await factory.finish(session,expected_tail=(),final_head=None,control_bytes=control,expected_catalog_sha256=sha(b'catalog'))
+        await factory.finish(session,expected_tail=(),final_head=None,control_bytes=control,expected_schema_version=16)
     assert not any(event[0]=='rollover' for event in events)
     cap=await factory.finish(session,expected_tail=tuple(session.receipts),final_head=None,
-        control_bytes=control,expected_catalog_sha256=sha(b'catalog'))
+        control_bytes=control,expected_schema_version=16)
     assert events==[('apply',1),('apply',2),('rollover',2),('readiness',2)]
     assert (await cap.verify_for(database,'run','nonce','inc'))['user']=='rkb_reader'
     with pytest.raises(SnapshotError):await replace(cap).verify_for(database,'run','nonce','inc')

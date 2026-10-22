@@ -79,26 +79,6 @@ def proof_body(c,h,before,after,status='applied'):
     return ('applied',sha(body),len(body)),SimpleNamespace(data=canonical(dict(outcome_b64=base64.b64encode(body).decode())))
 
 @pytest.mark.asyncio
-async def test_ordered_two_receipts_and_rejected_transition_never_prove14(env):
-    v,_,gh=setup(env);book=command(env.p.owner.subject);bh=native_source_upgrade_handler(P)
-    geo=ExactCommand(sequence=21,operation_key='geo-upgrade',request_id='geo',person_id=book.person_id,
-        route='geo.dependencies.upgrade.v2',kind='schema_transition',logical_time=book.logical_time,
-        schema_revision=GEO_REVISIONS.schema,function_revision=GEO_REVISIONS.function,executor_revision=GEO_REVISIONS.executor,
-        ids={'manifest_id':'a'*64},expected_revisions=dict(schema=GEO_REVISIONS.schema,function=GEO_REVISIONS.function,
-            executor=GEO_REVISIONS.executor,migration='',installer_person_id=book.person_id),
-        payload=canonical(dict(migration_id='geo-dependencies-v2',artifact_sha256=G.artifact_sha256,predecessor=None)))
-    observed={};remote={}
-    observed[21],remote[21]=proof_body(geo,gh,GEO_REVISIONS,GEO_V2_REVISIONS)
-    observed[26],remote[26]=proof_body(book,bh,GEO_V2_REVISIONS,ACTIVATION_REVISIONS)
-    known={21:(geo,gh,None),26:(book,bh,None)}
-    proof=v._closure_transition(known,observed,remote,None)
-    assert [p[2] for p in proof]==[21,26]
-    previous=SimpleNamespace(verifier=v,closure_transition=proof,applied_sequence=26)
-    assert v._closure_transition({}, {}, {},previous)==proof
-    for seq in (21,26):
-        bad=dict(observed);bad[seq]=('rejected_precondition',observed[seq][1],observed[seq][2])
-        with pytest.raises(SpoolConflict):v._closure_transition(known,bad,remote,None)
-    earlier=replace(book,sequence=20)
-    bad_known={21:(geo,gh,None),20:(earlier,bh,None)}
-    bad_observed={21:observed[21],20:observed[26]};bad_remote={21:remote[21],20:remote[26]}
-    with pytest.raises(SpoolConflict):v._closure_transition(bad_known,bad_observed,bad_remote,None)
+async def test_legacy_transition_metadata_is_not_a_schema_readiness_gate(env):
+    v,_,_=setup(env)
+    assert v._closure_transition({}, {}, {},None) is None

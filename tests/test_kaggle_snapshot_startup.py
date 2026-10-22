@@ -24,7 +24,7 @@ from types import SimpleNamespace
 @pytest.mark.asyncio
 async def test_same_owner_captures_drills_closes_then_publishes_under_unchanged_serving_writer(owner):
     e=owner;database=spec(fresh=True).database
-    versions=dict(server_version_num=170011,pgvector_version='0.8.2',catalog_sha256='a'*64,model_sha256='a'*64,
+    versions=dict(schema_version=database.schema_version,server_version_num=170011,pgvector_version='0.8.2',catalog_sha256='a'*64,model_sha256='a'*64,
         tokenizer_sha256='b'*64,schema_revision='s1',function_revision='f1',executor_revision='e1')
     config=SourceSnapshotConfig('first-base-empty',versions,('https://existing-s3.fixture.invalid',),
         max_archive_bytes=128*1024**2,max_unpacked_bytes=256*1024**2,seconds=2)
@@ -88,7 +88,7 @@ async def test_same_owner_captures_drills_closes_then_publishes_under_unchanged_
                     assert frame['download_ticket']['method']=='GET'
                     native_proof=dict(codec='rkb.empty-base-drill.v1',database=database.wire(),
                         drill_database=frame['arguments']['database'],identity=list(startup.snapshot.dispatch.identity),
-                        manifest_sha256=frame['arguments']['manifest_ref']['sha256'],applied_sequence=0,catalog_sha256='a'*64,
+                        manifest_sha256=frame['arguments']['manifest_ref']['sha256'],applied_sequence=0,schema_version=database.schema_version,
                         versions=versions,system_identifier='native-system',disk_free_before=2**30,
                         owned_peak_bytes_bound=2*(1024+len(blob)))
                     value=dict(handle='isolated-B-session',disk_free_before=2**30,owned_peak_bytes_bound=2*(1024+len(blob)))

@@ -39,7 +39,7 @@ async def test_work_cycle_waits_for_quiet_then_resumes_published_version_after_l
         db.execute('INSERT INTO rkb_control_spool_meta VALUES(1,?)',(base_sequence,))
         db.execute('CREATE TABLE rkb_control_operations(operation_key TEXT,sequence INTEGER,seal_state TEXT,apply_state TEXT,outcome_state TEXT)')
     proof=NS(applied_sequence=base_sequence,accepted_sequence=base_sequence)
-    versions=dict(server_version_num=170010,pgvector_version='0.8.2',catalog_sha256='a'*64,
+    versions=dict(schema_version=16,server_version_num=170010,pgvector_version='0.8.2',catalog_sha256='a'*64,
         model_sha256='b'*64,tokenizer_sha256='c'*64,schema_revision='schema11',
         function_revision='geo6',executor_revision='executor1')
     class Batch:
@@ -63,7 +63,7 @@ async def test_work_cycle_waits_for_quiet_then_resumes_published_version_after_l
             archive_sha256=archive.sha256,archive_size=archive.size)
     startup=NS(config=NS(queue=p.q,spool=NS(journal=NS(store=store,prefix=p.prefix.rstrip('/'))),
         source_restore=NS(versions=versions),history_adapter=NS(database=NS(**versions))),
-        history=NS(_coverage=proof,catalog_hash=versions['catalog_sha256']),
+        history=NS(schema_version=16,_coverage=proof,catalog_hash=versions['catalog_sha256']),
         restorer=NS(dispatch=NS(request=request)),binding_current=lambda binding:True)
     owner=SourceDatasetCheckpoints(startup,clock=lambda:clock[0])
     assert not await owner.refresh('binding')
@@ -135,7 +135,7 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900):
             'apply_state TEXT,outcome_state TEXT,outcome_sha256 TEXT)')
         db.execute('CREATE TABLE rkb_control_source_heads(source_id TEXT,sequence INTEGER,command_sha256 TEXT,'
             'restriction INTEGER,pending INTEGER,unknown INTEGER)')
-    versions=dict(server_version_num=170010,pgvector_version='0.8.2',catalog_sha256='a'*64,
+    versions=dict(schema_version=16,server_version_num=170010,pgvector_version='0.8.2',catalog_sha256='a'*64,
         model_sha256='b'*64,tokenizer_sha256='c'*64,schema_revision='schema11',
         function_revision='geo6',executor_revision='executor1')
     p.proof=NS(applied_sequence=7,accepted_sequence=7,current=lambda:True,head=None,
@@ -169,7 +169,7 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900):
         ticket=await batch.tickets.issue_upload(binding,batch.config.operation_key+':archive',
             size=20,sha256=sha(b'fixture archive'))
         return dict(database_generation='db',writer_generation='writer',applied_sequence=sequence,
-            versions=versions,blob=dict(key=ticket.key,size=ticket.size,sha256=ticket.sha256,native_version='fixture'))
+            versions={k:v for k,v in versions.items() if k in ('schema_version','server_version_num','pgvector_version','model_sha256','tokenizer_sha256')},blob=dict(key=ticket.key,size=ticket.size,sha256=ticket.sha256,native_version='fixture'))
     monkeypatch.setattr(_WorkCycleCapture,'_capture',capture)
     monkeypatch.setattr('regional_knowledge.kaggle_dataset_seed._put_control',
         lambda grant,data:p.uploads.__setitem__(grant.name,data))
@@ -185,7 +185,7 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900):
     spool=NS(journal=RecoveryJournal(p.store,stream='stream'),_lock=asyncio.Lock(),_source_covered_sequence=7)
     p.startup=NS(config=NS(queue=p.q,spool=spool,writer_owner=p.guard,writer_generation='writer',
         source_restore=NS(versions=versions),history_adapter=NS(database=NS(**versions))),
-        history=NS(_coverage=p.proof,catalog_hash='a'*64,acl_hash='d'*64,registry_hash='e'*64,routes=()),
+        history=NS(schema_version=16,_coverage=p.proof,catalog_hash='a'*64,acl_hash='d'*64,registry_hash='e'*64,routes=()),
         restorer=NS(complete=True,physical=NS(journal=spool.journal,
             limits=NS(max_receipts=100,max_control_bytes=1024*1024)),dispatch=NS(request=request)),
         binding_current=lambda binding:p.alive and binding is p.binding)

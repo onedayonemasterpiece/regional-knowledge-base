@@ -28,8 +28,8 @@ class TargetLaunchSpec:
     artifacts: tuple[dict, ...]
     dependency_packages: tuple[str, ...]
     dependency_sha256: str
-    schema_sha256: str
-    stage0_receipt: str
+    schema_sha256: str | None = None  # accepted only for old config decoding; never a gate
+    stage0_receipt: str = ''
     initialized_receipt: dict | None = None
     min_data_seq: int = 0
     command_handlers: tuple[dict, ...] = ()
@@ -43,6 +43,7 @@ class TargetLaunchSpec:
     telegram_runtime: bool = False
 
     def __post_init__(self):
+        object.__setattr__(self,'schema_sha256',None)
         if type(self.database) is not OwnedDatabase:
             raise TypeError('typed owned database required')
         if self.dataset_checkpoint is not None:
@@ -69,9 +70,9 @@ class TargetLaunchSpec:
                 or type(self.bootstrap_only) is not bool or type(self.bootstrap_seconds) is not int
                 or not 30<=self.bootstrap_seconds<=1800
                 or (self.bootstrap_only and (self.database.mode!='NEW_EMPTY_GENERATION'
-                    or self.dependency_sha256 is not None or self.schema_sha256 is not None))
+                    or self.dependency_sha256 is not None))
                 or (not self.bootstrap_only and any(type(v) is not str or not re.fullmatch('[0-9a-f]{64}',v)
-                    for v in (self.dependency_sha256,self.schema_sha256)))
+                    for v in (self.dependency_sha256,)))
                 or type(self.min_data_seq) is not int or not 0<=self.min_data_seq<2**63):
             raise ValueError('independent Stage0 dependency/schema pins required')
         if self.database.mode == 'VERIFIED_INITIALIZED':
@@ -88,7 +89,6 @@ class TargetLaunchSpec:
                         or self.recovery.drill_empty or self.bootstrap_only):
                     raise ValueError('initialized target without receipt requires exact native restore owner')
             elif (not isinstance(receipt,dict) or receipt.get('database') != self.database.wire()
-                    or receipt.get('schema_sha256') != self.schema_sha256
                     or receipt.get('stage0_receipt') != self.stage0_receipt):
                 raise ValueError('exact independently verified initialized binding required')
         elif self.initialized_receipt is not None or self.min_data_seq != 0:
@@ -167,7 +167,7 @@ class TargetLaunchSpec:
     def wire(self):
         return dict(database=self.database.wire(),artifact_root=self.artifact_root,
             artifacts=list(self.artifacts),dependency_packages=list(self.dependency_packages),
-            dependency_sha256=self.dependency_sha256,schema_sha256=self.schema_sha256,
+            dependency_sha256=self.dependency_sha256,
             stage0_receipt=self.stage0_receipt,initialized_receipt=self.initialized_receipt,
             min_data_seq=self.min_data_seq,command_handlers=list(self.command_handlers),
             stage0=self.stage0.wire() if self.stage0 is not None else None,
@@ -262,7 +262,8 @@ class TargetRuntime:
                 frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])))
 
     def _native_source_materializer(self,encoder):
-        if self.database.schema_revision!='rkb-v4-sql001-014-v1':return None
+        if self.database.schema_version<14 or not any(
+                entry.get('route')=='source.materialize.v1' for entry in self.target['command_handlers']):return None
         from .kaggle_source_materializer import resident_source_materializer
         return resident_source_materializer(encoder,current=lambda:not self.closed)
 
@@ -324,8 +325,29 @@ class TargetRuntime:
                     raise BootstrapUnavailable('migration_bundle_bytes_changed')
                 sql_files['sql/'+path.name]=body
         worker.schema_control=LiveSchemaMigrations(files=sql_files,acquire=acquire,database=self.database,
-            download=worker.download,current=lambda frame:worker.factory._current((
+            download=worker.download,on_version=self._promote_schema_version,current=lambda frame:worker.factory._current((
                 frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])))
+        worker.factory.schema_files=worker.schema_control.files
+
+    async def _promote_schema_version(self,version):
+        """Refresh only schema/readiness metadata; keep PG, pools and encoder."""
+        from dataclasses import replace
+        from .kaggle_bootstrap import CandidateReadiness
+        _,fields=await self.probe(acquire=self.pool.connection)
+        if fields.get('schema_version')!=version:raise BootstrapUnavailable('migration_readback_version_changed')
+        database=replace(self.database,schema_version=version)
+        self.database=database
+        worker=self.recovery_worker
+        worker.factory.database=database;worker.schema_control.database=database
+        worker.factory.schema_files=worker.schema_control.files
+        for cap in worker.factory._capabilities:
+            control=json.loads(cap.control);control['schema_version']=version
+            object.__setattr__(cap,'database',database);object.__setattr__(cap,'control',canonical(control))
+        if self.source_history_observer is not None:self.source_history_observer.database=database
+        if self.prepared.source_handler is not None:self.prepared.source_handler.database=database
+        hashes=dict(self.prepared.readiness.hashes);hashes['schema']=sha(canonical(version))
+        self.prepared.readiness=CandidateReadiness(hashes=hashes,**fields)
+        return self.prepared.readiness.to_wire()
 
     async def recovery(self,frame):
         """Register this handler before _load/prepare; same channel stays live."""
@@ -340,10 +362,9 @@ class TargetRuntime:
             return await self._probe_database(acquire=acquire)
 
     async def _probe_database(self, *, acquire):
-        # The native catalog hash and actual current writer binding have
-        # independent checks. A receipt cannot substitute for a database read.
+        # The native ledger/frontier and actual current writer are observed
+        # independently of the saved launch receipt.
         catalog, fields = await self.probe(acquire=acquire)
-        self._bootstrap_catalog=catalog
         async with asyncio.timeout(3):
             async with acquire() as connection:
                 async with connection.transaction():
@@ -400,8 +421,7 @@ class TargetRuntime:
             source_binding_verified=True,dependency_packages=self.target['dependency_packages'],telemetry=read_events)
         readiness = prepared.readiness
         if (readiness.database_generation != self.database.database_generation
-                or any(getattr(readiness,key) != getattr(self.database,key) for key in
-                       ('schema_revision','function_revision','executor_revision'))):
+                or readiness.schema_version!=self.database.schema_version):
             raise BootstrapUnavailable('target_database_binding_mismatch')
         # Same per-invocation context is used by telemetry's native adapter.
         handler = prepared.query_handler
@@ -454,7 +474,7 @@ class TargetRuntime:
             from .kaggle_bootstrap import observe_dependencies
             dependencies=await asyncio.to_thread(observe_dependencies,self.target['dependency_packages'])
             observation=dict(runtime_readiness=readiness.to_wire(),dependencies=dependencies,
-                catalog_b64=base64.b64encode(self._bootstrap_catalog).decode())
+                schema_version=readiness.schema_version)
         original_handler=None
         if self.target.get('original_intake') is not None:
             import tempfile

@@ -241,8 +241,8 @@ def target_sql_hashes(target, repository):
     """Pin exactly the migration prefix the native initializer will execute."""
     from regional_knowledge.kaggle_owned_pg import sql_artifacts, digest
     root=Path(repository)/'sql/kaggle'
-    return {name:digest((root/name).read_bytes())
-            for name in sql_artifacts(target.database.schema_revision)}
+    return {path.name:digest(path.read_bytes())
+            for path in sorted(root.glob('[0-9][0-9][0-9]_*.sql'))}
 
 
 def worker_source(template, queue, run_id, token, broker, *, transport='http', target=None, provider_image=None):

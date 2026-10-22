@@ -12,7 +12,6 @@ from regional_knowledge.bge_queue import BgeQueue
 from regional_knowledge.kaggle_bootstrap_pins import (BootstrapRuntimeExpectation,canonical,digest,verify_observation)
 from regional_knowledge.kaggle_readiness import SearchRuntimeExpectation
 from regional_knowledge.kaggle_bootstrap import PreparedRuntime,CandidateReadiness
-from test_kaggle_database_probe import catalog
 from test_kaggle_target_runtime import bundled_spec,stage0,queue_run,hashes,generate
 from regional_knowledge.kaggle_target_launch import persist_empty_intent
 from test_recovery_journal import fixture as journal_fixture
@@ -21,14 +20,12 @@ from test_bge_wss_worker import CONFIG,Wire,module
 
 def observation(plan):
     dependencies=dict(python='3.13 synthetic observed build',machine='x86_64',libc=['glibc','2.39'],packages=dict(plan.packages))
-    records=[[section,name,value] for section,rows in catalog().items() for name,value in rows.items()]
-    raw=canonical(dict(format='rkb-native-catalog-v1',records=records))
-    readiness=dict(hashes=dict(plan.hashes,dependency=digest(canonical(dependencies)),schema=digest(raw)),
-        database_generation=plan.database_generation,schema_revision=plan.schema_revision,
+    readiness=dict(hashes=dict(plan.hashes,dependency=digest(canonical(dependencies)),schema=digest(canonical(len(plan.sql_hashes)))),
+        schema_version=len(plan.sql_hashes),database_generation=plan.database_generation,schema_revision=plan.schema_revision,
         function_revision=plan.function_revision,executor_revision=plan.executor_revision,
         applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,
         archive_read_ready=None,proof_ready=None)
-    return dict(runtime_readiness=readiness,dependencies=dependencies,catalog_b64=base64.b64encode(raw).decode())
+    return dict(runtime_readiness=readiness,dependencies=dependencies,schema_version=len(plan.sql_hashes))
 
 
 def setup(tmp_path,now_value=1000.):
@@ -42,7 +39,7 @@ def setup(tmp_path,now_value=1000.):
     token=queue.launch_claim(run);queue.launch_record(run,'owner/stable-bootstrap',provider_version=7)
     generation=queue.attach_channel(run,token,nonce,'retained-incarnation')['connection_generation']
     value=observation(plan)
-    expected=SearchRuntimeExpectation(value['runtime_readiness']['hashes'],'bootstrap-db','s1','f1','e1')
+    expected=SearchRuntimeExpectation(value['runtime_readiness']['hashes'],'bootstrap-db','s1','f1','e1',schema_version=1)
     return SimpleNamespace(q=queue,run=run,token=token,nonce=nonce,generation=generation,plan=plan,
         value=value,expected=expected,now=now)
 
@@ -78,8 +75,8 @@ def test_unknown_changed_or_stale_bootstrap_evidence_never_finalizes(tmp_path,ch
             s.q.record_bootstrap_observation(s.run,s.token,s.generation,s.value)
         return
     if change=='catalog':
-        s.value['catalog_b64']=base64.b64encode(b'{}').decode()
-        with pytest.raises(ValueError,match='catalog'):
+        s.value['schema_version']=2
+        with pytest.raises(ValueError,match='schema version'):
             s.q.record_bootstrap_observation(s.run,s.token,s.generation,s.value)
         return
     receipt=s.q.record_bootstrap_observation(s.run,s.token,s.generation,s.value)
@@ -110,20 +107,11 @@ async def test_generated_bootstrap_freezes_partial_pins_before_attach_with_none_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('catalog_padding',(0,230000))
-async def test_worker_emits_bootstrap_observation_without_ready_or_reload(catalog_padding):
+async def test_worker_emits_bootstrap_observation_without_ready_or_reload():
     transport=module('bge_wss_transport');stop=asyncio.Event();sent=[]
     plan=BootstrapRuntimeExpectation({key:'a'*64 for key in ('code','model','launch_config','executed_source')},
         'bootstrap-db','s1','f1','e1',{'torch':'2.11.0+cpu'},'b'*64,{'001_search.sql':'c'*64})
     value=observation(plan);loads=[]
-    if catalog_padding:
-        native=json.loads(base64.b64decode(value['catalog_b64']))
-        definition=next(row[2] for row in native['records'] if row[0]=='functions')
-        definition['definition']+='\n-- '+('x'*catalog_padding)
-        raw=canonical(native)
-        value['catalog_b64']=base64.b64encode(raw).decode()
-        value['runtime_readiness']['hashes']['schema']=digest(raw)
-        assert 262144<len(canonical(value))<1536*1024
     verify_observation(plan,value)
     async def prepare(encoder,**kwargs):
         async def query(frame,*,encode):raise AssertionError('never ready')

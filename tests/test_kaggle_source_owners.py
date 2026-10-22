@@ -53,7 +53,7 @@ async def test_cold_start_configures_admission_before_native_ready_and_writer_ac
         assert not startup.reads_current() and writer_rows()==0 and not history.calls
         generation=q.attach_channel(run,token,nonce,'cold-incarnation')['connection_generation']
         value=dict(hashes=dict(expected.hashes),database_generation='synthetic-db',schema_revision='s1',function_revision='f1',
-            executor_revision='e1',applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,
+            executor_revision='e1',schema_version=16,applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,
             archive_read_ready=None,proof_ready=None)
         assert q.accept_search_runtime(run,token,generation,value).ok
         q.heartbeat(run,token,ready=True,connection_generation=generation)

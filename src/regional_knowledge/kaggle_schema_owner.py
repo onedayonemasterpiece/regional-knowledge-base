@@ -55,6 +55,38 @@ class SourceSchemaMigrations:
         row=self.pending()
         return row is None or not row['barrier']  # accepted work can still drain
 
+    def resume_attachment(self):
+        """Reconcile an issued migration before its new READY is accepted.
+
+        Existing restore authority validates the current run/incarnation. This
+        only rebinds retained jobs; it does not enqueue DDL or lift the barrier.
+        """
+        row=self.pending();restorer=self.startup.restorer
+        if row is None or not row['barrier'] or restorer is None or not restorer.complete or restorer.dispatch is None:
+            return False
+        plan=json.loads(row['plan']);root=row['operation_key']+':apply'
+        binding,nonce=restorer._observe()
+        if (plan['run_id'],plan['database_generation'],plan['writer_generation'])!=(
+                binding.run_id,binding.database_generation,binding.writer_generation):
+            raise SnapshotError('migration_original_target_changed')
+        dispatch=restorer.dispatch
+        if (binding.run_id,nonce,binding.runtime_incarnation)!=dispatch.identity:
+            raise SnapshotError('migration_original_runtime_changed')
+        with self.queue.connect(write=False) as db:
+            jobs=db.execute("SELECT identity FROM jobs WHERE run_id=? AND actor=? "
+                "AND kind='recovery_phase' AND state<>'done'",
+                (binding.run_id,'maintenance:'+binding.run_id)).fetchall()
+        for job in jobs:
+            identity=json.loads(job['identity']);operation=identity.get('operation_key','')
+            if (identity.get('phase')=='schema_migrate'
+                    and (operation==root or operation.startswith(root+':retry:'))
+                    and identity.get('arguments',{}).get('target_schema_version')==plan['target_schema_version']
+                    and tuple(identity.get(k) for k in ('run_id','launch_nonce','runtime_incarnation'))==dispatch.identity):
+                dispatch.schema_context=self.startup.promote_schema_context
+                dispatch.bind_attachment(binding)
+                return True
+        return False
+
     def kick(self,binding):
         if self.task is None or self.task.done():self.task=asyncio.create_task(self._run(binding))
 
@@ -89,6 +121,7 @@ class SourceSchemaMigrations:
                     db.execute('UPDATE rkb_schema_barrier SET barrier=1 WHERE operation_key=?',(key,))
                 sequence=proof.applied_sequence
             dispatch=startup.restorer.dispatch;bundle=plan['bundle_sha256']
+            dispatch.schema_context=getattr(startup,'promote_schema_context',None)
             if plan['artifact'] is not None:
                 result=await dispatch.request(binding,'schema_bundle_stage',dict(artifact=plan['artifact'],
                     expected_bundle_sha256=bundle),operation_key=key+':bundle')

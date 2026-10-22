@@ -6,7 +6,7 @@ Native binaries/extension files must already exist in the verified inventory.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import os
@@ -25,6 +25,7 @@ from psycopg import sql
 from psycopg.rows import tuple_row
 
 from .kaggle_apply import initialize_database, Revisions
+from .kaggle_schema_migrate import latest_schema_version
 from .kaggle_bootstrap import BootstrapUnavailable, _file_hash
 
 # Kaggle saves /kaggle/working outputs; /kaggle/temp is session-only.
@@ -61,21 +62,26 @@ READER_FUNCTIONS = ('lexical_candidates(text,integer)', 'dense_candidates(public
     'dense_candidates_scoped(public.vector,integer,uuid[])', 'hydrate_scoped(uuid[],uuid[])')
 
 
-async def configure_native_roles(admin,*,selected_sql,dbname):
+async def create_native_roles(admin):
+    """Fixed fresh-cluster roles, before SQL files grant privileges to them."""
+    await admin.execute('''CREATE ROLE rkb_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        CREATE ROLE rkb_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;''',prepare=False)
+
+
+async def configure_native_roles(admin,*,selected_sql,dbname,create_roles=True):
     """Harden a newly owned native cluster, using the exact bootstrap grant path.
 
     The caller owns the transaction. Roles must be absent; this function never
     adopts existing users or extends privileges from caller-provided SQL names.
     """
     selected_sql=tuple(selected_sql)
-    if selected_sql not in (SQL_ARTIFACTS,STORY_SQL_ARTIFACTS,FACT_SQL_ARTIFACTS,
-            EDITORIAL_SQL_ARTIFACTS,CASE_SQL_ARTIFACTS,DOMAIN_SQL_ARTIFACTS,DOMAIN_V2_SQL_ARTIFACTS,IMAGE_SOURCE_SQL_ARTIFACTS):
-        raise ValueError('exact reviewed native SQL prefix required')
+    if (not selected_sql or any(not re.fullmatch(r'[0-9]{3}_[a-z0-9_]+\.sql',name) for name in selected_sql)
+            or [int(name[:3]) for name in selected_sql]!=list(range(1,len(selected_sql)+1))):
+        raise ValueError('complete verified native SQL prefix required')
     if type(dbname) is not str or not re.fullmatch(r'[a-z][a-z0-9_]{0,62}',dbname):
         raise ValueError('exact owned native database name required')
-    await admin.execute('''CREATE ROLE rkb_writer LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-        CREATE ROLE rkb_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-        REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+    if create_roles:await create_native_roles(admin)
+    await admin.execute('''REVOKE CREATE ON SCHEMA public FROM PUBLIC;
         REVOKE ALL ON SCHEMA rkb_v4 FROM PUBLIC;
         REVOKE ALL ON ALL TABLES IN SCHEMA rkb_v4 FROM PUBLIC;
         REVOKE ALL ON ALL FUNCTIONS IN SCHEMA rkb_v4 FROM PUBLIC;
@@ -126,6 +132,18 @@ async def configure_native_roles(admin,*,selected_sql,dbname):
         await admin.execute('GRANT EXECUTE ON FUNCTION rkb_v4.'+signature+' TO rkb_reader')
     await admin.execute(sql.SQL('REVOKE ALL ON DATABASE {} FROM PUBLIC').format(sql.Identifier(dbname)))
     await admin.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO rkb_writer,rkb_reader').format(sql.Identifier(dbname)))
+
+
+async def configure_migration_defaults(connection):
+    """Carry the existing technical writer profile onto additive SQL objects.
+
+    Product participant ACL/eligibility tables and public reader grants remain
+    unchanged. The migration ledger explicitly revokes this technical default.
+    """
+    await connection.execute("""ALTER DEFAULT PRIVILEGES IN SCHEMA rkb_v4
+        GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO rkb_writer;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA rkb_v4
+        GRANT EXECUTE ON FUNCTIONS TO rkb_writer""",prepare=False)
 
 
 def canonical(value):
@@ -274,8 +292,11 @@ class OwnedDatabase:
     gid: int | None = None
     native_paths: object = None
     ownership_evidence: str = ''
+    schema_version: int = field(default_factory=latest_schema_version)
 
     def __post_init__(self):
+        if type(self.schema_version) is not int or self.schema_version<1:
+            raise ValueError('integer database schema version required')
         if self.mode not in ('NEW_EMPTY_GENERATION', 'VERIFIED_INITIALIZED'):
             raise ValueError('explicit initialized or new empty generation required')
         for key in ('database_generation','writer_generation','schema_revision','function_revision',
@@ -443,8 +464,13 @@ class OwnedPostgres:
             if account.pw_gid!=spec.gid:raise KeyError
         except KeyError:
             raise BootstrapUnavailable('native_pg_service_account_unverified') from None
-        selected_sql=sql_artifacts(spec.schema_revision)
-        files = {name:(Path(sql_root)/name).read_bytes() for name in selected_sql}
+        from .kaggle_schema_migrate import bundle_migrations,migrate
+        migrations=bundle_migrations({'sql/'+p.name:p.read_bytes()
+            for p in Path(sql_root).glob('[0-9][0-9][0-9]_*.sql')})
+        selected_sql=tuple(m.name for m in migrations)
+        files={m.name:m.body for m in migrations}
+        if len(migrations)!=spec.schema_version:
+            raise BootstrapUnavailable('native_pg_bundle_version_mismatch')
         if intent.get('sql_hashes') != {name:digest(data) for name,data in files.items()}:
             raise BootstrapUnavailable('native_pg_sql_binding_mismatch')
         await asyncio.to_thread(ensure_private_runtime_root,native_uid=spec.uid,native_gid=spec.gid)
@@ -505,17 +531,7 @@ class OwnedPostgres:
         async with admin:
             await admin.execute("SET statement_timeout='10s'; SET lock_timeout='2s'",prepare=False)
             await admin.commit()
-            async with admin.transaction():
-                await admin.execute('CREATE EXTENSION vector WITH SCHEMA public')
-                for name in selected_sql[:2]:
-                    await admin.execute(files[name].decode(),prepare=False)
-            await initialize_database(admin,database_generation=spec.database_generation,
-                writer_generation=spec.writer_generation,
-                revisions=Revisions(spec.schema_revision,spec.function_revision,spec.executor_revision))
-            async with admin.transaction():
-                for name in selected_sql[2:]:
-                    await admin.execute(files[name].decode(),prepare=False)
-                await configure_native_roles(admin,selected_sql=selected_sql,dbname=spec.dbname)
+            await self._initialize_schema(admin,files)
         # Fresh empty projections contain no accepted/source data; explicitly
         # publish only cursor zero under the same trusted writer lock.
         admin = await self.connect(**spec.connection(reader=False))
@@ -527,6 +543,24 @@ class OwnedPostgres:
                                     (spec.database_generation,spec.writer_generation))
         self._startup_complete=True
         self._startup_stderr.clear()  # Accepted/query diagnostics are never retained.
+
+    async def _initialize_schema(self,admin,files):
+        """Production fresh-schema sequence, independently testable on CI PG17."""
+        from .kaggle_schema_migrate import migrate
+        selected_sql=tuple(files)
+        spec=self.spec
+        async with admin.transaction():
+            await admin.execute('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public')
+            await create_native_roles(admin)
+        await migrate(admin,{'sql/'+name:files[name] for name in selected_sql[:2]})
+        await initialize_database(admin,database_generation=spec.database_generation,
+            writer_generation=spec.writer_generation,
+            revisions=Revisions(spec.schema_revision,spec.function_revision,spec.executor_revision))
+        await migrate(admin,{'sql/'+name:files[name] for name in selected_sql})
+        async with admin.transaction():
+            await configure_native_roles(admin,selected_sql=selected_sql,dbname=spec.dbname,create_roles=False)
+            await admin.execute('GRANT SELECT ON rkb_v4.schema_migrations TO rkb_reader')
+            await admin.execute('REVOKE ALL ON rkb_v4.schema_migrations FROM rkb_writer')
 
     async def aclose(self):
         try:

@@ -71,7 +71,7 @@ def verify_observation(plan,value):
     from .kaggle_bootstrap import CandidateReadiness
     from .kaggle_database_probe import NativeDatabaseProbe
     if (type(plan) is not BootstrapRuntimeExpectation or type(value) is not dict
-            or set(value)!={'runtime_readiness','dependencies','catalog_b64'}
+            or set(value)!={'runtime_readiness','dependencies','schema_version'}
             or len(canonical(value))>MAX_OBSERVATION_BYTES):
         raise ValueError('bounded exact bootstrap observation required')
     candidate=CandidateReadiness(**value['runtime_readiness'])
@@ -89,21 +89,10 @@ def verify_observation(plan,value):
             or any(type(part) is not str or not 1<=len(part)<=128 for part in dependencies['libc'])
             or digest(canonical(dependencies))!=candidate.hashes['dependency']):
         raise ValueError('actual dependency bytes differ from pinned package closure')
-    raw=base64.b64decode(value['catalog_b64'],validate=True)
-    if not 1<=len(raw)<=1024*1024 or digest(raw)!=candidate.hashes['schema']:
-        raise ValueError('actual native catalog hash differs')
-    catalog=json.loads(raw)
-    if (type(catalog) is not dict or set(catalog)!={'format','records'}
-            or catalog['format']!='rkb-native-catalog-v1' or type(catalog['records']) is not list
-            or not 1<=len(catalog['records'])<=2048):
-        raise ValueError('bounded actual native catalog required')
-    observed={}
-    for row in catalog['records']:
-        if (type(row) is not list or len(row)!=3 or type(row[0]) is not str or type(row[1]) is not str
-                or row[1] in observed.setdefault(row[0],{})):
-            raise ValueError('duplicate or malformed native catalog record')
-        observed[row[0]][row[1]]=row[2]
-    NativeDatabaseProbe._validate_catalog(observed)
+    if (type(value['schema_version']) is not int or value['schema_version']!=candidate.schema_version
+            or candidate.schema_version!=len(plan.sql_hashes)
+            or digest(canonical(candidate.schema_version))!=candidate.hashes['schema']):
+        raise ValueError('actual schema version differs from bundled SQL')
     return candidate
 
 
