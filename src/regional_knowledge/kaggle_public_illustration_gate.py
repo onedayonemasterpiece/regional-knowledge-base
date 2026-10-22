@@ -402,6 +402,18 @@ class PublicIllustrationOutputGate:
             # permission. No provider/private error text enters the frame.
             return False
 
+
+    async def _native_current_read(self, verified, binding, source_id, illustration_id):
+        reader=self.native_read
+        return await reader(source_id,illustration_id,
+            verified if getattr(reader, "_requires_verified_context",False)
+            else verified.person_id,binding)
+
+    async def _archive_current_observe(self, native, verified, binding):
+        return await (self.archive.read_opaque(native,verified,binding)
+            if getattr(self.archive,"_requires_verified_context",False)
+            else self.archive.read_opaque(native,verified.person_id))
+
     async def issue(self, *, verified: VerifiedReadAuthority,
                     binding: Any, source_id: str,
                     illustration_id: str) -> IssuedPublicIllustration:
@@ -415,8 +427,8 @@ class PublicIllustrationOutputGate:
             key = binding_key(binding)
             self._lease(binding, key)
             await self._after_await(verified, binding, key)
-            first = await self.native_read(
-                source_id, illustration_id, verified.person_id, binding)
+            first = await self._native_current_read(
+                verified, binding, source_id, illustration_id)
             await self._after_await(verified, binding, key)
             crop = self._proof(first, source_id=source_id,
                                illustration_id=illustration_id, expected_key=key)
@@ -428,8 +440,8 @@ class PublicIllustrationOutputGate:
             # No local source archive status constitutes access. The separately
             # leased owner must read/verify actual archive rights and mint an
             # exact opaque artifact (not a Telegram locator or bearer URL).
-            proof = await self.archive.read_opaque(
-                first, verified.person_id)
+            proof = await self._archive_current_observe(
+                first, verified, binding)
             await self._after_await(verified, binding, key)
             self._source_current(facts, binding, key)
             if (type(proof) is not ArchiveOpaqueProof
@@ -446,8 +458,8 @@ class PublicIllustrationOutputGate:
             # A second current authoritative PG read is compulsory after the
             # archive await. Source version, withdrawal, manifest or availability
             # drift is never reconciled by silently returning an old cached frame.
-            second = await self.native_read(
-                source_id, illustration_id, verified.person_id, binding)
+            second = await self._native_current_read(
+                verified, binding, source_id, illustration_id)
             await self._after_await(verified, binding, key)
             if second != first:
                 _fail("media_source_changed_during_read")
@@ -536,7 +548,9 @@ class PublicIllustrationOutputGate:
         if not callable(owner_read):
             _fail("media_actual_archive_bytes_issuer_missing")
         try:
-            blob = await owner_read(retained.archive_proof)
+            blob = await (owner_read(retained.archive_proof,retained.actor,retained.binding)
+                if getattr(self.archive,"_requires_verified_context",False)
+                else owner_read(retained.archive_proof))
             await self._after_await(retained.actor, retained.binding, retained.binding_identity)
             self._source_current(retained.source_facts, retained.binding,
                                  retained.binding_identity)
@@ -559,10 +573,10 @@ class PublicIllustrationOutputGate:
                         or not 1 <= height <= 20000):
                     _fail("media_issued_pixels_invalid")
                 decoded.verify()
-            latest = await self.native_read(
+            latest = await self._native_current_read(
+                retained.actor, retained.binding,
                 retained.source_snapshot.source_id,
-                retained.source_snapshot.illustration_id,
-                retained.actor.person_id, retained.binding)
+                retained.source_snapshot.illustration_id)
             await self._after_await(retained.actor, retained.binding, retained.binding_identity)
             if latest != retained.source_snapshot:
                 _fail("media_source_changed_during_image_download")
