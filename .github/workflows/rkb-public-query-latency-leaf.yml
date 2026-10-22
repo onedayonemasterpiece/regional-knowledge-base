@@ -6,6 +6,7 @@ on:
     paths:
       - scripts/benchmarks/public_query_latency_leaf.py
       - tests/test_public_query_latency_leaf.py
+      - docs/testing/rkb-public-query-latency-workload-20261022.md
       - .github/workflows/rkb-public-query-latency-leaf.yml
 
 permissions:
@@ -32,6 +33,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p synthetic-receipt
+          git rev-parse HEAD | tee synthetic-receipt/exact-head.txt
+          printf "SYNTHETIC_ONLY_NOT_KAGGLE_BASELINE\n" > synthetic-receipt/scope.txt
           timeout 75s python -m unittest discover -s tests -p 'test_public_query_latency_leaf.py' -v 2>&1 | tee synthetic-receipt/public-query-leaf-tests.log
       - name: Store bounded synthetic test receipt (no user content)
         if: always()
