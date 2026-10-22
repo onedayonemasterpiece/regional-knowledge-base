@@ -48,6 +48,16 @@ def gold_for(questions, state):
         database_generation_ref=state["database_generation_ref"],
         source_edition_sha256="e"*64,
         review_receipt_sha256="f"*64,
+        readiness=dict(
+            notebook_state="running",notebook_run_ref_sha256="1"*64,
+            pg_state="restored",
+            pg_database_generation_ref=state["database_generation_ref"],
+            pg_schema_revision=state["schema_revision"],
+            pg_applied_seq=state["applied_seq"],pg_projection_seq=state["projection_seq"],
+            route_state="usable",route_read_trace_sha256="2"*64,
+            import_state="Saved",import_source_id=rows[0]["source_id"],
+            import_source_revision=rows[0]["source_revision"],
+            import_edition_sha256="e"*64,import_remote_outcome_sha256="3"*64),
         cases=rows)
 
 
@@ -129,6 +139,41 @@ class WorkloadTests(unittest.IsolatedAsyncioTestCase):
         changed=copy.deepcopy(gold);changed["cases"].pop()
         with self.assertRaisesRegex(ValueError,"exact eight"):
             leaf.verify_query_gold_fixture(questions,value,changed)
+
+    async def test_running_notebook_or_restored_pg_alone_cannot_fake_saved_search(self):
+        import copy
+        queries={k:"private first-book source question "+k for k in leaf.CASE_IDS}
+        state=corpus(count=1,passages=3,profile="limited_first_book")
+        base=gold_for(queries,state)
+        sent=0
+        async def query(_):
+            nonlocal sent
+            sent+=1
+        async def readback():
+            return state
+        cases=(
+            ("notebook_state","pending","notebook_running_not_proven"),
+            ("pg_state","restore_pending","pg_restored_frontier_not_proven"),
+            ("pg_projection_seq",state["projection_seq"]-1,"pg_restored_frontier_not_proven"),
+            ("route_state","unavailable","public_route_usable_not_proven"),
+            ("route_read_trace_sha256",None,"public_route_usable_not_proven"),
+            ("import_state","APPLIED","real_import_saved_durable_not_proven"),
+            ("import_remote_outcome_sha256",None,"real_import_saved_durable_not_proven"),
+            ("import_source_revision",2,"real_import_saved_durable_not_proven"),
+        )
+        for key,value,reason in cases:
+            changed=copy.deepcopy(base)
+            changed["readiness"][key]=value
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(ValueError,reason):
+                    await leaf.run_public_workload(queries,query,readback,lambda _:None,
+                                                   gold_manifest=changed)
+                self.assertEqual(sent,0)
+        # Healthy notebook/PG/route/Saved is metadata-only and remains
+        # explicitly synthetic, not a live provider or human-gold receipt.
+        self.assertRegex(leaf.verify_query_gold_fixture(queries,state,base),
+                         r"^[0-9a-f]{64}$")
+        self.assertEqual(sent,0)
 
     async def test_not_ready_corpus_fails_before_public_queries(self):
         count=0
