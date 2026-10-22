@@ -8,7 +8,18 @@ Diagnostic source: PR212 `cda234538dcd61880955a12c13bb6007885e97a8` public
 `src/` and `sql/`, plus the exact new native-host module from PR216
 `9379db88abca68edb97a1c621430546b64b52f86`. This read-only source export is a
 managed diagnostic artifact, not a Git worktree or the integration owner's
-candidate. Run the same tests again against that owner's frozen candidate.
+candidate.
+
+The unchanged test was also run against the coordinator's frozen integrated
+handoff `src_f3548be35d1c99fd13ff02ac`, base
+`bd138b2449f68cabb2cbfa3df552df8471f40c78`, captured patch SHA-256
+`e336a669acfd8f5f7b1f410f16b25f4ce3456ac468f5de81dcbba6a8aaf04597`.
+Result: **2 failed, 5 passed in 3.62 seconds**, with the same inventory and
+`pg_snapshot_recovery.py:152` origin-control failures described below. This
+handoff contains only the first integration checkpoint; its shared wire/ACK,
+retained factory and startup fence are not yet connected. The retained JUnit
+receipt is `compat-integration-f3548.xml` in the managed task evidence directory.
+No source in that handoff was changed by the test run.
 
 ## Versions and authority at each boundary
 
