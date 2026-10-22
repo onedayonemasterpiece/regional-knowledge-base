@@ -377,3 +377,28 @@ def test_real_shared_sink_full_and_failed_never_hold_resource_producer():
     assert emit(standard, observation(1))
     standard._queue.join()
     assert standard.counters()['emitted'] == 1
+
+
+def test_companion_shared_sink_drops_unknown_private_keys_not_core_readings():
+    """Guard PR303's relaxed unknown-field behavior without leaking values."""
+    product = pytest.importorskip('regional_knowledge.product_telemetry')
+    received = []
+    shared = product.ProductTelemetry(mode='standard', capacity=2, sink=received.append)
+    core = {
+        'event': 'resource.sample', 'phase': 'resource', 'status': 'ok',
+        'run_id': 'fixture-run', 'sample_seq': 7,
+        'sample_time_unix_ms': 1700000000007, 'received_unix_ms': 1700000000042,
+        'rss_kib': 400, 'memory_current_bytes': 8192, 'cpu_seconds': 1.5,
+        'argv': 'sensitive process command line', 'token': 'secret',
+    }
+    assert shared.try_emit(core, level='standard')
+    shared._queue.join()
+    assert len(received) == 1
+    assert received[0]['rss_kib'] == 400
+    assert received[0]['memory_current_bytes'] == 8192
+    assert received[0]['ignored_fields'] == 2
+    assert 'argv' not in json.dumps(received)
+    assert 'sensitive' not in json.dumps(received)
+    # Invalid *known* reading is rejected logging-only, never coerced.
+    assert not shared.try_emit(dict(core, rss_kib=float('nan')), level='standard')
+    assert shared.counters()['failed'] >= 1
