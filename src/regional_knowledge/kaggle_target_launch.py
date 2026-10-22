@@ -8,7 +8,7 @@ import zlib
 
 from .bge_contract import REVISION, SPACE
 from .kaggle_owned_pg import SQL_ARTIFACTS, STORY_SQL_ARTIFACTS, FACT_SQL_ARTIFACTS, DOMAIN_SQL_ARTIFACTS, NATIVE_SOURCE_SQL_ARTIFACTS, sql_artifacts, canonical, digest
-from .kaggle_readiness import SearchRuntimeExpectation
+from .kaggle_readiness import SearchRuntimeExpectation, MAX_LAUNCH_CONFIG_BYTES
 from .kaggle_target_runtime import TargetLaunchSpec
 from .recovery_journal import RecoveryJournal
 from .kaggle_stage0 import MAX_PREPARED_FILES
@@ -28,12 +28,6 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_BUNDLE_JSON_BYTES = 3 * 1024 * 1024
 MAX_NOTEBOOK_SOURCE_BYTES = 1_000_000
-# Complete first-book launch: 55 wheels, native/source inventory and all 33
-# historical/current handlers measured 74,550 bytes. This is generated launch
-# metadata; the separate target-file, WSS frame and source budgets stay bounded.
-MAX_LAUNCH_CONFIG_BYTES = 96 * 1024
-
-
 def source_bundle(repository):
     repository = Path(repository)
     files = {f'regional_knowledge/{name}.py':(repository/'src/regional_knowledge'/f'{name}.py').read_bytes()
