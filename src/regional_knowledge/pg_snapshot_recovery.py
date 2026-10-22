@@ -141,14 +141,24 @@ class PhysicalSnapshotRecovery:
             control_bytes=await self.journal._verified(ObjectRef(ref['key'],ref['sha256'],ref['length'],
                 manifest['applied_sequence']),self.limits.max_control_bytes)
             control=json.loads(control_bytes)
+            base_revisions=tuple(expected_versions[key] for key in
+                ('schema_revision','function_revision','executor_revision'))
+            closure=dict(acl_sha256=self.history.acl_hash,registry_sha256=self.history.registry_hash,
+                routes=sorted(self.history.routes))
+            from .geo_manifest_commands import GEO_REVISIONS
+            origin=getattr(self.history,'origin_closure',None)
+            if origin is not None and base_revisions==GEO_REVISIONS.wire():
+                if origin['catalog_sha256']!=expected_versions['catalog_sha256']:
+                    raise SnapshotError('snapshot_source_control_binding')
+                closure=origin
             if (encode(control)!=control_bytes or control.get('codec')!='rkb.source-base-control.v1'
                     or control.get('stream')!=self.journal.stream or control.get('sequence')!=manifest['applied_sequence']
                     or control.get('database_generation')!=database.database_generation
                     or control.get('journal_head')!=manifest['journal_head']
                     or control.get('catalog_sha256')!=expected_versions['catalog_sha256']
-                    or control.get('acl_sha256')!=self.history.acl_hash
-                    or control.get('registry_sha256')!=self.history.registry_hash
-                    or control.get('routes')!=sorted(self.history.routes)):
+                    or control.get('acl_sha256')!=closure['acl_sha256']
+                    or control.get('registry_sha256')!=closure['registry_sha256']
+                    or control.get('routes')!=closure['routes']):
                 raise SnapshotError('snapshot_source_control_binding')
             intent=encode({'codec':'rkb.physical-recovery-intent.v1','stream':self.journal.stream,
                 'operation_key':operation_key,'manifest':manifest_ref.wire(),'database':database.wire(),'identity':identity})
@@ -160,9 +170,12 @@ class PhysicalSnapshotRecovery:
                 database=database.wire(),identity=identity)
             head=await self.journal.head();tail=await self._tail(head,boundary,manifest['applied_sequence'])
             heads={row[0]:row for row in control['heads']};receipts=[];transitions=[];replayed=[]
+            current_revisions=base_revisions
             for command,seal in tail:
                 self._authority(binding)
                 handler=self.registry.resolve(command);dep=handler.dependency
+                if (command.schema_revision,command.function_revision,command.executor_revision)!=current_revisions:
+                    raise SnapshotError('snapshot_replay_revision_order')
                 # Same closed route/dependency classification as native history;
                 # independent Case/GEO commands keep their real resource IDs.
                 classified,installed,_=self.history._classify(command.encode(),seal.manifest)
@@ -191,18 +204,23 @@ class PhysicalSnapshotRecovery:
                     remote=None  # Replayed locally; still pending until the next Dataset.
                 replayed.append((receipt,remote))
                 receipts.append((receipt.sequence,receipt.command_sha256,receipt.outcome_sha256))
-                if handler.transition is not None:
+                if handler.transition is not None and receipt.status=='applied':
+                    current_revisions=handler.transition.target.wire()
                     transitions.append({'sequence':command.sequence,'command_sha256':sha(command.encode()),
                         'handler_sha256':handler.fingerprint,'migration_id':handler.transition.migration_id,
                         'artifact_sha256':handler.transition.artifact_sha256})
-                elif dep.scope_class=='public_source':
+                elif dep is not None and dep.scope_class=='public_source':
                     source=command.ids['source_id'];old=heads.get(source)
                     heads[source]=[source,command.sequence,sha(command.encode()),int(dep.restriction or old is not None and old[3]),0,0]
             if await self.journal.head()!=head:raise SnapshotError('snapshot_tail_changed_before_rollover')
+            if (current_revisions!=(database.schema_revision,database.function_revision,database.executor_revision)
+                    or expected_final_catalog_sha256!=self.history.catalog_hash):
+                raise SnapshotError('snapshot_final_closure_transition_required')
             sequence=manifest['applied_sequence']+len(tail)
             control.update(sequence=sequence,journal_head=head.reference.wire() if head else None,
                 heads=[heads[k] for k in sorted(heads)],catalog_sha256=expected_final_catalog_sha256,
-                closure_transitions=transitions)
+                closure_transitions=transitions,acl_sha256=self.history.acl_hash,
+                registry_sha256=self.history.registry_hash,routes=sorted(self.history.routes))
             final_control=encode(control)
             if len(final_control)>self.limits.max_control_bytes:raise SnapshotError('snapshot_final_control_byte_budget')
             native_ref=await self.native.finish(binding,handle,expected_tail=tuple(receipts),

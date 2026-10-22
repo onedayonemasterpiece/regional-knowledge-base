@@ -21,6 +21,8 @@ from .disagreement_contracts import (CaseCreate,CaseRevise,CaseState,CaseGrant,E
     ContributionCorrect,ConclusionAdd,PersonalDraft,DraftPublication)
 from .kaggle_case_contracts import CaseReadRequest,canonical,exact_uuid
 from .kaggle_domain_bindings import DOMAIN_REVISIONS,resolved_current_case_command
+from .source_activation import ACTIVATION_REVISIONS
+from .kaggle_native_source_bindings import new_native_command,required_native_source_capabilities
 from .kaggle_protocol import TrustedActorContext
 from .kaggle_public_backend import current_binding
 from .participants import RequestAuthority,ParticipantError
@@ -82,8 +84,12 @@ class CaseOperationGate:
                 # Case ACL/draft authorship. No awaits after this final check.
                 from .disagreement_native import required_capabilities
                 from .kaggle_domain_bindings import _view
-                original=_view(command,CASE_REVISIONS) if command.schema_revision==DOMAIN_REVISIONS.schema else command
-                for capability in required_capabilities(original):
+                if command.schema_revision==ACTIVATION_REVISIONS.schema:
+                    capabilities=required_native_source_capabilities(command)
+                else:
+                    original=_view(command,CASE_REVISIONS) if command.schema_revision==DOMAIN_REVISIONS.schema else command
+                    capabilities=required_capabilities(original)
+                for capability in capabilities:
                     self.backend.participants.require(context,capability,connection=db)
             self.backend._scope(authority,command)
             spool=self.backend.spool
@@ -433,7 +439,7 @@ class KaggleCasesBackend:
                         head=await self.spool.journal.head();sequence=head.reference.last_sequence if head else 0
                         if sequence!=scope['accepted_sequence']:raise failure('case_history_unavailable')
                         revisions={h.revisions for h in self.spool.registry.handlers.values() if h.route.startswith('disagreement.')}
-                        if revisions=={DOMAIN_REVISIONS}:builder=resolved_current_case_command
+                        if revisions in ({DOMAIN_REVISIONS},{ACTIVATION_REVISIONS}):builder=resolved_current_case_command
                         elif revisions=={CASE_REVISIONS}:builder=resolved_case_command
                         else:raise failure('case_handler_versions_unavailable')
                         resolved=builder(sequence=sequence+1,operation_key=key,request_id='case-'+secrets.token_hex(16),
@@ -442,6 +448,8 @@ class KaggleCasesBackend:
                             case_revision=case_revision,object_version=object_version,
                             attribution=dict(person_id=authority.person_id,recorded_by=context.executor_id or context.principal.subject,
                                 route=context.route,link_id=context.link_id,link_revision=context.link_revision,human_reading_confirmed=False))
+                        # Adapt a newly resolved intent only; accepted replay entries are never relabelled.
+                        if revisions=={ACTIVATION_REVISIONS}:resolved=new_native_command(resolved)
                         await self._check(authority,context,binding,resolved)
                         if gated is not None and not self.gate.issuance_current(gated.ticket):raise failure('prior_write_pending')
                         frozen,data,handler=self.spool._validate(resolved,binding.database_generation)
