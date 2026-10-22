@@ -382,6 +382,24 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
             assert await (await connection.execute(
                 "SELECT count(*) FROM rkb_v4.passage_search WHERE source_id=%s AND revision=2",
                 (SOURCE,))).fetchone()==(1,)
+            # Real versioned SQL017 read ABI must hydrate the newly ACTIVE
+            # passage with original physical-page/edition provenance. Rev1
+            # manifests remain independently stored, not overwritten.
+            assert await (await connection.execute(
+                "SELECT source_revision,count(*) FROM rkb_v4.source_manifests "
+                "WHERE source_id=%s GROUP BY source_revision ORDER BY source_revision",
+                (SOURCE,))).fetchall()==[(1,1),(2,1)]
+            active_passage=await (await connection.execute(
+                "SELECT passage_id FROM rkb_v4.passage_search "
+                "WHERE source_id=%s AND revision=2",(SOURCE,))).fetchone()
+            assert active_passage is not None
+            active_meta=await (await connection.execute(
+                "SELECT metadata FROM rkb_v4.source_passage_metadata_v2(%s::uuid[])",
+                ([active_passage[0]],))).fetchone()
+            assert active_meta is not None
+            assert active_meta[0]["source_revision"]==2
+            assert active_meta[0]["original_sha256"]=="a"*64
+            assert active_meta[0]["pages"] is not None
             prior_story=await (await connection.execute(
                 "SELECT v.body FROM rkb_v4.story_variant_versions v JOIN rkb_v4.stories s USING(story_id) "
                 "WHERE s.source_id=%s",(SOURCE,))).fetchone()
