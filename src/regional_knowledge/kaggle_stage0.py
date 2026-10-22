@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Mapping
+from contextlib import contextmanager
 import hashlib
 import importlib.metadata
 import json
@@ -24,6 +25,7 @@ from urllib.parse import urlsplit, urljoin
 import urllib.request
 
 TRUSTED_ROOT = Path('/kaggle/working')
+TRUSTED_INPUT_ROOT = Path('/kaggle/input')
 MAX_FILES = 128
 # Native import source plus PDF/Telegram dependencies requires165 entries.
 # Download and wheel budgets remain128; only the complete prepared inventory
@@ -72,6 +74,29 @@ def _https(value):
     return value
 
 
+def _dataset_locator(value):
+    """Internal locator, never sent to urllib or interpreted as an HTTP URL.
+
+    A mounted slug cannot attest a provider version. The controller attaches
+    the declared version; exact size/SHA pins still verify every consumed byte.
+    """
+    if type(value) is not str or not value.startswith('kaggle-dataset:'):
+        return None
+    try:parsed=urlsplit(value)
+    except ValueError:raise ValueError('stage0_dataset_locator_invalid') from None
+    parts=parsed.path.split('/')[1:]
+    slug_pattern=r'[a-z0-9][a-z0-9-]{1,98}[a-z0-9]'
+    if (parsed.scheme!='kaggle-dataset' or parsed.query or parsed.fragment
+            or re.fullmatch(slug_pattern,parsed.netloc) is None
+            or len(parts)<3 or re.fullmatch(slug_pattern,parts[0]) is None
+            or re.fullmatch(r'[1-9][0-9]{0,9}',parts[1]) is None
+            or any(ord(c)<33 for c in value)
+            or len(parts)>18 or any(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,199}',p) is None
+                for p in parts[2:]) or len(value.encode())>1024):
+        raise ValueError('stage0_dataset_locator_invalid')
+    return parsed.netloc,parts[0],int(parts[1]),'/'.join(parts[2:])
+
+
 @dataclass(frozen=True)
 class Stage0Download:
     name: str
@@ -81,7 +106,9 @@ class Stage0Download:
     executable: bool = False
 
     def __post_init__(self):
-        _name(self.name);_https(self.url);_integer(self.size,1,MAX_FILE_BYTES);_hash(self.sha256)
+        _name(self.name)
+        if _dataset_locator(self.url) is None:_https(self.url)
+        _integer(self.size,1,MAX_FILE_BYTES);_hash(self.sha256)
         if type(self.executable) is not bool:
             raise ValueError('stage0_invalid_executable')
 
@@ -114,6 +141,14 @@ class Stage0Spec:
         for wheel in self.wheels:
             if not _name(wheel).endswith('.whl'):
                 raise ValueError('stage0_wheel_required')
+        mounts={}
+        for item in self.downloads:
+            locator=_dataset_locator(item.url)
+            if locator is not None:
+                owner,slug,version,_=locator
+                if slug in mounts and mounts[slug]!=(owner,version):
+                    raise ValueError('stage0_dataset_mount_ambiguous')
+                mounts[slug]=(owner,version)
         if not isinstance(self.packages,(dict,MappingProxyType)) or not 1<=len(self.packages)<=128:
             raise ValueError('stage0_exact_packages_required')
         packages=dict(self.packages)
@@ -129,6 +164,13 @@ class Stage0Spec:
         _integer(self.install_bytes,0,MAX_TOTAL_BYTES)
         _integer(self.total_seconds,1,3600)
         object.__setattr__(self,'packages',MappingProxyType(dict(sorted(packages.items()))))
+
+    @property
+    def dataset_sources(self):
+        """Version-qualified dependencies to attach BEFORE the notebook starts."""
+        return tuple(sorted({'/'.join((owner,slug,str(version)))
+            for item in self.downloads if (locator:=_dataset_locator(item.url)) is not None
+            for owner,slug,version,_ in (locator,)}))
 
     def wire(self, *, compact_wheels=True):
         wheels=list(self.wheels)
@@ -262,6 +304,39 @@ def _verify(parent,name,size,digest,deadline,*,executable=False):
     finally:os.close(fd)
 
 
+@contextmanager
+def _open_source(item,opener,deadline):
+    locator=_dataset_locator(item.url)
+    if locator is None:
+        request=urllib.request.Request(item.url,headers={'Accept-Encoding':'identity'},method='GET')
+        with opener.open(request,timeout=min(30,_remaining(deadline))) as response:
+            try:_https(response.geturl())
+            except ValueError:raise Stage0Error('stage0_unsafe_redirect') from None
+            if response.status!=200:raise Stage0Error('stage0_download_failed')
+            yield response
+        return
+    _,slug,_,name=locator
+    root_fd=parent=fd=None
+    try:
+        root=TRUSTED_INPUT_ROOT
+        if not root.is_absolute() or root.resolve(strict=True)!=root:
+            raise Stage0Error('stage0_dataset_mount_invalid')
+        root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        parent=_parent(root_fd,slug+'/'+name,create=False)
+        fd=os.open(name.split('/')[-1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent)
+        info=os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size!=item.size
+                or info.st_mode&0o022 and not os.fstatvfs(fd).f_flag&os.ST_RDONLY):
+            raise Stage0Error('stage0_dataset_file_invalid')
+        stream=os.fdopen(fd,'rb');fd=None
+        with stream:yield stream
+    except OSError:
+        raise Stage0Error('stage0_dataset_unavailable') from None
+    finally:
+        for handle in (fd,parent,root_fd):
+            if handle is not None:os.close(handle)
+
+
 def _download(root_fd,item,opener,deadline):
     parent=_parent(root_fd,item.name,create=True)
     temporary='.rkb-part-'+secrets.token_hex(16)
@@ -271,12 +346,7 @@ def _download(root_fd,item,opener,deadline):
         if _verify(parent,leaf,item.size,item.sha256,deadline,executable=item.executable):
             return False
         fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=parent)
-        request=urllib.request.Request(item.url,headers={'Accept-Encoding':'identity'},method='GET')
-        with opener.open(request,timeout=min(30,_remaining(deadline))) as response:
-            try:_https(response.geturl())
-            except ValueError:raise Stage0Error('stage0_unsafe_redirect') from None
-            if response.status!=200:
-                raise Stage0Error('stage0_download_failed')
+        with _open_source(item,opener,deadline) as response:
             digest=hashlib.sha256();count=0
             while True:
                 _remaining(deadline)
@@ -415,13 +485,16 @@ def prepare_stage0(prepared_model:dict,plan:dict,*,run_id=None)->dict:
             if shutil.disk_usage(root).free<needed:
                 raise Stage0Error('stage0_insufficient_disk')
             opener=urllib.request.build_opener(_HTTPSRedirect(deadline),urllib.request.ProxyHandler({}))
-            downloaded=0;downloaded_files=0
+            downloaded=0;downloaded_files=0;dataset_bytes=0;dataset_files=0
             from contextlib import nullcontext
             from .kaggle_environment import bootstrap_stage
             with bootstrap_stage(run_id,'stage0_download') if run_id is not None else nullcontext():
                 for item in spec.downloads:
                     if _download(root_fd,item,opener,deadline):
-                        downloaded+=item.size;downloaded_files+=1
+                        if _dataset_locator(item.url) is None:
+                            downloaded+=item.size;downloaded_files+=1
+                        else:
+                            dataset_bytes+=item.size;dataset_files+=1
             with bootstrap_stage(run_id,'stage0_install') if run_id is not None else nullcontext():
                 installed=_install(root_fd,root,spec,inventory,deadline)
             _remaining(deadline)
@@ -429,7 +502,8 @@ def prepare_stage0(prepared_model:dict,plan:dict,*,run_id=None)->dict:
             manifest=dict(codec='rkb.stage0.v1',plan_sha256=plan_hash,packages=dict(spec.packages))
             _receipt(root_fd,manifest,deadline)
             return dict(manifest,downloaded_bytes=downloaded,
-                reused_files=len(spec.downloads)-downloaded_files,
+                dataset_copied_bytes=dataset_bytes,dataset_copied_files=dataset_files,
+                reused_files=len(spec.downloads)-downloaded_files-dataset_files,
                 installed=installed)
         finally:os.close(root_fd)
     except Stage0Error:raise
