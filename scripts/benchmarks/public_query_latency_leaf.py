@@ -29,8 +29,11 @@ WARMUPS_PER_CASE = 2
 REPETITIONS_PER_CASE = 6
 TOTAL_CALLS = len(CASE_IDS) * len(COHORTS) * (WARMUPS_PER_CASE + REPETITIONS_PER_CASE)
 assert TOTAL_CALLS == 128
-CALL_TIMEOUT_S = 3.0
+CALL_TIMEOUT_S = 3.0  # Caller wait guard, NOT the public 2s query deadline or SLO.
+PUBLIC_SERVER_QUERY_DEADLINE_S = 2.0
+PUBLIC_MCP_P95_SLO_MS = 1500
 RUN_TIMEOUT_S = 450.0
+PROFILES = frozenset({"limited_first_book", "comparison_corpus"})
 MAX_LINES = 2048
 MAX_LINE_BYTES = 8192
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -38,7 +41,8 @@ HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 SAFE_REF = re.compile(r"[A-Za-z0-9_.:-]{1,256}\Z")
 CLIENT_FIELDS = frozenset({"event", "case_id", "phase", "warmup",
     "trace_id", "attempt_id", "request_ref", "status", "reason", "mode",
-    "evidence_count", "wall_ms", "client_cpu_ms", "client_rss_kib"})
+    "evidence_count", "wall_ms", "callback_wall_ms", "client_semaphore_wait_ms",
+    "latency_observation", "censor_lower_bound_ms", "client_cpu_ms", "client_rss_kib"})
 CONTROLLER_FIELDS = frozenset({"event", "plane", "terminal", "trace_id",
     "attempt_id", "request_ref", "status", "reason", "backend_elapsed_ms",
     "executed_branches", "stages_ms", "timing_semantics", "dispatch_state",
@@ -67,7 +71,7 @@ REASONS = frozenset({"dense_unavailable", "projection_lag", "deadline_exceeded",
 CORPUS_FIELDS = frozenset({"database_generation_ref", "schema_revision",
     "accepted_source_count", "visible_passage_count", "applied_seq",
     "projection_seq", "visibility_epoch", "corpus_manifest_sha256",
-    "release_sha", "owner_handoff_ref"})
+    "release_sha", "owner_handoff_ref", "profile"})
 RESOURCE_FIELDS = frozenset({"event", "phase", "client_process_cpu_ms",
     "client_peak_rss_kib"})
 PRIVATE_KEYS = frozenset({"query", "text", "message", "authorization",
@@ -106,9 +110,17 @@ def valid_corpus(value: object) -> dict:
                 "projection_seq", "visibility_epoch"):
         if type(value[key]) is not int or value[key] < 0:
             raise ValueError("exact numeric corpus frontier required")
-    if (value["accepted_source_count"] < 2 or value["visible_passage_count"] < 32
-            or value["applied_seq"] < 1 or value["projection_seq"] != value["applied_seq"]):
-        raise ValueError("corpus_not_ready_for_representative_latency")
+    if value["profile"] not in PROFILES:
+        raise ValueError("explicit accepted-corpus benchmark profile required")
+    if value["applied_seq"] < 1 or value["projection_seq"] != value["applied_seq"]:
+        raise ValueError("corpus_not_ready_for_latency")
+    if value["profile"] == "limited_first_book":
+        # A first accepted real book is a valid narrowly labelled baseline,
+        # not proof of corpus representativeness or production-scale readiness.
+        if value["accepted_source_count"] != 1 or value["visible_passage_count"] < 1:
+            raise ValueError("limited_first_book_requires_one_real_source_with_passages")
+    elif value["accepted_source_count"] < 2 or value["visible_passage_count"] < 32:
+        raise ValueError("comparison_corpus_requires_two_sources_and_32_passages")
     return dict(value)
 
 
