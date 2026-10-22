@@ -38,7 +38,7 @@ Candidate `768bca5c950507b053b157626e34c4ffcf6539af` passed CI39773458811:
 | PR248 compatible importer input | `3e1f6c948d7b1bd937eb5b443b87c292a0faab5f` | Exact importer/test delta on native baseline6d51bfd; main PR248 head d8fc88a9b2933834fe7fd4963f5fd9e008f225ee | Clean; only2 paths, not the old whole importer |
 | PR249 | `0d7fee1b7c6dc27d4d7925379a02e2e391f6be6c` | Dispatch status fastpath after included PR239 | Clean; final tests/teardown update over fd7d564, production unchanged; PR239 epoch fix retained |
 | PR250 | `ba57b276293aaf88548c37d56b9dd99f9882cbe0` | Inert authenticated executor claim receiver | Clean; includes author's fixture import fix after initial1283b13; new files, not mounted |
-| PR251 | `ddb69be3ce1e09ba0a64bb158fabd821e9b85067` | Same-client leased native Telegram crop bytes | Clean; new native file/tests and owned media doc |
+| PR251 | `cfe026b20ebe31e8251e5061062b12c08df27b5a` | Same-client leased native Telegram crop bytes | Clean; final native binding guards and changed-boundary media tests/doc over ddb69be |
 | PR252 | `f99e4f4fe3cde549572964db8c0bcf677c5d127b` | Persisted pending research continuation in native status | Clean; importer helper/callsite added on top of PR248 delta, not a whole-file replacement |
 
 PR246 source depends on already included PR242/243. Its earlier fbdafb5
