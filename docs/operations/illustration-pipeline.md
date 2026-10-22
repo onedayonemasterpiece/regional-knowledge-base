@@ -24,6 +24,14 @@ The corpus/proof adapters use the same PostgreSQL/pgvector on Kaggle and one acc
 
 `illustration_id` is tied to the accepted source revision, physical page and `source_region_id`. Keep `caption_region_ids`, exact printed caption and separately labelled `visual_description`. Same-page location, name similarity and vector proximity do not establish image/POI identity. Street Story remains canonical POI owner.
 
+The current `source.activate.v1` code registry uses SQL015's illustration-aware
+check/apply functions for both text and illustrated sources. Native preparation
+always seals its exact media sidecar; text-only sources use empty illustration
+and link arrays. Activation saves that projection and its accepted-operation
+origin atomically. Existing v1 command audit fields stay unchanged; the numbered
+SQL ledger supplies the schema version. This describes the source contract, not
+live import or Telegram mirror acceptance.
+
 Search material may include accepted captions and labelled visual observations without overwriting source text. An omitted descriptor can be projected only from the exact accepted shared figure/caption region, recorded as `association_basis=exact_shared_region`. A keyword or neighboring place cannot supply a missing image link. Search ranks source evidence; the agent follows its descriptor and fetches the real image.
 
 Only GEO migrates. Old book/figure/chunk/vector projections are rebuilt by fresh MCP import, not backfilled as accepted target content. Reuse verified original bytes and existing archive infrastructure as permitted; preserve GEO minimal provenance and exact reanchor under the [cutover contract](../migrations/rkb-layers-only-cutover-20261019.md).
