@@ -639,10 +639,19 @@ def assert_comparable_receipts(before, after) -> dict:
         raise ValueError("before_after_profile_changed")
     if earlier["question_fixture_sha256"] != later["question_fixture_sha256"]:
         raise ValueError("before_after_question_fixture_changed")
-    if earlier["corpus"] != later["corpus"]:
+    # A reviewed read-handler source fix may change loaded release SHA, and
+    # separate owner-approved read slots have distinct handoff references.
+    # Both are recorded independently; the *book corpus/version* must not drift.
+    excluded={"release_sha", "owner_handoff_ref"}
+    old_corpus={key:value for key,value in earlier["corpus"].items() if key not in excluded}
+    new_corpus={key:value for key,value in later["corpus"].items() if key not in excluded}
+    if old_corpus != new_corpus:
         raise ValueError("before_after_corpus_or_version_changed")
     return {"profile":earlier["corpus"]["profile"], "same_corpus":True,
-            "same_fixture":True, "not_production_scale_acceptance":True}
+            "same_fixture":True, "not_production_scale_acceptance":True,
+            "before_release_sha":earlier["corpus"]["release_sha"],
+            "after_release_sha":later["corpus"]["release_sha"],
+            "release_changed":earlier["corpus"]["release_sha"] != later["corpus"]["release_sha"]}
 
 
 def main(argv=None):
