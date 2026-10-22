@@ -62,7 +62,7 @@ def fixture():
         return SimpleNamespace(candidate=candidate)
     factory.prepare=prepare
     owner=SimpleNamespace(serving=serving,factory=factory,download=download,
-        workspace=lambda *_:Path("/fixture/drill"))
+        workspace=lambda *_:Path("/fixture/drill"),prepared={},sessions={})
     pins=NativeSourceUpgradePins(*["c"*64]*4)
     migrate=NativeDrillMigrate(owner,sql_root=Path("/fixture/native/sql"),native_pins=pins)
     args=dict(manifest_b64=base64.b64encode(raw_manifest).decode(),
