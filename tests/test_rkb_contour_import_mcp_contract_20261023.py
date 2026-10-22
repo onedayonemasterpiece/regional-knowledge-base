@@ -12,6 +12,9 @@ from mcp.server.mcpserver.exceptions import ToolError
 from regional_knowledge.contracts import ChatFile, Principal
 from regional_knowledge.original_intake import OriginalIntakeSpec
 from regional_knowledge.server import build_server
+from test_participants import people
+from test_read_authority import auth
+from test_kaggle_public_backend import target
 from test_kaggle_native_source_importer import native_intake, start
 
 
