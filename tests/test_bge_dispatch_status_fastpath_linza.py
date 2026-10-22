@@ -53,11 +53,16 @@ INSTRUMENTED_STATUS = """            async def status():
                 if (caller == "dispatch" and promoted and probe_nonce is not None
                         and _probe_dispatch_event is not None):
                     _probe_dispatch_event.set()
+                if caller == "sender" and _sender_entered is not None:
+                    _sender_entered.set()
+                    if not await asyncio.to_thread(_sender_release.wait, 3):
+                        raise AssertionError("bounded sender status test barrier expired")
                 return await queue_call(queue.channel_status, run_id, token, generation)
 """
 
 
-def candidate_route(*, fastpath: bool, observations: list, probe_event=None):
+def candidate_route(*, fastpath: bool, observations: list, probe_event=None,
+                    sender_entered=None, sender_release=None):
     """Build a temporary module; no global module, source or runtime patch."""
     source = Path(inspect.getfile(production)).read_text()
     if (source.count(CANDIDATE) != 1 or source.count(BEFORE_STATUS) != 1
@@ -72,6 +77,8 @@ def candidate_route(*, fastpath: bool, observations: list, probe_event=None):
     module.__dict__["sys"] = sys
     module.__dict__["_status_observations"] = observations
     module.__dict__["_probe_dispatch_event"] = probe_event
+    module.__dict__["_sender_entered"] = sender_entered
+    module.__dict__["_sender_release"] = sender_release
     exec(compile(source, module.__file__, "exec"), module.__dict__)
     return module.channel_route
 
