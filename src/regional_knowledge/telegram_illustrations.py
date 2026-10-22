@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 import hashlib
 from io import BytesIO
 import json
-import re
 import secrets
 import time
 from uuid import UUID
@@ -63,10 +62,6 @@ def _canonical(value):
                           ensure_ascii=False, allow_nan=False).encode("utf-8")
     except (TypeError, ValueError, OverflowError, RecursionError):
         raise IllustrationArchiveReadUnavailable("native_illustration_binding_invalid") from None
-
-
-def _digest(value):
-    return type(value) is str and re.fullmatch("[0-9a-f]{64}", value) is not None
 
 
 def _uuid(value):

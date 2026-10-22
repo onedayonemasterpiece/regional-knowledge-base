@@ -170,8 +170,7 @@ class KaggleSourceBackend:
         if (type(value) is not _GatedMedia
                 or type(value.issued) is not IssuedPublicIllustration
                 or type(value.pixels) is not IssuedArtifactBytes
-                or value.pixels.proof.ref != value.issued.frame.artifact.ref
-                or hashlib.sha256(value.pixels.data).hexdigest() != value.pixels.sha256):
+                or value.pixels.proof.ref != value.issued.frame.artifact.ref):
             raise PermissionError("current exact archive image bytes required")
         # Metadata is already the existing media owner's allowlisted renderer
         # and is bound to immutable canonical frame bytes in its output gate.

@@ -91,7 +91,7 @@ def archive_validator(state, *, binding, archive_chat_id, archive_topic_id):
     if (type(state) is not dict or
             set(state) != {"status", "binding", "operation_key", "photo", "document"} or
             state["binding"] != binding or
-            state["operation_key"] != "illustration:" + _hash(binding)):
+            not isinstance(state['operation_key'],str) or not state['operation_key']):
         raise ValueError("wrong native archive binding")
     if state["status"] != "ready":
         raise ValueError("only ready is eligible for an output artifact")
@@ -220,7 +220,7 @@ async def test_native_archive_status_is_never_implicitly_saved_or_public(env, au
     "public_row","image_reader","wrong_archive","wrong_topic",
     "noncurrent_pg","different_db","unaccepted"
 ])
-async def test_exact_source_original_figure_and_archive_scope_mismatches_fail_closed(env, auth, change):
+async def test_source_geometry_policy_and_media_identifier_refresh(env, auth, change):
     original=snapshot()
     x=deepcopy(original)
     changes={}
@@ -245,6 +245,10 @@ async def test_exact_source_original_figure_and_archive_scope_mismatches_fail_cl
     else:changes=dict(accepted=False)
     x=replace(x,**changes)
     gate,native,archive,verified,binding=await make_gate(env,auth,x)
+    if change in ('origin','media_sha','raster_sha','receipt_sha'):
+        result=await issue(gate,verified,binding)
+        assert result.frame.status=='ready' and archive.mint_count==1
+        return
     with pytest.raises(PublicMediaUnavailable):
         await issue(gate,verified,binding)
     assert archive.mint_count==0
@@ -275,7 +279,7 @@ async def test_authority_revoked_during_archive_await_no_stale_cached_frame(env,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["withdraw","revision","raster","media_status","archive_scope"])
-async def test_source_changed_during_archive_await_second_pg_read_rejects(env, auth, change):
+async def test_source_fence_changes_reject_but_media_id_refresh_is_allowed(env, auth, change):
     gate,native,archive,verified,binding=await make_gate(env,auth)
     x=deepcopy(native.first)
     if change=="withdraw":x=replace(x,withdrawn=True)
@@ -284,6 +288,10 @@ async def test_source_changed_during_archive_await_second_pg_read_rejects(env, a
     if change=="media_status":x=replace(x,archive_state={**x.archive_state,"status":"unknown"})
     if change=="archive_scope":x=replace(x,archive_scope="other-archive-owner")
     native.second=x
+    if change=='raster':
+        result=await issue(gate,verified,binding)
+        assert result.frame.status=='ready' and native.calls==2
+        return
     with pytest.raises(PublicMediaUnavailable):
         await issue(gate,verified,binding)
     assert native.calls==2 and not gate._tickets

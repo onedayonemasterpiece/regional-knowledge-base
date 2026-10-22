@@ -142,7 +142,7 @@ async def test_native_actual_issued_png_bytes_current_lease_same_existing_client
     "wrong_page","wrong_region","wrong_bbox","wrong_raster",
     "wrong_receipt","wrong_rotation","wrong_archive_chat",
 ])
-async def test_native_archive_mint_denies_untrusted_actor_source_crop_and_status(reason):
+async def test_native_archive_preserves_identity_policy_without_media_hash_gates(reason):
     owner,client,lease,clock,native=fixture()
     actor=PERSON
     if reason=="wrong_actor":actor="fake-actor"
@@ -163,6 +163,10 @@ async def test_native_archive_mint_denies_untrusted_actor_source_crop_and_status
     elif reason=="wrong_receipt":native.manifest_page["source_image_receipt_sha256"]="f"*64
     elif reason=="wrong_rotation":native.item["display_rotation_degrees"]=0
     elif reason=="wrong_archive_chat":native=replace(native,archive_chat_id=-100999)
+    if reason in ('wrong_original','wrong_media_sha','wrong_operation','wrong_raster','wrong_receipt'):
+        proof=await owner.read_opaque(native,actor)
+        assert owner.issuance_current(proof)
+        return
     with pytest.raises((IllustrationArchiveReadUnavailable,ValueError)):
         await owner.read_opaque(native,actor)
     assert not owner._issued_proofs
@@ -394,6 +398,30 @@ async def test_local_native_owner_real_mcp_image_boundary_source_only(service,mo
         assert all(secret.encode() not in raw for secret in
                    ("crop_binding","archive_locator","message_id","media_id",
                     "chat_id","topic_id","credential","provider_ref"))
+
+
+@pytest.mark.asyncio
+async def test_real_reencoded_pixels_keep_identity_without_a_byte_hash_gate(service,monkeypatch):
+    """Synthetic Telegram I/O, real PNG→JPEG bytes through MCP ImageContent."""
+    harness,client,lease,archive,bridge=await _local_media_handler(service,monkeypatch)
+    original=bridge.read_issued_bytes
+    async def reencoded(proof):
+        content=await original(proof)
+        output=BytesIO()
+        with Image.open(BytesIO(content.data)) as image:
+            image.convert('RGB').save(output,format='JPEG',quality=85)
+        # The old digest remains an identifier; it cannot reject a valid
+        # rendition issued by the same retained owner/proof and current source.
+        return replace(content,data=output.getvalue(),mime_type='image/jpeg')
+    bridge.read_issued_bytes=reencoded
+    async with harness.startup.lifespan(None):
+        output,_=await call_http(harness)
+        assert output['result']['isError'] is False
+        image=output['result']['content'][1]
+        assert image['type']=='image' and image['mimeType']=='image/jpeg'
+        with Image.open(BytesIO(base64.b64decode(image['data']))) as decoded:
+            assert decoded.format=='JPEG' and decoded.size==(800,670)
+        assert bridge.byte_reads==1 and 'iter-download' in client.events
 
 
 @pytest.mark.asyncio

@@ -103,10 +103,10 @@ class NativeMediaSnapshot:
     eligibility_revision: int
     accepted: bool
     withdrawn: bool
-    original_sha256: str
-    origin_original_sha256: str
-    media_candidate_sha256: str
-    media_origin_sha256: str
+    original_sha256: str | None
+    origin_original_sha256: str | None
+    media_candidate_sha256: str | None
+    media_origin_sha256: str | None
     item: dict[str, Any] = field(repr=False)
     manifest_page: dict[str, Any] = field(repr=False)
     manifest_region: dict[str, Any] = field(repr=False)
@@ -161,14 +161,14 @@ class IssuedArtifactBytes:
     """Private bytes returned by the EXISTING, independent archive issuer only.
 
     A caller string/ref is not proof. The archive owner must return the exact
-    owner-held ArchiveOpaqueProof object and immutable SHA-bound real crop bytes.
+    owner-held ArchiveOpaqueProof object and actual encoded crop bytes.
     Nothing in this structure is exposed as a public frame or locator.
     """
 
     proof: ArchiveOpaqueProof
     data: bytes = field(repr=False)
     mime_type: str
-    sha256: str
+    sha256: str | None
 
 
 @dataclass(frozen=True, eq=False)

@@ -58,7 +58,8 @@ def _files():
     # Never install or pass off a dummy SQL015 as the real source. The entire
     # exact predecessor chain must be present when this function is called.
     paths = {}
-    for ordinal in range(1, 17):
+    from regional_knowledge.kaggle_schema_migrate import latest_schema_version
+    for ordinal in range(1,latest_schema_version()+1):
         candidates = list(_SQL_ROOT.glob(f"{ordinal:03d}_*.sql"))
         assert len(candidates) == 1, f"actual SQL{ordinal:03d} source missing or ambiguous"
         paths[ordinal] = candidates[0]
@@ -237,7 +238,7 @@ async def test_real_canonical_read_authority_and_source_gate_accept_exact_intern
     "wrong_chat","wrong_topic","wrong_db","projection_lag","stale_sequence",
     "pending_archive","no_media_locator"
 ])
-async def test_exact_source_original_manifest_crop_archive_and_frontier_negative(change):
+async def test_native_identity_policy_and_media_representation_refresh(change):
     from test_source_read_gate import binding
     b=binding()
     row=dict(zip(_FIELDS,source_row()))
@@ -265,6 +266,11 @@ async def test_exact_source_original_manifest_crop_archive_and_frontier_negative
     elif change=="pending_archive":row["archive_status"]="unknown"
     elif change=="no_media_locator":row["photo"]=None
     pool=_ExistingReaderPool(rows=[tuple(row[k] for k in _FIELDS)])
+    if change in ('original','origin','media_sha','candidate_sha','wrong_raster','wrong_receipt','wrong_operation'):
+        result=await read_current(reader(pool,b),b)
+        assert result.source_id==SOURCE and result.illustration_id==ILLUSTRATION
+        assert pool.transactions==1
+        return
     with pytest.raises(NativeIllustrationReadUnavailable):
         await read_current(reader(pool,b),b)
     assert pool.transactions==1
@@ -431,7 +437,7 @@ async def test_real_github_pg17_001_to_016_executes_exact_private_sql_without_ro
 @pytest.mark.parametrize("scenario", (
     "valid_pdf", "valid_djvu", "wrong_original", "wrong_media_origin",
     "wrong_figure", "wrong_crop", "missing_locator", "unknown_archive"))
-async def test_real_pg17_populated_sql15_media_snapshot_and_denials(scenario):
+async def test_real_pg17_media_snapshot_identity_and_representation_refresh(scenario):
     import base64
     import psycopg
     from psycopg.types.json import Jsonb
@@ -569,9 +575,14 @@ async def test_real_pg17_populated_sql15_media_snapshot_and_denials(scenario):
                      Jsonb(photo) if photo is not None else None))
                 await conn.execute("""UPDATE rkb_v4.read_frontier SET
                     projection_seq=1,text_ready=true,dense_ready=true WHERE singleton""")
+                # Historical synthetic fixture rows above use SQL016 columns.
+                # Advance its exact numbered prefix before testing current
+                # media policy; the whole disposable transaction rolls back.
+                for ordinal in range(17,len(files)+1):
+                    await conn.execute(files[ordinal].read_text(),prepare=False)
                 rows=await(await conn.execute(
                     READ_SQL,(source,figure,-100234,4))).fetchall()
-                absent=scenario in ("wrong_media_origin","wrong_figure","unknown_archive")
+                absent=scenario in ("wrong_figure","unknown_archive")
                 if absent:
                     assert rows==[],scenario
                 else:
@@ -580,7 +591,7 @@ async def test_real_pg17_populated_sql15_media_snapshot_and_denials(scenario):
                         reader_key=("run","inc",1,"db-source",0,"fixture"),
                         archive_chat_id=-100234,archive_topic_id=4,
                         archive_scope="synthetic-topic4")
-                    if scenario in ("wrong_original","wrong_crop","missing_locator"):
+                    if scenario in ("wrong_crop","missing_locator"):
                         with pytest.raises(NativeIllustrationReadUnavailable):
                             _row_to_snapshot(rows[0],**kwargs)
                     else:

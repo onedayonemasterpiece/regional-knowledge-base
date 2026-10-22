@@ -15,7 +15,6 @@ import asyncio
 import hashlib
 import json
 import math
-import re
 from collections.abc import Callable
 from uuid import UUID
 
@@ -125,10 +124,6 @@ def _uuid(value) -> bool:
         return str(UUID(value)) == value
     except ValueError:
         return False
-
-
-def _sha256(value) -> bool:
-    return type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def _row_to_snapshot(values, *, source_id: str, illustration_id: str,
