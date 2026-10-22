@@ -50,9 +50,10 @@ SHA256904b782aabd7af8a798c608655ed4671d60249ffc370ba0501d80081b2db96b9,
 identical to frozen e58. No duplicate ELF parser, host `ldd`, ambient library
 resolution or maintainer scripts are used.
 This proves a byte-bound ELF closure, not Kaggle execution or decoding quality.
-If the complete closure exceeds the existing 96-package bound, CI saves the
-exact lock and explicit unresolved bound receipt; it never removes packages or
-changes the shared runtime cap.
+The integration owner explicitly assigned the package cap change to this leaf:
+`MAX_PACKAGES=112` accommodates the coherent103-package lock with headroom.
+Boundary tests assemble and safely extract112 packages, reject113 before
+assembly, and reject a113-package manifest. Other extraction limits remain.
 
 The Telegram input preserves Linza's reviewed candidate codec and evidence
 (CI39698152544, source9191f6a). The adapter explicitly produces the existing
@@ -62,6 +63,12 @@ binding its size/SHA-256. Until then `stage0-wheel-lock.json` has a different
 unresolved-input codec and `runtime_lock=null`. No hosting URL is invented.
 All51 PDF wheel entries remain byte-for-byte unchanged; four Telegram wheels
 are appended. This does not solve the integrator-owned prepared-file budget.
+
+`pyaes-stage0-placement-proposal-20261022.json` proposes the exact existing
+Stage0 object key for the verified26422-byte wheel, with its SHA-256 and CI
+provenance. The existing artifact host must supply the permanent HTTPS URL and
+verified placement receipt. Approval, URL and receipt are deliberately unset;
+no upload has occurred. Opus owns placement review and runtime integration.
 
 Only `.github/workflows/rkb-import-dependencies.yml` runs focused tests and
 native packaging. No Dev installs/builds/PG/models, Kaggle push, runtime
