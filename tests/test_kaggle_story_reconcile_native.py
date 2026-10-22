@@ -159,3 +159,29 @@ def test_sql016_has_only_accepted_pg_effects_and_narrow_reader_grants():
     assert 'reconciliation_state text NOT NULL DEFAULT' in sql
     assert 'story_reconcile_case_receipt_v1' in sql
     assert 'expected_status=\'rejected_precondition\'' not in sql  # passed as explicit literal to fixed helper
+
+
+def test_sql016_revision_parameter_has_unambiguous_binding_and_case_receipt_target():
+    """Structural guard only; actual SQL execution belongs to existing PG fixture."""
+    sql=(Path(__file__).resolve().parents[1]/'sql/kaggle/016_story_reconcile.sql').read_text()
+    source=sql.split('CREATE FUNCTION rkb_v4.story_reconcile_source_current_v1(',1)[1].split('$$;',1)[0]
+    assert 'ar.revision=$2' in source
+    assert 'ar.revision=revision' not in source
+    # Other new SQL funcs use no ambiguous unqualified `revision` symbol.
+    assert sql.count('CREATE FUNCTION rkb_v4.') == 7
+    for block in sql.split('CREATE FUNCTION rkb_v4.')[1:]:
+        function_name=block.split('(',1)[0]
+        if function_name!='story_reconcile_source_current_v1':
+            assert 'ar.revision=revision' not in block.split('$$;',1)[0]
+    check=sql.split('CREATE FUNCTION rkb_v4.check_story_reconcile_v1(',1)[1].split('$$;',1)[0]
+    start=check.index("IF action='advance' THEN")
+    end=check.index("IF action='reject' THEN",start)
+    advance=check[start:end]
+    assert "IF (d->>'case_id')::uuid<>wanted_case THEN RETURN false;END IF;" in advance
+    assert "ELSIF plan->>'action' IS DISTINCT FROM 'create' OR step<>0" in advance
+    assert "row.case_id IS NOT NULL" in advance
+    assert "story_reconcile_case_receipt_v1" in advance
+    assert advance.index("case_id')::uuid<>wanted_case") < advance.index('story_reconcile_case_receipt_v1')
+    # No replacing selected Case with a second actor-valid Case receipt.
+    assert "wanted_case:=coalesce(row.case_id" in check
+    assert "case_role_v1(wanted_case,actor)" in check

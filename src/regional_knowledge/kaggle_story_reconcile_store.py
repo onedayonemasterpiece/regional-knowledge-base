@@ -203,6 +203,47 @@ class NativeAcceptedReconcileStore:
                 existing.payload!=expected.payload):
             raise ReconcileError('reconciliation_operation_key_conflict')
 
+    async def _confirm_exact_lost_ack_retry(self, row: StoredIntent, *, action: str,
+                                            version: int, step: int,
+                                            case_id: str | None) -> None:
+        """Compare ALL original accepted inputs before treating PG version+1 as ACK.
+
+        A native PG row and durable receipt prove what WAS accepted, not that
+        this caller submitted the same immutable child command. The Case ID is
+        intentionally not part of the stable progress key; an alternate Case
+        ID must therefore fail before replay is acknowledged. This read uses
+        the existing RecoveryJournal object already verified by get(), no
+        new journal, SQL mutation or Dev-local authoritative cursor.
+        """
+        wanted=resolved_reconcile_command(action=action,intent=row.intent,
+            sequence=1,request_id='reconcile-immutable-retry-check',
+            logical_time='retry-preflight',version=version,step=step,case_id=case_id)
+        if self._last_effect_key(row)!=wanted.operation_key:
+            raise ReconcileError('stale_reconciliation_progress')
+        entry=await self._entry(wanted.operation_key)
+        if entry is not None:
+            self._same_command(entry.command,wanted)
+        journal=self.spool.journal
+        stored=await journal._read(journal.prefix+'/commands/'+sha(wanted.operation_key.encode()),
+                                   journal.max_segment_bytes)
+        if stored is None:
+            raise ReconcilePending('original_reconciliation_progress_command_unavailable')
+        try:
+            raw=json.loads(stored.data)
+            from .recovery_journal import ExactCommand
+            original=ExactCommand(**{name:raw[name] for name in
+                ('sequence','operation_key','request_id','person_id','route','logical_time',
+                 'schema_revision','function_revision','executor_revision','ids',
+                 'expected_revisions','kind')},
+                 payload=base64.b64decode(raw['payload_b64'],validate=True))
+            if original.encode()!=stored.data:
+                raise ReconcileError('reconciliation_original_command_corrupt')
+            self._same_command(original,wanted)
+        except ReconcileError:
+            raise
+        except (ValueError,TypeError,KeyError,UnicodeError):
+            raise ReconcileError('reconciliation_original_command_corrupt') from None
+
     async def _execute(self, *, action: str, intent: ReconcileIntent,
                        version: int, step: int, case_id: str|None=None) -> StoredIntent:
         key=intent.operation_key if action=='stage' else progress_key(intent,action,version,step)
@@ -303,6 +344,11 @@ class NativeAcceptedReconcileStore:
                     (action=='begin' and current.step_index==step and current.attempted) or
                     (action=='reject' and current.step_index==step and current.rejected) or
                     (action=='finish' and current.step_index==step and current.done)):
+                # PG/readback and remote outcome were checked in get(). They
+                # do not prove that the retry's Case ID/entire accepted command
+                # is identical. Require the *original* immutable child bytes.
+                await self._confirm_exact_lost_ack_retry(current,action=action,
+                    version=expected_version,step=step,case_id=case_id)
                 return current
             raise ReconcileError('stale_reconciliation_progress')
         if current.done or current.rejected:

@@ -375,3 +375,56 @@ async def test_missing_or_tampered_remote_receipt_does_not_pass_native_proof(env
         await store.get(ACTOR,value.operation_key)
     spool.journal.outcomes[value.operation_key]=saved
     assert (await store.get(ACTOR,value.operation_key)).version==1
+
+
+@pytest.mark.asyncio
+async def test_lost_ack_advance_case_target_conflict_before_replay_even_after_spool_gc(env):
+    """A-plan/accepted CaseA must never acknowledge caller CaseB at the same key."""
+    from regional_knowledge.kaggle_story_reconcile_native import progress_key
+    store,spool,dispatch,pg,auth=env
+    value=intent()
+    await store.stage(value)
+    await store.begin(ACTOR,value.operation_key,expected_version=1)
+    dispatch.lost_ack_once=True
+    with pytest.raises(TimeoutError,match='lost native apply ACK'):
+        await store.advance(ACTOR,value.operation_key,expected_version=2,step_index=1,case_id=CASE)
+    assert pg.effects==3
+    assert pg.rows[(ACTOR,value.operation_key)]['case_id']==CASE
+    different_case='20000000-0000-0000-0000-000000000002'
+    advance_key=progress_key(value,'advance',2,0)
+    # ControlSpool may still have its original accepted command.
+    with pytest.raises(ReconcileError,match='reconciliation_operation_key_conflict'):
+        await store.advance(ACTOR,value.operation_key,expected_version=2,step_index=1,
+                            case_id=different_case)
+    assert pg.effects==3 and pg.rows[(ACTOR,value.operation_key)]['case_id']==CASE
+    # After local spool GC the existing immutable remote command remains.
+    spool.entries.pop(advance_key)
+    with pytest.raises(ReconcileError,match='reconciliation_operation_key_conflict'):
+        await store.advance(ACTOR,value.operation_key,expected_version=2,step_index=1,
+                            case_id=different_case)
+    assert pg.effects==3
+    restored=await store.advance(ACTOR,value.operation_key,expected_version=2,step_index=1,case_id=CASE)
+    assert restored.version==3 and restored.case_id==CASE and restored.step_index==1
+    assert pg.effects==3, 'exact readback is not a second native PG effect'
+
+
+@pytest.mark.asyncio
+async def test_lost_ack_retry_requires_original_remote_command_even_with_pg_state(env):
+    from regional_knowledge.kaggle_story_reconcile_native import progress_key
+    store,spool,dispatch,pg,auth=env
+    value=intent()
+    await store.stage(value)
+    await store.begin(ACTOR,value.operation_key,expected_version=1)
+    dispatch.lost_ack_once=True
+    with pytest.raises(TimeoutError):
+        await store.advance(ACTOR,value.operation_key,expected_version=2,step_index=1,case_id=CASE)
+    advance_key=progress_key(value,'advance',2,0)
+    spool.entries.pop(advance_key)
+    remote_command_key=spool.journal.prefix+'/commands/'+sha(advance_key.encode())
+    original=spool.journal.commands.pop(remote_command_key)
+    with pytest.raises(ReconcileError,match='reconciliation_remote_receipt_unproved'):
+        await store.advance(ACTOR,value.operation_key,expected_version=2,step_index=1,case_id=CASE)
+    assert pg.effects==3
+    spool.journal.commands[remote_command_key]=original
+    same=await store.advance(ACTOR,value.operation_key,expected_version=2,step_index=1,case_id=CASE)
+    assert same.version==3 and pg.effects==3

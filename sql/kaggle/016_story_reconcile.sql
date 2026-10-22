@@ -86,7 +86,7 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog 
   JOIN rkb_v4.source_regions r ON r.source_id=s.source_id AND r.source_revision=ar.revision
    AND r.region_id=region AND r.page_id=page
   WHERE s.source_id=wanted AND s.accepted AND NOT s.withdrawn
-   AND ar.revision=revision AND v.eligibility_revision=eligibility AND f.frontier_id=frontier
+   AND ar.revision=$2 AND v.eligibility_revision=eligibility AND f.frontier_id=frontier
    AND o.original_sha256=original_sha
    AND EXISTS(SELECT 1 FROM jsonb_array_elements(a.data->'evidence') e
     WHERE e->>'region_id'=region::text AND e->>'original_excerpt'=excerpt
@@ -238,6 +238,14 @@ BEGIN
     THEN RETURN false;END IF;
  IF action='advance' THEN
   IF d->>'case_id' IS NULL THEN RETURN false;END IF;
+  -- Only the FIRST native CREATE may establish an as-yet unknown Case ID.
+  -- Later evidence must match the already selected Case, not a caller-picked
+  -- different Case with its own otherwise valid accepted receipt.
+  IF wanted_case IS NOT NULL THEN
+   IF (d->>'case_id')::uuid<>wanted_case THEN RETURN false;END IF;
+  ELSIF plan->>'action' IS DISTINCT FROM 'create' OR step<>0 OR row.case_id IS NOT NULL
+   THEN RETURN false;
+  END IF;
   RETURN rkb_v4.story_reconcile_case_receipt_v1(row.operation_key,actor,step,'applied',
     (d->>'case_id')::uuid,plan);
  END IF;
