@@ -41,6 +41,7 @@ Candidate `768bca5c950507b053b157626e34c4ffcf6539af` passed CI39773458811:
 | PR251 | `cfe026b20ebe31e8251e5061062b12c08df27b5a` | Same-client leased native Telegram crop bytes | Clean; final native binding guards and changed-boundary media tests/doc over ddb69be |
 | PR252 | `f99e4f4fe3cde549572964db8c0bcf677c5d127b` | Persisted pending research continuation in native status | Clean; importer helper/callsite added on top of PR248 delta, not a whole-file replacement |
 | PR253 | `592a2a2a3e87ebe64d9d5b166898aeb5c31b1ce4` | Current admitted native SQL health and status hook | Clean; health-only changes preserve dispatch/media/expert |
+| PR254 | `ec1a82dee9fac4cdb0a4f63a188de1b6b2d8dddb` | Bound Expert claim/result workflow and expert-only server routes | Clean; only3 own paths added over already included PR247/250 |
 | PR217 selected SQL prerequisites | `2991af968ad40bef9f6e43d181548fa25b7650c5` | Exact SQL015/016 and adapted ordered PG fixture | Only two new SQL files; no old whole-file source merge |
 
 PR246 source depends on already included PR242/243. Its earlier fbdafb5
