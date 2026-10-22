@@ -38,8 +38,6 @@ Receipt `op_331ecbfe359ac14f81506cd3`: **exit 0, 6 passed, 0 failed, 0 skipped; 
 
 **Execution status of this NEW selector: NOT RUN.** Cloning the immutable frozen handoff into a test-only copy through `capture_handoff` was denied exactly with `handoff_denied: capture_handoff requires a canonical project` (operation `op_f958fe6fe4c9b812a5e4ba02`). This particular copy operation was not retried via an alternate executor. The frozen handoff was left untouched. The NEW test/doc live on an independent GitHub source branch for explicit integrator-approved application to its next candidate; **do not run this new test against main without the frozen schema14 source/fixtures** or claim its success from the six earlier tests.
 
-## Owner's minimal future correction contract — not implemented
-
 ## Shkiper test-only continuation
 
 Own writable branch `chatgpt/rkb-intake-checkpoint-boundary-20261022` starts at
@@ -61,6 +59,8 @@ unrelated import failure, not a meaningful RED result. Frozen5f63/e58 and the
 deniedb833 path remain untouched. The native fixture's conditional object store
 does not measure real Dataset versions; existing checkpoint-class tests and
 actual provider acceptance remain separately identified above.
+
+## Owner's minimal future correction contract — not implemented
 
 A reviewed optimization could separate **bounded internal native progress at APPLIED/persistence_pending** from final external Saved/Telegram effects, *only if* the exact accepted immutable command/actor/sequence/handler/payload has required verified remote intent coverage, stable idempotent keys, fencing and recoverable contiguous cursor. Dataset snapshot may coalesce multiple already-applied outcomes, but no uncovered state may be emitted as Saved, final source activation, public evidence or a provider send. Telegram requires an independent covered send-intent and exact provider receipt/UNKNOWN reconciliation. End-of-book activation plus research continuation must be atomic and replayable; native capture/readback must verify the complete prefix before pointer promotion.
 
