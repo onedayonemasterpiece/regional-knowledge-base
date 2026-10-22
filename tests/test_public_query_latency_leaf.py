@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 PATH=ROOT/"scripts/benchmarks/public_query_latency_leaf.py"
@@ -20,19 +21,19 @@ leaf=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(leaf)
 
 
-def corpus(*, count=3):
+def corpus(*, count=3, passages=128, profile="comparison_corpus"):
     return dict(database_generation_ref="a"*64,
                 schema_revision="rkb-v4-sql001-011-v1",
-                accepted_source_count=count, visible_passage_count=128,
+                accepted_source_count=count, visible_passage_count=passages,
                 applied_seq=25, projection_seq=25, visibility_epoch=7,
                 corpus_manifest_sha256="b"*64, release_sha="c"*40,
-                owner_handoff_ref="synthetic-owner-only")
+                owner_handoff_ref="synthetic-owner-only", profile=profile)
 
 
 def make_telemetry(client_rows):
     events=[]
     for sample in client_rows:
-        if sample["event"] != "public_client_sample":continue
+        if sample["event"] != "public_client_sample" or sample["trace_id"] is None:continue
         trace_id,attempt_id,request_ref=(sample[k] for k in
             ("trace_id","attempt_id","request_ref"))
         events.append({
@@ -72,7 +73,7 @@ class WorkloadTests(unittest.IsolatedAsyncioTestCase):
             count+=1
         async def readback():
             return corpus(count=0)
-        with self.assertRaisesRegex(ValueError,"corpus_not_ready"):
+        with self.assertRaisesRegex(ValueError,"comparison_corpus_requires"):
             await leaf.run_public_workload({k:"Private wording"+str(n)
                         for n,k in enumerate(leaf.CASE_IDS)},query,readback,lambda row:None)
         self.assertEqual(count,0)
@@ -117,8 +118,8 @@ class WorkloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(x["phase"]=="concurrent2" and not x["warmup"] for x in samples),48)
         for text in questions.values():
             self.assertNotIn(text,json.dumps(records))
-        summary,joint=leaf.analyze(records,make_telemetry(samples))
-        self.assertEqual(summary["conclusion"],"CANDIDATE_BASELINE_MEASURED_NOT_INTEGRATION_ACCEPTANCE")
+        summary,joint=leaf.analyze(records,make_telemetry(samples),profile="comparison_corpus")
+        self.assertEqual(summary["conclusion"],"COMPARISON_CORPUS_BASELINE_ONLY_NOT_PRODUCTION_ACCEPTANCE")
         self.assertEqual(summary["cohorts"]["serial"]["samples"],48)
         self.assertEqual(summary["cohorts"]["serial"]["useful_hybrid"],48)
         self.assertEqual(summary["cohorts"]["concurrent2"]["observed_complete"],48)
@@ -141,7 +142,7 @@ class WorkloadTests(unittest.IsolatedAsyncioTestCase):
                 "results":[{"id":"synthetic"}],
                 "read_trace":{"trace_id":v[:32],"attempt_id":v[:32],"request_ref":v}}
         emitted=[]
-        with self.assertRaisesRegex(RuntimeError,"corpus/version changed"):
+        with self.assertRaisesRegex(RuntimeError,"corpus/profile/version changed"):
             await leaf.run_public_workload(questions,query,readback,emitted.append)
         self.assertEqual(len([x for x in emitted if x["event"]=="public_client_sample"]),128)
 
@@ -158,15 +159,20 @@ class ReportTests(unittest.TestCase):
                         trace_id=trace[:32],attempt_id=trace[:32],request_ref=trace,
                         status="degraded",reason="bounded_retrieval",
                         mode="hybrid",evidence_count=1,
-                        wall_ms=float(seq+1),client_cpu_ms=float(seq+1) if phase=="serial" else None,
+                        wall_ms=float(seq+1),callback_wall_ms=float(seq+1),
+                        client_semaphore_wait_ms=0.0,latency_observation="completed",
+                        censor_lower_bound_ms=None,
+                        client_cpu_ms=float(seq+1) if phase=="serial" else None,
                         client_rss_kib=2048))
         self.events=make_telemetry(self.samples)
 
     def test_percentiles_and_overlapping_stage_windows_are_not_summed(self):
-        summary,joint=leaf.analyze(self.samples,self.events)
+        summary,joint=leaf.analyze(self.samples,self.events,profile="comparison_corpus")
         first=summary["cohorts"]["serial"]
-        self.assertEqual(first["p50_wall_ms"],5.0)
-        self.assertEqual(first["p95_wall_ms"],8.0)
+        self.assertEqual(first["success_only_p50_public_callback_ms"],5.0)
+        self.assertEqual(first["success_only_p95_public_callback_ms"],8.0)
+        self.assertEqual(first["all_requests_completion_p95_public_ms"],8.0)
+        self.assertEqual(first["timeout_rate"],0.0)
         self.assertEqual(first["native_stages"]["search_ms"]["p95_ms"],4.1)
         self.assertEqual(first["native_stages"]["encode_ms"]["p95_ms"],2.0)
         self.assertNotIn("total_additive_ms",first)
@@ -176,32 +182,32 @@ class ReportTests(unittest.TestCase):
     def test_loss_or_terminal_conflict_is_inconclusive_not_ignored(self):
         events=list(self.events)
         events[6]=dict(events[6],loss_before={"dropped":1,"failed":0})
-        summary,_=leaf.analyze(self.samples,events)
-        self.assertEqual(summary["conclusion"],"INCONCLUSIVE_OR_NONREPRESENTATIVE")
+        summary,_=leaf.analyze(self.samples,events,profile="comparison_corpus")
+        self.assertEqual(summary["conclusion"],"INCONCLUSIVE_OR_CENSORED")
         self.assertEqual(summary["cohorts"]["serial"]["observed_complete"],47)
         events=list(self.events)
         events[6]=dict(events[6],status="denied",reason="access_denied")
-        summary,_=leaf.analyze(self.samples,events)
+        summary,_=leaf.analyze(self.samples,events,profile="comparison_corpus")
         self.assertEqual(summary["cohorts"]["serial"]["useful_hybrid"],47)
 
     def test_missing_native_event_never_becomes_zero_latency(self):
-        summary,joined=leaf.analyze(self.samples,self.events[:7]+self.events[8:])
-        self.assertEqual(summary["conclusion"],"INCONCLUSIVE_OR_NONREPRESENTATIVE")
+        summary,joined=leaf.analyze(self.samples,self.events[:7]+self.events[8:],profile="comparison_corpus")
+        self.assertEqual(summary["conclusion"],"INCONCLUSIVE_OR_CENSORED")
         self.assertEqual(sum(x["diagnostic_state"]=="inconclusive" for x in joined),1)
 
     def test_duplicate_terminal_and_invalid_private_payload_are_rejected(self):
         with self.assertRaisesRegex(ValueError,"duplicate controller terminal"):
-            leaf.analyze(self.samples,self.events+[self.events[0]])
+            leaf.analyze(self.samples,self.events+[self.events[0]],profile="comparison_corpus")
         injected=dict(self.events[0],secret="private credential")
         with self.assertRaisesRegex(ValueError,"potentially sensitive"):
-            leaf.analyze(self.samples,[injected]+self.events[1:])
+            leaf.analyze(self.samples,[injected]+self.events[1:],profile="comparison_corpus")
 
     def test_nonfinite_or_negative_stage_values_rejected(self):
         for val in (float("nan"),float("inf"),-1.0,True):
             changed=list(self.events)
             changed[1]=dict(changed[1],stages_ms=dict(changed[1]["stages_ms"],encode_ms=val))
             with self.assertRaisesRegex(ValueError,"stage"):
-                leaf.analyze(self.samples,changed)
+                leaf.analyze(self.samples,changed,profile="comparison_corpus")
 
     def test_actual_production_telemetry_stage_vocabulary_not_diverged(self):
         import ast
@@ -223,8 +229,8 @@ class ReportTests(unittest.TestCase):
     def test_native_terminal_mismatch_is_not_counted_as_useful_hybrid(self):
         events=list(self.events)
         events[8]=dict(events[8],status="error",reason="internal_error")
-        summary,_=leaf.analyze(self.samples,events)
-        self.assertEqual(summary["conclusion"],"INCONCLUSIVE_OR_NONREPRESENTATIVE")
+        summary,_=leaf.analyze(self.samples,events,profile="comparison_corpus")
+        self.assertEqual(summary["conclusion"],"INCONCLUSIVE_OR_CENSORED")
         self.assertEqual(summary["cohorts"]["serial"]["useful_hybrid"],47)
 
     def test_native_runtime_reconnect_invalidates_comparison(self):
@@ -233,20 +239,20 @@ class ReportTests(unittest.TestCase):
         first=(len(leaf.CASE_IDS)*8)*3+2*3
         for offset in (0,1,2):
             events[first+offset]=dict(events[first+offset],run_id="synthetic-new-run")
-        summary,_=leaf.analyze(self.samples,events)
+        summary,_=leaf.analyze(self.samples,events,profile="comparison_corpus")
         self.assertFalse(summary["native_runtime_scope_stable"])
-        self.assertEqual(summary["conclusion"],"INCONCLUSIVE_OR_NONREPRESENTATIVE")
+        self.assertEqual(summary["conclusion"],"INCONCLUSIVE_OR_CENSORED")
 
     def test_process_cpu_and_rss_are_scoped_to_client_not_kaggle(self):
         resource=[{"event":"public_phase_resources","phase":name,
                    "client_process_cpu_ms":12.5,"client_peak_rss_kib":12345}
                   for name,_ in leaf.COHORTS]
-        summary,_=leaf.analyze(self.samples+resource,self.events)
+        summary,_=leaf.analyze(self.samples+resource,self.events,profile="comparison_corpus")
         self.assertEqual(summary["cohorts"]["serial"]["client_phase_cpu_total_ms"],12.5)
         self.assertEqual(summary["cohorts"]["concurrent2"]["client_phase_peak_rss_kib"],12345)
         self.assertIsNone(summary["kaggle_native_cpu_ms"])
         with self.assertRaisesRegex(ValueError,"duplicate client process resource"):
-            leaf.analyze(self.samples+resource+resource[:1],self.events)
+            leaf.analyze(self.samples+resource+resource[:1],self.events,profile="comparison_corpus")
 
     def test_serialized_raw_jsonl_contains_only_public_fields(self):
         with tempfile.TemporaryDirectory() as t:
@@ -254,7 +260,7 @@ class ReportTests(unittest.TestCase):
             events=Path(t)/"telemetry.jsonl"
             client.write_text("\n".join(json.dumps(x) for x in self.samples)+"\n")
             events.write_text("\n".join(json.dumps(x) for x in self.events)+"\n")
-            summary,samples=leaf.analyze(leaf._read_events(client),leaf._read_events(events))
+            summary,samples=leaf.analyze(leaf._read_events(client),leaf._read_events(events),profile="comparison_corpus")
             self.assertEqual(summary["cohorts"]["serial"]["samples"],48)
             data=json.dumps(samples)
             self.assertNotIn("synthetic-run",data)
