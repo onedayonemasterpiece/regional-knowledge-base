@@ -524,10 +524,8 @@ BEGIN
        WHERE source_id=wanted AND source_revision=2)
        <>jsonb_array_length(doc->'passages') THEN
    RAISE EXCEPTION 'revision2 catalog/index provenance incomplete';END IF;
- INSERT INTO rkb_v4.source_revision2_origins VALUES(wanted,2,s.ingestion_id,s.origin_ingestion_id,
-   s.predecessor_command_sha256,encode(sha256(s.original_receipt),'hex'),s.original_sha256,
-   candidate.knowledge_sha256,'revision2-activation:'||s.ingestion_id,state.applied_seq+1,
-   encode(sha256(p),'hex'),s.owner_person_id,encode(sha256(p),'hex'));
+ -- Actual operation_key/command_sha256 are attested ONLY by the accepted
+ -- applied_ops trigger below, not reconstructed from this SQL payload.
  UPDATE rkb_v4.active_revision SET revision=2 WHERE source_id=wanted AND revision=1;
  IF NOT FOUND THEN RAISE EXCEPTION 'source successor lost active predecessor';END IF;
  SELECT * INTO STRICT frontier FROM rkb_v4.read_frontier WHERE singleton;
@@ -541,6 +539,50 @@ BEGIN
   'research_frontier_id',doc->'research'->>'frontier_id','research_state',doc->'research'->>'state',
   'payload_sha256',encode(sha256(p),'hex'),'logical_time',logical_time)::text,'UTF8');
 END $$;
+
+
+-- The domain apply function runs BEFORE apply_accepted inserts its immutable
+-- command ledger row. Capturing origin there would fabricate operation_key
+-- and command SHA. This trigger sees the ACTUAL accepted command bytes,
+-- original remote sequence/handler, and exact database outcome in one TX.
+CREATE FUNCTION rkb_v4.capture_source_revision2_origin_v1() RETURNS trigger
+ LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $
+DECLARE c jsonb;wanted uuid;ingestion uuid;session rkb_v4.source_revision2_sessions;
+ candidate rkb_v4.source_revision2_candidates;
+BEGIN
+ IF NEW.status<>'applied' THEN RETURN NULL;END IF;
+ c:=convert_from(NEW.command_bytes,'UTF8')::jsonb;
+ IF c->>'route'<>'source.activate.v2' THEN RETURN NULL;END IF;
+ wanted:=(c->'ids'->>'source_id')::uuid;
+ ingestion:=(convert_from(decode(c->>'payload_b64','base64'),'UTF8')::jsonb->>'ingestion_id')::uuid;
+ SELECT * INTO STRICT session FROM rkb_v4.source_revision2_sessions WHERE source_id=wanted;
+ SELECT * INTO STRICT candidate FROM rkb_v4.source_revision2_candidates WHERE source_id=wanted;
+ IF c->>'person_id' IS DISTINCT FROM session.owner_person_id::text
+  OR c->>'operation_key' IS DISTINCT FROM NEW.operation_key
+  OR c->>'sequence' IS DISTINCT FROM NEW.sequence::text
+  OR NEW.command_sha256<>encode(sha256(NEW.command_bytes),'hex')
+  OR ingestion<>session.ingestion_id OR candidate.ingestion_id<>ingestion
+  OR (SELECT revision FROM rkb_v4.active_revision WHERE source_id=wanted)<>2
+  OR (SELECT count(*) FROM rkb_v4.source_catalog
+     WHERE source_id=wanted AND source_revision=2)<>1
+  OR (SELECT count(*) FROM rkb_v4.source_passage_provenance
+     WHERE source_id=wanted AND source_revision=2)
+     <>jsonb_array_length(candidate.knowledge->'passages')
+  OR (SELECT count(*) FROM rkb_v4.source_revision2_finding_versions WHERE source_id=wanted)
+     <>jsonb_array_length(candidate.knowledge->'semantic'->'findings')
+  OR (SELECT count(*) FROM rkb_v4.source_revision2_story_versions WHERE source_id=wanted)
+     <>jsonb_array_length(candidate.knowledge->'semantic'->'stories')
+ THEN RAISE EXCEPTION 'revision2 activation accepted receipt/source origin differs';END IF;
+ INSERT INTO rkb_v4.source_revision2_origins VALUES(wanted,2,session.ingestion_id,
+  session.origin_ingestion_id,session.predecessor_command_sha256,
+  encode(sha256(session.original_receipt),'hex'),session.original_sha256,
+  candidate.knowledge_sha256,NEW.operation_key,NEW.sequence,
+  NEW.command_sha256,session.owner_person_id,
+  encode(sha256(decode(c->>'payload_b64','base64')),'hex'));
+ RETURN NULL;
+END $;
+CREATE TRIGGER capture_source_revision2_origin AFTER INSERT ON rkb_v4.applied_ops
+ FOR EACH ROW EXECUTE FUNCTION rkb_v4.capture_source_revision2_origin_v1();
 
 -- New objects private by default; privilege decisions/grants belong to sole
 -- runtime owner and are NOT made by this source-only migration PR.
