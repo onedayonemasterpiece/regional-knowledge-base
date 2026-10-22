@@ -134,6 +134,67 @@ def current_binding(queue):
         raise TargetUnavailable('target runtime unavailable') from None
 
 
+def verified_read_bindings(queue):
+    """Existing READY runs only; the sole writer remains the data cursor owner.
+
+    No notebook start, SQL, lease, credential or provider request occurs here.
+    A reader must independently reprove the same DB/model/schema and be at
+    least as current as the writer's observed data and projection frontier.
+    """
+    writer=current_binding(queue)
+    values=[writer]
+    try:
+        with queue.connect(write=False) as db:
+            queue._shared_owner(db)
+            runtime=queue._runtime_row(db,writer.run_id)
+            baseline=json.loads(runtime['observed_json'])
+            required=max(writer.min_data_seq,baseline['applied_seq'],
+                         baseline['projection_seq'])
+            rows=db.execute("""SELECT * FROM runs WHERE id<>? AND status='ready'
+                AND channel_active=1 AND attachment_conflict=0
+                AND provider_version IS NOT NULL AND runtime_incarnation IS NOT NULL
+                ORDER BY ready_at DESC,id LIMIT 8""",(writer.run_id,)).fetchall()
+            for run in rows:
+                if queue._run_expired(run,queue.clock()):continue
+                candidate=queue._runtime_row(db,run['id'])
+                if candidate is None or candidate['accepted_generation']!=run['connection_generation']:
+                    continue
+                try:
+                    observed=json.loads(candidate['observed_json'])
+                    if not queue._runtime_check(db,run,run['connection_generation'],observed).ok:
+                        continue
+                    # No stale SQL/model or last-good reader snapshot can
+                    # observe a newer source revision as if it were current.
+                    if (observed['database_generation']!=writer.database_generation
+                            or observed['schema_version']!=baseline['schema_version']
+                            or observed['applied_seq']<required or observed['projection_seq']<required
+                            or any(observed['hashes'].get(k)!=baseline['hashes'].get(k)
+                                   for k in ('model','tokenizer'))):
+                        continue
+                except (ValueError,KeyError,TypeError,AttributeError):
+                    continue
+                values.append(TargetReadBinding(run['id'],run['runtime_incarnation'],
+                    run['connection_generation'],writer.database_generation,
+                    writer.min_data_seq,str(run['provider_version'])))
+    except TargetUnavailable:
+        raise
+    except Exception:
+        raise TargetUnavailable('verified reader snapshot unavailable') from None
+    return tuple(values)
+
+
+def binding_is_current_reader(queue,binding):
+    if type(binding) is not TargetReadBinding:return False
+    try:return binding in verified_read_bindings(queue)
+    except TargetUnavailable:return False
+
+
+def select_read_binding(queue):
+    """Pick one ready IDLE read slot; compute assignment remains in admission."""
+    choices=verified_read_bindings(queue)
+    return queue.shared_reads.select_reader_binding(choices)
+
+
 class KaggleSourceBackend:
     """Current source vertical; unsupported product operations fail explicitly."""
     current_read_output_required = True
@@ -263,7 +324,7 @@ class KaggleSourceBackend:
 
     def binding_current(self, binding):
         try:
-            return type(binding) is TargetReadBinding and current_binding(self.worker_queue) == binding
+            return binding_is_current_reader(self.worker_queue,binding)
         except TargetUnavailable:
             return False
 
@@ -422,7 +483,7 @@ class KaggleSourceBackend:
                     startup = getattr(self, 'startup', None)
                     if startup is not None and not startup.reads_current():
                         raise TargetUnavailable('source history not ready')
-                    binding = await measured('binding_ms',asyncio.to_thread(current_binding, self.worker_queue))
+                    binding = await measured('binding_ms',asyncio.to_thread(select_read_binding, self.worker_queue))
                 except TargetUnavailable:
                     # An already-authorized caller records a durable demand;
                     # the existing controller owns the only remote launch.
@@ -475,7 +536,8 @@ class KaggleSourceBackend:
                         connection_generation=resource.dispatch_generation,
                         turn_generation=request.turn_generation)
                 ticket = await self.worker_queue.shared_reads.begin_read(authority, permit.query,
-                    dialog_ref=destination.key, deadline=deadline, on_dispatch=dispatched)
+                    dialog_ref=destination.key, deadline=deadline, on_dispatch=dispatched,
+                    run_id=binding.run_id)
                 result = await asyncio.shield(ticket.result)
                 received_at=time.monotonic()
                 if dispatched_at is not None:
