@@ -90,24 +90,30 @@ class ExpertExecutorRecoveryReceiver:
                 result=await asyncio.to_thread(
                     self.context.delivery.reconcile_restored_dataset_delivery,
                     self.context.credentials,rid)
-                if type(result) is not dict or result.get('retry_send_allowed') is not False:
+                if (type(result) is not dict
+                        or result.get('retry_send_allowed',False) is not False):
                     raise PermissionError('unsafe delivery recovery response')
                 state=result.get('state')
-                if state=='delivered' and result.get('remote_covered') is not True:
-                    # A local old delivered flag without exact captured native
-                    # receipt MUST NOT be returned as a verified delivery.
-                    state='pending'
-                    reason='original_receipt_remote_coverage'
-                else:
-                    reason=result.get('missing_contract')
-                    if state not in _STATES:
+                reason=result.get('missing_contract')
+                native_receipt_covered=False
+                if state=='delivered':
+                    # The original reconciler can finish via receipt() and
+                    # return only state=delivered. Independently require the
+                    # already covered native record, never trust a local flag.
+                    covered=await asyncio.to_thread(
+                        self.context.delivery.dataset_effects.read_covered,
+                        rid,'receipt')
+                    native_receipt_covered=covered is not None
+                    if not native_receipt_covered:
                         state='pending'
+                        reason='original_receipt_remote_coverage'
+                elif state not in _STATES:
+                    state='pending'
                 if reason not in _REASONS:
                     reason=None
                 payload=dict(codec=CODEC,state=state,
                     retry_send_allowed=False,
-                    native_receipt_covered=bool(
-                        state=='delivered' and result.get('remote_covered') is True))
+                    native_receipt_covered=native_receipt_covered)
                 if reason:payload['reason']=reason
                 return _response(payload,200 if state=='delivered' else 202)
         except asyncio.CancelledError:raise
