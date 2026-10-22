@@ -16,7 +16,7 @@ from .kaggle_stage0 import MAX_PREPARED_FILES
 MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_search',
     'kaggle_readiness','kaggle_worker_query','kaggle_warm_read','kaggle_warm_maintenance','kaggle_database_probe','kaggle_bootstrap',
     'kaggle_owned_pg','kaggle_schema_migrate','kaggle_schema_live','kaggle_warm_maintenance','kaggle_target_runtime','kaggle_apply','recovery_journal','query_telemetry',
-    'source_import','kaggle_source_commands','kaggle_stage0','kaggle_restored_database','kaggle_native_bundle',
+    'source_import','kaggle_source_commands','kaggle_current_registry','kaggle_stage0','kaggle_restored_database','kaggle_native_bundle',
     'kaggle_environment','kaggle_pg_snapshot_native','kaggle_recovery_phases','kaggle_snapshot_channel','kaggle_snapshot_io',
     'native_snapshot_transfer','kaggle_bootstrap_pins','kaggle_native_env','kaggle_source_acl','kaggle_source_history_native',
     'original_intake','telegram_original','telegram_runtime_binding','telegram_runtime_channel','kaggle_original_native','kaggle_original_parser','kaggle_djvu_inspect','kaggle_original_parser_pdf_v1','kaggle_djvu_pixels','kaggle_djvu_elf','kaggle_djvu_decoder_child','file_ingress','source_adapter','ingestion',
