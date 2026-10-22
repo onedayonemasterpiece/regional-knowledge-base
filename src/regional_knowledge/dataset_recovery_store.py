@@ -14,6 +14,10 @@ import secrets
 from .kaggle_dataset_base import DatasetCheckpoint
 from .recovery_journal import StoredObject, JournalConflict, JournalLimit
 
+MAX_CONTROL_OBJECTS = 10000
+MAX_CONTROL_BYTES = 64 * 1024**2
+CONTROL_PAGE_SIZE = 16
+
 
 class DatasetRecoveryStore:
     def __init__(self, queue, *, checkpoint, manifest_ref, publisher, writer_guard, stream):
@@ -56,7 +60,7 @@ class DatasetRecoveryStore:
     def _import(self,checkpoint,manifest_ref,journal_bytes,control_bytes,manifest_bytes):
         manifest=json.loads(manifest_bytes);journal=json.loads(journal_bytes)
         if (journal.get('codec')!='rkb.dataset-journal.v1' or type(journal.get('objects')) is not list
-                or len(journal['objects'])>10000 or manifest_ref.sha256!=checkpoint.manifest.sha256
+                or len(journal['objects'])>MAX_CONTROL_OBJECTS or manifest_ref.sha256!=checkpoint.manifest.sha256
                 or manifest_ref.length!=len(manifest_bytes) or manifest_ref.last_sequence!=checkpoint.base_sequence
                 or manifest['source_control']['sha256']!=hashlib.sha256(control_bytes).hexdigest()):
             raise JournalConflict('dataset_control_metadata_binding_changed')
@@ -87,18 +91,46 @@ class DatasetRecoveryStore:
         return DatasetCheckpoint.from_wire(json.loads(row['latest_json'] or row['checkpoint_json']))
 
     def export_control(self):
+        # One SQLite read snapshot, bounded pages and a limit shared with
+        # restore. Do not fetch the entire 512 MiB pending spool into memory.
+        raw=bytearray(b'{"codec":"rkb.dataset-journal.v1","objects":[')
+        count=0
         with self.queue.connect(write=False) as db:
-            rows=db.execute('SELECT key,data,token FROM rkb_dataset_recovery_objects WHERE storage=? ORDER BY key',
-                (self.storage_identity,)).fetchall()
-        records=[]
-        for row in rows:
-            if '/snapshots/' in row['key']:continue
-            records.append(dict(key=row['key'],token=row['token'],data_b64=base64.b64encode(row['data']).decode()))
-        raw=json.dumps(dict(codec='rkb.dataset-journal.v1',objects=records),sort_keys=True,separators=(',',':')).encode()
-        if len(raw)>64*1024**2:raise JournalLimit('dataset_checkpoint_control_budget')
-        return raw
+            rows=db.execute('SELECT key,data,token FROM rkb_dataset_recovery_objects WHERE storage=? '
+                'AND key NOT LIKE ? ORDER BY key LIMIT ?',
+                (self.storage_identity,self.prefix+'snapshots/%',MAX_CONTROL_OBJECTS+1))
+            while page:=rows.fetchmany(CONTROL_PAGE_SIZE):
+                for row in page:
+                    if count>=MAX_CONTROL_OBJECTS:raise JournalLimit('dataset_checkpoint_control_inventory_budget')
+                    if len(row['data'])>1024*1024:raise JournalLimit('dataset_control_object_budget')
+                    record=json.dumps(dict(key=row['key'],token=row['token'],
+                        data_b64=base64.b64encode(row['data']).decode()),sort_keys=True,separators=(',',':')).encode()
+                    if len(raw)+bool(count)+len(record)+2>MAX_CONTROL_BYTES:
+                        raise JournalLimit('dataset_checkpoint_control_budget')
+                    if count:raw.extend(b',')
+                    raw.extend(record);count+=1
+        raw.extend(b']}')
+        return bytes(raw)
 
-    def promote(self,checkpoint,native_readback,*,manifest_ref):
+    def pending_control(self):
+        """Exact pending control revision for the existing grouped owner.
+
+        Tokens change on every CAS, including a same-byte rewrite. Only small
+        metadata is read here; source commands still use their native cursor.
+        """
+        digest=hashlib.sha256();count=0
+        with self.queue.connect(write=False) as db:
+            rows=db.execute('SELECT key,token FROM rkb_dataset_recovery_objects WHERE storage=? '
+                'AND key>=? AND key<? AND covered_version IS NULL ORDER BY key LIMIT ?',
+                (self.storage_identity,self.prefix+'control/',self.prefix+'control0',MAX_CONTROL_OBJECTS+1))
+            while page:=rows.fetchmany(CONTROL_PAGE_SIZE):
+                for row in page:
+                    count+=1
+                    if count>MAX_CONTROL_OBJECTS:raise JournalLimit('dataset_checkpoint_control_inventory_budget')
+                    digest.update(json.dumps([row['key'],row['token']],separators=(',',':')).encode())
+        return digest.hexdigest() if count else None
+
+    def promote(self,checkpoint,native_readback,*,manifest_ref,current=None):
         expected=dict(dataset_ref=checkpoint.owner_slug+'/'+checkpoint.dataset_slug,dataset_version=checkpoint.dataset_version,
             base_sequence=checkpoint.base_sequence,archive_sha256=checkpoint.archive.sha256,archive_size=checkpoint.archive.size)
         if native_readback!=expected:raise JournalConflict('dataset_native_snapshot_readback_changed')
@@ -114,6 +146,7 @@ class DatasetRecoveryStore:
         parsed=json.loads(journal);m=json.loads(manifest)
         c=json.loads(control)
         if (parsed.get('codec')!='rkb.dataset-journal.v1'
+                or type(parsed.get('objects')) is not list or len(parsed['objects'])>MAX_CONTROL_OBJECTS
                 or (manifest_ref.sha256,manifest_ref.length,manifest_ref.last_sequence)!=(
                     checkpoint.manifest.sha256,checkpoint.manifest.size,checkpoint.base_sequence)
                 or (m.get('database_generation'),m.get('applied_sequence'))!=(
@@ -125,12 +158,23 @@ class DatasetRecoveryStore:
                 or hashlib.sha256(control).hexdigest()!=m['source_control']['sha256']):
             raise JournalConflict('dataset_checkpoint_promoted_control_changed')
         with self.queue.connect() as db:
+            # Fence the local pointer and exact coverage in one transaction.
+            # A writer retirement during remote readback must not promote, and
+            # a competing promotion must not be overwritten by a stale caller.
+            if not db.in_transaction:db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT checkpoint_json,latest_json FROM rkb_dataset_recovery_store WHERE storage=?',
+                (self.storage_identity,)).fetchone()
+            if json.loads(row['latest_json'] or row['checkpoint_json'])!=old.wire():
+                raise JournalConflict('dataset_checkpoint_promotion_predecessor')
+            if current is not None and not current():
+                raise JournalConflict('dataset_checkpoint_writer_changed')
             for item in parsed['objects']:
                 self._key(item['key']);raw=base64.b64decode(item['data_b64'],validate=True)
                 # New writes may have advanced after capture; only exact bytes
                 # contained in this saved version gain a persistence receipt.
                 db.execute('UPDATE rkb_dataset_recovery_objects SET covered_version=? '
-                    'WHERE storage=? AND key=? AND data=?',(checkpoint.dataset_version,self.storage_identity,item['key'],raw))
+                    'WHERE storage=? AND key=? AND data=? AND token=?',
+                    (checkpoint.dataset_version,self.storage_identity,item['key'],raw,item['token']))
             for key,data,tag in ((manifest_ref.key,manifest,'manifest'),(m['source_control']['key'],control,'control')):
                 self._key(key)
                 db.execute('INSERT INTO rkb_dataset_recovery_objects VALUES(?,?,?,?,?) '
