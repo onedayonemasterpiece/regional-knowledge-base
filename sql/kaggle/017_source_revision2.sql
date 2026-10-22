@@ -448,6 +448,24 @@ BEGIN
  INSERT INTO rkb_v4.source_revision2_research_frontier VALUES(wanted,2,
    (doc->'research'->>'frontier_id')::uuid,doc->'research'->>'state',
    doc->'research'->'continuation');
+ -- New v2 passages must carry the complete immutable source manifest before
+ -- switching the active revision. This uses SQL009's existing INSERT-only
+ -- projection trigger to create versioned source_catalog and
+ -- source_passage_provenance rows without rewriting any v1 manifest/body.
+ IF doc->'image_manifest'->>'source_id' IS DISTINCT FROM wanted::text
+   OR doc->'image_manifest'->'source_revision' IS DISTINCT FROM '2'::jsonb
+   OR decode(doc->'image_manifest'->>'original_receipt_b64','base64')
+       IS DISTINCT FROM s.original_receipt
+   OR (SELECT count(*) FROM jsonb_array_elements(doc->'image_manifest'->'passages'))
+       <>jsonb_array_length(doc->'passages') THEN
+   RAISE EXCEPTION 'revision2 source manifest/source pixels changed';END IF;
+ INSERT INTO rkb_v4.source_manifests(source_id,source_revision,manifest,payload_sha256,original_receipt)
+ VALUES(wanted,2,doc->'image_manifest',encode(sha256(p),'hex'),s.original_receipt);
+ IF (SELECT count(*) FROM rkb_v4.source_catalog WHERE source_id=wanted AND source_revision=2)<>1
+   OR (SELECT count(*) FROM rkb_v4.source_passage_provenance
+       WHERE source_id=wanted AND source_revision=2)
+       <>jsonb_array_length(doc->'passages') THEN
+   RAISE EXCEPTION 'revision2 catalog/index provenance incomplete';END IF;
  INSERT INTO rkb_v4.source_revision2_origins VALUES(wanted,2,s.ingestion_id,s.origin_ingestion_id,
    s.predecessor_command_sha256,encode(sha256(s.original_receipt),'hex'),s.original_sha256,
    candidate.knowledge_sha256,'revision2-activation:'||s.ingestion_id,state.applied_seq+1,
@@ -473,3 +491,34 @@ REVOKE ALL ON rkb_v4.source_revision2_sessions,rkb_v4.source_revision2_batches,
  rkb_v4.source_revision2_vectors,rkb_v4.source_revision2_materialized,
  rkb_v4.source_revision2_origins,rkb_v4.source_revision2_research_frontier,
  rkb_v4.source_revision2_semantic FROM PUBLIC;
+
+
+-- SQL009's source_passage_metadata_v1 is intentionally immutable: it joins
+-- source_import_origins revision1 only. New schema17 uses a versioned read
+-- function, retaining BOTH historical and current provenance under the
+-- existing source actor/visibility/active-revision read admission.
+CREATE FUNCTION rkb_v4.source_passage_metadata_v2(wanted uuid[])
+RETURNS TABLE(passage_id uuid,metadata jsonb)
+ LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT p.passage_id,jsonb_build_object(
+  'catalog',m.manifest->'metadata',
+  'original_sha256',coalesce(v2.original_sha256,v1.original_sha256),
+  'source_revision',p.source_revision,
+  'passage',p.data,
+  'pages',(SELECT jsonb_agg(x) FROM jsonb_array_elements(m.manifest->'pages') x
+    WHERE p.data->'page_ids' @> jsonb_build_array(x->'page_id')),
+  'regions',(SELECT jsonb_agg(x) FROM jsonb_array_elements(m.manifest->'regions') x
+    WHERE ((p.data->'region_ids')||(p.data->'footnote_region_ids')) @> jsonb_build_array(x->'region_id')))
+ FROM rkb_v4.source_passage_provenance p
+ JOIN rkb_v4.source_manifests m USING(source_id,source_revision)
+ LEFT JOIN rkb_v4.source_import_origins v1
+  ON v1.source_id=p.source_id AND v1.revision=p.source_revision
+ LEFT JOIN rkb_v4.source_revision2_origins v2
+  ON v2.source_id=p.source_id AND v2.revision=p.source_revision
+ JOIN rkb_v4.active_revision a ON a.source_id=p.source_id
+  AND a.revision=p.source_revision
+ JOIN rkb_v4.sources s ON s.source_id=p.source_id
+ WHERE p.passage_id=ANY(wanted[1:5]) AND s.accepted AND NOT s.withdrawn
+   AND (v1.source_id IS NOT NULL OR v2.source_id IS NOT NULL)
+$$;
+REVOKE ALL ON FUNCTION rkb_v4.source_passage_metadata_v2(uuid[]) FROM PUBLIC;
