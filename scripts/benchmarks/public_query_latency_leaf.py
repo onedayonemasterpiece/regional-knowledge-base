@@ -319,11 +319,12 @@ async def run_public_workload(questions: Mapping[str, str],
                               query_public: Callable[[str], Awaitable[object]],
                               corpus_readback: Callable[[], Awaitable[dict]],
                               emit: Callable[[dict], None]) -> dict:
-    """Owner-owned existing public MCP query callable; never retries or fetches private data.
+    """Existing authenticated public MCP callback; never installs a transport.
 
-    The caller must possess a separately granted read-only operator slot and
-    independently checked corpus version. Validating the annotation below does
-    NOT grant access. This function has no way to create clients/permissions.
+    A 3s caller timeout starts *after* the local semaphore. The raw sample
+    separately exposes local queued wait, public callback time-to-terminal,
+    and the whole queued→terminal span. A caller timeout is censored, never
+    counted as an observed 3s query completion.
     """
     if (type(questions) is not dict or tuple(sorted(questions)) != CASE_IDS
             or any(type(v) is not str or not 1 <= len(v.encode()) <= 4096 for v in questions.values())
@@ -337,44 +338,60 @@ async def run_public_workload(questions: Mapping[str, str],
         raw.append(value)
         emit(dict(value))
     started = time.monotonic()
-    async def perform(case_id: str, phase: str, concurrency: int, warmup: bool):
+    async def perform(case_id: str, phase: str, concurrency: int, warmup: bool,
+                      queued_ns: int):
         begin = time.perf_counter_ns()
+        queue_ms = (begin - queued_ns) / 1_000_000
         cpu_begin = time.process_time_ns() if concurrency == 1 else None
         result = None
         error = None
+        # asyncio.timeout exposes whether *this caller* enforced the 3s cap.
+        # A remote TimeoutError before 3s is a completed error observation.
+        window = asyncio.timeout(CALL_TIMEOUT_S)
         try:
-            result = await asyncio.wait_for(query_public(questions[case_id]), CALL_TIMEOUT_S)
+            async with window:
+                result = await query_public(questions[case_id])
         except asyncio.CancelledError:
             error = "cancelled"
             raise
         except TimeoutError:
-            error = "timeout"
+            error = "caller_timeout" if window.expired() else "remote_timeout"
         except Exception:
             # Private exception message and type never enter diagnostics.
             error = "other"
         finally:
-            elapsed = (time.perf_counter_ns() - begin) / 1_000_000
+            end = time.perf_counter_ns()
+            elapsed = (end - queued_ns) / 1_000_000
+            callback_elapsed = (end - begin) / 1_000_000
             cpu = (time.process_time_ns() - cpu_begin) / 1_000_000 if cpu_begin is not None else None
             record(_client_row(result, case_id=case_id, phase=phase, warmup=warmup,
-                elapsed_ms=elapsed, cpu_ms=cpu, rss_kib=_rss_kib(), exception=error))
+                elapsed_ms=elapsed, callback_ms=callback_elapsed,
+                semaphore_wait_ms=queue_ms, cpu_ms=cpu,
+                rss_kib=_rss_kib(), exception=error))
     async with asyncio.timeout(RUN_TIMEOUT_S):
         for phase, concurrency in COHORTS:
             cpu_before = time.process_time_ns()
             for _ in range(WARMUPS_PER_CASE):
                 for case_id in CASE_IDS:
-                    await perform(case_id, phase, 1, True)
+                    await perform(case_id, phase, 1, True, time.perf_counter_ns())
             semaphore = asyncio.Semaphore(concurrency)
-            async def call(case_id):
+            async def call(case_id, queued_ns):
                 async with semaphore:
-                    await perform(case_id, phase, concurrency, False)
+                    await perform(case_id, phase, concurrency, False, queued_ns)
             for _ in range(REPETITIONS_PER_CASE):
-                await asyncio.gather(*(call(case_id) for case_id in CASE_IDS))
+                # Stamps are captured BEFORE task scheduling/semaphore wait,
+                # making local queue delay visible in the full-schedule metric.
+                tasks = []
+                for case_id in CASE_IDS:
+                    tasks.append(asyncio.create_task(
+                        call(case_id, time.perf_counter_ns())))
+                await asyncio.gather(*tasks)
             record(dict(event="public_phase_resources", phase=phase,
                 client_process_cpu_ms=round((time.process_time_ns()-cpu_before)/1_000_000,3),
                 client_peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
     after = valid_corpus(await corpus_readback())
     if before != after:
-        raise RuntimeError("corpus/version changed during workload; samples are not comparable")
+        raise RuntimeError("corpus/profile/version changed during workload; samples are not comparable")
     return dict(codec="rkb.public-query-telemetry-run.v1",
         status="public_query_callbacks_invoked_not_authority_proof",
         question_fixture_sha256=fixture_hash, corpus=before,
