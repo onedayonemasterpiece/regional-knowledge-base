@@ -40,6 +40,7 @@ Candidate `768bca5c950507b053b157626e34c4ffcf6539af` passed CI39773458811:
 | PR250 | `ba57b276293aaf88548c37d56b9dd99f9882cbe0` | Inert authenticated executor claim receiver | Clean; includes author's fixture import fix after initial1283b13; new files, not mounted |
 | PR251 | `cfe026b20ebe31e8251e5061062b12c08df27b5a` | Same-client leased native Telegram crop bytes | Clean; final native binding guards and changed-boundary media tests/doc over ddb69be |
 | PR252 | `f99e4f4fe3cde549572964db8c0bcf677c5d127b` | Persisted pending research continuation in native status | Clean; importer helper/callsite added on top of PR248 delta, not a whole-file replacement |
+| PR253 | `592a2a2a3e87ebe64d9d5b166898aeb5c31b1ce4` | Current admitted native SQL health and status hook | Clean; health-only changes preserve dispatch/media/expert |
 
 PR246 source depends on already included PR242/243. Its earlier fbdafb5
 implementation passed CI39774529351 on both Python; the later1836c32 controller
@@ -53,6 +54,10 @@ Candidate `d2d0d91d00735d9117528607ca9ed442cfdb3dd7` passed CI39775995609:
 3023 passed /45 skipped on each Python and actual metadata2 passed/0 skipped.
 The later PR249 final-test update and PR252 continuation input require a fresh
 combined run; source-only work continues before the next batched CI submission.
+PR253 passed CI39778885562 on both Python; Python3.13 log2455 passed/32 skipped.
+Its initial cancellation bug and own pending-startup fixture were corrected;
+the separate inherited PR249 legacy observer race is reported to Linza for a
+test-only synchronization follow-up (no production bypass or waived assertion).
 
 ## Explicit exclusions and next boundaries
 
