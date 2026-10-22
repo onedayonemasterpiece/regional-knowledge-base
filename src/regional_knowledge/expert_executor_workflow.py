@@ -144,10 +144,13 @@ class ExpertExecutorResultReceiver:
                 raise RequestControlError('result_conflict')
         else:
             raise RequestControlError('request_fence_denied')
-        await delivery.stage_dataset_result(*args)
-        result=await asyncio.to_thread(delivery.confirm_dataset_result,*args)
-        if result.get('remote_accepted') is not True:
-            return _reply('result_pending')
+        if row['state']!='send_intent_ready':
+            await delivery.stage_dataset_result(*args)
+            result=await asyncio.to_thread(delivery.confirm_dataset_result,*args)
+            if result.get('remote_accepted') is not True:
+                return _reply('result_pending')
+        # Original result child is already immutable/covered for a
+        # send_intent_ready replay; stage_result cannot legitimately reopen it.
         await delivery.stage_dataset_send(*args)
         send=await asyncio.to_thread(delivery.confirm_dataset_send,*args)
         if send.get('remote_accepted') is not True:
