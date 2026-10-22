@@ -588,3 +588,41 @@ async def test_real_pg17_populated_sql15_media_snapshot_and_denials(scenario):
             "SELECT to_regnamespace('rkb_v4')")).fetchone())[0] is None
     finally:
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_real_issuer_never_returns_public_image(env,auth):
+    """SQL 'ready' plus an exact native snapshot are NOT archive access."""
+    from regional_knowledge.kaggle_public_illustration_gate import PublicMediaUnavailable
+    gate,old_native,archive,verified,binding=await make_gate(env,auth)
+    pool=_ExistingReaderPool()
+    gate.native_read=NativePublicIllustrationReader(
+        acquire=pool.acquire,binding_current=gate.source_gate.binding_current,
+        archive_chat_id=-100234,archive_scope="owner-owned-topic4")
+    gate.reader_sha=READ_SQL_SHA256
+    async def missing_actual_archive_observation(*args,**kwargs):
+        return None  # No signed/issued artifact; never fabricate a proof.
+    archive.read_opaque=missing_actual_archive_observation
+    with pytest.raises(PublicMediaUnavailable,match="independent_archive_access_not_proved"):
+        await issue(gate,verified,binding)
+    assert pool.acquire_calls==1 and not gate._tickets
+
+
+@pytest.mark.asyncio
+async def test_read_authority_revoked_during_actual_native_snapshot_await(env,auth):
+    from regional_knowledge.participant_contracts import ParticipantGrant
+    from regional_knowledge.kaggle_public_illustration_gate import PublicMediaUnavailable
+    from test_participants import change
+    gate,old_native,archive,verified,binding=await make_gate(env,auth)
+    pool=_ExistingReaderPool()
+    gate.native_read=NativePublicIllustrationReader(
+        acquire=pool.acquire,binding_current=gate.source_gate.binding_current,
+        archive_chat_id=-100234,archive_scope="owner-owned-topic4")
+    gate.reader_sha=READ_SQL_SHA256
+    pool.on_fetch=lambda:change(auth.p,ParticipantGrant(
+        capability="public_search",granted=False,
+        reason="synthetic revoke before native result"))
+    with pytest.raises(PublicMediaUnavailable):
+        await issue(gate,verified,binding)
+    assert pool.acquire_calls==1 and archive.mint_count==0
+    assert not gate._tickets
