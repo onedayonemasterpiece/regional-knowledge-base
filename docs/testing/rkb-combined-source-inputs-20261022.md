@@ -44,6 +44,7 @@ Candidate `768bca5c950507b053b157626e34c4ffcf6539af` passed CI39773458811:
 | PR254 | `ec1a82dee9fac4cdb0a4f63a188de1b6b2d8dddb` | Bound Expert claim/result workflow and expert-only server routes | Clean; only3 own paths added over already included PR247/250 |
 | PR255 | `b3f8ee0c3f45e6c47646ac91404c7cbd6a96c740` | Bound Expert recovery/status after local control loss | Clean; only3 own paths over already included PR254 |
 | PR256 | `cd98585597721d33d61121aca47ac613572ef155` | In-memory trusted native receipt consumer and context factory | Clean; only3 own paths over already included PR255 |
+| PR259 | `20d82bf6dc934db4df11f7b8ed3c2a5cf7b7a6f3` | Immutable cold successor, actual controller binding and retained source-owner adoption/restart | Clean;7 own paths; no media/WSS/SQL/Expert edits |
 | PR217 selected SQL prerequisites | `2991af968ad40bef9f6e43d181548fa25b7650c5` | Exact SQL015/016 and adapted ordered PG fixture | Only two new SQL files; no old whole-file source merge |
 
 PR246 source depends on already included PR242/243. Its earlier fbdafb5
@@ -105,6 +106,17 @@ verifying the PR255 combined input. PR256's own CI39783320839 passed both Python
 its new combined input still needs a fresh run. The source callback requires the
 existing provider owner's original typed native receipt and verified Dataset
 coverage; no provider adapter is installed or executed by this assembly.
+CI39787408803 on1c62d9f verified PR256 combined:3086 passed/35 skipped per
+Python and2 actual-metadata checks passed. PR259's CI39788209705 passed3093/35
+on both Python. Its actual checkout is GitHub merge f237534d5c6711c2ea48c8648f51f94652fa0329
+(parents8a8b87b and20d82bf), whose Git tree
+`f213beafa3a3ea251448aaa70586b3aa16a57556` exactly matches local combined merge
+`363e3a5dd1993e7e4336790c3163278bca19a33c`. Thus that full-suite receipt also
+covers the combined cold/Expert source tree, not just an outdated branch parent.
+The final push separately rechecks the actual generated launch envelope.
+PR259 is merged into this diagnostic candidate only; canonical integration and
+the installed service/provider remain unchanged. Its original nonce/rollback
+fixture failures remain in CI history, corrected without weakening guards.
 
 ## Explicit exclusions and next boundaries
 
