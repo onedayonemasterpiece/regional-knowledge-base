@@ -19,6 +19,7 @@ from starlette.websockets import WebSocketDisconnect
 from .bge_contract import REVISION, SPACE
 from .bge_queue import StaleClaim, StaleAttachment
 from .kaggle_protocol import RESULT_MAX_BYTES, decode_envelope, QueryResult, PassageReadResult, StoryReadResult
+from .kaggle_protocol import SqlHealthResult
 from .kaggle_fact_contracts import FactReadRequest, FactReadResult
 from .kaggle_source_read import SourceReadRequest, SourceReadResult
 from .kaggle_case_contracts import CaseReadRequest, CaseReadResult
@@ -214,8 +215,14 @@ def channel_route(queue, *, read_telemetry=None):
                             elif runtime_readiness is None:
                                 issues = ('runtime_readiness_required',)
                             else:
+                                evaluated = runtime_readiness
                                 proof = await queue_call(queue.accept_search_runtime, run_id, token,
-                                                         generation, runtime_readiness)
+                                                         generation, evaluated)
+                                if runtime_readiness is not evaluated:
+                                    # A newer READY replaced this observation while it
+                                    # was checked; its own promote reports the outcome.
+                                    # Never answer it with a stale runtime_not_ready.
+                                    return
                                 issues = proof.issues
                             if issues:
                                 if runtime_blocked != issues:
@@ -234,8 +241,9 @@ def channel_route(queue, *, read_telemetry=None):
                 nonlocal last_work, cancelled_work
                 resume_pending = True
                 while True:
-                    observed = await status()
-                    await promote(observed)
+                    if not promoted or shared is None or probe_nonce is not None:
+                        observed = await status()
+                        await promote(observed)
                     if shared is not None:
                         if promoted and source_dispatch is not None:
                             settled=await source_dispatch.poll_settlement(run_id=run_id,token=token,generation=generation)
@@ -332,11 +340,11 @@ def channel_route(queue, *, read_telemetry=None):
                             # challenge issued before it cannot establish idle.
                             probe_nonce = await shared.begin_resource_probe(run_id, token, generation)
                             await send('RESOURCE_PROBE', probe_nonce=probe_nonce)
-                    elif shared is not None and frame['type'] in ('QUERY_RESULT','PASSAGE_READ_RESULT','STORY_READ_RESULT','FACT_READ_RESULT','SOURCE_READ_RESULT','CASE_READ_RESULT','GEO_READ_RESULT','EDITORIAL_READ_RESULT','SOURCE_GRAPH_READ_RESULT','ACCEPTANCE_READ_RESULT'):
+                    elif shared is not None and frame['type'] in ('QUERY_RESULT','SQL_HEALTH_RESULT','PASSAGE_READ_RESULT','STORY_READ_RESULT','FACT_READ_RESULT','SOURCE_READ_RESULT','CASE_READ_RESULT','GEO_READ_RESULT','EDITORIAL_READ_RESULT','SOURCE_GRAPH_READ_RESULT','ACCEPTANCE_READ_RESULT'):
                         events=frame.pop('read_events',None)
                         result = decode_envelope(json.dumps(frame, allow_nan=False,
                             ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
-                        if not isinstance(result, (QueryResult,PassageReadResult,StoryReadResult,FactReadResult,SourceReadResult,CaseReadResult,GeoReadResult,EditorialReadResult,SourceGraphReadResult,AcceptanceReadResult)):
+                        if not isinstance(result, (QueryResult,SqlHealthResult,PassageReadResult,StoryReadResult,FactReadResult,SourceReadResult,CaseReadResult,GeoReadResult,EditorialReadResult,SourceGraphReadResult,AcceptanceReadResult)):
                             raise ValueError('query_result_required')
                         if not ready or observed['provider_version'] is None:
                             raise ValueError('not_ready')

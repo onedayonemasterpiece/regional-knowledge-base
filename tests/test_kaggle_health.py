@@ -159,9 +159,22 @@ async def test_existing_queue_and_native_probe_form_one_exact_health_response(ta
     result = await collect_health(queue=target.queue, native_probe=observe, controller_state='active')
     assert result['read_ready'] and result['postgres']['sql_response']
     assert result['notebook']['provider_version'] == int(expected.provider_version)
-    assert result['notebook']['runtime_incarnation'] == expected.runtime_incarnation
     assert result['notebook']['heartbeat_age_seconds'] == 0
-    assert 'token' not in json.dumps(result) and 'launch_nonce' not in json.dumps(result)
+    assert result['notebook']['source'] == 'controller_queue'
+    assert set(result['notebook']) == {'status', 'launch_state', 'provider_version',
+        'connection_generation', 'source', 'heartbeat_age_seconds'}
+    serialized = json.dumps(result)
+    for private in ('token', 'launch_nonce', 'runtime_incarnation', 'provider_ref', 'run_id'):
+        assert private not in serialized
+
+
+@pytest.mark.parametrize('fields', [
+    {}, {'schema_revision': 's1', 'applied_seq': 5, 'projection_seq': 5},
+    {'schema_revision': 's1', 'applied_seq': True, 'projection_seq': 1, 'pending': False},
+    {'schema_revision': 's1', 'applied_seq': 5, 'projection_seq': 4, 'pending': False},
+])
+def test_incomplete_or_inconsistent_callback_receipt_is_not_ready(fields):
+    assert not DatabaseHealth(binding(), sql_response=True, **fields).ready
 
 
 @pytest.mark.asyncio
@@ -220,3 +233,54 @@ def test_public_heartbeat_health_reports_runtime_observation_without_identifiers
     text = json.dumps(result)
     for secret in (expected.run_id, expected.runtime_incarnation, 'token', 'launch_nonce', 'provider_ref'):
         assert secret not in text
+
+
+def test_public_heartbeat_health_drops_observation_when_attachment_changes(target, monkeypatch):
+    from regional_knowledge import kaggle_health
+    capture = kaggle_health._control_snapshot
+    def disconnect_after_capture(queue):
+        result = capture(queue)
+        with queue.connect() as db:
+            db.execute('UPDATE runs SET channel_active=0 WHERE id=?', (result[2].run_id,))
+        return result
+    monkeypatch.setattr(kaggle_health, '_control_snapshot', disconnect_after_capture)
+    result = kaggle_health.heartbeat_health(target.queue)
+    assert result['reason'] == 'attachment_changed' and not result['read_ready']
+    assert 'postgres' not in result
+
+
+def test_native_health_import_does_not_require_controller_or_mcp():
+    import subprocess
+    import sys
+    source = '''
+import importlib.abc
+import sys
+forbidden = ('mcp', 'regional_knowledge.kaggle_public_backend',
+             'regional_knowledge.read_authority', 'regional_knowledge.bge_queue')
+class BlockController(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if any(fullname == prefix or fullname.startswith(prefix + '.') for prefix in forbidden):
+            raise ImportError('controller import attempted: ' + fullname)
+sys.meta_path.insert(0, BlockController())
+from regional_knowledge.kaggle_database_probe import probe_sql_health
+assert callable(probe_sql_health)
+assert not any(name == prefix or name.startswith(prefix + '.')
+               for name in sys.modules for prefix in forbidden)
+'''
+    subprocess.run([sys.executable, '-c', source], check=True, capture_output=True, timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_native_server_statement_timeout_is_sanitized(target):
+    from psycopg.errors import QueryCanceled
+    native = Native()
+    execute = native.execute
+    async def timeout(sql, params=None):
+        if sql == HEALTH_SQL:
+            raise QueryCanceled('private SQL diagnostic')
+        await execute(sql, params)
+    native.execute = timeout
+    result = await probe_database_health(acquire=native.acquire, binding=binding(), binding_current=lambda _: True)
+    assert result.reason == 'pg_timeout' and not result.ready
+    assert 'private' not in json.dumps(result.wire())
+    assert native.acquired == native.released == 1

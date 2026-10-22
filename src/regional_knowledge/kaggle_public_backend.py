@@ -12,7 +12,7 @@ import json
 import math
 import time
 from urllib.parse import quote
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -383,7 +383,7 @@ class KaggleSourceBackend:
         """MCP read-only continuation: freshly authorized, never auto-retries the query."""
         if type(startup_ref) is not str:
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
-        authority=None
+        authority=None;health_binding=None
         try:
             authority=await self.read_authority.resolve_oauth(principal.access_token,destination=self.destination)
             await self.read_authority.require(authority,'public_search')
@@ -397,11 +397,53 @@ class KaggleSourceBackend:
                 except TargetUnavailable:
                     observed.update(status='unavailable',reason='target_not_ready')
             await self.read_authority.recheck(authority)
-            from .kaggle_health import heartbeat_health
+            from .kaggle_health import heartbeat_health, collect_health, DatabaseHealth
             try:
-                observed['health']=await asyncio.to_thread(heartbeat_health,self.worker_queue)
+                if observed['status']=='ready':
+                    from .kaggle_protocol import SqlHealthRequest, SqlHealthResult
+                    async def native_probe(binding):
+                        nonlocal health_binding
+                        health_binding=binding
+                        deadline=time.monotonic()+2
+                        request=SqlHealthRequest(request_id=uuid4().hex,
+                            connection_generation=binding.connection_generation,turn_generation=0,
+                            database_generation=binding.database_generation,min_data_seq=binding.min_data_seq,
+                            deadline_ms=2000,
+                            actor=TrustedActorContext(person_id=authority.person_id,audience=authority.destination.key,
+                                auth_epoch=authority.auth_revision,visibility_epoch=0,context_ref=authority.context_ref))
+                        ticket=None
+                        try:
+                            ticket=await self.worker_queue.shared_reads.begin_read(authority,request,
+                                dialog_ref=authority.destination.key,deadline=deadline)
+                            try:result=await asyncio.shield(ticket.result)
+                            except asyncio.CancelledError:
+                                if asyncio.current_task().cancelling():raise
+                                await self.read_authority.recheck(authority)
+                                if time.monotonic()>=deadline:
+                                    return DatabaseHealth(binding,reason='pg_timeout')
+                                raise TargetUnavailable('SQL health request attachment changed') from None
+                            if type(result) is not SqlHealthResult:
+                                raise TargetUnavailable('SQL health response type differs')
+                            if result.health is None:
+                                return DatabaseHealth(binding,reason='pg_timeout'
+                                    if result.reason=='deadline_exceeded' else 'pg_query_failed')
+                            if (result.health.schema_revision is not None
+                                    and result.observed_database_generation!=binding.database_generation):
+                                raise TargetUnavailable('SQL health generation differs')
+                            return DatabaseHealth(binding,**result.health.model_dump())
+                        finally:
+                            if ticket is not None:self.worker_queue.shared_reads.cancel_read(ticket)
+                    observed['health']=await collect_health(queue=self.worker_queue,native_probe=native_probe)
+                else:
+                    observed['health']=await asyncio.to_thread(heartbeat_health,self.worker_queue)
             except Exception:
                 observed['health']={'codec':'rkb.health.v1','reason':'health_probe_unavailable','read_ready':False}
+            await self.read_authority.recheck(authority)
+            if health_binding is not None and observed['health'].get('read_ready'):
+                try:still_current=current_binding(self.worker_queue)==health_binding
+                except TargetUnavailable:still_current=False
+                if not still_current:
+                    observed['health'].update(postgres=None,read_ready=False,reason='attachment_changed')
             return StartupStatus.model_validate(observed)
         except (ValueError,TypeError):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
