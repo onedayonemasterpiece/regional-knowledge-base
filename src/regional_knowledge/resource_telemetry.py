@@ -68,7 +68,7 @@ def emit_resource_sample(collector, diagnostics, *, run_id, incarnation,
 
     Caller owns authenticated WSS attachment; this lossy observation cannot
     change ACK, admission, domain receipts or read results. A missing sink or
-    standard-mode debug filter simply drops telemetry without a second writer.
+    optional sink simply drops telemetry without a second writer.
     """
     if collector is None or not callable(getattr(collector, 'try_emit', None)):
         return False
@@ -101,6 +101,6 @@ def emit_resource_sample(collector, diagnostics, *, run_id, incarnation,
             event['release_sha256'] = release
         if len(json.dumps(event, allow_nan=False, separators=(',', ':')).encode()) > _MAX_BYTES:
             return False
-        return collector.try_emit(event, level='debug') is True
+        return collector.try_emit(event, level='standard') is True
     except Exception:
         return False  # Lossy telemetry never replaces an authorized response.
