@@ -254,7 +254,7 @@ async def test_target_media_selector_is_only_a_pair_of_ids_not_an_access_token(s
         from regional_knowledge.kaggle_public_backend import _media_selector,PublicQueryInvalid
         for locator in ("knowledge://illustrations/"+ILLUSTRATION,
                         f"rkb:illustration:v1:{ILLUSTRATION}",
-                        "rkb:illustration:v1:"+SOURCE.upper()+":"+ILLUSTRATION,
+                        "rkb:illustration:v1:AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA:"+ILLUSTRATION,
                         f"rkb:illustration:v1:{SOURCE}:not-a-uuid"):
             with pytest.raises(PublicQueryInvalid):
                 _media_selector(locator)
