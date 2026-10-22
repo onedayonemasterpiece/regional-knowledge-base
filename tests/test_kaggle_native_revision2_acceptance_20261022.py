@@ -41,6 +41,7 @@ from regional_knowledge.source_stage import (
     REVISION2_BATCH_CODEC, REVISION2_SEAL_CODEC, canonical, digest, ZERO_HASH,
 )
 from test_kaggle_apply import PG, pinned
+from test_kaggle_pg_driver import database  # guarded existing GH PG17 fixture
 from test_native_source_upgrade_pg import (
     schema12, preflight as preflight14, apply as native_apply,
     DB, WRITER,
