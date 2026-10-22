@@ -140,7 +140,8 @@ BEGIN
   OR (d->>'batch_index')::integer>2499 THEN RETURN false;END IF;
  idx:=(d->>'batch_index')::integer;previous:=d->>'previous_batch_sha256';
  IF expected IS DISTINCT FROM jsonb_build_object('active_revision','1','stage_head',previous,
-       'predecessor_command_sha256',d->>'predecessor_command_sha256') THEN RETURN false;END IF;
+       'predecessor_command_sha256',d->>'predecessor_command_sha256',
+       'owner_person_id',prior.person_id::text) THEN RETURN false;END IF;
  SELECT a.revision,o.original_sha256,o.edition_id,i.command_sha256,i.person_id,i.ingestion_id,
   v.accepted,v.withdrawn INTO prior FROM rkb_v4.active_revision a
   JOIN rkb_v4.sources v USING(source_id)
@@ -148,7 +149,7 @@ BEGIN
   JOIN rkb_v4.source_image_origins i ON i.source_id=a.source_id
   WHERE a.source_id=wanted;
  IF NOT FOUND OR prior.revision<>1 OR NOT prior.accepted OR prior.withdrawn
-  OR prior.person_id::text IS DISTINCT FROM current_setting('rkb_actor_person_id',true)
+  OR prior.person_id::text IS DISTINCT FROM expected->>'owner_person_id'
   OR prior.command_sha256 IS DISTINCT FROM d->>'predecessor_command_sha256'
   OR prior.ingestion_id::text IS DISTINCT FROM d->>'original_ingestion_id' THEN RETURN false; END IF;
  src:=d->'source';old:=convert_from(decode(src->>'original_receipt_b64','base64'),'UTF8')::jsonb;
@@ -171,7 +172,7 @@ BEGIN
  END LOOP;
  SELECT * INTO session FROM rkb_v4.source_revision2_sessions WHERE source_id=wanted;
  IF FOUND AND (session.ingestion_id::text<>d->>'ingestion_id'
-   OR session.owner_person_id::text<>prior.person_id::text
+   OR session.owner_person_id::text<>expected->>'owner_person_id'
    OR session.original_receipt<>decode(src->>'original_receipt_b64','base64')
    OR session.predecessor_command_sha256<>d->>'predecessor_command_sha256') THEN RETURN false;END IF;
  IF EXISTS(SELECT 1 FROM rkb_v4.source_revision2_seals WHERE source_id=wanted) THEN RETURN false;END IF;
@@ -191,7 +192,7 @@ BEGIN
   RAISE EXCEPTION 'revision2 source stage precondition rejected';END IF;
  d:=convert_from(p,'UTF8')::jsonb;src:=d->'source';wanted:=(ids->>'source_id')::uuid;
  INSERT INTO rkb_v4.source_revision2_sessions VALUES(wanted,2,1,(d->>'ingestion_id')::uuid,
-  (d->>'original_ingestion_id')::uuid,current_setting('rkb_actor_person_id')::uuid,
+  (d->>'original_ingestion_id')::uuid,(expected->>'owner_person_id')::uuid,
   decode(src->>'original_receipt_b64','base64'),
   convert_from(decode(src->>'original_receipt_b64','base64'),'UTF8')::jsonb->>'sha256',
   d->>'predecessor_command_sha256',src,logical_time)
@@ -214,10 +215,11 @@ BEGIN
   OR d->>'last_batch_sha256' !~ '^[0-9a-f]{64}$' THEN RETURN false;END IF;
  SELECT * INTO session FROM rkb_v4.source_revision2_sessions WHERE source_id=wanted;
  IF NOT FOUND OR session.ingestion_id::text<>d->>'ingestion_id'
-  OR session.owner_person_id::text<>current_setting('rkb_actor_person_id',true)
+  OR session.owner_person_id::text<>expected->>'owner_person_id'
   OR NOT EXISTS(SELECT 1 FROM rkb_v4.active_revision WHERE source_id=wanted AND revision=1)
   OR expected IS DISTINCT FROM jsonb_build_object('active_revision','1','stage_head',d->>'last_batch_sha256',
-   'predecessor_command_sha256',session.predecessor_command_sha256)
+   'predecessor_command_sha256',session.predecessor_command_sha256,
+   'owner_person_id',session.owner_person_id::text)
   OR NOT rkb_v4.revision2_stage_chain_v1(wanted,session.ingestion_id,
    (d->>'batch_count')::integer,d->>'last_batch_sha256') THEN RETURN false;END IF;
  SELECT * INTO head FROM rkb_v4.source_revision2_seals WHERE source_id=wanted;
@@ -283,7 +285,7 @@ BEGIN
   OR jsonb_typeof(doc->'semantic'->'stories')<>'array'
   OR jsonb_array_length(doc->'semantic'->'stories')>12*batches THEN
   RAISE EXCEPTION USING ERRCODE='22023',MESSAGE='revision2 knowledge/source identity invalid';END IF;
- SELECT payload_bytes::text::jsonb->'research' INTO research FROM rkb_v4.source_revision2_batches
+ SELECT convert_from(payload_bytes,'UTF8')::jsonb->'research' INTO research FROM rkb_v4.source_revision2_batches
   WHERE source_id=wanted ORDER BY batch_index DESC LIMIT 1;
  IF doc->'research' IS DISTINCT FROM research THEN
   RAISE EXCEPTION 'revision2 model frontier differs';END IF;
@@ -350,7 +352,8 @@ BEGIN
   OR candidate.last_batch_sha256<>d->>'last_batch_sha256'
   OR NOT EXISTS(SELECT 1 FROM rkb_v4.active_revision WHERE source_id=wanted AND revision=1)
   OR NOT EXISTS(SELECT 1 FROM rkb_v4.source_revision2_sessions WHERE source_id=wanted
-   AND owner_person_id::text=current_setting('rkb_actor_person_id',true)) THEN RETURN false;END IF;
+   AND owner_person_id::text=expected->>'owner_person_id'
+   AND predecessor_command_sha256=expected->>'predecessor_command_sha256') THEN RETURN false;END IF;
  SELECT * INTO v FROM rkb_v4.source_revision2_vectors WHERE source_id=wanted AND ordinal=ordinal;
  i:=rkb_v4.revision2_activation_input_v1(wanted,ordinal);
  RETURN v.input_id=(i->>'input_id')::uuid
@@ -393,7 +396,7 @@ BEGIN
   OR candidate.batch_count::text<>d->>'batch_count'
   OR candidate.last_batch_sha256<>d->>'last_batch_sha256'
   OR candidate.materializer_sha256<>d->>'materializer_sha256'
-  OR s.owner_person_id::text<>current_setting('rkb_actor_person_id',true)
+  OR s.owner_person_id::text<>expected->>'owner_person_id'
   OR s.predecessor_command_sha256<>expected->>'predecessor_command_sha256'
   OR NOT EXISTS(SELECT 1 FROM rkb_v4.active_revision WHERE source_id=wanted AND revision=1)
   OR NOT rkb_v4.revision2_stage_chain_v1(wanted,s.ingestion_id,candidate.batch_count,candidate.last_batch_sha256)
