@@ -197,6 +197,7 @@ class ControlSpool:
         self.max_command_bytes=min(1048576,journal.max_segment_bytes)
         self.max_outcome_bytes=min(1048576,journal.max_outcome_bytes)
         self._lock=asyncio.Lock();self._loop=None;self._writing=0;self._intake_guard=None
+        self._schema_intake_guard=None
         self._facts_owner=object();self._source_version=object();self._source_anchor=None
         self._source_head=None;self._source_covered_sequence=0
         self._fd=os.open(queue.path.resolve().with_suffix(queue.path.suffix+'.control-spool.lock'),os.O_RDWR|os.O_CREAT,0o600)
@@ -301,7 +302,8 @@ class ControlSpool:
         self._intake_guard=current
 
     def _require_intake(self):
-        try:allowed=self._intake_guard is None or self._intake_guard()
+        try:allowed=(self._intake_guard is None or self._intake_guard()) and (
+            self._schema_intake_guard is None or self._schema_intake_guard())
         except Exception:allowed=False
         if not allowed:raise SpoolDenied('configured control intake unavailable')
 

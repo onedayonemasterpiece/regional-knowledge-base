@@ -60,8 +60,10 @@ async def _row(connection, query, params=None):
     return await (await connection.execute(query, params)).fetchone()
 
 
-async def _baseline(connection, migrations):
+async def _baseline(connection, migrations, before_file=None):
     async with connection.transaction():
+        if before_file is not None:
+            await before_file(connection)
         exists = (await _row(connection, "SELECT to_regclass('rkb_v4.schema_migrations')"))[0]
         if exists is not None:
             return
@@ -97,7 +99,7 @@ async def _baseline(connection, migrations):
         LOG.info("schema_migrate baseline schema_version=%s", version)
 
 
-async def migrate(connection, files: Mapping[str, bytes]) -> tuple[int, ...]:
+async def migrate(connection, files: Mapping[str, bytes], *, before_file=None) -> tuple[int, ...]:
     """Apply pending files, each in its own transaction; return committed versions.
 
     On a lost commit ACK the caller reconciles the SAME database generation by
@@ -113,7 +115,7 @@ async def migrate(connection, files: Mapping[str, bytes]) -> tuple[int, ...]:
             locked = (await _row(connection, "SELECT pg_try_advisory_lock(%s)", (LOCK_ID,)))[0]
         if not locked:
             raise MigrationDenied("migration_busy")
-        await _baseline(connection, migrations)
+        await _baseline(connection, migrations, before_file)
         async with connection.transaction():
             exists = (await _row(connection, "SELECT to_regclass('rkb_v4.schema_migrations')"))[0]
             rows = [] if exists is None else await (await connection.execute(
@@ -131,6 +133,8 @@ async def migrate(connection, files: Mapping[str, bytes]) -> tuple[int, ...]:
             async with connection.transaction():
                 await connection.execute("SET LOCAL lock_timeout='5s'")
                 await connection.execute("SET LOCAL statement_timeout='120s'")
+                if before_file is not None:
+                    await before_file(connection)
                 await connection.execute(migration.body.decode("utf-8"), prepare=False)
                 if migration.version == 1:
                     await connection.execute(LEDGER_SQL)

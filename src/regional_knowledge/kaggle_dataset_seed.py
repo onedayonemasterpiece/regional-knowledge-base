@@ -4,6 +4,7 @@ This seed preserves the accepted prefix. Publication is an intermediate receipt;
 only the subsequent native Dataset restore can establish product readiness.
 """
 from dataclasses import dataclass
+from contextlib import asynccontextmanager
 import asyncio
 import base64
 import http.client
@@ -87,6 +88,11 @@ class SourceDatasetSeed:
 
     async def _prepare_prefix(self,proof):pass
 
+    @asynccontextmanager
+    async def capture_guard(self,binding):
+        async with self.startup.config.spool._lock:
+            yield
+
     async def _capture(self,physical,bridge,binding,sequence):
         return await physical.native.capture(binding,versions=dict(self.config.versions),expected_sequence=sequence)
 
@@ -134,7 +140,7 @@ class SourceDatasetSeed:
             # Restore used its original S3 tickets once; capture now uploads
             # directly to Kaggle. No provider credential reaches the notebook.
             bridge.snapshot_tickets = self.tickets
-            async with self.startup.config.spool._lock:
+            async with self.capture_guard(binding):
                 proof = self.startup.history._coverage
                 await self._prepare_prefix(proof)
                 if not self._prefix_ready(proof):

@@ -6,6 +6,7 @@ import json
 import logging
 import secrets
 import time
+from contextlib import asynccontextmanager
 
 from .dataset_recovery_store import DatasetRecoveryStore
 from .kaggle_dataset_base import DatasetCheckpoint, DatasetFile
@@ -96,6 +97,36 @@ class _WorkCycleCapture(SourceDatasetSeed):
         return await asyncio.to_thread(self.startup.config.spool.journal.store.export_control)
 
 
+class _SchemaCycleCapture(_WorkCycleCapture):
+    @asynccontextmanager
+    async def capture_guard(self,binding):
+        # The durable schema barrier already excludes intake AND dispatch;
+        # retain the small spool lock only to validate that exclusion. Holding
+        # it during basebackup/provider upload would prevent history renewal
+        # and expire read coverage while an otherwise healthy search serves.
+        async with self.startup.config.spool._lock:
+            self._current_barrier(binding)
+        yield
+        self._current_barrier(binding)
+
+    def _current_barrier(self,binding):
+        owner=self.startup.schema_migrations
+        if (owner.pending() is None or owner.writes_allowed()
+                or not self.startup.binding_current(binding)):
+            raise SnapshotError('migration_checkpoint_write_barrier_changed')
+
+    def _prefix_ready(self,proof):
+        # Read maintenance can renew the capability for the SAME immutable
+        # prefix during capture. Native capture still proves exact versions,
+        # generation, cursor and writer before any publication is promoted.
+        current=self.startup.history._coverage
+        if (proof is None or current is None
+                or (current.database_generation,current.applied_sequence,current.accepted_sequence)
+                !=(proof.database_generation,proof.applied_sequence,proof.accepted_sequence)):
+            return False
+        return super()._prefix_ready(current)
+
+
 class SourceDatasetCheckpoints:
     def __init__(self,startup,*,interval_seconds=900,clock=time.monotonic):
         self.startup=startup;self.store=startup.config.spool.journal.store
@@ -116,9 +147,10 @@ class SourceDatasetCheckpoints:
             **{key:getattr(database,key) for key in ('schema_revision','function_revision','executor_revision')})
         return result
 
-    async def _capture_verify(self,binding,operation,latest):
+    async def _capture_verify(self,binding,operation,latest,*,schema=False):
         startup=self.startup;spool=startup.config.spool;queue=startup.config.queue
-        batch=_WorkCycleCapture(startup,DatasetSeedConfig(self.store.publisher.ref,operation,self._versions()),
+        capture=_SchemaCycleCapture if schema else _WorkCycleCapture
+        batch=capture(startup,DatasetSeedConfig(self.store.publisher.ref,operation,self._versions()),
             self.store.publisher)
         version=await batch.capture_once(binding)
         with queue.connect(write=False) as db:
@@ -148,6 +180,38 @@ class SourceDatasetCheckpoints:
         if self._refresh_lock.locked():return False
         async with self._refresh_lock:
             return await self._refresh(binding,planned_stop=planned_stop)
+
+    async def checkpoint_schema(self,binding,*,schema_version,operation_key,expected_sequence):
+        """Immediate forced checkpoint, including unchanged journal sequences.
+
+        The schema owner keeps its durable write barrier across this entire
+        call and only releases it after the existing native archive readback
+        and Dataset pointer promotion. Ordinary timed checkpoints cannot
+        interleave. The operation key survives lost publication responses.
+        """
+        async with self._refresh_lock:
+            if self._versions().get('schema_version')!=schema_version:
+                # Deliberately unavailable until PR-2's version-based native
+                # capture is installed. Never label a legacy hash-pinned base
+                # as a checkpoint for an unobserved integer schema version.
+                raise SnapshotError('migration_checkpoint_schema_version_unavailable')
+            proof=self.startup.history._coverage
+            if (proof is None or not proof.current() or proof.applied_sequence!=expected_sequence
+                    or proof.accepted_sequence!=expected_sequence
+                    or not self.startup.binding_current(binding)):
+                raise SnapshotError('migration_checkpoint_prefix_changed')
+            checkpoint,observed,manifest_ref,version=await self._capture_verify(
+                binding,operation_key,self.store.latest_checkpoint,schema=True)
+            if checkpoint.base_sequence!=expected_sequence:
+                raise SnapshotError('migration_checkpoint_sequence_changed')
+            await asyncio.to_thread(self.store.promote,checkpoint,observed,manifest_ref=manifest_ref,
+                current=lambda:self.startup.binding_current(binding))
+            with self.startup.config.queue.connect() as db:
+                db.execute("UPDATE rkb_dataset_seed SET state='verified' WHERE operation_key=? AND version=?",
+                    (operation_key,version))
+            _LOG.info('schema_checkpoint_verified schema_version=%s dataset_version=%s base_sequence=%s',
+                schema_version,version,expected_sequence)
+            return checkpoint
 
     async def _refresh(self,binding,*,planned_stop=False):
         startup=self.startup;spool=startup.config.spool;queue=startup.config.queue

@@ -77,6 +77,9 @@ class DeferredRecoveryRuntime:
         identity=(self.config['run_id'],self.config['launch_nonce'],runtime_incarnation)
         if self.identity is not None and self.identity!=identity:raise ValueError('recovery incarnation changed')
         self.identity=identity;self.generation=generation
+        worker=getattr(self.instance,'recovery_worker',None)
+        io=getattr(worker,'snapshot_io',None)
+        if io is not None:io.rebind((identity[0],identity[2],generation))
 
     def detached(self,generation):
         if self.generation==generation:self.generation=None

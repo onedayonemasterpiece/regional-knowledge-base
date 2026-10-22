@@ -17,7 +17,7 @@ MAX_PHASE_RESULT_BYTES = 120 * 1024  # Reserve result envelope/claim identity by
 from .original_intake import PHASES as ORIGINAL_PHASES
 from .kaggle_snapshot_drill import DRILL_PHASES
 PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history',
-    'dataset_verify','read_handler_status','read_handler_stage','read_handler_activate','read_handler_rollback'})|ORIGINAL_PHASES|DRILL_PHASES
+    'dataset_verify','snapshot_status','capture_upload','schema_bundle_stage','schema_migrate','read_handler_status','read_handler_stage','read_handler_activate','read_handler_rollback'})|ORIGINAL_PHASES|DRILL_PHASES
 
 
 def _download_ticket_matches(blob,ticket,dataset_checkpoint=None):
@@ -124,7 +124,11 @@ async def build_recovery_worker(*,native_bundle,database,identity,tools,native_u
         factory.model_pins=dict(model_pins)
     factory.native_env=await asyncio.to_thread(verified_native_environment,native_bundle)
     await factory.tools.verify(factory._run)
-    return WorkerRecoveryPhases(factory=factory,download=download,workspace=workspace)
+    worker=WorkerRecoveryPhases(factory=factory,download=download,workspace=workspace)
+    if ticket_channel is not None and transfer is not None:
+        from .kaggle_snapshot_io import SnapshotIo
+        worker.snapshot_io=SnapshotIo(factory=factory,tickets=ticket_channel,transfer=transfer)
+    return worker
 
 
 def bounded(value, limit=MAX_PHASE_FRAME_BYTES):
@@ -165,6 +169,8 @@ class WorkerRecoveryPhases:
         # pathname, module bytes or resource reference enters this WSS phase.
         self.read_handler_slot=None
         self.read_handler_control=None
+        self.schema_control=None
+        self.snapshot_io=None
 
     async def wait_initialized(self,database,run_id,launch_nonce,runtime_incarnation):
         if database!=self.factory.database or (run_id,launch_nonce,runtime_incarnation)!=self.factory.identity:
@@ -182,7 +188,7 @@ class WorkerRecoveryPhases:
         if (not isinstance(frame,dict) or set(frame)-optional!=fields
                 or ('dataset_base' in frame)!=('dataset_observation' in frame)
                 or 'dataset_base' in frame and frame.get('phase')!='prepare'
-                or 'download_ticket' in frame and frame.get('phase') not in ('prepare','drill_prepare','read_handler_stage','dataset_verify') or frame['type']!='DISPATCH'
+                or 'download_ticket' in frame and frame.get('phase') not in ('prepare','drill_prepare','read_handler_stage','schema_bundle_stage','dataset_verify') or frame['type']!='DISPATCH'
                 or frame['protocol_version']!=2 or frame['kind']!='recovery_phase'
                 or frame['phase'] not in PHASES-{'source_history'}-ORIGINAL_PHASES or type(frame['connection_generation']) is not int
                 or frame['connection_generation']<1 or type(frame['dispatch_generation']) is not int
@@ -207,12 +213,13 @@ class WorkerRecoveryPhases:
                 if prior!=request:raise SnapshotError('recovery_phase_operation_changed')
                 if key in self._results:return self._results[key]
                 session=self._sessions.get(frame.get('arguments',{}).get('handle'))
-                if not (frame['phase']=='finish' and session in self.factory._finish_intents
+                if not (frame['phase'] in ('schema_migrate','schema_bundle_stage','capture_upload')
+                        or frame['phase']=='finish' and session in self.factory._finish_intents
                         or self.drill is not None and self.drill.can_reconcile(frame['phase'],frame['arguments'])):
                     raise SnapshotError('recovery_phase_unknown_requires_reconciliation')
             if len(self._requests)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
             self._requests[key]=request  # UNKNOWN is retained before effects.
-            if frame['phase'] in ('read_handler_stage','read_handler_activate','read_handler_rollback','capture','dataset_verify'):
+            if frame['phase'] in ('read_handler_stage','read_handler_activate','read_handler_rollback','capture','dataset_verify','snapshot_status','capture_upload'):
                 # Expected candidate/transfer/probe refusal is the outcome of
                 # THIS durable maintenance operation, not a fatal worker
                 # transport failure. BgeWssTransport._failure would otherwise
@@ -223,7 +230,8 @@ class WorkerRecoveryPhases:
                     value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
                 except Exception:
                     reason=('snapshot_capture_rejected' if frame['phase']=='capture' else
-                        'dataset_checkpoint_verify_rejected' if frame['phase']=='dataset_verify' else 'read_handler_maintenance_rejected')
+                        'dataset_checkpoint_verify_rejected' if frame['phase']=='dataset_verify' else
+                        'snapshot_io_rejected' if frame['phase'] in ('snapshot_status','capture_upload') else 'read_handler_maintenance_rejected')
                     value={'status':'rejected','reason':reason}
             else:
                 try:
@@ -244,6 +252,7 @@ class WorkerRecoveryPhases:
             return result
 
     async def aclose(self):
+        if self.snapshot_io is not None:await self.snapshot_io.aclose()
         if self.drill is not None:await self.drill.aclose()
         # Includes a partially restored candidate that never released readiness.
         for candidate in tuple(self.factory._owned_candidates):
@@ -258,32 +267,60 @@ class WorkerRecoveryPhases:
         session.binding=binding
         return session
 
+    async def _dataset_verify(self,args,key,frame):
+        from .kaggle_pg_snapshot_native import BlobRef
+        from .kaggle_dataset_base import DatasetCheckpoint
+        from .native_snapshot_transfer import SnapshotTicket,NativeSnapshotTransfer
+        if set(args)!={'checkpoint','blob'}:raise SnapshotError('dataset_verify_arguments')
+        checkpoint=DatasetCheckpoint.from_wire(args['checkpoint'])
+        base=getattr(self.factory,'dataset_checkpoint',None)
+        transfer=getattr(self.factory,'dataset_transfer',None)
+        if (type(base) is not DatasetCheckpoint or type(transfer) is not NativeSnapshotTransfer
+                or (checkpoint.owner_slug,checkpoint.dataset_slug,checkpoint.database_generation)!=(
+                    base.owner_slug,base.dataset_slug,self.factory.database.database_generation)
+                or checkpoint.dataset_version<base.dataset_version):
+            raise SnapshotError('dataset_verify_runtime_binding')
+        blob=BlobRef(**args['blob']);ticket=SnapshotTicket.from_wire(frame.get('download_ticket'))
+        if ((ticket.key,ticket.size,ticket.sha256)!=(blob.key,checkpoint.archive.size,checkpoint.archive.sha256)
+                or blob.key.rsplit('/',1)[-1]!=checkpoint.archive.name):
+            raise SnapshotError('dataset_verify_archive_changed')
+        path=await transfer.download(ticket,self.workspace(key,'download'),operation_key=key)
+        try:
+            return dict(dataset_ref=checkpoint.owner_slug+'/'+checkpoint.dataset_slug,
+                dataset_version=checkpoint.dataset_version,base_sequence=checkpoint.base_sequence,
+                archive_sha256=checkpoint.archive.sha256,archive_size=checkpoint.archive.size)
+        finally:path.unlink(missing_ok=True)
+
     async def _execute(self,phase,args,key,binding,frame):
         from .kaggle_pg_snapshot_native import BlobRef
         if not isinstance(args,dict):raise SnapshotError('recovery_phase_arguments')
-        if phase=='dataset_verify':
-            from .kaggle_dataset_base import DatasetCheckpoint
-            from .native_snapshot_transfer import SnapshotTicket,NativeSnapshotTransfer
-            if set(args)!={'checkpoint','blob'}:raise SnapshotError('dataset_verify_arguments')
-            checkpoint=DatasetCheckpoint.from_wire(args['checkpoint'])
-            base=getattr(self.factory,'dataset_checkpoint',None)
-            transfer=getattr(self.factory,'dataset_transfer',None)
-            if (type(base) is not DatasetCheckpoint or type(transfer) is not NativeSnapshotTransfer
-                    or (checkpoint.owner_slug,checkpoint.dataset_slug,checkpoint.database_generation)!=(
-                        base.owner_slug,base.dataset_slug,self.factory.database.database_generation)
-                    or checkpoint.dataset_version<base.dataset_version):
-                raise SnapshotError('dataset_verify_runtime_binding')
-            blob=BlobRef(**args['blob']);ticket=SnapshotTicket.from_wire(frame.get('download_ticket'))
-            if ((ticket.key,ticket.size,ticket.sha256)!=(blob.key,checkpoint.archive.size,checkpoint.archive.sha256)
-                    or blob.key.rsplit('/',1)[-1]!=checkpoint.archive.name):
-                raise SnapshotError('dataset_verify_archive_changed')
-            path=await transfer.download(ticket,self.workspace(key,'download'),operation_key=key)
+        if phase in ('snapshot_status','capture_upload'):
+            if set(args)!={'handle'} or self.snapshot_io is None:
+                raise SnapshotError('snapshot_io_arguments')
+            if phase=='snapshot_status':return self.snapshot_io.status(args['handle'],binding)
+            return await self.snapshot_io.upload(args['handle'],binding,key)
+        if phase in ('schema_bundle_stage','schema_migrate'):
+            from .kaggle_schema_live import LiveSchemaMigrations
+            from .kaggle_schema_migrate import MigrationDenied
+            from psycopg.errors import LockNotAvailable,QueryCanceled
+            if type(self.schema_control) is not LiveSchemaMigrations:
+                raise SnapshotError('migration_owner_unavailable')
             try:
-                self.factory._current(binding)
-                return dict(dataset_ref=checkpoint.owner_slug+'/'+checkpoint.dataset_slug,
-                    dataset_version=checkpoint.dataset_version,base_sequence=checkpoint.base_sequence,
-                    archive_sha256=checkpoint.archive.sha256,archive_size=checkpoint.archive.size)
-            finally:path.unlink(missing_ok=True)
+                return await self.schema_control(phase,args,key,frame)
+            except (LockNotAvailable,QueryCanceled):
+                # The runner's transaction has rolled back. This is a known
+                # retryable refusal, distinct from a lost commit response.
+                return dict(status='rejected',reason='migration_lock_or_statement_timeout',retryable=True)
+            except MigrationDenied as error:
+                return dict(status='rejected',reason=str(error),retryable=str(error)=='migration_busy')
+        if phase=='dataset_verify':
+            if self.snapshot_io is not None:
+                async def verify(operation):
+                    return await self._dataset_verify(args,key,frame)
+                return self.snapshot_io.start(key,binding,verify)
+            result=await self._dataset_verify(args,key,frame)
+            self.factory._current(binding)
+            return result
         if phase in DRILL_PHASES:
             if self.drill is None:raise SnapshotError('drill_fixed_owner_unavailable')
             return await self.drill(phase,args,key,binding,frame)
@@ -307,6 +344,8 @@ class WorkerRecoveryPhases:
             'verify':{'reference'}}[phase]
         if set(args)!=expected:raise SnapshotError('recovery_phase_arguments')
         if phase=='capture':
+            if self.snapshot_io is not None:
+                return self.snapshot_io.capture(key,binding,workspace=self.workspace(key,'capture'),**args)
             return await self.factory.capture(binding,workspace=self.workspace(key,'capture'),**args)
         if phase=='prepare':
             if args['database']!=self.factory.database.wire() or tuple(args['identity'])!=self.factory.identity:

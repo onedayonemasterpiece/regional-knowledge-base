@@ -23,7 +23,7 @@ class SnapshotTicketChannel:
 
     async def upload_ticket(self,*,size,sha256):
         frame=self._assignment
-        if (frame is None or frame.get('kind')!='recovery_phase' or frame.get('phase')!='capture'
+        if (frame is None or frame.get('kind')!='recovery_phase' or frame.get('phase') not in ('capture','capture_upload')
                 or type(size) is not int or size<1 or not isinstance(sha256,str)
                 or len(sha256)!=64 or set(sha256)-set('0123456789abcdef') or self._future is not None):
             raise ValueError('snapshot upload requires actual capture resource')
