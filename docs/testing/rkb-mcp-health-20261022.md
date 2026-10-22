@@ -53,3 +53,9 @@ binding after full identity comparisons. Callback readiness also requires a
 complete schema/sequence/pending observation, not a bare `sql_response=True`.
 The native WSS request hook and runtime rollout remain integration-owner work;
 queue observations alone never imply a successful SQL probe.
+
+The integrated phase1 heartbeat hook is retained. Its observation read now
+rechecks the exact current attachment and accepted generation before returning
+metadata; a disconnect between the queue snapshot and runtime-row read suppresses
+the PostgreSQL observation with `attachment_changed`. This is still explicitly
+a heartbeat observation, not a fresh SQL response.

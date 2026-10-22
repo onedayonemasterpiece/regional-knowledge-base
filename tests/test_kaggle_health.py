@@ -233,3 +233,17 @@ def test_public_heartbeat_health_reports_runtime_observation_without_identifiers
     text = json.dumps(result)
     for secret in (expected.run_id, expected.runtime_incarnation, 'token', 'launch_nonce', 'provider_ref'):
         assert secret not in text
+
+
+def test_public_heartbeat_health_drops_observation_when_attachment_changes(target, monkeypatch):
+    from regional_knowledge import kaggle_health
+    capture = kaggle_health._control_snapshot
+    def disconnect_after_capture(queue):
+        result = capture(queue)
+        with queue.connect() as db:
+            db.execute('UPDATE runs SET channel_active=0 WHERE id=?', (result[2].run_id,))
+        return result
+    monkeypatch.setattr(kaggle_health, '_control_snapshot', disconnect_after_capture)
+    result = kaggle_health.heartbeat_health(target.queue)
+    assert result['reason'] == 'attachment_changed' and not result['read_ready']
+    assert 'postgres' not in result

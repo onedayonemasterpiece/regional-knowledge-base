@@ -210,6 +210,15 @@ def heartbeat_health(queue):
     with queue.connect(write=False) as db:
         row = queue._runtime_row(db, binding.run_id)
     observed = json.loads(row['observed_json']) if row is not None and row['observed_json'] else {}
+    try:
+        current = current_binding(queue)
+    except TargetUnavailable:
+        current = None
+    if (current != binding or row is None
+            or row['accepted_generation'] != binding.connection_generation
+            or observed.get('database_generation') != binding.database_generation):
+        health['reason'] = 'attachment_changed'
+        return health
     postgres = {key: observed.get(key) for key in ('schema_revision', 'applied_seq', 'projection_seq')}
     health['postgres'] = postgres
     applied, projection = postgres['applied_seq'], postgres['projection_seq']
