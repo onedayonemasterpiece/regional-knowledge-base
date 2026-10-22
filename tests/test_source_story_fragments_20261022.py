@@ -99,7 +99,7 @@ async def test_pg_long_body_exact_readback_and_replay_idempotency(image_pg):
     async with env["connection"].transaction():
         await env["connection"].execute(
             (Path(__file__).resolve().parents[1] /
-             "sql/kaggle/018_story_embedding_fragments.sql").read_text(), prepare=False)
+             "sql/kaggle/pending/018_story_embedding_fragments.sql").read_text(), prepare=False)
     handlers = []
     for route, suffix in ((STAGE_ROUTE, "source_stage_v2"),
                           (SEAL_ROUTE, "source_stage_seal_v2"),
