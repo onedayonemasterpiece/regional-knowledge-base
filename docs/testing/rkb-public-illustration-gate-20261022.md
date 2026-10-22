@@ -331,3 +331,130 @@ Existing text/case/source issuance paths continue to use their original
    qualified PDF/DjVu pixels, authentic facts, Story.body and continuation,
    native Dataset checkpoint/restart and public API proof. This source
    PR alone cannot establish installed reader/issuer/live readiness.
+
+
+## 22 October 11:52 UTC — source-only NativeTelegramIllustrations owner-bound crop read
+
+**Latest product plan:** PR238 HEAD `a11a25e29720eb67caf2437751fed8461d0ea17f`,
+`docs/plans/rkb-product-delivery-checklist-20261022.md` blob
+`f23ce6e69b9033723697b4dce45ab7c69d7b60a0`.
+M3 source-only ownership assigned by dot
+`1792669652.725409`; Opus remains sole integration/live/merge owner.
+Base is the reviewed PR241 `5d9c07b17568bf7aa44be13022e5e98980222766`,
+not a second integration branch. The new source branch copies *only*
+`src/regional_knowledge/telegram_illustrations.py` from the authorized
+media delta `.media-delta.patch` SHA256
+`701c03106cb2a9436ddd814d08583008dd1065243fd6ce5e6b7a03e81f01a377`,
+file size 6240 and SHA256
+`485a992ba7d064bc86028ce3065d5ebc392a98cd304a69bf028f440a26d2066c`,
+then appends owner-bound **real native crop byte read methods**. The existing
+`send_one` unknown/no-resend / registered locator lifecycle and
+`observe` remain unchanged. Imported existing legacy regression tests are
+from exactly the same media delta. No new login/client, downloader class,
+second storage, queue, IAM, SQL, native WSS route, provider mutation or
+runtime/deploy.
+
+### Native owner-local contract: actual leased client, not fake archive proof
+
+```python
+# Reuses the single externally leased Telethon client used by send_one/observe.
+archive = NativeTelegramIllustrations(
+    client=existing_leased_telegram_client,
+    chat_id=trusted_private_archive_chat,
+    topic_id=4,
+    current=existing_native_lease_current,
+    archive_scope=trusted_exact_owner_scope,
+)
+native_proof = await archive.read_opaque(
+    existing_native_pg_snapshot, verified_actor_id)
+native_pixels = await archive.read_issued_bytes(native_proof)
+assert native_pixels.proof is native_proof
+# native_pixels.data: ACTUAL bounded image bytes from Telegram iter_download.
+# native_pixels.sha256 = sha256(exact downloaded bytes).
+archive.release_issued(native_proof)  # owner-side transient proof cleanup
+```
+
+`read_opaque` requires trusted accepted/current native snapshot:
+source revision 1, unchanged imported original/media SHA, exact persisted
+canonical crop binding and native ready operation key, configured archive
+scope, actor UUID, *current* native client lease, and **actual**
+`get_messages`/topic-4/media ID+dimensions readback via existing
+`observe` (never an invented provider receipt). It creates an owner-local
+short-lived object-identity-bound `NativeIllustrationArchiveProof`:
+private actor/source/figure/crop SHA and exact archive scope; the associated
+non-bearer `rkb-art-*` ref is not an authorization token. Native proofs are
+bounded in RAM (64 active, 10s TTL by default); cancellation/TTL/reconnect
+cannot promote a stale proof into a new read.
+
+`read_issued_bytes` uses **exact same** leased client's existing
+`iter_download(media, request_size=65536,chunk_size=65536)`, modelled after
+`NativeTelegramOriginalDownloader.download`. It bounds each chunk to
+64KiB, total to 256KiB, deadline 4s, checks native lease/owner+object
+identity after EVERY async step and again *after* awaited iterator cleanup,
+verifies the registered chat/topic/message/media/actual dimensions before
+and after download, SHA256 of real bytes, Pillow decoded image format/MIME and
+dimensions, and never sends/resends a provider message. Errors and private
+Telethon session details fail closed. Actual bytes are internal, not JSON
+locators, and the surrounding PR241 gate independently checks actor/source,
+re-reads PG after bytes await and synchronously fences final output.
+
+**Do not conflate native/local proof with Dev `ArchiveOpaqueProof`:**
+`NativeTelegramIllustrations` exists in the Kaggle resident context, while
+PR241 `PublicIllustrationOutputGate` and its retained Pydantic frame live in
+the Dev MCP ASGI process. Python object identity cannot traverse WSS.
+The native issuer returns
+`NativeIllustrationIssuedBytes(proof=native_proof,data,mime_type,sha256)`,
+*not* an `IssuedArtifactBytes` object accepted directly by the Dev gate.
+The sole integration owner must bind the source's validated native receipt
+and current exact WSS lease to the DEV-held
+`ArchiveOpaqueProof` identity and convert only after independently
+authorizing the operation. **No such WSS media read/bytes response is
+registered in this source PR.**
+
+### Exact shared follow-up hunks reserved for root owner (NOT EDITED)
+
+- `kaggle_protocol.py`: bounded `ILLUSTRATION_READ` native
+  request/result DTO with canonical actor/source/illustration/binding identity,
+  attached run/connection generation and ≤256KiB byte receipt/sha; never use
+  arbitrary user media IDs/URLs or claim native object identity as WSS proof.
+- `kaggle_worker_query.py`: dispatch to this existing native leased owner
+  only after the existing verified actor/source PG read, and return an
+  accepted image snapshot + proof-bound byte response. No second PG pool.
+- `bge_channel.py`: current WSS read owner, same-run/nonce/connection
+  generation and result-size bounds; use the already selected transport.
+- `kaggle_target_runtime.py`: construct/bind the SAME Telegram leased
+  client instance under its exclusive `current` predicate; do not mint
+  another credential/session. No shared source change in this PR.
+- `kaggle_public_backend.py` / `read_issuance.py`: trusted Dev bridge
+  retains its own current `ArchiveOpaqueProof`, exact native WSS result
+  identity and source/lease/actor rechecks through the existing ASGI final
+  issuance, mapping to Dev `IssuedArtifactBytes` only with validated bytes.
+- **Do not repurpose** `NativeSnapshotTransfer` or
+  `SnapshotTicketChannel`: their typed method and operation key are
+  recovery-phase/Dataset-specific, not user image-read grants.
+
+A remaining fidelity limitation is explicit: SQL015 availability persists
+canonical crop *binding bytes* and registered Telegram media locator, **not
+the SHA256 of the crop's exact upload byte stream**. A same-message
+`get_messages` plus independently hashed download proves the actual
+registered object and retrieved pixels under current scope; it does **not**
+bitwise prove equality to the pre-upload uncompressed crop or rule out
+Telegram's normal photo recompression. Product acceptance still needs
+source crop/rendition evidence, use the existing document choice when native
+dimensions require lossless archival, and a reviewed upload-byte digest/receipt
+if exact-bit equality is a requirement. No fabricated persisted SHA added.
+
+### Evidence boundaries
+
+The source-only tests use **the actual** `NativeTelegramIllustrations`
+and `NativeMediaSnapshot` classes plus fake Telethon external I/O:
+real encoded PNG, real 64KiB async chunk iterator, cancellation, revoked
+native lease during observe/download/stream-close, changed topic/media ID,
+stale/replayed/copied proof, scope/source/original/crop mismatches,
+oversize/bogus pixels, expired/current-epoch proofs, and legacy
+`send_one` UNKNOWN/no-resend. They are never called actual live Telegram
+archive, PG/Dataset saved, real ChatGPT image-content receipt or provider ACK.
+A complete first-approved-book PDF/DjVu page→model bbox→Telegram archived crop
+→MCP ImageContent→model actually sees pixels still requires root-owned
+typed WSS transport and sole Opus installed E2E slot, as required by full
+pinned RKB v4.1 / owner alignment / acceptance contract.
