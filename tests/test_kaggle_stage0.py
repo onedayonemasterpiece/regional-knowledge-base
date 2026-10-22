@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import urllib.request
+import urllib.error
 
 import pytest
 
@@ -58,6 +59,26 @@ def sandbox(tmp_path,monkeypatch):
     def no_pip(*args,**kwargs):raise AssertionError('unexpected installer')
     monkeypatch.setattr(stage0.subprocess,'run',no_pip)
     return root,opener
+
+
+def test_download_failure_identifies_artifact_without_private_url(sandbox,capsys):
+    root,opener=sandbox
+    item=download(url='https://fixture.example/native/postgres?signature=private-value')
+    plan=spec(item)
+    def unavailable(*args,**kwargs):
+        raise urllib.error.HTTPError(item.url,403,'private-error-detail',
+            {'Authorization':'private-header'},None)
+    opener.open=unavailable
+    with pytest.raises(Stage0Error,match='stage0_preparation_failed'):
+        prepare_stage0(prepared(root,plan),plan.wire(),run_id='download-fixture')
+    output=capsys.readouterr().out
+    events=[json.loads(line) for line in output.splitlines()]
+    failure=next(event for event in events if event['event']=='stage0_download_failed')
+    assert failure==dict(event='stage0_download_failed',run_id='download-fixture',
+        artifact_name=item.name,artifact_sha256=item.sha256,source_host='fixture.example',
+        error_type='HTTPError',http_status=403)
+    assert 'private-' not in output and 'signature=' not in output and 'https://' not in output
+    assert not (root/item.name).exists()
 
 
 def test_plan_roundtrip_detaches_versions_and_rejects_ambient_fields():
