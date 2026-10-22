@@ -305,6 +305,14 @@ class TargetRuntime:
             **({'dataset_checkpoint':self.target['dataset_checkpoint']} if self.target.get('dataset_checkpoint') is not None else {}),
             source_materializer=self._native_source_materializer(encoder))
         self.recovery_worker=worker
+        from .kaggle_recovery_phases import WorkerRecoveryPhases
+        if type(worker) is WorkerRecoveryPhases:
+            self._bind_schema_migrations(worker,encoder,acquire)
+        self._bind_read_handler_maintenance()
+        self._recovery_available.set()
+        return worker
+
+    def _bind_schema_migrations(self,worker,encoder,acquire):
         from .kaggle_schema_live import LiveSchemaMigrations
         sql_files={}
         sql_root=Path(self.target['sql_root'])
@@ -318,9 +326,6 @@ class TargetRuntime:
         worker.schema_control=LiveSchemaMigrations(files=sql_files,acquire=acquire,database=self.database,
             download=worker.download,current=lambda frame:worker.factory._current((
                 frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])))
-        self._bind_read_handler_maintenance()
-        self._recovery_available.set()
-        return worker
 
     async def recovery(self,frame):
         """Register this handler before _load/prepare; same channel stays live."""

@@ -323,9 +323,12 @@ class NativeSnapshotFactory:
         if self.model_pins is not None and any(versions.get(key)!=value for key,value in self.model_pins.items()):
             raise SnapshotError('snapshot_resident_model_tokenizer_changed')
 
-    async def capture(self,binding,*,workspace,versions,expected_sequence):
+    async def capture(self,binding,*,workspace,versions,expected_sequence,upload_callback=None,before_effect=None):
         """A scoped direct upload callback receives bytes, never bucket credentials."""
-        self._current(binding);self._versions(versions)
+        async def current():
+            if before_effect is None:self._current(binding)
+            else:await before_effect()
+        await current();self._versions(versions)
         if not callable(self.acquire) or not callable(self.upload_ticket):
             raise SnapshotError('native_backup_scoped_transport_unavailable')
         async with asyncio.timeout(self.limits.timeout_seconds):
@@ -357,9 +360,9 @@ class NativeSnapshotFactory:
             await self._run(self.tools.pg_verifybackup.path,str(root/'base'),timeout=self.limits.timeout_seconds)
             records,unpacked,inventory,size,digest=await _blocking(pack_tree,root/'base',root/'base.tar',self.limits)
             _,after=await self.probe(acquire=self.acquire)
-            self._current(binding)
+            await current()
             if after['applied_seq']!=expected_sequence:raise SnapshotError('native_backup_source_advanced')
-            blob=await self.upload_ticket(root/'base.tar',size=size,sha256=digest)
+            blob=await (upload_callback or self.upload_ticket)(root/'base.tar',size=size,sha256=digest)
             if type(blob) is not BlobRef or (blob.size,blob.sha256)!=(size,digest):
                 raise SnapshotError('native_backup_upload_receipt')
             return {'database_generation':self.database.database_generation,'writer_generation':self.database.writer_generation,

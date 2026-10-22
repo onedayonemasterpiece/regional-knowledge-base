@@ -65,15 +65,15 @@ async def test_schema_migration_requires_actual_pg_writer_and_reconciles_same_ve
             return Cursor((state['version'],))
     @asynccontextmanager
     async def acquire():yield Connection()
-    async def migrate(connection,files,*,through_version,before_file):
+    async def migrate(connection,files,*,before_file):
         await before_file(connection)
-        if state['version']==through_version:return ()
-        effects.append(through_version);state['version']=through_version
-        return (through_version,)
+        if state['version']==2:return ()
+        effects.append(2);state['version']=2
+        return (2,)
     monkeypatch.setattr('regional_knowledge.kaggle_schema_live.migrate',migrate)
     owner=LiveSchemaMigrations(files=files,acquire=acquire,current=lambda _:None,
         download=None,database=NS(database_generation='db',writer_generation='writer'))
-    args=dict(expected_schema_version=1,bundle_sha256=bundle_hash(files))
+    args=dict(target_schema_version=2,bundle_sha256=bundle_hash(files))
     with pytest.raises(MigrationDenied,match='writer_changed'):
         await owner('schema_migrate',args,'same-step',{})
     assert not effects
@@ -105,12 +105,13 @@ async def test_schema_migration_requires_actual_pg_writer_and_reconciles_same_ve
 
 @pytest.mark.asyncio
 async def test_controller_holds_barrier_across_lost_checkpoint_and_restart_before_next_ddl(env):
-    effects=[];checkpoints=[];lose=[True]
+    effects=[];checkpoints=[];lose=[True];ledger=[11]
     binding=NS(run_id='run')
     async def request(binding,phase,args,*,operation_key):
         assert phase=='schema_migrate'
-        version=args['expected_schema_version']+1;effects.append(version)
-        return dict(schema_version=version,latest_schema_version=13,checkpoint_required=True)
+        assert args['target_schema_version']==13
+        effects.extend(range(ledger[0]+1,14));ledger[0]=13
+        return dict(schema_version=13,latest_schema_version=13,checkpoint_required=True)
     async def checkpoint(binding,*,schema_version,operation_key,expected_sequence):
         checkpoints.append((schema_version,operation_key))
         assert expected_sequence==0
@@ -121,7 +122,7 @@ async def test_controller_holds_barrier_across_lost_checkpoint_and_restart_befor
         history=NS(_coverage=proof),binding_current=lambda _:True,
         restorer=NS(complete=True,dispatch=NS(request=request)),
         dataset_checkpoints=NS(checkpoint_schema=checkpoint))
-    options=dict(expected_schema_version=11,bundle_sha256='a'*64,
+    options=dict(target_schema_version=13,bundle_sha256='a'*64,
                  database_generation='db',writer_generation='writer',run_id='run')
     key=request_migration(env.q,**options)
     assert request_migration(env.q,**options)==key
@@ -133,13 +134,12 @@ async def test_controller_holds_barrier_across_lost_checkpoint_and_restart_befor
     assert not effects
     startup.config.writer_owner=object()
     with pytest.raises(TimeoutError):await owner.advance(binding)
-    assert not owner.writes_allowed() and effects==[12]
+    assert not owner.writes_allowed() and effects==[12,13]
     restarted=SourceSchemaMigrations(startup)
     assert not restarted.writes_allowed()
-    assert not await restarted.advance(binding)  # verify same checkpoint, no next SQL yet
-    assert effects==[12] and checkpoints[0]==checkpoints[1]
     assert await restarted.advance(binding)
-    assert effects==[12,13] and restarted.intake_allowed() and restarted.writes_allowed()
+    assert effects==[12,13] and checkpoints[0]==checkpoints[1]
+    assert restarted.intake_allowed() and restarted.writes_allowed()
 
 
 @pytest.mark.asyncio

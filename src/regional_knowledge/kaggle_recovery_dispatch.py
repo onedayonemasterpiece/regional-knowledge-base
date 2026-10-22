@@ -93,6 +93,19 @@ class RecoveryPhaseDispatch:
         self._attachment_binding=binding
         if phase not in PHASES or not isinstance(operation_key,str) or not 1<=len(operation_key.encode())<=256:
             raise SnapshotError('recovery_phase_contract')
+        if phase=='schema_migrate':
+            # A known rolled-back busy/timeout may use a fresh job. Unknown or
+            # successful results keep their original identity and are replayed.
+            root=operation_key
+            with self.queue.connect(write=False) as db:
+                for attempt in range(256):
+                    row=db.execute('SELECT state,result FROM jobs WHERE actor=? AND idempotency=?',
+                        ('maintenance:'+self.identity[0],'recovery:'+operation_key)).fetchone()
+                    if row is None or row['state']!='done':break
+                    value=json.loads(row['result'])['value']
+                    if value.get('status')!='rejected' or not value.get('retryable'):break
+                    operation_key=root+':retry:'+str(attempt+1)
+                else:raise SnapshotError('migration_retry_budget')
         if len(self._bindings)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
         arguments=json.loads(encode(arguments));request_hash=sha(encode({'phase':phase,'arguments':arguments}))
         identity=bounded(dict(phase=phase,arguments=arguments,operation_key=operation_key,
@@ -106,7 +119,22 @@ class RecoveryPhaseDispatch:
             _LOG.warning('recovery_phase_unknown run_id=%s phase=%s operation_hash=%s',self.identity[0],phase,sha(operation_key.encode()))
             raise SnapshotError('recovery_phase_unknown_reconcile_same_operation')
         if not self.current(binding):raise PermissionError('recovery binding expired before delivery')
-        return result['result']['value']
+        value=result['result']['value']
+        if phase in ('capture','dataset_verify') and isinstance(value,dict) and value.get('status')=='pending':
+            handle=value.get('handle')
+            if not isinstance(handle,str):raise SnapshotError('snapshot_io_receipt_invalid')
+            async with asyncio.timeout(self.timeout):
+                while True:
+                    status=await self.request(binding,'snapshot_status',dict(handle=handle),
+                        operation_key=sha(encode([operation_key,'status',uuid.uuid4().hex])))
+                    if status.get('status')=='complete':return status['value']
+                    if status.get('status')=='upload_required':
+                        upload=await self.request(binding,'capture_upload',dict(handle=handle),
+                            operation_key=operation_key+':upload')
+                        if upload!={'status':'started'}:raise SnapshotError('snapshot_io_upload_pending')
+                    elif status.get('status')!='pending':raise SnapshotError('snapshot_io_pending_reconciliation')
+                    await asyncio.sleep(2)
+        return value
 
 
     async def dispatch_payload(self,job_id,*,run_id,token,generation):
@@ -156,7 +184,7 @@ class RecoveryPhaseDispatch:
                     or job['state']!='claimed' or not self.eligible(job,run,generation)):
                 raise StaleClaim('snapshot transfer assignment changed')
             identity=json.loads(job['identity'])
-            if (identity['phase']!='capture' or frame['operation_key']!=identity['operation_key']
+            if (identity['phase'] not in ('capture','capture_upload') or frame['operation_key']!=identity['operation_key']
                     or tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))!=self.identity):
                 raise PermissionError('snapshot transfer capture binding changed')
             self.queue.shared_reads.require_durable_resource(run_id,self.identity[2],generation,job['id'],

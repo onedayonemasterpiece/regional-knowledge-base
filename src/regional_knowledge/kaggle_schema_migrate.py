@@ -99,8 +99,7 @@ async def _baseline(connection, migrations, before_file=None):
         LOG.info("schema_migrate baseline schema_version=%s", version)
 
 
-async def migrate(connection, files: Mapping[str, bytes], *, through_version: int | None = None,
-                  before_file=None) -> tuple[int, ...]:
+async def migrate(connection, files: Mapping[str, bytes], *, before_file=None) -> tuple[int, ...]:
     """Apply pending files, each in its own transaction; return committed versions.
 
     On a lost commit ACK the caller reconciles the SAME database generation by
@@ -108,9 +107,6 @@ async def migrate(connection, files: Mapping[str, bytes], *, through_version: in
     journal mutation occurs here.
     """
     migrations = bundle_migrations(files)
-    if through_version is not None and (type(through_version) is not int
-            or not 1 <= through_version <= len(migrations)):
-        raise MigrationDenied("migration_target_invalid")
     if connection.info.transaction_status != TransactionStatus.IDLE:
         raise MigrationDenied("migration_connection_not_idle")
     locked = False
@@ -133,8 +129,6 @@ async def migrate(connection, files: Mapping[str, bytes], *, through_version: in
                 raise MigrationDenied("migration_file_changed")
         applied = []
         for migration in migrations[len(rows):]:
-            if through_version is not None and migration.version > through_version:
-                break
             LOG.info("schema_migrate applying version=%s sha256=%s", migration.version, migration.sha256)
             async with connection.transaction():
                 await connection.execute("SET LOCAL lock_timeout='5s'")

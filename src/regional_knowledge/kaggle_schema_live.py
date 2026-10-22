@@ -93,11 +93,11 @@ class LiveSchemaMigrations:
             finally:
                 path.unlink(missing_ok=True)
             return self.receipt()
-        if phase != "schema_migrate" or set(args) != {"expected_schema_version", "bundle_sha256"}:
+        if phase != "schema_migrate" or set(args) != {"target_schema_version", "bundle_sha256"}:
             raise MigrationDenied("migration_phase_arguments")
-        expected = args["expected_schema_version"]
         latest = len(bundle_migrations(self.files))
-        if type(expected) is not int or not 0 <= expected <= latest or args["bundle_sha256"] != bundle_hash(self.files):
+        if (type(args['target_schema_version']) is not int or args['target_schema_version']!=latest
+                or args["bundle_sha256"] != bundle_hash(self.files)):
             raise MigrationDenied("migration_version_changed")
         async with self.acquire() as connection:
             async def writer_fence(connection):
@@ -109,23 +109,14 @@ class LiveSchemaMigrations:
                     raise MigrationDenied("migration_writer_changed")
             async with connection.transaction():
                 await writer_fence(connection)
-                exists = (await (await connection.execute(
-                    "SELECT to_regclass('rkb_v4.schema_migrations')")).fetchone())[0]
-                version = None if exists is None else (await (await connection.execute(
-                    "SELECT coalesce(max(version),0) FROM rkb_v4.schema_migrations")).fetchone())[0]
-            target = min(expected + 1, latest)
-            if version is not None and version not in (expected, target):
-                raise MigrationDenied("migration_version_changed")
             self.current(frame)
-            # At most one file: the controller checkpoints this committed
-            # version before it asks for the next. Retry targets the same file.
-            applied = await migrate(connection, self.files, through_version=max(1, target), before_file=writer_fence)
+            applied = await migrate(connection, self.files, before_file=writer_fence)
             async with connection.transaction():
                 version = (await (await connection.execute(
                     "SELECT max(version) FROM rkb_v4.schema_migrations")).fetchone())[0]
             self.current(frame)
         return dict(self.receipt(), schema_version=version,
-                    checkpoint_required=version > expected, applied_versions=list(applied))
+                    checkpoint_required=True, applied_versions=list(applied))
 
     def receipt(self):
         return dict(bundle_sha256=bundle_hash(self.files), latest_schema_version=len(bundle_migrations(self.files)))

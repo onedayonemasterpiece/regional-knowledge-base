@@ -16,7 +16,7 @@ from regional_knowledge.kaggle_schema_owner import request_migration
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--queue',default=os.getenv('RKB_BGE_QUEUE_PATH'))
-    parser.add_argument('--expected-version',required=True,type=int)
+    parser.add_argument('--target-version',required=True,type=int)
     parser.add_argument('--bundle-sha256',required=True)
     parser.add_argument('--artifact-approval',type=Path)
     args=parser.parse_args()
@@ -32,7 +32,7 @@ def main():
     if row is None:
         parser.error('a current ready writer without unresolved publication is required')
     artifact=json.loads(args.artifact_approval.read_text()) if args.artifact_approval else None
-    operation=request_migration(queue,expected_schema_version=args.expected_version,
+    operation=request_migration(queue,target_schema_version=args.target_version,
         bundle_sha256=args.bundle_sha256,artifact=artifact,**dict(row))
     print(json.dumps(dict(operation_key=operation,status='requested')))
 
