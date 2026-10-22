@@ -118,7 +118,7 @@ class RecoveryPhaseDispatch:
                 raise StaleClaim('recovery assignment changed')
             identity=json.loads(job['identity'])
             payload=dict(id=job_id,claim=job['claim'],kind='recovery_phase',**identity)
-        if identity['phase'] in ('prepare','drill_prepare','read_handler_stage','dataset_verify'):
+        if identity['phase'] in ('prepare','drill_prepare','drill_migrate','read_handler_stage','dataset_verify'):
             # Kernel metadata readback drops Dataset version qualifiers.
             # Resolve an exact-version SDK download ticket instead of claiming
             # a mounted version observation from our own intended pin.
@@ -220,6 +220,15 @@ class WssSnapshotPhases:
     async def prepare(self,binding,*,operation_key,manifest_bytes,control_bytes,**args):
         return (await self._call(binding,'prepare',dict(args,manifest_b64=b64(manifest_bytes),
             control_b64=b64(control_bytes),restore_operation=operation_key)))['handle']
+
+    async def drill_migrate(self,binding,*,operation_key,manifest_bytes,control_bytes,**args):
+        """Exact pinned Dataset source; same WSS owner and conditional ticket.
+
+        Returned catalog/ACL digests are observations, never PG adoption.
+        """
+        return await self._call(binding,'drill_migrate',dict(args,
+            manifest_b64=b64(manifest_bytes),control_b64=b64(control_bytes),
+            restore_operation=operation_key))
 
     async def apply(self,binding,handle,*,command_bytes,**args):
         return await self._call(binding,'apply',dict(args,handle=handle,command_b64=b64(command_bytes)))
