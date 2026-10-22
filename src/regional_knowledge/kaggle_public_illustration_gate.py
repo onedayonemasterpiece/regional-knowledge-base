@@ -406,7 +406,8 @@ class PublicIllustrationOutputGate:
     async def _native_current_read(self, verified, binding, source_id, illustration_id):
         reader=self.native_read
         return await reader(source_id,illustration_id,
-            verified if getattr(reader, "_requires_verified_context",False)
+            verified if getattr(getattr(reader, "__self__",None),
+                                "_requires_verified_context",False)
             else verified.person_id,binding)
 
     async def _archive_current_observe(self, native, verified, binding):
