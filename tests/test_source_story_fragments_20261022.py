@@ -4,6 +4,7 @@ Only the existing image-source compiler, native SQL activation and accepted
 operation fixture are exercised. No provider/real model/Dev PG is involved.
 """
 import json
+from pathlib import Path
 from uuid import UUID, uuid5
 
 import pytest
@@ -17,8 +18,13 @@ from test_source_stage import SOURCE, original, seal
 from test_source_activation import activation_payload
 from test_source_activation_pg import (
     PG, image_pg, stage_all, prepare, install, accepted, stage_command, next_command,
-    VECTOR,
 )
+from test_kaggle_pg_driver import database
+from test_kaggle_apply import pinned
+from regional_knowledge.kaggle_apply import HandlerRegistry
+from regional_knowledge.kaggle_native_source_bindings import native_source_handler
+from regional_knowledge.source_activation import MATERIALIZE_ROUTE, ACTIVATE_ROUTE
+from regional_knowledge.source_stage import STAGE_ROUTE, SEAL_ROUTE
 from regional_knowledge.source_stage import SEAL_ROUTE
 
 # 660 individually separated words fit the existing 4000-character Story.body
@@ -88,6 +94,22 @@ async def test_long_body_kept_exact_but_each_vector_input_is_bounded():
 @pytest.mark.asyncio
 async def test_pg_long_body_exact_readback_and_replay_idempotency(image_pg):
     env = image_pg
+    # Existing GH PG17 fixture only. Override the target SQL14 callables with
+    # additive SQL18, then bind the real registry to their actual function pins.
+    async with env["connection"].transaction():
+        await env["connection"].execute(
+            (Path(__file__).resolve().parents[1] /
+             "sql/kaggle/018_story_embedding_fragments.sql").read_text(), prepare=False)
+    handlers = []
+    for route, suffix in ((STAGE_ROUTE, "source_stage_v2"),
+                          (SEAL_ROUTE, "source_stage_seal_v2"),
+                          (MATERIALIZE_ROUTE, "source_materialize_v1"),
+                          (ACTIVATE_ROUTE, "source_activate_v1")):
+        check = await pinned(env["connection"], "check_" + suffix)
+        apply = await pinned(env["connection"], "apply_" + suffix)
+        handlers.append(native_source_handler(route,
+            check_sha256=check.definition_sha256, apply_sha256=apply.definition_sha256))
+    env["registry"] = HandlerRegistry(handlers)
     # Keep the existing accepted page, region, finding and source edition. Only
     # replace the authored body and its derived fragment metadata.
     sample = authored_batch()
