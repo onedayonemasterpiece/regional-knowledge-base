@@ -43,6 +43,7 @@ Candidate `768bca5c950507b053b157626e34c4ffcf6539af` passed CI39773458811:
 | PR253 | `592a2a2a3e87ebe64d9d5b166898aeb5c31b1ce4` | Current admitted native SQL health and status hook | Clean; health-only changes preserve dispatch/media/expert |
 | PR254 | `ec1a82dee9fac4cdb0a4f63a188de1b6b2d8dddb` | Bound Expert claim/result workflow and expert-only server routes | Clean; only3 own paths added over already included PR247/250 |
 | PR255 | `b3f8ee0c3f45e6c47646ac91404c7cbd6a96c740` | Bound Expert recovery/status after local control loss | Clean; only3 own paths over already included PR254 |
+| PR256 | `cd98585597721d33d61121aca47ac613572ef155` | In-memory trusted native receipt consumer and context factory | Clean; only3 own paths over already included PR255 |
 | PR217 selected SQL prerequisites | `2991af968ad40bef9f6e43d181548fa25b7650c5` | Exact SQL015/016 and adapted ordered PG fixture | Only two new SQL files; no old whole-file source merge |
 
 PR246 source depends on already included PR242/243. Its earlier fbdafb5
@@ -99,6 +100,11 @@ test:3078 passed/35 skipped on both Python, actual metadata2 passed/0 skipped.
 PR255's own full CI39781563243 passed2479/32 skipped on each Python; its new
 combined input requires the next candidate run. Recovery/status source tests
 use synthetic external Dataset/provider I/O and do not assert installed sends.
+CI39783693219 onf5543d6 completed both Python suites and actual metadata SUCCESS,
+verifying the PR255 combined input. PR256's own CI39783320839 passed both Python;
+its new combined input still needs a fresh run. The source callback requires the
+existing provider owner's original typed native receipt and verified Dataset
+coverage; no provider adapter is installed or executed by this assembly.
 
 ## Explicit exclusions and next boundaries
 
