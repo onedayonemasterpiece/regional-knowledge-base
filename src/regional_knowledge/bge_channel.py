@@ -246,8 +246,14 @@ def channel_route(queue, *, read_telemetry=None):
                             elif runtime_readiness is None:
                                 issues = ('runtime_readiness_required',)
                             else:
+                                evaluated = runtime_readiness
                                 proof = await queue_call(queue.accept_search_runtime, run_id, token,
-                                                         generation, runtime_readiness)
+                                                         generation, evaluated)
+                                if runtime_readiness is not evaluated:
+                                    # A newer READY replaced this observation while it
+                                    # was checked; its own promote reports the outcome.
+                                    # Never answer it with a stale runtime_not_ready.
+                                    return
                                 issues = proof.issues
                             if issues:
                                 if runtime_blocked != issues:
