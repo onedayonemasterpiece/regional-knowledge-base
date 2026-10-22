@@ -12,6 +12,7 @@ from regional_knowledge.geo_migration import GeoMigrationManifest,canonical
 from regional_knowledge.geo_whitelist import build_geo_whitelist
 from regional_knowledge.geo_read_gate import GeoReadGate
 from regional_knowledge.kaggle_apply import HandlerRegistry
+from regional_knowledge.control_spool import SpoolDenied
 from regional_knowledge.kaggle_geo_contracts import GeoReadResult,GeoReadRecord
 from regional_knowledge.participant_contracts import ParticipantDisable
 from regional_knowledge.source_history_verifier import _Coverage
@@ -165,7 +166,6 @@ async def test_retained_terminal_geo_spool_and_gate_survive_current_registry_wit
 
 @pytest.mark.asyncio
 async def test_old_unapplied_spool_entry_never_executes_through_current_registry(env):
-    from regional_knowledge.control_spool import SpoolError
     from regional_knowledge.kaggle_current_registry import current_registry
     manifest=build_geo_whitelist(**snapshot()).require_ready()
     command=plan_geo_manifest(manifest).commands(first_sequence=1,operation_key='old-pending',request_id='old-pending',
@@ -176,7 +176,7 @@ async def test_old_unapplied_spool_entry_never_executes_through_current_registry
     env.spool.registry=current_registry()
     class ForbiddenPg:
         async def execute(self,*args,**kwargs):pytest.fail('historical pending command reached PG')
-    with pytest.raises(SpoolError):
+    with pytest.raises(SpoolDenied):
         await env.spool.apply(command.operation_key,ForbiddenPg(),writer_generation='writer-1')
     row=env.spool._row(command.operation_key)
     assert bytes(row['command_bytes'])==command.encode() and row['apply_state']=='NOT_SENT'
