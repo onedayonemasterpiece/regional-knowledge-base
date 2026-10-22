@@ -26,7 +26,7 @@ from .queue_writer import QueueWriterAuthority
 
 def compose_source_service(*,queue,oauth_provider,participants,object_store,stream,registry,
                            history_adapter,run_id,database_generation,writer_generation,
-                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=(),source_restore=None,source_snapshot=None,geo_bootstrap=None,dataset_seed=None):
+                           destination_ref='rkb-source-http-response',source_import=None,geo_manifest_operation_keys=(),source_restore=None,source_snapshot=None,geo_bootstrap=None,dataset_seed=None,telegram_runtime_source=None):
     """Reuse the actual owner objects; returns the real server.main input.
 
     object_store is the already configured S3ObjectStore authority/client, not
@@ -71,7 +71,7 @@ def compose_source_service(*,queue,oauth_provider,participants,object_store,stre
         return TargetServiceStartup(TargetServiceConfig(oauth_provider,participants,queue,spool,history_adapter,
             writer_generation,writer.current,destination_ref=destination_ref,writer_owner=writer,
             geo_manifest_operation_keys=geo_manifest_operation_keys,source_restore=source_restore,source_snapshot=source_snapshot,geo_bootstrap=geo_bootstrap,
-            dataset_seed=dataset_seed,**import_options))
+            dataset_seed=dataset_seed,telegram_runtime_source=telegram_runtime_source,**import_options))
     except BaseException:
         if spool is not None:spool.close()
         if writer is not None:writer.close()
@@ -170,7 +170,7 @@ def configured_source_service():
         return result
     value=json.loads(data,object_pairs_hook=unique)
     fields={'codec','run_id','stream','database','registry_sha256','observer_sha256'}
-    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys','source_restore','source_snapshot','geo_bootstrap','dataset_seed'}
+    if (type(value) is not dict or not fields<=value.keys() or set(value)-fields-{'source_import','geo_manifest_operation_keys','source_restore','source_snapshot','geo_bootstrap','dataset_seed','telegram_original_locator_file'}
             or value['codec']!='rkb.source-service.v1'):
         raise ValueError('exact source owner configuration required')
     if 'geo_manifest_operation_keys' in value and type(value['geo_manifest_operation_keys']) is not list:
@@ -221,8 +221,13 @@ def configured_source_service():
     if 'dataset_seed' in value:
         from .kaggle_dataset_seed import DatasetSeedConfig
         dataset_seed=DatasetSeedConfig.from_wire(value['dataset_seed'])
+    telegram_source=None
+    if 'telegram_original_locator_file' in value:
+        if import_owners is None:raise ValueError('Telegram original requires configured source import')
+        from .telegram_runtime_owners import configured_rkb1_source
+        telegram_source=configured_rkb1_source(queue,value['telegram_original_locator_file'])
     return compose_source_service(queue=queue,oauth_provider=provider,participants=people,
         object_store=object_store,stream=value['stream'],registry=registry,history_adapter=history,
         run_id=value['run_id'],database_generation=database.database_generation,writer_generation=database.writer_generation,
         source_import=import_owners,geo_manifest_operation_keys=tuple(value.get('geo_manifest_operation_keys',())),source_restore=restore,source_snapshot=snapshot,geo_bootstrap=geo_bootstrap,
-        dataset_seed=dataset_seed)
+        dataset_seed=dataset_seed,telegram_runtime_source=telegram_source)
