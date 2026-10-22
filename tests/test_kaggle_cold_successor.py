@@ -180,3 +180,18 @@ async def test_running_owner_adoption_preserves_public_routes_spool_auth_and_sto
         await startup.restorer.aclose()
         await startup.source_dispatch.aclose()
         startup.config.spool.close();startup.config.writer_owner.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('guard',['publication_unknown','writer_active','provider_unknown'])
+async def test_successor_does_not_discard_unsettled_original_authority(owner,guard):
+    e=owner;source=source_config(e);run=await terminal_then_demand(e)
+    with e.q.connect() as db:
+        if guard=='publication_unknown':
+            db.execute("UPDATE rkb_writer_control SET publication_json=?", ('{"state":"UNKNOWN"}',))
+        elif guard=='writer_active':db.execute('UPDATE rkb_writer_control SET active=1')
+        else:db.execute("UPDATE runs SET launch_state='dispatched' WHERE id=?",(e.run,))
+    with pytest.raises(ValueError):prepare_successor(e.q,run,target(),source)
+    with e.q.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM rkb_cold_successor_plans').fetchone()[0]==0
+        assert db.execute('SELECT count(*) FROM rkb_writer_generations').fetchone()[0]==1

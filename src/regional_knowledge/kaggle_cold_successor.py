@@ -80,6 +80,9 @@ def prepare_successor(queue, run_id, target, source):
             or type(source.get('stream')) is not str):
         raise ValueError('same verified restore target/source authority required')
     restore = SourceRestoreConfig.from_wire(source['source_restore'])
+    prefix = 'recovery/v1/' + hashlib.sha256(source['stream'].encode()).hexdigest() + '/'
+    if not restore.manifest.key.startswith(prefix + 'snapshots/manifests/'):
+        raise ValueError('restore manifest must retain original journal stream')
     if restore.dataset_checkpoint != target.dataset_checkpoint:
         raise ValueError('target and source restore checkpoint differ')
     anchor = hashlib.sha256(_encoded(dict(target=target.wire(), source=source)).encode()).hexdigest()
@@ -123,6 +126,10 @@ def prepare_successor(queue, run_id, target, source):
         options = dict(database=database, initialized_receipt=None)
         if target.dataset_checkpoint is not None:
             checkpoint = target.dataset_checkpoint
+            storage = hashlib.sha256(json.dumps(['kaggle-dataset', checkpoint.owner_slug,
+                checkpoint.dataset_slug, prefix], separators=(',', ':')).encode()).hexdigest()
+            if storage != writer['storage_sha256']:
+                raise ValueError('Dataset successor cannot change original storage authority')
             store = db.execute('SELECT * FROM rkb_dataset_recovery_store WHERE storage=?',
                 (writer['storage_sha256'],)).fetchone()
             if store is None:
