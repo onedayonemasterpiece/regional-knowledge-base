@@ -50,9 +50,9 @@ def test_sql017_fixed_order_manifest_never_uses_sql015_as_new_migration():
     assert [r['name'] for r in pins.manifest['artifacts']]==list(ARTIFACTS)
     handler=revision2_upgrade_handler(pins)
     assert handler.route==UPGRADE_ROUTE
-    assert handler.transition.target_revisions==REVISION2_REVISIONS if hasattr(handler.transition,'target_revisions') else handler.transition is not None
+    assert handler.transition is not None and handler.transition.target==REVISION2_REVISIONS
     with pytest.raises(ValueError):
-        NativeRevision2UpgradePins('0'*64,*hashes[1:],'1'*64,'2'*64,'3'*64)
+        NativeRevision2UpgradePins('BAD',hashes[1],hashes[2],'1'*64,'2'*64)
 
 
 @pytest.mark.parametrize('route',[
@@ -62,7 +62,7 @@ def test_versioned_command_routes_are_unique_and_do_not_masquerade_as_v1(route):
     handler=revision2_native_handler(route,check_sha256='1'*64,apply_sha256='2'*64)
     assert handler.route==route and handler.revisions==REVISION2_REVISIONS
     assert handler.dependency.scope_class=='public_source'
-    assert 'source_id' in handler.dependency.keys
+    assert 'source_id' in handler.dependency.resource_keys
 
 
 def test_revision2_stage_binds_original_page_and_distinct_ingestion():
