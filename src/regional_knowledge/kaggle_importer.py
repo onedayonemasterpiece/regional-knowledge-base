@@ -207,10 +207,13 @@ class KaggleSourceImporter:
 
     @staticmethod
     def _budget(db):
+        # Keep terminal intake identities, receipts and status addressable;
+        # only unsettled control rows consume active row/byte capacity.
         row = db.execute('''SELECT count(*),coalesce(sum(length(CAST(metadata_json AS BLOB))+
             length(CAST(rights_json AS BLOB))+coalesce(length(CAST(stage_json AS BLOB)),0)+
             coalesce(length(CAST(research_json AS BLOB)),0)+
-            coalesce(length(CAST(semantic_json AS BLOB)),0)+2048),0) FROM rkb_source_intake_control''').fetchone()
+            coalesce(length(CAST(semantic_json AS BLOB)),0)+2048),0) FROM rkb_source_intake_control
+            WHERE phase NOT IN ('finalized','failed')''').fetchone()
         if row[0] > MAX_CONTROL_ROWS or row[1] > MAX_CONTROL_BYTES:
             raise failure('small_import_control_capacity')
 
