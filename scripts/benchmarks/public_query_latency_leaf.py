@@ -128,6 +128,48 @@ def valid_corpus(value: object) -> dict:
 
 
 
+def verify_first_book_readiness(corpus: dict, fixture: dict, cases: list[dict]) -> None:
+    """Require four separately observable first-book milestones, not just READY.
+
+    Metadata can attest a proof's identity; it cannot independently produce a
+    real notebook/PG/public MCP/Saved receipt. The sole operator must corroborate
+    these nonsecret digests with its existing live authority/readback.
+    """
+    readiness=fixture.get("readiness")
+    keys={"notebook_state","notebook_run_ref_sha256","pg_state",
+          "pg_database_generation_ref","pg_schema_revision",
+          "pg_applied_seq","pg_projection_seq",
+          "route_state","route_read_trace_sha256",
+          "import_state","import_source_id","import_source_revision",
+          "import_edition_sha256","import_remote_outcome_sha256"}
+    if type(readiness) is not dict or set(readiness)!=keys:
+        raise ValueError("four distinct notebook/pg/route/import owner receipts required")
+    if (readiness["notebook_state"]!="running"
+            or type(readiness["notebook_run_ref_sha256"]) is not str
+            or HEX64.fullmatch(readiness["notebook_run_ref_sha256"]) is None):
+        raise ValueError("notebook_running_not_proven")
+    if (readiness["pg_state"]!="restored"
+            or readiness["pg_database_generation_ref"]!=corpus["database_generation_ref"]
+            or readiness["pg_schema_revision"]!=corpus["schema_revision"]
+            or type(readiness["pg_applied_seq"]) is not int
+            or type(readiness["pg_projection_seq"]) is not int
+            or readiness["pg_applied_seq"]!=corpus["applied_seq"]
+            or readiness["pg_projection_seq"]!=corpus["projection_seq"]):
+        raise ValueError("pg_restored_frontier_not_proven")
+    if (readiness["route_state"]!="usable"
+            or type(readiness["route_read_trace_sha256"]) is not str
+            or HEX64.fullmatch(readiness["route_read_trace_sha256"]) is None):
+        raise ValueError("public_route_usable_not_proven")
+    if (readiness["import_state"]!="Saved"
+            or type(readiness["import_remote_outcome_sha256"]) is not str
+            or HEX64.fullmatch(readiness["import_remote_outcome_sha256"]) is None
+            or readiness["import_edition_sha256"]!=fixture["source_edition_sha256"]
+            or not any(readiness["import_source_id"]==case["source_id"]
+                       and readiness["import_source_revision"]==case["source_revision"]
+                       for case in cases)):
+        raise ValueError("real_import_saved_durable_not_proven")
+
+
 def verify_query_gold_fixture(questions: Mapping[str,str], corpus: dict, fixture: dict) -> str:
     """Pure metadata gate on eight owner-reviewed source-evidence fixtures.
 
@@ -138,7 +180,7 @@ def verify_query_gold_fixture(questions: Mapping[str,str], corpus: dict, fixture
     """
     required={"codec","state","profile","corpus_manifest_sha256",
               "database_generation_ref","source_edition_sha256",
-              "review_receipt_sha256","cases"}
+              "review_receipt_sha256","cases","readiness"}
     if type(fixture) is not dict or set(fixture)!=required:
         raise ValueError("exact owner-approved source gold metadata required")
     if (fixture["codec"]!="rkb.first-book-query-gold.v1"
@@ -179,6 +221,7 @@ def verify_query_gold_fixture(questions: Mapping[str,str], corpus: dict, fixture
                 or type(case["review_receipt_sha256"]) is not str
                 or HEX64.fullmatch(case["review_receipt_sha256"]) is None):
             raise ValueError("OCR-only or unreviewed gold is not admissible")
+    verify_first_book_readiness(corpus,fixture,cases)
     return sha256(json.dumps(fixture,sort_keys=True,separators=(",",":"),
                              ensure_ascii=False,allow_nan=False).encode("utf-8")).hexdigest()
 
