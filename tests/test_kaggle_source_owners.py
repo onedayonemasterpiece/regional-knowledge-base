@@ -11,7 +11,8 @@ from test_queue_writer import owner
 from test_read_authority import auth
 from test_participants import people
 from test_control_spool import handler
-from test_kaggle_service_startup import HistoryAdapter
+from test_kaggle_service_startup import HistoryAdapter, service
+from test_kaggle_public_backend import target
 
 
 @pytest.mark.asyncio
@@ -78,6 +79,51 @@ async def test_concrete_composition_reuses_actual_owners_and_journal_writer_fenc
         await startup.config.writer_owner.retire('writer-1')
         assert not startup.reads_current() and not await startup.refresh()
     assert startup.config.writer_owner.closed and e.a._fd is None
+
+
+
+
+def test_private_slack_ingress_config_reuses_exact_target_owners_and_fails_closed(service,tmp_path):
+    """Only an explicitly installed, private synthetic scope enables the route."""
+    import json
+    from regional_knowledge.kaggle_source_owners import configured_expert_slack_ingress
+
+    startup=service.startup
+    signing=tmp_path/'not-a-provider-secret'
+    signing.write_text('synthetic-signing-secret-for-only-unit-tests')
+    signing.chmod(0o600)
+    path=tmp_path/'slack-ingress.json'
+    value=dict(codec='rkb.expert-slack-ingress.v1',app_id='A111',team_id='T111',
+        bot_user_id='UBOT',allowed_channels=['C111'],signing_secret_file=str(signing))
+    path.write_text(json.dumps(value));path.chmod(0o600)
+    ingress=configured_expert_slack_ingress(startup,str(path))
+    assert ingress.control.people is startup.config.participants
+    assert ingress.control.spool is startup.config.spool
+    assert ingress.control.allowed_channels=={'C111'}
+
+    path.chmod(0o644)
+    with pytest.raises(ValueError,match='private Slack config'):
+        configured_expert_slack_ingress(startup,str(path))
+    path.chmod(0o600)
+    signing.chmod(0o644)
+    with pytest.raises(ValueError,match='private Slack config'):
+        configured_expert_slack_ingress(startup,str(path))
+    signing.chmod(0o600)
+    path.write_text(json.dumps(dict(value,allowed_channels=['C111','C111'])))
+    with pytest.raises(ValueError,match='exact Slack ingress config'):
+        configured_expert_slack_ingress(startup,str(path))
+    path.write_text(json.dumps(dict(value,unknown_field=True)))
+    with pytest.raises(ValueError,match='exact Slack ingress config'):
+        configured_expert_slack_ingress(startup,str(path))
+    path.write_text('{"codec":"v1","codec":"v2"}')
+    with pytest.raises(ValueError,match='duplicate Slack config'):
+        configured_expert_slack_ingress(startup,str(path))
+    path.write_text(json.dumps(value))
+    # A symlink is not an opt-in installation, even to the exact private file.
+    alias=tmp_path/'slack-symlink.json'
+    alias.symlink_to(path)
+    with pytest.raises(OSError):
+        configured_expert_slack_ingress(startup,str(alias))
 
 
 def test_fixed_entrypoint_requires_private_exact_metadata_before_any_owner_creation(tmp_path,monkeypatch):

@@ -9,6 +9,7 @@ without the existing accepted-intent reconciler.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 
@@ -22,6 +23,8 @@ from .participants import ParticipantError
 
 PATH='/internal/rkb/expert-slack-events'
 MAX_BODY=262144
+_MAX_INFLIGHT_STAGES=16  # Only ephemeral work under one HTTP owner.
+_LOG=logging.getLogger(__name__)
 
 
 class ExpertSlackIngress:
@@ -35,6 +38,10 @@ class ExpertSlackIngress:
         self.control=control
         self._signing_secret=signing_secret
         self._clock=clock or time.time
+        # Bounded, deduplicated pending CAS tasks. They retain the existing
+        # writer fence if Slack's 2.5s HTTP timeout elapses during SQLite lock
+        # contention. The next verified event retry reads the original bytes.
+        self._staging_tasks={}
 
     async def __call__(self, request):
         try:
@@ -64,6 +71,39 @@ class ExpertSlackIngress:
                     # Signed unsupported/self/bot event: no new request.
                     return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
                 outcome=await asyncio.to_thread(self.control.accept,observation)
+                if self.control.dataset_records is not None:
+                    # A signed request is staged only by the existing fenced
+                    # Dataset CAS. Local staging never earns Slack HTTP 200.
+                    request_id=outcome['request_id']
+                    task=self._staging_tasks.get(request_id)
+                    if task is None:
+                        if len(self._staging_tasks)>=_MAX_INFLIGHT_STAGES:
+                            return JSONResponse({'error':'remote_intent_pending'},
+                                status_code=503,headers={'Cache-Control':'no-store',
+                                                         'Retry-After':'1'})
+                        task=asyncio.create_task(
+                            self.control.stage_received_dataset(request_id))
+                        self._staging_tasks[request_id]=task
+                        def done(finished, identity=request_id):
+                            if self._staging_tasks.get(identity) is finished:
+                                self._staging_tasks.pop(identity,None)
+                            try:
+                                finished.result()
+                            except asyncio.CancelledError:
+                                pass
+                            except Exception as exc:
+                                # Provider event content, ids and secrets MUST
+                                # NOT appear in logs. The retry stays 503.
+                                _LOG.warning("expert_dataset_stage_pending error_type=%s",
+                                             type(exc).__name__)
+                        task.add_done_callback(done)
+                    # Do not cancel a CAS task while its worker thread still
+                    # holds the existing writer fence. Slack HTTP may time out
+                    # independently; never 200 until exact remote coverage.
+                    await asyncio.shield(task)
+                    covered=await asyncio.to_thread(
+                        self.control.confirm_dataset_coverage,request_id)
+                    outcome=dict(outcome,durable=covered)
                 if outcome['durable'] is not True:
                     # Do not give Slack an irreversible 200 for a local-only
                     # received row that could vanish with the DevCoveer disk.
@@ -77,6 +117,9 @@ class ExpertSlackIngress:
                                 headers={'Cache-Control':'no-store','Retry-After':'1'})
         except RequestControlError as exc:
             code=exc.code
+            if code=='request_restore_pending':
+                return JSONResponse({'error':'request_pending'},status_code=503,
+                    headers={'Cache-Control':'no-store','Retry-After':'1'})
             status=400 if code in ('invalid_signed_body','slack_event_invalid','invalid_request_text') else 403
             # No ids, raw event text, signatures or user identity in response.
             return JSONResponse({'error':'slack_request_invalid' if status==400

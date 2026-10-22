@@ -80,6 +80,76 @@ def compose_source_service(*,queue,oauth_provider,participants,object_store,stre
         raise
 
 
+def configured_expert_slack_ingress(target_startup, config_path):
+    """Opt-in signed Slack route using the existing Dev person and spool owners.
+
+    The installed signing secret is read only for an explicitly configured
+    route. Neither this factory nor the HTTP ingress seals expert requests:
+    until a separate remote-intent reconciler exists, valid messages remain
+    received/503 and cannot be dispatched or counted as Saved.
+    """
+    import re
+    from .expert_request_control import TargetExpertRequestControl
+    from .expert_slack_ingress import ExpertSlackIngress
+
+    if type(target_startup) is not TargetServiceStartup:
+        raise TypeError('Slack ingress requires the exact target startup')
+
+    def private_bytes(value, maximum):
+        if (type(value) is not str or not 1 <= len(value) <= 1024
+                or not Path(value).is_absolute()):
+            raise ValueError('absolute private Slack config path required')
+        fd = os.open(value, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_mode & 0o077
+                    or not 1 <= before.st_size <= maximum):
+                raise ValueError('private Slack config file required')
+            raw = os.read(fd, maximum + 1)
+            after = os.fstat(fd)
+            if (len(raw) != before.st_size or os.read(fd, 1)
+                    or (after.st_size, after.st_mtime_ns) !=
+                    (before.st_size, before.st_mtime_ns)):
+                raise ValueError('Slack config changed during read')
+            return raw
+        finally:
+            os.close(fd)
+
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError('duplicate Slack config field')
+            value[key] = item
+        return value
+
+    value = json.loads(private_bytes(config_path, 4096), object_pairs_hook=unique)
+    required = {'codec', 'app_id', 'team_id', 'bot_user_id',
+                'allowed_channels', 'signing_secret_file'}
+    if (type(value) is not dict or set(value) != required
+            or value['codec'] != 'rkb.expert-slack-ingress.v1'
+            or type(value['app_id']) is not str
+            or re.fullmatch(r'A[A-Z0-9]+', value['app_id']) is None
+            or type(value['team_id']) is not str
+            or re.fullmatch(r'T[A-Z0-9]+', value['team_id']) is None
+            or type(value['bot_user_id']) is not str
+            or re.fullmatch(r'[UW][A-Z0-9]+', value['bot_user_id']) is None
+            or type(value['allowed_channels']) is not list
+            or len(value['allowed_channels']) > 32
+            or any(type(channel) is not str
+                   or re.fullmatch(r'[CG][A-Z0-9]+', channel) is None
+                   for channel in value['allowed_channels'])
+            or len(set(value['allowed_channels'])) != len(value['allowed_channels'])):
+        raise ValueError('exact Slack ingress config required')
+    signing_secret = private_bytes(value['signing_secret_file'], 257).decode('ascii').removesuffix('\n')
+    control = TargetExpertRequestControl(
+        target_startup.config.participants, target_startup.config.spool,
+        app_id=value['app_id'], team_id=value['team_id'],
+        bot_user_id=value['bot_user_id'],
+        allowed_channels=tuple(value['allowed_channels']))
+    return ExpertSlackIngress(control, signing_secret=signing_secret)
+
+
 def configured_source_service():
     """Fixed production entrypoint over the application's existing owner config."""
     path=os.getenv('RKB_KAGGLE_SOURCE_CONFIG','').strip()
