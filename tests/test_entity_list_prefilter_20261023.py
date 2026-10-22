@@ -34,7 +34,7 @@ from test_kaggle_source_graph_read import request as old_request, row as origina
 from test_kaggle_fact_read import Native
 
 ROOT = Path(__file__).resolve().parents[1]
-pytestmark = pytest.mark.skipif(
+PG17 = pytest.mark.skipif(
     not os.getenv('RKB_KAGGLE_TEST_DSN'),
     reason='existing authorized GitHub Actions PG17 service only',
 )
@@ -117,6 +117,7 @@ async def graph_sql22():
         await connection.close()
 
 
+@PG17
 @pytest.mark.asyncio
 async def test_real_pg17_sparse_kinds_query_before_limit_unicode_and_withdrawal(graph_sql22):
     native=graph_sql22
@@ -154,8 +155,9 @@ async def test_real_pg17_sparse_kinds_query_before_limit_unicode_and_withdrawal(
             (SOURCE,'strasse'))).fetchall()==[]
 
 
+@PG17
 @pytest.mark.asyncio
-async def test_real_pg17_source_filtered_cursor_returns_every_rare_entity_and_no_false_tail(graph_sql22):
+async def test_real_pg17_source_filtered_cursor_returns_every_rare_entity_and_no_false_tail(graph_sql22,monkeypatch):
     native=graph_sql22
     assert (await apply(native,long_graph_command())).status=='applied'
     connection=native['connection']
@@ -166,6 +168,13 @@ async def test_real_pg17_source_filtered_cursor_returns_every_rare_entity_and_no
         # Restore an accurate read frontier after the accepted domain command.
         await connection.execute(
             "SELECT rkb_v4.publish_read_frontier('sql22-entity-fixture','writer-1',1,1,true,true)")
+    original_execute=psycopg.AsyncCursor.execute
+    actual_pages=[]
+    async def metered_execute(cursor,statement,params=None,**kwargs):
+        if 'read_source_graph_' in str(statement):
+            actual_pages.append(str(statement))
+        return await original_execute(cursor,statement,params,**kwargs)
+    monkeypatch.setattr(psycopg.AsyncCursor,'execute',metered_execute)
     pages=[]
     cursor=None
     for index in range(3):
@@ -181,6 +190,7 @@ async def test_real_pg17_source_filtered_cursor_returns_every_rare_entity_and_no
         else:
             assert cursor is None
     assert pages==['Straße number 0','Straße number 1','Straße number 2']
+    assert len(actual_pages)==3 and all('read_source_graph_filtered_v1' in q for q in actual_pages)
     missing=await execute_source_graph_read(
         selected(query='not-in-source-7355',kinds=['organization']),acquire=acquire)
     assert missing.status=='ok' and not missing.records and missing.next_cursor is None
@@ -191,16 +201,25 @@ async def test_real_pg17_source_filtered_cursor_returns_every_rare_entity_and_no
     assert withdrawn.status=='ok' and not withdrawn.records and withdrawn.next_cursor is None
 
 
+@PG17
 @pytest.mark.asyncio
 async def test_real_pg17_default_unicode_fold_matches_python_codepoint_rules(graph_sql22):
     connection=graph_sql22['connection']
     examples=['STRASSE','Straße','ẞ','ﬃ','İ','I','ı','ς','Σ','ΟΣ','ŉ','K','Œ',
         'КЁНИГСБЕРГ','ὈΔΥΣΣΕΎΣ','𝔄','Ⅳ','\u0000'.replace('\u0000','')]
     examples=[x for x in examples if x]
-    for value in examples:
-        row=await (await connection.execute(
-            'SELECT rkb_v4.source_graph_casefold_v1(%s)',(value,))).fetchone()
-        assert row[0]==value.casefold(),(value,row[0],value.casefold())
+    # Exhaust every changing Unicode code point, not just hand-picked cases.
+    # CPython 3.12/3.13 use the same 1530 default C+F mappings as Unicode 15.1.
+    import sys
+    mapped=[(chr(cp),chr(cp).casefold()) for cp in range(sys.maxunicode+1)
+        if chr(cp).casefold()!=chr(cp)]
+    assert len(mapped)==1530, 'Unicode version changed: update the pinned SQL map explicitly'
+    inputs=[s for s,_ in mapped]+examples
+    expected=[folded for _,folded in mapped]+[s.casefold() for s in examples]
+    rows=await (await connection.execute(
+        'SELECT rkb_v4.source_graph_casefold_v1(value) FROM unnest(%s::text[]) t(value)',
+        (inputs,))).fetchall()
+    assert [row[0] for row in rows]==expected
 
 
 @pytest.mark.asyncio
