@@ -95,6 +95,17 @@ recovery; an in-memory host receipt is not Dataset Saved.
 | `bge_channel.py`, `kaggle_readiness.py` | Authenticate update result/ACK and validate current generation/readiness; preserve attachment and actor/writer fences |
 | `kaggle_target_launch.py` | Ship the host hook in the independently verified bundle and recompute actual complete packaging inventory |
 
+The Dataset-backed source currently installs `DatasetSnapshotTicketIssuer`,
+whose GET method accepts only the pinned checkpoint archive. The older S3
+`SnapshotTicketIssuer` accepts only its `snapshots/blobs/` namespace. Neither
+already provides a code GET for `bootstrap-artifacts/<SHA>/<filename>`.
+The existing recovery dispatcher therefore needs explicit purpose routing for
+the reviewed code `BlobRef` through the existing bootstrap object-store client
+and scoped `NativeSnapshotTransfer` ticket. Preserve the same current
+writer/admission checks and exact size/SHA/conditional GET. Do not accept an
+arbitrary URL/key, replace Dataset persistence or publish a Dataset per patch.
+This is a missing integration adapter, not missing credentials or a new service.
+
 The Dev barrier must prevent creation of new **accepted** writes under the old
 revision until adoption. Merely stopping native dispatch is insufficient.
 Fresh source-history and catalog closure must be established before product
