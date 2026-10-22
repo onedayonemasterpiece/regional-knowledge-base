@@ -419,6 +419,8 @@ class KaggleSourceBackend:
                             except asyncio.CancelledError:
                                 if asyncio.current_task().cancelling():raise
                                 await self.read_authority.recheck(authority)
+                                if time.monotonic()>=deadline:
+                                    return DatabaseHealth(binding,reason='pg_timeout')
                                 raise TargetUnavailable('SQL health request attachment changed') from None
                             if type(result) is not SqlHealthResult:
                                 raise TargetUnavailable('SQL health response type differs')
