@@ -218,7 +218,7 @@ async def test_configured_restart_selects_finalized_run_before_constructing_rest
     monkeypatch.setenv('RKB_BGE_QUEUE_PATH',str(e.q.path))
     monkeypatch.setattr('regional_knowledge.personal_auth_cli._runtime',lambda:(e.auth.provider,None))
     monkeypatch.setattr('regional_knowledge.supabase_backend._object_store_from_env',lambda:store)
-    monkeypatch.setattr('regional_knowledge.kaggle_source_owners.BgeQueue',lambda path:e.q)
+    e.a.close()  # Actual API-owner restart releases its existing admission flock.
     startup=configured_source_service()
     try:
         assert startup.config.writer_owner.run_id==run
@@ -229,4 +229,4 @@ async def test_configured_restart_selects_finalized_run_before_constructing_rest
         assert not startup.reads_current()
     finally:
         await startup.restorer.aclose();await startup.source_dispatch.aclose()
-        startup.config.spool.close();startup.config.writer_owner.close()
+        startup.config.spool.close();startup.config.writer_owner.close();startup.admission.close()
