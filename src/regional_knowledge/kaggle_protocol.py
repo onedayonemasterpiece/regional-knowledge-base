@@ -152,6 +152,8 @@ class SqlHealthResult(ReadIdentity):
                 raise ValueError('complete current SQL health required')
         elif self.reason is None:
             raise ValueError('explicit health failure reason required')
+        elif self.health is not None and self.health.ready:
+            raise ValueError('unavailable response cannot claim ready SQL health')
         return self
 
 

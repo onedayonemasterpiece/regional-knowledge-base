@@ -5,6 +5,7 @@ import json
 import time
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -21,7 +22,8 @@ from test_kaggle_health import Native
 from test_kaggle_public_backend import target,work,release
 from test_bge_runtime_readiness import run,shared_channel_run,observation
 from test_read_authority import auth
-from test_participants import people
+from test_participants import people,change
+from regional_knowledge.participants import ParticipantDisable
 from test_bge_wss_worker import CONFIG,module
 
 
@@ -129,10 +131,22 @@ def test_actual_asgi_channel_routes_health_result_through_verified_shared_admiss
 
 
 @pytest.mark.asyncio
-async def test_existing_public_status_uses_native_admitted_health_and_sanitizes_identity(target,monkeypatch):
+@pytest.mark.parametrize('final_race',['stable','detach','revoke'])
+async def test_existing_public_status_uses_native_admitted_health_and_sanitizes_identity(target,monkeypatch,final_race):
     s=target;startup_ref=s.queue.request_startup()['startup_ref']
     def no_startup(*args,**kwargs):raise AssertionError('health must not allocate startup')
     monkeypatch.setattr(s.queue,'request_startup',no_startup)
+    returning=[False];original_recheck=s.auth.resolver.recheck
+    async def recheck(context):
+        if returning[0] and final_race=='revoke':
+            returning[0]=False
+            change(s.auth.p,ParticipantDisable(disabled=True,reason='health final recheck fixture'))
+        result=await original_recheck(context)
+        if returning[0] and final_race=='detach':
+            returning[0]=False
+            assert s.queue.detach_channel(s.run,s.token,s.generation)
+        return result
+    monkeypatch.setattr(s.auth.resolver,'recheck',recheck)
     pending=asyncio.create_task(s.backend.startup_status(startup_ref,s.principal))
     dispatched=await work(s)
     assert type(dispatched.query) is SqlHealthRequest
@@ -140,8 +154,16 @@ async def test_existing_public_status_uses_native_admitted_health_and_sanitizes_
     wire=await KaggleWorkerQuery(acquire=native.acquire,tokenizer=pinned())(
         json.loads(dispatched.query.model_dump_json()),encode=forbidden_encode,lease_current=lambda:True)
     assert await s.admission.finish_read(s.run,s.token,s.generation,decode_envelope(json.dumps(wire).encode()))
+    returning[0]=True
     await release(s,dispatched)
+    if final_race=='revoke':
+        with pytest.raises(ToolError,match='access_denied'):await pending
+        return
     result=await pending
+    if final_race=='detach':
+        assert not result.health['read_ready'] and result.health['reason']=='attachment_changed'
+        assert result.health['postgres'] is None
+        return
     assert result.health['read_ready'] and result.health['postgres']['sql_response']
     encoded=json.dumps(result.health)
     assert s.run not in encoded and 'incarnation-a' not in encoded and 'compute_claim' not in encoded

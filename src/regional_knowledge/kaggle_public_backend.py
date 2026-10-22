@@ -383,7 +383,7 @@ class KaggleSourceBackend:
         """MCP read-only continuation: freshly authorized, never auto-retries the query."""
         if type(startup_ref) is not str:
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
-        authority=None
+        authority=None;health_binding=None
         try:
             authority=await self.read_authority.resolve_oauth(principal.access_token,destination=self.destination)
             await self.read_authority.require(authority,'public_search')
@@ -402,6 +402,8 @@ class KaggleSourceBackend:
                 if observed['status']=='ready':
                     from .kaggle_protocol import SqlHealthRequest, SqlHealthResult
                     async def native_probe(binding):
+                        nonlocal health_binding
+                        health_binding=binding
                         deadline=time.monotonic()+2
                         request=SqlHealthRequest(request_id=uuid4().hex,
                             connection_generation=binding.connection_generation,turn_generation=0,
@@ -413,7 +415,11 @@ class KaggleSourceBackend:
                         try:
                             ticket=await self.worker_queue.shared_reads.begin_read(authority,request,
                                 dialog_ref=authority.destination.key,deadline=deadline)
-                            result=await asyncio.shield(ticket.result)
+                            try:result=await asyncio.shield(ticket.result)
+                            except asyncio.CancelledError:
+                                if asyncio.current_task().cancelling():raise
+                                await self.read_authority.recheck(authority)
+                                raise TargetUnavailable('SQL health request attachment changed') from None
                             if type(result) is not SqlHealthResult:
                                 raise TargetUnavailable('SQL health response type differs')
                             if result.health is None:
@@ -431,6 +437,11 @@ class KaggleSourceBackend:
             except Exception:
                 observed['health']={'codec':'rkb.health.v1','reason':'health_probe_unavailable','read_ready':False}
             await self.read_authority.recheck(authority)
+            if health_binding is not None and observed['health'].get('read_ready'):
+                try:still_current=current_binding(self.worker_queue)==health_binding
+                except TargetUnavailable:still_current=False
+                if not still_current:
+                    observed['health'].update(postgres=None,read_ready=False,reason='attachment_changed')
             return StartupStatus.model_validate(observed)
         except (ValueError,TypeError):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
