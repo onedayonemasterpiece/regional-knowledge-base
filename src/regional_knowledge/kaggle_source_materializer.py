@@ -413,6 +413,8 @@ class NativeSourceMaterializer:
         if not self.current():raise PermissionError('native_source_owner_changed')
 
     async def __call__(self,command,*,acquire,database):
+        if command.route in ('source.stage.seal.v2','source.materialize.v2'):
+            return await self._revision2(command,acquire=acquire,database=database)
         from .source_activation import MATERIALIZE_ROUTE,validate_materialize_command
         from .source_stage import load_stage_batch,SEAL_ROUTE
         from .bge_contract import validate_vector
@@ -495,6 +497,101 @@ class NativeSourceMaterializer:
                     (source_id,knowledge_hash,doc['ordinal'],json.dumps(vector,allow_nan=False),
                         database.database_generation,database.writer_generation))).fetchone()
                 if row is None or row[0]!=item[1]:raise failure('native_source_vector_input_changed')
+        self._current()
+
+
+
+    async def _revision2(self,command,*,acquire,database):
+        """One already accepted v2 command, one Kaggle-local BGE input.
+
+        The old v1 materialization and vector rows remain immutable and
+        referenceable after a v2 candidate is staged. No vectors/semantic
+        corpus ever leave this existing native writer/encoder process.
+        """
+        from .kaggle_native_source_bindings import validate_revision2_native_command
+        from .source_stage import load_revision2_stage_batch
+        from .source_activation import (REVISION2_MATERIALIZE_ROUTE,REVISION2_SEAL_ROUTE)
+        from .source_activation import validate_revision2_activation_command
+        from .bge_contract import validate_vector
+        doc=validate_revision2_native_command(command)
+        self._current()
+        if doc['materializer_sha256'] != materializer_fingerprint() if 'materializer_sha256' in doc else False:
+            raise PermissionError('exact revision2 materializer pin changed')
+        wanted=command.ids['source_id']
+        if command.route == 'source.stage.seal.v2':
+            from .source_activation import REVISION2_SEAL_ROUTE as dummy
+        if command.route == 'source.stage.seal.v2':
+            # The accepted seal has no native model call outside the retained
+            # accepted source. Prepare on first explicit seal/materialize only.
+            stage_count=doc['batch_count'];head=doc['last_batch_sha256'];ingestion=doc['ingestion_id']
+            fingerprint=materializer_fingerprint()
+        else:
+            stage_count=doc['batch_count'];head=doc['last_batch_sha256'];ingestion=doc['ingestion_id']
+            fingerprint=doc['materializer_sha256']
+            if fingerprint!=materializer_fingerprint():
+                raise PermissionError('accepted source materializer unavailable')
+        known=None
+        async with acquire() as connection:
+            async with connection.transaction():
+                await connection.execute("SET LOCAL statement_timeout='5s'")
+                found=await(await connection.execute('''SELECT 1 FROM rkb_v4.applied_ops
+                    WHERE operation_key=%s''',(command.operation_key,))).fetchone()
+                if found is not None:return
+                known=await(await connection.execute('''SELECT knowledge_sha256,total_inputs
+                    FROM rkb_v4.source_revision2_candidates WHERE source_id=%s AND ingestion_id=%s
+                     AND batch_count=%s AND last_batch_sha256=%s AND materializer_sha256=%s''',
+                    (wanted,ingestion,stage_count,head,fingerprint))).fetchone()
+                if known is None:
+                    batches=[];total_bytes=0
+                    for idx in range(stage_count):
+                        raw=await load_revision2_stage_batch(connection,source_id=wanted,
+                            ingestion_id=ingestion,batch_index=idx)
+                        if raw is None:raise failure('accepted_revision2_batch_missing')
+                        total_bytes+=len(raw)
+                        if total_bytes>128*1024*1024:raise failure('revision2_materialization_capacity')
+                        batches.append(raw)
+        self._current()
+        if known is None:
+            compiler=NativeSourceCompiler(count=self.count,current=self.current,source_revision=2)
+            resolved=await compiler.compile(batches,source_id=wanted,person_id=command.person_id,
+                last_batch_sha256=head)
+            material=knowledge_bytes(resolved)
+            self._current()
+            async with acquire() as connection:
+                async with connection.transaction():
+                    await connection.execute("SET LOCAL statement_timeout='5s'")
+                    row=await(await connection.execute('''SELECT
+                      rkb_v4.prepare_source_revision2_activation_v1(%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s)''',
+                      (wanted,ingestion,stage_count,head,fingerprint,material,
+                       database.database_generation,database.writer_generation))).fetchone()
+                    if row is None or row[0]!=digest(material):
+                        raise failure('revision2_candidate_checksum_mismatch')
+            known=(digest(material),len(resolved['passages'])+len(resolved['semantic']['stories']))
+        self._current()
+        if command.route=='source.stage.seal.v2':return
+        from .bge_contract import validate_vector
+        ordinal=doc['ordinal'];knowledge_hash,total=known
+        if not 0<=ordinal<total:raise failure('revision2_materialize_ordinal')
+        async with acquire() as connection:
+            async with connection.transaction():
+                await connection.execute("SET LOCAL statement_timeout='5s'")
+                item=await(await connection.execute('''SELECT input_id,input_sha256,body,installed
+                    FROM rkb_v4.read_source_revision2_activation_input_v1(%s::uuid,%s,%s)''',
+                    (wanted,knowledge_hash,ordinal))).fetchone()
+        if item is None or not item[2] or digest(item[2].encode())!=item[1]:
+            raise failure('revision2_materialize_input_missing')
+        if item[3]:return
+        vector=validate_vector(await self.encode(item[2]))
+        self._current()
+        async with acquire() as connection:
+            async with connection.transaction():
+                await connection.execute("SET LOCAL statement_timeout='5s'")
+                row=await(await connection.execute('''SELECT rkb_v4.install_source_revision2_vector_v1(
+                    %s::uuid,%s,%s,%s::public.vector,%s,%s)''',
+                    (wanted,knowledge_hash,ordinal,json.dumps(vector,allow_nan=False),
+                     database.database_generation,database.writer_generation))).fetchone()
+                if row is None or row[0]!=item[1]:
+                    raise failure('revision2_vector_install_changed')
         self._current()
 
 
