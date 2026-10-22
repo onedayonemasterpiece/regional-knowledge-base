@@ -35,6 +35,10 @@ Candidate `768bca5c950507b053b157626e34c4ffcf6539af` passed CI39773458811:
 | PR246 | `1836c3243b86125f03718881918eaaa5c8f3bc00` | Dataset Stage0 copy and controller pre-claim readiness/metadata | Clean |
 | PR247 | `a8033238904ee4c36b99df459a9fadb9caf5d76d` | Expert-only server.main receiver composition | One conflict in main's build_server call; retained exact incoming e928fc4 composition/call hunk; earlier health/media hunks preserved |
 | PR223 Dataset receipt follow-up | `5fad3eb6c3e7b8a12ce2910e27adcaf6f830d4f7` | Metadata wheel-lock accepts exact Dataset placement | Clean; no package bytes/pins changed |
+| PR248 compatible importer input | `3e1f6c948d7b1bd937eb5b443b87c292a0faab5f` | Exact importer/test delta on native baseline6d51bfd; main PR248 head d8fc88a9b2933834fe7fd4963f5fd9e008f225ee | Clean; only2 paths, not the old whole importer |
+| PR249 | `fd7d564830178d7c71e54a0cd74f35591146483b` | Dispatch status fastpath after included PR239 | Clean; PR239 epoch fix retained |
+| PR250 | `1283b13efa5551ba550aa31e25862fcb6386ec85` | Inert authenticated executor claim receiver | Clean; new files, not mounted |
+| PR251 | `ddb69be3ce1e09ba0a64bb158fabd821e9b85067` | Same-client leased native Telegram crop bytes | Clean; new native file/tests and owned media doc |
 
 PR246 source depends on already included PR242/243. Its earlier fbdafb5
 implementation passed CI39774529351 on both Python; the later1836c32 controller
@@ -52,9 +56,11 @@ transport using the same actual native manifest and all55 wheels/165 entries.
   applied. PR240 contains an inert proposal, not an installed source fix.
 - PR245 composition and Quartz's PR247 expert-only `server.main` mounting hunk
   are present in the diagnostic source. Installed read/send remains unverified.
-- PR241's archive byte issuer remains gated and assigned to Rif. No real media
-  read or Telegram send is claimed by this receipt.
-- The new reprocess/rechunk work belongs to RKB-Import and is not yet an input.
+- PR241's Dev archive bridge remains gated: Rif's PR251 native same-client bytes
+  leaf is present, but protocol/transport/native-runtime composition is still a
+  separate handoff. No real media read or Telegram send is claimed here.
+- RKB-Import's reprocess/rechunk preflight is present via its compatible input;
+  actual revision2 activation still requires ordered native SQL capability.
 - PR223's S3 placement proposal remains unexecuted. Owner clarification selects
   reusable versioned Kaggle Dataset delivery for bootstrap dependencies. Dataset
   readiness precedes notebook launch via PR246's assigned source-only controller
