@@ -56,7 +56,11 @@ async def test_original_native_receipt_pending_then_remote_covered_delivered_onc
     ctl,recovered=lose_local_and_reopen(a)
     settled=recovered.reconcile_restored_dataset_delivery(
         a.credentials,entry['request_id'])
-    assert settled['state']=='delivered' and settled['retry_send_allowed'] is False
+    # Original reconciler may return receipt()'s minimal {'state': 'delivered'}.
+    # Do not invent a retry flag missing from that original class: the
+    # invariant is its settled state plus refusal to mint a second lease.
+    assert settled['state']=='delivered'
+    assert ctl.claim(a.credentials)=={'state':'empty'}
     assert ctl._row(entry['request_id'])['delivery_attempt']==1
 
 
