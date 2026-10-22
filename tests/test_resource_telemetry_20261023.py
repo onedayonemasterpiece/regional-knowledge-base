@@ -103,6 +103,14 @@ def test_v2_own_cgroup_cpu_deltas_memory_io_and_exact_process_pss(tmp_path):
     assert 'cpu_usage_delta_seconds' not in reset
     assert 'cpu_throttled_delta_seconds' not in reset
     assert len(json.dumps(second).encode()) < 4096
+    # A different mounted cgroup must never inherit the old usage baseline.
+    write(proc, 'self/cgroup', '0::/another/own\\n')
+    write(root, 'sys/fs/cgroup/another/own/cpu.stat',
+          'usage_usec 4000000\\nnr_throttled 1\\nthrottled_usec 2000\\n')
+    clock[0] = 14.0
+    moved = sampler.sample()
+    assert moved['cpu_usage_usec'] == 4000000
+    assert 'cpu_usage_delta_seconds' not in moved
 
 
 def test_real_v1_controller_mount_cpuacct_and_memory_without_v2_assumption(tmp_path):
