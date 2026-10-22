@@ -235,7 +235,7 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
             "predecessor_command_sha256":digest(original_activation.encode())}
         command=resolved_revision2_native_command(
             route=REVISION2_STAGE_ROUTE,source_id=SOURCE,payload=doc,
-            sequence=env["sequence"]+1,operation_key="accepted-rev2-stage",
+            sequence=env["sequence"]+1,operation_key=f"revision2:{v2_ingestion}:stage:0",
             request_id=REQUEST,person_id=PERSON,logical_time=TIME)
         assert validate_revision2_native_command(command)==doc
 
@@ -276,7 +276,7 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
             predecessor_command_sha256=digest(original_activation.encode()))
         sealing=resolved_revision2_native_command(
             route=REVISION2_SEAL_ROUTE,source_id=SOURCE,payload=seal_payload,
-            sequence=env["sequence"]+1,operation_key="accepted-rev2-seal",
+            sequence=env["sequence"]+1,operation_key=f"revision2:{v2_ingestion}:seal:{stage_head}",
             request_id=REQUEST,person_id=PERSON,logical_time=TIME)
         assert (await _accepted(env,sealing)).status=="applied"
         async with connection.transaction():
@@ -316,7 +316,7 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
         activation=resolved_revision2_native_command(
             route=REVISION2_ACTIVATE_ROUTE,source_id=SOURCE,payload={
                 **v2_projection,"codec":REVISION2_ACTIVATION_CODEC},
-            sequence=env["sequence"]+1,operation_key="accepted-rev2-activate",
+            sequence=env["sequence"]+1,operation_key=f"synthetic-revision2-activation-premature:{v2_ingestion}",
             request_id=REQUEST,person_id=PERSON,logical_time=TIME)
         pending=await _accepted(env,activation)
         assert pending.status=="rejected_precondition"
@@ -330,7 +330,7 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
         missing_vector=resolved_revision2_native_command(
             route=REVISION2_MATERIALIZE_ROUTE,source_id=SOURCE,payload={
                 **v2_projection,"codec":REVISION2_MATERIALIZE_CODEC,"ordinal":0},
-            sequence=env["sequence"]+1,operation_key="accepted-rev2-missing-vector",
+            sequence=env["sequence"]+1,operation_key=f"synthetic-revision2-unvectorized:{v2_ingestion}",
             request_id=REQUEST,person_id=PERSON,logical_time=TIME)
         no_vector=await _accepted(env,missing_vector)
         assert no_vector.status=="rejected_precondition"
@@ -353,7 +353,7 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
             materialized=resolved_revision2_native_command(
                 route=REVISION2_MATERIALIZE_ROUTE,source_id=SOURCE,payload={
                     **v2_projection,"codec":REVISION2_MATERIALIZE_CODEC,"ordinal":ordinal},
-                sequence=env["sequence"]+1,operation_key=f"accepted-rev2-vector-{ordinal}",
+                sequence=env["sequence"]+1,operation_key=f"revision2:{v2_ingestion}:materialize:{ordinal}",
                 request_id=REQUEST,person_id=PERSON,logical_time=TIME)
             receipt=await _accepted(env,materialized)
             assert receipt.status=="applied"
@@ -363,7 +363,7 @@ async def test_real_postgres_same_source_revision2_preserves_revision1_and_rejec
         activated=resolved_revision2_native_command(
             route=REVISION2_ACTIVATE_ROUTE,source_id=SOURCE,payload={
                 **v2_projection,"codec":REVISION2_ACTIVATION_CODEC},
-            sequence=env["sequence"]+1,operation_key="accepted-rev2-activate-after-complete",
+            sequence=env["sequence"]+1,operation_key=f"revision2-activation:{v2_ingestion}",
             request_id=REQUEST,person_id=PERSON,logical_time=TIME)
         active=await _accepted(env,activated)
         assert active.status=="applied" and not active.duplicate
