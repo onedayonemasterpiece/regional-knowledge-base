@@ -579,6 +579,24 @@ class NativeSnapshotFactory:
                 or fields['applied_seq']!=final_sequence
                 or fields['projection_seq']!=final_sequence or not fields['text_search_ready'] or not fields['dense_search_ready']
                 or any(fields[k]!=getattr(self.database,k) for k in ('schema_revision','function_revision','executor_revision'))):
+            # The real ordered transition is the only faithful measurement of a
+            # Kaggle-specific final catalog/ACL. Report digests only (never the
+            # catalog bytes) to the kernel log, then fail closed exactly as before.
+            acl_sha256=None
+            try:
+                from .kaggle_source_acl import inspect_acl
+                async with session.candidate.acquire() as connection:
+                    async with connection.transaction():
+                        await connection.execute("SET TRANSACTION READ ONLY")
+                        await connection.execute("SET LOCAL statement_timeout='2000ms'")
+                        acl_sha256=sha(await inspect_acl(connection))
+            except Exception:
+                pass
+            print(json.dumps(dict(event='native_restore_final_observation',
+                observed_catalog_sha256=sha(catalog),expected_catalog_sha256=expected_catalog_sha256,
+                observed_acl_sha256=acl_sha256,applied_seq=fields['applied_seq'],
+                schema_revision=fields['schema_revision'],function_revision=fields['function_revision'],
+                executor_revision=fields['executor_revision'])),flush=True)
             raise SnapshotError('native_restore_final_readiness')
         async with session.candidate.acquire() as connection:
             async with connection.transaction():
