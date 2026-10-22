@@ -204,3 +204,52 @@ async def test_sql017_real_accepted_revision1_original_allows_only_exact_same_id
             assert await(await connection.execute('SELECT revision FROM rkb_v4.active_revision WHERE source_id=%s',(source_id,))).fetchone()==(1,)
             assert await(await connection.execute('SELECT count(*) FROM rkb_v4.source_revision2_origins')).fetchone()==(0,)
             raise Revision2FixtureRollback()
+
+
+@pytest.mark.asyncio
+async def test_compiler_real_model_story_body_and_original_pixels_survive_rechunk():
+    """Actual NativeSourceCompiler with synthetic one-page model review; no BGE model."""
+    from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler
+    from regional_knowledge.source_activation import validate_image_manifest
+    from test_source_stage import original
+    v1=batch(count=1,receipt=original(page_count=1))
+    page=v1["model_payload"]["pages"][0]
+    original_text=page["regions"][0]["source_text"]
+    body="A complete model-authored synthetic episode, not its editorial summary."
+    model_story=dict(candidate_key="model-episode",title="Synthetic documented episode",
+        summary="A deliberately separate short editorial summary.",
+        proposition=original_text,
+        evidence_refs=[dict(page_id=page["page_id"],region_key="body",
+            original_excerpt=original_text)],
+        basic_variant=dict(body=body,language="de",
+            blocks=[dict(start=0,end=len(body),evidence_indexes=[0])]))
+    v1["model_payload"]["story_candidates"]=[model_story]
+    async def count(text):
+        assert type(text) is str and text
+        return max(4,len(text.split()))
+    base=NativeSourceCompiler(count=count,current=lambda:True,source_revision=1)
+    former=await base.compile([canonical(v1)],source_id=SOURCE,person_id=PERSON,
+        last_batch_sha256=digest(canonical(v1)))
+    successor={**v1,"codec":REVISION2_BATCH_CODEC,"source_revision":2,"prior_revision":1,
+        "ingestion_id":str(uuid4()),"original_ingestion_id":INGESTION,
+        "predecessor_command_sha256":"a"*64}
+    successor["research"]={**v1["research"],"continuation":{
+        "tool":"book_pages","arguments":{"ingestion_id":successor["ingestion_id"],"cursor":"1"}}}
+    native=NativeSourceCompiler(count=count,current=lambda:True,source_revision=2)
+    revised=await native.compile([canonical(successor)],source_id=SOURCE,person_id=PERSON,
+        last_batch_sha256=digest(canonical(successor)))
+    assert former["revision"]==1 and revised["revision"]==2
+    assert revised["original"]==former["original"]
+    assert revised["image_manifest"]["pages"][0]["page_id"]==former["image_manifest"]["pages"][0]["page_id"]
+    assert revised["image_manifest"]["pages"][0]["image_sha256"]==former["image_manifest"]["pages"][0]["image_sha256"]
+    assert revised["image_manifest"]["source_revision"]==2
+    assert revised["passages"][0]["passage_id"]!=former["passages"][0]["passage_id"]
+    assert revised["semantic"]["findings"][0]["assertion_id"]!=former["semantic"]["findings"][0]["assertion_id"]
+    assert revised["semantic"]["stories"][0]["story_id"]!=former["semantic"]["stories"][0]["story_id"]
+    assert revised["semantic"]["stories"][0]["default_variant"]["body"]==body
+    assert revised["semantic"]["stories"][0]["summary"]!=body
+    assert revised["semantic"]["stories"][0]["default_variant"]["body"]==former["semantic"]["stories"][0]["default_variant"]["body"]
+    assert revised["research"]["continuation"]["arguments"]["ingestion_id"]==successor["ingestion_id"]
+    assert validate_image_manifest(revised["image_manifest"],source_id=SOURCE,
+        original=revised["original"],semantic=revised["semantic"],passages=revised["passages"],
+        source_revision=2)==revised["image_manifest"]
