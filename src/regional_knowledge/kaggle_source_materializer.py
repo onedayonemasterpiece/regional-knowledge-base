@@ -485,7 +485,15 @@ class NativeSourceMaterializer:
                     # apply_accepted alone verifies duplicates/conflicts. Never
                     # repeat a model call just to reconstruct an old receipt.
                     return
-                candidate=await (await connection.execute('''SELECT knowledge_sha256,total_inputs
+                # SQL018 exposes the fragment-aware cardinality. Old SQL014
+                # fixtures use their original one-vector-per-story projection;
+                # a fragmented candidate itself is never valid without SQL018.
+                installed=await (await connection.execute(
+                    "SELECT to_regprocedure('rkb_v4.source_activation_total_inputs_v2(jsonb)') IS NOT NULL")).fetchone()
+                fragment_total=installed[0]
+                total_expr=('rkb_v4.source_activation_total_inputs_v2(knowledge)'
+                    if fragment_total else 'total_inputs')
+                candidate=await (await connection.execute(f'''SELECT knowledge_sha256,{total_expr}
                     FROM rkb_v4.source_activation_candidates WHERE source_id=%s AND ingestion_id=%s
                     AND batch_count=%s AND last_batch_sha256=%s AND materializer_sha256=%s''',exact)).fetchone()
                 if candidate is None:
@@ -503,6 +511,9 @@ class NativeSourceMaterializer:
             resolved=await compiler.compile(batches,source_id=source_id,person_id=command.person_id,
                 last_batch_sha256=doc['last_batch_sha256'])
             knowledge=knowledge_bytes(resolved)
+            if not fragment_total and any('fragments' in story['default_variant']
+                    for story in resolved['semantic']['stories']):
+                raise failure('native_story_fragments_sql18_required')
             self._current()
             try:
                 async with acquire() as connection:
@@ -512,11 +523,15 @@ class NativeSourceMaterializer:
                             %s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s)''',
                             (*exact,knowledge,database.database_generation,database.writer_generation))).fetchone()
                         if row is None or row[0]!=digest(knowledge):raise failure('native_source_candidate_binding')
+                        candidate=await (await connection.execute(f'''SELECT knowledge_sha256,{total_expr}
+                            FROM rkb_v4.source_activation_candidates WHERE source_id=%s AND ingestion_id=%s
+                            AND batch_count=%s AND last_batch_sha256=%s AND materializer_sha256=%s''',exact)).fetchone()
+                        if candidate is None or candidate[0]!=digest(knowledge):
+                            raise failure('native_source_candidate_binding')
             except Exception as error:
                 if getattr(error,'sqlstate',None)=='22023':
                     raise failure('native_source_stage_requires_review') from None
                 raise
-            candidate=(digest(knowledge),len(resolved['passages'])+len(resolved['semantic']['stories']))
         self._current()
         if sealing:return
         knowledge_hash,total=candidate
