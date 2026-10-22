@@ -41,6 +41,7 @@ Candidate `768bca5c950507b053b157626e34c4ffcf6539af` passed CI39773458811:
 | PR251 | `cfe026b20ebe31e8251e5061062b12c08df27b5a` | Same-client leased native Telegram crop bytes | Clean; final native binding guards and changed-boundary media tests/doc over ddb69be |
 | PR252 | `f99e4f4fe3cde549572964db8c0bcf677c5d127b` | Persisted pending research continuation in native status | Clean; importer helper/callsite added on top of PR248 delta, not a whole-file replacement |
 | PR253 | `592a2a2a3e87ebe64d9d5b166898aeb5c31b1ce4` | Current admitted native SQL health and status hook | Clean; health-only changes preserve dispatch/media/expert |
+| PR217 selected SQL prerequisites | `2991af968ad40bef9f6e43d181548fa25b7650c5` | Exact SQL015/016 and adapted ordered PG fixture | Only two new SQL files; no old whole-file source merge |
 
 PR246 source depends on already included PR242/243. Its earlier fbdafb5
 implementation passed CI39774529351 on both Python; the later1836c32 controller
@@ -58,6 +59,26 @@ PR253 passed CI39778885562 on both Python; Python3.13 log2455 passed/32 skipped.
 Its initial cancellation bug and own pending-startup fixture were corrected;
 the separate inherited PR249 legacy observer race is reported to Linza for a
 test-only synchronization follow-up (no production bypass or waived assertion).
+
+## Ordered media/Story SQL prerequisites for revision2
+
+The existing SQL013/014 Git blobs match PR217 exactly. Selected SQL015 and016
+are copied without modification from PR217, with SHA256 respectively
+`7faacbf7fbb2b99f0dbdbd4339dea5138f134347e31a6be09577dff35be8c773` and
+`f6bf7f45f8a716ebe59b73413d724725577319f6d78c2a57d4d751dc007eafb8`.
+This enables the existing previously skipped PR241 native media PG tests.
+
+`test_shkiper_ordered_013_016_pg.py` is the PR217 ordered rollback/catalog
+fixture, adapted only to import the identical validated existing CI DSN helper
+from the already included public media test instead of importing the separate
+Story runtime stack. It applies real001–016 in the existing GitHub PG17 fixture,
+checks preservation of older functions/Case/media relationships and rolls back
+all DDL and fixture NOLOGIN roles. No Dev or live SQL is executed.
+
+This does not register a new native warm-upgrade route, modify old SQL pins,
+change the selected launch schema14 or claim installed SQL015/016. SQL017 is
+reserved to RKB-Import's separately assigned revision2 implementation; this
+source assembly does not edit that migration or its handlers.
 
 ## Explicit exclusions and next boundaries
 
