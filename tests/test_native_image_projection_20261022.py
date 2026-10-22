@@ -3,7 +3,9 @@
 These are synthetic image receipts and existing GH PG17 fixtures only, never
 provider bytes, Telegram crop uploads or a live book import.
 """
+import copy
 import json
+from pathlib import Path
 from uuid import UUID, uuid5
 
 import pytest
@@ -88,3 +90,84 @@ async def test_native_image_projection_rejects_changed_or_cross_page_source(case
     raw = illustrated_batch(**{case: True})
     with pytest.raises((ValueError, PermissionError)):
         await compile_image(raw)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("database")
+async def test_pg_sql015_native_prepares_exact_illustration_candidate(image_pg_sql18):
+    """SQL015 checks the actual accepted page+crop and durable preparation.
+
+    Activation's SQL015 revision/handler rollout is owned by Shkiper. This
+    scoped source regression never fabricates a version upgrade or route grant.
+    """
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from psycopg.types.json import Jsonb
+    from regional_knowledge.kaggle_source_materializer import (
+        NativeSourceMaterializer, materializer_fingerprint)
+    from test_source_activation_pg import (
+        stage_all, stage_command, DB, WRITER, SEAL_ROUTE, seal)
+
+    env = image_pg_sql18
+    connection = env["connection"]
+    sql015 = (Path(__file__).resolve().parents[1] /
+              "sql/kaggle/015_source_illustrations.sql").read_text()
+    async with connection.transaction():
+        await connection.execute(sql015, prepare=False)
+
+    raw = illustrated_batch()
+    await stage_all(env, [json.loads(raw)])
+    forwarded = []
+
+    async def count(text):
+        return len(text.split()) + 2
+
+    async def encode(text):
+        forwarded.append(text)
+        return [1.0] + [0.0] * 1023
+
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+
+    native = NativeSourceMaterializer(count=count, encode=encode, current=lambda: True)
+    owned = SimpleNamespace(database_generation=DB, writer_generation=WRITER)
+    command = stage_command(seal(1, digest(raw)), env["sequence"] + 1, SEAL_ROUTE)
+    await env["journal"].seal([command],
+        predecessor=await env["journal"].head(), writer_generation=WRITER)
+    await native(command, acquire=acquire, database=owned)
+
+    async with connection.transaction():
+        row = await (await connection.execute("""
+            SELECT c.knowledge,m.media,m.knowledge_sha256,m.media_sha256
+            FROM rkb_v4.source_activation_candidates c
+            JOIN rkb_v4.source_illustration_candidates m USING(source_id)
+            WHERE c.source_id=%s
+        """, (SOURCE,))).fetchone()
+        assert row is not None
+        knowledge, media, knowledge_hash, media_hash = row
+        assert knowledge_hash == digest(canonical(knowledge))
+        assert media_hash == digest(canonical(media))
+        assert (await (await connection.execute(
+            "SELECT rkb_v4.check_source_illustrations_v1(%s::jsonb,%s::jsonb,%s::uuid)",
+            (Jsonb(knowledge), Jsonb(media), SOURCE))).fetchone()) == (True,)
+
+        # The public crop metadata cannot be rebound to another source,
+        # nonexistent page, different original or substituted issued raster.
+        for mismatch in ("source_id", "page_id", "original_sha256", "source_raster_sha256"):
+            changed = copy.deepcopy(media)
+            item = changed["illustrations"][0]
+            crop = item["crop_binding"]
+            if mismatch == "source_id":
+                changed["source_id"] = str(uuid5(UUID(SOURCE), "foreign-source"))
+            elif mismatch == "page_id":
+                item["page_id"] = str(uuid5(UUID(SOURCE), "missing-page"))
+            else:
+                crop[mismatch] = "f" * 64
+            assert (await (await connection.execute(
+                "SELECT rkb_v4.check_source_illustrations_v1(%s::jsonb,%s::jsonb,%s::uuid)",
+                (Jsonb(knowledge), Jsonb(changed), SOURCE))).fetchone()) == (False,)
+        assert await (await connection.execute(
+            "SELECT count(*) FROM rkb_v4.sources WHERE source_id=%s",
+            (SOURCE,))).fetchone() == (0,)
+    assert forwarded == []  # Preparing metadata did not run the encoder/media provider.
