@@ -107,6 +107,13 @@ class NativeDrillMigrate:
                         or tuple(state[3:6])!=GEO_REVISIONS.wire()
                         or state[6] is not None or state[7] is not None):
                     raise SnapshotError('drill_migrate_exact_base_changed')
+                frontier=await(await connection.execute('''SELECT projection_seq,visibility_epoch,
+                    text_ready,dense_ready,pending_seq FROM rkb_v4.read_frontier WHERE singleton
+                    FOR SHARE''')).fetchone()
+                if (frontier is None or frontier[0]!=base_sequence or frontier[1] is None
+                        or frontier[2] is not True or frontier[3] is not True
+                        or frontier[4] is not None):
+                    raise SnapshotError('drill_migrate_base_frontier_unready')
                 original_prefix=await applied_prefix(connection,base_sequence,factory.limits)
                 original_sources=await(await connection.execute(
                     'SELECT count(*) FROM rkb_v4.sources')).fetchone()
@@ -131,6 +138,16 @@ class NativeDrillMigrate:
                      *GEO_REVISIONS.wire()))
                 if update.rowcount!=1:
                     raise SnapshotError('drill_migrate_original_cursor_changed')
+                # SQL004's protected read_frontier trigger correctly revokes
+                # readiness when schema semantics change without a new applied
+                # operation. Only in this disposable OBSERVATION cluster, after
+                # checking the original ready frontier and immutable ledger,
+                # restore exactly the baseline readiness for catalog comparison.
+                # No serving PG or accepted tail receives this publication.
+                await connection.execute('''SELECT rkb_v4.publish_read_frontier(
+                    %s,%s,%s,%s,%s,%s)''',
+                    (serving.database.database_generation,base_writer,
+                     frontier[1],base_sequence,frontier[2],frontier[3]))
                 for pinned in (geo.check,geo.apply,native.check,native.apply):
                     row=await(await connection.execute(
                         'SELECT pg_get_functiondef(to_regprocedure(%s))',
