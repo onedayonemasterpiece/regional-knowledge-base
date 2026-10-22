@@ -333,6 +333,46 @@ class CensorAndProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(n,128)
         self.assertEqual(observations,2)
 
+    async def test_callback_suppressing_cancellation_is_still_censored_not_success(self):
+        emitted=[]
+        counter=0
+        async def query(text):
+            nonlocal counter
+            counter+=1
+            try:
+                await asyncio.sleep(.05)
+            except asyncio.CancelledError:
+                # Some transport adapters swallow cancellation and complete
+                # after our caller timeout. Never report that as an exact result.
+                return self._response(text,counter)
+            return self._response(text,counter)
+        async def readback():
+            return self._operator_first_book()
+        with patch.object(leaf,"CALL_TIMEOUT_S",.003):
+            await leaf.run_public_workload(self._questions(),query,readback,emitted.append)
+        samples=[row for row in emitted if row["event"]=="public_client_sample"]
+        self.assertEqual(len(samples),128)
+        self.assertTrue(all(x["latency_observation"]=="right_censored" for x in samples))
+        self.assertTrue(all(x["trace_id"] is None for x in samples))
+        report,_=leaf.analyze(emitted,[],profile="limited_first_book")
+        self.assertEqual(report["cohorts"]["serial"]["public_success_count"],0)
+        self.assertEqual(report["cohorts"]["concurrent2"]["timeout_rate"],1.0)
+        self.assertEqual(report["conclusion"],"INCONCLUSIVE_OR_CENSORED")
+
+    async def test_corpus_readback_is_bounded_before_query_dispatch(self):
+        calls=0
+        async def query(text):
+            nonlocal calls
+            calls+=1
+            return self._response(text,calls)
+        async def readback():
+            await asyncio.sleep(.1)
+            return self._operator_first_book()
+        with patch.object(leaf,"CALL_TIMEOUT_S",.003):
+            with self.assertRaises(TimeoutError):
+                await leaf.run_public_workload(self._questions(),query,readback,lambda _:None)
+        self.assertEqual(calls,0)
+
     def test_timeout_shape_and_production_deadline_distinct_from_client_guard(self):
         row=leaf._client_row(None,case_id="q01",phase="concurrent2",warmup=False,
             elapsed_ms=3600.0,callback_ms=3000.0,semaphore_wait_ms=600.0,
