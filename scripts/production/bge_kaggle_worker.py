@@ -304,14 +304,17 @@ class ResourceSampler:
                     if value is not None and (name != 'memory_limit_bytes' or value < 1 << 60):
                         observed[name] = value
         # Only compute deltas across comparable observed counters and scope.
-        version = observed.get('cgroup_version')
+        # Rebase when the observed process moves to a different cgroup,
+        # even if its v1/v2 version and monotone counters happen to match.
+        scope = (2, str(v2)) if v2 is not None else (1, str(
+            lookup.get('cpuacct') or lookup.get('cpu') or lookup.get('memory')))
         for raw_key, delta_key in (('cpu_usage_usec','cpu_usage_delta_seconds'),
                                    ('cpu_throttled_usec','cpu_throttled_delta_seconds')):
             current = observed.get(raw_key)
             if current is None:
                 continue
-            prior = self._cpu_prior.get((version, raw_key))
-            self._cpu_prior[(version, raw_key)] = (current, now)
+            prior = self._cpu_prior.get((scope, raw_key))
+            self._cpu_prior[(scope, raw_key)] = (current, now)
             if prior is None or now <= prior[1] or current < prior[0]:
                 continue
             delta = (current - prior[0]) / 1_000_000
