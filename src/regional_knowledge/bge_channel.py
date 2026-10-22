@@ -272,8 +272,9 @@ def channel_route(queue, *, read_telemetry=None):
                 nonlocal last_work, cancelled_work
                 resume_pending = True
                 while True:
-                    observed = await status()
-                    await promote(observed)
+                    if not promoted or shared is None or probe_nonce is not None:
+                        observed = await status()
+                        await promote(observed)
                     if shared is not None:
                         if promoted and source_dispatch is not None:
                             settled=await source_dispatch.poll_settlement(run_id=run_id,token=token,generation=generation)
