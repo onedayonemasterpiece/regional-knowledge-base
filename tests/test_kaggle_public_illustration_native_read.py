@@ -377,3 +377,214 @@ async def test_real_github_pg17_001_to_016_executes_exact_private_sql_without_ro
         assert (await (await conn.execute("SELECT to_regnamespace('rkb_v4')")).fetchone())[0] is None
     finally:
         await conn.close()
+
+
+# This real-PG gate uses deliberately synthetic SQL-shaped rows. It proves that
+# the actual PostgreSQL SELECT returns a *populated* figure/crop snapshot and
+# rejects changes; it does NOT simulate an accepted command, provider ACK,
+# durable Dataset, real image payload or installed production reader grants.
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.environ.get("RKB_KAGGLE_TEST_DSN"),
+                    reason="Only existing GitHub PG17 CI fixture is authorized")
+@pytest.mark.parametrize("scenario", (
+    "valid_pdf", "valid_djvu", "wrong_original", "wrong_media_origin",
+    "wrong_figure", "wrong_crop", "missing_locator", "unknown_archive"))
+async def test_real_pg17_populated_sql15_media_snapshot_and_denials(scenario):
+    import base64
+    import psycopg
+    from psycopg.types.json import Jsonb
+    from regional_knowledge.kaggle_public_illustration_native_read import _row_to_snapshot
+
+    s=snapshot()
+    source=s.source_id
+    figure=s.illustration_id
+    actor="60000000-0000-0000-0000-000000000006"
+    ingestion="70000000-0000-0000-0000-000000000007"
+    op="fixture:media-relational-read:1"
+    receipt=_canonical(dict(sha256=s.original_sha256,
+                            format="djvu" if scenario=="valid_djvu" else "pdf"))
+    receipt_sha=hashlib.sha256(receipt).hexdigest()
+    projection=_canonical(dict(codec="synthetic-activation",source_id=source))
+    projection_sha=hashlib.sha256(projection).hexdigest()
+    cmd=_canonical(dict(route="fixture-only-non-domain-read",
+                        ids=dict(source_id=source),person_id=actor))
+    cmd_sha=hashlib.sha256(cmd).hexdigest()
+    knowledge=dict(passages=[],semantic=dict(stories=[]))
+    knowledge_bytes=_canonical(knowledge)
+    knowledge_sha=hashlib.sha256(knowledge_bytes).hexdigest()
+    media=dict(codec="rkb.source-illustrations.v1",source_id=source,
+               source_revision=1,illustrations=[s.item],
+               passage_links=[],poi_media_links=[])
+    media_bytes=_canonical(media)
+    media_sha=hashlib.sha256(media_bytes).hexdigest()
+    page=s.manifest_page.copy()
+    region=s.manifest_region.copy()
+    if scenario=="wrong_figure":
+        region["bbox"]={**region["bbox"],"left":1}
+    manifest=dict(codec="rkb.source-image-manifest.v1",
+        source_id=source,source_revision=1,
+        original_receipt_b64=base64.b64encode(receipt).decode(),
+        metadata=dict(title="Fixture illustrated book",authors=[]),
+        pages=[page],regions=[region],passages=[])
+    crop=_canonical(s.item["crop_binding"])
+    if scenario=="wrong_crop":crop=b'{"source_id":"forged"}'
+    crop_op="illustration:"+hashlib.sha256(crop).hexdigest()
+    photo=None if scenario=="missing_locator" else s.archive_state["photo"]
+    archive_status="unknown" if scenario=="unknown_archive" else "ready"
+
+    conn=await psycopg.AsyncConnection.connect(
+        _validated_ci_dsn(),connect_timeout=2,sslmode="disable")
+    class Rollback(Exception):pass
+    class SavepointRollback(Exception):pass
+    try:
+        try:
+            async with conn.transaction():
+                assert (await(await conn.execute(
+                    "SELECT to_regnamespace('rkb_v4')")).fetchone())[0] is None
+                await conn.execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
+                files=_files()
+                for ordinal in range(1,17):
+                    if ordinal==16:
+                        roles=await(await conn.execute("""SELECT rolname FROM pg_roles
+                            WHERE rolname IN ('rkb_reader','rkb_writer')""")).fetchall()
+                        assert roles==[]
+                        await conn.execute("CREATE ROLE rkb_reader NOLOGIN")
+                        await conn.execute("CREATE ROLE rkb_writer NOLOGIN")
+                    await conn.execute(files[ordinal].read_text(),prepare=False)
+
+                # Inert synthetic ledger FK row: route explicitly cannot run any
+                # accepted source activation trigger. No fake "Saved" asserted.
+                await conn.execute("INSERT INTO rkb_v4.writer_generations(generation) VALUES(%s)",
+                                   ("fixture-writer",))
+                await conn.execute("""INSERT INTO rkb_v4.recovery_state
+                    (singleton,database_generation,writer_generation,applied_seq,
+                    schema_revision,function_revision,executor_revision)
+                    VALUES(true,'db-source','fixture-writer',1,'fixture-schema',
+                           'fixture-functions','fixture-executor')""")
+                await conn.execute("""INSERT INTO rkb_v4.applied_ops
+                    (operation_key,sequence,command_bytes,command_sha256,
+                     accepted_manifest_sha256,database_generation,writer_generation,
+                     status,outcome_bytes,outcome_sha256,handler_sha256)
+                    VALUES(%s,1,%s,%s,%s,'db-source','fixture-writer','applied',
+                           %s,%s,%s)""",
+                    (op,cmd,cmd_sha,"a"*64,b'{}',hashlib.sha256(b'{}').hexdigest(),"b"*64))
+                await conn.execute("INSERT INTO rkb_v4.sources VALUES(%s,%s,true,false)",
+                                   (source,"Synthetic " + scenario))
+                await conn.execute("INSERT INTO rkb_v4.revisions VALUES(%s,1)",(source,))
+                await conn.execute("INSERT INTO rkb_v4.active_revision VALUES(%s,1)",(source,))
+                await conn.execute("""INSERT INTO rkb_v4.source_import_origins
+                    (source_id,revision,work_id,edition_id,original_sha256,
+                     original_size,original_ref,original_receipt_sha256,
+                     payload_sha256,model_revision,embedding_space,
+                     tokenizer_sha256,imported_logical_time)
+                    VALUES(%s,1,%s,%s,%s,42,'fixture-source',%s,%s,
+                        'fixture-model','fixture-BGE','fixture-tokenizer','fixture-time')""",
+                    (source,"80000000-0000-0000-0000-000000000008",
+                     "90000000-0000-0000-0000-000000000009",
+                     "c"*64 if scenario=="wrong_original" else s.original_sha256,
+                     receipt_sha,projection_sha))
+                await conn.execute("""INSERT INTO rkb_v4.source_stage_sessions
+                    (source_id,ingestion_id,source_metadata,original_receipt,
+                     page_count,logical_time) VALUES(%s,%s,%s,%s,1,'fixture-time')""",
+                    (source,ingestion,Jsonb({}),receipt))
+                await conn.execute("""INSERT INTO rkb_v4.source_activation_candidates
+                    (source_id,ingestion_id,batch_count,last_batch_sha256,
+                     materializer_sha256,knowledge_bytes,knowledge_sha256,
+                     knowledge,prepared_database,prepared_writer)
+                    VALUES(%s,%s,1,%s,%s,%s,%s,%s,'db-source','fixture-writer')""",
+                    (source,ingestion,"d"*64,"e"*64,knowledge_bytes,
+                     knowledge_sha,Jsonb(knowledge)))
+                await conn.execute("""INSERT INTO rkb_v4.source_image_origins
+                    (source_id,ingestion_id,batch_count,last_batch_sha256,
+                     materializer_sha256,knowledge_sha256,
+                     activation_payload_sha256,operation_key,sequence,
+                     person_id,request_id,command_sha256)
+                    VALUES(%s,%s,1,%s,%s,%s,%s,%s,1,%s,'fixture-request',%s)""",
+                    (source,ingestion,"d"*64,"e"*64,knowledge_sha,
+                     projection_sha,op,actor,cmd_sha))
+                await conn.execute("""INSERT INTO rkb_v4.source_manifests
+                    (source_id,source_revision,manifest,payload_sha256,
+                     original_receipt) VALUES(%s,1,%s,%s,%s)""",
+                    (source,Jsonb(manifest),projection_sha,receipt))
+                await conn.execute("""INSERT INTO rkb_v4.source_illustration_candidates
+                    (source_id,knowledge_sha256,media_bytes,media_sha256,media)
+                    VALUES(%s,%s,%s,%s,%s)""",
+                    (source,knowledge_sha,media_bytes,media_sha,Jsonb(media)))
+                await conn.execute("""INSERT INTO rkb_v4.source_illustrations
+                    (source_id,illustration_id,data) VALUES(%s,%s,%s)""",
+                    (source,figure,Jsonb(s.item)))
+                await conn.execute("""INSERT INTO rkb_v4.source_illustration_origins
+                    (source_id,media_sha256,knowledge_sha256,operation_key,
+                     sequence,command_sha256,person_id)
+                    VALUES(%s,%s,%s,%s,1,%s,%s)""",
+                    (source,"f"*64 if scenario=="wrong_media_origin" else media_sha,
+                     knowledge_sha,op,cmd_sha,actor))
+                await conn.execute("""INSERT INTO rkb_v4.source_illustration_availability
+                    (source_id,illustration_id,operation_key,binding_bytes,
+                     archive_chat_id,archive_topic_id,version,status,photo,document)
+                    VALUES(%s,%s,%s,%s,-100234,4,3,%s,%s,NULL)""",
+                    (source,figure,crop_op,crop,archive_status,
+                     Jsonb(photo) if photo is not None else None))
+                await conn.execute("""UPDATE rkb_v4.read_frontier SET
+                    projection_seq=1,text_ready=true,dense_ready=true WHERE singleton""")
+                rows=await(await conn.execute(
+                    READ_SQL,(source,figure,-100234,4))).fetchall()
+                absent=scenario in ("wrong_media_origin","wrong_figure","unknown_archive")
+                if absent:
+                    assert rows==[],scenario
+                else:
+                    assert len(rows)==1,scenario
+                    kwargs=dict(source_id=source,illustration_id=figure,
+                        reader_key=("run","inc",1,"db-source",0,"fixture"),
+                        archive_chat_id=-100234,archive_topic_id=4,
+                        archive_scope="synthetic-topic4")
+                    if scenario in ("wrong_original","wrong_crop","missing_locator"):
+                        with pytest.raises(NativeIllustrationReadUnavailable):
+                            _row_to_snapshot(rows[0],**kwargs)
+                    else:
+                        native=_row_to_snapshot(rows[0],**kwargs)
+                        assert native.item==s.item
+                        assert native.manifest_page==page
+                        assert native.manifest_region==region
+                        assert native.observed_data_seq==native.observed_projection_seq==1
+                        assert native.public_row["data"]=={
+                            k:v for k,v in s.item.items() if k!="crop_binding"}
+                        sql15=await(await conn.execute(
+                            "SELECT data,archive_status FROM rkb_v4.read_source_illustrations_v1(%s,NULL,4)",
+                            (source,))).fetchall()
+                        assert sql15==[(native.public_row["data"],"ready")]
+
+                        # SAVEPOINT mutations never escape this disposable PG
+                        # transaction; actual query must close on withdrawal.
+                        try:
+                            async with conn.transaction():
+                                await conn.execute(
+                                    "UPDATE rkb_v4.sources SET withdrawn=true WHERE source_id=%s",
+                                    (source,))
+                                assert await(await conn.execute(
+                                    READ_SQL,(source,figure,-100234,4))).fetchall()==[]
+                                raise SavepointRollback
+                        except SavepointRollback:
+                            pass
+                        assert len(await(await conn.execute(
+                            READ_SQL,(source,figure,-100234,4))).fetchall())==1
+                        try:
+                            async with conn.transaction():
+                                await conn.execute("INSERT INTO rkb_v4.revisions VALUES(%s,2)",
+                                                   (source,))
+                                await conn.execute("""UPDATE rkb_v4.active_revision
+                                    SET revision=2 WHERE source_id=%s""",(source,))
+                                assert await(await conn.execute(
+                                    READ_SQL,(source,figure,-100234,4))).fetchall()==[]
+                                raise SavepointRollback
+                        except SavepointRollback:
+                            pass
+                        assert len(await(await conn.execute(
+                            READ_SQL,(source,figure,-100234,4))).fetchall())==1
+                raise Rollback
+        except Rollback:
+            pass
+        assert (await(await conn.execute(
+            "SELECT to_regnamespace('rkb_v4')")).fetchone())[0] is None
+    finally:
+        await conn.close()
