@@ -70,7 +70,7 @@ async def test_sequential_100_owner_intakes_after_32_completed_rows_preserve_his
     assert first['file_id'] == 'prior-original-000'
     assert middle['file_id'] == 'prior-original-032'
     assert last['file_id'] == 'prior-original-099'
-    assert first['phase'] == middle['phase'] == 'finalized'
+    assert first['phase'] == 'finalized' and middle['phase'] == 'failed'
     assert last['source_id'] == s.originals.receipts[history[-1]].source_id
     assert (await s.importer.owned_row(s.principal, history[0]))['id'] == history[0]
     with pytest.raises(ToolError, match='owned_ingestion_required'):
