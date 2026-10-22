@@ -16,6 +16,7 @@ from regional_knowledge.kaggle_bootstrap_config import build_bootstrap_target
 from regional_knowledge.kaggle_original_native import OriginalIntakeConfig
 from regional_knowledge.kaggle_owned_pg import canonical, sql_artifacts
 from regional_knowledge.kaggle_stage0_urls import PinnedStage0Object
+from regional_knowledge.kaggle_stage0 import Stage0Spec
 from regional_knowledge.kaggle_target_launch import persist_empty_intent
 from regional_knowledge.source_activation import ACTIVATION_REVISIONS
 from test_import_dependency_packaging import packaging, inputs, placement
@@ -76,7 +77,7 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
     config = next(ast.literal_eval(node.value) for node in ast.parse(source).body
         if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='RUN_CONFIG' for t in node.targets))
     assert len(config['prepared_model']['entries']) == 165
-    assert len(config['stage0']['wheels']) == 55
+    assert len(Stage0Spec.from_wire(config['stage0']).wheels) == 55
     assert len(canonical(config)) <= 65536
     assert len(source.encode()) <= 1_000_000
     print(json.dumps(dict(prepared_entries=165, wheel_count=55,
