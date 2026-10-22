@@ -378,3 +378,60 @@ async def test_history_or_geo_loss_prevents_new_batch_without_rewriting_pending(
     s.geo_state['current'] = False
     assert (await call(s,result,'status')).state == 'processing'
     assert (await pending(s,result)).command_bytes == entry.command_bytes and operation_count(s) == 1
+
+
+@pytest.mark.asyncio
+async def test_mcp_inline_stage_omits_absent_graph_and_rejects_malformed_graph(native_intake, monkeypatch):
+    """MCP serialization must preserve the native schema14 optional-graph contract."""
+    from starlette.requests import Request
+    from pydantic import ValidationError
+
+    from regional_knowledge.server import build_server
+    from regional_knowledge.read_issuance import _SCOPE_KEY
+    from regional_knowledge.source_stage import validate_stage_payload
+
+    s = native_intake
+    result = await start(s)
+    payload = batch(s, result, count=1)
+    monkeypatch.setattr("regional_knowledge.server._principal", lambda: s.principal)
+    server = build_server(target_startup=s.startup)
+
+    async def mcp_stage(**fields):
+        request = Request({
+            "type": "http", "method": "POST", "path": "/mcp", "headers": [],
+            "app": SimpleNamespace(state=SimpleNamespace()), "state": {},
+        })
+        context = SimpleNamespace(request_context=SimpleNamespace(
+            request=request, request_id="inline-graph-regression"))
+        args = dict(command="stage", ingestion_id=result.ingestion_id,
+            pages=payload["pages"], chunks=payload["chunks"],
+            source_import=options(research=True, ingestion_id=result.ingestion_id,
+                state="pending").model_dump(mode="json"), **fields)
+        try:
+            return await server.call_tool("book_ingest", args, context)
+        finally:
+            retained = request.scope.pop(_SCOPE_KEY, None)
+            if retained:
+                retained[1].release()
+
+    # An explicitly malformed graph is rejected at the real typed MCP boundary.
+    with pytest.raises((ToolError, ValidationError)):
+        await mcp_stage(entity_candidates={"entities": "not-a-list"})
+    assert operation_count(s) == 0
+
+    # Absence means omission, not JSON null: actual native stage accepts the
+    # retained model payload and source_stage validates the accepted envelope.
+    await mcp_stage()
+    entry = await pending(s, result)
+    assert entry.command.route == STAGE_ROUTE
+    stage_document = validate_stage_payload(entry.command.payload, source_id=result.document_id)
+    assert "entity_candidates" not in stage_document["model_payload"]
+    assert stage_document["model_payload"]["pages"] == [
+        StagePageInput.model_validate(page).model_dump(mode="json", exclude_none=True)
+        for page in payload["pages"]
+    ]
+    assert stage_document["model_payload"]["chunks"] == [
+        StageChunkInput.model_validate(chunk).model_dump(mode="json", exclude_none=True)
+        for chunk in payload["chunks"]
+    ]
+    assert operation_count(s) == 1
