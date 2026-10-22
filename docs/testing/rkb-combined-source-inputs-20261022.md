@@ -25,22 +25,36 @@ replacement or conflict resolution was required. Clean textual merges are not
 proof of semantic compatibility: the combined GitHub workflow runs the full
 suite on Python 3.12/3.13 with the existing PostgreSQL service and separately
 rechecks the real 103-package native manifest in the actual launch envelope.
-This update has not yet passed that new combined run.
+Candidate `768bca5c950507b053b157626e34c4ffcf6539af` passed CI39773458811:
+2901 passed /44 skipped on each Python; separate actual metadata1 passed/0 skipped.
+
+## Subsequent source inputs
+
+| Input | Exact head | Boundary | Merge outcome |
+| --- | --- | --- | --- |
+| PR246 | `1836c3243b86125f03718881918eaaa5c8f3bc00` | Dataset Stage0 copy and controller pre-claim readiness/metadata | Clean |
+| PR247 | `a8033238904ee4c36b99df459a9fadb9caf5d76d` | Expert-only server.main receiver composition | One conflict in main's build_server call; retained exact incoming e928fc4 composition/call hunk; earlier health/media hunks preserved |
+
+PR246 source depends on already included PR242/243. Its earlier fbdafb5
+implementation passed CI39774529351 on both Python; the later1836c32 controller
+wiring has a new run pending. PR247 brings its own main composition test;
+no source outside the declared main hunk was replaced. This later combined
+update requires its own full CI before any compatibility claim.
 
 ## Explicit exclusions and next boundaries
 
 - No canonical integration, service, notebook, Dataset or provider mutation.
 - Health/WSS dispatch is deferred to a separate handoff; no latency patch was
   applied. PR240 contains an inert proposal, not an installed source fix.
-- PR245 composition is present, but the subsequent expert-only `server.main`
-  mounting hunk remains assigned to Quartz; no independent overwrite here.
+- PR245 composition and Quartz's PR247 expert-only `server.main` mounting hunk
+  are present in the diagnostic source. Installed read/send remains unverified.
 - PR241's archive byte issuer remains gated and assigned to Rif. No real media
   read or Telegram send is claimed by this receipt.
 - The new reprocess/rechunk work belongs to RKB-Import and is not yet an input.
 - PR223's S3 placement proposal remains unexecuted. Owner clarification selects
   reusable versioned Kaggle Dataset delivery for bootstrap dependencies. Dataset
-  readiness must precede notebook launch after a create/update; source support
-  and actual placement/readback are distinct next steps.
+  readiness precedes notebook launch via PR246's assigned source-only controller
+  hunk. Actual Dataset placement/mount readback and deployment remain unverified.
 
 The native assembly and synthetic decoder CI receipts do not establish Kaggle
 ABI, real-book Saved, crop/Telegram/MCP pixels or installed product acceptance.
