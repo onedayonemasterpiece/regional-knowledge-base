@@ -44,3 +44,28 @@ native I/O. A conditional native SQL case uses only the existing approved
 GitHub CI PG17 fixture; absent that fixture it must report SKIP. No Dev PG,
 model, real credentials, Kaggle push, service restart or deployment occurs.
 This leaf is an integration input, not an installed MCP health endpoint.
+
+Public receipt follow-up: notebook observations explicitly identify their source
+as `controller_queue`; they expose only status, launch state, provider version,
+connection generation and heartbeat age. Provider references, run IDs and runtime
+incarnations remain internal. The SQL receipt similarly sanitizes its public
+binding after full identity comparisons. Callback readiness also requires a
+complete schema/sequence/pending observation, not a bare `sql_response=True`.
+The native WSS request hook and runtime rollout remain integration-owner work;
+queue observations alone never imply a successful SQL probe.
+
+The integrated phase1 heartbeat hook is retained. Its observation read now
+rechecks the exact current attachment and accepted generation before returning
+metadata; a disconnect between the queue snapshot and runtime-row read suppresses
+the PostgreSQL observation with `attachment_changed`. This is still explicitly
+a heartbeat observation, not a fresh SQL response.
+
+The existing native-safe `kaggle_database_probe.py` contains the same fixed read-only SQL probe without
+controller/MCP imports. Its caller supplies the existing acquisition, expected
+database generation/minimum sequence and a current authenticated lease callback.
+It returns sanitized observation fields, not a new identity or capability.
+The controller wrapper retains the exact existing TargetReadBinding and DTO.
+The integration owner dispatches through the existing authenticated WSS handler;
+the probe module is already included in the native bundle. No new pool or route
+is introduced. A fresh-process import check blocks controller/MCP modules, and
+server-side statement cancellation maps to the fixed `pg_timeout` reason.
