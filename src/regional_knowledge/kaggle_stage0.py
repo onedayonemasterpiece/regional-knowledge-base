@@ -130,18 +130,36 @@ class Stage0Spec:
         _integer(self.total_seconds,1,3600)
         object.__setattr__(self,'packages',MappingProxyType(dict(sorted(packages.items()))))
 
-    def wire(self):
-        return dict(downloads=[value.wire() for value in self.downloads],wheels=list(self.wheels),
+    def wire(self, *, compact_wheels=True):
+        wheels=list(self.wheels)
+        positions={item.name:index for index,item in enumerate(self.downloads)}
+        if compact_wheels and wheels and all(name in positions for name in wheels):
+            # Exact selected download references; never infer/install every
+            # downloaded .whl. Cached-only wheels retain the legacy name form.
+            wheels={'download_indices':[positions[name] for name in wheels]}
+        return dict(downloads=[value.wire() for value in self.downloads],wheels=wheels,
                     packages=dict(self.packages),install_bytes=self.install_bytes,total_seconds=self.total_seconds)
 
     @classmethod
     def from_wire(cls,value):
         if (type(value) is not dict
                 or set(value)!={'downloads','wheels','packages','install_bytes','total_seconds'}
-                or type(value['downloads']) is not list or type(value['wheels']) is not list):
+                or type(value['downloads']) is not list or len(value['downloads'])>MAX_FILES):
             raise ValueError('stage0_invalid_plan')
-        return cls(tuple(Stage0Download.from_wire(item) for item in value['downloads']),
-                   tuple(value['wheels']),value['packages'],value['install_bytes'],value['total_seconds'])
+        downloads=tuple(Stage0Download.from_wire(item) for item in value['downloads'])
+        wheels=value['wheels']
+        if type(wheels) is dict:
+            indices=wheels.get('download_indices')
+            if (set(wheels)!={'download_indices'} or type(indices) is not list
+                    or len(indices)>MAX_FILES):
+                raise ValueError('stage0_invalid_wheel_references')
+            for index in indices:_integer(index,0,len(downloads)-1)
+            if len(set(indices))!=len(indices):
+                raise ValueError('stage0_duplicate_wheel_reference')
+            wheels=[downloads[index].name for index in indices]
+        if type(wheels) is not list:
+            raise ValueError('stage0_invalid_plan')
+        return cls(downloads,tuple(wheels),value['packages'],value['install_bytes'],value['total_seconds'])
 
 
 def _remaining(deadline):
