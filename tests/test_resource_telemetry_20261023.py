@@ -238,9 +238,9 @@ def test_sanitizer_sink_correlation_release_and_no_private_keys():
             'fixture-run', 'fixture.incarnation', 3, 'a' * 64)
     assert record['sample_seq'] == 1 and record['phase'] == 'resource'
     assert record['event'] == 'resource.sample' and record['status'] == 'ok'
-    assert record['rss_bytes'] == 102400
-    assert record['cgroup_memory_current_bytes'] == 10000
-    assert record['worker_sampling_failed_total'] == 0
+    assert record['rss_kib'] == 100
+    assert record['memory_current_bytes'] == 10000
+    assert record['sampling_failures_total'] == 0
     assert 'private_text' not in json.dumps(record)
     assert not emit(Sink(), {'sample_seq': 3})  # Incomplete observation is not real.
     assert clean_resource_numbers({'rss_kib': False, 'memory_current_bytes': -1,
@@ -328,9 +328,9 @@ def test_real_shared_product_telemetry_schema_when_companion_pr_is_present():
     assert record['run_id'] == 'fixture-run'
     assert record['runtime_incarnation'] == 'fixture.incarnation'
     assert record['sample_seq'] == 1 and record['release_sha256'] == 'a' * 64
-    assert record['rss_bytes'] == 102400 and record['pss_bytes'] == 70 * 1024
+    assert record['rss_kib'] == 100 and record['pss_kib'] == 70
     assert record['cgroup_memory_current_bytes'] == 10000
-    assert record['pg_master_rss_bytes'] == 300 * 1024
+    assert record['pg_master_rss_kib'] == 300
     assert record['cpu_usage_delta_seconds'] == 1.5
     assert record['worker_sampling_failed_total'] == 0
     assert 'private_text' not in json.dumps(record)
