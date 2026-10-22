@@ -16,6 +16,17 @@ Opus must provide immutable canonical integration branch **base SHA + HEAD SHA**
 
 First-book restricted search profile `limited_first_book` means **exactly 1 accepted genuine book with ≥1 visible passage**, not representative corpus readiness. Separate later `comparison_corpus` (≥2 accepted sources/32 passages) remains non-production-scale. Neither numeric profile proves that the source contains meaningful facts, figures or actual narrative; those require evidence review.
 
+## Four separate acceptance milestones (false-green guard)
+
+The existing bounded query harness now requires **separately owner-corroborated metadata receipts**, rather than conflating these four states:
+
+1. **Notebook running:** observed owned run/attachment, state `running`, immutable `notebook_run_ref_sha256`. This is NOT PostgreSQL restore or useful search.
+2. **PG restored:** explicit `pg_state=restored`, identical database generation/schema/applied+projection frontiers to verified corpus readback. This is NOT a public read permit.
+3. **Route usable:** `route_state=usable` and the hash of a current authorized public read trace. This is NOT proof that a book was Saved.
+4. **First book Saved:** `import_state=Saved` with exact source ID/revision/edition and remotely durable saved-outcome digest. Local `APPLIED/persistence_pending` must not satisfy it.
+
+The metadata is **not independent authentication or provider proof**: only Opus's actual status/readback and owner handoff validate those digest references. Missing/mismatched stage aborts the workload before benchmark queries. Unit tests use labelled SYNTHETIC references to verify rejection logic, **not** to claim acceptance of a real book. These labels restate existing product requirements, not new gates.
+
 ## Product acceptance cases (same selected genuine book, no fabricated text)
 
 | ID | Existing API/workflow | Actual positive receipt required | Negative / current state |
@@ -52,7 +63,7 @@ For the existing `public_query_latency_leaf.py` fixed q01–q08 cases, freeze pr
 | q07 | Exact source-language quote/region with stable fetch locator |
 | q08 | Human-reviewed multilingual query (e.g. RU→DE), only if source-gold exists |
 
-The pre-existing leaf now accepts `gold_manifest` for the exact operator-owned eight questions. Manifest codec `rkb.first-book-query-gold.v1` requires `state=human_reviewed`, equal `profile`, `database_generation_ref` and `corpus_manifest_sha256` to its pre-run owner readback, exact edition/review SHA-256 and ordered cases (q01..q08). Each case binds hash of question bytes, UUID source ID, positive source revision, 1–5 unique SHA-256 **exact evidence locators**, human reviewer SHA and basis: `human_reviewed_source_text`, `human_reviewed_actual_pixels`, `approved_story_body` or `owner_verified_bibliography`. **OCR-only/unverified/wrong identity/extra private payload is rejected before public query dispatch**. Only canonical `gold_fixture_sha256` is retained alongside question SHA in run/before-after receipts. This *metadata integrity guard* is **not independent proof returned results match gold**: approved operator must compare actual source+locator+revision and negative outcomes separately. Where pixels or reviewer gold are unavailable → **gold fixture unavailable / quality gate UNVERIFIED**, no invented visual hit.
+The pre-existing leaf now accepts `gold_manifest` for the exact operator-owned eight questions. Its exact `readiness` section also pins the four milestones above. Manifest codec `rkb.first-book-query-gold.v1` requires `state=human_reviewed`, equal `profile`, `database_generation_ref` and `corpus_manifest_sha256` to its pre-run owner readback, exact edition/review SHA-256 and ordered cases (q01..q08). Each case binds hash of question bytes, UUID source ID, positive source revision, 1–5 unique SHA-256 **exact evidence locators**, human reviewer SHA and basis: `human_reviewed_source_text`, `human_reviewed_actual_pixels`, `approved_story_body` or `owner_verified_bibliography`. **OCR-only/unverified/wrong identity/extra private payload is rejected before public query dispatch**. Only canonical `gold_fixture_sha256` is retained alongside question SHA in run/before-after receipts. This *metadata integrity guard* is **not independent proof returned results match gold**: approved operator must compare actual source+locator+revision and negative outcomes separately. Where pixels or reviewer gold are unavailable → **gold fixture unavailable / quality gate UNVERIFIED**, no invented visual hit.
 
 ## Existing latency harness, no new measurement system
 
