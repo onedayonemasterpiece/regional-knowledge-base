@@ -168,3 +168,12 @@ class ReadTelemetry:
                 self._record(json.dumps(record, allow_nan=False, separators=(",", ":")))
             except Exception:
                 self.failed += 1  # Diagnostics cannot replace a result or exception.
+            # One additional bounded product event, strictly metadata-only.
+            # The shared segmented sink never gates results or error propagation.
+            try:
+                from .product_telemetry import emit_product_event
+                emit_product_event({"event": "read.terminal", "phase": "total",
+                    "status": "returned" if outcome == "returned" else outcome,
+                    "trace_id": trace_id, "duration_ms": elapsed_ms})
+            except Exception:
+                self.failed += 1
