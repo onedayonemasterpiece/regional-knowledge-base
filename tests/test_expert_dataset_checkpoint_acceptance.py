@@ -400,6 +400,10 @@ async def test_late_signed_child_after_capture_does_not_inherit_parents_saved_ve
         child_key=ctl.dataset_records.key(child_id)
         child_data=from_row(ctl._row(child_id))
         assert first_id!=child_id and child['state']=='received'
+        # The new Dataset version invalidates the bounded restore traversal.
+        # A signed parent retry (not a direct caller-Saved assertion) advances
+        # the real request-control reconciliation before its HTTP 200.
+        assert (await post(app,first_raw,first_headers)).status_code==200
         assert ctl.confirm_dataset_coverage(first_id)
         assert not ctl.confirm_dataset_coverage(child_id)
         assert not p.store.remote_durable(child_key,child_data)
