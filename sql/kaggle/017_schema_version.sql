@@ -1,7 +1,5 @@
 -- Integer schema metadata; SQL files and the ledger are the migration authority.
 -- Historical command/receipt bytes in applied_ops remain immutable evidence.
-ALTER TABLE rkb_v4.recovery_state ADD COLUMN schema_version integer NOT NULL DEFAULT 17
- CHECK(schema_version>0);
 
 CREATE OR REPLACE FUNCTION rkb_v4.promote_applied_read_frontier() RETURNS trigger
 LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
@@ -58,7 +56,7 @@ BEGIN
  IF c->>'route'<>'source.activate.v1' THEN RETURN NULL;END IF;
  SELECT * INTO m FROM rkb_v4.source_illustration_candidates WHERE source_id=(c->'ids'->>'source_id')::uuid;
  IF NOT FOUND THEN RETURN NULL;END IF;
- IF (SELECT schema_version FROM rkb_v4.recovery_state WHERE singleton)<15 THEN RAISE EXCEPTION 'illustration activation version differs';END IF;
+ IF (SELECT max(version) FROM rkb_v4.schema_migrations)<15 THEN RAISE EXCEPTION 'illustration activation version differs';END IF;
  IF (SELECT count(*) FROM rkb_v4.source_illustrations WHERE source_id=m.source_id)<>jsonb_array_length(m.media->'illustrations')
   OR EXISTS(SELECT 1 FROM jsonb_array_elements(m.media->'illustrations') i WHERE NOT EXISTS(
    SELECT 1 FROM rkb_v4.source_illustrations x WHERE x.source_id=m.source_id AND x.data=i)) THEN RAISE EXCEPTION 'illustration projection missing';END IF;

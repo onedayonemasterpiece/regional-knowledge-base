@@ -142,7 +142,7 @@ class Native:
  async def cursor(self):yield self
  async def execute(self,sql,args=()):self.sql=sql
  async def fetchone(self):
-  if 'SELECT schema_version' in self.sql:return (11,)
+  if 'SELECT max(version)' in self.sql:return (11,)
   if 'read_editorial_story_v1' in self.sql:return (raw['story'],)
   return (9,9,4,True,False,'native-db')
  async def fetchall(self):return raw['rows']

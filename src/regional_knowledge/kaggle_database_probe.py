@@ -98,7 +98,7 @@ class NativeDatabaseProbe:
 # Bounded health operation over the same existing native PG acquisition.
 HEALTH_SQL = """SELECT
     CASE WHEN octet_length(s.database_generation)<=256 THEN s.database_generation END,
-    s.schema_version,
+    (SELECT max(version) FROM rkb_v4.schema_migrations),
     s.applied_seq,f.projection_seq,f.pending_seq IS NOT NULL
     FROM rkb_v4.recovery_state s CROSS JOIN rkb_v4.read_frontier f
     WHERE s.singleton AND f.singleton LIMIT 2"""

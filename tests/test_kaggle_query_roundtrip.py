@@ -46,7 +46,7 @@ async def test_actual_shared_worker_query_sql_roundtrip_and_separate_resource_re
         # actual loaded-model identity. Frontier values come from the real PG.
         async with env['connection'].transaction():
             row = await (await env['connection'].execute('''
-                SELECT s.database_generation,s.schema_version,
+                SELECT s.database_generation,(SELECT max(version) FROM rkb_v4.schema_migrations),
                     s.applied_seq,f.projection_seq,f.visibility_epoch,f.text_ready,f.dense_ready
                 FROM rkb_v4.recovery_state s CROSS JOIN rkb_v4.read_frontier f
                 WHERE s.singleton AND f.singleton''')).fetchone()

@@ -186,7 +186,7 @@ async def execute_source_graph_read(request:SourceGraphReadRequest,*,acquire):
                             await cursor.execute("SELECT set_config('statement_timeout',%s,true)",(str(max(1,int((deadline-loop.time())*1000))),))
                             await cursor.execute(statement,params)
                         await _frontier(cursor,execute,request,observed,require_dense=False)
-                        await execute('SELECT schema_version FROM rkb_v4.recovery_state WHERE singleton')
+                        await execute('SELECT max(version) FROM rkb_v4.schema_migrations')
                         installed=await cursor.fetchone()
                         if not installed or type(installed[0]) is not int or installed[0]<11:
                             raise ReadUnavailable('not_ready')

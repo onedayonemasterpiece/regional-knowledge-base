@@ -66,13 +66,11 @@ async def vertical(database, auth, tmp_path):
                         'NOCREATEROLE NOREPLICATION NOBYPASSRLS').format(sql.Identifier(name)))
                     roles.append(name)
         await initialize_database(admin, database_generation=GENERATION,
-                                  writer_generation='writer-1', revisions=VERSIONS)
+                                  writer_generation='writer-1',schema_version=6)
         async with admin.transaction():
             for name in ('003_search_scope.sql', '004_read_fences.sql',
                          '005_source_withdraw.sql', '006_source_import.sql'):
                 await admin.execute((ROOT / 'sql/kaggle' / name).read_text(), prepare=False)
-            await admin.execute('CREATE TABLE rkb_v4.schema_migrations(version integer PRIMARY KEY)')
-            await admin.execute('INSERT INTO rkb_v4.schema_migrations VALUES(6)')
             await admin.execute('SELECT rkb_v4.publish_read_frontier(%s,%s,0,0,true,true)',
                                 (GENERATION, 'writer-1'))
 

@@ -101,7 +101,7 @@ def test_configuration_is_finite(timeout):
 
 async def install_five(env):
     async with env['admin'].transaction():
-        await env['admin'].execute('CREATE TABLE rkb_v4.schema_migrations(version integer PRIMARY KEY)')
+        await env['admin'].execute('DELETE FROM rkb_v4.schema_migrations')
         await env['admin'].execute('INSERT INTO rkb_v4.schema_migrations VALUES(4)')
 
 

@@ -126,9 +126,6 @@ async def test_native_schema14_integer_readiness_and_origin_verifiers():
             for name in IMAGE_SOURCE_SQL_ARTIFACTS[2:]:
                 await connection.execute((ROOT/'sql/kaggle'/name).read_text(), prepare=False)
             await connection.execute("SELECT rkb_v4.publish_read_frontier('image-metadata-fixture','writer-1',0,0,true,true)")
-        async with connection.transaction():
-            await connection.execute('CREATE TABLE rkb_v4.schema_migrations(version integer PRIMARY KEY)')
-            await connection.execute('INSERT INTO rkb_v4.schema_migrations VALUES(14)')
         @asynccontextmanager
         async def acquire():yield connection
         encoded, fields = await probe.NativeDatabaseProbe()(acquire=acquire)

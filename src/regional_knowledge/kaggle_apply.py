@@ -244,8 +244,7 @@ async def _settings(connection):
 
 
 async def _state(connection, database_generation: str, writer_generation: str | None = None):
-    row = await (await connection.execute("""SELECT database_generation, writer_generation, applied_seq,
-        schema_version
+    row = await (await connection.execute("""SELECT database_generation, writer_generation, applied_seq
         FROM rkb_v4.recovery_state WHERE singleton FOR UPDATE""")).fetchone()
     if row is None or row[0] != database_generation:
         raise ApplyConflict("original database generation is not the initialized target")
@@ -255,11 +254,10 @@ async def _state(connection, database_generation: str, writer_generation: str | 
 
 
 async def initialize_database(connection, *, database_generation: str, writer_generation: str,
-                              schema_version: int, applied_seq: int = 0) -> None:
+                              applied_seq: int = 0) -> None:
     """Trusted one-time initialization, not an implicit migration or reset."""
     _text(database_generation)
     _text(writer_generation)
-    if type(schema_version) is not int or schema_version<1:raise ValueError("integer schema version required")
     if type(applied_seq) is not int or not 0 <= applied_seq < 2**63:
         raise ValueError("explicit bounded initial cursor required")
     async with _exclusive(connection):
@@ -270,9 +268,9 @@ async def initialize_database(connection, *, database_generation: str, writer_ge
                 raise ApplyConflict("database is already initialized; explicit upgrade required")
             await connection.execute("INSERT INTO rkb_v4.writer_generations(generation) VALUES (%s)", (writer_generation,))
             await connection.execute("""INSERT INTO rkb_v4.recovery_state
-                (singleton,database_generation,writer_generation,applied_seq,schema_version)
-                 VALUES (true,%s,%s,%s,%s)""",
-                (database_generation,writer_generation,applied_seq,schema_version))
+                (singleton,database_generation,writer_generation,applied_seq)
+                 VALUES (true,%s,%s,%s)""",
+                (database_generation,writer_generation,applied_seq))
 
 
 async def handover_writer(connection, *, database_generation: str, expected_writer: str,

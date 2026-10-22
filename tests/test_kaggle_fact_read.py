@@ -78,7 +78,7 @@ class Native:
         self.statement = statement
 
     async def fetchone(self):
-        return ((int(self.revision[0].split('-')[3]),) if 'SELECT schema_version' in self.statement else self.frontier)
+        return ((int(self.revision[0].split('-')[3]),) if 'SELECT max(version)' in self.statement else self.frontier)
 
     async def fetchall(self):
         return self.rows

@@ -540,7 +540,7 @@ class OwnedPostgres:
             await create_native_roles(admin)
         await migrate(admin,{'sql/'+name:files[name] for name in selected_sql})
         await initialize_database(admin,database_generation=spec.database_generation,
-            writer_generation=spec.writer_generation,schema_version=spec.schema_version)
+            writer_generation=spec.writer_generation)
         async with admin.transaction():
             await configure_native_roles(admin,selected_sql=selected_sql,dbname=spec.dbname,create_roles=False)
             await admin.execute('GRANT SELECT ON rkb_v4.schema_migrations TO rkb_reader')

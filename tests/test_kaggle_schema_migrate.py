@@ -104,11 +104,11 @@ async def test_pg17_fresh_baselines_noop_integrity_rollback_and_schema_equivalen
             assert await migrate(connection, artifacts) == ()
             assert await dump_schema() == reference
             assert await (await connection.execute(
-                "SELECT schema_version,applied_seq FROM rkb_v4.recovery_state WHERE singleton")).fetchone()==(len(artifacts),0)
+                "SELECT (SELECT max(version) FROM rkb_v4.schema_migrations),applied_seq FROM rkb_v4.recovery_state WHERE singleton")).fetchone()==(len(artifacts),0)
             assert await (await connection.execute(
                 "SELECT column_name FROM information_schema.columns WHERE table_schema='rkb_v4' "
                 "AND table_name='recovery_state' AND column_name IN "
-                "('schema_revision','function_revision','executor_revision')")).fetchall()==[]
+                "('schema_revision','function_revision','executor_revision','schema_version')")).fetchall()==[]
 
         # Additive DDL changes only the integer ledger. Existing v1 commands,
         # canonical outcomes and ordinary writes keep their exact audit fields.
@@ -141,7 +141,7 @@ async def test_pg17_fresh_baselines_noop_integrity_rollback_and_schema_equivalen
         assert (first.schema_revision,first.function_revision,first.executor_revision)==(
             second.schema_revision,second.function_revision,second.executor_revision)
         assert await (await connection.execute(
-            'SELECT schema_version,applied_seq FROM rkb_v4.recovery_state WHERE singleton')).fetchone()==(len(extended),2)
+            'SELECT (SELECT max(version) FROM rkb_v4.schema_migrations),applied_seq FROM rkb_v4.recovery_state WHERE singleton')).fetchone()==(len(extended),2)
     finally:
         if owned:
             await connection.execute("DROP SCHEMA IF EXISTS rkb_v4 CASCADE")

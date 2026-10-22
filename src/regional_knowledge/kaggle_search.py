@@ -169,7 +169,7 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                         await snapshot_guard(cursor, execute)
                     editorial=False
                     if story:
-                        await execute('SELECT schema_version FROM rkb_v4.recovery_state WHERE singleton')
+                        await execute('SELECT max(version) FROM rkb_v4.schema_migrations')
                         semantic=await cursor.fetchone()
                         editorial=bool(semantic and type(semantic[0]) is int and semantic[0]>=9)
                     async def timed_encode():
