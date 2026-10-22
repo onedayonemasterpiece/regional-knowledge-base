@@ -100,6 +100,29 @@ async def installation(target,tmp_path,request):
 
 
 @pytest.mark.asyncio
+async def test_restore_only_upgrade_continues_only_after_verified_recovery(installation,monkeypatch):
+    s=installation;s.startup.snapshot.verified=True
+    await s.owner.advance(s.startup.binding)  # Existing real spool reserves original commands.
+    monkeypatch.setattr(s.owner,'needs_native_upgrade',lambda binding:True)
+    s.startup.snapshot=None;s.startup.restorer=SimpleNamespace(complete=False)
+    calls=[]
+    async def continue_repair(binding,commands,context):
+        assert binding==s.startup.binding and len(commands)==len(s.keys)
+        assert s.spool.participants.require(context,'import')==s.spool.participants.owner
+        calls.append(tuple(command.operation_key for command in commands))
+        return False
+    monkeypatch.setattr(s.owner,'_dependency_repair',continue_repair)
+    assert not await s.owner.advance(s.startup.binding)
+    assert not calls
+    s.startup.restorer.complete=True
+    assert not await s.owner.advance(s.startup.binding)
+    assert calls==[s.keys]
+    s.startup.binding_current=lambda binding:False
+    assert not await s.owner.advance(s.startup.binding)
+    assert calls==[s.keys]
+
+
+@pytest.mark.asyncio
 async def test_unrelated_precondition_rejection_still_stops_original_plan(installation):
     s=installation;s.startup.snapshot.verified=True
     for index,key in enumerate(s.keys[:2]):

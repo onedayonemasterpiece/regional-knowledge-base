@@ -116,7 +116,11 @@ class SourceGeoInstaller:
             row=self.queue._runtime_row(db,binding.run_id)
             if row is None:return False
             expected=json.loads(row['expected_json'])
-        return tuple(expected.get(k) for k in ('schema_revision','function_revision','executor_revision'))!=GEO_V2_REVISIONS.wire()
+        revisions=tuple(expected.get(k) for k in ('schema_revision','function_revision','executor_revision'))
+        if self.native_pins is not None:
+            from .source_activation import ACTIVATION_REVISIONS
+            if revisions==ACTIVATION_REVISIONS.wire():return False
+        return revisions!=GEO_V2_REVISIONS.wire()
 
     def native_upgrade_command(self,repair):
         if self.native_pins is None:return None
@@ -378,7 +382,10 @@ class SourceGeoInstaller:
     async def advance(self,binding):
         """One bounded continuation. Every effect uses its original durable key."""
         if self.needs_native_upgrade(binding):
-            if self.closed or not self.startup.binding_current(binding) or not self.startup.snapshot.verified:return False
+            snapshot=self.startup.snapshot
+            recovered=(snapshot.verified if snapshot is not None else
+                getattr(getattr(self.startup,'restorer',None),'complete',False))
+            if self.closed or not self.startup.binding_current(binding) or not recovered:return False
             commands=tuple([(await self.spool.get(key)).command for key in self.keys])
             return await self._dependency_repair(binding,commands,self._context())
         if self.closed or not self._source_ready(binding):return False

@@ -6,6 +6,10 @@ import pytest
 from regional_knowledge.control_spool import SpoolConflict, SpoolError
 from regional_knowledge.kaggle_geo_install import SourceGeoInstaller
 from regional_knowledge.kaggle_native_source_upgrade import NativeSourceUpgradePins, ROUTE
+from regional_knowledge.bge_queue import BgeQueue
+from regional_knowledge.geo_manifest_commands import GEO_REVISIONS, GEO_V2_REVISIONS
+from regional_knowledge.kaggle_readiness import RUNTIME_HASHES, SearchRuntimeExpectation
+from regional_knowledge.source_activation import ACTIVATION_REVISIONS
 
 
 PINS = NativeSourceUpgradePins('1' * 64, '2' * 64, '3' * 64, '4' * 64)
@@ -74,3 +78,18 @@ async def test_changed_native_intent_is_refused_and_absent_pins_stage_nothing():
     empty = Spool()
     assert await installer(empty, pins=None)._seal_native_upgrade(binding, REPAIR, 'ctx') == 25
     assert empty.calls == []
+
+
+@pytest.mark.parametrize('revisions,pins,needs_upgrade',[
+    (GEO_REVISIONS,PINS,True),(GEO_V2_REVISIONS,PINS,False),
+    (ACTIVATION_REVISIONS,PINS,False),(ACTIVATION_REVISIONS,None,True)])
+def test_pinned_final14_launch_is_compatible_with_geo_continuation(tmp_path,revisions,pins,needs_upgrade):
+    queue=BgeQueue(tmp_path/'queue.sqlite')
+    queue.enqueue(REPAIR[0].person_id,'fixture-demand',['synthetic'],kind='document')
+    with queue.connect(write=False) as db:
+        run=db.execute('select current_run from control where id=1').fetchone()[0]
+    queue.expect_search_runtime(run,SearchRuntimeExpectation(
+        {name:'a'*64 for name in RUNTIME_HASHES},'db-1',*revisions.wire(),0))
+    owner=installer(Spool(),pins=pins)
+    owner.queue=queue;owner.upgrade_pending=True
+    assert owner.needs_native_upgrade(SimpleNamespace(run_id=run)) is needs_upgrade
