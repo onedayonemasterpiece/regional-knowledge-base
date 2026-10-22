@@ -19,7 +19,7 @@ from .kaggle_public_backend import TargetReadBinding, TargetUnavailable, current
 class DatabaseHealth:
     binding: TargetReadBinding
     sql_response: bool = False
-    schema_revision: str | None = None
+    schema_version: int | None = None
     applied_seq: int | None = None
     projection_seq: int | None = None
     pending: bool | None = None
@@ -29,8 +29,7 @@ class DatabaseHealth:
     @property
     def ready(self):
         return (self.sql_response is True and self.reason is None
-                and type(self.schema_revision) is str
-                and 1 <= len(self.schema_revision.encode()) <= 256
+                and type(self.schema_version) is int and self.schema_version>0
                 and type(self.applied_seq) is int and type(self.projection_seq) is int
                 and self.applied_seq >= self.binding.min_data_seq
                 and self.projection_seq == self.applied_seq and self.pending is False)
@@ -144,7 +143,7 @@ def heartbeat_health(queue):
             or observed.get('database_generation') != binding.database_generation):
         health['reason'] = 'attachment_changed'
         return health
-    postgres = {key: observed.get(key) for key in ('schema_revision', 'applied_seq', 'projection_seq')}
+    postgres = {key: observed.get(key) for key in ('schema_version', 'applied_seq', 'projection_seq')}
     health['postgres'] = postgres
     applied, projection = postgres['applied_seq'], postgres['projection_seq']
     if type(applied) is not int or type(projection) is not int:

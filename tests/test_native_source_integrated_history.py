@@ -1,4 +1,4 @@
-"""Integrated historical closure selects current schema without dropping old replay handlers."""
+"""Current import selection does not depend on historical database revision metadata."""
 from types import SimpleNamespace
 import pytest
 from test_kaggle_native_source_importer import native_intake, target, auth, people
@@ -21,11 +21,7 @@ async def test_mixed_retained_registry_selects_exact_current_import_profile(nati
         config.history_adapter.database=SimpleNamespace(**dict(zip(
             ("schema_revision","function_revision","executor_revision"),selected.wire())))
     startup=SimpleNamespace(config=config,authority=s.startup.authority,backend=s.startup.backend)
-    if selected is None:
-        with pytest.raises(TypeError,match="exact future source"):
-            KaggleSourceImporter(startup,originals=s.originals,tokenizer=s.importer.tokenizer)
-    else:
-        importer=KaggleSourceImporter(startup,originals=s.originals,tokenizer=s.importer.tokenizer)
-        assert importer.import_revisions==selected
-        assert (importer.native_intake is not None)==(selected==ACTIVATION_REVISIONS)
-        assert len(s.spool.registry.handlers)==len(retained)
+    importer=KaggleSourceImporter(startup,originals=s.originals,tokenizer=s.importer.tokenizer)
+    assert importer.import_revisions==ACTIVATION_REVISIONS
+    assert importer.native_intake is not None
+    assert len(s.spool.registry.handlers)==len(retained)

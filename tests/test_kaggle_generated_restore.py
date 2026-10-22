@@ -220,8 +220,7 @@ def test_generated_fresh_snapshot_owner_configures_after_pg_without_model_reload
                 KaggleWorkerQuery(acquire=lambda:None,tokenizer=pinned(),
                     source_provenance=True),
                 loaded_sha256='a'*64,
-                compatibility=ReadHandlerCompatibility('db','schema','function',
-                    'executor','b'*64,'c'*64))
+                compatibility=ReadHandlerCompatibility('db', 'b' * 64, 'c' * 64))
             self.prepared=None
         async def prepare(self,actual,**kwargs):
             assert actual is encoder;events.append('prepare-owned-PG-A')

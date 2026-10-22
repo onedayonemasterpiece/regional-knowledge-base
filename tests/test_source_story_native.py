@@ -14,7 +14,8 @@ from psycopg.rows import tuple_row
 import pytest
 import pytest_asyncio
 
-from regional_knowledge.kaggle_apply import HandlerRegistry,apply_accepted,initialize_database,ApplyExecutionError
+from regional_knowledge.kaggle_apply import HandlerRegistry, apply_accepted, ApplyExecutionError
+from pg_schema_metadata import initialize_fixture_database as initialize_database
 from regional_knowledge.source_import_v2 import STORY_REVISIONS,source_import_v2_handler
 from test_kaggle_apply import pinned
 from test_recovery_journal import fixture as journal_fixture

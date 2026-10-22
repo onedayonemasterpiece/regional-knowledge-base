@@ -12,7 +12,8 @@ from psycopg.types.json import Jsonb
 import pytest
 import pytest_asyncio
 
-from regional_knowledge.kaggle_apply import HandlerRegistry, apply_accepted, initialize_database, handover_writer
+from regional_knowledge.kaggle_apply import HandlerRegistry, apply_accepted, handover_writer
+from pg_schema_metadata import initialize_fixture_database as initialize_database
 from regional_knowledge.kaggle_native_source_bindings import native_source_handler
 from regional_knowledge.recovery_journal import ExactCommand
 from regional_knowledge.source_activation import (

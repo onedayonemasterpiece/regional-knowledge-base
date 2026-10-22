@@ -18,16 +18,11 @@ from test_participants import people
 
 
 def expected():
-    return SearchRuntimeExpectation({key: 'a' * 64 for key in RUNTIME_HASHES},
-        'synthetic-db', 's1', 'f1', 'e1', 5)
+    return SearchRuntimeExpectation({key: 'a' * 64 for key in RUNTIME_HASHES}, 'synthetic-db', 5)
 
 
 def observation(**updates):
-    value = dict(hashes=dict(expected().hashes), database_generation='synthetic-db',
-        schema_revision='s1', function_revision='f1', executor_revision='e1',
-        schema_version=expected().schema_version, applied_seq=5, projection_seq=5, visibility_epoch=0,
-        text_search_ready=True, dense_search_ready=True,
-        archive_read_ready=False, proof_ready=None)
+    value = dict(hashes=dict(expected().hashes), database_generation='synthetic-db', schema_version=expected().schema_version, applied_seq=5, projection_seq=5, visibility_epoch=0, text_search_ready=True, dense_search_ready=True, archive_read_ready=False, proof_ready=None)
     return value | updates
 
 

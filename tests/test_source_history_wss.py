@@ -39,7 +39,7 @@ class NativePg(Pg):
 
 
 def pair(e,*,lease_seconds=10,schema_revision=None,geo_bootstrap_operation_keys=()):
-    b=binding();pg=NativePg();database=SimpleNamespace(schema_version=16,database_generation='db-source',writer_generation='writer-1')
+    b=binding();pg=NativePg();database=SimpleNamespace(schema_version=int(schema_revision.split('-')[3]) if schema_revision is not None else 16,database_generation='db-source',writer_generation='writer-1')
     if schema_revision is not None:database.schema_revision=schema_revision
     routes=('source.search','source.fetch','source.withdraw')
     if schema_revision in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):
@@ -47,14 +47,11 @@ def pair(e,*,lease_seconds=10,schema_revision=None,geo_bootstrap_operation_keys=
             'source.fact_read','source.calendar','source.observations')
     if schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):routes=routes+('story.edit','story.access','source.catalog')
     if schema_revision=='rkb-v4-sql001-011-v1':routes=routes+('source.entity_read','source.entity_list')
-    async def probe(**kwargs):return b'catalog',dict(schema_version=16,database_generation='db-source',applied_seq=pg.applied_seq)
+    async def probe(**kwargs):return b'catalog',dict(schema_version=database.schema_version,database_generation='db-source',applied_seq=pg.applied_seq)
     native=NativeSourceHistoryObserver(acquire=pg.acquire,database=database,identity=('run','nonce','inc'),registry=e.registry,
         current=lambda key:key==('run','inc',1),probe=probe,lease_seconds=lease_seconds)
     native.attached(1)
-    verifier=WssSourceHistoryVerifier(e.spool,acquire=None,database=database,observer_sha256=native.code_hash,
-        binding_current=lambda current:current is b,routes={k:lambda:None for k in routes},
-        expected_catalog_sha256=digest(b'catalog'),expected_acl_sha256=digest(canonical(pg.acl)),writer_generation='writer-1',
-        geo_bootstrap_operation_keys=geo_bootstrap_operation_keys)
+    verifier=WssSourceHistoryVerifier(e.spool, acquire=None, database=database, observer_sha256=native.code_hash, binding_current=lambda current: current is b, routes={k: lambda: None for k in routes}, expected_schema_version=database.schema_version, writer_generation='writer-1', geo_bootstrap_operation_keys=geo_bootstrap_operation_keys)
     calls=[]
     async def phase(binding,args):
         calls.append(args)

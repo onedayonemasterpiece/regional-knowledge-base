@@ -26,7 +26,7 @@ class Connection(FixtureConnection):
     async def fetchone(self):
         if 'FROM rkb_v4.read_frontier' in self.statement or 'CROSS JOIN rkb_v4.read_frontier' in self.statement:
             return (12,12,3,True,False,'synthetic-db')
-        if 'SELECT schema_revision' in self.statement:return CASE_REVISIONS.wire()
+        if 'SELECT max(version)' in self.statement:return (10,)
         if 'verify_disagreement_origins_v1' in self.statement:return (True,)
         return (self.record,)
 

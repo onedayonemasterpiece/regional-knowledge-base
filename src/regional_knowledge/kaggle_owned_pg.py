@@ -24,7 +24,7 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import tuple_row
 
-from .kaggle_apply import initialize_database, Revisions
+from .kaggle_apply import initialize_database
 from .kaggle_schema_migrate import latest_schema_version
 from .kaggle_bootstrap import BootstrapUnavailable, _file_hash
 
@@ -42,16 +42,6 @@ DOMAIN_SQL_ARTIFACTS=CASE_SQL_ARTIFACTS+('011_geo_identity_manifest.sql',)
 DOMAIN_V2_SQL_ARTIFACTS=DOMAIN_SQL_ARTIFACTS+('012_geo_dependency_bound.sql',)
 IMAGE_SOURCE_SQL_ARTIFACTS=DOMAIN_V2_SQL_ARTIFACTS+('013_source_stage.sql','014_source_stage_activation.sql')
 NATIVE_SOURCE_SQL_ARTIFACTS=IMAGE_SOURCE_SQL_ARTIFACTS
-
-def sql_artifacts(schema_revision):
-    if schema_revision=='rkb-v4-sql001-014-v1':return IMAGE_SOURCE_SQL_ARTIFACTS
-    if schema_revision=='rkb-v4-sql001-012-v1':return DOMAIN_V2_SQL_ARTIFACTS
-    if schema_revision=='rkb-v4-sql001-011-v1':return DOMAIN_SQL_ARTIFACTS
-    if schema_revision=='rkb-v4-sql001-010-v1':return CASE_SQL_ARTIFACTS
-    if schema_revision=='rkb-v4-sql001-009-v1':return EDITORIAL_SQL_ARTIFACTS
-    if schema_revision=='rkb-v4-sql001-008-v1':return FACT_SQL_ARTIFACTS
-    if schema_revision=='rkb-v4-sql001-007-v1':return STORY_SQL_ARTIFACTS
-    return SQL_ARTIFACTS
 
 STORY_READER_FUNCTIONS=('read_story_v1(uuid,text,bigint,bigint,integer)',
     'story_lexical_candidates_v1(text,integer,uuid[])','story_dense_candidates_v1(public.vector,integer,uuid[])',
@@ -281,9 +271,6 @@ class OwnedDatabase:
     mode: str
     database_generation: str
     writer_generation: str
-    schema_revision: str
-    function_revision: str
-    executor_revision: str
     socket: str
     dbname: str
     port: int = 5432
@@ -299,8 +286,7 @@ class OwnedDatabase:
             raise ValueError('integer database schema version required')
         if self.mode not in ('NEW_EMPTY_GENERATION', 'VERIFIED_INITIALIZED'):
             raise ValueError('explicit initialized or new empty generation required')
-        for key in ('database_generation','writer_generation','schema_revision','function_revision',
-                    'executor_revision','ownership_evidence'):
+        for key in ('database_generation','writer_generation','ownership_evidence'):
             value = getattr(self,key)
             if not isinstance(value,str) or not 1 <= len(value.encode()) <= 256:
                 raise ValueError('explicit bounded database ownership required')
@@ -552,11 +538,9 @@ class OwnedPostgres:
         async with admin.transaction():
             await admin.execute('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public')
             await create_native_roles(admin)
-        await migrate(admin,{'sql/'+name:files[name] for name in selected_sql[:2]})
-        await initialize_database(admin,database_generation=spec.database_generation,
-            writer_generation=spec.writer_generation,
-            revisions=Revisions(spec.schema_revision,spec.function_revision,spec.executor_revision))
         await migrate(admin,{'sql/'+name:files[name] for name in selected_sql})
+        await initialize_database(admin,database_generation=spec.database_generation,
+            writer_generation=spec.writer_generation)
         async with admin.transaction():
             await configure_native_roles(admin,selected_sql=selected_sql,dbname=spec.dbname,create_roles=False)
             await admin.execute('GRANT SELECT ON rkb_v4.schema_migrations TO rkb_reader')

@@ -8,7 +8,7 @@ from uuid import UUID
 
 import pytest
 import pytest_asyncio
-from regional_knowledge.kaggle_apply import (HandlerRegistry,HandlerSpec,MigrationTransition,apply_accepted,ApplyExecutionError)
+from regional_knowledge.kaggle_apply import (HandlerRegistry,HandlerSpec,apply_accepted,ApplyExecutionError)
 from regional_knowledge.recovery_journal import ExactCommand
 from regional_knowledge.disagreement_native import *
 from regional_knowledge.disagreement_contracts import *
@@ -36,36 +36,21 @@ def source_command():
 async def prepare(conn,generation):
     await initialize(conn,generation)
     artifact=(ROOT/'sql/kaggle/010_disagreement_cases.sql').read_text()
-    sha=hashlib.sha256(artifact.encode()).hexdigest()
-    # This fixture migration function contains only the exact checked-in DDL;
-    # it does not execute SQL supplied in a command payload.
     async with conn.transaction():
-        await conn.execute("""CREATE FUNCTION rkb_v4.fixture_check_cases_migration(p bytea,ids jsonb,expected jsonb,logical_time text)
-          RETURNS boolean LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
-          SELECT convert_from(p,'UTF8')::jsonb->>'migration_id'='fixture-cases-010' AND expected->>'schema'=schema_revision
-           AND expected->>'function'=function_revision AND expected->>'executor'=executor_revision
-           AND expected->>'migration'=coalesce(last_migration_id,'') FROM rkb_v4.recovery_state WHERE singleton $$""",prepare=False)
-        await conn.execute('CREATE FUNCTION rkb_v4.fixture_apply_cases_migration(p bytea,ids jsonb,expected jsonb,logical_time text) '
-            'RETURNS bytea LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $case_migration$ BEGIN\n'
-            +artifact+"\nRETURN convert_to('{\"migration\":\"010_disagreement_cases.sql\"}','UTF8');END $case_migration$",prepare=False)
+        await conn.execute(artifact,prepare=False)
     c=await pinned(conn,'check_source_import_v4');a=await pinned(conn,'apply_source_import_v4')
     source=source_import_v4_handler(check_sha256=c.definition_sha256,apply_sha256=a.definition_sha256)
-    c=await pinned(conn,'fixture_check_cases_migration');a=await pinned(conn,'fixture_apply_cases_migration')
-    transition=HandlerSpec('schema_transition','fixture.cases.migrate',EDITORIAL_REVISIONS,c,a,
-        frozenset({'schema','function','executor','migration'}),MigrationTransition('fixture-cases-010',sha,None,CASE_REVISIONS))
     _,journal=journal_fixture()
-    n=dict(connection=conn,generation=generation,registry=HandlerRegistry([source,transition]),journal=journal)
+    n=dict(connection=conn,generation=generation,registry=HandlerRegistry([source]),journal=journal)
     assert (await apply(n,source_command())).status=='applied'
-    migration=ExactCommand(sequence=2,operation_key='cases-migration-010',request_id='migrate-2',person_id=ACTOR,
-        route='fixture.cases.migrate',logical_time='2026-10-20T18:01:00Z',kind='schema_transition',
-        schema_revision=EDITORIAL_REVISIONS.schema,function_revision=EDITORIAL_REVISIONS.function,executor_revision=EDITORIAL_REVISIONS.executor,
-        ids={'migration_id':'fixture-cases-010'},expected_revisions=dict(schema=EDITORIAL_REVISIONS.schema,
-            function=EDITORIAL_REVISIONS.function,executor=EDITORIAL_REVISIONS.executor,migration=''),
-        payload=json.dumps(dict(migration_id='fixture-cases-010',artifact_sha256=sha,predecessor=None),
-            sort_keys=True,separators=(',',':')).encode())
-    assert (await apply(n,migration)).status=='applied'
+    # Keep the existing case sequence fixtures: a real second source attempt
+    # is rejected by its absent-source precondition; DDL never enters journal.
+    duplicate=replace(source_command(),sequence=2,operation_key='source-already-present')
+    assert (await apply(n,duplicate)).status=='rejected_precondition'
+    async with conn.transaction():
+        await conn.execute('UPDATE rkb_v4.recovery_state SET schema_revision=%s,function_revision=%s,executor_revision=%s',CASE_REVISIONS.wire())
     c=await pinned(conn,'check_disagreement_v1');a=await pinned(conn,'apply_disagreement_v1')
-    n['registry']=HandlerRegistry([source,transition]+[case_handler(route,check_sha256=c.definition_sha256,
+    n['registry']=HandlerRegistry([source]+[case_handler(route,check_sha256=c.definition_sha256,
         apply_sha256=a.definition_sha256) for route in DEPENDENCIES])
     return n
 

@@ -35,10 +35,7 @@ class SyntheticTokenizer:
 
 
 def observation(**changes):
-    values = dict(database_generation='synthetic-db', schema_revision='s1', function_revision='f1',
-        executor_revision='e1', applied_seq=5, projection_seq=5, visibility_epoch=3,
-        text_search_ready=True, dense_search_ready=True, archive_read_ready=None, proof_ready=None,
-        schema_version=latest_schema_version())
+    values = dict(database_generation='synthetic-db', applied_seq=5, projection_seq=5, visibility_epoch=3, text_search_ready=True, dense_search_ready=True, archive_read_ready=None, proof_ready=None, schema_version=latest_schema_version())
     values.update(changes)
     return values
 

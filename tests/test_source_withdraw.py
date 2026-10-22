@@ -16,9 +16,8 @@ import pytest_asyncio
 
 from regional_knowledge.bge_queue import BgeQueue
 from regional_knowledge.control_spool import ControlSpool,SOURCE_WITHDRAW,WITHDRAW_DEPENDENCY
-from regional_knowledge.kaggle_apply import (
-    ApplyExecutionError,ApplyUnknown,HandlerRegistry,HandlerSpec,Revisions,initialize_database,
-)
+from regional_knowledge.kaggle_apply import ApplyExecutionError, ApplyUnknown, HandlerRegistry, HandlerSpec, Revisions
+from pg_schema_metadata import initialize_fixture_database as initialize_database
 from regional_knowledge.recovery_journal import RecoveryJournal
 from test_kaggle_apply import pinned
 from test_kaggle_pg_driver import database,connect

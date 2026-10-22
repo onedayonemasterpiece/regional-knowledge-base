@@ -145,9 +145,7 @@ async def test_native_replay_exact_receipts_precede_rollover_and_adoption(monkey
     async def executor(frame):
         sequence[0]+=1;events.append(('apply',sequence[0]))
         return {'sequence':sequence[0],'command_sha256':str(sequence[0])*64,'outcome_sha256':'a'*64}
-    async def probe(**kwargs):return b'catalog',dict(database_generation='db',applied_seq=sequence[0],
-        schema_version=16,projection_seq=sequence[0],text_search_ready=True,dense_search_ready=True,
-        schema_revision='s',function_revision='f',executor_revision='e')
+    async def probe(**kwargs):return b'catalog',dict(database_generation='db', applied_seq=sequence[0], schema_version=16, projection_seq=sequence[0], text_search_ready=True, dense_search_ready=True)
     async def rollover(connection,**kwargs):
         events.append(('rollover',sequence[0]));assert sequence[0]==2;writer[0]='new'
     async def readiness(connection):events.append(('readiness',sequence[0]))

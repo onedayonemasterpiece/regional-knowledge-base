@@ -127,7 +127,7 @@ class PhysicalSnapshotRecovery:
         return ObjectRef(key,sha(data),len(data),proof.applied_sequence)
 
     async def recover(self,manifest_ref,binding,*,database,expected_versions,identity,operation_key,
-                      expected_schema_version=None,expected_final_catalog_sha256=None):
+                      expected_schema_version=None):
         from .kaggle_pg_snapshot_native import compatible_versions
         self._authority(binding);validate_versions(expected_versions)
         expected_schema_version=database.schema_version if expected_schema_version is None else expected_schema_version
@@ -158,7 +158,7 @@ class PhysicalSnapshotRecovery:
                 blob=asdict(blob),control_bytes=control_bytes,expected_versions=expected_versions,
                 database=database.wire(),identity=identity)
             head=await self.journal.head();tail=await self._tail(head,boundary,manifest['applied_sequence'])
-            heads={row[0]:row for row in control['heads']};receipts=[];transitions=[];replayed=[]
+            heads={row[0]:row for row in control['heads']};receipts=[];replayed=[]
             for command,seal in tail:
                 self._authority(binding)
                 handler=self.registry.resolve(command);dep=handler.dependency
@@ -190,11 +190,8 @@ class PhysicalSnapshotRecovery:
                     remote=None  # Replayed locally; still pending until the next Dataset.
                 replayed.append((receipt,remote))
                 receipts.append((receipt.sequence,receipt.command_sha256,receipt.outcome_sha256))
-                if handler.transition is not None and receipt.status=='applied':
-                    transitions.append({'sequence':command.sequence,'command_sha256':sha(command.encode()),
-                        'handler_sha256':handler.fingerprint,'migration_id':handler.transition.migration_id,
-                        'artifact_sha256':handler.transition.artifact_sha256})
-                elif dep is not None and dep.scope_class=='public_source':
+
+                if dep is not None and dep.scope_class=='public_source':
                     source=command.ids['source_id'];old=heads.get(source)
                     heads[source]=[source,command.sequence,sha(command.encode()),int(dep.restriction or old is not None and old[3]),0,0]
             if await self.journal.head()!=head:raise SnapshotError('snapshot_tail_changed_before_rollover')

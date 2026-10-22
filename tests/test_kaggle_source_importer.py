@@ -57,7 +57,7 @@ async def intake(target, tmp_path, request):
         row=db.execute('SELECT expected_json,observed_json FROM bge_runtime_expectations WHERE run_id=?',(t.run,)).fetchone()
         # Exact future installed revisions; the hash/catalog observations remain
         # synthetic as in the existing target fixture.
-        revision_values=dict(zip(('schema_revision','function_revision','executor_revision'),versions.wire()))
+        revision_values=dict(schema_version=getattr(request,'param',7))
         values=[]
         for raw in row:
             value=json.loads(raw);value.update(revision_values);values.append(json.dumps(value))

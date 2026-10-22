@@ -50,7 +50,7 @@ def _files():
         ordinal = int(file.name[:3])
         assert ordinal not in discovered, f"duplicate ordinal {ordinal}"
         discovered[ordinal] = file
-    assert sorted(discovered) == list(range(1, 17)), "real complete SQL001–016 prefix required"
+    assert sorted(discovered) == list(range(1, len(discovered)+1)) and len(discovered)>=16, "real complete SQL001–016 prefix required"
     for ordinal, name in (
         (13, "013_source_stage.sql"),
         (14, "014_source_stage_activation.sql"),
@@ -65,7 +65,7 @@ def _files():
     raw16 = discovered[16].read_bytes()
     git_blob = hashlib.sha1(b"blob " + str(len(raw16)).encode() + b"\0" + raw16).hexdigest()
     assert git_blob == SQL16_GIT_BLOB, "SQL016 must be the reviewed PR214 source"
-    return discovered
+    return {ordinal:file for ordinal,file in discovered.items() if ordinal<=16}
 
 
 async def _definition_hashes(conn):

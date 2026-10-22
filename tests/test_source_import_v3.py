@@ -61,7 +61,7 @@ def test_v3_precondition_rejects_facts_absent_from_selected_evidence_before_acce
 def test_fixed_registry_selects_exact_schema8_only():
     db=SimpleNamespace(schema_revision=FACT_REVISIONS.schema,function_revision=FACT_REVISIONS.function,
                        executor_revision=FACT_REVISIONS.executor)
-    entries=[dict(route='source.import.v3',check_sha256='a'*64,apply_sha256='b'*64)]
+    entries=[dict(route='source.import.v3',check_sha256='a'*64,apply_sha256='b'*64,revisions=list(FACT_REVISIONS.wire()))]
     assert fixed_registry(db,entries).resolve(command()).route=='source.import.v3'
     with pytest.raises(ValueError):fixed_registry(db,[dict(entries[0],route='source.import.v2')])
 

@@ -29,8 +29,7 @@ async def test_finish_detach_after_handover_reconciles_same_session_without_seco
     async def probe(**kwargs):
         probes[0]+=1
         if probes[0]==1:current[0]=None  # Actual detach after SQL handover committed.
-        return b'catalog',dict(schema_version=16,database_generation='db',applied_seq=0,projection_seq=0,text_search_ready=True,dense_search_ready=True,
-            schema_revision='s',function_revision='f',executor_revision='e')
+        return b'catalog',dict(schema_version=16, database_generation='db', applied_seq=0, projection_seq=0, text_search_ready=True, dense_search_ready=True)
     async def readiness(connection):pass
     monkeypatch.setattr('regional_knowledge.kaggle_pg_snapshot_native.handover_writer',rollover)
     binary=NativeBinary('/fixture/postgres',1,'a'*64,'postgres (PostgreSQL) 17.11')

@@ -7,7 +7,7 @@ from pathlib import Path
 import zlib
 
 from .bge_contract import REVISION, SPACE
-from .kaggle_owned_pg import SQL_ARTIFACTS, STORY_SQL_ARTIFACTS, FACT_SQL_ARTIFACTS, DOMAIN_SQL_ARTIFACTS, NATIVE_SOURCE_SQL_ARTIFACTS, sql_artifacts, canonical, digest
+from .kaggle_owned_pg import canonical,digest
 from .kaggle_readiness import SearchRuntimeExpectation, MAX_LAUNCH_CONFIG_BYTES
 from .kaggle_target_runtime import TargetLaunchSpec
 from .recovery_journal import RecoveryJournal
@@ -21,7 +21,7 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
     'native_snapshot_transfer','kaggle_bootstrap_pins','kaggle_native_env','kaggle_source_acl','kaggle_source_history_native',
     'original_intake','telegram_original','telegram_runtime_binding','telegram_runtime_channel','kaggle_original_native','kaggle_original_parser','kaggle_djvu_inspect','kaggle_original_parser_pdf_v1','kaggle_djvu_pixels','kaggle_djvu_elf','kaggle_djvu_decoder_child','file_ingress','source_adapter','ingestion',
     'source_import_v2','story_contracts','kaggle_story_read','source_import_v3','kaggle_fact_contracts','kaggle_fact_read','kaggle_source_read','source_import_v4','source_manifest',
-    'story_editorial','disagreement_contracts','disagreement_native','geo_migration','geo_manifest_commands','kaggle_geo_upgrade','kaggle_native_source_upgrade','kaggle_dataset_base',
+    'story_editorial','disagreement_contracts','disagreement_native','geo_migration','geo_manifest_commands','kaggle_dataset_base',
     'kaggle_case_contracts','kaggle_case_read','kaggle_geo_contracts','kaggle_geo_read',
     'kaggle_domain_bindings','kaggle_domain_schema','kaggle_editorial_contracts','kaggle_editorial_read','source_graph','entity_graph','contracts','kaggle_source_graph_read','stage_graph','poi_reference','kaggle_recovery_composition','kaggle_snapshot_drill','kaggle_acceptance_contracts','source_stage','source_activation','source_graph_native','kaggle_native_source_bindings',
     'kaggle_source_materializer','kaggle_import_contracts','rights','search_material','region_policy','continuation_context')
@@ -212,12 +212,7 @@ if __name__ == '__main__':
         from .kaggle_bootstrap_pins import BootstrapRuntimeExpectation,ANCHORS
         if target.stage0 is None or target.native_bundle is None:
             raise ValueError('bootstrap requires complete pinned native and package plan')
-        queue.expect_bootstrap_runtime(config['run_id'],BootstrapRuntimeExpectation(
-            {key:hashes[key] for key in ANCHORS},database.database_generation,database.schema_revision,
-            database.function_revision,database.executor_revision,target.stage0.packages,
-            target.native_bundle.manifest_sha256,intent['sql_hashes'],target.bootstrap_seconds,target.min_data_seq))
+        queue.expect_bootstrap_runtime(config['run_id'],BootstrapRuntimeExpectation({key: hashes[key] for key in ANCHORS}, database.database_generation, target.stage0.packages, target.native_bundle.manifest_sha256, intent['sql_hashes'], target.bootstrap_seconds, target.min_data_seq))
     else:
-        queue.expect_search_runtime(config['run_id'],SearchRuntimeExpectation(hashes,
-            database.database_generation,database.schema_revision,database.function_revision,
-            database.executor_revision,target.min_data_seq,schema_version=database.schema_version))
+        queue.expect_search_runtime(config['run_id'],SearchRuntimeExpectation(hashes, database.database_generation, target.min_data_seq, schema_version=database.schema_version))
     return source

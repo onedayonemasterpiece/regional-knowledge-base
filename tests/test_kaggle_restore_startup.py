@@ -91,8 +91,7 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
         assert method=='get_object' and kwargs['Params']['IfMatch']=='"native-blob"'
         return 'https://existing-s3.fixture.invalid/private-exact-object?synthetic-ticket'
     e.old.c.generate_presigned_url=sign
-    history=WssNativeHistoryProofAdapter(database=database,expected_catalog_sha256='a'*64,
-        expected_acl_sha256='b'*64,expected_observer_sha256='c'*64)
+    history=WssNativeHistoryProofAdapter(database=database, expected_observer_sha256='c' * 64)
     imports=None
     if dataset_input:
         from regional_knowledge.kaggle_import_composition import SourceImportOwners
@@ -129,8 +128,7 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
                 elif phase=='finish':
                     assert frame['arguments']['handle']=='native-retained-session'
                     value={'reference':'retained-native-capability'}
-                    ready=dict(hashes=dict(e.expected.hashes),database_generation='synthetic-db',schema_revision='s1',function_revision='f1',executor_revision='e1',
-                        schema_version=16,applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,archive_read_ready=None,proof_ready=None)
+                    ready=dict(hashes=dict(e.expected.hashes), database_generation='synthetic-db', schema_version=e.expected.schema_version, applied_seq=0, projection_seq=0, visibility_epoch=0, text_search_ready=True, dense_search_ready=True, archive_read_ready=None, proof_ready=None)
                     assert e.q.accept_search_runtime(e.run,e.token,e.generation,ready).ok
                     e.q.heartbeat(e.run,e.token,ready=True,connection_generation=e.generation)
                     assert not startup.config.writer_owner.current(database_generation='synthetic-db',writer_generation='writer-2')
@@ -185,7 +183,7 @@ async def test_lifespan_yields_wss_route_before_waiting_for_pre_ready_restore(re
     database=replace(spec().database,writer_generation='writer-2')
     registry=fixed_registry(database,[dict(route='source.withdraw.v1',check_sha256='a'*64,apply_sha256='b'*64)])
     spool=ControlSpool(e.q,e.old.auth.p.registry,e.j,registry)
-    history=WssNativeHistoryProofAdapter(database=database,expected_catalog_sha256='a'*64,expected_acl_sha256='b'*64,expected_observer_sha256='c'*64)
+    history=WssNativeHistoryProofAdapter(database=database, expected_observer_sha256='c' * 64)
     startup=TargetServiceStartup(TargetServiceConfig(e.old.auth.provider,e.old.auth.p.registry,e.q,spool,history,'writer-2',e.w.current,
         writer_owner=e.w,source_restore=e.plan))
     entered=asyncio.Event();blocked=asyncio.Event()

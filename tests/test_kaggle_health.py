@@ -8,6 +8,7 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 
 from regional_knowledge.bge_queue import BgeQueue
+from regional_knowledge.kaggle_schema_migrate import latest_schema_version
 from regional_knowledge.kaggle_health import (
     HEALTH_SQL, DatabaseHealth, collect_health, probe_database_health,
 )
@@ -30,7 +31,7 @@ class Native:
     def __init__(self, rows=None, delay=False):
         self.row_factory = tuple_row
         self.info = SimpleNamespace(transaction_status=TransactionStatus.IDLE)
-        self.rows = rows if rows is not None else [('synthetic-db', 'rkb-v4-sql001-014-v1', 5, 5, False)]
+        self.rows = rows if rows is not None else [('synthetic-db', 14, 5, 5, False)]
         self.sql = []
         self.delay = delay
         self.acquired = 0
@@ -77,7 +78,7 @@ async def test_native_health_uses_one_existing_read_only_transaction_and_no_corp
     result = await probe_database_health(acquire=native.acquire, binding=binding(), binding_current=lambda _: True)
     assert result.ready and result.sql_response
     assert result.applied_seq == result.projection_seq == 5
-    assert result.schema_revision == 'rkb-v4-sql001-014-v1'
+    assert result.schema_version == 14
     assert 0 <= result.elapsed_ms < 2000
     assert native.acquired == native.released == 1
     assert native.sql[0][0] == 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'
@@ -87,11 +88,11 @@ async def test_native_health_uses_one_existing_read_only_transaction_and_no_corp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('row,reason', [
-    (('other-db', 's1', 5, 5, False), 'pg_generation_mismatch'),
-    (('synthetic-db', 's1', 6, 5, False), 'pg_projection_lag'),
-    (('synthetic-db', 's1', 5, 5, True), 'pg_prior_write_pending'),
-    (('synthetic-db', 's1', 4, 4, False), 'pg_sequence_behind'),
-    (('synthetic-db', 's1', True, 5, False), 'pg_metadata_invalid'),
+    (('other-db', 1, 5, 5, False), 'pg_generation_mismatch'),
+    (('synthetic-db', 1, 6, 5, False), 'pg_projection_lag'),
+    (('synthetic-db', 1, 5, 5, True), 'pg_prior_write_pending'),
+    (('synthetic-db', 1, 4, 4, False), 'pg_sequence_behind'),
+    (('synthetic-db', 1, True, 5, False), 'pg_metadata_invalid'),
     (('synthetic-db', None, 5, 5, False), 'pg_metadata_invalid'),
 ])
 async def test_sql_responded_does_not_imply_readiness(row, reason):
@@ -152,7 +153,7 @@ async def test_ready_queue_alone_is_not_sql_response_and_controller_is_independe
 @pytest.mark.asyncio
 async def test_existing_queue_and_native_probe_form_one_exact_health_response(target):
     expected = current_binding(target.queue)
-    native = Native([(expected.database_generation, 's1', expected.min_data_seq, expected.min_data_seq, False)])
+    native = Native([(expected.database_generation, 1, expected.min_data_seq, expected.min_data_seq, False)])
     async def observe(value):
         return await probe_database_health(acquire=native.acquire, binding=value,
             binding_current=lambda b: current_binding(target.queue) == b)
@@ -169,9 +170,9 @@ async def test_existing_queue_and_native_probe_form_one_exact_health_response(ta
 
 
 @pytest.mark.parametrize('fields', [
-    {}, {'schema_revision': 's1', 'applied_seq': 5, 'projection_seq': 5},
-    {'schema_revision': 's1', 'applied_seq': True, 'projection_seq': 1, 'pending': False},
-    {'schema_revision': 's1', 'applied_seq': 5, 'projection_seq': 4, 'pending': False},
+    {}, {'schema_version': 1, 'applied_seq': 5, 'projection_seq': 5},
+    {'schema_version': 1, 'applied_seq': True, 'projection_seq': 1, 'pending': False},
+    {'schema_version': 1, 'applied_seq': 5, 'projection_seq': 4, 'pending': False},
 ])
 def test_incomplete_or_inconsistent_callback_receipt_is_not_ready(fields):
     assert not DatabaseHealth(binding(), sql_response=True, **fields).ready
@@ -182,7 +183,7 @@ async def test_old_attachment_or_exception_payload_cannot_be_reported_as_healthy
     async def stale(expected):
         with target.queue.connect() as db:
             db.execute('UPDATE runs SET channel_active=0 WHERE id=?', (expected.run_id,))
-        return DatabaseHealth(expected, sql_response=True, schema_revision='s1', applied_seq=5, projection_seq=5, pending=False)
+        return DatabaseHealth(expected, sql_response=True, schema_version=1, applied_seq=5, projection_seq=5, pending=False)
     result = await collect_health(queue=target.queue, native_probe=stale)
     assert not result['read_ready'] and result['reason'] == 'attachment_changed'
     assert result['postgres'] is None
@@ -207,7 +208,7 @@ async def test_health_sql_on_existing_disposable_github_pg17(env):
     await publish(env)
     expected = TargetReadBinding('fixture-run', 'fixture-incarnation', 1, 'query-fixture', 5, '106')
     result = await probe_database_health(acquire=env['acquire'], binding=expected, binding_current=lambda _: True)
-    assert result.ready and result.schema_revision == 's1'
+    assert result.ready and result.schema_version == latest_schema_version()
     assert result.applied_seq == result.projection_seq == 5
 
 
@@ -228,7 +229,7 @@ def test_public_heartbeat_health_reports_runtime_observation_without_identifiers
     assert result['source'] == 'heartbeat_observation'
     assert result['notebook']['status'] == 'ready'
     assert result['notebook']['provider_version'] == int(expected.provider_version)
-    assert set(result['postgres']) == {'schema_revision', 'applied_seq', 'projection_seq'}
+    assert set(result['postgres']) == {'schema_version', 'applied_seq', 'projection_seq'}
     assert result['read_ready'] == (result.get('reason') is None)
     text = json.dumps(result)
     for secret in (expected.run_id, expected.runtime_incarnation, 'token', 'launch_nonce', 'provider_ref'):

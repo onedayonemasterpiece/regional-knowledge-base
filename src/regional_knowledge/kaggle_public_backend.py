@@ -580,7 +580,7 @@ class KaggleSourceBackend:
                             if result.health is None:
                                 return DatabaseHealth(binding,reason='pg_timeout'
                                     if result.reason=='deadline_exceeded' else 'pg_query_failed')
-                            if (result.health.schema_revision is not None
+                            if (result.health.schema_version is not None
                                     and result.observed_database_generation!=binding.database_generation):
                                 raise TargetUnavailable('SQL health generation differs')
                             return DatabaseHealth(binding,**result.health.model_dump())

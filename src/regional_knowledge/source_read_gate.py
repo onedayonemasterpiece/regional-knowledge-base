@@ -172,7 +172,7 @@ class SourceReadGate:
         from .source_import import IMPORT_PRECONDITIONS
         return any(h.route=='source.import.v4' and h.revisions==DOMAIN_REVISIONS
             and h.check.name=='check_source_import_graph_v1' and h.apply.name=='apply_source_import_graph_v1'
-            and h.dependency==IMPORT_V4_DEPENDENCY and h.transition is None and h.precondition_keys==IMPORT_PRECONDITIONS
+            and h.dependency==IMPORT_V4_DEPENDENCY and h.precondition_keys==IMPORT_PRECONDITIONS
             for h in self.spool.registry.handlers.values())
 
     async def dispatch(self, authority, query: Query | PassageReadRequest | StoryReadRequest, binding):

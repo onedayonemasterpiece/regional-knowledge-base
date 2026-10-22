@@ -23,11 +23,7 @@ from test_recovery_journal import fixture as journal_fixture, command
 def spec(*,fresh=False):
     native = {name:'/kaggle/working/native/'+name for name in
         ('initdb','postgres','pg_config','vector_library','vector_control','vector_sql')}
-    database = OwnedDatabase(mode='NEW_EMPTY_GENERATION' if fresh else 'VERIFIED_INITIALIZED',
-        database_generation='synthetic-db',writer_generation='writer-1',schema_revision='s1',
-        function_revision='f1',executor_revision='e1',socket='/kaggle/temp/owned/socket',
-        dbname='rkb',ownership_evidence='stage0-fixture',
-        **(dict(cluster='/kaggle/temp/owned',uid=1000,gid=1000,native_paths=native) if fresh else {}))
+    database = OwnedDatabase(mode='NEW_EMPTY_GENERATION' if fresh else 'VERIFIED_INITIALIZED', database_generation='synthetic-db', writer_generation='writer-1', socket='/kaggle/temp/owned/socket', dbname='rkb', ownership_evidence='stage0-fixture', **dict(cluster='/kaggle/temp/owned', uid=1000, gid=1000, native_paths=native) if fresh else {})
     receipt = None if fresh else dict(database=database.wire(),schema_sha256='a'*64,stage0_receipt='stage0-fixture')
     return TargetLaunchSpec(database,'/kaggle/working',(
         dict(name='model/tokenizer.json',size=3,sha256='b'*64,role='tokenizer'),
@@ -172,8 +168,7 @@ async def test_controller_intent_includes_the_selected_native_story_migration(tm
     from regional_knowledge.kaggle_owned_pg import STORY_SQL_ARTIFACTS
     queue,run=queue_run(tmp_path)
     base=spec(fresh=True)
-    target=replace(base,database=replace(base.database,schema_revision=STORY_REVISIONS.schema,
-        function_revision=STORY_REVISIONS.function,executor_revision=STORY_REVISIONS.executor))
+    target=base
     _,journal=journal_fixture()
     selected=controller().target_sql_hashes(target,ROOT)
     assert selected==hashes()
@@ -602,6 +597,7 @@ async def test_live_version_promotion_retains_prepared_query_pg_pool_and_models(
     prepared=owner.prepared=PreparedRuntime(query_handler,candidate())
     worker=owner.recovery_worker=NS(factory=NS(_capabilities=set()),schema_control=NS(files={'verified':'bytes'}))
     owner.source_history_observer=NS(database=database)
+    owner.read_handler_slot=None
     async def probe(*,acquire):
         assert acquire is pool.connection
         return b'{}',observation(schema_version=database.schema_version+1)

@@ -8,7 +8,7 @@ from .kaggle_editorial_contracts import EditorialReadRequest,EditorialReadResult
 from .kaggle_story_read import story_item
 from .kaggle_query import _frontier,_identity,ReadUnavailable
 
-EDITORIAL_SCHEMAS=frozenset({'rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-014-v1'})
+
 
 
 def editorial_failure(request,reason,observed):
@@ -35,8 +35,10 @@ async def execute_editorial_read(request,*,acquire):
                             await cursor.execute("SELECT set_config('statement_timeout',%s,true)",(str(max(1,int(remaining*1000))),))
                             await cursor.execute(statement,args)
                         await _frontier(cursor,execute,request,observed,require_dense=False)
-                        await execute('SELECT schema_revision FROM rkb_v4.recovery_state WHERE singleton')
-                        if await cursor.fetchone() not in [(s,) for s in EDITORIAL_SCHEMAS]:raise ReadUnavailable('not_ready')
+                        await execute('SELECT max(version) FROM rkb_v4.schema_migrations')
+                        installed=await cursor.fetchone()
+                        if not installed or type(installed[0]) is not int or installed[0]<9:
+                            raise ReadUnavailable('not_ready')
                         if request.view=='edit_context':
                             await execute('SELECT rkb_v4.read_story_edit_context_v1(%s,%s)',(UUID(request.story_id),UUID(request.actor.person_id)))
                         else:

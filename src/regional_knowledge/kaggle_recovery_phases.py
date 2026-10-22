@@ -96,16 +96,9 @@ async def build_recovery_worker(*,native_bundle,database,identity,tools,native_u
     await asyncio.to_thread(grant_native_code_access,native_bundle.root,native_bundle.pins,
         uid=native_uid,gid=native_gid)
     registry=fixed_registry(database,tools['command_handlers'])
-    prepare_transition=None
-    if any(h.transition is not None for h in registry.handlers.values()):
-        if sql_root is None:raise SnapshotError('recovery_migration_bundle_required')
-        from .kaggle_native_source_upgrade import ordered_migration_prepare
-        prepare_transition=ordered_migration_prepare(sql_root=sql_root,registry=registry,
-            database_generation=database.database_generation,entries=tools['command_handlers'])
     factory=NativeSnapshotFactory(tools=PhysicalPgTools(**binaries),database=database,identity=identity,
         registry=registry,executor_factory=(WorkerSourceExecutor
             if source_materializer is None else __import__('functools').partial(WorkerSourceExecutor,materializer=source_materializer)),
-        prepare_transition=prepare_transition,
         current=current,workspace_private_current=workspace_private_current,native_uid=native_uid,
         native_gid=native_gid,acquire=acquire,upload_ticket=upload,limits=limits or SnapshotLimits())
     if dataset_checkpoint is not None:

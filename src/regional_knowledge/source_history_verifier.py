@@ -20,6 +20,7 @@ from psycopg.rows import tuple_row
 
 from .control_spool import SourceChange, SpoolConflict, _command, _database, _uuid
 from .kaggle_database_probe import NativeDatabaseProbe
+from .kaggle_domain_schema import TABLES_13,TABLES_14
 from .kaggle_schema_migrate import latest_schema_version
 from .source_read_gate import binding_key
 
@@ -55,7 +56,6 @@ class _Coverage:
     applied_sequence: int
     pending: tuple = ()
     case_state: object = None
-    closure_transition: tuple | None = None
 
     def current(self):
         v = self.verifier
@@ -77,7 +77,6 @@ def _case_projection(commands,applied,previous=None,*,after=0):
 class NativeSourceHistoryVerifier:
     def __init__(self, spool, *, acquire, binding_current, routes,
                  writer_generation, expected_schema_version=None,
-                 expected_catalog_sha256=None, expected_acl_sha256=None,
                  timeout_seconds=5, coverage_seconds=30, max_commands=2048,
                  max_history_bytes=4*1024*1024, clock=time.monotonic):
         if (acquire is None and type(self) is NativeSourceHistoryVerifier
@@ -121,9 +120,8 @@ class NativeSourceHistoryVerifier:
     def _verify_genesis(self,data,generation,*,expected_closure=None):
         """Known genesis facts are immutable; producer code is provenance.
 
-        A stateless verifier correction may read the fixed v1/v2 codecs. It
-        does not authorize changing original handlers, native catalog or ACLs.
-        Those require an explicit ordered closure transition, not a hash waiver.
+        A compatible verifier reads v1/v2 metadata without comparing catalog
+        or ACL fingerprints. Exact stream/generation/sequence remain bound.
         """
         try:
             value=json.loads(data)
@@ -148,7 +146,7 @@ class NativeSourceHistoryVerifier:
                     or not isinstance(producer,str)
                     or len(producer)!=64 or set(producer)-set('0123456789abcdef')):raise ValueError
         except (ValueError,TypeError,KeyError):
-            raise SpoolConflict('genesis facts or original closure differ; explicit migration required') from None
+            raise SpoolConflict('genesis facts differ') from None
         return value
 
     def _classify(self,raw,reference):
@@ -161,12 +159,7 @@ class NativeSourceHistoryVerifier:
         try:command,_,handler=self.spool._validate(command,'history-classification')
         except (ValueError,TypeError):raise SpoolConflict('unclassified accepted source dependency') from None
         dep=handler.dependency
-        if (dep is None and command.route=='source.native.upgrade.v1'
-                and handler.transition is not None):
-            # _validate above checked the exact pinned schema transition and actor.
-            return command,handler,reference
-        if dep is None or (handler.transition is not None and command.route!='geo.dependencies.upgrade.v2'):
-            raise SpoolConflict('unclassified accepted source dependency')
+        if dep is None:raise SpoolConflict('unclassified accepted source dependency')
         if dep.scope_class=='public_source':
             expected_route=('source.import' if command.route.startswith('source.import.') else
                 {'source.withdraw.v1':'source.withdraw','story.edit.v1':'story.edit','story.access.v1':'story.access'}.get(command.route))
@@ -287,21 +280,24 @@ class NativeSourceHistoryVerifier:
                             await cursor.execute('LOCK TABLE rkb_v4.sources,rkb_v4.revisions,rkb_v4.active_revision,'
                                 'rkb_v4.passage_search,rkb_v4.applied_ops,rkb_v4.recovery_state,'
                                 'rkb_v4.writer_generations IN SHARE MODE')
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+                            if fields['schema_version'] >= 7:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_regions,rkb_v4.story_assertion_versions,'
                                     'rkb_v4.stories,rkb_v4.story_versions,rkb_v4.story_variant_versions,'
                                     'rkb_v4.story_search,rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+                            if fields['schema_version'] >= 8:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+                            if fields['schema_version'] >= 11:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_graph_documents,rkb_v4.source_entity_ids,'
                                     'rkb_v4.source_entity_representations,rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,'
                                     'rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,rkb_v4.source_entity_finding_links,'
                                     'rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts IN SHARE MODE')
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+                            if fields['schema_version'] >= 9:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
                                     'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
                                     'rkb_v4.editorial_story_receipts,rkb_v4.story_editor_grants,rkb_v4.editorial_story_search IN SHARE MODE')
+                            if fields['schema_version']>=14:
+                                await cursor.execute('LOCK TABLE '+','.join('rkb_v4.'+name
+                                    for name in sorted(TABLES_13|TABLES_14))+' IN SHARE MODE')
                             await cursor.execute('SELECT s.database_generation,s.writer_generation,s.applied_seq '
                                 'FROM rkb_v4.recovery_state s JOIN rkb_v4.writer_generations w '
                                 'ON w.generation=s.writer_generation WHERE s.singleton AND NOT w.retired LIMIT 2')
@@ -352,18 +348,22 @@ class NativeSourceHistoryVerifier:
                                     _hash(c.encode()) if previous is None or c.sequence>=previous.sequence else previous.command_sha256,
                                     bool(h.dependency.restriction or previous and previous.restriction),
                                     bool(not durable or previous and previous.pending),False)
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+                            if fields['schema_version'] >= 7:
                                 origins=sorted({c.ids['source_id'] for c,_,_ in known.values()
                                     if 'source_id' in c.ids and c.sequence in applied})
-                                statement=('SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])'
-                                    if fields['schema_revision'] in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1') else
+                                statement=('SELECT rkb_v4.verify_source_story_origins_v4(%s::uuid[])'
+                                    if fields['schema_version'] >= 14 else
+                                    'SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])'
+                                    if fields['schema_version'] >= 9 else
                                     'SELECT rkb_v4.verify_source_story_origins_v2(%s::uuid[])'
-                                    if fields['schema_revision']=='rkb-v4-sql001-008-v1' else
+                                    if fields['schema_version'] >= 8 else
                                     'SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])')
                                 await cursor.execute(statement,(origins,))
                                 if await cursor.fetchone()!=(True,):raise SpoolConflict('native story origin differs')
-                                if fields.get('schema_revision') in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
-                                    await cursor.execute('SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])',(origins,))
+                                if fields['schema_version'] >= 11:
+                                    await cursor.execute(('SELECT rkb_v4.verify_source_graph_origins_v2(%s::uuid[])'
+                                        if fields['schema_version'] >= 14 else
+                                        'SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])'),(origins,))
                                     if await cursor.fetchone()!=(True,):raise SpoolConflict('native graph origin differs')
                             if await j.head()!=head or s._writing or s._source_version is not version:
                                 raise SpoolConflict('source prefix changed during extension')
@@ -458,21 +458,24 @@ class NativeSourceHistoryVerifier:
                             await cursor.execute('SET TRANSACTION READ ONLY')
                             await cursor.execute("SET LOCAL statement_timeout='2000ms'")
                             await cursor.execute('SET LOCAL search_path=pg_catalog')
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+                            if fields['schema_version'] >= 7:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_regions,rkb_v4.story_assertion_versions,'
                                     'rkb_v4.stories,rkb_v4.story_versions,rkb_v4.story_variant_versions,'
                                     'rkb_v4.story_search,rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+                            if fields['schema_version'] >= 8:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+                            if fields['schema_version'] >= 11:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_graph_documents,rkb_v4.source_entity_ids,'
                                     'rkb_v4.source_entity_representations,rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,'
                                     'rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,rkb_v4.source_entity_finding_links,'
                                     'rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts IN SHARE MODE')
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+                            if fields['schema_version'] >= 9:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads,'
                                     'rkb_v4.editorial_story_versions,rkb_v4.editorial_variant_versions,rkb_v4.editorial_variant_heads,'
                                     'rkb_v4.editorial_story_receipts,rkb_v4.story_editor_grants,rkb_v4.editorial_story_search IN SHARE MODE')
+                            if fields['schema_version']>=14:
+                                await cursor.execute('LOCK TABLE '+','.join('rkb_v4.'+name
+                                    for name in sorted(TABLES_13|TABLES_14))+' IN SHARE MODE')
                             await cursor.execute('SELECT s.database_generation,s.writer_generation,s.applied_seq '
                                 'FROM rkb_v4.recovery_state s JOIN rkb_v4.writer_generations w '
                                 'ON w.generation=s.writer_generation WHERE s.singleton AND NOT w.retired LIMIT 2')
@@ -519,17 +522,20 @@ class NativeSourceHistoryVerifier:
                             await cursor.execute('LOCK TABLE rkb_v4.sources,rkb_v4.revisions,rkb_v4.active_revision,'
                                 'rkb_v4.passage_search,rkb_v4.applied_ops,rkb_v4.recovery_state,'
                                 'rkb_v4.writer_generations IN SHARE MODE')
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+                            if fields['schema_version'] >= 7:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_regions,rkb_v4.story_assertion_versions,'
                                     'rkb_v4.stories,rkb_v4.story_versions,rkb_v4.story_variant_versions,'
                                     'rkb_v4.story_search,rkb_v4.source_story_pending,rkb_v4.story_history_receipts IN SHARE MODE')
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+                            if fields['schema_version'] >= 8:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations IN SHARE MODE')
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
+                            if fields['schema_version'] >= 11:
                                 await cursor.execute('LOCK TABLE rkb_v4.source_graph_documents,rkb_v4.source_entity_ids,'
                                     'rkb_v4.source_entity_representations,rkb_v4.source_entity_references,rkb_v4.source_entity_mentions,'
                                     'rkb_v4.source_entity_aliases,rkb_v4.source_entity_relations,rkb_v4.source_entity_finding_links,'
                                     'rkb_v4.source_poi_hypotheses,rkb_v4.source_graph_receipts IN SHARE MODE')
+                            if fields['schema_version']>=14:
+                                await cursor.execute('LOCK TABLE '+','.join('rkb_v4.'+name
+                                    for name in sorted(TABLES_13|TABLES_14))+' IN SHARE MODE')
                             await cursor.execute('SELECT s.database_generation,s.writer_generation,s.applied_seq '
                                 'FROM rkb_v4.recovery_state s JOIN rkb_v4.writer_generations w '
                                 'ON w.generation=s.writer_generation WHERE s.singleton AND NOT w.retired LIMIT 2')
@@ -636,16 +642,20 @@ class NativeSourceHistoryVerifier:
                                 'WHERE NOT (source_id=ANY(%s::uuid[])))',(imported,))
                             if await cursor.fetchone()!=(False,):
                                 raise SpoolConflict('native source lacks canonical applied import origin')
-                            if fields.get('schema_revision') in ('rkb-v4-sql001-007-v1','rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
-                                statement=('SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])'
-                                    if fields['schema_revision'] in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1') else
+                            if fields['schema_version'] >= 7:
+                                statement=('SELECT rkb_v4.verify_source_story_origins_v4(%s::uuid[])'
+                                    if fields['schema_version'] >= 14 else
+                                    'SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])'
+                                    if fields['schema_version'] >= 9 else
                                     'SELECT rkb_v4.verify_source_story_origins_v2(%s::uuid[])'
-                                    if fields['schema_revision']=='rkb-v4-sql001-008-v1' else
+                                    if fields['schema_version'] >= 8 else
                                     'SELECT rkb_v4.verify_source_story_origins_v1(%s::uuid[])')
                                 await cursor.execute(statement,(imported,))
                                 if await cursor.fetchone()!=(True,):raise SpoolConflict('native story origin differs')
-                                if fields.get('schema_revision') in ('rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1'):
-                                    await cursor.execute('SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])',(imported,))
+                                if fields['schema_version'] >= 11:
+                                    await cursor.execute(('SELECT rkb_v4.verify_source_graph_origins_v2(%s::uuid[])'
+                                        if fields['schema_version'] >= 14 else
+                                        'SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])'),(imported,))
                                     if await cursor.fetchone()!=(True,):raise SpoolConflict('native graph origin differs')
                             if await j.head()!=head or not self.binding_current(binding):
                                 raise SpoolConflict('source history changed during verification')

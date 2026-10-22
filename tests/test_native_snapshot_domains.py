@@ -67,8 +67,7 @@ async def test_actual_physical_base_domain_tail_and_same_candidate_proof(native,
         binaries[name]=NativeBinary(str(path),path.stat().st_size,sha(path.read_bytes()),version)
     tools=PhysicalPgTools(**binaries)
     limits=SnapshotLimits(max_archive_bytes=128*1024**2,max_unpacked_bytes=128*1024**2,timeout_seconds=70)
-    olddb=OwnedDatabase('VERIFIED_INITIALIZED',native['generation'],'writer-1',*DOMAIN_REVISIONS.wire(),
-        str(root/'pg/socket'),'rkb',ownership_evidence='isolated-native-restore-fixture')
+    olddb=OwnedDatabase('VERIFIED_INITIALIZED', native['generation'], 'writer-1', str(root / 'pg/socket'), 'rkb', ownership_evidence='isolated-native-restore-fixture')
     newdb=replace(olddb,writer_generation='writer-2',socket=str(root/'r/socket'))
     binding=('synthetic-run','synthetic-incarnation',1);identity=('synthetic-run','synthetic-nonce','synthetic-incarnation')
     started=[]
@@ -144,7 +143,7 @@ async def test_actual_physical_base_domain_tail_and_same_candidate_proof(native,
             receipts.append((command.sequence,replay['command_sha256'],replay['outcome_sha256']))
         head=await native['journal'].head();sequence=tail[-1].sequence
         final=encode(dict(json.loads(control),sequence=sequence,journal_head=head.reference.wire()))
-        cap=await restored.finish(session,expected_tail=tuple(receipts),final_head=head.reference.wire(),control_bytes=final,expected_catalog_sha256=sha(catalog))
+        cap=await restored.finish(session, expected_tail=tuple(receipts), final_head=head.reference.wire(), control_bytes=final)
         assert (await cap.verify_for(newdb,*identity))==newdb.connection()
         async with session.candidate.acquire() as connection:
             async with connection.transaction():

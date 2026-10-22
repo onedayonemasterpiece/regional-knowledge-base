@@ -54,7 +54,7 @@ class OfflineClient:
         self.model=object();self.acquire=lambda:self.db;self.telemetry=object()
         self.constructor=dict(acquire=self.acquire,tokenizer=self.model,telemetry=self.telemetry,
                               source_provenance=True,result_builder=response)
-        self.compatibility=ReadHandlerCompatibility('offline-fixture-db','schema1','fn1','exec1','b'*64,'c'*64)
+        self.compatibility=ReadHandlerCompatibility('offline-fixture-db', 'b' * 64, 'c' * 64)
         self.slot=ReadHandlerSlot(ExistingHandler(**self.constructor),loaded_sha256='a'*64,
                                  compatibility=self.compatibility)
         self.counters={k:0 for k in harness.COUNTERS}

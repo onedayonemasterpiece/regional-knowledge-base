@@ -27,8 +27,8 @@ from regional_knowledge.kaggle_apply import ApplyReceipt, HandlerRegistry
 from regional_knowledge.bge_queue import BgeQueue
 from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint, DatasetFile
 from regional_knowledge.kaggle_domain_bindings import CURRENT_ROUTES
-from regional_knowledge.kaggle_geo_upgrade import GeoUpgradePins
 from regional_knowledge.kaggle_owned_pg import OwnedDatabase
+from regional_knowledge.kaggle_schema_migrate import latest_schema_version
 from regional_knowledge.kaggle_pg_snapshot_native import BlobRef, SnapshotError, encode, sha
 from regional_knowledge.kaggle_readiness import (
     RUNTIME_HASHES, RunIdentity, SearchRuntimeExpectation, validate_search_runtime,
@@ -72,7 +72,7 @@ def original_commands(person):
 def outcome(command, registry, *, rejected=False):
     handler = registry.resolve(command)
     before = [command.schema_revision, command.function_revision, command.executor_revision]
-    after = list(handler.transition.target.wire()) if handler.transition and not rejected else before
+    after = before
     status = 'rejected_precondition' if rejected else 'applied'
     body = encode(dict(codec='rkb.applied-outcome.v1', operation_key=command.operation_key,
         command_sha256=sha(command.encode()), cursor=command.sequence, status=status,
@@ -91,16 +91,13 @@ async def guard(binding):
 
 async def scenario(e):
     # These are actual reviewed PR212 classes, not local substitute transitions.
-    upgrade = importlib.import_module('regional_knowledge.kaggle_native_source_upgrade')
     activation = importlib.import_module('regional_knowledge.source_activation')
     final = activation.ACTIVATION_REVISIONS
     root = package_root()
-    database = OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', *final.wire(),
-        '/kaggle/temp/compat/socket', 'rkb', ownership_evidence='synthetic-first-context')
-    old_database = replace(database, schema_revision=GEO_REVISIONS.schema,
-        function_revision=GEO_REVISIONS.function, executor_revision=GEO_REVISIONS.executor)
+    database = OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', '/kaggle/temp/compat/socket', 'rkb', ownership_evidence='synthetic-first-context')
+    old_database = replace(database, schema_version=11)
     original_registry = fixed_registry(old_database, [
-        dict(route=route, check_sha256='a' * 64, apply_sha256='b' * 64)
+        dict(route=route, check_sha256='a' * 64, apply_sha256='b' * 64, revisions=list(GEO_REVISIONS.wire()))
         for route in sorted(CURRENT_ROUTES)])
     registry=original_registry
     commands = original_commands(e.p.owner.subject)
@@ -197,12 +194,7 @@ async def scenario(e):
     e.spool.journal, e.spool.registry = journal, registry
     binding = SimpleNamespace(run_id='fixture-run', runtime_incarnation='fixture-incarnation',
                               connection_generation=1, database_generation='db-source')
-    history = WssSourceHistoryVerifier(e.spool, acquire=None, binding_current=lambda b: b is binding,
-        routes=routes, expected_schema_version=16,
-        expected_acl_sha256=sha(b'synthetic-acl14'), writer_generation='writer-2',
-        database=database, observer_sha256='6' * 64,
-        geo_bootstrap_operation_keys=tuple(c.operation_key for c in commands))
-    assert history.origin_closure is None
+    history = WssSourceHistoryVerifier(e.spool, acquire=None, binding_current=lambda b: b is binding, routes=routes, expected_schema_version=database.schema_version, writer_generation='writer-2', database=database, observer_sha256='6' * 64, geo_bootstrap_operation_keys=tuple((c.operation_key for c in commands)))
     assert history.registry_hash != origin['registry_sha256']
     events = []
     class Native:
@@ -228,7 +220,6 @@ async def scenario(e):
             assert spec.fingerprint == args['handler_sha256']
             receipt = outcome(command, registry)
             self.ledger[command.sequence] = receipt
-            assert spec.transition is None
             events.append(('apply',command.sequence,self.schema_version))
             return receipt_wire(receipt)
         async def finish(self, b, handle, **args):
@@ -256,7 +247,7 @@ async def scenario(e):
 
 def test_first_book_context_ships_actual_import_and_telegram_modules():
     _, files, _ = source_bundle(package_root())
-    required={'kaggle_source_materializer','kaggle_native_source_upgrade','source_activation','telegram_runtime_channel'}
+    required={'kaggle_source_materializer','source_activation','telegram_runtime_channel'}
     assert {f'regional_knowledge/{name}.py' for name in required} <= files.keys()
 
 
@@ -294,16 +285,12 @@ async def test_dataset2_keeps_model_abi_bound_before_native_prepare(env):
 def test_launch_target14_is_expected_final_state_and_never_accepts_origin11_readiness():
     final = importlib.import_module('regional_knowledge.source_activation').ACTIVATION_REVISIONS
     hashes = {key: 'a' * 64 for key in RUNTIME_HASHES}
-    target = SearchRuntimeExpectation(hashes, 'db-source', *final.wire(), 26)
+    target = SearchRuntimeExpectation(hashes, 'db-source', 26)
     identity = RunIdentity('fixture-owner/stable-slug', '1', None,
                            'fixture-run', 'fixture-nonce', 'fixture-incarnation')
-    origin = dict(hashes=hashes, database_generation='db-source', schema_revision=GEO_REVISIONS.schema,
-        function_revision=GEO_REVISIONS.function, executor_revision=GEO_REVISIONS.executor,
-        schema_version=11,applied_seq=20, projection_seq=20, visibility_epoch=0, text_search_ready=True,
-        dense_search_ready=True, archive_read_ready=None, proof_ready=None)
+    origin = dict(hashes=hashes, database_generation='db-source', schema_version=11, applied_seq=20, projection_seq=20, visibility_epoch=0, text_search_ready=True, dense_search_ready=True, archive_read_ready=None, proof_ready=None)
     assert not validate_search_runtime(target, origin, identity).ok
-    observed = dict(origin, schema_revision=final.schema, function_revision=final.function,
-                    executor_revision=final.executor,schema_version=16, applied_seq=26, projection_seq=26)
+    observed = dict(origin, schema_version=target.schema_version, applied_seq=26, projection_seq=26)
     assert validate_search_runtime(target, observed, identity).ok
     # This is readiness-shape validation, not a fabricated recovery capability.
 
@@ -311,7 +298,6 @@ def test_launch_target14_is_expected_final_state_and_never_accepts_origin11_read
 @pytest.mark.asyncio
 @pytest.mark.parametrize('initial_revision', [11, 14])
 async def test_source_restore_observation_binds_final_launch_target_while_base_versions_stay11(auth, tmp_path, initial_revision):
-    upgrade = importlib.import_module('regional_knowledge.kaggle_native_source_upgrade')
     final = importlib.import_module('regional_knowledge.source_activation').ACTIVATION_REVISIONS
     queue = BgeQueue(tmp_path / 'first-context-queue.sqlite', clock=lambda: 1000.)
     queue.enqueue(auth.p.owner.subject, 'fixture-demand', ['synthetic'], kind='document')
@@ -320,8 +306,7 @@ async def test_source_restore_observation_binds_final_launch_target_while_base_v
     nonce = queue.prepare_channel(run)
     admission = queue.configure_shared_reads(auth.resolver)
     revision = GEO_REVISIONS if initial_revision == 11 else final
-    expected = SearchRuntimeExpectation({key: 'a' * 64 for key in RUNTIME_HASHES},
-        'db-source', *revision.wire(), 26,schema_version=initial_revision if initial_revision==11 else 16)
+    expected = SearchRuntimeExpectation({key: 'a' * 64 for key in RUNTIME_HASHES}, 'db-source', 26, schema_version=initial_revision if initial_revision == 11 else latest_schema_version())
     queue.expect_search_runtime(run, expected)
     token = queue.launch_claim(run)
     queue.launch_record(run, 'fixture-owner/stable-slug', provider_version=1)
@@ -331,11 +316,8 @@ async def test_source_restore_observation_binds_final_launch_target_while_base_v
     writer = QueueWriterAuthority(queue, run_id=run, database_generation='db-source',
                                   writer_generation='writer-2', stream=journal.stream)
     try:
-        database = OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', *final.wire(),
-            '/kaggle/temp/compat/socket', 'rkb', ownership_evidence='fixture-native-target')
-        pins = GeoUpgradePins(*('b' * 64 for _ in range(7)))
-        native = upgrade.NativeSourceUpgradePins(*('c' * 64 for _ in range(4)))
-        versions = dict(server_version_num=170011, pgvector_version='0.8.2', catalog_sha256=pins.origin_catalog_sha256,
+        database = OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', '/kaggle/temp/compat/socket', 'rkb', ownership_evidence='fixture-native-target')
+        versions = dict(server_version_num=170011, pgvector_version='0.8.2', catalog_sha256='b'*64,
             model_sha256='d' * 64, tokenizer_sha256='e' * 64, schema_revision=GEO_REVISIONS.schema,
             function_revision=GEO_REVISIONS.function, executor_revision=GEO_REVISIONS.executor)
         manifest = ObjectRef(journal.prefix + '/snapshots/manifests/' + 'f' * 64, 'f' * 64, 100, 20)
@@ -346,7 +328,7 @@ async def test_source_restore_observation_binds_final_launch_target_while_base_v
                                       ('https://storage.googleapis.com',), dataset_checkpoint=checkpoint)
         startup = SimpleNamespace(config=SimpleNamespace(writer_owner=writer,
             history_adapter=SimpleNamespace(database=database), spool=SimpleNamespace(journal=journal),
-            queue=queue, geo_dependency_upgrade=pins, native_source_upgrade=native),
+            queue=queue),
             history=SimpleNamespace(catalog_hash='4' * 64))
         coordinator = SourceRestoreCoordinator(startup, restore)
         if initial_revision == 11:
@@ -368,8 +350,7 @@ async def test_source_restore_observation_binds_final_launch_target_while_base_v
 async def test_native_finish_refuses_capability_when_ledger_is_behind(monkeypatch, capsys):
     import regional_knowledge.kaggle_pg_snapshot_native as native
     final = importlib.import_module('regional_knowledge.source_activation').ACTIVATION_REVISIONS
-    database = OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', *final.wire(),
-        '/kaggle/temp/compat/socket', 'rkb', ownership_evidence='synthetic-final-target')
+    database = OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', '/kaggle/temp/compat/socket', 'rkb', ownership_evidence='synthetic-final-target')
     binding = object()
     class Connection:
         async def execute(self, sql, args=None):
@@ -386,16 +367,12 @@ async def test_native_finish_refuses_capability_when_ledger_is_behind(monkeypatc
         pass  # Native SQL I/O boundary only, not a replacement restore factory.
     monkeypatch.setattr(native, 'handover_writer', handover)
     async def actual_origin_probe(**kwargs):
-        return b'{}', dict(schema_version=11,database_generation='db-source', applied_seq=20,
-            projection_seq=20, text_search_ready=True, dense_search_ready=True,
-            schema_revision=GEO_REVISIONS.schema, function_revision=GEO_REVISIONS.function,
-            executor_revision=GEO_REVISIONS.executor)
+        return b'{}', dict(schema_version=11, database_generation='db-source', applied_seq=20, projection_seq=20, text_search_ready=True, dense_search_ready=True)
     binary = native.NativeBinary('/synthetic/not-executed', 1, 'a' * 64, 'PostgreSQL 17.11')
     factory = native.NativeSnapshotFactory(tools=native.PhysicalPgTools(binary, binary, binary),
         database=database, identity=('fixture-run', 'fixture-nonce', 'fixture-incarnation'),
-        registry=fixed_registry(replace(database, schema_revision=GEO_REVISIONS.schema,
-            function_revision=GEO_REVISIONS.function, executor_revision=GEO_REVISIONS.executor),
-            [dict(route='geo.manifest.install.v1', check_sha256='a' * 64, apply_sha256='b' * 64)]),
+        registry=fixed_registry(replace(database, schema_version=11),
+            [dict(route='geo.manifest.install.v1', check_sha256='a' * 64, apply_sha256='b' * 64, revisions=list(GEO_REVISIONS.wire()))]),
         executor_factory=lambda **kwargs: None, current=lambda value: value is binding,
         workspace_private_current=lambda path: True, native_uid=1, native_gid=1,
         probe=actual_origin_probe)

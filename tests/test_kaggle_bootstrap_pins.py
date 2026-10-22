@@ -20,11 +20,7 @@ from test_bge_wss_worker import CONFIG,Wire,module
 
 def observation(plan):
     dependencies=dict(python='3.13 synthetic observed build',machine='x86_64',libc=['glibc','2.39'],packages=dict(plan.packages))
-    readiness=dict(hashes=dict(plan.hashes,dependency=digest(canonical(dependencies)),schema=digest(canonical(len(plan.sql_hashes)))),
-        schema_version=len(plan.sql_hashes),database_generation=plan.database_generation,schema_revision=plan.schema_revision,
-        function_revision=plan.function_revision,executor_revision=plan.executor_revision,
-        applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,
-        archive_read_ready=None,proof_ready=None)
+    readiness=dict(hashes=dict(plan.hashes, dependency=digest(canonical(dependencies)), schema=digest(canonical(len(plan.sql_hashes)))), schema_version=len(plan.sql_hashes), database_generation=plan.database_generation, applied_seq=0, projection_seq=0, visibility_epoch=0, text_search_ready=True, dense_search_ready=True, archive_read_ready=None, proof_ready=None)
     return dict(runtime_readiness=readiness,dependencies=dependencies,schema_version=len(plan.sql_hashes))
 
 
@@ -33,13 +29,12 @@ def setup(tmp_path,now_value=1000.):
     queue=BgeQueue(tmp_path/'bootstrap.sqlite',clock=lambda:now[0])
     queue.enqueue('owner','synthetic-document',['not-dispatched'],kind='document')
     run=queue.maintenance()[0]['id'];nonce=queue.prepare_channel(run)
-    plan=BootstrapRuntimeExpectation({key:'a'*64 for key in ('code','model','launch_config','executed_source')},
-        'bootstrap-db','s1','f1','e1',{'torch':'2.11.0+cpu'},'b'*64,{'001_search.sql':'c'*64},seconds=60)
+    plan=BootstrapRuntimeExpectation({key: 'a' * 64 for key in ('code', 'model', 'launch_config', 'executed_source')}, 'bootstrap-db', {'torch': '2.11.0+cpu'}, 'b' * 64, {'001_search.sql': 'c' * 64}, seconds=60)
     queue.expect_bootstrap_runtime(run,plan)
     token=queue.launch_claim(run);queue.launch_record(run,'owner/stable-bootstrap',provider_version=7)
     generation=queue.attach_channel(run,token,nonce,'retained-incarnation')['connection_generation']
     value=observation(plan)
-    expected=SearchRuntimeExpectation(value['runtime_readiness']['hashes'],'bootstrap-db','s1','f1','e1',schema_version=1)
+    expected=SearchRuntimeExpectation(value['runtime_readiness']['hashes'], 'bootstrap-db', schema_version=1)
     return SimpleNamespace(q=queue,run=run,token=token,nonce=nonce,generation=generation,plan=plan,
         value=value,expected=expected,now=now)
 
@@ -109,8 +104,7 @@ async def test_generated_bootstrap_freezes_partial_pins_before_attach_with_none_
 @pytest.mark.asyncio
 async def test_worker_emits_bootstrap_observation_without_ready_or_reload():
     transport=module('bge_wss_transport');stop=asyncio.Event();sent=[]
-    plan=BootstrapRuntimeExpectation({key:'a'*64 for key in ('code','model','launch_config','executed_source')},
-        'bootstrap-db','s1','f1','e1',{'torch':'2.11.0+cpu'},'b'*64,{'001_search.sql':'c'*64})
+    plan=BootstrapRuntimeExpectation({key: 'a' * 64 for key in ('code', 'model', 'launch_config', 'executed_source')}, 'bootstrap-db', {'torch': '2.11.0+cpu'}, 'b' * 64, {'001_search.sql': 'c' * 64})
     value=observation(plan);loads=[]
     verify_observation(plan,value)
     async def prepare(encoder,**kwargs):

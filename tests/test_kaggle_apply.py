@@ -11,11 +11,8 @@ from psycopg.pq import TransactionStatus
 import pytest
 import pytest_asyncio
 
-from regional_knowledge.kaggle_apply import (
-    ApplyConflict, ApplyExecutionError, ApplyLimit, ApplyUnknown, HandlerRegistry,
-    HandlerSpec, MigrationTransition, PgFunction, Revisions, apply_accepted,
-    handover_writer, initialize_database,
-)
+from regional_knowledge.kaggle_apply import ApplyConflict, ApplyExecutionError, ApplyLimit, ApplyUnknown, HandlerRegistry, HandlerSpec, PgFunction, Revisions, apply_accepted, handover_writer
+from pg_schema_metadata import initialize_fixture_database as initialize_database
 from regional_knowledge.recovery_journal import JournalConflict, RecoveryJournal, StaleWriter
 from test_kaggle_pg_driver import connect, database, wait_for_lock_wait
 from test_recovery_journal import ConditionalMemoryStore, command
@@ -87,11 +84,6 @@ def item(sequence=1, *, revision="0", versions=V1, **changes):
                    payload=canonical({"body": f"accepted exact body {sequence}"}), **changes)
 
 
-def migration(sequence=2, *, artifact=MIGRATION_ARTIFACT):
-    return command(sequence, kind="schema_transition", route="fixture.migration",
-                   schema_revision="s1", function_revision="f1", executor_revision="e1",
-                   ids={}, expected_revisions={"schema": "s1", "function": "f1", "executor": "e1", "migration": ""},
-                   payload=canonical({"migration_id": "v1-v2", "artifact_sha256": artifact, "predecessor": None}))
 
 
 async def pinned(connection, name):
@@ -111,10 +103,6 @@ async def install(connection, generation="db-1"):
                     await pinned(connection, "apply_item_v1"), frozenset({"revision"})),
         HandlerSpec("domain_command", "fixture.item", V2, check,
                     await pinned(connection, "apply_item_v2"), frozenset({"revision"})),
-        HandlerSpec("schema_transition", "fixture.migration", V1,
-                    await pinned(connection, "check_transition_v1"), await pinned(connection, "transition_v1_v2"),
-                    frozenset({"schema", "function", "executor", "migration"}),
-                    MigrationTransition("v1-v2", MIGRATION_ARTIFACT, None, V2)),
     ])
     await initialize_database(connection, database_generation=generation, writer_generation="writer-1", revisions=V1)
     return registry
@@ -210,7 +198,7 @@ async def test_concurrent_duplicate_has_one_actual_handler_effect(env):
 
 @PG
 @pytest.mark.asyncio
-async def test_sequence_gap_semantic_mismatch_and_exact_ledger_conflicts(env):
+async def test_sequence_gap_unknown_handler_and_exact_ledger_conflicts(env):
     journal = env["journal"]
     one, two = item(), item(2, revision="1")
     seal = await journal.seal([one, two], predecessor=None, writer_generation="writer-1")
@@ -227,9 +215,9 @@ async def test_sequence_gap_semantic_mismatch_and_exact_ledger_conflicts(env):
     with pytest.raises(JournalConflict):
         await apply(env, changed, seal)
     await apply(env, two, seal)
-    wrong = item(3, revision="2", versions=V2)
+    wrong = item(3, revision="2", versions=Revisions("unregistered", "unregistered", "unregistered"))
     wrong_seal = await accepted(env, wrong)
-    with pytest.raises(ApplyConflict, match="semantic revisions"):
+    with pytest.raises(ApplyConflict, match="no exact semantic handler"):
         await apply(env, wrong, wrong_seal)
     assert (await facts(env["connection"]))[:3] == ((2, "s1", "f1", "e1"), 2, 2)
 
@@ -309,37 +297,13 @@ async def test_commit_ack_loss_reconciles_saved_exact_outcome_on_new_connection(
         await fresh.close()
 
 
-@PG
-@pytest.mark.asyncio
-async def test_v1_migration_v2_replay_has_identical_canonical_outcomes_in_fresh_generation(env):
-    commands = [item(), migration(), item(3, revision="1", versions=V2)]
-    seals = [await accepted(env, cmd) for cmd in commands]
-    live = [await apply(env, cmd, seal) for cmd, seal in zip(commands, seals)]
-    connection = env["connection"]
-    live_facts = await facts(connection)
-    assert live_facts[:3] == ((3, "s2", "f2", "e2"), 3, 2)
-    assert (await apply(env, commands[0], seals[0])).outcome == live[0].outcome
-    # Only this strictly checked synthetic fixture is recreated; no product refs.
-    async with connection.transaction():
-        await connection.execute("DROP SCHEMA rkb_v4 CASCADE")
-        await connection.execute((ROOT / "sql/kaggle/001_search.sql").read_text(), prepare=False)
-    env["registry"] = await install(connection, generation="db-replay-2")
-    env["generation"] = "db-replay-2"
-    replayed = [await apply(env, cmd, seal) for cmd, seal in zip(commands, seals)]
-    assert [r.outcome for r in replayed] == [r.outcome for r in live]
-    assert await facts(connection) == live_facts
-    assert all(r.database_generation == "db-replay-2" for r in replayed)
 
 
 @PG
 @pytest.mark.asyncio
-async def test_wrong_migration_artifact_and_changed_function_definition_have_no_effect(env):
+async def test_changed_function_definition_has_no_effect(env):
     one = item()
     await apply(env, one, await accepted(env, one))
-    bad = migration(artifact="0" * 64)
-    with pytest.raises(ApplyConflict, match="artifact"):
-        await apply(env, bad, await accepted(env, bad))
-    assert (await facts(env["connection"]))[:3] == ((1, "s1", "f1", "e1"), 1, 1)
     async with env["connection"].transaction():
         await env["connection"].execute("""CREATE OR REPLACE FUNCTION rkb_v4.apply_item_v1
             (p bytea, ids jsonb, expected jsonb, logical_time text) RETURNS bytea LANGUAGE sql

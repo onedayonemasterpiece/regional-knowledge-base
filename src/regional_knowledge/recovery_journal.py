@@ -151,7 +151,7 @@ class ExactCommand:
                   self.executor_revision, self.kind)
         if any(not isinstance(value, str) or not value for value in fields):
             raise ValueError("exact command identity and revisions are required")
-        if self.kind not in {"domain_command", "durable_intake", "schema_transition",
+        if self.kind not in {"domain_command", "durable_intake",
                              "control", "provider_intent"}:
             raise ValueError("unsupported durable command kind; read_query is ephemeral")
         if not isinstance(self.payload, bytes):

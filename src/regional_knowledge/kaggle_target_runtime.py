@@ -192,7 +192,7 @@ class TargetRuntime:
         self.executed_source = executed_source
         self.pool_factory = pool_factory or AsyncConnectionPool
         self.owner = owner_factory(self.database)
-        self.probe = probe or native_probe_for_schema(self.database.schema_revision)
+        self.probe = probe or native_probe_for_schema()
         self.prepare_resident = prepare
         self.pool = None
         self.writer_pool = None
@@ -301,8 +301,6 @@ class TargetRuntime:
             native_gid=native_gid,current=current,workspace_private_current=workspace_private_current,
             upload=upload,download=download,workspace=workspace,limits=limits,
             ticket_channel=ticket_channel,transfer=transfer,acquire=acquire,model_pins=model_pins,
-            **({'sql_root':self.target['sql_root']} if any(e.get('route') in ('geo.dependencies.upgrade.v2','source.native.upgrade.v1')
-                for e in self.target['command_handlers']) else {}),
             **({'dataset_checkpoint':self.target['dataset_checkpoint']} if self.target.get('dataset_checkpoint') is not None else {}),
             source_materializer=self._native_source_materializer(encoder))
         self.recovery_worker=worker
@@ -345,6 +343,8 @@ class TargetRuntime:
             object.__setattr__(cap,'database',database);object.__setattr__(cap,'control',canonical(control))
         if self.source_history_observer is not None:self.source_history_observer.database=database
         if self.prepared.source_handler is not None:self.prepared.source_handler.database=database
+        if self.read_handler_slot is not None:
+            self.read_handler_slot._compatibility=replace(self.read_handler_slot._compatibility,schema_version=version)
         hashes=dict(self.prepared.readiness.hashes);hashes['schema']=sha(canonical(version))
         self.prepared.readiness=CandidateReadiness(hashes=hashes,**fields)
         return self.prepared.readiness.to_wire()
@@ -425,19 +425,14 @@ class TargetRuntime:
             raise BootstrapUnavailable('target_database_binding_mismatch')
         # Same per-invocation context is used by telemetry's native adapter.
         handler = prepared.query_handler
-        if self.database.schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-010-v1','rkb-v4-sql001-011-v1','rkb-v4-sql001-012-v1','rkb-v4-sql001-014-v1'):
+        from dataclasses import is_dataclass
+        if self.database.schema_version>=9 and is_dataclass(handler):
             from dataclasses import replace
             handler=replace(handler,source_provenance=True)
         from .kaggle_warm_read import ReadHandlerCompatibility,ReadHandlerSlot
         self.read_handler_slot=ReadHandlerSlot(handler,
             loaded_sha256=readiness.hashes['code'],
-            compatibility=ReadHandlerCompatibility(
-                database_generation=readiness.database_generation,
-                schema_revision=readiness.schema_revision,
-                function_revision=readiness.function_revision,
-                executor_revision=readiness.executor_revision,
-                model_sha256=readiness.hashes['model'],
-                dependency_sha256=readiness.hashes['dependency']))
+            compatibility=ReadHandlerCompatibility(database_generation=readiness.database_generation, model_sha256=readiness.hashes['model'], dependency_sha256=readiness.hashes['dependency'],schema_version=readiness.schema_version))
         async def invoke(frame, *, encode):
             from .query_telemetry import ReadRuntime, bind_read_runtime
             with bind_read_runtime(ReadRuntime(run_id,runtime_incarnation)):
@@ -445,18 +440,13 @@ class TargetRuntime:
         source_handler=None;history_handler=None
         if self.target.get('command_handlers'):
             from .kaggle_source_commands import fixed_registry,WorkerSourceExecutor
-            transition_prepare=None
-            if any(e.get('route') in ('geo.dependencies.upgrade.v2','source.native.upgrade.v1') for e in self.target['command_handlers']):
-                transition_prepare=getattr(getattr(self.recovery_worker,'factory',None),'prepare_transition',None)
-                if not callable(transition_prepare):
-                    raise BootstrapUnavailable('target_ordered_migration_owner_required')
             self.writer_pool=self.pool_factory(kwargs={**self.database.connection(),'user':'rkb_writer'},
                 min_size=1,max_size=1,open=False,timeout=2,max_waiting=1)
             await self.writer_pool.open(wait=True,timeout=10)
             source_handler=WorkerSourceExecutor(acquire=self.writer_pool.connection,
                 registry=fixed_registry(self.database,self.target['command_handlers']),database=self.database,
                 run_id=run_id,launch_nonce=launch_nonce,runtime_incarnation=runtime_incarnation,
-                prepare_transition=transition_prepare,materializer=self._native_source_materializer(encoder))
+                materializer=self._native_source_materializer(encoder))
             from contextlib import asynccontextmanager
             from .kaggle_source_history_native import NativeSourceHistoryObserver
             @asynccontextmanager

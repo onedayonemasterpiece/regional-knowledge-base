@@ -301,7 +301,7 @@ class NativeSnapshotFactory:
     """Private native phases; fixed accepted-command replay, no journal client."""
     def __init__(self,*,tools,database,identity,registry,executor_factory,current,
                  workspace_private_current,native_uid,native_gid,acquire=None,
-                 upload_ticket=None,prepare_transition=None,
+                 upload_ticket=None,
                  limits=SnapshotLimits(),connect=psycopg.AsyncConnection.connect,
                  spawn=asyncio.create_subprocess_exec,probe=None):
         if (type(tools) is not PhysicalPgTools or not callable(executor_factory)
@@ -310,9 +310,6 @@ class NativeSnapshotFactory:
             raise TypeError('fixed native restore deployment required')
         self.tools,self.database,self.identity,self.registry=tools,database,identity,registry
         self.executor_factory,self.current=executor_factory,current
-        if prepare_transition is not None and not callable(prepare_transition):
-            raise TypeError('trusted installed transition preparation required')
-        self.prepare_transition=prepare_transition
         self._custom_probe=probe is not None
         self.workspace_private_current=workspace_private_current
         self.native_uid,self.native_gid=native_uid,native_gid
@@ -320,7 +317,7 @@ class NativeSnapshotFactory:
         self.native_env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'}
         self.model_pins=None
         self.upload_ticket=upload_ticket
-        self.probe=probe or native_probe_for_schema(getattr(database,'schema_revision',None))
+        self.probe=probe or native_probe_for_schema()
         self._sessions=set();self._capabilities=set();self._owned_candidates=set()
         self._operations={}
         self._completed={};self._references={};self._finish_intents={}
@@ -513,9 +510,8 @@ class NativeSnapshotFactory:
                         raise SnapshotError('native_restore_internal_cursor')
             await self._upgrade_restored(candidate,m)
             original=replace(self.database,writer_generation=m['writer_generation'])
-            options={} if self.prepare_transition is None else {'prepare_transition':self.prepare_transition}
             executor=self.executor_factory(acquire=candidate.acquire,registry=self.registry,database=original,
-                run_id=self.identity[0],launch_nonce=self.identity[1],runtime_incarnation=self.identity[2],**options)
+                run_id=self.identity[0],launch_nonce=self.identity[1],runtime_incarnation=self.identity[2])
             session=_NativeSession(candidate,m,control_bytes,binding,executor,[])
             self._sessions.add(session);self._current(binding)
             return session
@@ -558,7 +554,7 @@ class NativeSnapshotFactory:
         return receipt
 
     async def finish(self,session,*,expected_tail,final_head,control_bytes,
-                     expected_schema_version=None,expected_catalog_sha256=None):
+                     expected_schema_version=None):
         """Controller calls only after exact remote outcomes and old tail drain.
 
         The current authenticated control binding is the authority; supplied

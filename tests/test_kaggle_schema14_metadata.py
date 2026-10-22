@@ -17,7 +17,7 @@ from regional_knowledge import kaggle_domain_schema as domain
 from regional_knowledge import kaggle_source_history_native as history
 from regional_knowledge.kaggle_owned_pg import (
     SQL_ARTIFACTS, DOMAIN_SQL_ARTIFACTS, IMAGE_SOURCE_SQL_ARTIFACTS, NATIVE_SOURCE_SQL_ARTIFACTS,
-    configure_native_roles, sql_artifacts,
+    configure_native_roles,
 )
 from test_kaggle_database_probe import Connection
 
@@ -74,7 +74,7 @@ async def test_history_selects_matching_provenance_without_changing_old_profile(
     async def release(session, *, abort):released.append(abort)
     monkeypatch.setattr(history, 'inspect_acl', inspect_acl)
     observer = object.__new__(history.NativeSourceHistoryObserver)
-    observer.database = NS(schema_revision=schema, database_generation='db')
+    observer.database = NS(schema_version=int(schema.split('-')[3]),database_generation='db')
     observer.max_commands = 100; observer.valid = lambda binding:True
     observer._release = release; observer.probe = read_probe; observer.acquire = None; observer._prefixes = {}
     session = NS(nonce=nonce, exhausted=True, mode='full', connection=NS(execute=execute),
@@ -84,16 +84,6 @@ async def test_history_selects_matching_provenance_without_changing_old_profile(
     assert any(story+'(' in sql for sql in statements)
     assert any(graph+'(' in sql for sql in statements)
     assert not any(('verify_source_story_origins_v3' if schema==SCHEMA else 'verify_source_story_origins_v4')+'(' in sql for sql in statements)
-
-
-def test_schema14_readers_accept_exact_profile_not_a_future_range():
-    from regional_knowledge.kaggle_editorial_read import EDITORIAL_SCHEMAS
-    from regional_knowledge.kaggle_fact_read import FACT_READ_REVISIONS
-    from regional_knowledge.kaggle_source_graph_read import SOURCE_GRAPH_READ_REVISIONS
-    assert SCHEMA in EDITORIAL_SCHEMAS
-    assert (SCHEMA,FUNCTION) in FACT_READ_REVISIONS and (SCHEMA,FUNCTION) in SOURCE_GRAPH_READ_REVISIONS
-    assert 'rkb-v4-sql001-015-v1' not in EDITORIAL_SCHEMAS
-    assert (SCHEMA,'wrong-function') not in FACT_READ_REVISIONS | SOURCE_GRAPH_READ_REVISIONS
 
 
 @pytest.mark.parametrize('layer', [13, 14])
@@ -114,11 +104,11 @@ def test_inventory_names_match_exact_sql_artifact(layer):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not os.getenv('RKB_STORY_FIXTURE_SOCKET'), reason='explicit existing isolated PG17 fixture only')
-async def test_native_schema14_complete_catalog_measurement():
+async def test_native_schema14_integer_readiness_and_origin_verifiers():
     # The existing guard verifies the named fixture, network=none, <=256MiB,
     # private socket and rkb_bootstrap. This test starts no service or model.
     from test_source_story_native import connect
-    from regional_knowledge.kaggle_apply import initialize_database, Revisions
+    from pg_schema_metadata import initialize_fixture_database as initialize_database
     connection, fd = await connect()
     created = False
     try:
@@ -131,22 +121,16 @@ async def test_native_schema14_complete_catalog_measurement():
                 await connection.execute((ROOT/'sql/kaggle'/name).read_text(), prepare=False)
         created = True
         await initialize_database(connection, database_generation='image-metadata-fixture',
-            writer_generation='writer-1', revisions=Revisions(SCHEMA,FUNCTION,EXECUTOR))
+            writer_generation='writer-1',schema_version=14)
         async with connection.transaction():
             for name in IMAGE_SOURCE_SQL_ARTIFACTS[2:]:
                 await connection.execute((ROOT/'sql/kaggle'/name).read_text(), prepare=False)
             await connection.execute("SELECT rkb_v4.publish_read_frontier('image-metadata-fixture','writer-1',0,0,true,true)")
-        async with connection.transaction():
-            await connection.execute('CREATE TABLE rkb_v4.schema_migrations(version integer PRIMARY KEY)')
-            await connection.execute('INSERT INTO rkb_v4.schema_migrations VALUES(14)')
         @asynccontextmanager
         async def acquire():yield connection
-        # Default remains the production readiness budget. A bounded structural
-        # measurement may opt in separately; it is not a latency-gate PASS.
-        timeout = float(os.getenv("RKB_CATALOG_FIXTURE_TIMEOUT_SECONDS", "2"))
-        encoded, fields = await probe.native_probe_for_schema(SCHEMA, timeout_seconds=timeout)(acquire=acquire)
+        encoded, fields = await probe.NativeDatabaseProbe()(acquire=acquire)
         assert encoded==b'{}'
-        assert fields['schema_revision'] == SCHEMA and fields['applied_seq'] == 0
+        assert fields['applied_seq'] == 0
         assert fields['text_search_ready'] and fields['dense_search_ready']
         assert fields['schema_version']==14
         # Both new and legacy-only origin verifiers handle the empty fixture.

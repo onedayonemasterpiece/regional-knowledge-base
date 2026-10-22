@@ -76,8 +76,6 @@ class TargetServiceConfig:
     source_restore: object = None
     source_snapshot: object = None
     geo_bootstrap: object = None
-    geo_dependency_upgrade: object = None
-    native_source_upgrade: object = None
     dataset_seed: object = None
     telegram_runtime_source: object = None
 
@@ -112,15 +110,6 @@ class TargetServiceConfig:
                 or any(type(key) is not str or not 1<=len(key.encode())<=256 for key in self.geo_manifest_operation_keys)
                 or len(self.geo_manifest_operation_keys)==1):
             raise ValueError('bounded exact GEO manifest operation keys required')
-        if self.native_source_upgrade is not None:
-            from .kaggle_native_source_upgrade import NativeSourceUpgradePins,native_source_upgrade_handler
-            if (type(self.native_source_upgrade) is not NativeSourceUpgradePins or self.geo_dependency_upgrade is None
-                    or native_source_upgrade_handler(self.native_source_upgrade) not in self.spool.registry.handlers.values()):
-                raise ValueError('exact ordered native source upgrade and retained registry required')
-        if self.geo_dependency_upgrade is not None:
-            from .kaggle_geo_upgrade import GeoUpgradePins
-            if type(self.geo_dependency_upgrade) is not GeoUpgradePins or self.geo_bootstrap is None:
-                raise ValueError('reviewed geographic upgrade requires the existing GEO owner')
         if (len({value is None for value in (self.import_originals,self.import_tokenizer,
                 self.import_parser_sha256,self.import_launch_config_sha256)}) != 1):
             raise TypeError('native originals and exact independent tokenizer must be supplied together')
@@ -299,8 +288,7 @@ class TargetServiceStartup:
         self.geo_installer=None
         if config.geo_bootstrap is not None:
             from .kaggle_geo_install import SourceGeoInstaller
-            self.geo_installer=SourceGeoInstaller(self,config.geo_bootstrap,upgrade_pins=config.geo_dependency_upgrade,
-                native_pins=config.native_source_upgrade)
+            self.geo_installer=SourceGeoInstaller(self,config.geo_bootstrap)
         self.dataset_seed=None
         if config.dataset_seed is not None:
             from .kaggle_dataset_seed import SourceDatasetSeed, DatasetSeedConfig
@@ -418,9 +406,6 @@ class TargetServiceStartup:
             if self.config.writer_owner is not None:
                 await self.config.writer_owner.ensure_current(self.config.spool.journal)
             if not self.binding_current(binding):raise PermissionError('current writer binding unavailable')
-            if self.geo_installer is not None and self.geo_installer.needs_native_upgrade(binding):
-                self.coverage=None;self.gate.invalidate();self.geo_installer.kick(binding)
-                return False
             if binding==self.binding and self.coverage is not None and self.coverage.current():
                 coverage=self.coverage if self._coverage_idle() else await self.history.extend(self.binding)
             else:

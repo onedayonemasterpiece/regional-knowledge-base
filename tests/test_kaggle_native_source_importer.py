@@ -45,8 +45,7 @@ async def native_intake(target, tmp_path):
         values = []
         for raw in row:
             value = json.loads(raw)
-            value.update(dict(zip(('schema_revision','function_revision','executor_revision'),
-                                  ACTIVATION_REVISIONS.wire())))
+            value.update(schema_version=14)
             values.append(json.dumps(value))
         db.execute('UPDATE bge_runtime_expectations SET expected_json=?,observed_json=? WHERE run_id=?',
                    (*values,t.run))

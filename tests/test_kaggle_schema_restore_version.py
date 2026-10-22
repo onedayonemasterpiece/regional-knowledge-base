@@ -43,7 +43,7 @@ async def test_production_fresh_schema_sequence_creates_roles_before_sql_grants(
         owner=OwnedPostgres(replace(spec(fresh=True).database,dbname='rkb_graph_test'))
         artifacts={m.name:m.body for m in bundle_migrations(files())}
         await owner._initialize_schema(connection,artifacts)
-        assert await (await connection.execute('SELECT max(version) FROM rkb_v4.schema_migrations')).fetchone()==(16,)
+        assert await (await connection.execute('SELECT max(version) FROM rkb_v4.schema_migrations')).fetchone()==(len(artifacts),)
         assert await (await connection.execute("SELECT rolname,rolsuper,rolcreaterole,rolcreatedb FROM pg_roles WHERE rolname IN ('rkb_writer','rkb_reader') ORDER BY rolname")).fetchall()==[
             ('rkb_reader',False,False,False),('rkb_writer',False,False,False)]
         assert await (await connection.execute("SELECT has_table_privilege('rkb_reader','rkb_v4.schema_migrations','SELECT'),has_table_privilege('rkb_writer','rkb_v4.schema_migrations','INSERT')")).fetchone()==(True,False)
@@ -71,8 +71,8 @@ async def test_native_restore_n_minus_two_migrates_before_tail_and_readiness():
         await connection.execute('CREATE ROLE rkb_reader NOLOGIN')
         await connection.execute('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public')
         artifacts=files()
-        older={name:body for name,body in artifacts.items() if int(name[4:7])<=14}
-        assert await migrate(connection,older)==tuple(range(1,15))
+        older={name:body for name,body in artifacts.items() if int(name[4:7])<=len(artifacts)-2}
+        assert await migrate(connection,older)==tuple(range(1,len(artifacts)-1))
         await connection.execute("INSERT INTO rkb_v4.writer_generations(generation) VALUES('old')")
         await connection.execute("""INSERT INTO rkb_v4.recovery_state
             (singleton,database_generation,writer_generation,applied_seq,schema_revision,function_revision,executor_revision)
@@ -81,20 +81,20 @@ async def test_native_restore_n_minus_two_migrates_before_tail_and_readiness():
         @asynccontextmanager
         async def acquire():yield connection
         factory=object.__new__(NativeSnapshotFactory)
-        factory.database=NS(schema_version=16,database_generation='restore-fixture')
+        factory.database=NS(schema_version=len(artifacts),database_generation='restore-fixture')
         factory.schema_files=artifacts
         factory.probe=NativeDatabaseProbe()
-        manifest=dict(versions={'schema_version':14},applied_sequence=20)
-        assert (await factory.probe(acquire=acquire))[1]['schema_version']==14
+        manifest=dict(versions={'schema_version':len(artifacts)-2},applied_sequence=20)
+        assert (await factory.probe(acquire=acquire))[1]['schema_version']==len(artifacts)-2
         # This is the same awaited boundary _prepare uses before constructing
         # the executor or allowing PhysicalSnapshotRecovery to replay its tail.
         await factory._upgrade_restored(NS(acquire=acquire),manifest)
         _,ready=await factory.probe(acquire=acquire)
-        assert ready['schema_version']==16 and ready['applied_seq']==20
+        assert ready['schema_version']==len(artifacts) and ready['applied_seq']==20
         assert ready['text_search_ready'] and ready['dense_search_ready']
         assert await (await connection.execute(
-            'SELECT version,name,sha256 FROM rkb_v4.schema_migrations WHERE version>14 ORDER BY version')).fetchall()==[
-                (m.version,m.name,m.sha256) for m in bundle_migrations(artifacts)[14:]]
+            'SELECT version,name,sha256 FROM rkb_v4.schema_migrations WHERE version>%s ORDER BY version',(len(artifacts)-2,))).fetchall()==[
+                (m.version,m.name,m.sha256) for m in bundle_migrations(artifacts)[-2:]]
         assert await migrate(connection,artifacts)==()
     finally:
         if owned:

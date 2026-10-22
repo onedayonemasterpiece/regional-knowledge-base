@@ -17,10 +17,7 @@ from test_kaggle_pg_driver import database
 
 
 def state(**changes):
-    return dict(database_generation='synthetic-db',schema_version=16,server_version_num=170011,
-        pgvector_version='0.8.2',postgis_version=None,schema_revision='s1',function_revision='f1',
-        executor_revision='e1',applied_seq=5,projection_seq=5,visibility_epoch=3,
-        text_search_ready=True,dense_search_ready=True,pending=False) | changes
+    return dict(database_generation='synthetic-db', schema_version=16, server_version_num=170011, pgvector_version='0.8.2', postgis_version=None, applied_seq=5, projection_seq=5, visibility_epoch=3, text_search_ready=True, dense_search_ready=True, pending=False) | changes
 
 
 class Connection:
@@ -104,7 +101,7 @@ def test_configuration_is_finite(timeout):
 
 async def install_five(env):
     async with env['admin'].transaction():
-        await env['admin'].execute('CREATE TABLE rkb_v4.schema_migrations(version integer PRIMARY KEY)')
+        await env['admin'].execute('DELETE FROM rkb_v4.schema_migrations')
         await env['admin'].execute('INSERT INTO rkb_v4.schema_migrations VALUES(4)')
 
 

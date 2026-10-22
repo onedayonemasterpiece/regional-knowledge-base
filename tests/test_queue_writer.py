@@ -35,14 +35,11 @@ async def owner(auth,tmp_path):
     store=S3ConditionalRecoveryStore(client=client,bucket='existing-private',prefix=prefix,writer_guard=writer)
     journal=RecoveryJournal(store,stream=writer.stream)
     await persist_empty_intent(q,run,spec(fresh=True),launch_nonce=nonce,recovery_journal=journal,sql_hashes=hashes())
-    expected=SearchRuntimeExpectation({key:'a'*64 for key in ('code','model','launch_config','executed_source','dependency','schema')},
-        'synthetic-db','s1','f1','e1',0)
+    expected=SearchRuntimeExpectation({key: 'a' * 64 for key in ('code', 'model', 'launch_config', 'executed_source', 'dependency', 'schema')}, 'synthetic-db', 0)
     q.expect_search_runtime(run,expected)
     token=q.launch_claim(run);q.launch_record(run,'owner/stable-slug',provider_version=88)
     generation=q.attach_channel(run,token,nonce,'retained-incarnation')['connection_generation']
-    value=dict(hashes=dict(expected.hashes),database_generation='synthetic-db',schema_revision='s1',function_revision='f1',
-        executor_revision='e1',schema_version=expected.schema_version,applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,
-        archive_read_ready=None,proof_ready=None)
+    value=dict(hashes=dict(expected.hashes), database_generation='synthetic-db', schema_version=expected.schema_version, applied_seq=0, projection_seq=0, visibility_epoch=0, text_search_ready=True, dense_search_ready=True, archive_read_ready=None, proof_ready=None)
     assert q.accept_search_runtime(run,token,generation,value).ok
     q.heartbeat(run,token,ready=True,connection_generation=generation)
     await a.resource_state(run,token,generation,runtime_incarnation='retained-incarnation',state='idle')

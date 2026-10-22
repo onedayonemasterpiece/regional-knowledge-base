@@ -239,7 +239,7 @@ def ref_shape(value, ref):
 
 def target_sql_hashes(target, repository):
     """Pin exactly the migration prefix the native initializer will execute."""
-    from regional_knowledge.kaggle_owned_pg import sql_artifacts, digest
+    from regional_knowledge.kaggle_owned_pg import digest
     root=Path(repository)/'sql/kaggle'
     return {path.name:digest(path.read_bytes())
             for path in sorted(root.glob('[0-9][0-9][0-9]_*.sql'))}
