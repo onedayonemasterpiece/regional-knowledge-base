@@ -26,7 +26,7 @@ _EVENTS = frozenset({"read.stage", "read.terminal", "fetch.terminal",
                      "import.phase", "import.terminal", "resource.sample"})
 _PHASES = frozenset({"total", "auth", "admission", "dispatch", "transport", "adapter",
                      "acquire", "verify", "pages", "stage", "seal", "materialize",
-                     "activation", "saved", "encode", "lexical", "dense", "hydrate",
+                     "activation", "saved", "archive", "encode", "lexical", "dense", "hydrate",
                      "fusion", "serialize", "search", "fetch", "resource"})
 _STATUSES = frozenset({"started", "ok", "returned", "degraded", "pending", "staged",
                        "applied", "saved", "acknowledged", "rejected", "failed",
@@ -39,7 +39,7 @@ _SHA = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _clean(record: Mapping[str, object], level: str):
-    if type(record) is not dict or set(record) - _FIELDS:
+    if not isinstance(record, Mapping) or set(record) - _FIELDS:
         raise ValueError("only fixed telemetry metadata is accepted")
     if (record.get("event") not in _EVENTS or record.get("phase") not in _PHASES
             or record.get("status") not in _STATUSES or level not in ("standard", "debug")):
