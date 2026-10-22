@@ -68,6 +68,29 @@ async def image_pg(database):
     return dict(connection=connection,journal=journal,registry=HandlerRegistry(handlers),sequence=0)
 
 
+@pytest_asyncio.fixture
+async def image_pg_sql18(image_pg):
+    """Apply actual SQL018 only for the native materializer preapply test.
+
+    Other SQL014 historical contract tests retain their isolated fixture.
+    Re-pin the real PG17 function definitions before accepted commands.
+    """
+    env=image_pg
+    connection=env['connection']
+    async with connection.transaction():
+        await connection.execute(
+            (ROOT/'sql/kaggle/018_story_embedding_fragments.sql').read_text(),prepare=False)
+    handlers=[]
+    for route,suffix in [(STAGE_ROUTE,'source_stage_v2'),(SEAL_ROUTE,'source_stage_seal_v2'),
+                         ('source.materialize.v1','source_materialize_v1'),('source.activate.v1','source_activate_v1')]:
+        check=await pinned(connection,'check_'+suffix);apply=await pinned(connection,'apply_'+suffix)
+        handlers.append(native_source_handler(route,check_sha256=check.definition_sha256,
+                                              apply_sha256=apply.definition_sha256))
+    env['registry']=HandlerRegistry(handlers)
+    return env
+
+
+
 async def accepted(env,command):
     journal=env['journal'];found=await journal.locate_accepted(command)
     if found is None:found=await journal.seal([command],predecessor=await journal.head(),writer_generation=WRITER)
@@ -220,7 +243,7 @@ async def test_latest_accepted_transcription_is_final_truth_not_first_page_snaps
 
 @PG
 @pytest.mark.asyncio
-async def test_real_native_compiler_preflight_and_one_input_preapply_match_sql14(image_pg):
+async def test_real_native_compiler_preflight_and_one_input_preapply_match_sql18(image_pg_sql18):
     """Exercise the production preapply hook, not handcrafted resolved knowledge.
 
     Journal acceptance precedes each hook; BGE/tokenizer are deterministic local
@@ -230,7 +253,7 @@ async def test_real_native_compiler_preflight_and_one_input_preapply_match_sql14
     from types import SimpleNamespace
     from regional_knowledge.kaggle_source_materializer import NativeSourceMaterializer, materializer_fingerprint
 
-    env=image_pg;chain,head,_=synthetic_knowledge(2);await stage_all(env,chain)
+    env=image_pg_sql18;chain,head,_=synthetic_knowledge(2);await stage_all(env,chain)
     counts=[];forwards=[]
     async def count(text):counts.append(text);return len(text.split())+2
     async def encode(text):forwards.append(text);return [1.]+[0.]*1023
@@ -249,7 +272,8 @@ async def test_real_native_compiler_preflight_and_one_input_preapply_match_sql14
     assert len(counts)==2 and forwards==[] # pre-seal validation never runs BGE
     async with env['connection'].transaction():
         knowledge,total=await (await env['connection'].execute(
-            'SELECT knowledge,total_inputs FROM rkb_v4.source_activation_candidates WHERE source_id=%s',(SOURCE,))).fetchone()
+            'SELECT knowledge,rkb_v4.source_activation_total_inputs_v2(knowledge) '
+            'FROM rkb_v4.source_activation_candidates WHERE source_id=%s',(SOURCE,))).fetchone()
         assert total==2 and knowledge['image_manifest']['codec']=='rkb.source-image-manifest.v1'
         assert knowledge['passages'][0]['body']==counts[0]
         assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.source_stage_candidates WHERE source_id=%s',(SOURCE,))).fetchone()==(0,)

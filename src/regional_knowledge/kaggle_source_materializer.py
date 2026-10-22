@@ -204,6 +204,93 @@ def refresh_native_graph_evidence(graph, replacement):
     return graph
 
 
+
+def native_illustration_projection(graph, resolved, raw_poi_locators):
+    """Lower only model-reviewed illustrations against verified issued source pages.
+
+    The SQL015 check consumes this exact metadata; it independently verifies
+    the accepted stage bytes, every crop/region/page and all original hashes.
+    No image bytes, crop renderer or availability state are manufactured here.
+    """
+    if not graph.illustrations:
+        if graph.poi_media_links or any(chunk.illustration_ids for chunk in graph.chunks):
+            raise failure('native_illustration_reference_missing')
+        return None
+
+    manifest=resolved['image_manifest']
+    pages={page['page_id']:page for page in manifest['pages']}
+    manifest_regions={region['region_id']:region for region in manifest['regions']}
+    semantic_regions={region['region_id']:region for region in resolved['semantic']['regions']}
+    illustrations={}
+    for figure in graph.illustrations:
+        figure_id=str(figure.illustration_id)
+        page_id=str(figure.page_id)
+        region_id=str(figure.source_region_id)
+        page=pages.get(page_id)
+        region=manifest_regions.get(region_id)
+        if (page is None or region is None or region['page_id']!=page_id
+                or region['kind']!='figure'
+                or not page.get('source_image_receipt_sha256') or not page.get('image_sha256')
+                or not resolved['original'].get('sha256')):
+            raise failure('native_illustration_source_binding_invalid')
+        bbox=region['bbox']
+        if bbox!=figure.bbox.model_dump(mode='json'):
+            raise failure('native_illustration_region_bbox_changed')
+        caption=[]
+        for caption_id in figure.caption_region_ids:
+            key=str(caption_id)
+            source_region=manifest_regions.get(key)
+            text_region=semantic_regions.get(key)
+            if (source_region is None or source_region['page_id']!=page_id
+                    or source_region['kind']!='caption' or text_region is None):
+                raise failure('native_illustration_caption_source_changed')
+            caption.append(text_region['source_text'])
+        for region_ref in figure.nearby_region_ids:
+            value=manifest_regions.get(str(region_ref))
+            if value is None or value['page_id']!=page_id:
+                raise failure('native_illustration_nearby_source_changed')
+        crop=dict(source_id=manifest['source_id'],source_revision=1,
+            illustration_id=figure_id,page_id=page_id,source_region_id=region_id,
+            bbox=bbox,display_rotation_degrees=figure.display_rotation_degrees,
+            source_image_receipt_sha256=page['source_image_receipt_sha256'],
+            source_raster_sha256=page['image_sha256'],
+            original_sha256=resolved['original']['sha256'],rendition='preview')
+        illustrations[figure_id]=dict(
+            illustration_key=figure.illustration_key,illustration_id=figure_id,
+            page_id=page_id,source_region_id=region_id,bbox=bbox,kind=figure.kind,
+            caption_region_ids=[str(x) for x in figure.caption_region_ids],
+            nearby_region_ids=[str(x) for x in figure.nearby_region_ids],
+            visual_description=figure.visual_description,
+            visual_description_provenance=figure.visual_description_provenance,
+            visual_description_language=figure.visual_description_language,
+            display_rotation_degrees=figure.display_rotation_degrees,
+            caption_text='\n'.join(caption),crop_binding=crop)
+    passages={p['passage_id'] for p in resolved['passages']}
+    passage_links=[]
+    for chunk in graph.chunks:
+        if chunk.illustration_ids:
+            ids=[str(x) for x in chunk.illustration_ids]
+            if any(value not in illustrations for value in ids) or str(chunk.chunk_id) not in passages:
+                raise failure('native_illustration_passage_reference_invalid')
+            passage_links.append(dict(passage_id=str(chunk.chunk_id),
+                chunk_key=chunk.chunk_key,illustration_ids=ids))
+    poi_links=[]
+    for link in graph.poi_media_links:
+        image=illustrations.get(str(link.illustration_id))
+        if image is None or image['page_id']!=str(link.page_id):
+            raise failure('native_illustration_poi_reference_invalid')
+        poi_links.append(dict(link_key=link.link_key,link_id=str(link.link_id),
+            # SQL015 compares the exact accepted locator JSON, not a
+            # Pydantic-expanded object with additional default/null fields.
+            poi_locator=raw_poi_locators[link.link_key],
+            illustration_id=str(link.illustration_id),page_id=str(link.page_id),
+            relation=link.relation,time_scope=link.time_scope))
+    return dict(codec='rkb.source-illustrations.v1',
+        source_id=manifest['source_id'],source_revision=1,
+        illustrations=list(illustrations.values()),passage_links=passage_links,
+        poi_media_links=poi_links)
+
+
 class NativeSourceCompiler:
     def __init__(self, *, count, current):
         if not callable(count) or not callable(current):
@@ -225,21 +312,71 @@ class NativeSourceCompiler:
             result.append(count)
         return result
 
-    async def compile(self,batches,*,source_id,person_id,last_batch_sha256):
+    async def _narrative_fragments(self, variant_id, body):
+        """Keep the authored body intact; count only actual full encoder inputs.
+
+        Offsets use Python/PG Unicode characters. No tokenizer truncation or
+        summary substitute is permitted; a long story reuses the same native
+        ordinal/vector path with one stable ID per contiguous source fragment.
+        """
+        self._current()
+        whole = await self.count(body)
+        self._current()
+        if type(whole) is not int or not 1 <= whole <= 100000:
+            raise failure('complete_native_input_token_count_invalid')
+        if whole <= MAX_TOKENS:
+            return whole, None
+        start = 0
+        fragments = []
+        while start < len(body):
+            lo, hi = start + 1, len(body)
+            while lo < hi:
+                middle = (lo + hi + 1) // 2
+                self._current()
+                candidate_count = await self.count(body[start:middle])
+                self._current()
+                if type(candidate_count) is not int or not 1 <= candidate_count <= 100000:
+                    raise failure('complete_native_input_token_count_invalid')
+                if candidate_count <= MAX_TOKENS:
+                    lo = middle
+                else:
+                    hi = middle - 1
+            end = lo
+            if end <= start:
+                raise failure('complete_narrative_fragment_exceeds_512_tokens')
+            # Prefer an actual word boundary without dropping whitespace. A
+            # language with no spaces still gets exact lossless char offsets.
+            if end < len(body):
+                break_at = body.rfind(' ', start, end)
+                if break_at >= start + (end - start) // 2:
+                    end = break_at + 1
+            self._current()
+            tokens = await self.count(body[start:end])
+            self._current()
+            if type(tokens) is not int or not 1 <= tokens <= MAX_TOKENS:
+                raise failure('complete_narrative_fragment_exceeds_512_tokens')
+            fragments.append(dict(fragment_id=str(uuid5(UUID(variant_id),
+                f'fragment:{start}:{end}')),start=start,end=end,input_tokens=tokens))
+            start = end
+        if ''.join(body[f['start']:f['end']] for f in fragments) != body:
+            raise failure('complete_narrative_fragment_coverage_changed')
+        return fragments[0]['input_tokens'], fragments
+
+    async def compile(self,batches,*,source_id,person_id,last_batch_sha256,include_illustrations=False):
         try:
             return await self._compile(batches,source_id=source_id,person_id=person_id,
-                last_batch_sha256=last_batch_sha256)
+                last_batch_sha256=last_batch_sha256,include_illustrations=include_illustrations)
         except SourceMaterializationRejected:
             raise
         except (ValueError,TypeError,KeyError):
             raise failure('native_source_model_input_invalid') from None
 
-    async def _compile(self,batches,*,source_id,person_id,last_batch_sha256):
+    async def _compile(self,batches,*,source_id,person_id,last_batch_sha256,include_illustrations):
         self._current()
         if type(batches) is not list or not 1<=len(batches)<=2500:
             raise failure('native_source_batch_chain_required')
         graph=NativeStagedGraph(revision=1)
-        source=None;previous=ZERO_HASH;images={};reviews={};candidates={};research=None
+        source=None;previous=ZERO_HASH;images={};reviews={};candidates={};research=None;raw_poi_locators={}
         for index,raw in enumerate(batches):
             doc=validate_stage_payload(raw,source_id=source_id)
             if doc['batch_index']!=index or doc['previous_batch_sha256']!=previous:
@@ -252,7 +389,9 @@ class NativeSourceCompiler:
             chunks=[_typed(StageChunkInput,c) for c in payload['chunks']]
             facts=[_typed(StagePoiFactInput,f) for f in payload.get('poi_facts',[])]
             media=[_typed(StagePoiMediaLinkInput,m) for m in payload.get('poi_media_links',[])]
-            if media or any(page.illustrations for page in pages):
+            for item in payload.get('poi_media_links',[]):
+                raw_poi_locators[item['link_key']]=item['poi_locator']
+            if not include_illustrations and (media or any(page.illustrations for page in pages)):
                 raise failure('native_illustration_activation_unavailable')
             partial=compile_model_stage(graph,document_id=source_id,revision=1,pages=pages,chunks=chunks,
                 poi_facts=facts,poi_media_links=media)
@@ -289,7 +428,8 @@ class NativeSourceCompiler:
         counts=await self._counts([chunk.text for chunk in graph.chunks])
         passages=[]
         for ordinal,(chunk,tokens) in enumerate(zip(graph.chunks,counts,strict=True)):
-            if chunk.article_id or chunk.illustration_ids:raise failure('native_source_component_activation_unavailable')
+            if chunk.article_id or (chunk.illustration_ids and not include_illustrations):
+                raise failure('native_source_component_activation_unavailable')
             locators=[pages[str(p)].printed_page_number or str(pages[str(p)].physical_page_index+1) for p in chunk.page_ids]
             passages.append(dict(passage_id=str(chunk.chunk_id),ordinal=ordinal,locator='pages '+', '.join(locators),
                 body=chunk.text,language=language,input_tokens=tokens))
@@ -311,6 +451,10 @@ class NativeSourceCompiler:
                 semantic=semantic,batch_count=len(batches))
         # Resource capacity is explicit; it is not the old32-page codec limit.
         knowledge_bytes(resolved)
+        if include_illustrations:
+            # Private sidecar is not part of canonical knowledge or any wire
+            # outcome; it is checked and sealed by existing SQL015 metadata.
+            return resolved,native_illustration_projection(graph,resolved,raw_poi_locators)
         return resolved
 
     async def _semantic(self, row, graph, passages):
@@ -322,9 +466,15 @@ class NativeSourceCompiler:
             findings=[], stories=[], pending=[])
         narrative_inputs = []
         candidates = [_typed(StageStoryCandidateInput,raw) for raw in staged['candidates'].values()]
-        variants = [candidate for candidate in candidates if candidate.basic_variant is not None]
-        variant_counts = dict(zip((value.candidate_key for value in variants),
-            await self._counts([value.basic_variant.body for value in variants]) if variants else [], strict=True))
+        # The complete authored body is not itself a model input when it needs
+        # multiple bounded embeddings. Keep one scalar token count for the
+        # representative first input; the fragment ledger retains every other.
+        vector_inputs = {}
+        for candidate in candidates:
+            if candidate.basic_variant is not None:
+                variant_id = str(uuid5(UUID(row['source_id']), 'variant:'+candidate.candidate_key))
+                vector_inputs[candidate.candidate_key] = await self._narrative_fragments(
+                    variant_id, candidate.basic_variant.body)
         for candidate in candidates:
             key = candidate.candidate_key
             assertion_id = str(uuid5(UUID(row['source_id']), 'finding:'+key))
@@ -367,17 +517,22 @@ class NativeSourceCompiler:
                 if candidate.narrative_outcome != 'facts_only':
                     result['pending'].append(dict(candidate_key=key, finding_ids=[assertion_id], reason='needs_context'))
                 continue
-            count = variant_counts[key]
-            if not 1 <= count <= MAX_TOKENS:
-                raise failure('complete_narrative_input_exceeds_512_tokens', status='invalid_query')
+            count, fragments = vector_inputs[key]
             variant_id = str(uuid5(UUID(row['source_id']), 'variant:'+key))
+            saved_variant = dict(variant_id=variant_id, revision=1,
+                audience=variant.audience, format='story', language=variant.language, body=variant.body,
+                blocks=[dict(start=block.start, end=block.end, assertion_ids=[assertion_id]) for block in variant.blocks],
+                input_tokens=count)
+            if fragments is not None:
+                saved_variant['fragments'] = fragments
             result['stories'].append(dict(story_id=str(uuid5(UUID(row['source_id']), 'story:'+key)),
                 finding_ids=[assertion_id], title=candidate.title, summary=candidate.summary,
-                material_type=candidate.material_type, default_variant=dict(variant_id=variant_id, revision=1,
-                    audience=variant.audience, format='story', language=variant.language, body=variant.body,
-                    blocks=[dict(start=block.start, end=block.end, assertion_ids=[assertion_id]) for block in variant.blocks],
-                    input_tokens=count)))
-            narrative_inputs.append(dict(passage_id=variant_id, body=variant.body, input_tokens=count))
+                material_type=candidate.material_type, default_variant=saved_variant))
+            for fragment in fragments or (dict(fragment_id=variant_id,
+                    start=0,end=len(variant.body),input_tokens=count),):
+                narrative_inputs.append(dict(passage_id=fragment['fragment_id'],
+                    body=variant.body[fragment['start']:fragment['end']],
+                    input_tokens=fragment['input_tokens']))
         if result['pending'] and SourceResearchInput.model_validate_json(row['research_json']).state != 'pending':
             raise failure('unfinished_narratives_require_explicit_research_continuation', status='invalid_query')
         return result, narrative_inputs
@@ -414,6 +569,11 @@ class NativeSourceMaterializer:
             raise PermissionError('accepted_native_materializer_unavailable')
         source_id=command.ids['source_id']
         exact=(source_id,doc['ingestion_id'],doc['batch_count'],doc['last_batch_sha256'],doc['materializer_sha256'])
+        # The SQL018 function owns both short and fragmented input cardinality.
+        # Missing SQL018 is a failed installation, not an alternate materializer.
+        candidate_query='''SELECT knowledge_sha256,rkb_v4.source_activation_total_inputs_v2(knowledge)
+            FROM rkb_v4.source_activation_candidates WHERE source_id=%s AND ingestion_id=%s
+            AND batch_count=%s AND last_batch_sha256=%s AND materializer_sha256=%s'''
         batches=None
         async with acquire() as connection:
             async with connection.transaction():
@@ -424,9 +584,7 @@ class NativeSourceMaterializer:
                     # apply_accepted alone verifies duplicates/conflicts. Never
                     # repeat a model call just to reconstruct an old receipt.
                     return
-                candidate=await (await connection.execute('''SELECT knowledge_sha256,total_inputs
-                    FROM rkb_v4.source_activation_candidates WHERE source_id=%s AND ingestion_id=%s
-                    AND batch_count=%s AND last_batch_sha256=%s AND materializer_sha256=%s''',exact)).fetchone()
+                candidate=await (await connection.execute(candidate_query,exact)).fetchone()
                 if candidate is None:
                     batches=[]
                     size=0
@@ -439,23 +597,31 @@ class NativeSourceMaterializer:
         self._current()
         if batches is not None:
             compiler=NativeSourceCompiler(count=self.count,current=self.current)
-            resolved=await compiler.compile(batches,source_id=source_id,person_id=command.person_id,
-                last_batch_sha256=doc['last_batch_sha256'])
+            resolved,media=await compiler.compile(batches,source_id=source_id,person_id=command.person_id,
+                last_batch_sha256=doc['last_batch_sha256'],include_illustrations=True)
             knowledge=knowledge_bytes(resolved)
             self._current()
             try:
                 async with acquire() as connection:
                     async with connection.transaction():
                         await connection.execute("SET LOCAL statement_timeout='5s'")
-                        row=await (await connection.execute('''SELECT rkb_v4.prepare_source_activation_v1(
-                            %s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s)''',
-                            (*exact,knowledge,database.database_generation,database.writer_generation))).fetchone()
+                        if media is None:
+                            row=await (await connection.execute('''SELECT rkb_v4.prepare_source_activation_v1(
+                                %s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s)''',
+                                (*exact,knowledge,database.database_generation,database.writer_generation))).fetchone()
+                        else:
+                            row=await (await connection.execute('''SELECT rkb_v4.prepare_source_activation_with_illustrations_v1(
+                                %s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s)''',
+                                (*exact,knowledge,database.database_generation,
+                                    database.writer_generation,canonical(media)))).fetchone()
                         if row is None or row[0]!=digest(knowledge):raise failure('native_source_candidate_binding')
+                        candidate=await (await connection.execute(candidate_query,exact)).fetchone()
+                        if candidate is None or candidate[0]!=digest(knowledge):
+                            raise failure('native_source_candidate_binding')
             except Exception as error:
                 if getattr(error,'sqlstate',None)=='22023':
                     raise failure('native_source_stage_requires_review') from None
                 raise
-            candidate=(digest(knowledge),len(resolved['passages'])+len(resolved['semantic']['stories']))
         self._current()
         if sealing:return
         knowledge_hash,total=candidate
