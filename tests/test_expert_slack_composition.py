@@ -84,71 +84,76 @@ async def test_signed_ingress_remote_journal_then_same_person_delegated_read(ser
         Route(EVIDENCE_PATH, receiver.__call__, methods=['POST']),
     ]))
     raw, signed_headers = _event()
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app, client=('127.0.0.1', 9001)),
-        base_url='http://127.0.0.1'
-    ) as http:
-        # A valid signature is not a remote durable receipt or work permit.
-        first = await http.post(
-            INGRESS_PATH, content=raw, headers=signed_headers)
-        assert first.status_code == 503
-        assert first.json() == {'error': 'remote_intent_pending'}
-        assert control.claim(executor) == {'state': 'empty'}
-        with s.config.participants.corpus.connect() as db:
-            ids = db.execute(
-                'SELECT id FROM rkb_expert_requests').fetchall()
-            assert len(ids) == 1
-            request_id = ids[0]['id']
-        command = control.exact_remote_intent(request_id, 1)
-        # Synthetic external journal I/O only, not target Dataset Saved.
-        seal = await s.config.spool.journal.seal(
-            [command], predecessor=None, writer_generation='writer-1')
-        assert (await control.verify_remote_intent(
-            request_id, command, seal))['remote_accepted']
-        again = await http.post(
-            INGRESS_PATH, content=raw, headers=signed_headers)
-        assert again.status_code == 200 and again.json() == {'ok': True}
+    # Establish the canonical native history/read gate using the existing
+    # startup lifecycle; a cold target must NOT dispatch a forged 'ready' read.
+    s.adapter.available = True  # synthetic existing native history adapter
+    async with s.startup.lifespan(None):
+        assert s.startup.reads_current()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=('127.0.0.1', 9001)),
+            base_url='http://127.0.0.1'
+        ) as http:
+            # A valid signature is not a remote durable receipt or work permit.
+            first = await http.post(
+                INGRESS_PATH, content=raw, headers=signed_headers)
+            assert first.status_code == 503
+            assert first.json() == {'error': 'remote_intent_pending'}
+            assert control.claim(executor) == {'state': 'empty'}
+            with s.config.participants.corpus.connect() as db:
+                ids = db.execute(
+                    'SELECT id FROM rkb_expert_requests').fetchall()
+                assert len(ids) == 1
+                request_id = ids[0]['id']
+            command = control.exact_remote_intent(request_id, 1)
+            # Synthetic external journal I/O only, not target Dataset Saved.
+            seal = await s.config.spool.journal.seal(
+                [command], predecessor=None, writer_generation='writer-1')
+            assert (await control.verify_remote_intent(
+                request_id, command, seal))['remote_accepted']
+            again = await http.post(
+                INGRESS_PATH, content=raw, headers=signed_headers)
+            assert again.status_code == 200 and again.json() == {'ok': True}
 
-        lease = control.claim(executor, request_id=request_id)
-        assert lease['state'] == 'leased'
-        payload = dict(
-            codec=CODEC, request_id=request_id,
-            generation=lease['generation'],
-            execution_token=lease['execution_token'],
-            min_data_seq=5, deadline_monotonic=time.monotonic()+2)
-        headers = {
-            'Authorization': 'Bearer '+executor.token,
-            'X-RKB-Expert-Service': executor.service_id}
-        task = asyncio.create_task(
-            http.post(EVIDENCE_PATH, json=payload, headers=headers))
-        # Observe the actual shared queue; surface premature HTTP failure
-        # instead of hiding it behind an unrelated 200 ms polling fixture.
-        issued = None
-        for _ in range(1500):
-            if task.done():
-                early = await task
-                reason = early.json().get('reason') if early.headers.get('content-type', '').startswith('application/json') else 'non_json'
-                pytest.fail(f'delegated read ended before dispatch: status={early.status_code} reason={reason}')
-            issued = await s.target.queue.next_channel_work(
-                s.target.run, s.target.token, s.target.generation)
-            if issued is not None:
-                assert issued.kind == 'read'
-                s.target.admission.mark_work_sent(issued)
-                break
-            await asyncio.sleep(.001)
-        assert issued is not None, 'read never reached existing shared admission'
-        assert issued.query.actor.person_id == s.target.auth.p.other.subject
-        assert issued.query.actor.person_id != s.target.auth.p.owner.subject
-        assert issued.query.request_id == request_id
-        assert issued.query.turn_generation == lease['generation']
-        await settle(s.target, issued)
-        response = await task
-        assert response.status_code == 200
-        answer = response.json()
-        assert answer['codec'] == CODEC
-        assert answer['request_id'] == request_id
-        assert not answer['context_gap']
-        assert len(answer['evidence']) == 1
-        assert answer['evidence'][0]['text'] == 'Evidence'
-        assert not s.target.auth.resolver._contexts
-        await release(s.target, issued)
+            lease = control.claim(executor, request_id=request_id)
+            assert lease['state'] == 'leased'
+            payload = dict(
+                codec=CODEC, request_id=request_id,
+                generation=lease['generation'],
+                execution_token=lease['execution_token'],
+                min_data_seq=5, deadline_monotonic=time.monotonic()+2)
+            headers = {
+                'Authorization': 'Bearer '+executor.token,
+                'X-RKB-Expert-Service': executor.service_id}
+            task = asyncio.create_task(
+                http.post(EVIDENCE_PATH, json=payload, headers=headers))
+            # Observe the actual shared queue; surface premature HTTP failure
+            # instead of hiding it behind an unrelated 200 ms polling fixture.
+            issued = None
+            for _ in range(1500):
+                if task.done():
+                    early = await task
+                    reason = early.json().get('reason') if early.headers.get('content-type', '').startswith('application/json') else 'non_json'
+                    pytest.fail(f'delegated read ended before dispatch: status={early.status_code} reason={reason}')
+                issued = await s.target.queue.next_channel_work(
+                    s.target.run, s.target.token, s.target.generation)
+                if issued is not None:
+                    assert issued.kind == 'read'
+                    s.target.admission.mark_work_sent(issued)
+                    break
+                await asyncio.sleep(.001)
+            assert issued is not None, 'read never reached existing shared admission'
+            assert issued.query.actor.person_id == s.target.auth.p.other.subject
+            assert issued.query.actor.person_id != s.target.auth.p.owner.subject
+            assert issued.query.request_id == request_id
+            assert issued.query.turn_generation == lease['generation']
+            await settle(s.target, issued)
+            response = await task
+            assert response.status_code == 200
+            answer = response.json()
+            assert answer['codec'] == CODEC
+            assert answer['request_id'] == request_id
+            assert not answer['context_gap']
+            assert len(answer['evidence']) == 1
+            assert answer['evidence'][0]['text'] == 'Evidence'
+            assert not s.target.auth.resolver._contexts
+            await release(s.target, issued)
