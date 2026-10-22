@@ -86,8 +86,8 @@ def resolved_activation_command(*, sequence, operation_key, request_id, person_i
 
 def activation_handler(*, check_sha256, apply_sha256):
     return HandlerSpec('domain_command', ACTIVATE_ROUTE, ACTIVATION_REVISIONS,
-        PgFunction('check_source_activate_v1', check_sha256),
-        PgFunction('apply_source_activate_v1', apply_sha256), frozenset({'absent_source'}),
+        PgFunction('check_source_activate_with_illustrations_v1', check_sha256),
+        PgFunction('apply_source_activate_with_illustrations_v1', apply_sha256), frozenset({'absent_source'}),
         dependency=ACTIVATION_DEPENDENCY)
 
 

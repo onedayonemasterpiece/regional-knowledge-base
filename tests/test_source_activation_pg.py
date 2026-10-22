@@ -4,6 +4,7 @@ Vectors are synthetic unit vectors; this is SQL/replay proof, not live BGE proof
 """
 import base64
 import copy
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -63,31 +64,46 @@ async def image_pg(database):
     for route,suffix in [(STAGE_ROUTE,'source_stage_v2'),(SEAL_ROUTE,'source_stage_seal_v2'),
                          ('source.materialize.v1','source_materialize_v1'),('source.activate.v1','source_activate_v1')]:
         check=await pinned(connection,'check_'+suffix);apply=await pinned(connection,'apply_'+suffix)
-        handlers.append(native_source_handler(route,check_sha256=check.definition_sha256,apply_sha256=apply.definition_sha256))
+        # This fixture intentionally installs SQL014, not the current code's
+        # SQL015 activation. Keep the historical contract entirely in tests.
+        handlers.append(replace(native_source_handler(route,
+            check_sha256=check.definition_sha256,apply_sha256=apply.definition_sha256),
+            check=check,apply=apply))
     _,journal=journal_fixture()
     return dict(connection=connection,journal=journal,registry=HandlerRegistry(handlers),sequence=0)
 
 
 @pytest_asyncio.fixture
-async def image_pg_sql18(image_pg):
-    """Apply actual SQL018 only for the native materializer preapply test.
+async def image_pg_sql18(database):
+    """Current numbered runner and code registry on the existing PG17 fixture.
 
-    Other SQL014 historical contract tests retain their isolated fixture.
-    Re-pin the real PG17 function definitions before accepted commands.
+    Other SQL014 tests retain their explicit historical test-only bindings.
     """
-    env=image_pg
-    connection=env['connection']
+    from regional_knowledge.kaggle_apply import initialize_database as initialize_current
+    from regional_knowledge.kaggle_current_registry import current_registry
+    from regional_knowledge.kaggle_schema_migrate import migrate
+    from test_kaggle_schema_migrate import files
+    connection=database
+    created=[]
     async with connection.transaction():
-        await connection.execute(
-            (ROOT/'sql/kaggle/018_story_embedding_fragments.sql').read_text(),prepare=False)
-    handlers=[]
-    for route,suffix in [(STAGE_ROUTE,'source_stage_v2'),(SEAL_ROUTE,'source_stage_seal_v2'),
-                         ('source.materialize.v1','source_materialize_v1'),('source.activate.v1','source_activate_v1')]:
-        check=await pinned(connection,'check_'+suffix);apply=await pinned(connection,'apply_'+suffix)
-        handlers.append(native_source_handler(route,check_sha256=check.definition_sha256,
-                                              apply_sha256=apply.definition_sha256))
-    env['registry']=HandlerRegistry(handlers)
-    return env
+        await connection.execute('DROP SCHEMA rkb_v4 CASCADE')
+        for role in ('rkb_reader','rkb_writer'):
+            if not await (await connection.execute('SELECT 1 FROM pg_roles WHERE rolname=%s',(role,))).fetchone():
+                await connection.execute('CREATE ROLE '+role+' NOLOGIN')
+                created.append(role)
+    try:
+        await migrate(connection,files())
+        await initialize_current(connection,database_generation=DB,writer_generation=WRITER)
+        async with connection.transaction():
+            await connection.execute('SELECT rkb_v4.publish_read_frontier(%s,%s,0,0,true,true)',(DB,WRITER))
+        _,journal=journal_fixture()
+        yield dict(connection=connection,journal=journal,registry=current_registry(),sequence=0)
+    finally:
+        await connection.rollback()
+        async with connection.transaction():
+            for role in created:
+                await connection.execute('DROP OWNED BY '+role)
+                await connection.execute('DROP ROLE '+role)
 
 
 
