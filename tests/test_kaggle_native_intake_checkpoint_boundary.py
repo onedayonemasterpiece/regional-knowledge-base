@@ -21,6 +21,7 @@ from regional_knowledge.source_stage import SEAL_ROUTE, STAGE_ROUTE
 from test_kaggle_native_source_importer import (
     native_intake, start, batch, stage, call, finish, pending, state, operation_count,
 )
+from test_kaggle_public_backend import target
 
 
 def _keys(s):
