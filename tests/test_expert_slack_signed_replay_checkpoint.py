@@ -20,6 +20,7 @@ from regional_knowledge.expert_slack_ingress import ExpertSlackIngress, PATH
 from test_control_spool import env
 from test_expert_request_control import _event, _prepare
 from test_expert_slack_ingress import NOW, SECRET, signed
+from test_participants import people  # Registers env's dependent pytest fixture
 
 
 def _test_app(control):
