@@ -8,7 +8,7 @@
       "sha256": "082fac0eacba99cdccbd675dd64b1cebeff3b306e6137662b12866e3973553e3"
     },
     {
-      "base_url": "https://apt.postgresql.org/pub/repos/apt/",
+      "base_url": "https://apt-archive.postgresql.org/pub/repos/apt/",
       "name": "native-preserved-pgdg-Packages",
       "release": "noble",
       "sha256": "a5a2d2841ed280d745972009eaf5c53bf7747cc7284d64cca21609020ee1c86a"
