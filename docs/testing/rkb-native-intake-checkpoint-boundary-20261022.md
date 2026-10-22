@@ -40,6 +40,28 @@ Receipt `op_331ecbfe359ac14f81506cd3`: **exit 0, 6 passed, 0 failed, 0 skipped; 
 
 ## Owner's minimal future correction contract — not implemented
 
+## Shkiper test-only continuation
+
+Own writable branch `chatgpt/rkb-intake-checkpoint-boundary-20261022` starts at
+the unchanged Linza leaf9699e260205e40f86c49ed426482269baa9a7bd2. It changes only
+this report and the adjacent test file. The two terminal assertions now await
+entries into an ordinary list: `all` cannot consume the original asynchronous
+generator expression. Two additional cases directly exercise actual
+`NativeSourceIntake._stage_exact` under real owner access after an actual
+ControlSpool apply: unpublished outcome sets both real `scope.pending` and
+`read_facts.pending` and prevents allocation; after publication, loss of the
+existing synthetic GEO proof makes `_intake_coverage_current` false and also
+prevents allocation. No `_drive` replacement, source guard patch or private
+storage-identity reset is used.
+
+These four new/updated cases remain **NOT RUN until the integration owner
+provides a compatible writable candidate/test slot**. The branch's main base
+does not contain the native14 fixture, so execution against it would be an
+unrelated import failure, not a meaningful RED result. Frozen5f63/e58 and the
+deniedb833 path remain untouched. The native fixture's conditional object store
+does not measure real Dataset versions; existing checkpoint-class tests and
+actual provider acceptance remain separately identified above.
+
 A reviewed optimization could separate **bounded internal native progress at APPLIED/persistence_pending** from final external Saved/Telegram effects, *only if* the exact accepted immutable command/actor/sequence/handler/payload has required verified remote intent coverage, stable idempotent keys, fencing and recoverable contiguous cursor. Dataset snapshot may coalesce multiple already-applied outcomes, but no uncovered state may be emitted as Saved, final source activation, public evidence or a provider send. Telegram requires an independent covered send-intent and exact provider receipt/UNKNOWN reconciliation. End-of-book activation plus research continuation must be atomic and replayable; native capture/readback must verify the complete prefix before pointer promotion.
 
 This source slice establishes the bottleneck **location**, not a performance number and not authorization to change the integrator-owned `_drive/_finalize`. Nothing in this report relaxes PDF/DjVu, images, facts, Story.body, continuation or corpus/readiness gates.
