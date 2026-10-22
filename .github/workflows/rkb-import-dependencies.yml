@@ -11,6 +11,8 @@ on:
       - scripts/production/manifests/native-preserved-metadata-20261022.json
       - scripts/production/manifests/telethon-stage0-input-20261022.json
       - tests/test_import_dependency_packaging.py
+      - tests/test_kaggle_native_bundle_package_bound.py
+      - src/regional_knowledge/kaggle_native_bundle.py
       - .github/workflows/rkb-import-dependencies.yml
 
 permissions:
@@ -50,7 +52,7 @@ jobs:
       - name: Install only focused test tooling on GitHub runner
         run: python -m pip install 'pytest==8.4.2'
       - name: Verify changed packaging boundaries
-        run: python -m pytest tests/test_import_dependency_packaging.py -q --junitxml=packaging-tests.xml
+        run: python -m pytest tests/test_import_dependency_packaging.py tests/test_kaggle_native_bundle_package_bound.py -q --junitxml=packaging-tests.xml
       - name: Capture and assemble full import native dependencies
         run: python scripts/production/prepare_import_dependencies.py --output dependency-proof
       - name: Retain exact dependency bytes and unresolved inputs

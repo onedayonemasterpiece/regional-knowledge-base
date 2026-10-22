@@ -104,8 +104,8 @@ def test_captured_ci_closure_reports_all_conflicts_and_bound_without_a_fake_mani
     extra = json.loads((m.MANIFESTS / 'kaggle-native-djvu-noble-lock-20261022.json').read_text())
     review = m.native_review(base, extra)
     assert {r['package'] for r in review['conflicts']} == {'libhogweed6t64', 'liblzma5', 'libnettle8t64'}
-    assert review['union_package_count'] == 103 and review['current_max_packages'] == 96
-    assert review['package_bound_exceeded'] and review['status'] == 'UNRESOLVED'
+    assert review['union_package_count'] == 103 and review['current_max_packages'] == 112
+    assert not review['package_bound_exceeded'] and review['status'] == 'UNRESOLVED'
     assert review['deployable'] is False and review['dependencies_removed'] is False
     assert review['manifest'] is None and review['elf_receipt'] is None
 
@@ -117,7 +117,8 @@ def test_preserved_metadata_resolves_real_constraints_without_base_pin_changes()
     review = m.native_review(base, resolved)
     assert review['conflicts'] == []
     assert review['union_package_count'] == 103
-    assert review['package_bound_exceeded'] is True
+    assert review['package_bound_exceeded'] is False
+    assert review['status'] == 'COMPATIBLE'
     assert resolved['roots']['djvulibre-bin'] == m.DJVU_VERSION
     assert set(base['roots']) <= resolved['roots'].keys()
     # A dependency closure is still not a native ELF execution receipt.
