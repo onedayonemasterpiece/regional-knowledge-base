@@ -1,0 +1,1837 @@
+{
+  "codec": "rkb.native_package_lock.v1",
+  "release": "noble",
+  "architecture": "amd64",
+  "roots": {
+    "postgresql-17": "17.11-1.pgdg24.04+2",
+    "postgresql-client-17": "17.11-1.pgdg24.04+2",
+    "libpq5": "17.11-1.pgdg24.04+2",
+    "postgresql-17-pgvector": "0.8.2-1.pgdg24.04+1"
+  },
+  "metadata": [
+    {
+      "release": "noble",
+      "base_url": "https://apt-archive.postgresql.org/pub/repos/apt/",
+      "sha256": "d285243ece8b1eb72fdd14d7b7125af01187adf63bf4595a5b4d8e475a5783e8"
+    },
+    {
+      "release": "noble",
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "sha256": "687ffc969e7700137677b9cfe2f614ee2d638052a91a7c9bf31f3f6a3040a99a"
+    },
+    {
+      "release": "noble",
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "release": "noble",
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "sha256": "01f18fc13468ae74b4233cc40a56c6d3c578ee1e9005738e062ac8e997ae894d"
+    },
+    {
+      "release": "noble",
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "sha256": "35c0af51a3b257cdf001a73163371cd17fa85ea00610f0eaf42fd91666b2bc7b"
+    },
+    {
+      "release": "noble",
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "release": "noble",
+      "base_url": "https://archive.ubuntu.com/ubuntu/",
+      "sha256": "6b423c1e193c4847fd70bc014dacef54ada22103de643a180ea33fe79a388d85"
+    }
+  ],
+  "packages": [
+    {
+      "name": "adduser",
+      "version": "3.137ubuntu1",
+      "architecture": "all",
+      "filename": "pool/main/a/adduser/adduser_3.137ubuntu1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/a/adduser/adduser_3.137ubuntu1_all.deb",
+      "size": 100872,
+      "sha256": "542aff2395eb912a56833e11a78076342779689d8fede7adcf08d1d6b0d0cd8b",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "debconf",
+      "version": "1.5.86ubuntu1",
+      "architecture": "all",
+      "filename": "pool/main/d/debconf/debconf_1.5.86ubuntu1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/d/debconf/debconf_1.5.86ubuntu1_all.deb",
+      "size": 124096,
+      "sha256": "bb390da466a7461bfc87aa3e6b7cd145dae84af3e26bf437f2c0c218ba226294",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "dpkg",
+      "version": "1.22.6ubuntu6.6",
+      "architecture": "amd64",
+      "filename": "pool/main/d/dpkg/dpkg_1.22.6ubuntu6.6_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/d/dpkg/dpkg_1.22.6ubuntu6.6_amd64.deb",
+      "size": 1282284,
+      "sha256": "ceb6aa4da59fbcb8a3b0549b4280c60b7d849b519859797c8668bdfbe378fb3b",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "gcc-14-base",
+      "version": "14.2.0-4ubuntu2~24.04.1",
+      "architecture": "amd64",
+      "filename": "pool/main/g/gcc-14/gcc-14-base_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/gcc-14-base_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "size": 51014,
+      "sha256": "b95c172411a7fdae70307cf33a9f5320ba5e056b556454543dd5b679d5ce1c4f",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "init-system-helpers",
+      "version": "1.66ubuntu1",
+      "architecture": "all",
+      "filename": "pool/main/i/init-system-helpers/init-system-helpers_1.66ubuntu1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/i/init-system-helpers/init-system-helpers_1.66ubuntu1_all.deb",
+      "size": 39402,
+      "sha256": "8eb801f9ce084dab9bf4cbc3ec0ee5ac75516a4cc1f25e3f92298c632e75b700",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libacl1",
+      "version": "2.3.2-1build1.1",
+      "architecture": "amd64",
+      "filename": "pool/main/a/acl/libacl1_2.3.2-1build1.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/a/acl/libacl1_2.3.2-1build1.1_amd64.deb",
+      "size": 16792,
+      "sha256": "f2bfd3f8f00413d5f1f04fc723063803c56ac0f1e0efae3bc41f2d7276972ec3",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libaudit-common",
+      "version": "1:3.1.2-2.1ubuntu0.1",
+      "architecture": "all",
+      "filename": "pool/main/a/audit/libaudit-common_3.1.2-2.1ubuntu0.1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/a/audit/libaudit-common_3.1.2-2.1ubuntu0.1_all.deb",
+      "size": 5948,
+      "sha256": "b1b6fca3f7ed86db971c073352a6741f1f60f4a94eeb2c1eb0aca8a7e4b11660",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libaudit1",
+      "version": "1:3.1.2-2.1ubuntu0.1",
+      "architecture": "amd64",
+      "filename": "pool/main/a/audit/libaudit1_3.1.2-2.1ubuntu0.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/a/audit/libaudit1_3.1.2-2.1ubuntu0.1_amd64.deb",
+      "size": 47082,
+      "sha256": "326a55fce45a620f12b98baf581fb037eb0fcea1ab3969c54cf177f51be8abfe",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libbsd0",
+      "version": "0.12.1-1build1.1",
+      "architecture": "amd64",
+      "filename": "pool/main/libb/libbsd/libbsd0_0.12.1-1build1.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libb/libbsd/libbsd0_0.12.1-1build1.1_amd64.deb",
+      "size": 41238,
+      "sha256": "f3857b0863ac5cfd4263e9bf6cfb1d4be88d5321e4070d5bc2b62b0949e6c86f",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libbz2-1.0",
+      "version": "1.0.8-5.1ubuntu0.1",
+      "architecture": "amd64",
+      "filename": "pool/main/b/bzip2/libbz2-1.0_1.0.8-5.1ubuntu0.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/b/bzip2/libbz2-1.0_1.0.8-5.1ubuntu0.1_amd64.deb",
+      "size": 34562,
+      "sha256": "36ee08b00b1ee5018b2fce02881b7d2d73c9b4e32990bde3388400d86c48126a",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libc-bin",
+      "version": "2.39-0ubuntu8.9",
+      "architecture": "amd64",
+      "filename": "pool/main/g/glibc/libc-bin_2.39-0ubuntu8.9_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/glibc/libc-bin_2.39-0ubuntu8.9_amd64.deb",
+      "size": 682164,
+      "sha256": "066398a06ef1a218d4109461d4c636eafe83322ad19b179de9ef7af42b3fec58",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libc6",
+      "version": "2.39-0ubuntu8.9",
+      "architecture": "amd64",
+      "filename": "pool/main/g/glibc/libc6_2.39-0ubuntu8.9_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/glibc/libc6_2.39-0ubuntu8.9_amd64.deb",
+      "size": 3264314,
+      "sha256": "ff5557d99b51f761c4b7c92368b9cc45565eda17df9bf9eb4b134d09825008be",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libcap-ng0",
+      "version": "0.8.4-2build2",
+      "architecture": "amd64",
+      "filename": "pool/main/libc/libcap-ng/libcap-ng0_0.8.4-2build2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libc/libcap-ng/libcap-ng0_0.8.4-2build2_amd64.deb",
+      "size": 15180,
+      "sha256": "cf1e9437ac7ddf6539dbe87b68858cbdef84d78c6aac243ab3b6e564a52ed930",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libcap2",
+      "version": "1:2.66-5ubuntu2.4",
+      "architecture": "amd64",
+      "filename": "pool/main/libc/libcap2/libcap2_2.66-5ubuntu2.4_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libc/libcap2/libcap2_2.66-5ubuntu2.4_amd64.deb",
+      "size": 30500,
+      "sha256": "23c627c77c66552a658e62852f244f4946dc543898e0ec5428d5dc6bffde2d6a",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libcom-err2",
+      "version": "1.47.0-2.4~exp1ubuntu4.1",
+      "architecture": "amd64",
+      "filename": "pool/main/e/e2fsprogs/libcom-err2_1.47.0-2.4~exp1ubuntu4.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/libcom-err2_1.47.0-2.4~exp1ubuntu4.1_amd64.deb",
+      "size": 22982,
+      "sha256": "7ab24d3057dabf86db8f771ad6e43f073ed86b6b950d6e8ba22cb9fe6707bbc9",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libcrypt1",
+      "version": "1:4.4.36-4build1",
+      "architecture": "amd64",
+      "filename": "pool/main/libx/libxcrypt/libcrypt1_4.4.36-4build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libx/libxcrypt/libcrypt1_4.4.36-4build1_amd64.deb",
+      "size": 82302,
+      "sha256": "9474785cd6f398512bf8c305c3901dbb111569dccb6f5832002373c0a8ac5832",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libdb5.3t64",
+      "version": "5.3.28+dfsg2-7",
+      "architecture": "amd64",
+      "filename": "pool/main/d/db5.3/libdb5.3t64_5.3.28+dfsg2-7_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/d/db5.3/libdb5.3t64_5.3.28+dfsg2-7_amd64.deb",
+      "size": 734100,
+      "sha256": "a78a25c8fad8fdd0b7bc6b297da5d5685579be1e57732aa47870830e4a13161e",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libedit2",
+      "version": "3.1-20230828-1build1",
+      "architecture": "amd64",
+      "filename": "pool/main/libe/libedit/libedit2_3.1-20230828-1build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libe/libedit/libedit2_3.1-20230828-1build1_amd64.deb",
+      "size": 97586,
+      "sha256": "3afbc8ddf835049dd4d88275b9d13680e4c4cdd59e191cbd63424152cc08e00e",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libffi8",
+      "version": "3.4.6-1build1",
+      "architecture": "amd64",
+      "filename": "pool/main/libf/libffi/libffi8_3.4.6-1build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libf/libffi/libffi8_3.4.6-1build1_amd64.deb",
+      "size": 24718,
+      "sha256": "637e6a7744de08cd331a41f4efd0d24e6ea9064843dea9d1c6ca87bdb5f038a2",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libgcc-s1",
+      "version": "14.2.0-4ubuntu2~24.04.1",
+      "architecture": "amd64",
+      "filename": "pool/main/g/gcc-14/libgcc-s1_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgcc-s1_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "size": 78392,
+      "sha256": "aa7fadbe33b78bcf99885318040601c550c208929565b179891d9a3cc2aa68cd",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libgcrypt20",
+      "version": "1.10.3-2ubuntu0.2",
+      "architecture": "amd64",
+      "filename": "pool/main/libg/libgcrypt20/libgcrypt20_1.10.3-2ubuntu0.2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libg/libgcrypt20/libgcrypt20_1.10.3-2ubuntu0.2_amd64.deb",
+      "size": 536494,
+      "sha256": "957b9eeaa83cf6f2d5d5d76dbb8aa31d3297e6781d8a02fa08dcc897ae650a0b",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libgdbm-compat4t64",
+      "version": "1.23-5.1build1",
+      "architecture": "amd64",
+      "filename": "pool/main/g/gdbm/libgdbm-compat4t64_1.23-5.1build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gdbm/libgdbm-compat4t64_1.23-5.1build1_amd64.deb",
+      "size": 6710,
+      "sha256": "fb8564afd7b7d74d55207070ba50339478e22d29a39ec740dc482f069ac7ee65",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libgdbm6t64",
+      "version": "1.23-5.1build1",
+      "architecture": "amd64",
+      "filename": "pool/main/g/gdbm/libgdbm6t64_1.23-5.1build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gdbm/libgdbm6t64_1.23-5.1build1_amd64.deb",
+      "size": 34440,
+      "sha256": "18d6d74a5c038b458d95ba0c0909e0f086cd50bb9a0fee32697902724fc5645e",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libgmp10",
+      "version": "2:6.3.0+dfsg-2ubuntu6.1",
+      "architecture": "amd64",
+      "filename": "pool/main/g/gmp/libgmp10_6.3.0+dfsg-2ubuntu6.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gmp/libgmp10_6.3.0+dfsg-2ubuntu6.1_amd64.deb",
+      "size": 253460,
+      "sha256": "285f8a505dfa8e1b33f357a9d8d3477ad35bf18c0b34771a6df4c25923f3ae0d",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libgnutls30t64",
+      "version": "3.8.3-1.1ubuntu3.6",
+      "architecture": "amd64",
+      "filename": "pool/main/g/gnutls28/libgnutls30t64_3.8.3-1.1ubuntu3.6_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gnutls28/libgnutls30t64_3.8.3-1.1ubuntu3.6_amd64.deb",
+      "size": 1002902,
+      "sha256": "b8944756260c5ea6b7fac019745f931f905aa7a4df0763676b1b25c911b692e2",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libgpg-error0",
+      "version": "1.47-3build2.1",
+      "architecture": "amd64",
+      "filename": "pool/main/libg/libgpg-error/libgpg-error0_1.47-3build2.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libg/libgpg-error/libgpg-error0_1.47-3build2.1_amd64.deb",
+      "size": 70092,
+      "sha256": "93654ee8180a73a0363f25c51dc673d67cbabcbecd164187b8a2deb54d007aef",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libgssapi-krb5-2",
+      "version": "1.20.1-6ubuntu2.10",
+      "architecture": "amd64",
+      "filename": "pool/main/k/krb5/libgssapi-krb5-2_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libgssapi-krb5-2_1.20.1-6ubuntu2.10_amd64.deb",
+      "size": 142830,
+      "sha256": "0d4a0187bcdbbe3e6a10bfa574100087d12052d0d0ef28614fd6210021c587b2",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libhogweed6t64",
+      "version": "3.9.1-2.2build1.1",
+      "architecture": "amd64",
+      "filename": "pool/main/n/nettle/libhogweed6t64_3.9.1-2.2build1.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/n/nettle/libhogweed6t64_3.9.1-2.2build1.1_amd64.deb",
+      "size": 198548,
+      "sha256": "a9b5f7e9d49ba9060e1c933567046fbc6feab6096799cbf550b7214dc9b0f49b",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libicu74",
+      "version": "74.2-1ubuntu3.1",
+      "architecture": "amd64",
+      "filename": "pool/main/i/icu/libicu74_74.2-1ubuntu3.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/i/icu/libicu74_74.2-1ubuntu3.1_amd64.deb",
+      "size": 10860078,
+      "sha256": "c9a70989678660eed9a1e904c74fa043da8bec8e2036856fc16e31ced79b04f8",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libidn2-0",
+      "version": "2.3.7-2build1.1",
+      "architecture": "amd64",
+      "filename": "pool/main/libi/libidn2/libidn2-0_2.3.7-2build1.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libi/libidn2/libidn2-0_2.3.7-2build1.1_amd64.deb",
+      "size": 66242,
+      "sha256": "46bfd10df095a23b65f58115de47a547c9a2d14627749bd0423ae78c14be77d3",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libjson-perl",
+      "version": "4.10000-1",
+      "architecture": "all",
+      "filename": "pool/main/libj/libjson-perl/libjson-perl_4.10000-1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libj/libjson-perl/libjson-perl_4.10000-1_all.deb",
+      "size": 81896,
+      "sha256": "b88095b0b6307650f581c17240ea2cc7ba1676c6f7eb72b0066eaf159215d926",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libk5crypto3",
+      "version": "1.20.1-6ubuntu2.10",
+      "architecture": "amd64",
+      "filename": "pool/main/k/krb5/libk5crypto3_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libk5crypto3_1.20.1-6ubuntu2.10_amd64.deb",
+      "size": 81944,
+      "sha256": "273f7cc95a68d927d7f71c3e78b7717a16a8d86e646a206bae7bf797150ae9db",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libkeyutils1",
+      "version": "1.6.3-3build1",
+      "architecture": "amd64",
+      "filename": "pool/main/k/keyutils/libkeyutils1_1.6.3-3build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/keyutils/libkeyutils1_1.6.3-3build1_amd64.deb",
+      "size": 9490,
+      "sha256": "0679f198b0128179e46cdf956fb2022c23c758664c00bc8efa0382d509683a8a",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libkrb5-3",
+      "version": "1.20.1-6ubuntu2.10",
+      "architecture": "amd64",
+      "filename": "pool/main/k/krb5/libkrb5-3_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libkrb5-3_1.20.1-6ubuntu2.10_amd64.deb",
+      "size": 347568,
+      "sha256": "60b48c5a3233f1d8caba30d6573edc8e131911ab6d63adcd664f7cbe62708362",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libkrb5support0",
+      "version": "1.20.1-6ubuntu2.10",
+      "architecture": "amd64",
+      "filename": "pool/main/k/krb5/libkrb5support0_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libkrb5support0_1.20.1-6ubuntu2.10_amd64.deb",
+      "size": 34942,
+      "sha256": "9224ede3246a82a845ea97652ecfae57f88e8d8f520d8a186f9157167574fb34",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libldap2",
+      "version": "2.6.10+dfsg-0ubuntu0.24.04.1",
+      "architecture": "amd64",
+      "filename": "pool/main/o/openldap/libldap2_2.6.10+dfsg-0ubuntu0.24.04.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/o/openldap/libldap2_2.6.10+dfsg-0ubuntu0.24.04.1_amd64.deb",
+      "size": 197620,
+      "sha256": "7f3f8e565401256f21d5aa562c9f92dbb63537b73aaea6283e4db5264f1598f4",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libllvm19",
+      "version": "1:19.1.1-1ubuntu1~24.04.2",
+      "architecture": "amd64",
+      "filename": "pool/main/l/llvm-toolchain-19/libllvm19_19.1.1-1ubuntu1~24.04.2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/llvm-toolchain-19/libllvm19_19.1.1-1ubuntu1~24.04.2_amd64.deb",
+      "size": 28737618,
+      "sha256": "a62f1074eb7aecf10e00fed9c7c967dc6c801fae444a40b8007e246320f5ee15",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "liblz4-1",
+      "version": "1.9.4-1build1.1",
+      "architecture": "amd64",
+      "filename": "pool/main/l/lz4/liblz4-1_1.9.4-1build1.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/lz4/liblz4-1_1.9.4-1build1.1_amd64.deb",
+      "size": 63062,
+      "sha256": "319331270d5cc52d5ebffe51c941d7b01b432bc402c2924b557209a64d4ecbad",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "liblzma5",
+      "version": "5.6.1+really5.4.5-1ubuntu0.3",
+      "architecture": "amd64",
+      "filename": "pool/main/x/xz-utils/liblzma5_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/x/xz-utils/liblzma5_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb",
+      "size": 127352,
+      "sha256": "d2eabd41ca77d2c2dd9d5d4ef478cccb64ffde6279c47cf4699a857d46785a52",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libmd0",
+      "version": "1.1.0-2build1.1",
+      "architecture": "amd64",
+      "filename": "pool/main/libm/libmd/libmd0_1.1.0-2build1.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libm/libmd/libmd0_1.1.0-2build1.1_amd64.deb",
+      "size": 26976,
+      "sha256": "e5ba01d3c41f256aaf57ec59aa0554857162e3e7f97cdfbff1ed2c0e8d720ee7",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libnettle8t64",
+      "version": "3.9.1-2.2build1.1",
+      "architecture": "amd64",
+      "filename": "pool/main/n/nettle/libnettle8t64_3.9.1-2.2build1.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/n/nettle/libnettle8t64_3.9.1-2.2build1.1_amd64.deb",
+      "size": 181636,
+      "sha256": "6d97fbc1972633083f08f51ccab433606c97bbceb897c631c66495117ca3406f",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libp11-kit0",
+      "version": "0.25.3-4ubuntu2.2",
+      "architecture": "amd64",
+      "filename": "pool/main/p/p11-kit/libp11-kit0_0.25.3-4ubuntu2.2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/p/p11-kit/libp11-kit0_0.25.3-4ubuntu2.2_amd64.deb",
+      "size": 297270,
+      "sha256": "e7c58aeac19d89f5f1492dfaa52b8623bcd56edc40983f5243ad56d94f477bf2",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libpam-modules",
+      "version": "1.5.3-5ubuntu5.7",
+      "architecture": "amd64",
+      "filename": "pool/main/p/pam/libpam-modules_1.5.3-5ubuntu5.7_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/p/pam/libpam-modules_1.5.3-5ubuntu5.7_amd64.deb",
+      "size": 286418,
+      "sha256": "c8e86ef52e3a743dc67d90f4c6654f7f529deafa6a523fe9076e809785aeea18",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libpam-modules-bin",
+      "version": "1.5.3-5ubuntu5.7",
+      "architecture": "amd64",
+      "filename": "pool/main/p/pam/libpam-modules-bin_1.5.3-5ubuntu5.7_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/p/pam/libpam-modules-bin_1.5.3-5ubuntu5.7_amd64.deb",
+      "size": 51866,
+      "sha256": "e6753b038042cd007843cbc79a81e732d82d0d2415bcf78ff2120c50b5e54f82",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libpam0g",
+      "version": "1.5.3-5ubuntu5.7",
+      "architecture": "amd64",
+      "filename": "pool/main/p/pam/libpam0g_1.5.3-5ubuntu5.7_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/p/pam/libpam0g_1.5.3-5ubuntu5.7_amd64.deb",
+      "size": 68124,
+      "sha256": "1d7f54e77f0455ab5e607cd5e78b576801d8efdc66115e02cf3c6e708d093667",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libpcre2-8-0",
+      "version": "10.42-4ubuntu2.1",
+      "architecture": "amd64",
+      "filename": "pool/main/p/pcre2/libpcre2-8-0_10.42-4ubuntu2.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/p/pcre2/libpcre2-8-0_10.42-4ubuntu2.1_amd64.deb",
+      "size": 226662,
+      "sha256": "110a797a57673d3ee497a141cf988199258058c57525799c63194d81822529a0",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libperl5.38t64",
+      "version": "5.38.2-3.2ubuntu0.6",
+      "architecture": "amd64",
+      "filename": "pool/main/p/perl/libperl5.38t64_5.38.2-3.2ubuntu0.6_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/p/perl/libperl5.38t64_5.38.2-3.2ubuntu0.6_amd64.deb",
+      "size": 4863614,
+      "sha256": "e9e5ac9a657e0cacf5f0de977c1573c696ee74515d5136c4e9a0ce9467d32ae7",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libpq5",
+      "version": "17.11-1.pgdg24.04+2",
+      "architecture": "amd64",
+      "filename": "pool/17/p/postgresql-17/libpq5_17.11-1.pgdg24.04+2_amd64.deb",
+      "url": "https://apt-archive.postgresql.org/pub/repos/apt/pool/17/p/postgresql-17/libpq5_17.11-1.pgdg24.04+2_amd64.deb",
+      "size": 237304,
+      "sha256": "42548e7f855a646f2dc58c1aa1cfd1464678fc0e8ac04096a66d6354bca5ed10",
+      "source_sha256": "d285243ece8b1eb72fdd14d7b7125af01187adf63bf4595a5b4d8e475a5783e8"
+    },
+    {
+      "name": "libreadline8t64",
+      "version": "8.2-4build1",
+      "architecture": "amd64",
+      "filename": "pool/main/r/readline/libreadline8t64_8.2-4build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/r/readline/libreadline8t64_8.2-4build1_amd64.deb",
+      "size": 152856,
+      "sha256": "563977a16df03b611f5239cc1e9a0426e86479fcc616b5c9e200ea32063119e5",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libsasl2-2",
+      "version": "2.1.28+dfsg1-5ubuntu3.1",
+      "architecture": "amd64",
+      "filename": "pool/main/c/cyrus-sasl2/libsasl2-2_2.1.28+dfsg1-5ubuntu3.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/c/cyrus-sasl2/libsasl2-2_2.1.28+dfsg1-5ubuntu3.1_amd64.deb",
+      "size": 53194,
+      "sha256": "eda097f98dcb3a08b9ce157d6191d140e4885c1cba47b683c94b8ca45e88f458",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libsasl2-modules-db",
+      "version": "2.1.28+dfsg1-5ubuntu3.1",
+      "architecture": "amd64",
+      "filename": "pool/main/c/cyrus-sasl2/libsasl2-modules-db_2.1.28+dfsg1-5ubuntu3.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/c/cyrus-sasl2/libsasl2-modules-db_2.1.28+dfsg1-5ubuntu3.1_amd64.deb",
+      "size": 20354,
+      "sha256": "1f13548b1774cd9c70c50b8c3267204a101334a4d2f979338896ba5a4c6f81b8",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libselinux1",
+      "version": "3.5-2ubuntu2.1",
+      "architecture": "amd64",
+      "filename": "pool/main/libs/libselinux/libselinux1_3.5-2ubuntu2.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libs/libselinux/libselinux1_3.5-2ubuntu2.1_amd64.deb",
+      "size": 79660,
+      "sha256": "6abaa6c26f46ef17764c4a753e0e84de1cdadde5634fd2987621fdc617988d19",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libsemanage-common",
+      "version": "3.5-1build5",
+      "architecture": "all",
+      "filename": "pool/main/libs/libsemanage/libsemanage-common_3.5-1build5_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libs/libsemanage/libsemanage-common_3.5-1build5_all.deb",
+      "size": 10144,
+      "sha256": "e10cd93f0b6941566de04b860b723df57ca3fe4a9255a73b2be0d1dc7df2850e",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libsemanage2",
+      "version": "3.5-1build5",
+      "architecture": "amd64",
+      "filename": "pool/main/libs/libsemanage/libsemanage2_3.5-1build5_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libs/libsemanage/libsemanage2_3.5-1build5_amd64.deb",
+      "size": 93178,
+      "sha256": "56102dcbd410416d03c5ffb80958f54ac63936f4d9eb3f6a98964e680a82ce37",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libsepol2",
+      "version": "3.5-2build1",
+      "architecture": "amd64",
+      "filename": "pool/main/libs/libsepol/libsepol2_3.5-2build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libs/libsepol/libsepol2_3.5-2build1_amd64.deb",
+      "size": 302950,
+      "sha256": "47272bab0c2fcc350431f9a8ae63afc49ce6d7e71e63c914639fbda6b1ca9f6a",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "libssl3t64",
+      "version": "3.0.13-0ubuntu3.16",
+      "architecture": "amd64",
+      "filename": "pool/main/o/openssl/libssl3t64_3.0.13-0ubuntu3.16_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl3t64_3.0.13-0ubuntu3.16_amd64.deb",
+      "size": 1945300,
+      "sha256": "219f43b1cd836a4da550938db5fda93160d269d39a4edcf1f1ce698a470db797",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libstdc++6",
+      "version": "14.2.0-4ubuntu2~24.04.1",
+      "architecture": "amd64",
+      "filename": "pool/main/g/gcc-14/libstdc++6_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libstdc++6_14.2.0-4ubuntu2~24.04.1_amd64.deb",
+      "size": 792064,
+      "sha256": "a51f8de7829211db961a31f02158058ad1a95f92ac6d0a5dff6350e2821c54c0",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libsystemd0",
+      "version": "255.4-1ubuntu8.18",
+      "architecture": "amd64",
+      "filename": "pool/main/s/systemd/libsystemd0_255.4-1ubuntu8.18_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/s/systemd/libsystemd0_255.4-1ubuntu8.18_amd64.deb",
+      "size": 436342,
+      "sha256": "2da3fa28302cf007075e89cdc3aabe6973916afcd62c3884b86f67b77c73a5b4",
+      "source_sha256": "6b423c1e193c4847fd70bc014dacef54ada22103de643a180ea33fe79a388d85"
+    },
+    {
+      "name": "libtasn1-6",
+      "version": "4.19.0-3ubuntu0.24.04.2",
+      "architecture": "amd64",
+      "filename": "pool/main/libt/libtasn1-6/libtasn1-6_4.19.0-3ubuntu0.24.04.2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libt/libtasn1-6/libtasn1-6_4.19.0-3ubuntu0.24.04.2_amd64.deb",
+      "size": 44468,
+      "sha256": "f82c9ad142f952ea523bda5bfca7bb0802af3a50b8c0f0dd9ec18cdfa104bde7",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libtinfo6",
+      "version": "6.4+20240113-1ubuntu2.2",
+      "architecture": "amd64",
+      "filename": "pool/main/n/ncurses/libtinfo6_6.4+20240113-1ubuntu2.2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo6_6.4+20240113-1ubuntu2.2_amd64.deb",
+      "size": 108086,
+      "sha256": "b67a6df2bdab61d273eabebd208bb6a3fb12618a390a067e1ee305a409ff03d9",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libunistring5",
+      "version": "1.1-2build1.1",
+      "architecture": "amd64",
+      "filename": "pool/main/libu/libunistring/libunistring5_1.1-2build1.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libu/libunistring/libunistring5_1.1-2build1.1_amd64.deb",
+      "size": 535554,
+      "sha256": "203d7657b5f54633fba1a9c9b784d556ef83c9f6787b3185ba55a88e07b865a3",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libuuid1",
+      "version": "2.39.3-9ubuntu6.6",
+      "architecture": "amd64",
+      "filename": "pool/main/u/util-linux/libuuid1_2.39.3-9ubuntu6.6_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/u/util-linux/libuuid1_2.39.3-9ubuntu6.6_amd64.deb",
+      "size": 36596,
+      "sha256": "7e2992d3a79fc05514dc5966558ee9c66a7214a47edf2a36017b9e2777528665",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libxml2",
+      "version": "2.9.14+dfsg-1.3ubuntu3.10",
+      "architecture": "amd64",
+      "filename": "pool/main/libx/libxml2/libxml2_2.9.14+dfsg-1.3ubuntu3.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libx/libxml2/libxml2_2.9.14+dfsg-1.3ubuntu3.10_amd64.deb",
+      "size": 763592,
+      "sha256": "c5a065f85c1e6f605741e365e40cad71c3ceb0e85e2791400bd35b8896e12ad1",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libxslt1.1",
+      "version": "1.1.39-0exp1ubuntu0.24.04.3",
+      "architecture": "amd64",
+      "filename": "pool/main/libx/libxslt/libxslt1.1_1.1.39-0exp1ubuntu0.24.04.3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libx/libxslt/libxslt1.1_1.1.39-0exp1ubuntu0.24.04.3_amd64.deb",
+      "size": 167806,
+      "sha256": "e716daf96ea2526cab92e5cc4708739d5f2f4b89fb76782dfda7f49283eeeb40",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "libzstd1",
+      "version": "1.5.5+dfsg2-2build1.1",
+      "architecture": "amd64",
+      "filename": "pool/main/libz/libzstd/libzstd1_1.5.5+dfsg2-2build1.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libz/libzstd/libzstd1_1.5.5+dfsg2-2build1.1_amd64.deb",
+      "size": 299472,
+      "sha256": "dfcf25061e07aad7efd3f4f880ba5ad4d4d09ebe7fc8cc77ab6b8a161d6d4727",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "locales",
+      "version": "2.39-0ubuntu8.9",
+      "architecture": "all",
+      "filename": "pool/main/g/glibc/locales_2.39-0ubuntu8.9_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/glibc/locales_2.39-0ubuntu8.9_all.deb",
+      "size": 4231704,
+      "sha256": "f8310ef4ba442845cf5d44a5ce3d5d7accb659bae96b3a0999002132209cd367",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "netbase",
+      "version": "6.4",
+      "architecture": "all",
+      "filename": "pool/main/n/netbase/netbase_6.4_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/n/netbase/netbase_6.4_all.deb",
+      "size": 13112,
+      "sha256": "8cdbc9c3dca01e660759bf9d840f72e45ac72faf5d19ca1faecacaf6a60c1a87",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "openssl",
+      "version": "3.0.13-0ubuntu3.16",
+      "architecture": "amd64",
+      "filename": "pool/main/o/openssl/openssl_3.0.13-0ubuntu3.16_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/o/openssl/openssl_3.0.13-0ubuntu3.16_amd64.deb",
+      "size": 1003702,
+      "sha256": "675b84971ffd4467707008c25ef7520f90ea7c23ef27b7a76b0dccf1d7c4dc3f",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "passwd",
+      "version": "1:4.13+dfsg1-4ubuntu3.2",
+      "architecture": "amd64",
+      "filename": "pool/main/s/shadow/passwd_4.13+dfsg1-4ubuntu3.2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/s/shadow/passwd_4.13+dfsg1-4ubuntu3.2_amd64.deb",
+      "size": 844580,
+      "sha256": "139b51228c8065eefa3051f649d8480eb986f1cf629448e49d2eaf9813318412",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "perl",
+      "version": "5.38.2-3.2ubuntu0.6",
+      "architecture": "amd64",
+      "filename": "pool/main/p/perl/perl_5.38.2-3.2ubuntu0.6_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/p/perl/perl_5.38.2-3.2ubuntu0.6_amd64.deb",
+      "size": 231438,
+      "sha256": "1a2341674a1c69e3247537ab243dc3d5878b74a39a696964232e1a4f5a27502d",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "perl-base",
+      "version": "5.38.2-3.2ubuntu0.6",
+      "architecture": "amd64",
+      "filename": "pool/main/p/perl/perl-base_5.38.2-3.2ubuntu0.6_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/p/perl/perl-base_5.38.2-3.2ubuntu0.6_amd64.deb",
+      "size": 1825574,
+      "sha256": "50e1b2c2646387a94664fbea144af1d1b16cf6e0778426baa198166ca3246697",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "perl-modules-5.38",
+      "version": "5.38.2-3.2ubuntu0.6",
+      "architecture": "all",
+      "filename": "pool/main/p/perl/perl-modules-5.38_5.38.2-3.2ubuntu0.6_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/p/perl/perl-modules-5.38_5.38.2-3.2ubuntu0.6_all.deb",
+      "size": 3110182,
+      "sha256": "9c4c90145209d4f85be9255417008e8decb9cd5d189f446fd39ad096e31199cf",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "postgresql-17",
+      "version": "17.11-1.pgdg24.04+2",
+      "architecture": "amd64",
+      "filename": "pool/main/p/postgresql-17/postgresql-17_17.11-1.pgdg24.04+2_amd64.deb",
+      "url": "https://apt-archive.postgresql.org/pub/repos/apt/pool/main/p/postgresql-17/postgresql-17_17.11-1.pgdg24.04+2_amd64.deb",
+      "size": 16949784,
+      "sha256": "d5b58058a82a3f344f832aea2cc54badc4f6265c25c960752cb1f5df5d2180ee",
+      "source_sha256": "d285243ece8b1eb72fdd14d7b7125af01187adf63bf4595a5b4d8e475a5783e8"
+    },
+    {
+      "name": "postgresql-17-pgvector",
+      "version": "0.8.2-1.pgdg24.04+1",
+      "architecture": "amd64",
+      "filename": "pool/main/p/pgvector/postgresql-17-pgvector_0.8.2-1.pgdg24.04+1_amd64.deb",
+      "url": "https://apt-archive.postgresql.org/pub/repos/apt/pool/main/p/pgvector/postgresql-17-pgvector_0.8.2-1.pgdg24.04+1_amd64.deb",
+      "size": 258816,
+      "sha256": "b7f06e23480c50e86e9a06c8a2abe2b1bd6bec133c5ab9fff4e2aa4bccaf8d66",
+      "source_sha256": "d285243ece8b1eb72fdd14d7b7125af01187adf63bf4595a5b4d8e475a5783e8"
+    },
+    {
+      "name": "postgresql-client-17",
+      "version": "17.11-1.pgdg24.04+2",
+      "architecture": "amd64",
+      "filename": "pool/main/p/postgresql-17/postgresql-client-17_17.11-1.pgdg24.04+2_amd64.deb",
+      "url": "https://apt-archive.postgresql.org/pub/repos/apt/pool/main/p/postgresql-17/postgresql-client-17_17.11-1.pgdg24.04+2_amd64.deb",
+      "size": 2052656,
+      "sha256": "b3b071b67a814a382516d6f6241b529c52f909672457e2f48083acce047b634f",
+      "source_sha256": "d285243ece8b1eb72fdd14d7b7125af01187adf63bf4595a5b4d8e475a5783e8"
+    },
+    {
+      "name": "postgresql-client-common",
+      "version": "293.pgdg24.04+1",
+      "architecture": "all",
+      "filename": "pool/main/p/postgresql-common/postgresql-client-common_293.pgdg24.04+1_all.deb",
+      "url": "https://apt-archive.postgresql.org/pub/repos/apt/pool/main/p/postgresql-common/postgresql-client-common_293.pgdg24.04+1_all.deb",
+      "size": 48488,
+      "sha256": "80ae115f63ba67fbba442f6b75a468a559b77a3ee3b0be357a4c49e70bf860c5",
+      "source_sha256": "d285243ece8b1eb72fdd14d7b7125af01187adf63bf4595a5b4d8e475a5783e8"
+    },
+    {
+      "name": "postgresql-common",
+      "version": "293.pgdg24.04+1",
+      "architecture": "all",
+      "filename": "pool/main/p/postgresql-common/postgresql-common_293.pgdg24.04+1_all.deb",
+      "url": "https://apt-archive.postgresql.org/pub/repos/apt/pool/main/p/postgresql-common/postgresql-common_293.pgdg24.04+1_all.deb",
+      "size": 113320,
+      "sha256": "4393363fa55e5351c6948939927c48419d804197bf638e295a78824daecff6b3",
+      "source_sha256": "d285243ece8b1eb72fdd14d7b7125af01187adf63bf4595a5b4d8e475a5783e8"
+    },
+    {
+      "name": "readline-common",
+      "version": "8.2-4build1",
+      "architecture": "all",
+      "filename": "pool/main/r/readline/readline-common_8.2-4build1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/r/readline/readline-common_8.2-4build1_all.deb",
+      "size": 56484,
+      "sha256": "879bfd7f8a9bc4c0f7cdc777cdd8bc6de5f8c4a2ac80c060322a1b22f13504bb",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "sensible-utils",
+      "version": "0.0.22",
+      "architecture": "all",
+      "filename": "pool/main/s/sensible-utils/sensible-utils_0.0.22_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/s/sensible-utils/sensible-utils_0.0.22_all.deb",
+      "size": 22462,
+      "sha256": "410c29ff82c6916d14e235b511287e67a45cb78d509b19aab48608acdc941254",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "ssl-cert",
+      "version": "1.1.2ubuntu1",
+      "architecture": "all",
+      "filename": "pool/main/s/ssl-cert/ssl-cert_1.1.2ubuntu1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/s/ssl-cert/ssl-cert_1.1.2ubuntu1_all.deb",
+      "size": 17826,
+      "sha256": "99654cc8dd7e2cd4cc907504f7564c0055d8cb06e1bf5aa93f822f007981d271",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "sysvinit-utils",
+      "version": "3.08-6ubuntu3",
+      "architecture": "amd64",
+      "filename": "pool/main/s/sysvinit/sysvinit-utils_3.08-6ubuntu3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/s/sysvinit/sysvinit-utils_3.08-6ubuntu3_amd64.deb",
+      "size": 34170,
+      "sha256": "03cf5c9c28a5d186fb7f5214e464f831ff28177695cbb61e66083237267a047e",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "tar",
+      "version": "1.35+dfsg-3ubuntu0.4",
+      "architecture": "amd64",
+      "filename": "pool/main/t/tar/tar_1.35+dfsg-3ubuntu0.4_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/t/tar/tar_1.35+dfsg-3ubuntu0.4_amd64.deb",
+      "size": 256392,
+      "sha256": "fdf41a87936824e50c8ac11b0b22d1395aeb0754feef2dae5575b5d5a93793ec",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "tzdata",
+      "version": "2026e-0ubuntu0.24.04.1",
+      "architecture": "all",
+      "filename": "pool/main/t/tzdata/tzdata_2026e-0ubuntu0.24.04.1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/t/tzdata/tzdata_2026e-0ubuntu0.24.04.1_all.deb",
+      "size": 282136,
+      "sha256": "2f6794a7f31753fc947d9ac02ff03ea46510f34864f9d132a93d7b105e3c4447",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    },
+    {
+      "name": "ucf",
+      "version": "3.0043+nmu1",
+      "architecture": "all",
+      "filename": "pool/main/u/ucf/ucf_3.0043+nmu1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/u/ucf/ucf_3.0043+nmu1_all.deb",
+      "size": 56522,
+      "sha256": "397e541af11db776ed7facf1674ee37b56e7de51348c9f077d7a283912c4b458",
+      "source_sha256": "8f6f71ae839c8cba390a7643fcbbdacddb0bc7d12c1583a2dd80a1f8443a30e5"
+    },
+    {
+      "name": "zlib1g",
+      "version": "1:1.3.dfsg-3.1ubuntu2.2",
+      "architecture": "amd64",
+      "filename": "pool/main/z/zlib/zlib1g_1.3.dfsg-3.1ubuntu2.2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/z/zlib/zlib1g_1.3.dfsg-3.1ubuntu2.2_amd64.deb",
+      "size": 62988,
+      "sha256": "84b9cf5752b29c9f92c27cd4c4ba9bbcc70b5ccf9b1b515421a28ae23212e273",
+      "source_sha256": "203dcefe23c56c770b6dca69de6422c5b73d65984e103617d8e21a638a043eb2"
+    }
+  ],
+  "dependency_edges": [
+    [
+      "postgresql-17",
+      "locales"
+    ],
+    [
+      "postgresql-17",
+      "postgresql-client-17"
+    ],
+    [
+      "postgresql-17",
+      "postgresql-common"
+    ],
+    [
+      "postgresql-17",
+      "ssl-cert"
+    ],
+    [
+      "postgresql-17",
+      "tzdata"
+    ],
+    [
+      "postgresql-17",
+      "debconf"
+    ],
+    [
+      "postgresql-17",
+      "libc6"
+    ],
+    [
+      "postgresql-17",
+      "libgcc-s1"
+    ],
+    [
+      "postgresql-17",
+      "libgssapi-krb5-2"
+    ],
+    [
+      "postgresql-17",
+      "libicu74"
+    ],
+    [
+      "postgresql-17",
+      "libldap2"
+    ],
+    [
+      "postgresql-17",
+      "libllvm19"
+    ],
+    [
+      "postgresql-17",
+      "liblz4-1"
+    ],
+    [
+      "postgresql-17",
+      "libpam0g"
+    ],
+    [
+      "postgresql-17",
+      "libpq5"
+    ],
+    [
+      "postgresql-17",
+      "libselinux1"
+    ],
+    [
+      "postgresql-17",
+      "libssl3t64"
+    ],
+    [
+      "postgresql-17",
+      "libstdc++6"
+    ],
+    [
+      "postgresql-17",
+      "libsystemd0"
+    ],
+    [
+      "postgresql-17",
+      "libuuid1"
+    ],
+    [
+      "postgresql-17",
+      "libxml2"
+    ],
+    [
+      "postgresql-17",
+      "libxslt1.1"
+    ],
+    [
+      "postgresql-17",
+      "libzstd1"
+    ],
+    [
+      "postgresql-17",
+      "zlib1g"
+    ],
+    [
+      "postgresql-client-17",
+      "libpq5"
+    ],
+    [
+      "postgresql-client-17",
+      "postgresql-client-common"
+    ],
+    [
+      "postgresql-client-17",
+      "sensible-utils"
+    ],
+    [
+      "postgresql-client-17",
+      "libc6"
+    ],
+    [
+      "postgresql-client-17",
+      "liblz4-1"
+    ],
+    [
+      "postgresql-client-17",
+      "libreadline8t64"
+    ],
+    [
+      "postgresql-client-17",
+      "libssl3t64"
+    ],
+    [
+      "postgresql-client-17",
+      "libzstd1"
+    ],
+    [
+      "postgresql-client-17",
+      "zlib1g"
+    ],
+    [
+      "libpq5",
+      "libc6"
+    ],
+    [
+      "libpq5",
+      "libgssapi-krb5-2"
+    ],
+    [
+      "libpq5",
+      "libldap2"
+    ],
+    [
+      "libpq5",
+      "libssl3t64"
+    ],
+    [
+      "postgresql-17-pgvector",
+      "postgresql-17"
+    ],
+    [
+      "postgresql-17-pgvector",
+      "libc6"
+    ],
+    [
+      "locales",
+      "libc-bin"
+    ],
+    [
+      "locales",
+      "debconf"
+    ],
+    [
+      "postgresql-common",
+      "init-system-helpers"
+    ],
+    [
+      "postgresql-common",
+      "adduser"
+    ],
+    [
+      "postgresql-common",
+      "debconf"
+    ],
+    [
+      "postgresql-common",
+      "libjson-perl"
+    ],
+    [
+      "postgresql-common",
+      "sysvinit-utils"
+    ],
+    [
+      "postgresql-common",
+      "postgresql-client-common"
+    ],
+    [
+      "postgresql-common",
+      "ssl-cert"
+    ],
+    [
+      "postgresql-common",
+      "ucf"
+    ],
+    [
+      "postgresql-common",
+      "perl"
+    ],
+    [
+      "ssl-cert",
+      "debconf"
+    ],
+    [
+      "ssl-cert",
+      "openssl"
+    ],
+    [
+      "ssl-cert",
+      "adduser"
+    ],
+    [
+      "tzdata",
+      "debconf"
+    ],
+    [
+      "libc6",
+      "libgcc-s1"
+    ],
+    [
+      "libgcc-s1",
+      "gcc-14-base"
+    ],
+    [
+      "libgcc-s1",
+      "libc6"
+    ],
+    [
+      "libgssapi-krb5-2",
+      "libkrb5-3"
+    ],
+    [
+      "libgssapi-krb5-2",
+      "libc6"
+    ],
+    [
+      "libgssapi-krb5-2",
+      "libcom-err2"
+    ],
+    [
+      "libgssapi-krb5-2",
+      "libk5crypto3"
+    ],
+    [
+      "libgssapi-krb5-2",
+      "libkrb5support0"
+    ],
+    [
+      "libicu74",
+      "libc6"
+    ],
+    [
+      "libicu74",
+      "libgcc-s1"
+    ],
+    [
+      "libicu74",
+      "libstdc++6"
+    ],
+    [
+      "libldap2",
+      "libc6"
+    ],
+    [
+      "libldap2",
+      "libgnutls30t64"
+    ],
+    [
+      "libldap2",
+      "libsasl2-2"
+    ],
+    [
+      "libllvm19",
+      "libc6"
+    ],
+    [
+      "libllvm19",
+      "libedit2"
+    ],
+    [
+      "libllvm19",
+      "libffi8"
+    ],
+    [
+      "libllvm19",
+      "libgcc-s1"
+    ],
+    [
+      "libllvm19",
+      "libstdc++6"
+    ],
+    [
+      "libllvm19",
+      "libxml2"
+    ],
+    [
+      "libllvm19",
+      "libzstd1"
+    ],
+    [
+      "libllvm19",
+      "zlib1g"
+    ],
+    [
+      "liblz4-1",
+      "libc6"
+    ],
+    [
+      "libpam0g",
+      "libaudit1"
+    ],
+    [
+      "libpam0g",
+      "libc6"
+    ],
+    [
+      "libpam0g",
+      "debconf"
+    ],
+    [
+      "libselinux1",
+      "libc6"
+    ],
+    [
+      "libselinux1",
+      "libpcre2-8-0"
+    ],
+    [
+      "libssl3t64",
+      "libc6"
+    ],
+    [
+      "libstdc++6",
+      "gcc-14-base"
+    ],
+    [
+      "libstdc++6",
+      "libc6"
+    ],
+    [
+      "libstdc++6",
+      "libgcc-s1"
+    ],
+    [
+      "libsystemd0",
+      "libc6"
+    ],
+    [
+      "libsystemd0",
+      "libcap2"
+    ],
+    [
+      "libsystemd0",
+      "libgcrypt20"
+    ],
+    [
+      "libsystemd0",
+      "liblz4-1"
+    ],
+    [
+      "libsystemd0",
+      "liblzma5"
+    ],
+    [
+      "libsystemd0",
+      "libzstd1"
+    ],
+    [
+      "libuuid1",
+      "libc6"
+    ],
+    [
+      "libxml2",
+      "libc6"
+    ],
+    [
+      "libxml2",
+      "libicu74"
+    ],
+    [
+      "libxml2",
+      "liblzma5"
+    ],
+    [
+      "libxml2",
+      "zlib1g"
+    ],
+    [
+      "libxslt1.1",
+      "libc6"
+    ],
+    [
+      "libxslt1.1",
+      "libgcrypt20"
+    ],
+    [
+      "libxslt1.1",
+      "libxml2"
+    ],
+    [
+      "libzstd1",
+      "libc6"
+    ],
+    [
+      "zlib1g",
+      "libc6"
+    ],
+    [
+      "postgresql-client-common",
+      "netbase"
+    ],
+    [
+      "postgresql-client-common",
+      "perl"
+    ],
+    [
+      "libreadline8t64",
+      "readline-common"
+    ],
+    [
+      "libreadline8t64",
+      "libc6"
+    ],
+    [
+      "libreadline8t64",
+      "libtinfo6"
+    ],
+    [
+      "libc-bin",
+      "libc6"
+    ],
+    [
+      "libc-bin",
+      "libc6"
+    ],
+    [
+      "adduser",
+      "passwd"
+    ],
+    [
+      "libjson-perl",
+      "perl"
+    ],
+    [
+      "sysvinit-utils",
+      "libc6"
+    ],
+    [
+      "ucf",
+      "debconf"
+    ],
+    [
+      "ucf",
+      "sensible-utils"
+    ],
+    [
+      "perl",
+      "dpkg"
+    ],
+    [
+      "perl",
+      "perl-base"
+    ],
+    [
+      "perl",
+      "perl-modules-5.38"
+    ],
+    [
+      "perl",
+      "libperl5.38t64"
+    ],
+    [
+      "openssl",
+      "libc6"
+    ],
+    [
+      "openssl",
+      "libssl3t64"
+    ],
+    [
+      "libkrb5-3",
+      "libkrb5support0"
+    ],
+    [
+      "libkrb5-3",
+      "libc6"
+    ],
+    [
+      "libkrb5-3",
+      "libcom-err2"
+    ],
+    [
+      "libkrb5-3",
+      "libk5crypto3"
+    ],
+    [
+      "libkrb5-3",
+      "libkeyutils1"
+    ],
+    [
+      "libkrb5-3",
+      "libssl3t64"
+    ],
+    [
+      "libcom-err2",
+      "libc6"
+    ],
+    [
+      "libk5crypto3",
+      "libc6"
+    ],
+    [
+      "libk5crypto3",
+      "libkrb5support0"
+    ],
+    [
+      "libkrb5support0",
+      "libc6"
+    ],
+    [
+      "libgnutls30t64",
+      "libc6"
+    ],
+    [
+      "libgnutls30t64",
+      "libgmp10"
+    ],
+    [
+      "libgnutls30t64",
+      "libhogweed6t64"
+    ],
+    [
+      "libgnutls30t64",
+      "libidn2-0"
+    ],
+    [
+      "libgnutls30t64",
+      "libnettle8t64"
+    ],
+    [
+      "libgnutls30t64",
+      "libp11-kit0"
+    ],
+    [
+      "libgnutls30t64",
+      "libtasn1-6"
+    ],
+    [
+      "libgnutls30t64",
+      "libunistring5"
+    ],
+    [
+      "libsasl2-2",
+      "libsasl2-modules-db"
+    ],
+    [
+      "libsasl2-2",
+      "libc6"
+    ],
+    [
+      "libsasl2-2",
+      "libssl3t64"
+    ],
+    [
+      "libedit2",
+      "libbsd0"
+    ],
+    [
+      "libedit2",
+      "libc6"
+    ],
+    [
+      "libedit2",
+      "libtinfo6"
+    ],
+    [
+      "libffi8",
+      "libc6"
+    ],
+    [
+      "libaudit1",
+      "libaudit-common"
+    ],
+    [
+      "libaudit1",
+      "libc6"
+    ],
+    [
+      "libaudit1",
+      "libcap-ng0"
+    ],
+    [
+      "libpcre2-8-0",
+      "libc6"
+    ],
+    [
+      "libcap2",
+      "libc6"
+    ],
+    [
+      "libgcrypt20",
+      "libc6"
+    ],
+    [
+      "libgcrypt20",
+      "libgpg-error0"
+    ],
+    [
+      "liblzma5",
+      "libc6"
+    ],
+    [
+      "libtinfo6",
+      "libc6"
+    ],
+    [
+      "passwd",
+      "libaudit1"
+    ],
+    [
+      "passwd",
+      "libc6"
+    ],
+    [
+      "passwd",
+      "libcrypt1"
+    ],
+    [
+      "passwd",
+      "libpam0g"
+    ],
+    [
+      "passwd",
+      "libselinux1"
+    ],
+    [
+      "passwd",
+      "libsemanage2"
+    ],
+    [
+      "passwd",
+      "libpam-modules"
+    ],
+    [
+      "dpkg",
+      "libbz2-1.0"
+    ],
+    [
+      "dpkg",
+      "libc6"
+    ],
+    [
+      "dpkg",
+      "liblzma5"
+    ],
+    [
+      "dpkg",
+      "libmd0"
+    ],
+    [
+      "dpkg",
+      "libselinux1"
+    ],
+    [
+      "dpkg",
+      "libzstd1"
+    ],
+    [
+      "dpkg",
+      "zlib1g"
+    ],
+    [
+      "dpkg",
+      "tar"
+    ],
+    [
+      "perl-base",
+      "libc6"
+    ],
+    [
+      "perl-base",
+      "libcrypt1"
+    ],
+    [
+      "perl-base",
+      "dpkg"
+    ],
+    [
+      "perl-modules-5.38",
+      "dpkg"
+    ],
+    [
+      "perl-modules-5.38",
+      "perl-base"
+    ],
+    [
+      "libperl5.38t64",
+      "libbz2-1.0"
+    ],
+    [
+      "libperl5.38t64",
+      "libc6"
+    ],
+    [
+      "libperl5.38t64",
+      "libcrypt1"
+    ],
+    [
+      "libperl5.38t64",
+      "libdb5.3t64"
+    ],
+    [
+      "libperl5.38t64",
+      "libgdbm-compat4t64"
+    ],
+    [
+      "libperl5.38t64",
+      "libgdbm6t64"
+    ],
+    [
+      "libperl5.38t64",
+      "zlib1g"
+    ],
+    [
+      "libperl5.38t64",
+      "perl-modules-5.38"
+    ],
+    [
+      "libkeyutils1",
+      "libc6"
+    ],
+    [
+      "libgmp10",
+      "libc6"
+    ],
+    [
+      "libhogweed6t64",
+      "libc6"
+    ],
+    [
+      "libhogweed6t64",
+      "libgmp10"
+    ],
+    [
+      "libhogweed6t64",
+      "libnettle8t64"
+    ],
+    [
+      "libidn2-0",
+      "libc6"
+    ],
+    [
+      "libidn2-0",
+      "libunistring5"
+    ],
+    [
+      "libnettle8t64",
+      "libc6"
+    ],
+    [
+      "libp11-kit0",
+      "libc6"
+    ],
+    [
+      "libp11-kit0",
+      "libffi8"
+    ],
+    [
+      "libtasn1-6",
+      "libc6"
+    ],
+    [
+      "libunistring5",
+      "libc6"
+    ],
+    [
+      "libsasl2-modules-db",
+      "libc6"
+    ],
+    [
+      "libsasl2-modules-db",
+      "libdb5.3t64"
+    ],
+    [
+      "libbsd0",
+      "libc6"
+    ],
+    [
+      "libbsd0",
+      "libmd0"
+    ],
+    [
+      "libcap-ng0",
+      "libc6"
+    ],
+    [
+      "libgpg-error0",
+      "libc6"
+    ],
+    [
+      "libcrypt1",
+      "libc6"
+    ],
+    [
+      "libsemanage2",
+      "libsemanage-common"
+    ],
+    [
+      "libsemanage2",
+      "libaudit1"
+    ],
+    [
+      "libsemanage2",
+      "libbz2-1.0"
+    ],
+    [
+      "libsemanage2",
+      "libc6"
+    ],
+    [
+      "libsemanage2",
+      "libselinux1"
+    ],
+    [
+      "libsemanage2",
+      "libsepol2"
+    ],
+    [
+      "libpam-modules",
+      "libaudit1"
+    ],
+    [
+      "libpam-modules",
+      "libc6"
+    ],
+    [
+      "libpam-modules",
+      "libcrypt1"
+    ],
+    [
+      "libpam-modules",
+      "libdb5.3t64"
+    ],
+    [
+      "libpam-modules",
+      "libpam0g"
+    ],
+    [
+      "libpam-modules",
+      "libselinux1"
+    ],
+    [
+      "libpam-modules",
+      "libsystemd0"
+    ],
+    [
+      "libpam-modules",
+      "debconf"
+    ],
+    [
+      "libpam-modules",
+      "libpam-modules-bin"
+    ],
+    [
+      "libbz2-1.0",
+      "libc6"
+    ],
+    [
+      "libmd0",
+      "libc6"
+    ],
+    [
+      "tar",
+      "libacl1"
+    ],
+    [
+      "tar",
+      "libc6"
+    ],
+    [
+      "tar",
+      "libselinux1"
+    ],
+    [
+      "libdb5.3t64",
+      "libc6"
+    ],
+    [
+      "libgdbm-compat4t64",
+      "libc6"
+    ],
+    [
+      "libgdbm-compat4t64",
+      "libgdbm6t64"
+    ],
+    [
+      "libgdbm6t64",
+      "libc6"
+    ],
+    [
+      "libsepol2",
+      "libc6"
+    ],
+    [
+      "libpam-modules-bin",
+      "libaudit1"
+    ],
+    [
+      "libpam-modules-bin",
+      "libc6"
+    ],
+    [
+      "libpam-modules-bin",
+      "libcrypt1"
+    ],
+    [
+      "libpam-modules-bin",
+      "libpam0g"
+    ],
+    [
+      "libpam-modules-bin",
+      "libselinux1"
+    ],
+    [
+      "libpam-modules-bin",
+      "libsystemd0"
+    ],
+    [
+      "libacl1",
+      "libc6"
+    ]
+  ],
+  "total_download_bytes": 93182638,
+  "target_abi_observed": false,
+  "native_execution_verified": false
+}
