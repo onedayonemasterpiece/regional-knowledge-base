@@ -22,6 +22,8 @@ from test_kaggle_native_source_importer import (
     native_intake, start, batch, stage, call, finish, pending, state, operation_count,
 )
 from test_kaggle_public_backend import target
+from test_read_authority import auth
+from test_participants import people
 
 
 def _keys(s):
