@@ -1465,8 +1465,19 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
             raise RuntimeError('Slack ingress requires the existing target startup')
         from .kaggle_source_owners import configured_expert_slack_ingress
         expert_slack_ingress=configured_expert_slack_ingress(target_startup,slack_config)
+    # Install the delegated read receiver ONLY alongside the signed ingress and
+    # against precisely the same existing target/Participants/spool authority.
+    # This does not register an executor, grant, provider sender or second IAM.
+    expert_evidence_receiver=None
+    if expert_slack_ingress is not None:
+        if target_startup is None:
+            raise RuntimeError('expert read requires existing target startup')
+        from .expert_slack_composition import compose_expert_evidence_receiver
+        expert_evidence_receiver=compose_expert_evidence_receiver(
+            target_startup=target_startup,expert_slack_ingress=expert_slack_ingress)
     build_server(profile=profile,target_startup=target_startup,projects_hub_receiver=projects_hub_receiver,
-        expert_slack_ingress=expert_slack_ingress).run(
+        expert_slack_ingress=expert_slack_ingress,
+        expert_evidence_receiver=expert_evidence_receiver).run(
         transport="streamable-http",
         stateless_http=True,
         json_response=True,
