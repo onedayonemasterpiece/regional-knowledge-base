@@ -176,3 +176,86 @@ async def test_pg_sql015_native_prepares_exact_illustration_candidate(image_pg_s
             "SELECT count(*) FROM rkb_v4.sources WHERE source_id=%s",
             (SOURCE,))).fetchone() == (0,)
     assert forwarded == []  # Preparing metadata did not run the encoder/media provider.
+
+
+@pytest.mark.asyncio
+async def test_existing_trusted_registry_refuses_image_activation_without_binding(image_pg_sql18):
+    """Prove the remaining SQL015 handler wiring gap through real accepted ops.
+
+    Do not replace the installed text-only activation handler with a synthetic
+    image-aware handler just to make a fixture pass. The existing SQL015
+    deferred receipt must abort this transaction without a half-Saved source.
+    """
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from regional_knowledge.kaggle_apply import ApplyExecutionError
+    from regional_knowledge.kaggle_source_materializer import (
+        NativeSourceMaterializer, materializer_fingerprint,
+    )
+    from test_source_activation import activation_payload
+    from test_source_activation_pg import (
+        stage_all, stage_command, next_command, accepted, DB, WRITER,
+        SEAL_ROUTE, seal,
+    )
+
+    env = image_pg_sql18
+    connection = env["connection"]
+    async with connection.transaction():
+        await connection.execute(
+            (Path(__file__).resolve().parents[1] /
+             "sql/kaggle/015_source_illustrations.sql").read_text(), prepare=False)
+
+    raw = illustrated_batch()
+    await stage_all(env, [json.loads(raw)])
+    forwards = []
+
+    async def count(text):
+        return len(text.split()) + 2
+
+    async def encode(text):
+        forwards.append(text)
+        return [1.0] + [0.0] * 1023
+
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+
+    native = NativeSourceMaterializer(count=count, encode=encode, current=lambda: True)
+    owner = SimpleNamespace(database_generation=DB, writer_generation=WRITER)
+    sealing = stage_command(seal(1, digest(raw)), env["sequence"] + 1, SEAL_ROUTE)
+    await env["journal"].seal([sealing],
+        predecessor=await env["journal"].head(), writer_generation=WRITER)
+    await native(sealing, acquire=acquire, database=owner)
+    assert (await accepted(env, sealing)).status == "applied"
+
+    payload = {**activation_payload([json.loads(raw)], digest(raw)),
+               "materializer_sha256": materializer_fingerprint()}
+    materialize = next_command(payload, env["sequence"] + 1, ordinal=0)
+    await env["journal"].seal([materialize],
+        predecessor=await env["journal"].head(), writer_generation=WRITER)
+    await native(materialize, acquire=acquire, database=owner)
+    assert len(forwards) == 1
+    assert (await accepted(env, materialize)).status == "applied"
+
+    activation = next_command(payload, env["sequence"] + 1)
+    installed = env["registry"].resolve(activation)
+    assert installed.check.name == "check_source_activate_v1"
+    assert installed.apply.name == "apply_source_activate_v1"
+    # SQL015 requires the image-aware exact handler, but this is the actual
+    # trusted text handler. Its deferred image receipt rejects at PG commit.
+    with pytest.raises(ApplyExecutionError):
+        await accepted(env, activation)
+
+    async with connection.transaction():
+        assert await (await connection.execute(
+            "SELECT count(*) FROM rkb_v4.sources WHERE source_id=%s",
+            (SOURCE,))).fetchone() == (0,)
+        assert await (await connection.execute(
+            "SELECT count(*) FROM rkb_v4.source_illustrations WHERE source_id=%s",
+            (SOURCE,))).fetchone() == (0,)
+        assert await (await connection.execute(
+            "SELECT count(*) FROM rkb_v4.source_illustration_candidates WHERE source_id=%s",
+            (SOURCE,))).fetchone() == (1,)
+        assert await (await connection.execute(
+            "SELECT count(*) FROM rkb_v4.source_activation_vectors WHERE source_id=%s",
+            (SOURCE,))).fetchone() == (1,)
