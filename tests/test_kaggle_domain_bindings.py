@@ -45,3 +45,29 @@ def test_current_graph_handler_preserves_frozen_nine_function_binding():
     assert current.apply.name=='apply_source_import_graph_v1'
     assert frozen.check.name=='check_source_import_v4'
     assert frozen.apply.name=='apply_source_import_v4'
+
+
+def test_full_ordered_closure_registry_fits_thirty_three_retained_handlers():
+    """Historic schema11 + schema12 handlers, both migrations and schema14 routes (33)."""
+    import pytest
+    from types import SimpleNamespace
+    from regional_knowledge.kaggle_source_commands import fixed_registry
+    from regional_knowledge.kaggle_domain_bindings import CURRENT_ROUTES
+    from regional_knowledge.kaggle_native_source_bindings import NATIVE_ROUTES
+    from regional_knowledge.geo_manifest_commands import GEO_REVISIONS, GEO_V2_REVISIONS
+    from regional_knowledge.kaggle_native_source_upgrade import NativeSourceUpgradePins, native_source_upgrade_handler
+    pins = NativeSourceUpgradePins('1'*64, '2'*64, '3'*64, '4'*64)
+    native = native_source_upgrade_handler(pins)
+    db = SimpleNamespace(schema_revision='rkb-v4-sql001-014-v1', function_revision='f14', executor_revision='e14')
+    pin = dict(check_sha256='a'*64, apply_sha256='b'*64)
+    entries = ([dict(route=r, revisions=list(GEO_REVISIONS.wire()), **pin) for r in CURRENT_ROUTES]
+        + [dict(route=r, revisions=list(GEO_V2_REVISIONS.wire()), **pin) for r in CURRENT_ROUTES]
+        + [dict(route='geo.dependencies.upgrade.v2', revisions=list(GEO_REVISIONS.wire()), artifact_sha256='c'*64, **pin)]
+        + [dict(route='source.native.upgrade.v1', revisions=list(native.revisions.wire()), artifact_sha256=pins.artifact_sha256,
+                check_sha256=pins.transition_check_sha256, apply_sha256=pins.transition_apply_sha256,
+                native_source_upgrade=pins.wire())]
+        + [dict(route=r, revisions=['rkb-v4-sql001-014-v1', 'f14', 'e14'], **pin) for r in NATIVE_ROUTES])
+    assert len(entries) == 33
+    assert len(fixed_registry(db, entries).handlers) == 33
+    with pytest.raises(ValueError, match='fixed source registry required'):
+        fixed_registry(db, entries * 2)
