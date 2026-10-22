@@ -66,17 +66,26 @@ assembly, and reject a113-package manifest. Other extraction limits remain.
 The Telegram input preserves Linza's reviewed candidate codec and evidence
 (CI39698152544, source9191f6a). The adapter explicitly produces the existing
 Stage0 codec `rkb.candidate_wheel_lock.v1` with exact package key `Telethon`,
-only when supplied an approved permanent content-addressed pyaes URL receipt
-binding its size/SHA-256. Until then `stage0-wheel-lock.json` has a different
+only when supplied a verified pyaes placement receipt binding its size/SHA-256.
+It accepts either the original permanent content-addressed HTTPS URL or a
+versioned Dataset identity (`dataset` with exact owner/slug/version/filename,
+without a competing `url`). Until then `stage0-wheel-lock.json` has a different
 unresolved-input codec and `runtime_lock=null`. No hosting URL is invented.
 All51 PDF wheel entries remain byte-for-byte unchanged; four Telegram wheels
 are appended. This does not solve the integrator-owned prepared-file budget.
 
 `pyaes-stage0-placement-proposal-20261022.json` proposes the exact existing
 Stage0 object key for the verified26422-byte wheel, with its SHA-256 and CI
-provenance. The existing artifact host must supply the permanent HTTPS URL and
-verified placement receipt. Approval, URL and receipt are deliberately unset;
-no upload has occurred. Opus owns placement review and runtime integration.
+provenance. This historical S3 proposal remains unexecuted. The owner's later
+clarification selects reusable Kaggle Dataset delivery with a stable slug and
+built-in versions. The metadata adapter now emits an internal
+`kaggle-dataset://owner/slug/version/filename` locator from a verified Dataset
+placement receipt, preserving every wheel byte/version pin. Dataset addresses
+need no invented content-addressed path because the version and byte digest are
+pinned independently. **Runtime Dataset support depends on PR246**; this
+packaging branch alone still has the old HTTPS-only Stage0 reader. No upload
+or ready Dataset receipt is asserted. Opus owns actual placement/deployment;
+PR246 source waits for readiness before claim/push.
 
 Only `.github/workflows/rkb-import-dependencies.yml` runs focused tests and
 native packaging. No Dev installs/builds/PG/models, Kaggle push, runtime

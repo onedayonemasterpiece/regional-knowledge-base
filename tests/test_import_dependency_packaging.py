@@ -64,6 +64,50 @@ def test_placement_is_exact_approved_content_addressed(field, value):
         m.merge_wheels(base, candidate, receipt)
 
 
+def dataset_placement(candidate,version=7):
+    receipt=placement(candidate);receipt.pop('url')
+    wheel=next(p for p in candidate['packages'] if p['package']=='pyaes')
+    receipt['dataset']=dict(owner='fixture-owner',slug='rkb-bootstrap',version=version,filename=wheel['filename'])
+    return receipt
+
+
+def test_versioned_dataset_receipt_preserves_all_pins_and_does_not_invent_https():
+    m=packaging();base,candidate=inputs(m)
+    first=m.merge_wheels(base,candidate,dataset_placement(candidate))
+    second=m.merge_wheels(base,candidate,dataset_placement(candidate,version=8))
+    assert first['packages'][:len(base['packages'])]==base['packages']
+    assert first['wheel_bytes']==second['wheel_bytes']==base['wheel_bytes']+candidate['wheel_bytes']
+    assert first['telegram_dataset_source']=='fixture-owner/rkb-bootstrap/7'
+    for lock,version in ((first,7),(second,8)):
+        row=next(p for p in lock['packages'] if p['package']=='pyaes')
+        original=next(p for p in candidate['packages'] if p['package']=='pyaes')
+        assert all(row[k]==original[k] for k in ('size','sha256','version'))
+        assert row['url']==f"kaggle-dataset://fixture-owner/rkb-bootstrap/{version}/{original['filename']}"
+        assert lock['telegram_placement_receipt']=='synthetic-test-receipt'
+    # Dataset-aware Stage0 is an explicit PR246 runtime dependency. This
+    # packaging branch does not pretend the old HTTPS-only parser supports it.
+
+
+@pytest.mark.parametrize('field,value',[
+    ('version',0),('version',True),('version','latest'),('version',10000000000),
+    ('owner','../escape'),('slug','rkb/bootstrap'),('filename','different.whl'),
+])
+def test_dataset_receipt_rejects_unpinned_or_ambiguous_identity(field,value):
+    m=packaging();base,candidate=inputs(m);receipt=dataset_placement(candidate)
+    receipt['dataset'][field]=value
+    with pytest.raises(ValueError,match='versioned pyaes Dataset'):
+        m.merge_wheels(base,candidate,receipt)
+
+
+def test_dataset_placement_requires_the_same_exact_byte_receipt_as_https():
+    m=packaging();base,candidate=inputs(m)
+    for field,value in (('approved',False),('sha256','0'*64),('size',1),('receipt_ref','')):
+        receipt=dataset_placement(candidate);receipt[field]=value
+        with pytest.raises(ValueError):m.merge_wheels(base,candidate,receipt)
+    receipt=dataset_placement(candidate);receipt['url']=placement(candidate)['url']
+    with pytest.raises(ValueError):m.merge_wheels(base,candidate,receipt)
+
+
 def test_native_union_preserves_base_and_refuses_hidden_upgrade():
     m = packaging()
     base = json.loads((m.MANIFESTS / 'kaggle-native-noble-pg17.11-base-lock.json').read_text())
