@@ -168,6 +168,25 @@ class DeferredRecoveryRuntime:
             from .kaggle_snapshot_drill import EmptySnapshotDrill
             runtime.recovery_worker.drill=EmptySnapshotDrill(runtime.recovery_worker.factory,
                 download=runtime.recovery_worker.download,workspace=self._workspace)
+        elif not fresh and runtime.recovery_worker.factory.dataset_checkpoint is not None:
+            # Same existing restore owner, exact launch-pinned Dataset checkpoint
+            # and immutable native migration pins. Merely constructing this
+            # opt-in source drill does NOT restore/migrate a serving database.
+            from .kaggle_snapshot_drill import EmptySnapshotDrill
+            from .kaggle_native_source_upgrade import NativeSourceUpgradePins
+            entries=[entry for entry in self.config['target_runtime']['command_handlers']
+                if entry.get('route')=='source.native.upgrade.v1']
+            if len(entries)!=1:
+                raise ValueError('drill_migrate_native_upgrade_not_installed')
+            pins=NativeSourceUpgradePins.from_wire(entries[0]['native_source_upgrade'])
+            runtime.recovery_worker.drill=EmptySnapshotDrill(runtime.recovery_worker.factory,
+                download=runtime.recovery_worker.download,workspace=self._workspace,
+                sql_root=self.config['target_runtime']['sql_root'],native_pins=pins)
+            # The owner is currently restoring a schema11 Dataset checkpoint,
+            # while its *target* descriptor/probe expects schema14. Let the
+            # underlying private factory select the verified base schema's
+            # native probe dynamically; never weaken catalog requirements.
+            runtime.recovery_worker.drill.factory._custom_probe=False
         return prepared if fresh else await runtime.prepare(encoder,**identity)
 
     async def __call__(self,frame):
