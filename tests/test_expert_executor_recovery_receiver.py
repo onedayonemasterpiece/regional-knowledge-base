@@ -206,4 +206,8 @@ async def test_corrupt_covered_native_receipt_is_persistence_pending_not_client_
         assert response.json()=={'error':'recovery_pending'}
         assert ctl.claim(a.credentials)=={'state':'empty'}
         row=ctl._row(entry['request_id'])
-        assert row['state']=='unknown' and row['delivery_receipt'] is None
+        # Corruption is detected BEFORE state promotion to UNKNOWN: retain
+        # the stricter recovery_review_required gate, with no receipt/permit.
+        assert row['state']=='recovery_review_required'
+        assert row['delivery_receipt'] is None
+        assert row['delivery_attempt']==0
