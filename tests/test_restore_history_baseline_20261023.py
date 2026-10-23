@@ -55,26 +55,32 @@ async def test_cursor_unknown_apply_then_original_receipt_and_api_reconnect(env)
     binding=TargetReadBinding('run','runtime',1,'db-source',0,'1')
     guard=lambda b:current[0] and b==binding
     await accept(e)
-    head=await e.journal.head()
     empty=dict(sequence=0,heads=[])
-    first=await e.spool.dataset_cursor(binding,control=empty,head=head,current=guard)
+    first=await e.spool.dataset_cursor(binding,control=empty,current=guard)
     assert first.accepted_sequence==1 and first.applied_sequence==0 and first.pending
     await e.spool.mark_apply_sent(e.cmd.operation_key)
-    unknown=await e.spool.dataset_cursor(binding,control=empty,head=head,current=guard)
+    unknown=await e.spool.dataset_cursor(binding,control=empty,current=guard)
     assert unknown.applied_sequence==0 and unknown.pending
     await e.spool.record_apply(e.cmd.operation_key,receipt(e.cmd))
-    applied=await e.spool.dataset_cursor(binding,control=empty,head=head,current=guard)
+    applied=await e.spool.dataset_cursor(binding,control=empty,current=guard)
     assert applied.accepted_sequence==applied.applied_sequence==1 and not applied.pending
+    # A subsequent checkpoint must retain the suffix's per-source restriction,
+    # rather than export only the old Dataset's heads.
+    with e.spool._db() as db:
+        row=db.execute('SELECT sequence,restriction,pending,unknown FROM rkb_control_source_heads '
+            'WHERE source_id=?',(SOURCE,)).fetchone()
+    assert tuple(row)==(1,1,1,0)
     # Dataset promotion already preserves the old command. Reconnecting the
     # controller must not resolve/revalidate its historical handler again.
     control=dict(sequence=1,heads=[[SOURCE,1,hashlib.sha256(e.cmd.encode()).hexdigest(),1,0,0]])
     e.spool.invalidate_source_history()
     e.spool.registry=HandlerRegistry([replace(handler(None),route='current.route')])
-    restored=await e.spool.dataset_cursor(binding,control=control,head=head,current=guard)
+    restored=await e.spool.dataset_cursor(binding,control=control,current=guard)
     assert restored.current() and restored.applied_sequence==1
+    assert not restored.source_heads[0].pending
     facts=await e.spool.read_facts((SOURCE,),(SOURCE,))
     assert facts.changes[0].restriction and e.spool.facts_current(facts)
     current[0]=False
     assert not restored.current() and not e.spool.facts_current(facts)
     with pytest.raises(SpoolConflict):
-        await e.spool.dataset_cursor(binding,control=control,head=head,current=guard)
+        await e.spool.dataset_cursor(binding,control=control,current=guard)
