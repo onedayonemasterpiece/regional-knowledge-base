@@ -323,4 +323,34 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.spool.entries),3)
 
 
+    async def test_applied_inactive_stage_advances_without_claiming_remote_durability(self):
+        await self.stage();entry=self.pending();self.finish(entry)
+        entry.outcome_state='NOT_SENT';entry.apply_state='APPLIED'
+        result=await self.helper.status(self.access,self.row)
+        self.assertEqual(self.state()['batch_count'],1)
+        self.assertIsNone(self.state()['pending_operation_key'])
+        self.assertEqual(entry.outcome_state,'NOT_SENT')
+        self.assertNotEqual(result.state,'finalized')
+
+    async def test_applied_materialization_advances_ordinal_without_a_checkpoint_per_vector(self):
+        await self.stage_and_seal();await self.helper.finalize(self.access,self.row)
+        entry=self.pending();self.finish(entry,total=20)
+        entry.outcome_state='NOT_SENT';entry.apply_state='APPLIED'
+        state=await self.helper._drive(self.access,self.row,self.state())
+        self.assertEqual(state['next_ordinal'],1)
+        self.assertIsNone(state['pending_operation_key'])
+        self.assertEqual(entry.outcome_state,'NOT_SENT')
+
+    async def test_applied_activation_and_unknown_inactive_receipts_still_wait(self):
+        await self.stage_and_seal();await self.helper.finalize(self.access,self.row)
+        for ordinal in (0,1):
+            self.finish();await self.helper.finalize(self.access,self.row)
+        entry=self.pending();self.assertEqual(entry.command.route,ACTIVATE)
+        self.finish(entry);entry.outcome_state='NOT_SENT';entry.apply_state='APPLIED'
+        result=await self.helper.status(self.access,self.row)
+        self.assertNotEqual(result.state,'finalized')
+        self.assertIsNotNone(self.state()['pending_operation_key'])
+        self.assertEqual(entry.outcome_state,'NOT_SENT')
+
+
 if __name__=='__main__': unittest.main()

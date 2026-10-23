@@ -532,8 +532,10 @@ class BgeWssTransport:
             nonlocal ready_confirmed, telegram_request_pending
             while True:
                 frame = await receive()
-                if type(frame.get('connection_generation')) is not int or frame['connection_generation'] != generation:
-                    raise BgeChannelStopped('stale channel generation')
+                if type(frame.get('connection_generation')) is not int:
+                    raise ValueError('integer channel generation required')
+                if frame['connection_generation'] != generation:
+                    raise ConnectionError('stale channel generation')
                 kind = frame.get('type')
                 if self.shared_reads and kind == 'RESOURCE_PROBE':
                     if not self._identifier(frame.get('probe_nonce')):
@@ -751,8 +753,10 @@ class BgeWssTransport:
                             message = await socket.receive()
                             if message.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
                                 return message.data
-                            if message.type == aiohttp.WSMsgType.CLOSE and message.data in (4400, 4403, 4409):
-                                raise BgeChannelStopped('channel authority or contract ended')
+                            # A close ends this attachment, not the owned run.
+                            # Reauthentication and all dispatch fences run on
+                            # reconnect; the existing outage/lifetime bounds
+                            # still terminate an unrecoverable or revoked run.
                             raise ConnectionError('channel disconnected')
                     yield Adapter()
 
@@ -769,7 +773,10 @@ class BgeWssTransport:
                     self._failure(self.encoding)
                     try:
                         async with (self.connector() if self.connector else native_connect()) as socket:
-                            await self._session(socket)
+                            try:
+                                await self._session(socket)
+                            except (ValueError,KeyError,TypeError,UnicodeError):
+                                raise ConnectionError('channel protocol validation failed') from None
                         if self.stop.is_set():
                             break
                     except BgeChannelStopped:

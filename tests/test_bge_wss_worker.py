@@ -223,15 +223,97 @@ async def test_lost_ack_reconnect_retains_exact_result_and_warm_encoder(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_wrong_ack_nonce_does_not_discard_exact_pending_result():
+async def test_wrong_ack_nonce_exhausts_reconnect_without_discarding_result(monkeypatch):
     transport = module('bge_wss_transport')
+    monkeypatch.setattr(transport.random,'uniform',lambda *args:.001)
     stop = asyncio.Event()
     wire = Wire(stop, wrong_claim=True)
     worker = transport.BgeWssTransport(CONFIG, lambda: lambda _: [1.] + [0.] * 1023,
-                                      lambda: {}, connector=wire.connect, maximum_seconds=3, stop=stop)
-    with pytest.raises(ValueError, match='acknowledgment mismatch'):
+                                      lambda: {}, connector=wire.connect, maximum_seconds=3, stop=stop,
+                                      reconnect_grace_seconds=9)
+    clock=[0.]
+    def tick():clock[0]+=1.;return clock[0]
+    worker._retry_clock=tick
+    with pytest.raises(transport.BgeChannelStopped,match='reconnect exhausted'):
         await worker.run()
-    assert worker.pending['claim'] == 'claim'
+    assert worker.pending['claim'] == 'claim' and wire.sessions>1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('close_code',[4400,4403,4409,1012])
+async def test_native_socket_close_reconnects_with_exact_pending_result(monkeypatch,close_code):
+    import aiohttp
+    from types import SimpleNamespace
+    transport=module('bge_wss_transport')
+    monkeypatch.setattr(transport.random,'uniform',lambda *args:.001)
+    stop=asyncio.Event();wire=Wire(stop,lose_ack=True);observed=[];calls=[]
+    class Session:
+        def __init__(self,**kwargs):pass
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        @asynccontextmanager
+        async def ws_connect(self,*args,**kwargs):
+            async with wire.connect() as inner:
+                closed=asyncio.Event()
+                class Socket:
+                    async def send_str(self,raw):
+                        try:await inner.send(raw)
+                        except ConnectionError:closed.set()
+                    async def receive(self):
+                        read=asyncio.create_task(inner.receive())
+                        closing=asyncio.create_task(closed.wait())
+                        try:
+                            done,_=await asyncio.wait((read,closing),return_when=asyncio.FIRST_COMPLETED)
+                            if closing in done:
+                                observed.append(close_code)
+                                return SimpleNamespace(type=aiohttp.WSMsgType.CLOSE,data=close_code)
+                            return SimpleNamespace(type=aiohttp.WSMsgType.TEXT,data=read.result())
+                        finally:
+                            read.cancel();closing.cancel()
+                            await asyncio.gather(read,closing,return_exceptions=True)
+                yield Socket()
+    monkeypatch.setattr(aiohttp,'ClientSession',Session)
+    def load():
+        calls.append('load')
+        def encode(text):
+            calls.append(text);return [1.]+[0.]*1023
+        return encode
+    worker=transport.BgeWssTransport(CONFIG,load,lambda:{},heartbeat_seconds=.01,maximum_seconds=3,stop=stop)
+    await worker.run()
+    assert observed==[close_code] and wire.sessions==2
+    assert calls==['load','fixture text'] and worker.pending is None
+    results=[f for f in wire.sent if f['type']=='RESULT']
+    assert len(results)==2
+    assert {k:v for k,v in results[0].items() if k!='connection_generation'}=={
+        k:v for k,v in results[1].items() if k!='connection_generation'}
+
+
+@pytest.mark.asyncio
+async def test_stale_generation_ack_reconnects_without_discarding_result(monkeypatch):
+    transport=module('bge_wss_transport')
+    monkeypatch.setattr(transport.random,'uniform',lambda *args:.001)
+    stop=asyncio.Event();wire=Wire(stop,wrong_claim=True);calls=[]
+    @asynccontextmanager
+    async def connect():
+        async with wire.connect() as inner:
+            class Socket:
+                async def send(self,raw):await inner.send(raw)
+                async def receive(self):
+                    frame=json.loads(await inner.receive())
+                    if wire.sessions==1 and frame['type']=='RESULT_ACK':
+                        frame['connection_generation']=0
+                        frame['claim']='claim';wire.wrong_claim=False
+                    return json.dumps(frame)
+            yield Socket()
+    def load():
+        calls.append('load')
+        def encode(text):calls.append(text);return [1.]+[0.]*1023
+        return encode
+    worker=transport.BgeWssTransport(CONFIG,load,lambda:{},connector=connect,
+        heartbeat_seconds=.01,maximum_seconds=3,stop=stop)
+    await worker.run()
+    assert wire.sessions==2 and calls==['load','fixture text'] and worker.pending is None
+    assert len([f for f in wire.sent if f['type']=='RESULT'])==2
 
 
 @pytest.mark.asyncio

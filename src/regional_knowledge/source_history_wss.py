@@ -8,7 +8,7 @@ import json
 import secrets
 
 from .control_spool import SourceChange,SpoolConflict,_command,_database,_uuid
-from .source_history_verifier import NativeSourceHistoryVerifier,_Coverage,_json,_hash
+from .source_history_verifier import NativeSourceHistoryVerifier,_Coverage,_json,_hash,_source_origin_required,DEFAULT_HISTORY_BYTES
 from .source_read_gate import binding_key
 from .kaggle_recovery_dispatch import RecoveryPhaseDispatch
 
@@ -20,7 +20,7 @@ _LOG=logging.getLogger(__name__)
 class WssNativeHistoryProofAdapter:
     """Concrete startup adapter; existing queue and private native observations."""
     def __init__(self,*,database,expected_observer_sha256,
-                 coverage_seconds=30,timeout_seconds=10,max_commands=2048,max_history_bytes=4*1024*1024,
+                 coverage_seconds=30,timeout_seconds=10,max_commands=2048,max_history_bytes=DEFAULT_HISTORY_BYTES,
                  geo_bootstrap_operation_keys=()):
         self.database=database
         self.observer=expected_observer_sha256;self.coverage_seconds=coverage_seconds
@@ -125,7 +125,14 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     or previous.binding is not binding or previous.key!=key or self._native_prefix is None):
                 s.invalidate_source_history();self._coverage=None
                 raise SpoolConflict('retained exact native source prefix unavailable')
-            s.invalidate_source_history();self._coverage=None;version=s._source_version
+            # Verification runs beside reads. An unchanged binding can keep
+            # using its existing proof until replacement, contradiction or its
+            # own deadline; rebuilding the native prefix does not revoke it.
+            retained=(previous is not None and previous.binding is binding
+                and s._source_anchor is previous and previous.current() and not s._writing)
+            if not retained:
+                s.invalidate_source_history();self._coverage=None
+            version=s._source_version
             session=None;committing=False
             try:
                 async with asyncio.timeout(self.cloud_prepare_seconds) as phase_timeout:
@@ -260,9 +267,9 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                                     'outcome_b64':base64.b64encode(body).decode(),'outcome_sha256':outcome[1],'outcome_length':outcome[2]}
                                 if (remote.data!=_json(expected_outcome) or len(body)!=outcome[2] or _hash(body)!=outcome[1]):raise SpoolConflict('remote outcome differs from native exact prefix')
                                 durable=True
-                            if h.dependency is not None and h.dependency.scope_class=='public_source' and outcome[0]=='applied':origins.append(c.ids['source_id'])
+                            if h.dependency is not None and h.dependency.scope_class=='public_source' and outcome[0]=='applied' and _source_origin_required(c):origins.append(c.ids['source_id'])
                         if not durable:pending.append((c.encode(),h.fingerprint,m))
-                        if h.dependency is None or h.dependency.scope_class!='public_source':continue
+                        if h.dependency is None or h.dependency.scope_class!='public_source' or not _source_origin_required(c):continue
                         source=c.ids['source_id'];old=changes.get(source)
                         changes[source]=SourceChange(source,c.sequence,_hash(c.encode()),bool(h.dependency.restriction or old and old.restriction),
                             bool(not durable or old and old.pending),False)
@@ -302,12 +309,16 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                 # expires at its own deadline. Contradictions keep closing reads.
                 if (mode=='full' or committing or previous is None
                         or type(exc) is SpoolConflict and exc.args!=('native source history observation unavailable',)
-                        or s._source_version is not version or s._source_anchor is not None or s._writing
+                        or s._source_version is not version or (s._source_anchor is not None and s._source_anchor is not previous) or s._writing
                         or previous.deadline<=self.clock() or not self.binding_current(binding)):
+                    s.invalidate_source_history();self._coverage=None
                     raise
                 self._coverage=previous;s._source_anchor=previous
                 _LOG.warning('source_history_renewal_deferred mode=%s reason=%s',mode,type(exc).__name__)
                 return previous
+            except BaseException:
+                s.invalidate_source_history();self._coverage=None
+                raise
             finally:
                 if session is not None:
                     await self._abort_session(binding,session)

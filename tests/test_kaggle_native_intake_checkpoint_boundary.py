@@ -1,4 +1,4 @@
-"""Frozen schema14 native intake: exact per-ordinal durable-outcome boundary.
+"""Native intake: exact APPLIED progress and final durable-outcome boundary.
 
 Test-only leaf for the integrated source candidate; reuse real
 KaggleSourceImporter -> NativeSourceIntake -> ControlSpool/RecoveryJournal
@@ -34,14 +34,14 @@ def _keys(s):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("total_inputs", (2, 3))
-async def test_native_ordinal_progress_waits_for_remote_outcome_not_only_applied(
+async def test_native_applied_progress_preserves_final_remote_durability(
     native_intake, total_inputs,
 ):
-    """CURRENT behavior: per-ordinal DURABLE barrier, not a new Dataset upload.
+    """Inactive progress uses APPLIED; remote publication still gates activation.
 
-    At two/three ordinals, the serial intake has respectively 5/6 distinct
-    durable outcome gates (stage+seal+N materialize+activate). These are
-    logical coverage barriers, NOT proof of 5/6 actual Dataset versions.
+    This fixture has no fresh physical-prefix proof for pending allocation, so
+    it publishes before allocating each next command. The separate real native
+    history tests cover continuing the proved owned prefix without publication.
     """
     s = native_intake
     result = await start(s)
@@ -51,8 +51,8 @@ async def test_native_ordinal_progress_waits_for_remote_outcome_not_only_applied
     assert first.command.route == STAGE_ROUTE
     assert operation_count(s) == 1
     await finish(s, result, publish=False)
-    assert (await call(s, result, "status")).state == "processing"
-    assert state(s, result)["batch_count"] == 0
+    assert (await call(s, result, "status")).state == "staged"
+    assert state(s, result)["batch_count"] == 1
     assert operation_count(s) == 1
     await s.spool.publish_outcome(first.command.operation_key, writer_generation="writer-1")
     assert (await call(s, result, "status")).state == "staged"
@@ -63,8 +63,8 @@ async def test_native_ordinal_progress_waits_for_remote_outcome_not_only_applied
     assert sealed.command.route == SEAL_ROUTE
     assert operation_count(s) == 2
     await finish(s, result, publish=False)
-    assert (await call(s, result, "status")).state == "processing"
-    assert state(s, result)["phase"] == "staging"
+    assert (await call(s, result, "status")).state == "ready"
+    assert state(s, result)["phase"] == "sealed"
     assert operation_count(s) == 2
     await s.spool.publish_outcome(sealed.command.operation_key, writer_generation="writer-1")
     assert (await call(s, result, "status")).state == "ready"
@@ -79,14 +79,16 @@ async def test_native_ordinal_progress_waits_for_remote_outcome_not_only_applied
         exact_command = entry.command_bytes
         commands_before = operation_count(s)
         assert commands_before == ordinal + 3
-        # APPLIED/PERSISTENCE_PENDING: real native controller does not advance.
+        # The exact applied receipt advances candidate progress, not Saved.
         await finish(s, result, publish=False, total_inputs=total_inputs)
         assert (await call(s, result, "status")).state == "processing"
-        assert state(s, result)["next_ordinal"] == ordinal
-        assert state(s, result)["pending_operation_key"] == key
+        assert state(s, result)["next_ordinal"] == ordinal + 1
+        assert state(s, result)["pending_operation_key"] is None
         assert operation_count(s) == commands_before
-        assert (await pending(s, result)).command_bytes == exact_command
-        # Only verified remote outcome frees this ordinal for the next one.
+        assert (await s.spool.get(key)).command_bytes == exact_command
+        assert (await s.spool.get(key)).outcome_state == "NOT_SENT"
+        # This synthetic seam lacks the native proof required to allocate
+        # across a pending prefix. Publication lets it allocate normally.
         await s.spool.publish_outcome(key, writer_generation="writer-1")
         next_response = await call(s, result, "status")
         assert next_response.state == "processing"
