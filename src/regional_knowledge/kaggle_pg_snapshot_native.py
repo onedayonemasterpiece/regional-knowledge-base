@@ -262,7 +262,7 @@ async def applied_prefix(connection,sequence,limits):
     async with connection.cursor(name='rkb_snapshot_prefix') as cursor:
         await cursor.execute('SELECT sequence,operation_key,command_sha256,handler_sha256,'
             'accepted_manifest_sha256,status,outcome_sha256,database_generation,writer_generation '
-            'FROM rkb_v4.applied_ops ORDER BY sequence LIMIT %s',(limits.max_receipts+1,))
+            'FROM rkb_v4.applied_ops WHERE sequence<=%s ORDER BY sequence LIMIT %s',(sequence,limits.max_receipts+1))
         while (row:=await cursor.fetchone()) is not None:
             count+=1
             if count>limits.max_receipts or row[0]!=count or count>sequence:
@@ -342,7 +342,7 @@ class NativeSnapshotFactory:
             await self.tools.verify(self._run)
             catalog,fields=await self.probe(acquire=self.acquire)
             if (fields['schema_version']!=versions.get('schema_version') or fields['database_generation']!=self.database.database_generation
-                    or fields['applied_seq']!=expected_sequence
+                    or fields['applied_seq']<expected_sequence
                     ):
                 raise SnapshotError('native_backup_current_prefix')
             root=await _blocking(self._workspace,workspace,self.limits.max_unpacked_bytes*2)
@@ -369,7 +369,13 @@ class NativeSnapshotFactory:
             records,unpacked,inventory,size,digest=await _blocking(pack_tree,root/'base',root/'base.tar',self.limits)
             _,after=await self.probe(acquire=self.acquire)
             await current()
-            if after['applied_seq']!=expected_sequence:raise SnapshotError('native_backup_source_advanced')
+            # pg_basebackup + streamed WAL is a consistent PG image. Its actual
+            # recovered cursor may exceed the pre-backup verified lower bound;
+            # do not reject a concurrent committed APPLIED operation.
+            if (after['applied_seq']<expected_sequence
+                    or after['schema_version']!=versions.get('schema_version')
+                    or after['database_generation']!=self.database.database_generation):
+                raise SnapshotError('native_backup_source_changed')
             blob=await (upload_callback or self.upload_ticket)(root/'base.tar',size=size,sha256=digest)
             if type(blob) is not BlobRef or (blob.size,blob.sha256)!=(size,digest):
                 raise SnapshotError('native_backup_upload_receipt')
@@ -506,7 +512,10 @@ class NativeSnapshotFactory:
                     if await cursor.fetchone()!=(m['writer_generation'],):raise SnapshotError('native_restore_original_writer')
                     cursor=await connection.execute('SELECT database_generation,applied_seq '
                         'FROM rkb_v4.recovery_state WHERE singleton')
-                    if await cursor.fetchone()!=(self.database.database_generation,m['applied_sequence']):
+                    observed_generation,restored_cursor=await cursor.fetchone()
+                    if (observed_generation!=self.database.database_generation
+                            or type(restored_cursor) is not int
+                            or restored_cursor<m['applied_sequence']):
                         raise SnapshotError('native_restore_internal_cursor')
             await self._upgrade_restored(candidate,m)
             original=replace(self.database,writer_generation=m['writer_generation'])
@@ -538,7 +547,7 @@ class NativeSnapshotFactory:
         _,fields=await self.probe(acquire=candidate.acquire)
         if (fields['schema_version']!=self.database.schema_version
                 or fields['database_generation']!=self.database.database_generation
-                or fields['applied_seq']!=manifest['applied_sequence']):
+                or fields['applied_seq']<manifest['applied_sequence']):
             raise SnapshotError('native_restore_migrated_version_or_cursor')
 
     async def apply(self,session,frame):
