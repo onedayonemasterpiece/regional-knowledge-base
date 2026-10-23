@@ -589,7 +589,7 @@ def build_server(
     mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
     mcp._target_catalog_available = (selected=='kaggle_source' and target_startup.gate.catalog_supported())
     mcp._target_cases_available = (selected=='kaggle_source' and getattr(target_startup,'cases_backend',None) is not None)
-    mcp._target_participants_available = (selected=='kaggle_source'
+    mcp._target_participants_available = (selected=='kaggle_source' and profile=='full'
         and target_startup.authority.participants is target_startup.config.participants)
     mcp._target_editorial_available = (selected=='kaggle_source' and getattr(target_startup,'editorial',None) is not None)
     mcp._target_graph_available = (selected=='kaggle_source' and target_startup.gate.graph_supported())
