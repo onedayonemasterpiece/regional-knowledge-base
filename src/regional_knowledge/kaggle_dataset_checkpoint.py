@@ -292,8 +292,12 @@ class SourceDatasetCheckpoints:
             from .bge_queue import MAX_LIFETIME
             run_id=getattr(binding,'run_id',None)
             if run_id is not None:
-                run=db.execute('SELECT started FROM runs WHERE id=?',(run_id,)).fetchone()
-                planned_stop=planned_stop or (run is not None and queue.clock()-run['started']>=MAX_LIFETIME-600)
+                run=db.execute('SELECT started,status FROM runs WHERE id=?',(run_id,)).fetchone()
+                # The existing controller marks an operator-approved idle
+                # drain before sending its authenticated STOP. Request the
+                # checkpoint on that same owner while the binding is current.
+                planned_stop=planned_stop or (run is not None and
+                    (run['status']=='draining' or queue.clock()-run['started']>=MAX_LIFETIME-600))
         if retained is None:
             late_outcomes=self.store.pending_outcomes()
             try:control=self.store.pending_control()
