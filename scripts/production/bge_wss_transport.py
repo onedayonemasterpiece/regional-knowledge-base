@@ -490,9 +490,26 @@ class BgeWssTransport:
                 await put({'type':'RKB1_BIND_REQUEST','retained_client':owner.retained_client})
 
         async def heartbeat():
+            # At most ONE optional sampler task can be in flight. A stalled
+            # /proc read never holds the authenticated 20s control heartbeat
+            # or accumulates a fresh worker thread every tick.
+            pending_sample = None
             while True:
                 await asyncio.sleep(self.heartbeat_seconds)
-                await put({'type': 'HEARTBEAT', 'diagnostics': await asyncio.to_thread(self.diagnostics)})
+                if pending_sample is None:
+                    pending_sample = asyncio.create_task(asyncio.to_thread(self.diagnostics))
+                    pending_sample.add_done_callback(
+                        lambda task: task.exception() if not task.cancelled() else None)
+                try:
+                    sample = await asyncio.wait_for(asyncio.shield(pending_sample),
+                        timeout=min(.15, self.heartbeat_seconds / 2))
+                except (asyncio.TimeoutError, Exception):
+                    sample = {}
+                if pending_sample.done():
+                    pending_sample = None
+                if type(sample) is not dict:
+                    sample = {}
+                await put({'type': 'HEARTBEAT', 'diagnostics': sample})
                 await request_telegram()
 
         async def states():

@@ -77,6 +77,284 @@ def _load_model(artifacts):
             return ResidentEncoder(encode,tokenizer,artifacts,artifacts.model_directory,_MODEL_LOAD_COUNT)
     return encode
 
+
+class ResourceSampler:
+    """Read only this notebook's mounted /proc and own cgroup, without sysstat.
+
+    Totals for the cgroup include shared pages once. PG/BGE RSS and PSS are
+    *separate* process observations and must never be added as a usage total.
+    A PID must have matching /proc/stat starttime before/after each read; an
+    observed PID reuse omits one sample instead of attributing the old process.
+    """
+
+    def __init__(self, *, proc_root='/proc', path_root='/', pid=None,
+                 clock=None, wall_clock=None, clock_ticks=None):
+        self.proc_root = Path(proc_root)
+        self.path_root = Path(path_root)
+        self.pid = os.getpid() if pid is None else pid
+        self.clock = clock or time.monotonic
+        self.wall_clock = wall_clock or time.time
+        self.clock_ticks = clock_ticks or os.sysconf('SC_CLK_TCK')
+        self.seq = 0
+        self.failures = 0
+        self._process_start = {}
+        self._cpu_prior = {}
+
+    def _read(self, path, *, limit=16384):
+        try:
+            with Path(path).open('rb') as stream:
+                data = stream.read(limit + 1)
+            if len(data) > limit:
+                self.failures += 1
+                return None
+            return data.decode('ascii', errors='strict')
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeError, ValueError):
+            self.failures += 1
+            return None
+
+    @staticmethod
+    def _number(text):
+        if not text or not text.isascii() or not text.isdecimal():
+            return None
+        value = int(text)
+        return value if 0 <= value < 2**63 else None
+
+    def _fields(self, text):
+        if text is None:
+            return {}
+        result = {}
+        for line in text.splitlines()[:128]:
+            parts = line.split()
+            if len(parts) == 2:
+                value = self._number(parts[1])
+                if value is not None:
+                    result[parts[0].rstrip(':')] = value
+        return result
+
+    def _stat(self, pid):
+        text = self._read(self.proc_root / str(pid) / 'stat', limit=8192)
+        if text is None:
+            return None
+        # comm is parenthesized and can contain spaces and ')' characters.
+        end = text.rfind(')')
+        if end < 0 or not text.startswith(str(pid) + ' ('):
+            return None
+        fields = text[end+1:].split()
+        if len(fields) < 20:
+            return None
+        start = self._number(fields[19])  # Linux field 22
+        utime = self._number(fields[11])  # Linux field 14
+        stime = self._number(fields[12])  # Linux field 15
+        if start is None or start == 0 or utime is None or stime is None:
+            return None
+        return start, (utime + stime) / self.clock_ticks
+
+    def _process(self, pid, prefix=''):
+        if type(pid) is not int or not 1 <= pid < 2**31:
+            return {}
+        before = self._stat(pid)
+        if before is None:
+            return {}
+        status = self._read(self.proc_root / str(pid) / 'status')
+        pss = self._read(self.proc_root / str(pid) / 'smaps_rollup')
+        after = self._stat(pid)
+        if after is None or before[0] != after[0]:
+            return {}
+        prior = self._process_start.get((prefix, pid))
+        self._process_start[(prefix, pid)] = before[0]
+        if prior is not None and prior != before[0]:
+            return {}  # Reused PID: an entire observation stays unknown.
+        result = {prefix + 'cpu_seconds': after[1]}
+        mapping = {'VmRSS': prefix + 'rss_kib', 'VmHWM': prefix + 'hwm_kib'}
+        if status is not None:
+            for line in status.splitlines()[:200]:
+                parts = line.split()
+                if len(parts) == 3 and parts[0].rstrip(':') in mapping and parts[2] == 'kB':
+                    value = self._number(parts[1])
+                    if value is not None:
+                        result[mapping[parts[0].rstrip(':')]] = value
+        if pss is not None:
+            for line in pss.splitlines()[:200]:
+                parts = line.split()
+                if len(parts) == 3 and parts[0] == 'Pss:' and parts[2] == 'kB':
+                    value = self._number(parts[1])
+                    if value is not None:
+                        result[prefix + 'pss_kib'] = value
+                    break
+        result[prefix + 'pid'] = pid
+        return result
+
+    def _mounts(self):
+        groups = {}
+        cg = self._read(self.proc_root / 'self' / 'cgroup', limit=8192)
+        info = self._read(self.proc_root / 'self' / 'mountinfo', limit=32768)
+        if cg is None or info is None:
+            return []
+        for line in cg.splitlines()[:64]:
+            parts = line.split(':', 2)
+            if len(parts) != 3 or not parts[2].startswith('/'):
+                continue
+            for name in (parts[1].split(',') if parts[1] else ('v2',)):
+                if name in ('v2', 'cpu', 'cpuacct', 'memory', 'blkio'):
+                    groups[name] = parts[2]
+        mounts = []
+        for line in info.splitlines()[:256]:
+            if ' - ' not in line:
+                continue
+            left, right = line.split(' - ', 1)
+            head, tail = left.split(), right.split()
+            if len(head) < 5 or len(tail) < 3 or tail[0] not in ('cgroup2', 'cgroup'):
+                continue
+            root, mountpoint = head[3], head[4]
+            if not root.startswith('/') or not mountpoint.startswith('/'):
+                continue
+            names = ('v2',) if tail[0] == 'cgroup2' else tuple(
+                name for name in tail[2].split(',') if name in ('cpu', 'cpuacct', 'memory', 'blkio'))
+            for name in names:
+                membership = groups.get(name)
+                if membership is None:
+                    continue
+                # Match the recognized mount *root*, never guess host root.
+                prefix = root.rstrip('/') + '/'
+                if membership != root and not membership.startswith(prefix):
+                    continue
+                relative = membership[len(root):].lstrip('/') if root != '/' else membership.lstrip('/')
+                if any(part in ('.', '..') for part in relative.split('/')):
+                    continue
+                if '\\' in mountpoint or '\\' in root:
+                    continue  # Refuse unhandled mountinfo path escaping.
+                mounts.append((name, self.path_root / mountpoint.lstrip('/') / relative))
+        return mounts
+
+    def _sample_cgroup(self, now):
+        mounts = self._mounts()
+        observed = {}
+        v2 = next((path for name, path in mounts if name == 'v2'), None)
+        if v2 is not None:
+            cpu = self._fields(self._read(v2 / 'cpu.stat'))
+            maximum = self._read(v2 / 'cpu.max', limit=128)
+            memory = self._number((self._read(v2 / 'memory.current', limit=128) or '').strip())
+            memmax = (self._read(v2 / 'memory.max', limit=128) or '').strip()
+            events = self._fields(self._read(v2 / 'memory.events'))
+            observed['cgroup_version'] = 2
+            if maximum:
+                parts = maximum.split()
+                if len(parts) == 2:
+                    quota = self._number(parts[0]) if parts[0] != 'max' else None
+                    period = self._number(parts[1])
+                    if quota is not None: observed['cpu_quota_us'] = quota
+                    if period is not None and period > 0: observed['cpu_period_us'] = period
+            for source, dest in (('usage_usec','cpu_usage_usec'),
+                                 ('nr_throttled','cpu_nr_throttled'),
+                                 ('throttled_usec','cpu_throttled_usec')):
+                if source in cpu: observed[dest] = cpu[source]
+            if memory is not None: observed['memory_current_bytes'] = memory
+            limit = self._number(memmax) if memmax != 'max' else None
+            if limit is not None: observed['memory_limit_bytes'] = limit
+            for name in ('high', 'max', 'oom', 'oom_kill'):
+                if name in events: observed['memory_events_' + name] = events[name]
+            io = self._read(v2 / 'io.stat', limit=8192)
+            if io is not None:
+                read = written = 0
+                found_r = found_w = False
+                for line in io.splitlines()[:32]:
+                    parts = line.split()
+                    if not parts or ':' not in parts[0]:
+                        continue
+                    for entry in parts[1:]:
+                        key, sep, value_text = entry.partition('=')
+                        value = self._number(value_text) if sep else None
+                        if value is None: continue
+                        if key == 'rbytes': read += value; found_r = True
+                        if key == 'wbytes': written += value; found_w = True
+                if found_r and read < 2**63: observed['io_read_bytes'] = read
+                if found_w and written < 2**63: observed['io_write_bytes'] = written
+        else:
+            # v1 ONLY when real /proc/self/mountinfo and controller membership
+            # declare a known cpu/cpuacct or memory mount.
+            lookup = {name: path for name, path in mounts if name != 'v2'}
+            if not any(k in lookup for k in ('cpu', 'cpuacct', 'memory')):
+                return observed
+            observed['cgroup_version'] = 1
+            cpu_dir = lookup.get('cpu')
+            if cpu_dir is not None:
+                for filename, name in (('cpu.cfs_quota_us','cpu_quota_us'),
+                                       ('cpu.cfs_period_us','cpu_period_us')):
+                    text = (self._read(cpu_dir / filename, limit=128) or '').strip()
+                    value = self._number(text)  # -1 unlimited -> unknown
+                    if value is not None: observed[name] = value
+                stats = self._fields(self._read(cpu_dir / 'cpu.stat'))
+                if 'nr_throttled' in stats: observed['cpu_nr_throttled'] = stats['nr_throttled']
+                if 'throttled_time' in stats:
+                    observed['cpu_throttled_usec'] = stats['throttled_time'] // 1000
+            acct = lookup.get('cpuacct')
+            if acct is not None:
+                text = (self._read(acct / 'cpuacct.usage', limit=128) or '').strip()
+                value = self._number(text)
+                if value is not None: observed['cpu_usage_usec'] = value // 1000
+            memory_dir = lookup.get('memory')
+            if memory_dir is not None:
+                for filename, name in (('memory.usage_in_bytes','memory_current_bytes'),
+                                       ('memory.limit_in_bytes','memory_limit_bytes'),
+                                       ('memory.failcnt','memory_events_max')):
+                    value = self._number((self._read(memory_dir / filename, limit=128) or '').strip())
+                    # v1 memory.limit may be a very large sentinel, not a real quota.
+                    if value is not None and (name != 'memory_limit_bytes' or value < 1 << 60):
+                        observed[name] = value
+        # Only compute deltas across comparable observed counters and scope.
+        # Rebase when the observed process moves to a different cgroup,
+        # even if its v1/v2 version and monotone counters happen to match.
+        scope = (2, str(v2)) if v2 is not None else (1, str(
+            lookup.get('cpuacct') or lookup.get('cpu') or lookup.get('memory')))
+        for raw_key, delta_key in (('cpu_usage_usec','cpu_usage_delta_seconds'),
+                                   ('cpu_throttled_usec','cpu_throttled_delta_seconds')):
+            current = observed.get(raw_key)
+            if current is None:
+                continue
+            prior = self._cpu_prior.get((scope, raw_key))
+            self._cpu_prior[(scope, raw_key)] = (current, now)
+            if prior is None or now <= prior[1] or current < prior[0]:
+                continue
+            delta = (current - prior[0]) / 1_000_000
+            observed[delta_key] = delta
+            if raw_key == 'cpu_usage_usec':
+                observed['cpu_utilization_cores'] = delta / (now - prior[1])
+        return observed
+
+    def sample(self, *, pg_pid=None):
+        self.seq += 1
+        try:
+            stamp = int(self.wall_clock() * 1000)
+            stamp = stamp if 1 <= stamp < 2**63 else 1
+            metrics = {'sample_seq': self.seq, 'sample_time_unix_ms': stamp}
+            metrics.update(self._process(self.pid))
+            if type(pg_pid) is int and pg_pid != self.pid:
+                metrics.update(self._process(pg_pid, 'pg_master_'))
+            metrics.update(self._sample_cgroup(self.clock()))
+            metrics['sampling_failures_total'] = min(self.failures, 2**63 - 1)
+            if len(json.dumps(metrics, allow_nan=False).encode()) > 4096:
+                self.failures += 1
+                return dict(sample_seq=self.seq, sample_time_unix_ms=stamp,
+                            sampling_failures_total=min(self.failures, 2**63 - 1))
+            return metrics
+        except Exception:
+            self.failures += 1
+            return dict(sample_seq=self.seq, sample_time_unix_ms=max(1,int(time.time() * 1000)),
+                        sampling_failures_total=min(self.failures, 2**63 - 1))
+
+
+def _owned_pg_master_pid(prepare_runtime):
+    """Only a process object from our already attached native runtime is valid."""
+    holder = getattr(prepare_runtime, '__self__', None)
+    instance = getattr(holder, 'instance', None)
+    owner = getattr(instance, 'owner', None)
+    process = getattr(owner, 'process', None)
+    pid = getattr(process, 'pid', None)
+    return pid if type(pid) is int and 1 <= pid < 2**31 else None
+
+
 def main(*, prepare_runtime=None, close_runtime=None, recovery_handler=None, snapshot_channel=None):
     config=RUN_CONFIG;started=time.monotonic();stop=threading.Event()
     if prepare_runtime is not None and config.get('transport') != 'wss':
@@ -85,11 +363,9 @@ def main(*, prepare_runtime=None, close_runtime=None, recovery_handler=None, sna
             or not isinstance(config.get('prepared_model'), dict)
             or set(config['prepared_model']) != {'root', 'entries', 'max_total_bytes'}):
         raise ValueError('resident preparation requires explicit shared model inventory')
+    sampler = ResourceSampler()
     def diagnostics():
-        status=Path('/proc/self/status').read_text().splitlines()
-        values={line.split(':',1)[0]:int(line.split()[1]) for line in status if line.startswith(('VmRSS:','VmHWM:'))}
-        pss=sum(int(line.split()[1]) for line in Path('/proc/self/smaps_rollup').read_text().splitlines() if line.startswith('Pss:'))
-        cpu=os.times();return {'rss_kib':values['VmRSS'],'hwm_kib':values['VmHWM'],'pss_kib':pss,'cpu_seconds':cpu.user+cpu.system,'cpu_threads':4,'pid':os.getpid()}
+        return sampler.sample(pg_pid=_owned_pg_master_pid(prepare_runtime))
     if config.get('transport')=='wss':
         try:
             run_wss_worker(config,load_encoder,diagnostics,prepare_runtime=prepare_runtime,close_runtime=close_runtime,

@@ -88,7 +88,7 @@ def _identifier(value):
     return value
 
 
-def channel_route(queue, *, read_telemetry=None):
+def channel_route(queue, *, read_telemetry=None, product_telemetry=None):
     """Return a native route for the existing MCP ASGI application."""
     async def endpoint(socket):
         # Explicit startup configuration only. Legacy encoding stays on its
@@ -470,6 +470,14 @@ def channel_route(queue, *, read_telemetry=None):
                                          connection_generation=generation)
                         await send('HEARTBEAT_ACK', provider_version=(str(observed['provider_version'])
                                    if observed['provider_version'] is not None else None))
+                        # History is disposable and never awaits its sink. Use
+                        # the same authenticated run/incarnation/generation and
+                        # the existing bounded read collector; no new service.
+                        from .resource_telemetry import emit_resource_sample
+                        hashes=runtime_readiness.get('hashes') if isinstance(runtime_readiness,dict) else None
+                        release=hashes.get('code') if isinstance(hashes,dict) else None
+                        emit_resource_sample(product_telemetry,frame.get('diagnostics'),run_id=run_id,
+                            incarnation=hello['runtime_incarnation'],generation=generation,release=release)
                     elif frame['type']=='SNAPSHOT_UPLOAD_INTENT':
                         _fields(frame,(*common,'request_id','job_id','claim','run_id','launch_nonce',
                             'runtime_incarnation','compute_claim','dispatch_generation','operation_key','size','sha256'))

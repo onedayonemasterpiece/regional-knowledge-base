@@ -703,13 +703,24 @@ class BgeQueue:
             if diagnostics is not None:
                 if not isinstance(diagnostics,dict):raise ValueError('BGE diagnostics type')
                 safe=json.loads(run['diagnostics'])
-                for key in ('startup_seconds','rss_kib','hwm_kib','pss_kib','cpu_seconds','cpu_threads','pid'):
-                    if key in diagnostics:
-                        import math
-                        value=float(diagnostics[key])
-                        if not math.isfinite(value) or value<0:raise ValueError('BGE diagnostics value')
-                        safe[key]=value
-                db.execute('update runs set diagnostics=? where id=?',(json.dumps(safe),run_id))
+                from .resource_telemetry import (clean_resource_numbers, RESOURCE_NUMBERS)
+                current=clean_resource_numbers(diagnostics)
+                if 'sample_seq' in current and 'sample_time_unix_ms' in current:
+                    # New samples replace, never carry a previously readable
+                    # metric across denied /proc or cgroup access. No history
+                    # here: the existing bounded read telemetry sink owns it.
+                    for key in RESOURCE_NUMBERS:
+                        safe.pop(key,None)
+                    safe.update(current)
+                else:
+                    # Preserve legacy HTTP workers' published diagnostics.
+                    for key in ('startup_seconds','rss_kib','hwm_kib','pss_kib','cpu_seconds','cpu_threads','pid'):
+                        if key in diagnostics:
+                            import math
+                            value=float(diagnostics[key])
+                            if not math.isfinite(value) or value<0:raise ValueError('BGE diagnostics value')
+                            safe[key]=value
+                db.execute('update runs set diagnostics=? where id=?',(json.dumps(safe,separators=(',',':')),run_id))
             if ready and run['status']=='starting':
                 control=db.execute('select * from control where id=1').fetchone()
                 db.execute("update runs set status='ready',ready_at=? where id=?",(now,run_id))
