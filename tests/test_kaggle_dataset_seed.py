@@ -40,7 +40,7 @@ async def test_nonempty_native_checkpoint_publishes_archive_without_dev_proxy(tm
     async def head():return None
     startup = NS(config=NS(queue=queue, writer_owner=guard, writer_generation='writer',
         spool=NS(_lock=asyncio.Lock(), _source_covered_sequence=7, journal=NS(prefix='recovery/source', stream='source',head=head))),
-        binding_current=lambda b:b is binding, history=NS(_coverage=proof),
+        binding_current=lambda b:b is binding, coverage=proof,
         restorer=NS(complete=True, physical=physical, dispatch=bridge))
     seed = SourceDatasetSeed(startup, config, publisher)
     async def journal_control():return encode(dict(codec='rkb.dataset-journal.v1',objects=[]))
@@ -75,7 +75,7 @@ async def test_pending_prefix_cannot_be_replaced_by_empty_seed(tmp_path):
     @asynccontextmanager
     async def guard(generation):yield
     startup = NS(config=NS(queue=queue, writer_owner=guard, spool=NS(_lock=asyncio.Lock())),
-        binding_current=lambda b:True, history=NS(_coverage=NS(current=lambda:True, pending=('pending',))),
+        binding_current=lambda b:True, coverage=NS(current=lambda:True, pending=("pending",)),
         restorer=NS(complete=True, physical=NS(), dispatch=NS()))
     config = NS(operation_key='nonempty', provider_ref='owner/rkb-pg')
     seed = SourceDatasetSeed(startup, config, NS())
