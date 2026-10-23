@@ -112,7 +112,19 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
         if not isinstance(value,dict) or 'error' in value:raise SpoolConflict('native source history observation unavailable')
         return value
 
-    async def restore(self,binding):return await self._verify_remote(binding,mode='full')
+    async def restore(self,binding):
+        # A read capability can expire while its *native* verified prefix still
+        # belongs to this exact process/binding. Re-check only the journal tail,
+        # never re-decode the lifetime prefix for ordinary renewals. A lost
+        # native prefix/cold process must still take the full proof path.
+        prior=self._coverage
+        if (prior is not None and self._native_prefix is not None
+                and self.spool._source_anchor is prior and prior.binding is binding
+                and prior.key==binding_key(binding) and self.binding_current(binding)
+                and self._routes_current() and self._registry_hash()==self.registry_hash
+                and not self.spool._writing):
+            return await self._verify_remote(binding,mode='delta')
+        return await self._verify_remote(binding,mode='full')
     async def establish_genesis(self,binding):return await self._verify_remote(binding,mode='full',genesis=True)
     async def extend(self,binding):return await self._verify_remote(binding,mode='delta')
     async def renew(self,binding):return await self._verify_remote(binding,mode='renew')
@@ -148,7 +160,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                         if ref is None:raise SpoolConflict('verified source prefix is not an exact ancestor')
                         older,raws=await j.read_segment(ref)
                         for raw in raws:
-                            value=self._classify(raw,ref,historical=mode=='full')
+                            value=self._classify(raw,ref,historical=True)
                             self._charge_history(usage,value[0],len(raw))
                             if len(commands)>=self.max_commands:
                                 raise SpoolConflict('native source history budget exceeded')
@@ -164,8 +176,9 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     known={c.sequence:(c,h,m) for c,h,m in commands}
                     if mode!='full':
                         for raw,hh,m in previous.pending:
-                            c,h,m=self._classify(raw,m)
-                            if h.fingerprint!=hh:raise SpoolConflict('pending source handler differs')
+                            c,h,m=self._classify(raw,m,historical=True)
+                            if (h.fingerprint if h is not None else None)!=hh:
+                                raise SpoolConflict('pending source handler differs')
                             known[c.sequence]=(c,h,m);self._charge_history(usage,c,len(raw))
                     if len(known)>self.max_commands or len({c.operation_key for c,_,_ in known.values()})!=len(known):
                         raise SpoolConflict('source pending history bound or identity differs')
@@ -267,9 +280,9 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                                     'outcome_b64':base64.b64encode(body).decode(),'outcome_sha256':outcome[1],'outcome_length':outcome[2]}
                                 if (remote.data!=_json(expected_outcome) or len(body)!=outcome[2] or _hash(body)!=outcome[1]):raise SpoolConflict('remote outcome differs from native exact prefix')
                                 durable=True
-                            if h.dependency is not None and h.dependency.scope_class=='public_source' and outcome[0]=='applied' and _source_origin_required(c):origins.append(c.ids['source_id'])
-                        if not durable:pending.append((c.encode(),h.fingerprint,m))
-                        if h.dependency is None or h.dependency.scope_class!='public_source' or not _source_origin_required(c):continue
+                            if h is not None and h.dependency is not None and h.dependency.scope_class=='public_source' and outcome[0]=='applied' and _source_origin_required(c):origins.append(c.ids['source_id'])
+                        if not durable:pending.append((c.encode(),h.fingerprint if h is not None else None,m))
+                        if h is None or h.dependency is None or h.dependency.scope_class!='public_source' or not _source_origin_required(c):continue
                         source=c.ids['source_id'];old=changes.get(source)
                         changes[source]=SourceChange(source,c.sequence,_hash(c.encode()),bool(h.dependency.restriction or old and old.restriction),
                             bool(not durable or old and old.pending),False)
@@ -295,7 +308,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     if mode=='full':await s._write(s._replace_source_heads,tuple(changes.values()))
                     elif changes:await s._write(self._merge_source_heads,tuple(changes.values()))
                     from .case_history import project_cases
-                    case_state=(project_cases([v for v in known.values() if mode=='full' or v[0].sequence>previous.applied_sequence],
+                    case_state=(project_cases([v for v in known.values() if v[1] is not None and (mode=='full' or v[0].sequence>previous.applied_sequence)],
                         {seq:value[0] for seq,value in observations.items()},None if mode=='full' else previous.case_state)
                         if mode=='full' or previous.case_state is not None else None)
                     self._native_prefix=closed['prefix']
