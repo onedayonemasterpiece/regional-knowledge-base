@@ -494,11 +494,19 @@ class TargetServiceStartup:
         archive after attachment retirement; failure is reported, not Saved.
         """
         checkpoint=self.dataset_checkpoints
-        binding=self.binding
         if checkpoint is None:return None
+        # During a normal successor rotation self.binding can already point
+        # to the NEW run. Still await the exact existing old-run checkpoint
+        # task; never use that old task to grant a new capture/promotion.
+        binding=self.binding
         if (binding is None or binding.run_id!=run_id
                 or binding.connection_generation!=connection_generation):
-            raise RuntimeError('dataset_checkpoint_stop_binding_changed')
+            binding=getattr(checkpoint,'_task_binding',None)
+            task=getattr(checkpoint,'_task',None)
+            if (binding is None or task is None
+                    or binding.run_id!=run_id
+                    or binding.connection_generation!=connection_generation):
+                raise RuntimeError('dataset_checkpoint_stop_binding_changed')
         queue=self.config.queue
         with queue.connect(write=False) as db:
             run=db.execute('SELECT started FROM runs WHERE id=?',(run_id,)).fetchone()
