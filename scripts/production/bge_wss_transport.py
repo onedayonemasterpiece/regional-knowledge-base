@@ -369,6 +369,16 @@ class BgeWssTransport:
             if handler is None:raise ValueError('fixed native executor unavailable')
             if job['kind']=='recovery_phase' and self.snapshot_channel is not None:
                 with self.snapshot_channel.assignment(job):receipt=await handler(job)
+            elif job['kind']=='source_command':
+                from regional_knowledge.kaggle_apply import ApplyUnknown
+                try:
+                    receipt=await handler(job)
+                except ApplyUnknown:
+                    # Compute has ended, but the exact accepted source operation
+                    # may have committed. No receipt or terminal ACK is known.
+                    # Retain self.job/claim to fence replay; the existing task
+                    # completion releases only the compute permit for reads.
+                    return
             else:receipt=await handler(job)
             self.pending=dict(job_id=job['id'],claim=job['claim'],receipt=receipt,
                 **{key:job[key] for key in ('run_id','launch_nonce','runtime_incarnation',
