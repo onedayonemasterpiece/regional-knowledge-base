@@ -36,6 +36,26 @@ def test_previous_service_ignores_stale_backup_created_first(tmp_path):
     with pytest.raises(ValueError,match='exactly one'):m.previous_service_config(tmp_path)
 
 
+def test_new_registry_and_observer_replace_old_code_pins_without_touching_data():
+    from regional_knowledge.kaggle_current_registry import registry_sha256
+    from regional_knowledge.kaggle_source_history_native import observer_fingerprint
+    m=module();target,service=configs()
+    target.update(registry_sha256='a'*64,dataset_checkpoint=checkpoint(27,63,'c'))
+    service.update(registry_sha256='a'*64,observer_sha256='b'*64)
+    t,s=m.current_code_pins(target,service)
+    assert t['registry_sha256']==s['registry_sha256']==registry_sha256()
+    assert s['observer_sha256']==observer_fingerprint()
+    assert {k for k,v in flat(t) if dict(flat(target))[k]!=v}=={'.registry_sha256'}
+    assert {k for k,v in flat(s) if dict(flat(service))[k]!=v}=={'.registry_sha256','.observer_sha256'}
+    assert target['registry_sha256']==service['registry_sha256']=='a'*64
+    # The actual next-run assembly must retain these refreshed pins too.
+    new_t,new_s=m.successor_configs(t,s,run_id='r',writer_generation='w',
+        launch_config_sha256='d'*64,release_sha='e'*40)
+    assert new_t['registry_sha256']==new_s['registry_sha256']==registry_sha256()
+    assert new_s['observer_sha256']==observer_fingerprint()
+    assert new_t['dataset_checkpoint']==target['dataset_checkpoint']
+
+
 def test_successor_schema_comes_from_new_bundle_without_changing_old_checkpoint():
     m=module();target,service=configs()
     target['database']['schema_version']=service['database']['schema_version']=21
