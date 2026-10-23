@@ -89,7 +89,8 @@ async def graph_sql22():
     owned_roles=False
     try:
         scripts=sorted((ROOT/'sql/kaggle').glob('[0-9][0-9][0-9]_*.sql'))
-        assert [int(path.name[:3]) for path in scripts]==list(range(1,23))
+        assert len(scripts)>=22
+        assert [int(path.name[:3]) for path in scripts]==list(range(1,len(scripts)+1))
         async with connection.transaction():
             assert await (await connection.execute('SELECT current_database(),current_user')).fetchone()==('rkb_graph_test','postgres')
             assert (await (await connection.execute('SHOW server_version_num')).fetchone())[0].startswith('17')

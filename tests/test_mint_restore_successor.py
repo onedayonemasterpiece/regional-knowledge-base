@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,30 @@ def configs():
         source_import=dict(launch_config_sha256='a'*64,codec='x'),
         source_restore=dict(launch_config_sha256='a'*64,operation_key='old-op',dataset_checkpoint=dict(dataset_version=1)))
     return target,service
+
+
+def test_previous_service_ignores_stale_backup_created_first(tmp_path):
+    m=module();_,service=configs()
+    stale=dict(service,geo_bootstrap={'obsolete':True})
+    (tmp_path/'source-service-before-effective-geo.private.json').write_text(json.dumps(stale))
+    (tmp_path/'source-service-old-run.json').write_text(json.dumps(service))
+    assert m.previous_service_config(tmp_path)==service
+    (tmp_path/'source-service-other-run.json').write_text(json.dumps(dict(service,run_id='other-run')))
+    with pytest.raises(ValueError,match='exactly one'):m.previous_service_config(tmp_path)
+
+
+def test_successor_schema_comes_from_new_bundle_without_changing_old_checkpoint():
+    m=module();target,service=configs()
+    target['database']['schema_version']=service['database']['schema_version']=21
+    t,s=m.successor_configs(target,service,run_id='r',writer_generation='w',
+        launch_config_sha256='b'*64,release_sha='c'*40,schema_version=23)
+    assert t['database']['schema_version']==s['database']['schema_version']==23
+    assert s['source_restore']=={**service['source_restore'], 'launch_config_sha256':'b'*64,
+        'operation_key':'rkb-restore-ccccccc-r'}
+    assert target['database']['schema_version']==21
+    with pytest.raises(ValueError,match='schema must extend'):
+        m.successor_configs(target,service,run_id='r',writer_generation='w',
+            launch_config_sha256='b'*64,release_sha='c'*40,schema_version=20)
 
 
 def test_successor_changes_only_run_bound_fields():
