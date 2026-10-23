@@ -128,7 +128,7 @@ async def test_current_gate_drops_entire_pair_after_pending_withdrawal(env,auth)
     assert not gate.issuance_current(gated.ticket)
     refreshed=await gate.refresh(gated)
     assert not refreshed.result.records and not refreshed.result.evidence
-    assert refreshed.result.reason=='prior_write_pending'
+    assert refreshed.result.reason=='evidence_withdrawn'
     with pytest.raises(ValueError):render_comparison(refreshed.result)
 
 
@@ -208,9 +208,10 @@ async def test_actual_mcp_registration_dispatches_native_pair_and_refresh_remove
     issued=req.scope[_SCOPE_KEY][1]
     assert issued.gate is startup.gate and issued.gate.issuance_current(issued.gated.ticket)
     s.spool.invalidate_source_history()
-    assert not issued.gate.issuance_current(issued.gated.ticket)
+    # The exact native PG pair remains observable on the same binding even
+    # when the global source-history renewal is unavailable.
+    assert issued.gate.issuance_current(issued.gated.ticket)
     refreshed=await issued.gate.refresh(issued.gated)
-    closed=issued.render(refreshed.result)
-    assert closed['status']=='unavailable' and not closed['items']
-    assert all(key not in closed for key in ('left','right','story_id','verdict','difference','ratio'))
+    observed=issued.render(refreshed.result)
+    assert observed['status']=='ok' and observed['verdict']=='manual_identity_and_semantic_review_required'
     issued.release();await release(t,dispatch)

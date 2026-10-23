@@ -200,14 +200,11 @@ class KaggleSourceBackend:
         issued = None
         retained = False
         try:
-            # Exactly the same verified OAuth resolver/destination/current
-            # source-history owners as the existing search/fetch routes.
+            # Reuse the OAuth, current PG binding and independent native media
+            # issuance owner; ordinary pixels do not require history renewal.
             verified = await self.read_authority.resolve_oauth(
                 principal.access_token, destination=self.destination)
             await self.read_authority.require(verified, "public_search")
-            startup = getattr(self, "startup", None)
-            if startup is not None and not startup.reads_current():
-                raise PermissionError("source history unavailable")
             binding = await asyncio.to_thread(current_binding, self.worker_queue)
             if self.source_gate.binding_current(binding) is not True:
                 raise PermissionError("target binding changed")
@@ -416,11 +413,9 @@ class KaggleSourceBackend:
                         raise PermissionError('adapter destination differs')
                     await measured('auth_ms',self.read_authority.require(authority,'public_search'))
                 try:
-                    # The source-history/restore gate is checked only AFTER
-                    # actor authorization; a cold read must not bypass it.
-                    startup = getattr(self, 'startup', None)
-                    if startup is not None and not startup.reads_current():
-                        raise TargetUnavailable('source history not ready')
+                    # Authenticated actor + verified current PG/worker binding
+                    # suffice for reads. History renewal belongs to writes
+                    # and must never hide previously published pages.
                     binding = await measured('binding_ms',asyncio.to_thread(current_binding, self.worker_queue))
                 except TargetUnavailable:
                     # An already-authorized caller records a durable demand;
@@ -542,9 +537,6 @@ class KaggleSourceBackend:
             observed=await asyncio.to_thread(self.worker_queue.startup_status,startup_ref)
             if observed['status']=='ready':
                 try:
-                    target=getattr(self,'startup',None)
-                    if target is not None and not target.reads_current():
-                        raise TargetUnavailable('source history unavailable')
                     await asyncio.to_thread(current_binding,self.worker_queue)
                 except TargetUnavailable:
                     observed.update(status='unavailable',reason='target_not_ready')

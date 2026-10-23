@@ -171,7 +171,8 @@ class KaggleCasesBackend:
         authority=gated=None;retained=False
         try:
             async with asyncio.timeout_at(deadline):
-                if not self.startup.reads_current():raise failure('case_history_unavailable')
+                # PG owns the current Case role/draft ACL. Do not wait for the
+                # unrelated global source-history maintenance proof.
                 authority=await self.read_authority.resolve_oauth(principal.access_token,destination=self.destination)
                 binding=await asyncio.to_thread(current_binding,self.queue)
                 gated=await self._native(authority,binding,deadline=deadline,**selector)

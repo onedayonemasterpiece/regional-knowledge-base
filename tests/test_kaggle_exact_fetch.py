@@ -126,7 +126,7 @@ async def test_exact_gate_rechecks_pending_source_and_withholds_entire_continuat
     assert not gate.issuance_current(gated.ticket)
     refreshed = await gate.refresh(gated)
     assert refreshed.result.status == 'unavailable' and not refreshed.result.evidence
-    assert refreshed.result.reason == 'prior_write_pending'
+    assert refreshed.result.reason == 'evidence_withdrawn'
     assert 'mode' not in refreshed.result.model_dump()
 
 

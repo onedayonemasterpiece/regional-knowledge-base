@@ -100,6 +100,14 @@ class SourceReadGate:
         except Exception:
             return False
 
+    def _restricted_sources(self,source_ids):
+        # Only exact local withdrawal/restriction intents for these returned
+        # sources, never all source history or unrelated page stages. A future
+        # uncommitted stage cannot hide older PG-visible passages.
+        if not source_ids:return frozenset()
+        barriers=self.spool._barriers_for(tuple(sorted(set(source_ids))))
+        return frozenset(b.source_id for b in barriers.barriers if b.restriction_active)
+
     def story_supported(self):
         # Semantics come from the deployment-owned immutable registry, never a
         # serialized permission flag or a caller-selected variant.
@@ -263,6 +271,14 @@ class SourceReadGate:
             raise SourceGateDenied('dependency bound exceeded')
         scope = q.filters.source_ids if acceptance else ((q.source_id,) if q.source_id is not None else None) if graph else None if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
         if fact and q.action=='observation_compare':scope=sources
+        guard_sources=set(sources)
+        if scope is not None:guard_sources.update(scope)
+        for record in getattr(result,'records',()):
+            if type(record) is dict and type(record.get('source_id')) is str:
+                guard_sources.add(record['source_id'])
+        # A withdrawn source can be denied promptly before the PG writer
+        # completes, without treating unrelated accepted stages as a gate.
+        restricted=self._restricted_sources(guard_sources)
         if graph and (not self.graph_supported() or len(result.records)>q.limit or any(
                 record['action']!=q.action or q.source_id is not None and record['source_id']!=q.source_id
                 or q.entity_id is not None and record['entity_id']!=q.entity_id for record in result.records)):
@@ -297,18 +313,15 @@ class SourceReadGate:
                 or result.evidence[0].dependencies.source_revisions != (q.locator.source,)
                 or result.observed_visibility_epoch != q.locator.visibility_epoch):
             raise SourceGateDenied('exact source provenance differs')
-        facts = await self.spool.read_facts(scope, sources)
-        if (not self.spool.facts_current(facts) or facts.database_generation != read.key[3]
-                or result.observed_database_generation != read.key[3]
+        # Native PG resolves active revisions, visibility and source eligibility
+        # in its read snapshot. The controller checks the exact result/binding,
+        # not unrelated pending commands or an expiring global history proof.
+        if (result.observed_database_generation != read.key[3]
                 or result.observed_data_seq is None or result.observed_data_seq < q.min_data_seq
-                or result.observed_projection_seq is None
-                or result.observed_projection_seq < q.min_data_seq
+                or result.observed_projection_seq is None or result.observed_projection_seq < q.min_data_seq
                 or result.observed_visibility_epoch is None):
-            result = self._closed(result, 'prior_write_pending')
+            result = self._closed(result, 'not_ready')
         else:
-            restricted = {c.source_id for c in facts.changes if c.restriction
-                or c.sequence > min(result.observed_data_seq,result.observed_projection_seq)}
-            lag = facts.scope_sequence > min(result.observed_data_seq,result.observed_projection_seq)
             def supported(item):
                 expected_kind=('geo' if q.action=='poi_facts' else 'entity') if graph else 'fact' if fact else 'story' if story or type(q) is Query and q.filters.kinds==('story',) else 'source'
                 if item.kind!=expected_kind or item.dependencies.grant_refs:return False
@@ -324,33 +337,35 @@ class SourceReadGate:
                         and item.source_continuation is None and len(item.dependencies.source_ids)==1)
                 except (ValueError,TypeError,AttributeError):return False
             retained = tuple(item for item in result.evidence
-                if supported(item)
-                and (scope is None or set(item.dependencies.source_ids) <= set(scope))
+                if supported(item) and (scope is None or set(item.dependencies.source_ids) <= set(scope))
                 and not restricted.intersection(item.dependencies.source_ids))
-            unsupported = any(not supported(item) for item in result.evidence)
-            if unsupported:
+            if any(not supported(item) for item in result.evidence):
                 result = self._closed(result, 'access_denied')
-            elif result.status in ('ok', 'degraded') and (facts.pending or facts.unknown or lag
-                    or len(retained) != len(result.evidence)):
-                reason = (
-                    'prior_write_pending' if facts.pending or facts.unknown else
-                    'projection_lag' if lag else 'evidence_withdrawn')
-                result = (self._closed(result, reason) if exact else result.model_copy(update={
-                    'status': 'degraded', 'reason': reason,
-                    'prior_write_pending': facts.pending or facts.unknown,
-                    'evidence': retained, 'continuation': None}))
+            elif restricted and (exact or catalog or graph or fact):
+                # These DTOs contain records as well as evidence. Never return
+                # stale source rows under an exact withdrawal.
+                result = self._closed(result, 'evidence_withdrawn')
+            elif len(retained) != len(result.evidence):
+                result = self._closed(result, 'evidence_withdrawn') if exact else result.model_copy(update={
+                    'status': 'degraded', 'reason': 'evidence_withdrawn',
+                    'prior_write_pending': False, 'evidence': retained, 'continuation': None})
         # Authority is rechecked again after the local read's await. The final
         # synchronous fence below also rejects mutations during that recheck.
         await self.authority.require(read.authority, 'public_search')
         if not self._binding(read):
             raise SourceGateDenied('runtime binding changed during output check')
-        if not self.spool.facts_current(facts):
-            # Missing coverage or an in-flight write is availability, not a
-            # participant denial. An evidence-free response needs only the
-            # current authority/runtime fence through final JSON issuance.
-            result = self._closed(result, 'prior_write_pending')
-            facts = None
-        read.facts, read.result = facts, result
+        selected_sources={source for item in result.evidence
+            for source in item.dependencies.source_ids}
+        selected_sources.update(record['source_id'] for record in getattr(result,'records',())
+            if type(record) is dict and type(record.get('source_id')) is str)
+        if not selected_sources and result.status in ('ok','degraded') and scope is not None:
+            selected_sources.update(scope)
+        selected=tuple(sorted(selected_sources))
+        if result.status in ('ok','degraded') and self._restricted_sources(selected):
+            result=self._closed(result,'evidence_withdrawn')
+            selected=()
+        read.facts=selected
+        read.result=result
         return result
 
     @staticmethod
@@ -401,8 +416,17 @@ class SourceReadGate:
         try:
             if read is not None and type(read.query) is AcceptanceReadRequest:
                 self._require_acceptance(read.authority,read.query,read.binding)
+            if (read is not None and type(read.query) is EditorialReadRequest
+                    and read.query.view=='edit_context'):
+                # Retained Story EDIT document jobs are writes: do not permit
+                # execution after the exact source-history proof has expired.
+                # Public Story get/history/variants remain PG-only.
+                anchor=self.spool._source_anchor
+                if anchor is None or not anchor.current():
+                    return False
             return bool(read is not None and self._binding(read)
-                and (read.facts is None or self.spool.facts_current(read.facts)))
+                and read.result is not None
+                and not self._restricted_sources(read.facts or ()))
         except Exception:
             return False
 

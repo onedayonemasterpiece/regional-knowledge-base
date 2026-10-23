@@ -54,7 +54,10 @@ def _read_pending(command,outcome,durable):
 
 
 def _receipt_handler_matches(command,handler,recorded_hash,outcome,status,database_generation):
-    if recorded_hash==handler.fingerprint:return True
+    # An accepted historical operation may no longer have an installed
+    # executor. It still belongs to the global prefix only when its original
+    # canonical receipt binds the exact bytes/hash, not a guessed new handler.
+    if handler is not None and recorded_hash==handler.fingerprint:return True
     from .kaggle_apply import ApplyReceipt
     from .kaggle_source_commands import verify_historical_receipt
     receipt=ApplyReceipt(database_generation,command.operation_key,command.sequence,_hash(command.encode()),
@@ -176,10 +179,10 @@ class NativeSourceHistoryVerifier:
         return value
 
     def _classify(self,raw,reference,*,historical=False):
-        """Verify every global command; derive book heads only for book writes.
+        """Verify exact accepted global history; only known domains get heads.
 
-        Fixed Case/GEO validators confer no public source dependency and never
-        add private domain IDs to the source head cache. Unknown handlers fail.
+        Unknown *historical* routes stay opaque and non-public. This never
+        installs a command handler, changes current intake or permits dispatch.
         """
         command=_command(raw)
         try:
@@ -189,7 +192,15 @@ class NativeSourceHistoryVerifier:
             else:
                 command,_,handler=self.spool._validate(command,'history-classification')
                 dep=handler.dependency
-        except (ValueError,TypeError,KeyError):raise SpoolConflict('unclassified accepted source dependency') from None
+        except (ValueError,TypeError,KeyError):
+            # Only historical immutable accepted bytes can be opaque. Known
+            # registered routes with a malformed contract still fail closed,
+            # and the historical import aliases retain their existing handler.
+            legacy=command.route in ('source.import.v1','source.import.v2','source.import.v3')
+            if (historical and command.route not in self.spool.registry.handlers
+                    and (not legacy or 'source.activate.v1' not in self.spool.registry.handlers)):
+                return command,None,reference
+            raise SpoolConflict('unclassified accepted source dependency') from None
         if dep is None:raise SpoolConflict('unclassified accepted source dependency')
         if dep.scope_class=='public_source':
             expected_route=('source.import' if command.route.startswith('source.import.')
@@ -198,7 +209,7 @@ class NativeSourceHistoryVerifier:
             if expected_route not in self.routes or dep.scope_owner!='shared' or 'source_id' not in dep.resource_keys:
                 raise SpoolConflict('unclassified accepted source dependency')
             _uuid(command.ids['source_id'])
-        elif dep.scope_class not in ('case','private_draft','geo_manifest'):
+        elif dep.scope_class not in ('case','private_draft','geo_manifest','unknown'):
             raise SpoolConflict('unclassified accepted source dependency')
         return command,handler,reference
 
