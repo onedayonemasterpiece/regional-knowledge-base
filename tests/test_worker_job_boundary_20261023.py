@@ -201,6 +201,10 @@ async def test_missing_optional_product_telemetry_and_overlapping_reads_do_not_k
     worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),
         lambda:lambda text:[1.]+[0.]*1023,lambda:{},prepare_runtime=prepare,
         connector=peer.connect,stop=stop,heartbeat_seconds=.01,maximum_seconds=6)
+    # Deterministically reproduce the old writer's occupied-export branch
+    # without ever importing or starting notebook product telemetry.
+    blocked_export=asyncio.create_task(asyncio.Event().wait())
+    worker._read_telemetry_export=blocked_export
     task=asyncio.create_task(worker.run())
     try:
         await peer.wait('READY')
@@ -210,9 +214,12 @@ async def test_missing_optional_product_telemetry_and_overlapping_reads_do_not_k
             out=await peer.wait('QUERY_RESULT',predicate=lambda f:f['request_id']==request)
             assert out['status']=='degraded'
         assert calls==['read-0','read-1']
-        assert drains==[]  # No unnecessary diagnostic Task without a sink.
-        assert not hasattr(worker,'_read_telemetry_export')
+        assert drains==[]  # No new worker export despite native drain callback.
+        assert worker._read_telemetry_export is blocked_export
+        assert not blocked_export.done()
         assert peer.sessions==1 and not task.done()
     finally:
         stop.set()
         await asyncio.wait_for(task,3)
+        blocked_export.cancel()
+        await asyncio.gather(blocked_export,return_exceptions=True)
