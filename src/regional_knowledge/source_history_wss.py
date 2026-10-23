@@ -120,60 +120,11 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
             ingestion_id=ingestion_id,nonce=secrets.token_hex(16)))
 
     async def adopt_recovered(self,cap,binding):
-        """A verified Dataset base is the baseline; only later deltas need history."""
-        from .pg_snapshot_recovery import ControllerRecoveryProof
-        if type(cap) is not ControllerRecoveryProof:
-            raise SpoolConflict('owner-retained physical recovery capability required')
-        s=self.spool;key=binding_key(binding)
-        async with s._lock:
-            s.invalidate_source_history();self._coverage=None;self._native_prefix=None
-            version=s._source_version
-            await cap.verify_for(cap.database,*cap.identity)
-            if len(cap.control)>self.max_history_bytes:
-                raise SpoolConflict('restored source control byte budget exceeded')
-            control=json.loads(cap.control)
-            if (cap.database!=self.database or key[3]!=cap.database.database_generation
-                    or self.writer_generation!=cap.database.writer_generation
-                    or not self.binding_current(binding) or not self._routes_current()
-                    or self._registry_hash()!=self.registry_hash
-                    or control.get('schema_version')!=self.schema_version
-                    or control.get('registry_sha256')!=self.registry_hash
-                    or control.get('routes')!=sorted(self.routes)
-                    or control.get('sequence')!=cap.applied_sequence
-                    or control.get('journal_head')!=(cap.journal_head.reference.wire() if cap.journal_head else None)
-                    or not await self._head_unchanged(cap.journal_head)):
-                raise SpoolConflict('restored source closure or journal binding differs')
-            changes=[];seen=set()
-            for row in control['heads']:
-                if (not isinstance(row,list) or len(row)!=6 or row[0] in seen
-                        or type(row[1]) is not int or not 1<=row[1]<=cap.applied_sequence
-                        or type(row[2]) is not str or len(row[2])!=64 or set(row[2])-set('0123456789abcdef')
-                        or type(row[3]) is not int or row[3] not in (0,1) or row[4:]!=[0,0]):
-                    raise SpoolConflict('restored source control checkpoint shape differs')
-                source=_uuid(row[0]);seen.add(source)
-                changes.append(SourceChange(source,row[1],row[2],bool(row[3]),False,False))
-            nonce=secrets.token_hex(24)
-            observed=await self._phase(binding,dict(action='restore_prefix',nonce=nonce))
-            expected=dict(nonce=nonce,applied_sequence=cap.applied_sequence,
-                database_generation=key[3],writer_generation=self.writer_generation,
-                schema_version=self.schema_version,registry_sha256=self.registry_hash,
-                observer_sha256=self.observer_hash,control_sha256=_hash(cap.control))
-            prefix=observed.get('prefix')
-            if (any(observed.get(k)!=v for k,v in expected.items())
-                    or type(prefix) is not str or not 1<=len(prefix)<=256
-                    or s._writing or s._source_version is not version or not self.binding_current(binding)
-                    or not await self._head_unchanged(cap.journal_head)):
-                raise SpoolConflict('restored source native target differs')
-            await s._write(s._replace_source_heads,tuple(changes))
-            coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,
-                cap.journal_head,cap.applied_sequence,cap.applied_sequence,())
-            self._native_prefix=prefix;self._coverage=coverage;s._source_anchor=coverage
-            self._restored_baseline=True
-            s._source_head=cap.journal_head.reference if cap.journal_head else None
-            s._source_covered_sequence=cap.applied_sequence;s._source_version=object()
-            s._native_history_unsettled=False
-            _LOG.info('source_restore_adopted sequence=%s database_generation=%s',cap.applied_sequence,key[3])
-            return coverage
+        coverage=await super().adopt_recovered(cap,binding)
+        self._native_prefix='restore:'+_hash(cap.control)
+        self._restored_baseline=True
+        self.spool._native_history_unsettled=False
+        return coverage
 
     async def restore(self,binding):
         # A read capability can expire while its *native* verified prefix still

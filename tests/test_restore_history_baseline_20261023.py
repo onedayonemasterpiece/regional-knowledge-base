@@ -21,11 +21,12 @@ async def restored(e):
         schema_version=p.v.schema_version,registry_sha256=p.v.registry_hash,routes=sorted(p.v.routes),
         heads=[[SOURCE,1,digest(e.cmd.encode()),1,0,0]]))
     class Owner:
-        def __init__(self):self.retained=set();self.checks=0
+        def __init__(self):self.retained=set();self._capabilities=self.retained;self.checks=0
         async def verify_initialized(self,cap,database,identity):
             if cap not in self.retained or database!=p.v.database or identity!=('run','nonce','inc'):
                 raise SpoolConflict('unknown retained recovery')
             self.checks+=1
+            if not p.n.valid(('run','inc',1)):raise SpoolConflict('native attachment changed')
             if p.pg.applied_seq!=cap.applied_sequence:raise SpoolConflict('native cursor changed')
             return {'host':'synthetic-owned-socket'}
     native_owner=Owner();controller_owner=Owner()
@@ -33,7 +34,7 @@ async def restored(e):
         None,head,1,control,object());native_owner.retained.add(cap)
     proof=ControllerRecoveryProof(controller_owner,'native-reference',p.v.database,('run','nonce','inc'),
         seal.manifest,head,1,control,p.b);controller_owner.retained.add(proof)
-    p.n.restored_database=cap
+    p.n._restore_baseline(cap)
     return p,proof,native_owner,controller_owner
 
 
@@ -47,7 +48,7 @@ async def test_verified_base_adopts_without_genesis_or_old_receipt_scan_then_ver
             coverage=await p.v.adopt_recovered(proof,p.b)
         assert coverage.current() and coverage.applied_sequence==coverage.accepted_sequence==1
         assert not coverage.pending and not env.spool._native_history_unsettled
-        assert [x['action']for x in p.calls]==['restore_prefix']
+        assert not p.calls  # Reuse the existing adoption path; no new WSS action.
         assert not p.pg.sql  # Neither native receipt pagination nor origin scans.
         # Renewal uses the retained baseline, not mode=full or genesis.
         renewed=await p.v.renew(p.b)
@@ -69,18 +70,21 @@ async def test_verified_base_adopts_without_genesis_or_old_receipt_scan_then_ver
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change',['copied_controller','json_native','copied_native','cursor','control_hash','binding'])
+@pytest.mark.parametrize('change',['copied_controller','json_native','copied_native','cursor','control_heads','binding'])
 async def test_restore_baseline_rejects_forged_stale_or_different_retained_authority(env,change):
-    p,proof,_,_=await restored(env)
+    p,proof,native_owner,_=await restored(env)
     try:
         if change=='copied_controller':proof=replace(proof)
-        elif change=='json_native':p.n.restored_database=json.loads(proof.control)
-        elif change=='copied_native':p.n.restored_database=replace(p.n.restored_database)
+        elif change in ('json_native','copied_native'):
+            cap=next(iter(native_owner.retained))
+            with pytest.raises(NativeHistoryError):
+                p.n._restore_baseline(json.loads(proof.control) if change=='json_native' else replace(cap))
+            assert p.v._coverage is None
+            return
         elif change=='cursor':p.pg.applied_seq=2
-        elif change=='control_hash':
-            original=p.v._phase
-            async def altered(binding,args):return (await original(binding,args))|{'control_sha256':'f'*64}
-            p.v._phase=altered
+        elif change=='control_heads':
+            control=json.loads(proof.control);control['heads'][0][4]=1
+            object.__setattr__(proof,'control',canonical(control))
         else:p.n.detached(1)
         with pytest.raises((SpoolConflict,PermissionError,NativeHistoryError)):
             await p.v.adopt_recovered(proof,p.b)

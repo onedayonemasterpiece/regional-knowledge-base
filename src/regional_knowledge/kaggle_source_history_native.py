@@ -65,7 +65,7 @@ class NativeSourceHistoryObserver:
         self.code_hash=observer_fingerprint()
         self.registry_hash=digest(canonical(sorted(h.fingerprint for h in registry.handlers.values())))
         self._sessions={};self._prefixes={};self._lock=asyncio.Lock();self.generation=None
-        self.restored_database=restored_database
+        if restored_database is not None:self._restore_baseline(restored_database)
 
     def attached(self,generation):self.generation=generation
     def detached(self,generation):
@@ -101,7 +101,6 @@ class NativeSourceHistoryObserver:
     async def _observe(self,frame,args,binding):
         action=args.get('action')
         if action=='open':value=await self._open(binding,args)
-        elif action=='restore_prefix':value=await self._restore_prefix(binding,args)
         elif action=='source_tails':
             if set(args)!={'action','source_id','ingestion_id','nonce'}:
                 raise NativeHistoryError('native_history_arguments')
@@ -129,31 +128,20 @@ class NativeSourceHistoryObserver:
         if len(canonical(value))>120*1024:raise NativeHistoryError('native_history_response_bound')
         return {'phase':'source_history','request_sha256':frame['request_sha256'],'value':value}
 
-    async def _restore_prefix(self,binding,args):
-        """Use the native factory's verified candidate, never uploaded history."""
-        from .kaggle_pg_snapshot_native import VerifiedInitializedDatabase
-        cap=self.restored_database
-        if (set(args)!={'action','nonce'} or type(args['nonce']) is not str
-                or len(args['nonce'])!=48 or set(args['nonce'])-set('0123456789abcdef')
-                or type(cap) is not VerifiedInitializedDatabase or self._sessions):
+    def _restore_baseline(self,cap):
+        # TargetRuntime has already verified this same factory-owned candidate.
+        # Seed the existing prefix directly; no maintenance action or history scan.
+        from .kaggle_restored_database import VerifiedInitializedDatabase
+        if (type(cap) is not VerifiedInitializedDatabase or cap not in cap._factory._capabilities
+                or cap.database!=self.database or cap.identity!=self.identity):
             raise NativeHistoryError('native_history_restored_capability_required')
-        # This checks retained factory membership, the actual owned PG process,
-        # writer, schema, cursor and search readiness. No applied_ops replay.
-        await cap.verify_for(self.database,*self.identity)
         control=json.loads(cap.control)
-        if (control.get('database_generation')!=self.database.database_generation
-                or control.get('sequence')!=cap.applied_sequence
-                or control.get('schema_version')!=self.database.schema_version
+        if (control.get('schema_version')!=self.database.schema_version
                 or control.get('registry_sha256')!=self.registry_hash
-                or not self.valid(binding)):
+                or control.get('sequence')!=cap.applied_sequence):
             raise NativeHistoryError('native_history_restored_closure_changed')
-        closure=[self.database.schema_version,self.registry_hash,self.code_hash,control['routes']]
-        self._prefixes.clear();token=secrets.token_urlsafe(24)
-        self._prefixes[token]={'sequence':cap.applied_sequence,'closure':closure}
-        return dict(prefix=token,nonce=args['nonce'],applied_sequence=cap.applied_sequence,
-            database_generation=self.database.database_generation,writer_generation=self.database.writer_generation,
-            schema_version=self.database.schema_version,registry_sha256=self.registry_hash,
-            observer_sha256=self.code_hash,control_sha256=digest(cap.control))
+        self._prefixes['restore:'+digest(cap.control)]={'sequence':cap.applied_sequence,
+            'closure':[self.database.schema_version,self.registry_hash,self.code_hash,control['routes']]}
 
     async def _open(self,binding,args):
         expected={'action','mode','nonce','schema_version','registry_sha256','observer_sha256',

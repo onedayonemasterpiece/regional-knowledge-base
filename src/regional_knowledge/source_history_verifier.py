@@ -236,10 +236,13 @@ class NativeSourceHistoryVerifier:
             control=json.loads(cap.control)
             if (key[3]!=cap.database.database_generation or self.writer_generation!=cap.database.writer_generation
                     or not self.binding_current(binding)
+                    or not self._routes_current() or self._registry_hash()!=self.registry_hash
                     or control.get('schema_version')!=self.schema_version
+                    or control.get('registry_sha256')!=self.registry_hash
+                    or control.get('routes')!=sorted(self.routes)
                     or control.get('sequence')!=cap.applied_sequence
                     or control.get('journal_head')!=(cap.journal_head.reference.wire() if cap.journal_head else None)
-                    or await self.spool.journal.head()!=cap.journal_head):
+                    or not await self._head_unchanged(cap.journal_head)):
                 raise SpoolConflict('restored source closure or journal binding differs')
             changes=[];seen=set()
             for row in control['heads']:
@@ -250,14 +253,21 @@ class NativeSourceHistoryVerifier:
                     raise SpoolConflict('restored source control checkpoint shape differs')
                 source=_uuid(row[0]);seen.add(source)
                 changes.append(SourceChange(source,row[1],row[2],bool(row[3]),False,False))
-            catalog,fields=await NativeDatabaseProbe(timeout_seconds=min(2,self.timeout_seconds))(acquire=self.acquire)
-            if (fields['database_generation']!=key[3] or fields['applied_seq']!=cap.applied_sequence
-                    or fields['schema_version']!=self.schema_version or s._writing or s._source_version is not version):
+            # WSS has no Dev-side PG connection: cap.verify_for above already
+            # checks the native factory's actual process/writer/cursor/readiness.
+            if self.acquire is not None:
+                catalog,fields=await NativeDatabaseProbe(timeout_seconds=min(2,self.timeout_seconds))(acquire=self.acquire)
+                if (fields['database_generation']!=key[3] or fields['applied_seq']!=cap.applied_sequence
+                        or fields['schema_version']!=self.schema_version or s._writing or s._source_version is not version):
+                    raise SpoolConflict('restored source native target differs')
+                async with self.acquire() as connection:
+                    if (connection.info.host!=cap.database.socket or connection.info.port!=cap.database.port
+                            or connection.info.dbname!=cap.database.dbname):
+                        raise SpoolConflict('restored source connection is not the verified candidate')
+            elif getattr(self,'database',None)!=cap.database:
                 raise SpoolConflict('restored source native target differs')
-            async with self.acquire() as connection:
-                if (connection.info.host!=cap.database.socket or connection.info.port!=cap.database.port
-                        or connection.info.dbname!=cap.database.dbname):
-                    raise SpoolConflict('restored source connection is not the verified candidate')
+            if s._writing or s._source_version is not version or not self.binding_current(binding):
+                raise SpoolConflict('restored source native target differs')
             await s._write(s._replace_source_heads,tuple(changes))
             coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,secrets.token_hex(24),
                 cap.journal_head,cap.applied_sequence,cap.applied_sequence,())
