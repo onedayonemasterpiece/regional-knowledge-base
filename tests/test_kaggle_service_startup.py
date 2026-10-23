@@ -373,3 +373,30 @@ async def test_unchanged_geo_denial_is_not_retried_every_tick(service,monkeypatc
         startup.config.spool._source_covered_sequence+=1
         assert await startup.refresh() and Gate.calls==3  # new spool sequence retries at once
         assert startup.reads_current()
+
+
+@pytest.mark.asyncio
+async def test_existing_planned_stop_waits_for_checkpoint_outcome_before_nine_hours(tmp_path):
+    from regional_knowledge.bge_queue import BgeQueue
+    now=[100.]
+    queue=BgeQueue(tmp_path/'stop-checkpoint.sqlite',clock=lambda:now[0])
+    with queue.connect() as db:
+        run_id=queue._new_run(db,now[0])
+    binding=SimpleNamespace(run_id=run_id,connection_generation=1)
+    events=[]
+    class Checkpoint:
+        async def before_stop(self,binding):
+            events.append(('checkpoint',binding.run_id))
+            await asyncio.sleep(0)
+            return True
+    fake=SimpleNamespace(dataset_checkpoints=Checkpoint(),binding=binding,
+        config=SimpleNamespace(queue=queue))
+    assert await TargetServiceStartup.before_planned_stop(fake,run_id,1)
+    assert events==[('checkpoint',run_id)]
+    # Invalid attachment must never borrow another owner's stop checkpoint.
+    with pytest.raises(RuntimeError,match='stop_binding_changed'):
+        await TargetServiceStartup.before_planned_stop(fake,run_id,2)
+    now[0]+=9*3600
+    with pytest.raises(TimeoutError,match='nine_hour_limit'):
+        await TargetServiceStartup.before_planned_stop(fake,run_id,1)
+    assert events==[('checkpoint',run_id)]
