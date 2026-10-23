@@ -125,7 +125,14 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     or previous.binding is not binding or previous.key!=key or self._native_prefix is None):
                 s.invalidate_source_history();self._coverage=None
                 raise SpoolConflict('retained exact native source prefix unavailable')
-            s.invalidate_source_history();self._coverage=None;version=s._source_version
+            # Verification runs beside reads. An unchanged binding can keep
+            # using its existing proof until replacement, contradiction or its
+            # own deadline; rebuilding the native prefix does not revoke it.
+            retained=(previous is not None and previous.binding is binding
+                and s._source_anchor is previous and previous.current() and not s._writing)
+            if not retained:
+                s.invalidate_source_history();self._coverage=None
+            version=s._source_version
             session=None;committing=False
             try:
                 async with asyncio.timeout(self.cloud_prepare_seconds) as phase_timeout:
@@ -302,12 +309,16 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                 # expires at its own deadline. Contradictions keep closing reads.
                 if (mode=='full' or committing or previous is None
                         or type(exc) is SpoolConflict and exc.args!=('native source history observation unavailable',)
-                        or s._source_version is not version or s._source_anchor is not None or s._writing
+                        or s._source_version is not version or (s._source_anchor is not None and s._source_anchor is not previous) or s._writing
                         or previous.deadline<=self.clock() or not self.binding_current(binding)):
+                    s.invalidate_source_history();self._coverage=None
                     raise
                 self._coverage=previous;s._source_anchor=previous
                 _LOG.warning('source_history_renewal_deferred mode=%s reason=%s',mode,type(exc).__name__)
                 return previous
+            except BaseException:
+                s.invalidate_source_history();self._coverage=None
+                raise
             finally:
                 if session is not None:
                     await self._abort_session(binding,session)

@@ -438,3 +438,60 @@ async def test_renewal_without_new_evidence_keeps_unexpired_proof_only(env):
         with pytest.raises(SpoolConflict,match='binding differs'):await p.v.renew(p.b)
         assert p.v._coverage is None
     finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_valid_reads_remain_available_while_schema_prefix_is_rebuilt(env):
+    p=pair(env)
+    try:
+        previous=await p.v.establish_genesis(p.b)
+        assert previous.current() and env.spool._source_anchor is previous
+        # Compatible migration retires only the native prefix, not the binding,
+        # accepted journal or existing unexpired read proof.
+        p.v._native_prefix=None
+        opened=asyncio.Event();release=asyncio.Event()
+        phase=p.v._phase
+        async def paused(binding,args):
+            if args['action']=='open':
+                opened.set();await release.wait()
+            return await phase(binding,args)
+        p.v._phase=paused
+        task=asyncio.create_task(p.v.restore(p.b))
+        await asyncio.wait_for(opened.wait(),1)
+        try:
+            assert previous.current()
+            assert env.spool._source_anchor is previous
+        finally:
+            release.set()
+            refreshed=await task
+        assert refreshed.current() and refreshed is not previous
+        assert not previous.current()
+    finally:await p.n.aclose()
+
+
+@pytest.mark.parametrize('failure',['deadline','contradiction'])
+@pytest.mark.asyncio
+async def test_retained_refresh_proof_still_expires_and_contradictions_revoke_it(env,monkeypatch,failure):
+    p=pair(env)
+    try:
+        previous=await p.v.establish_genesis(p.b)
+        p.v._native_prefix=None
+        opened=asyncio.Event();release=asyncio.Event();phase=p.v._phase
+        async def paused(binding,args):
+            if args['action']=='open':opened.set();await release.wait()
+            return await phase(binding,args)
+        p.v._phase=paused
+        task=asyncio.create_task(p.v.restore(p.b))
+        await asyncio.wait_for(opened.wait(),1)
+        assert previous.current()
+        if failure=='deadline':
+            monkeypatch.setattr(p.v,'clock',lambda:previous.deadline+1)
+            assert not previous.current()
+        else:p.pg.origin_valid=False
+        release.set()
+        if failure=='contradiction':
+            with pytest.raises(SpoolConflict,match='origin'):await task
+            assert p.v._coverage is None and env.spool._source_anchor is None
+        else:
+            assert (await task).current() and not previous.current()
+    finally:await p.n.aclose()
