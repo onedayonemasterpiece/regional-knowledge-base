@@ -322,7 +322,13 @@ async def test_packet_progress_and_reading_completion_keep_exact_durability_rece
 
 @pytest.mark.asyncio
 async def test_start_allows_same_file_retry_but_blocks_second_original_before_acquisition(native_intake):
-    s = native_intake; first = await start(s)
+    s = native_intake
+    async def acquiring(self, context, *, operation_id, source_id, ingestion_id, file, max_bytes):
+        self.calls.append((ingestion_id,file.file_id))
+        return OriginalIntakeStatus(ingestion_id,'pending',reason='original_acquisition_pending')
+    s.originals.begin=MethodType(acquiring,s.originals)
+    first = await start(s)
+    assert first.state=='processing'
     assert (await start(s)).ingestion_id == first.ingestion_id
     calls = len(s.originals.calls)
     with pytest.raises(ToolError,match='another_native_ingestion_active'):
@@ -331,7 +337,7 @@ async def test_start_allows_same_file_retry_but_blocks_second_original_before_ac
 
 
 @pytest.mark.asyncio
-async def test_normal_start_retires_only_a_known_inactive_legacy_intake(native_intake):
+async def test_normal_start_keeps_inactive_legacy_rows_and_accepted_bytes_unchanged(native_intake):
     s=native_intake;old=await start(s)
     row=s.importer._row(s.principal.subject,old.ingestion_id)
     s.importer.native_intake._state(row,create=True)
@@ -340,17 +346,19 @@ async def test_normal_start_retires_only_a_known_inactive_legacy_intake(native_i
     await stage(s,old,batch(s,old,count=1))
     entry=await finish(s,old) # Known durable receipt, not yet settled in compact progress.
     frozen=entry.command_bytes
+    before_row=s.importer._row(s.principal.subject,old.ingestion_id)
+    before_state=state(s,old)
     new=await start(s)
     assert new.ingestion_id!=old.ingestion_id and new.document_id!=old.document_id
-    assert s.importer._row(s.principal.subject,old.ingestion_id)['phase']=='failed'
-    assert state(s,old)['phase']=='failed'
+    assert s.importer._row(s.principal.subject,old.ingestion_id)==before_row
+    assert state(s,old)==before_state
     assert (await s.spool.get(entry.command.operation_key)).command_bytes==frozen
     assert (await s.spool.get(entry.command.operation_key)).outcome_state=='DURABLE'
     assert len(s.originals.calls)==2
 
 
 @pytest.mark.asyncio
-async def test_normal_start_does_not_retire_an_uncertain_legacy_operation(native_intake):
+async def test_new_upload_preserves_uncertain_legacy_operation_without_replaying_it(native_intake):
     s=native_intake;old=await start(s)
     row=s.importer._row(s.principal.subject,old.ingestion_id)
     s.importer.native_intake._state(row,create=True)
@@ -359,12 +367,18 @@ async def test_normal_start_does_not_retire_an_uncertain_legacy_operation(native
     await stage(s,old,batch(s,old,count=1))
     entry=await pending(s,old)
     await s.spool.mark_apply_sent(entry.command.operation_key)
+    before_row=s.importer._row(s.principal.subject,old.ingestion_id)
+    before_state=state(s,old)
     again=await start(s)
-    assert again.ingestion_id==old.ingestion_id and state(s,old)['phase']=='staging'
+    assert again.ingestion_id!=old.ingestion_id
+    assert s.importer._row(s.principal.subject,old.ingestion_id)==before_row
+    assert state(s,old)==before_state
     assert (await s.spool.get(entry.command.operation_key)).apply_state=='SENT_UNKNOWN'
-    assert len(s.originals.calls)==2 # Same begin intent is reconciled, no new source ID.
+    assert len(s.originals.calls)==2
+    with pytest.raises(ToolError,match='prior_write_pending'):
+        await stage(s,again,batch(s,again,count=1))
     with s.t.queue.connect(write=False) as db:
-        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 1
+        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 2
 
 
 @pytest.mark.asyncio
@@ -473,3 +487,19 @@ async def test_mcp_inline_stage_omits_absent_graph_and_rejects_malformed_graph(n
         for chunk in payload["chunks"]
     ]
     assert operation_count(s) == 1
+
+
+@pytest.mark.asyncio
+async def test_status_releases_verified_upload_and_current_file_dedup_survives_other_book(native_intake):
+    s=native_intake
+    first=await start(s,file_id='first-upload')
+    row=s.importer._row(s.principal.subject,first.ingestion_id)
+    # Crash seam: receipt was persisted before its acquiring -> staging save.
+    s.importer._save(row,phase='acquiring')
+    assert (await call(s,first,'status')).source_archive_status=='verified'
+    assert s.importer._row(s.principal.subject,first.ingestion_id)['phase']=='staging'
+    second=await start(s,file_id='second-upload')
+    assert second.ingestion_id!=first.ingestion_id
+    repeated=await start(s,file_id='first-upload')
+    assert (repeated.ingestion_id,repeated.document_id)==(first.ingestion_id,first.document_id)
+    assert s.importer._row(s.principal.subject,second.ingestion_id)['phase']=='staging'
