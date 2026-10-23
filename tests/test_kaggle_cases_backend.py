@@ -77,10 +77,12 @@ async def test_case_create_does_not_require_unrelated_next_page_history_refresh(
         assert first['status']=='pending' and first['saved'] is False
         assert len(outputs)==1
         outputs[0].release()
-    again=await value.disagreement_edit('create','case-during-next-page',
-        principal,command=create())
-    assert again['operation_key']==first['operation_key']
-    assert again['status']=='pending' and not again['saved']
+    with capture_read_output() as outputs:
+        again=await value.disagreement_edit('create','case-during-next-page',
+            principal,command=create())
+        assert again['operation_key']==first['operation_key']
+        assert again['status']=='pending' and not again['saved']
+        outputs[0].release()
     with env.q.connect(write=False) as db:
         assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
 
