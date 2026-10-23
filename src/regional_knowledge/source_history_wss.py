@@ -118,7 +118,8 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
         # never re-decode the lifetime prefix for ordinary renewals. A lost
         # native prefix/cold process must still take the full proof path.
         prior=self._coverage
-        if (prior is not None and self._native_prefix is not None
+        if (prior is not None and prior.deadline<=self.clock()
+                and self._native_prefix is not None
                 and self.spool._source_anchor is prior and prior.binding is binding
                 and prior.key==binding_key(binding) and self.binding_current(binding)
                 and self._routes_current() and self._registry_hash()==self.registry_hash
