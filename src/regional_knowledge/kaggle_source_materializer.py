@@ -631,6 +631,30 @@ class NativeSourceMaterializer:
                 _LOG.warning('native_source_candidate state=failed sequence=%s elapsed_seconds=%.3f error_type=%s sqlstate=%s',
                     command.sequence,time.monotonic()-started,type(error).__name__,getattr(error,'sqlstate',None))
                 if getattr(error,'sqlstate',None)=='22023':
+                    # Inspect only fixed validation booleans after rollback;
+                    # source bytes stay in the same Kaggle process/database.
+                    try:
+                        async with acquire() as connection:
+                            async with connection.transaction():
+                                await connection.execute("SET LOCAL statement_timeout='60s'")
+                                flags=await (await connection.execute('''WITH candidate AS MATERIALIZED (
+                                    SELECT convert_from(%s,'UTF8')::jsonb AS doc)
+                                    SELECT rkb_v4.check_source_activation_semantic_v1(convert_to(
+                                        ((doc-ARRAY['image_manifest','source_graph','public_rights'])||
+                                        '{"codec":"rkb.source-activation-semantic.v1"}'::jsonb)::text,'UTF8'),
+                                        jsonb_build_object('source_id',s.source_id),'{"absent_source":"true"}'::jsonb,s.logical_time),
+                                        rkb_v4.check_source_image_manifest_v1(doc,s.source_id),
+                                        rkb_v4.check_source_image_graph_v1(doc,s.source_id,%s),
+                                        (SELECT coalesce(bool_and(rkb_v4.check_source_facts_v1(value)),true)
+                                         FROM jsonb_array_elements(doc->'semantic'->'findings'))
+                                    FROM candidate CROSS JOIN rkb_v4.source_stage_sessions s
+                                    WHERE s.source_id=%s::uuid''',(knowledge,doc['batch_count'],source_id))).fetchone()
+                        if flags is not None:
+                            _LOG.warning('native_source_candidate state=validation_rejected sequence=%s semantic_valid=%s image_valid=%s graph_valid=%s facts_valid=%s',
+                                command.sequence,*flags)
+                    except Exception as diagnostic_error:
+                        _LOG.warning('native_source_candidate state=diagnostic_unavailable sequence=%s error_type=%s',
+                            command.sequence,type(diagnostic_error).__name__)
                     raise failure('native_source_stage_requires_review') from None
                 raise
         self._current()
