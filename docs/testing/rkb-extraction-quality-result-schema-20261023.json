@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/main/docs/testing/rkb-extraction-quality-result-schema-20261023.json",
   "title": "RKB extraction PMI: append-only blind attempt record",
-  "description": "Schema only, NOT RUN. Store one JSONL object per attempted query/arm/replicate after approved multi-source import. Never rewrite prior rows. Gold stays separate from runners. Does not create telemetry/harness.",
+  "description": "Schema only, NOT RUN. Store one JSONL object per attempted query/arm/replicate after approved multi-source import. Never rewrite prior rows. Gold stays separate from runners. Does not create telemetry/harness. When resources/tokens availability=unavailable, all measures MUST be null with nonempty reason (not zero).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -676,7 +676,47 @@
             "null"
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "measurement_status": {
+                "const": "unavailable"
+              }
+            },
+            "required": [
+              "measurement_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "query_input": {
+                "type": "null"
+              },
+              "retrieval_text_returned": {
+                "type": "null"
+              },
+              "neighbor_text_returned": {
+                "type": "null"
+              },
+              "model_input": {
+                "type": "null"
+              },
+              "model_output": {
+                "type": "null"
+              },
+              "unavailable_reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "unavailable_reason"
+            ]
+          }
+        }
+      ]
     },
     "resources": {
       "type": "object",
@@ -746,7 +786,50 @@
             "null"
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "availability": {
+                "const": "unavailable"
+              }
+            },
+            "required": [
+              "availability"
+            ]
+          },
+          "then": {
+            "properties": {
+              "cpu_ms": {
+                "type": "null"
+              },
+              "gpu_ms": {
+                "type": "null"
+              },
+              "gpu_memory_peak_bytes": {
+                "type": "null"
+              },
+              "ram_peak_bytes": {
+                "type": "null"
+              },
+              "io_read_bytes": {
+                "type": "null"
+              },
+              "io_write_bytes": {
+                "type": "null"
+              },
+              "unavailable_reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "unavailable_reason"
+            ]
+          }
+        }
+      ]
     },
     "adjudication": {
       "type": "object",
