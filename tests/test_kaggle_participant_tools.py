@@ -13,6 +13,7 @@ from regional_knowledge.contracts import Principal
 from regional_knowledge.participant_contracts import ParticipantGrant
 from regional_knowledge.server import build_server
 from test_kaggle_native_source_importer import native_intake
+from test_kaggle_public_backend import target  # fixture dependency of native_intake
 
 
 def _context():
