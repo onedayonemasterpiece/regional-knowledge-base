@@ -377,8 +377,8 @@ async def test_readback_dispatch_uses_real_durable_owner_and_new_operation_per_p
 
 
 @pytest.mark.asyncio
-async def test_live_admission_wss_reviewed_blob_stage_and_reconcile_readback(state,tmp_path):
-    """Same durable compute claim transports a pinned artifact, never Python bytes."""
+async def test_live_admission_wss_inline_stage_and_reconcile_readback(state,tmp_path):
+    """Same durable compute claim transports reviewed inline source without tickets."""
     from regional_knowledge.kaggle_warm_maintenance import WarmHandlerMaintenance,WarmHandlerPatchApproval
     from regional_knowledge.kaggle_warm_read import ReadHandlerSlot
     from test_kaggle_warm_read import old,context,staged_module,good_probe,good_stage
@@ -415,7 +415,7 @@ async def test_live_admission_wss_reviewed_blob_stage_and_reconcile_readback(sta
     worker=WorkerRecoveryPhases(factory=native,download=download,workspace=workpath)
     slot=ReadHandlerSlot(old,loaded_sha256='b'*64,compatibility=context())
     worker.read_handler_slot=slot
-    worker.read_handler_control=WarmHandlerMaintenance(slot=slot,download=download,
+    worker.read_handler_control=WarmHandlerMaintenance(slot=slot,
         workspace=workpath,constructor={'marker':'new'},self_test=good_stage,
         probe=good_probe,current=lambda frame:None)
 
@@ -426,9 +426,7 @@ async def test_live_admission_wss_reviewed_blob_stage_and_reconcile_readback(sta
             await asyncio.sleep(.001)
         else:pytest.fail('signed warm maintenance DISPATCH missing')
         s.a.mark_work_sent(work)
-        # next_channel_work already runs the exact maintenance dispatch
-        # and issues the scoped GET ticket once; a second dispatch_payload
-        # call would unnecessarily request a second signing operation.
+        # The same authenticated dispatch carries source inline, without a storage ticket.
         frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
             **dict(work.document_payload),compute_claim=work.compute_claim,
             dispatch_generation=work.dispatch_generation)
@@ -456,12 +454,13 @@ async def test_live_admission_wss_reviewed_blob_stage_and_reconcile_readback(sta
         return frame
 
     try:
-        staged=asyncio.create_task(control.stage_read_handler(s,approval,
+        staged=asyncio.create_task(control.stage_read_handler(s,handler_source=source.read_text(),reviewed_commit='a'*40,
             expected_loaded_sha256='b'*64,expected_generation=0))
         frame=await deliver(staged)
         assert frame['phase']=='read_handler_stage'
-        assert frame['download_ticket']==dict(scope='existing-signed-GET')
-        assert signed and signed[0][2]==blob and len(transfer)==1
+        assert 'download_ticket' not in frame
+        assert frame['arguments']['handler_source']==source.read_text()
+        assert signed==[] and transfer==[]
         assert slot.receipt()['staged_sha256']==digest
         applied=asyncio.create_task(control.activate_read_handler(s,staged_sha256=digest,
             expected_loaded_sha256='b'*64,expected_generation=0))
@@ -471,15 +470,13 @@ async def test_live_admission_wss_reviewed_blob_stage_and_reconcile_readback(sta
         status=asyncio.create_task(control.read_handler_status(s))
         await deliver(status)
         assert slot.receipt()['loaded_sha256']==digest and slot.receipt()['generation']==1
-        assert len(signed)==1 and len(transfer)==1
-        # A presigned GET may be renewed after reconnect. Transient ticket
-        # bytes are deliberately excluded from the operation identity, so
-        # an exact completed stage replays its pinned RESULT without a new
-        # transfer or executing code again, even if the ticket has changed.
-        cached=await worker(dict(frame,download_ticket={'renewed':'unused'}))
+        assert signed==[] and transfer==[]
+        # Exact completed stage returns its retained RESULT after reconnect,
+        # without executing the source a second time.
+        cached=await worker(dict(frame))
         assert cached['phase']=='read_handler_stage'
         assert cached['value']['staged_sha256']==digest
-        assert len(signed)==1 and len(transfer)==1
+        assert signed==[] and transfer==[]
         # A rejected competing activation is ACKed as a durable *operation*
         # failure. It must not escape _encode, kill the model-owning runtime,
         # replace an already active handler, or silently stage a second file.
@@ -489,7 +486,7 @@ async def test_live_admission_wss_reviewed_blob_stage_and_reconcile_readback(sta
         await deliver(failure,rejected=True)
         assert slot.receipt()['loaded_sha256']==digest
         assert slot.receipt()['generation']==1
-        assert len(transfer)==1
+        assert transfer==[]
     finally:
         await bridge.aclose()
         await worker.aclose()
@@ -525,7 +522,7 @@ async def test_failed_warm_candidate_has_normal_rejected_receipt_and_existing_mo
     worker=WorkerRecoveryPhases(factory=native,download=download,workspace=workspace)
     slot=ReadHandlerSlot(old,loaded_sha256='a'*64,compatibility=context())
     worker.read_handler_slot=slot
-    worker.read_handler_control=WarmHandlerMaintenance(slot=slot,download=download,
+    worker.read_handler_control=WarmHandlerMaintenance(slot=slot,
         workspace=workspace,constructor={'marker':'new'},
         self_test=rejecting_selftest,probe=good_probe,current=lambda _:None)
     def frame(phase,key,args,ticket=None):
@@ -537,14 +534,14 @@ async def test_failed_warm_candidate_has_normal_rejected_receipt_and_existing_mo
             compute_claim='resource',dispatch_generation=1)
         if ticket is not None:wire['download_ticket']=ticket
         return wire
-    args=dict(artifact=WarmHandlerPatchApproval(blob,'a'*40).wire(),
+    args=dict(handler_source=source.read_text(),handler_sha256=digest,reviewed_commit='a'*40,
         expected_loaded_sha256='a'*64,expected_generation=0)
-    failed=frame('read_handler_stage','reject-me',args,{'scoped':'GET'})
+    failed=frame('read_handler_stage','reject-me',args)
     first=await worker(failed)
     assert first['phase']=='read_handler_stage'
     assert first['value']==dict(status='rejected',reason='read_handler_maintenance_rejected')
     assert await worker(failed)==first
-    assert len(transfers)==1
+    assert transfers==[]
     assert 'private' not in str(first)
     # Exercise the actual BgeWssTransport._encode path which previously
     # propagated the failed candidate into _failure()/close_runtime.

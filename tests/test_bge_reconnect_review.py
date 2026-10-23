@@ -138,16 +138,18 @@ async def test_early_heartbeat_ack_does_not_erase_retry_debt(monkeypatch):
 async def test_wrong_generation_heartbeat_ack_cannot_reset_budget(monkeypatch):
     transport = module("bge_wss_transport")
     monkeypatch.setattr(transport.random, "uniform", lambda *_: .0001)
-    attempts = []
+    attempts = [];clock=[0.]
     @asynccontextmanager
     async def connect():
         attempts.append(1)
         if len(attempts) < 9:
+            clock[0]+=1
             raise ConnectionError("offline")
         incoming = asyncio.Queue()
         class Socket:
             async def send(self, raw):
                 kind = json.loads(raw)["type"]
+                if kind=='HEARTBEAT':clock[0]=40.
                 value = {"type": "WELCOME", "provider_version": "85"} if kind == "ATTACH" else (
                     {"type": "READY_ACK", "status": "ready"} if kind == "READY" else {
                     "type": "HEARTBEAT_ACK"})
@@ -157,11 +159,12 @@ async def test_wrong_generation_heartbeat_ack_cannot_reset_budget(monkeypatch):
                 return await incoming.get()
         yield Socket()
     worker = transport.BgeWssTransport(CONFIG, lambda: lambda _: [1.] + [0.] * 1023,
-        lambda: {}, connector=connect, heartbeat_seconds=.01, maximum_seconds=4)
-    worker._retry_clock = lambda: 31.0
-    with pytest.raises(transport.BgeChannelStopped, match="stale channel generation"):
+        lambda: {}, connector=connect, heartbeat_seconds=.01, maximum_seconds=4,reconnect_grace_seconds=29)
+    worker._retry_clock = lambda: clock[0]
+    with pytest.raises(transport.BgeChannelStopped, match="reconnect exhausted"):
         await worker.run()
-    assert len(attempts) == 9 and worker._reconnect_attempt == 8
+    assert len(attempts) == 9 and worker._reconnect_attempt == 9
+    assert worker._outage_started==1.
 
 
 @pytest.mark.asyncio

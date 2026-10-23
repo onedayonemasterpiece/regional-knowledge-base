@@ -285,21 +285,56 @@ class BgeWssTransport:
             except Exception:
                 reason = 'deadline_exceeded' if asyncio.get_running_loop().time() >= deadline else 'internal_error'
                 result = self._unavailable(frame, reason)
-            # Optional lossy metadata is drained from the same prepared owner;
-            # it cannot change the validated result or extend its wire budget.
-            drain=getattr(self.prepared_runtime,'read_event_drain',None)
-            if drain is not None:
-                try:
-                    events=drain(frame)
-                    with_events={**result,'read_events':events}
-                    if events and len(json.dumps(events,allow_nan=False,separators=(',',':')).encode())<=8192 and len(json.dumps(with_events,allow_nan=False,separators=(',',':')).encode())<=262144:
-                        result=with_events
-                except Exception:pass  # Telemetry never turns a result into failure.
+            # Optional diagnostics are consumed only after QUERY_RESULT is sent.
+            # The result path performs no telemetry drain or extra JSON encoding.
             if not self.read_discard:
                 self.read_pending = result
                 self.changed.set()
         self.read_task = asyncio.create_task(consume())
         self.read_task.add_done_callback(lambda _: (self._maybe_release(), self.changed.set()))
+
+    async def _export_read_events(self, frame):
+        """Best-effort old native observations -> single local telemetry sink.
+
+        The read has already been delivered. Drain runs off-loop to tolerate
+        a blocked diagnostic producer; identity and stage whitelists still apply.
+        A sink fault cannot affect WSS framing, status or read permits.
+        """
+        drain = getattr(self.prepared_runtime, 'read_event_drain', None)
+        if drain is None:
+            return
+        from regional_knowledge.product_telemetry import emit_product_event
+        try:
+            events = await asyncio.to_thread(drain, frame)
+            from regional_knowledge.query_telemetry import clean_native_read_events
+            cleaned = clean_native_read_events(events, request_id=frame['request_id'],
+                run_id=self.config['run_id'], runtime_incarnation=self.incarnation,
+                connection_generation=frame['connection_generation'],
+                turn_generation=frame['turn_generation'])
+            phases = {'tokenize_ms':'encode','acquire_ms':'acquire','encode_ms':'encode',
+                      'lexical_ms':'lexical','dense_ms':'dense','hydrate_ms':'hydrate',
+                      'search_ms':'search','serialize_ms':'serialize','total_ms':'total',
+                      'adapter_ms':'adapter','admission_ms':'admission',
+                      'transport_ms':'transport','output_gate_ms':'adapter'}
+            for event in cleaned:
+                common = {'run_id':event['run_id'],'request_ref':event['request_ref'],
+                    'connection_generation':event['connection_generation'],
+                    'turn_generation':event['turn_generation']}
+                for name, duration in event['stages_ms'].items():
+                    emit_product_event({'event':'read.stage','phase':phases[name],
+                        'status':'ok', 'duration_ms':duration, **common},level='debug')
+                if event['terminal']:
+                    outcome=event['status']
+                    if outcome not in ('ok','degraded','pending','cancelled','unavailable','error'):
+                        outcome='error'
+                    emit_product_event({'event':'read.terminal','phase':'adapter',
+                        'status':outcome, **common})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A malformed/blocked native collector is not a QUERY_RESULT failure.
+            emit_product_event({'event':'read.terminal','phase':'adapter',
+                'status':'dropped','run_id':self.config['run_id']})
 
     async def _load(self):
         self.encoder = await asyncio.to_thread(self.load_encoder)
@@ -419,6 +454,19 @@ class BgeWssTransport:
                 if frame.get('type') == 'QUERY_RESULT' and frame.get('connection_generation') != generation:
                     continue
                 await send(frame)
+                if frame.get('type') == 'QUERY_RESULT':
+                    # Only one optional off-loop native drain may be in flight.
+                    # A blocked collector must not accumulate tasks/threads on
+                    # successive reads; the bounded native collector accounts
+                    # for discarded older observations.
+                    previous = getattr(self, '_read_telemetry_export', None)
+                    if previous is None or previous.done():
+                        self._read_telemetry_export = asyncio.create_task(
+                            self._export_read_events(frame))
+                    else:
+                        from regional_knowledge.product_telemetry import emit_product_event
+                        emit_product_event({'event':'read.terminal','phase':'adapter',
+                            'status':'dropped','run_id':self.config['run_id']})
 
         async def queue_read_result():
             nonlocal read_sent
@@ -510,8 +558,10 @@ class BgeWssTransport:
             nonlocal ready_confirmed, telegram_request_pending
             while True:
                 frame = await receive()
-                if type(frame.get('connection_generation')) is not int or frame['connection_generation'] != generation:
-                    raise BgeChannelStopped('stale channel generation')
+                if type(frame.get('connection_generation')) is not int:
+                    raise ValueError('integer channel generation required')
+                if frame['connection_generation'] != generation:
+                    raise ConnectionError('stale channel generation')
                 kind = frame.get('type')
                 if self.shared_reads and kind == 'RESOURCE_PROBE':
                     if not self._identifier(frame.get('probe_nonce')):
@@ -729,8 +779,10 @@ class BgeWssTransport:
                             message = await socket.receive()
                             if message.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
                                 return message.data
-                            if message.type == aiohttp.WSMsgType.CLOSE and message.data in (4400, 4403, 4409):
-                                raise BgeChannelStopped('channel authority or contract ended')
+                            # A close ends this attachment, not the owned run.
+                            # Reauthentication and all dispatch fences run on
+                            # reconnect; the existing outage/lifetime bounds
+                            # still terminate an unrecoverable or revoked run.
                             raise ConnectionError('channel disconnected')
                     yield Adapter()
 
@@ -747,7 +799,10 @@ class BgeWssTransport:
                     self._failure(self.encoding)
                     try:
                         async with (self.connector() if self.connector else native_connect()) as socket:
-                            await self._session(socket)
+                            try:
+                                await self._session(socket)
+                            except (ValueError,KeyError,TypeError,UnicodeError):
+                                raise ConnectionError('channel protocol validation failed') from None
                         if self.stop.is_set():
                             break
                     except BgeChannelStopped:

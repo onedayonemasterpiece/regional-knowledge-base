@@ -38,10 +38,10 @@ class NativePg(Pg):
     async def execute(self,sql,args=None):return await self.cursor().execute(sql,args)
 
 
-def pair(e,*,lease_seconds=10,schema_revision=None,geo_bootstrap_operation_keys=()):
+def pair(e,*,lease_seconds=10,schema_revision=None,geo_bootstrap_operation_keys=(),extra_routes=()):
     b=binding();pg=NativePg();database=SimpleNamespace(schema_version=int(schema_revision.split('-')[3]) if schema_revision is not None else 16,database_generation='db-source',writer_generation='writer-1')
     if schema_revision is not None:database.schema_revision=schema_revision
-    routes=('source.search','source.fetch','source.withdraw')
+    routes=('source.search','source.fetch','source.withdraw')+extra_routes
     if schema_revision in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):
         routes=routes+('source.import','story.get','story.history','story.search','story.variants',
             'source.fact_read','source.calendar','source.observations')
@@ -265,6 +265,12 @@ async def test_measured_geo_bootstrap_has_separate_bounded_history_window(env):
         # Byte headroom is limited to explicitly configured GEO keys. Neither
         # unknown GEO operations nor public source commands inherit it.
         p.v.geo_bootstrap_operations=frozenset()
+        # A full rebuild after an expired proof must also support the same
+        # accepted chain above the retired 4 MiB pilot default.
+        proof=await p.v.restore(p.b)
+        assert proof.current() and proof.accepted_sequence==len(commands)
+        # Explicit smaller budgets and their fail-closed behavior still apply.
+        p.v.max_history_bytes=4*1024*1024
         with pytest.raises(SpoolConflict,match='budget exceeded'):await p.v.restore(p.b)
         assert p.v._coverage is None
     finally:await p.n.aclose()
@@ -277,7 +283,7 @@ def test_geo_window_cannot_expand_ordinary_source_or_unlisted_operation_budget(e
     usage=[0,0]
     p.v._charge_history(usage,geo,GEO_BOOTSTRAP_HISTORY_BYTES)
     p.v._charge_history(usage,env.cmd,p.v.max_history_bytes)
-    assert usage==[4*1024*1024,6*1024*1024]
+    assert usage==[p.v.max_history_bytes,6*1024*1024]
     for command in (env.cmd,SimpleNamespace(**dict(vars(geo),operation_key='not-configured'))):
         with pytest.raises(SpoolConflict):p.v._charge_history([p.v.max_history_bytes,0],command,1)
     with pytest.raises(SpoolConflict):p.v._charge_history([0,GEO_BOOTSTRAP_HISTORY_BYTES],geo,1)
@@ -437,4 +443,61 @@ async def test_renewal_without_new_evidence_keeps_unexpired_proof_only(env):
         p.v._phase=contradicts
         with pytest.raises(SpoolConflict,match='binding differs'):await p.v.renew(p.b)
         assert p.v._coverage is None
+    finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_valid_reads_remain_available_while_schema_prefix_is_rebuilt(env):
+    p=pair(env)
+    try:
+        previous=await p.v.establish_genesis(p.b)
+        assert previous.current() and env.spool._source_anchor is previous
+        # Compatible migration retires only the native prefix, not the binding,
+        # accepted journal or existing unexpired read proof.
+        p.v._native_prefix=None
+        opened=asyncio.Event();release=asyncio.Event()
+        phase=p.v._phase
+        async def paused(binding,args):
+            if args['action']=='open':
+                opened.set();await release.wait()
+            return await phase(binding,args)
+        p.v._phase=paused
+        task=asyncio.create_task(p.v.restore(p.b))
+        await asyncio.wait_for(opened.wait(),1)
+        try:
+            assert previous.current()
+            assert env.spool._source_anchor is previous
+        finally:
+            release.set()
+            refreshed=await task
+        assert refreshed.current() and refreshed is not previous
+        assert not previous.current()
+    finally:await p.n.aclose()
+
+
+@pytest.mark.parametrize('failure',['deadline','contradiction'])
+@pytest.mark.asyncio
+async def test_retained_refresh_proof_still_expires_and_contradictions_revoke_it(env,monkeypatch,failure):
+    p=pair(env)
+    try:
+        previous=await p.v.establish_genesis(p.b)
+        p.v._native_prefix=None
+        opened=asyncio.Event();release=asyncio.Event();phase=p.v._phase
+        async def paused(binding,args):
+            if args['action']=='open':opened.set();await release.wait()
+            return await phase(binding,args)
+        p.v._phase=paused
+        task=asyncio.create_task(p.v.restore(p.b))
+        await asyncio.wait_for(opened.wait(),1)
+        assert previous.current()
+        if failure=='deadline':
+            monkeypatch.setattr(p.v,'clock',lambda:previous.deadline+1)
+            assert not previous.current()
+        else:p.pg.origin_valid=False
+        release.set()
+        if failure=='contradiction':
+            with pytest.raises(SpoolConflict,match='origin'):await task
+            assert p.v._coverage is None and env.spool._source_anchor is None
+        else:
+            assert (await task).current() and not previous.current()
     finally:await p.n.aclose()

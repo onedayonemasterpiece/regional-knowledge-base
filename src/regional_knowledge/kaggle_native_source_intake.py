@@ -10,16 +10,54 @@ import asyncio
 import base64
 from datetime import datetime, timezone
 import json
+import logging
 import sqlite3
+import time
+import hashlib
+from functools import wraps
 from uuid import UUID, uuid5
 
 from .source_stage import (STAGE_ROUTE, SEAL_ROUTE, BATCH_CODEC, SEAL_CODEC, ZERO_HASH,
     canonical, digest, encode_issued_image, validate_stage_payload)
 
 
+_LOG=logging.getLogger(__name__)
+
+
 def _failure(reason, *, status='unavailable'):
     from .kaggle_importer import failure
     return failure(reason, status=status)
+
+
+def _timed_native_phase(phase):
+    """Outer tool-call duration, not provider ACK or persisted Saved."""
+    def decorate(method):
+        @wraps(method)
+        async def observed(self, access, row, *args, **kwargs):
+            from .product_telemetry import emit_product_event
+            started = time.monotonic()
+            status = 'error'
+            try:
+                result = await method(self, access, row, *args, **kwargs)
+                state = getattr(result, 'state', None)
+                status = ('applied' if state == 'finalized' else 'failed' if state == 'failed'
+                          else 'staged' if state == 'staged' else 'pending'
+                          if state in ('ready','processing') else 'returned')
+                return result
+            except asyncio.CancelledError:
+                status = 'cancelled'
+                raise
+            finally:
+                # A malformed observer input must not replace the domain
+                # result, cancellation or exception being returned.
+                try:
+                    ref = hashlib.sha256(str(row['ingestion_id']).encode()).hexdigest()
+                    emit_product_event({'event':'import.phase','phase':phase,'status':status,
+                        'operation_ref':ref,'duration_ms':(time.monotonic()-started)*1000})
+                except Exception:
+                    pass
+        return observed
+    return decorate
 
 
 class NativeSourceIntake:
@@ -109,6 +147,40 @@ class NativeSourceIntake:
         return digest(canonical({k:v for k,v in doc.items()
             if k not in ('codec','batch_index','previous_batch_sha256')}))
 
+    def _inactive_prefix_current(self, access, row, scope):
+        """Continue only this owned inactive prefix proved APPLIED by history."""
+        proof=getattr(self.startup,'coverage',None)
+        if (proof is None or not proof.current() or getattr(proof,'binding',None)!=access.binding
+                or self.spool._source_anchor is not proof
+                or getattr(proof,'accepted_sequence',None)!=scope['accepted_sequence']
+                or getattr(proof,'applied_sequence',None)!=scope['accepted_sequence']):
+            return False
+        from .control_spool import _command
+        from .source_history_verifier import INACTIVE_SOURCE_ROUTES
+        with self.queue.connect(write=False) as db:
+            rows=db.execute("SELECT command_bytes,source_id,person_id,database_generation,seal_state,apply_state,outcome_state "
+                "FROM rkb_control_operations WHERE outcome_state<>'DURABLE'").fetchall()
+        if not rows:return False
+        for pending in rows:
+            if (pending['source_id']!=row['source_id'] or pending['person_id']!=row['person_id']
+                    or pending['database_generation']!=access.binding.database_generation
+                    or pending['seal_state']!='ACCEPTED' or pending['apply_state']!='APPLIED'
+                    or pending['outcome_state']!='NOT_SENT'):
+                return False
+            command=_command(pending['command_bytes'])
+            if (command.route not in INACTIVE_SOURCE_ROUTES
+                    or json.loads(command.payload).get('ingestion_id')!=row['ingestion_id']):
+                return False
+        return proof.current()
+
+    @staticmethod
+    def _can_settle(state,entry):
+        if entry.outcome_state=='DURABLE':return True
+        return (state['pending_kind'] in ('stage','seal','materialize')
+            and entry.outcome_state=='NOT_SENT' and entry.accepted is not None
+            and entry.seal_state=='ACCEPTED' and getattr(entry,'apply_state',None)=='APPLIED'
+            and entry.apply_receipt is not None and entry.apply_receipt.status=='applied')
+
     async def _stage_exact(self, access, row, *, kind, key, route, payload, builder):
         async with self.spool._lock:
             entry=await self._entry(key)
@@ -120,11 +192,17 @@ class NativeSourceIntake:
             else:
                 await self._check(access)
                 scope=await self.spool.scope_state()
-                if scope['pending'] or scope['unknown'] or scope['sequence']!=scope['accepted_sequence']:
+                if scope['unknown'] or scope['sequence']!=scope['accepted_sequence']:
                     raise _failure('prior_write_pending')
+                continuation=(scope['pending'] and kind in ('stage','seal','materialize')
+                    and await asyncio.to_thread(self._inactive_prefix_current,access,row,scope))
+                if scope['pending'] and not continuation:raise _failure('prior_write_pending')
                 head=await self.spool.journal.head()
                 sequence=head.reference.last_sequence if head else 0
-                if sequence!=scope['accepted_sequence']: raise _failure('source_history_unavailable')
+                if sequence!=scope['accepted_sequence']:
+                    _LOG.warning('native_intake_admission reason=journal_prefix kind=%s journal_sequence=%s accepted_sequence=%s',
+                        kind,sequence,scope['accepted_sequence'])
+                    raise _failure('source_history_unavailable')
                 command=builder(sequence=sequence+1,operation_key=key,request_id=row['request_id'],
                     person_id=row['person_id'],logical_time=datetime.now(timezone.utc).isoformat(),
                     revisions=self.importer._revisions(access.binding),source_id=row['source_id'],payload=payload)
@@ -134,8 +212,15 @@ class NativeSourceIntake:
                 await self._check(access)
                 if (not self.importer._intake_coverage_current(access.binding)
                         or facts.database_generation!=access.binding.database_generation
-                        or facts.scope_sequence>facts.covered_sequence or facts.pending or facts.unknown
+                        or facts.scope_sequence>facts.covered_sequence or (facts.pending and not continuation) or facts.unknown
                         or not self.spool.facts_current(facts)):
+                    _LOG.warning('native_intake_admission reason=history_proof kind=%s reads_current=%s imports_current=%s '
+                        'anchor_current=%s binding_current=%s database_current=%s scope_sequence=%s covered_sequence=%s '
+                        'pending=%s continuation=%s unknown=%s facts_current=%s',kind,self.startup.reads_current(),
+                        self.startup.imports_current(),self.startup.coverage is self.spool._source_anchor,
+                        self.startup.binding==access.binding,facts.database_generation==access.binding.database_generation,
+                        facts.scope_sequence,facts.covered_sequence,facts.pending,continuation,facts.unknown,
+                        self.spool.facts_current(facts))
                     raise _failure('source_history_unavailable')
                 entry=await self.spool._write(self.spool._stage,frozen,data,handler,access.binding.database_generation)
             # If the process exits between the spool commit and this compact
@@ -156,7 +241,7 @@ class NativeSourceIntake:
 
     async def _settle(self, access, row, state, entry):
         await self._check(access)
-        if entry.outcome_state!='DURABLE': return state
+        if not self._can_settle(state,entry): return state
         if entry.apply_receipt is None: raise _failure('native_durable_receipt_missing')
         if entry.apply_receipt.status not in ('applied','rejected_precondition'):
             raise _failure('native_durable_outcome_status_unknown')
@@ -206,7 +291,16 @@ class NativeSourceIntake:
             changes['phase']='finalized'
             await asyncio.to_thread(self.importer._save,row,phase='finalized')
         else: raise _failure('native_pending_operation_invalid')
-        return await asyncio.to_thread(self._update,row,**changes)
+        updated=await asyncio.to_thread(self._update,row,**changes)
+        _LOG.info('native_intake_progress ingestion_id=%s kind=%s remote_durable=%s next_ordinal=%s',
+            row['ingestion_id'],kind,entry.outcome_state=='DURABLE',updated['next_ordinal'])
+        # Applied != Saved: log only, do not modify actual remote receipt.
+        from .product_telemetry import emit_product_event
+        emit_product_event({'event':'import.phase','phase':{
+            'stage':'stage','seal':'seal','materialize':'materialize',
+            'activate':'activation'}[kind], 'status':'applied',
+            'operation_ref':hashlib.sha256(entry.command.operation_key.encode()).hexdigest()})
+        return updated
 
     async def _drive(self, access, row, state):
         if not state['pending_operation_key']: return state
@@ -234,7 +328,7 @@ class NativeSourceIntake:
                 return state
         await self._check(access)
         entry=await self.spool.get(entry.command.operation_key)
-        if entry.outcome_state=='DURABLE': return await self._settle(access,row,state,entry)
+        if self._can_settle(state,entry): return await self._settle(access,row,state,entry)
         await self.startup.source_dispatch.enqueue(access.context,entry.command.operation_key,
             writer_generation=self.startup.config.writer_generation)
         await self._check(access)
@@ -267,6 +361,7 @@ class NativeSourceIntake:
         state=await asyncio.to_thread(self._update,row,pending_operation_key=key,pending_kind=kind)
         return await self._drive(access,row,state)
 
+    @_timed_native_phase('stage')
     async def stage(self, access, row, payload, source_import):
         from .contracts import StartMetadataInput
         from .kaggle_import_contracts import SourceResearchInput
@@ -323,6 +418,7 @@ class NativeSourceIntake:
         state=await asyncio.to_thread(self._state,row)
         return self._output(row,await self._drive(access,row,state))
 
+    @_timed_native_phase('seal')
     async def validate(self, access, row):
         from .kaggle_native_source_bindings import resolved_native_stage_command
         await self._check(access,row)
@@ -339,6 +435,7 @@ class NativeSourceIntake:
         state=await asyncio.to_thread(self._state,row)
         return self._output(row,await self._drive(access,row,state))
 
+    @_timed_native_phase('materialize')
     async def finalize(self, access, row):
         from .source_activation import (ACTIVATE_ROUTE, ACTIVATION_CODEC, MATERIALIZE_ROUTE,
             MATERIALIZE_CODEC, resolved_activation_command, resolved_materialize_command)
@@ -371,6 +468,13 @@ class NativeSourceIntake:
         else:
             kind='activate'; route=ACTIVATE_ROUTE; key=self._operation(row,kind)
             doc['codec']=ACTIVATION_CODEC; builder=resolved_activation_command
+        scope=await self.spool.scope_state()
+        if (scope['unknown'] or scope['sequence']!=scope['accepted_sequence']
+                or scope['pending'] and (kind=='activate'
+                    or not await asyncio.to_thread(self._inactive_prefix_current,access,row,scope))):
+            return self.importer._output(row,'processing',
+                'Inactive candidate is awaiting current-prefix verification or remote durability; resume the same finalize',
+                'wait',source_archive_status='verified')
         await self._stage_exact(access,row,kind=kind,key=key,route=route,payload=doc,builder=builder)
         state=await asyncio.to_thread(self._state,row)
         return self._output(row,await self._drive(access,row,state))

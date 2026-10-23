@@ -279,12 +279,13 @@ async def test_real_lost_acceptance_ack_keeps_unknown_key_then_read_only_reconci
 
 
 @pytest.mark.asyncio
-async def test_stage_status_validate_materialize_activation_require_exact_durable_outcomes(native_intake):
+async def test_inactive_apply_progress_and_final_activation_require_exact_receipts(native_intake):
     s = native_intake; result = await start(s)
     await stage(s,result,batch(s,result,count=1))
     staged = await finish(s,result,publish=False)
-    assert (await call(s,result,'status')).state == 'processing'
-    assert state(s,result)['batch_count'] == 0 and operation_count(s) == 1
+    assert (await call(s,result,'status')).state == 'staged'
+    assert state(s,result)['batch_count'] == 1 and operation_count(s) == 1
+    assert (await s.spool.get(staged.command.operation_key)).outcome_state == 'NOT_SENT'
     await s.spool.publish_outcome(staged.command.operation_key,writer_generation='writer-1')
     assert (await call(s,result,'status')).state == 'staged'
     assert operation_count(s) == 1  # Status does not silently seal a staged candidate.

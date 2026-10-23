@@ -259,7 +259,7 @@ class TargetRuntime:
             await self._owned_probe(acquire=candidate.acquire)
             await candidate_self_test(candidate)
         worker.read_handler_control=WarmHandlerMaintenance(
-            slot=slot,download=worker.download,workspace=worker.workspace,
+            slot=slot,workspace=worker.workspace,
             constructor=dict(slot._pinned),
             self_test=candidate_self_test,probe=candidate_probe,
             current=lambda frame:worker.factory._current((

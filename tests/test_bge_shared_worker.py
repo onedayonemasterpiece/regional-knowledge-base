@@ -451,18 +451,19 @@ async def test_invalid_cancel_and_changed_active_identity_fail_closed_without_re
 
     # A malformed control frame or changed payload terminates this attachment;
     # the currently blocked read must be cancelled/cleaned, never rerun.
-    with pytest.raises((ValueError, RuntimeError)):
-        async with running(handler) as (peer, task, _):
-            original = query()
-            await peer.put(original)
-            await asyncio.wait_for(entered.wait(), 1)
-            invalid = query(text='changed fixture query') if violation == 'changed-active-payload' else cancel(original)
-            if violation == 'cancel-bool-turn':
-                invalid['turn_generation'] = True
-            elif violation == 'cancel-bool-generation':
-                invalid['connection_generation'] = True
-            await peer.put(invalid)
-            await asyncio.wait_for(asyncio.shield(task), 1)
+    async with running(handler) as (peer, task, loads):
+        original = query()
+        await peer.put(original)
+        await asyncio.wait_for(entered.wait(), 1)
+        invalid = query(text='changed fixture query') if violation == 'changed-active-payload' else cancel(original)
+        if violation == 'cancel-bool-turn':
+            invalid['turn_generation'] = True
+        elif violation == 'cancel-bool-generation':
+            invalid['connection_generation'] = True
+        await peer.put(invalid)
+        await peer.wait('READY',generation=2)
+        assert not task.done() and loads==['loaded']
+        assert not peer.frames('QUERY_RESULT') and peer.sessions==2
     assert calls == ['fixture query']
 
 
@@ -519,22 +520,39 @@ async def test_each_idle_probe_replays_unacknowledged_release_before_nonce_proof
 
 
 @pytest.mark.asyncio
-async def test_native_read_events_attach_to_existing_result_without_changing_result_contract():
+async def test_native_diagnostics_only_after_wire_send_and_blocked_drain_does_not_hold_reply():
     from regional_knowledge.kaggle_bootstrap import PreparedRuntime
     from test_kaggle_target_runtime import candidate
-    transport=module('bge_wss_transport');peer=Peer();stop=asyncio.Event();calls=[]
+    transport=module('bge_wss_transport');peer=Peer();stop=asyncio.Event()
+    entered,release=threading.Event(),threading.Event()
+    calls=[]
     async def handler(frame,*,encode):return result(frame)
-    def drain(frame):calls.append(frame['request_id']);return [{'synthetic_native_timing':1}]
+    def drain(frame):
+        calls.append(frame['request_id'])
+        entered.set()
+        release.wait(5)  # Broken optional collector must not hold either read.
+        return []
     async def prepare(*args,**kwargs):return PreparedRuntime(handler,candidate(),read_event_drain=drain)
     worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),lambda:lambda text:[1.]+[0.]*1023,lambda:{},
         prepare_runtime=prepare,connector=peer.connect,heartbeat_seconds=.01,maximum_seconds=3,stop=stop)
     task=asyncio.create_task(worker.run())
     try:
         await peer.wait('READY');await peer.put(query(request='native-event-query'))
-        value=await peer.wait('QUERY_RESULT')
-        assert value['status']=='degraded' and value['read_events']==[{'synthetic_native_timing':1}]
-        assert calls==['native-event-query'] and len(json.dumps(value).encode())<=262144
-    finally:stop.set();await task
+        value=await asyncio.wait_for(peer.wait('QUERY_RESULT'),1)
+        assert value['status']=='degraded' and 'read_events' not in value
+        assert len(json.dumps(value).encode())<=262144
+        assert await asyncio.to_thread(entered.wait,1)
+        assert calls==['native-event-query']
+        # A second authorized read is still delivered while the first
+        # diagnostic drain is blocked. Do not create another background drain.
+        await peer.put(query(request='native-event-query-2',turn=2,claim='native-claim-2'))
+        second=await asyncio.wait_for(peer.wait('QUERY_RESULT',
+            predicate=lambda f:f['request_id']=='native-event-query-2'),1)
+        assert second['status']=='degraded' and 'read_events' not in second
+        assert not worker._read_telemetry_export.done()
+        assert calls==['native-event-query']
+    finally:
+        release.set();stop.set();await task
 
 
 @pytest.mark.asyncio
@@ -599,9 +617,8 @@ async def test_pending_native_result_resync_preserves_runtime_and_auth_fences(mo
             await peer.inputs[1].put(transport.BgeChannelStopped('channel authority or contract ended'))
         else:
             await peer.put(conflicting)
-        if fault != 'new_dispatch':
-            error = transport.BgeChannelStopped if fault in ('stale_generation', 'authority_closed') else ValueError
-            with pytest.raises(error):
+        if fault == 'authority_closed':
+            with pytest.raises(transport.BgeChannelStopped):
                 await asyncio.wait_for(task, 2)
             assert peer.sessions == 1 and closes == ['close']
             assert worker.job is original_job and worker.pending is original_pending

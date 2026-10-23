@@ -184,7 +184,7 @@ class WorkerRecoveryPhases:
         if (not isinstance(frame,dict) or set(frame)-optional!=fields
                 or ('dataset_base' in frame)!=('dataset_observation' in frame)
                 or 'dataset_base' in frame and frame.get('phase')!='prepare'
-                or 'download_ticket' in frame and frame.get('phase') not in ('prepare','drill_prepare','read_handler_stage','schema_bundle_stage','dataset_verify') or frame['type']!='DISPATCH'
+                or 'download_ticket' in frame and frame.get('phase') not in ('prepare','drill_prepare','schema_bundle_stage','dataset_verify') or frame['type']!='DISPATCH'
                 or frame['protocol_version']!=2 or frame['kind']!='recovery_phase'
                 or frame['phase'] not in PHASES-{'source_history'}-ORIGINAL_PHASES or type(frame['connection_generation']) is not int
                 or frame['connection_generation']<1 or type(frame['dispatch_generation']) is not int
