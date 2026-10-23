@@ -1,0 +1,857 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/main/docs/testing/rkb-extraction-quality-result-schema-20261023.json",
+  "title": "RKB extraction PMI: append-only blind attempt record",
+  "description": "Schema only, NOT RUN. Store one JSONL object per attempted query/arm/replicate after approved multi-source import. Never rewrite prior rows. Gold stays separate from runners. Does not create telemetry/harness.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "attempt_id",
+    "batch_id",
+    "run_id",
+    "case_id",
+    "family_id",
+    "query_variant_index",
+    "attempt_ordinal",
+    "created_at",
+    "frozen",
+    "method",
+    "scope",
+    "execution",
+    "status",
+    "tool_trace",
+    "retrieved_candidates",
+    "model_answer",
+    "timings_ms",
+    "tokens",
+    "resources",
+    "adjudication"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "rkb-extraction-result-v1"
+    },
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "batch_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^EQ26-"
+    },
+    "family_id": {
+      "type": "string",
+      "pattern": "^EQ26-"
+    },
+    "query_variant_index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "attempt_ordinal": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "frozen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo_commit",
+        "installed_runtime_commit",
+        "source_corpus_manifest_sha256",
+        "gold_manifest_sha256",
+        "model_id",
+        "model_revision",
+        "tokenizer_revision",
+        "settings_sha256",
+        "allowed_source_ids",
+        "accepted_source_revisions",
+        "projection_cursor"
+      ],
+      "properties": {
+        "repo_commit": {
+          "type": "string"
+        },
+        "installed_runtime_commit": {
+          "type": "string"
+        },
+        "source_corpus_manifest_sha256": {
+          "type": "string"
+        },
+        "gold_manifest_sha256": {
+          "type": "string"
+        },
+        "model_id": {
+          "type": "string"
+        },
+        "model_revision": {
+          "type": "string"
+        },
+        "tokenizer_revision": {
+          "type": "string"
+        },
+        "settings_sha256": {
+          "type": "string"
+        },
+        "allowed_source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "accepted_source_revisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "source_id",
+              "revision",
+              "source_sha256"
+            ],
+            "properties": {
+              "source_id": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "string"
+              },
+              "source_sha256": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "projection_cursor": {
+          "type": "string"
+        }
+      }
+    },
+    "method": {
+      "type": "object",
+      "required": [
+        "retrieval_arm",
+        "neighbor_arm",
+        "other_parameters",
+        "candidate_budget",
+        "top_k"
+      ],
+      "properties": {
+        "retrieval_arm": {
+          "enum": [
+            "configured_baseline",
+            "bge_dense_only",
+            "lexical_only",
+            "configured_fusion",
+            "client_ru_de",
+            "aliases",
+            "bge_sparse",
+            "colbert_rerank",
+            "cross_encoder_rerank",
+            "import_translation_projection"
+          ]
+        },
+        "neighbor_arm": {
+          "enum": [
+            "no_neighbors",
+            "legacy_strong_continuation_only",
+            "always_plus_minus_one"
+          ]
+        },
+        "other_parameters": {
+          "type": "object"
+        },
+        "candidate_budget": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "top_k": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "required": [
+        "actor_profile_ref",
+        "source_filter",
+        "scope_digest",
+        "current_acl_decision",
+        "withdrawal_check_status"
+      ],
+      "properties": {
+        "actor_profile_ref": {
+          "type": "string"
+        },
+        "source_filter": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope_digest": {
+          "type": "string"
+        },
+        "current_acl_decision": {
+          "enum": [
+            "allow",
+            "deny",
+            "unknown"
+          ]
+        },
+        "withdrawal_check_status": {
+          "enum": [
+            "checked",
+            "denied",
+            "unknown",
+            "not_applicable"
+          ]
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": [
+        "client_kind",
+        "query_language",
+        "question_only_sha256",
+        "cache_condition",
+        "warm_cold",
+        "concurrent_users",
+        "model_version"
+      ],
+      "properties": {
+        "client_kind": {
+          "type": "string"
+        },
+        "query_language": {
+          "enum": [
+            "ru",
+            "de",
+            "en"
+          ]
+        },
+        "question_only_sha256": {
+          "type": "string"
+        },
+        "cache_condition": {
+          "enum": [
+            "hit",
+            "miss",
+            "unknown"
+          ]
+        },
+        "warm_cold": {
+          "enum": [
+            "warm",
+            "cold",
+            "mixed"
+          ]
+        },
+        "concurrent_users": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "model_version": {
+          "type": "string"
+        },
+        "prompt_budget_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "no_relevant_evidence",
+        "abstained",
+        "ambiguous",
+        "denied",
+        "error",
+        "timeout",
+        "cancelled",
+        "pending",
+        "unknown"
+      ]
+    },
+    "error": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "class": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "timeout_budget_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "safe_details": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "tool_trace": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tool_name",
+          "call_ordinal",
+          "started_at",
+          "ended_at",
+          "outcome",
+          "elapsed_ms",
+          "phase_timings_ms"
+        ],
+        "properties": {
+          "tool_name": {
+            "type": "string"
+          },
+          "call_ordinal": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ended_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "outcome": {
+            "enum": [
+              "completed",
+              "error",
+              "timeout",
+              "denied",
+              "pending",
+              "cancelled",
+              "unknown"
+            ]
+          },
+          "elapsed_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "phase_timings_ms": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "raw_trace_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trace_fidelity": {
+            "enum": [
+              "native_trace",
+              "partial_native_trace",
+              "unavailable"
+            ]
+          }
+        }
+      }
+    },
+    "retrieved_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "rank",
+          "original_source_id",
+          "accepted_revision",
+          "original_passage_ref",
+          "printed_page_or_region",
+          "neighbor_of_rank",
+          "current_acl_checked"
+        ],
+        "properties": {
+          "rank": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "original_source_id": {
+            "type": "string"
+          },
+          "accepted_revision": {
+            "type": "string"
+          },
+          "original_passage_ref": {
+            "type": "string"
+          },
+          "printed_page_or_region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "neighbor_of_rank": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "current_acl_checked": {
+            "type": "boolean"
+          },
+          "relevance_judgement": {
+            "enum": [
+              "relevant",
+              "irrelevant",
+              "partial",
+              "not_yet_adjudicated"
+            ]
+          }
+        }
+      }
+    },
+    "model_answer": {
+      "type": "object",
+      "required": [
+        "status",
+        "text_ref",
+        "claim_ref_list",
+        "actual_evidence_refs",
+        "unsupported_claims"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "present",
+            "absent",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "text_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "claim_ref_list": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "actual_evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unsupported_claims": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "model_answer_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "timings_ms": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "required": [
+        "user_to_evidence",
+        "user_to_useful_answer",
+        "user_to_full_answer",
+        "public_mcp",
+        "backend_ranked_retrieval",
+        "model_generation",
+        "queue_and_dispatch"
+      ],
+      "properties": {
+        "user_to_evidence": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "user_to_useful_answer": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "user_to_full_answer": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "public_mcp": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "backend_ranked_retrieval": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "model_generation": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "queue_and_dispatch": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "encode": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "lexical": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "dense_ann": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "fusion": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "hydrate_acl": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "wire": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "serialization": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "tokens": {
+      "type": "object",
+      "required": [
+        "query_input",
+        "retrieval_text_returned",
+        "neighbor_text_returned",
+        "model_input",
+        "model_output",
+        "measurement_status"
+      ],
+      "properties": {
+        "query_input": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "retrieval_text_returned": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "neighbor_text_returned": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "model_input": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "model_output": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "measurement_status": {
+          "enum": [
+            "actual",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "unavailable_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "required": [
+        "availability",
+        "cpu_ms",
+        "gpu_ms",
+        "gpu_memory_peak_bytes",
+        "ram_peak_bytes",
+        "io_read_bytes",
+        "io_write_bytes",
+        "unavailable_reason"
+      ],
+      "properties": {
+        "availability": {
+          "enum": [
+            "native_trace",
+            "partial_native_trace",
+            "unavailable"
+          ]
+        },
+        "cpu_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "gpu_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "gpu_memory_peak_bytes": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "ram_peak_bytes": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "io_read_bytes": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "io_write_bytes": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "unavailable_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "adjudication": {
+      "type": "object",
+      "required": [
+        "status",
+        "reviewer1",
+        "reviewer2",
+        "blind_phase",
+        "evidence_relevance",
+        "answer_correctness",
+        "answer_completeness",
+        "provenance_correct",
+        "hallucination",
+        "abstention_correct"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "unreviewed",
+            "provisional",
+            "resolved",
+            "disputed"
+          ]
+        },
+        "reviewer1": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reviewer2": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blind_phase": {
+          "enum": [
+            "gold_hidden_to_runner",
+            "gold_unsealed_post_run"
+          ]
+        },
+        "evidence_relevance": {
+          "enum": [
+            "yes",
+            "partial",
+            "no",
+            "not_applicable",
+            "not_reviewed"
+          ]
+        },
+        "answer_correctness": {
+          "enum": [
+            "correct",
+            "partial",
+            "incorrect",
+            "unanswerable_correct",
+            "not_reviewed"
+          ]
+        },
+        "answer_completeness": {
+          "enum": [
+            "complete",
+            "partial",
+            "missing",
+            "not_applicable",
+            "not_reviewed"
+          ]
+        },
+        "provenance_correct": {
+          "enum": [
+            "yes",
+            "no",
+            "partial",
+            "not_reviewed"
+          ]
+        },
+        "hallucination": {
+          "enum": [
+            "none",
+            "present",
+            "not_reviewed"
+          ]
+        },
+        "abstention_correct": {
+          "enum": [
+            "yes",
+            "no",
+            "not_applicable",
+            "not_reviewed"
+          ]
+        }
+      }
+    },
+    "immutable_predecessor_attempt_sha256": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tool_trace_privacy_note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}
