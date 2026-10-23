@@ -425,7 +425,8 @@ class TargetServiceStartup:
         # the ready successor becomes the serving current run. Do not run
         # writer maintenance, checkpoint publication or schema mutation here.
         owner=self.config.writer_owner
-        if (owner is not None and self.coverage is not None and self.binding is not None
+        if (owner is not None and self.coverage is not None
+                and getattr(self, 'binding', None) is not None
                 and owner.retired_serving(self.binding)):
             return self.reads_current()
         try:
