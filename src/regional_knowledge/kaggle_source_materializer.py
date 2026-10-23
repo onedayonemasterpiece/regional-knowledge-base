@@ -65,11 +65,9 @@ def _typed(model, raw):
 def materializer_fingerprint():
     root=Path(__file__).parent
     names=('kaggle_source_materializer.py','source_batch_selection.py','source_batch_context.py','kaggle_source_batch.py','source_graph_native.py','source_stage.py',
-        'source_activation.py','stage_graph.py','source_packet_tails.py','contracts.py','entity_graph.py',
-        'story_contracts.py','search_material.py','region_policy.py','continuation_context.py',
-        'source_manifest.py','kaggle_import_contracts.py','bge_contract.py')
+        'source_activation.py','stage_graph.py','source_packet_tails.py','entity_graph.py',
+        'source_manifest.py','bge_contract.py')
     return digest(canonical({name:digest((root/name).read_bytes()) for name in names}))
-
 
 def merge_native_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
     # Reissuing the exact page for additional chunks is enrichment, not a
