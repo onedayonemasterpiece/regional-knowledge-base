@@ -251,6 +251,8 @@ class MaterializerFingerprintTests(unittest.IsolatedAsyncioTestCase):
             ('contracts.py',
                 'span_refs: list[StageRegionSpanRef] = Field(default_factory=list, max_length=100)',
                 'span_refs: list[StageRegionSpanRef] = Field(default_factory=list, max_length=99)'),
+            ('contracts.py', 'class StageChunkInput(BaseModel):',
+                '@synthetic_stage_decorator\nclass StageChunkInput(BaseModel):'),
             ('contracts.py', 'if self.start >= self.end:', 'if self.start > self.end:'),
             ('story_contracts.py',
                 'summary: Annotated[str, Field(min_length=5, max_length=1000)]',
