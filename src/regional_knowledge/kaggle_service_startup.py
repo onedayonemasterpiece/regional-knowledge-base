@@ -199,7 +199,7 @@ class TargetServiceStartup:
         self.authority,self.admission=authority,admission
         self.binding=self.coverage=None
         self.running=False;self.closed=False;self._maintenance=None
-        self.gate=SourceReadGate(authority,config.spool,binding_current=self.binding_current)
+        self.gate=SourceReadGate(authority,config.spool,binding_current=self.read_binding_current)
         self.backend=_SourceBackend(worker_queue=config.queue,read_authority=authority,
             source_gate=self.gate,destination_ref=config.destination_ref)
         self.backend.startup=self
@@ -225,7 +225,7 @@ class TargetServiceStartup:
         if config.geo_manifest_operation_keys:
             from .geo_read_gate import GeoReadGate
             from .kaggle_geo_backend import KaggleGeoBackend
-            self.geo_gate=GeoReadGate(authority,config.spool,binding_current=self.binding_current)
+            self.geo_gate=GeoReadGate(authority,config.spool,binding_current=self.read_binding_current)
             if not self.geo_gate.supported():
                 raise ValueError('explicit fresh11 GEO handler required for GEO startup')
             self.geo_backend=KaggleGeoBackend(worker_queue=config.queue,read_authority=authority,
@@ -233,7 +233,7 @@ class TargetServiceStartup:
             self.routes.update({'geo.identity_read':self.geo_backend.geo_lookup,
                 'geo.members_read':self.geo_backend.graph_fetch})
         from .case_read_gate import CaseReadGate
-        self.case_gate=CaseReadGate(authority,config.spool,binding_current=self.binding_current)
+        self.case_gate=CaseReadGate(authority,config.spool,binding_current=self.read_binding_current)
         self.cases_backend=None
         if self.case_gate.cases_supported():
             from .kaggle_cases_backend import KaggleCasesBackend
@@ -334,6 +334,20 @@ class TargetServiceStartup:
                     writer_generation=self.config.writer_generation))
         except Exception:return False
 
+    def read_binding_current(self,binding):
+        """Read-serving binding survives writer retirement, never write admission."""
+        if self.binding_current(binding):
+            return True
+        owner=self.config.writer_owner
+        if owner is None:
+            return False
+        try:
+            return (not self.closed and type(binding) is TargetReadBinding
+                and current_binding(self.config.queue)==binding
+                and owner.retired_serving(binding))
+        except Exception:
+            return False
+
     def command_binding_current(self,*,run_id,runtime_incarnation,connection_generation,
                                 database_generation,writer_generation):
         try:
@@ -348,13 +362,13 @@ class TargetServiceStartup:
     def reads_current(self):
         try:
             return bool(self.running and not self.closed and (self.snapshot is None or self.snapshot.verified) and self.coverage is not None
-                and self.coverage.current() and self.binding_current(self.binding))
+                and self.coverage.current() and self.read_binding_current(self.binding))
         except Exception:return False
 
     def imports_current(self):
         # Current restored cursor/binding authorizes ordinary imports. Native
         # admission retains exact receipts, UNKNOWN and writer fencing.
-        return self.reads_current()
+        return self.reads_current() and self.binding_current(self.binding)
 
     async def _dataset_coverage(self,binding):
         """READY restored Dataset + retained apply receipts is the cursor.
@@ -378,7 +392,7 @@ class TargetServiceStartup:
             if self.geo_gate is not None:self.geo_gate.invalidate()
             self.case_gate.invalidate()
         self.binding=binding
-        cursor=await spool.dataset_cursor(binding,control=control,current=self.binding_current)
+        cursor=await spool.dataset_cursor(binding,control=control,current=self.read_binding_current)
         if cursor is not self.coverage:
             _LOG.info('target_dataset_cursor run_id=%s dataset_version=%s accepted_seq=%s applied_seq=%s pending_count=%s',
                 binding.run_id,checkpoint.dataset_version,cursor.accepted_sequence,cursor.applied_sequence,len(cursor.pending))
@@ -407,8 +421,14 @@ class TargetServiceStartup:
             return False
         """Maintenance only; public reads use the PG binding independently."""
         if not self.running or self.closed:return False
+        # An exact retired writer keeps its already proven Dataset reads until
+        # the ready successor becomes the serving current run. Do not run
+        # writer maintenance, checkpoint publication or schema mutation here.
+        owner=self.config.writer_owner
+        if (owner is not None and self.coverage is not None and self.binding is not None
+                and owner.retired_serving(self.binding)):
+            return self.reads_current()
         try:
-            owner=self.config.writer_owner
             if owner is not None:
                 # Read back an owned UNKNOWN publication even if its worker
                 # disconnected, before restore/current-runtime checks reject it.
