@@ -238,6 +238,7 @@ class TargetServiceStartup:
             from .kaggle_cases_backend import KaggleCasesBackend
             self.cases_backend=KaggleCasesBackend(self,case_gate=self.case_gate)
             self.routes.update({'case.read':self.cases_backend.disagreement_get,
+                'case.search':self.cases_backend.disagreement_search,
                 'case.edit':self.cases_backend.disagreement_edit,'case.access':config.spool.stage_domain_command,
                 'case.contribute':self.cases_backend.disagreement_contribute,
                 'case.conclusion':self.cases_backend.disagreement_conclusion})
