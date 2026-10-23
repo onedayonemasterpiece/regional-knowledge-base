@@ -414,9 +414,16 @@ class TargetServiceStartup:
                 else:
                     coverage=self.coverage if self._coverage_idle() else await self.history.extend(self.binding)
             else:
-                self.coverage=None;self.gate.invalidate();self.binding=binding
-                if self.geo_gate is not None:self.geo_gate.invalidate()
-                self.case_gate.invalidate()
+                # Only a different runtime/binding revokes an in-flight PG read.
+                # A failed history renewal must not invalidate a healthy read
+                # ticket every maintenance tick on the same native database.
+                changed=binding!=self.binding
+                self.coverage=None
+                if changed:
+                    self.gate.invalidate()
+                    if self.geo_gate is not None:self.geo_gate.invalidate()
+                    self.case_gate.invalidate()
+                self.binding=binding
                 coverage=await self.history.restore(binding)
             if not coverage.current() or not self.binding_current(self.binding):
                 raise PermissionError('native history proof no longer current')
