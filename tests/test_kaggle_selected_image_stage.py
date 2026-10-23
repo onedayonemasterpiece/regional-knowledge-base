@@ -97,18 +97,33 @@ async def test_174_pages_stage_in_batches_without_native_text_or_book_fetch(inta
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('case',['unissued','forged','wrong_original','unreviewed'])
+@pytest.mark.parametrize('case',['unissued','wrong_original','unreviewed'])
 async def test_selected_stage_rejects_unissued_or_changed_provenance(intake,case):
     s=intake;result=await start(s);controller,receipt=issuer(s,result)
     payload=batch(controller,receipt,0,1,issue=case!='unissued')
-    if case=='forged':payload['pages'][0]['source_image_receipt_sha256']='f'*64
-    if case=='wrong_original':s.originals.receipts[result.ingestion_id]=replace(receipt,sha256='f'*64)
+     if case=='wrong_original':s.originals.receipts[result.ingestion_id]=replace(receipt,sha256='f'*64)
     if case=='unreviewed':
         payload['pages'][0].update(knowledge_reviewed=False,source_material='preview')
     with pytest.raises((ToolError,OriginalIntakeError)):
         await s.importer.book_ingest(command='stage',principal=s.principal,ingestion_id=result.ingestion_id,
             payload=payload,source_import=options(research=True))
     assert s.importer._row(s.principal.subject,result.ingestion_id)['stage_json'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('echo',['omitted','incorrect'])
+async def test_reviewed_issued_page_does_not_require_model_hash_echo(intake,echo):
+    s=intake;result=await start(s);controller,receipt=issuer(s,result)
+    payload=batch(controller,receipt,0,1)
+    if echo=='omitted':
+        payload['pages'][0].pop('source_image_receipt_sha256')
+    else:
+        payload['pages'][0]['source_image_receipt_sha256']='f'*64
+    await s.importer.book_ingest(command='stage',principal=s.principal,ingestion_id=result.ingestion_id,
+        payload=payload,source_import=options(research=True))
+    graph=StagedGraph.model_validate_json(s.importer._row(s.principal.subject,result.ingestion_id)['stage_json'])
+    assert graph.pages[0].source_material=='visual_reviewed'
+    assert graph.pages[0].physical_page_index==0
 
 
 @pytest.mark.asyncio
