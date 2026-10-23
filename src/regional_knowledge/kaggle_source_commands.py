@@ -213,10 +213,14 @@ class WorkerSourceExecutor:
             from .kaggle_source_materializer import SourceMaterializationRejected
             try:
                 await self.materializer(command,acquire=self.acquire,database=self.database)
-            except SourceMaterializationRejected:
+            except SourceMaterializationRejected as error:
                 # Deterministic invalid model input produces an ordinary
                 # rejected-precondition receipt, not a fabricated completion.
-                pass
+                reason=str(error)
+                if not 1<=len(reason)<=100 or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_' for c in reason):
+                    reason='invalid_model_input'
+                _LOG.warning('native_source_materialization state=rejected route=%s sequence=%s reason=%s',
+                    command.route,command.sequence,reason)
         async with self.acquire() as connection:
             receipt=await apply_accepted(connection,journal=proof,seal=seal,command=command,
                 database_generation=self.database.database_generation,writer_generation=self.database.writer_generation,
