@@ -326,11 +326,25 @@ class KaggleSourceBackend:
 
     @staticmethod
     def _render_story(result, *, attempt):
-        return {**(result.record or {}),**({'next_cursor':editorial_cursor(result.record,result.observed_database_generation)}
+        output={**(result.record or {}),**({'next_cursor':editorial_cursor(result.record,result.observed_database_generation)}
             if type(result) is EditorialReadResult and result.record is not None else {}),'status':result.status,'reason':result.reason,
             'observed_data_seq':result.observed_data_seq,'observed_projection_seq':result.observed_projection_seq,
             'read_trace':ReadTrace(**attempt.correlation(),
                 backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json')}
+        # Use the SAME opaque locator and independent ACL/revocation checks as
+        # ordinary fetch. The Story never confers a new passage-read grant.
+        if result.record is not None and 'passage_refs' in result.record:
+            if (result.observed_database_generation is None or result.observed_visibility_epoch is None
+                    or len(result.evidence)!=1 or len(result.evidence[0].dependencies.source_revisions)!=1):
+                raise ValueError('current Story source locator required')
+            source=result.evidence[0].dependencies.source_revisions[0]
+            output['passage_refs']=[{**ref,'fetch_id':passage_fetch_id(PassageContinuation(
+                database_generation=result.observed_database_generation,
+                source=source, passage_id=ref['passage_id'],
+                visibility_epoch=result.observed_visibility_epoch,
+                text_offset=0,bibliography_offset=0))}
+                for ref in result.record['passage_refs']]
+        return output
 
     @staticmethod
     def _render_fact(result, *, attempt, comparison=False):
