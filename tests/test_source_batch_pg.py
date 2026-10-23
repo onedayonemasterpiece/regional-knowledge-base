@@ -126,3 +126,48 @@ async def test_later_finding_uses_ordinary_prior_passage_without_history_scan(im
     async with env['connection'].transaction():
         assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.passage_search')).fetchone()==(2,)
         assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.story_assertion_versions')).fetchone()==(1,)
+
+
+@PG
+@pytest.mark.asyncio
+async def test_story_completed_on_next_page_persists_body_and_both_passage_refs(image_pg_sql18):
+    """The finishing packet can cite an already published page without restaging it."""
+    env=image_pg_sql18;first=exact_batch(count=1);prepare,_=native(env)
+    assert (await accepted(env,stage_command(first,1))).status=='applied'
+    c=packet(env,first);await prepare(c)
+    assert (await accepted(env,c)).status=='applied'
+    second=exact_batch(1,digest(canonical(first)),start=1,count=1)
+    pages=[first['model_payload']['pages'][0],second['model_payload']['pages'][0]]
+    body='Синтетический эпизод начинается на первой странице. Его окончание находится на следующей.'
+    second['model_payload']['story_candidates']=[dict(candidate_key='finished-episode',
+        title='Синтетический эпизод на двух страницах',summary='Один эпизод с окончанием.',
+        proposition='Две страницы содержат один синтетический эпизод.',
+        evidence_refs=[dict(page_id=p['page_id'],region_key='body',
+            original_excerpt=p['regions'][0]['source_text']) for p in pages],
+        basic_variant=dict(body=body,language='ru',
+            blocks=[dict(start=0,end=len(body),evidence_indexes=[0,1])]))]
+    assert (await accepted(env,stage_command(second,env['sequence']+1))).status=='applied'
+    c=packet(env,second);await prepare(c)
+    assert (await accepted(env,c)).status=='applied'
+    c=packet(env,second,'semantic');await prepare(c)
+    assert (await accepted(env,c)).status=='applied'
+    assert (await accepted(env,c)).duplicate
+    async with env['connection'].transaction():
+        row=await (await env['connection'].execute('''SELECT v.body,v.data,a.assertion_id,a.data
+            FROM rkb_v4.stories s
+            JOIN rkb_v4.story_variant_versions v ON v.variant_id=s.default_variant_id
+                AND v.revision=s.default_variant_revision
+            JOIN rkb_v4.story_versions sv ON sv.story_id=s.story_id AND sv.revision=s.current_revision
+            JOIN rkb_v4.story_assertion_versions a
+                ON a.assertion_id=(sv.data->'finding_ids'->>0)::uuid''')).fetchone()
+        assert row[0]==body
+        assert row[1]['language']=='ru'
+        assert row[1]['blocks']==[dict(start=0,end=len(body),assertion_ids=[str(row[2])])]
+        evidence=row[3]['evidence']
+        assert len(evidence)==2
+        refs=await (await env['connection'].execute('''SELECT passage_id FROM rkb_v4.passage_search
+            WHERE source_id=%s''',(SOURCE,))).fetchall()
+        assert {e['passage_id'] for e in evidence}=={str(r[0]) for r in refs}
+        assert len({e['region_id'] for e in evidence})==2
+        assert await (await env['connection'].execute('SELECT body FROM rkb_v4.story_search')).fetchone()==(body,)
+        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.source_story_pending')).fetchone()==(0,)
