@@ -4,6 +4,7 @@ No Kaggle, PG, original bytes, network or import mutation is executed here.
 """
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -64,10 +65,10 @@ def arguments(tool):
         "ingestion_id": _INGESTION, "batch_size": 2}
 
 
-async def error_envelope(server, tool):
+async def error_envelope(server, tool, args=None):
     """Exercise the registered callable and inspect MCP's actual error surface."""
     try:
-        result = await server.call_tool(tool, arguments(tool))
+        result = await server.call_tool(tool, arguments(tool) if args is None else args)
     except ToolError as exc:
         raw = str(exc)
     else:
@@ -81,8 +82,9 @@ async def error_envelope(server, tool):
     begin, end = raw.find("{"), raw.rfind("}")
     assert 0 <= begin < end
     envelope = json.loads(raw[begin:end + 1])
-    assert set(envelope) == {"status", "reason", "error_class"}
-    assert len(json.dumps(envelope)) <= 250
+    assert {"status", "reason", "error_class"} <= set(envelope)
+    assert set(envelope) <= {"status", "reason", "error_class", "hints"}
+    assert len(json.dumps(envelope)) <= 360
     return envelope
 
 
@@ -194,3 +196,118 @@ async def test_successful_registered_ingest_and_page_response_are_unchanged(regi
     assert manifest["pages"][0]["physical_page_index"] == 0
     assert read.content[1].type == "image"
     assert backend.calls == [("book_ingest", "status"), ("book_pages", _INGESTION)]
+
+
+@pytest.mark.asyncio
+async def test_real_stage_file_parser_preserves_only_two_redacted_path_type_hints(
+        tmp_path, monkeypatch):
+    """Real parse_stage_file -> read_stage_file -> registered book_ingest.
+
+    Malicious *field name* and *value* must not enter MCP or server errors.
+    """
+    from regional_knowledge.stage_file import (
+        StageFileError, parse_stage_file, MAX_STAGE_FILE_BYTES,
+    )
+    secret_key = "bearer_TOKEN_" + _SECRET
+    payload = {
+        "ingestion_id": _INGESTION, "source_revision": 1,
+        "pages": _SECRET,  # Pydantic list_type, no original text in error.
+        secret_key: _SECRET,  # Unknown labels become *:extra_forbidden.
+    }
+    raw = json.dumps(payload).encode()
+    with pytest.raises(StageFileError) as caught:
+        parse_stage_file(raw, _INGESTION, 1)
+    assert "stage_file_schema" in str(caught.value)
+    assert secret_key not in str(caught.value) and _SECRET not in str(caught.value)
+
+    original = tmp_path / "unsafe-user-stage.json"
+    original.write_bytes(raw)
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    monkeypatch.setenv("RKB_WORK_DIR", str(tmp_path / "private-work"))
+    monkeypatch.delenv("RKB_BGE_QUEUE_PATH", raising=False)
+    monkeypatch.setattr(server_module, "_principal", lambda: Principal(
+        subject=_INGESTION, client_id="fixture-client",
+        issuer="fixture-issuer", access_token="PRIVATE_TOKEN_DO_NOT_LOG"))
+
+    class Downloader:
+        calls = 0
+
+        async def download(self, url, target, *, max_bytes, content_kind):
+            self.calls += 1
+            assert max_bytes == MAX_STAGE_FILE_BYTES and content_kind == "stage_json"
+            return SimpleNamespace(path=original, sha256="a" * 64)
+
+    class StageBackend(FakeBooks):
+        def __init__(self):
+            super().__init__()
+            self.file_downloader = Downloader()
+            self.lookups = 0
+
+        async def _ingestion_row(self, *, principal, ingestion_id):
+            self.lookups += 1
+            assert principal.subject == _INGESTION and ingestion_id == _INGESTION
+            return {"id": _INGESTION, "staged_revision": 1, "owner_user_id": _INGESTION}
+
+    backend = StageBackend()
+    server = server_module.build_server(backend, profile="full")
+    result = await error_envelope(server, "book_ingest", {
+        "command": "stage", "ingestion_id": _INGESTION,
+        "file": {
+            "file_id": "synthetic-stage-json",
+            "download_url": "https://files.example.test/stage.json?token=PRIVATE_TOKEN",
+            "mime_type": "application/json",
+        },
+    })
+    assert result == {
+        "status": "invalid_query", "reason": "stage_file_schema",
+        "error_class": "domain",
+        "hints": ["pages:list_type", "*:extra_forbidden"],
+    }
+    assert backend.lookups == 1 and backend.file_downloader.calls == 1
+    assert backend.calls == []  # Never entered source mutation.
+    assert _SECRET not in json.dumps(result) and secret_key not in json.dumps(result)
+    assert "PRIVATE_TOKEN" not in json.dumps(result)
+    assert "https://" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_untyped_stage_file_schema_text_never_reveals_untrusted_hints(registered_books):
+    from regional_knowledge.stage_file import StageFileError
+    server, backend = registered_books
+    backend.error = ToolError("stage_file_schema: pages:list_type; " + _SECRET)
+    assert await error_envelope(server, "book_ingest") == {
+        "status": "invalid_query", "reason": "stage_file_schema",
+        "error_class": "domain"}
+    forged = ToolError("stage_file_schema: pages:list_type")
+    forged.__cause__ = StageFileError("stage_file_schema: pages:list_type")
+    backend.error = forged
+    assert await error_envelope(server, "book_ingest") == {
+        "status": "invalid_query", "reason": "stage_file_schema",
+        "error_class": "domain"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["book_ingest", "book_pages"])
+async def test_missing_actual_mcp_principal_denied_before_backend_effect(monkeypatch, tool):
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    monkeypatch.delenv("RKB_BGE_QUEUE_PATH", raising=False)
+    # Exercise the original server._principal, not the fake principal fixture.
+    monkeypatch.setattr(server_module, "get_access_token", lambda: None)
+    backend = FakeBooks()
+    server = server_module.build_server(backend, profile="full")
+    record = await error_envelope(server, tool)
+    assert record == {
+        "status": "denied", "reason": "authenticated_user_context_required",
+        "error_class": "access",
+    }
+    assert backend.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["book_ingest", "book_pages"])
+async def test_backend_runtimeerror_with_same_auth_words_is_still_unknown(registered_books, tool):
+    server, backend = registered_books
+    backend.error = RuntimeError("authenticated user context is required")
+    assert await error_envelope(server, tool) == {
+        "status": "unknown", "reason": "internal_error", "error_class": "internal"}
+    assert len(backend.calls) == 1

@@ -168,6 +168,31 @@ _BOOK_LOCAL_REASONS = {
 }
 
 
+def _book_stage_schema_hints(exc: ToolError) -> list[str]:
+    """Only the real StageFile parser's redacted path/type diagnostics."""
+    from .stage_file import StageFileError, parse_stage_file
+    cause = exc.__cause__
+    if type(cause) is not StageFileError:
+        return []
+    origin = cause.__traceback__
+    while origin is not None and origin.tb_next is not None:
+        origin = origin.tb_next
+    if origin is None or origin.tb_frame.f_code is not parse_stage_file.__code__:
+        return []  # A fabricated ToolError/StageFileError is not source evidence.
+    detail = str(cause)
+    prefix = "stage_file_schema: "
+    if not detail.startswith(prefix) or len(detail) > 1024:
+        return []
+    hints = []
+    path_pattern = r"(?:[a-z][a-z0-9_]{0,47}|\*|[0-9]{1,4})(?:\.(?:[a-z][a-z0-9_]{0,47}|\*|[0-9]{1,4})){0,7}"
+    for item in detail[len(prefix):].split("; ")[:2]:
+        path, sep, error_type = item.partition(":")
+        if (sep and len(item) <= 96 and re.fullmatch(path_pattern, path)
+                and re.fullmatch(r"[a-z][a-z0-9_]{0,47}", error_type)):
+            hints.append(item)  # The producer masks unknown field labels as *.
+    return hints
+
+
 def _book_mcp_error(exc: Exception) -> ToolError:
     """Keep existing domain status/reason; never serialize exception messages."""
     status, reason, error_class = "unknown", "internal_error", "internal"
@@ -194,13 +219,28 @@ def _book_mcp_error(exc: Exception) -> ToolError:
                     status, reason = _BOOK_LOCAL_REASONS[label], label
     elif isinstance(exc, PermissionError):
         status, reason, error_class = "denied", "access_denied", "access"
+    elif (type(exc) is RuntimeError and
+          exc.args == ("authenticated user context is required",)):
+        # Only a raise *inside the existing _principal* proves that backend
+        # execution was never entered. Backend RuntimeErrors with identical
+        # wording must remain UNKNOWN instead of falsely denied.
+        origin = exc.__traceback__
+        while origin is not None and origin.tb_next is not None:
+            origin = origin.tb_next
+        if origin is not None and origin.tb_frame.f_code is _principal.__code__:
+            status, reason, error_class = (
+                "denied", "authenticated_user_context_required", "access")
     elif isinstance(exc, TimeoutError):
         status, reason, error_class = "unknown", "transport_timeout", "transport"
     elif isinstance(exc, (ConnectionError, OSError)):
         status, reason, error_class = "unknown", "transport_unavailable", "transport"
     # For every other exception the operation's effect is UNKNOWN, not rejected.
-    return ToolError(json.dumps({"status": status, "reason": reason,
-                                 "error_class": error_class}, separators=(",", ":")))
+    response = {"status": status, "reason": reason, "error_class": error_class}
+    if reason == "stage_file_schema" and isinstance(exc, ToolError):
+        hints = _book_stage_schema_hints(exc)
+        if hints:
+            response["hints"] = hints
+    return ToolError(json.dumps(response, separators=(",", ":")))
 
 
 def _book_mcp_error_boundary(handler):
