@@ -594,6 +594,21 @@ class KnowledgeExtractionStatus(BaseModel):
     retrieval_acceptance: Literal["not_evaluated"] = "not_evaluated"
 
 
+class SourceTailRef(BaseModel):
+    page_id: str = Field(min_length=36,max_length=36)
+    physical_page_index: int = Field(ge=0,le=2499)
+    region_id: str = Field(min_length=36,max_length=36)
+    region_key: str = Field(min_length=1,max_length=80)
+    source_text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    start: int = Field(ge=0,le=7999)
+    end: int = Field(ge=1,le=8000)
+
+    @model_validator(mode='after')
+    def nonempty_span(self):
+        if self.start>=self.end:raise ValueError('nonempty source tail span required')
+        return self
+
+
 class BookIngestOutput(BaseModel):
     story_extraction: StoryExtractionStatus | None = None
     knowledge_extraction: KnowledgeExtractionStatus | None = None
@@ -602,7 +617,8 @@ class BookIngestOutput(BaseModel):
     message: str
     document_id: str | None = None
     next_cursor: str | None = None
-    next_action: Literal["continue_pages", "validate", "finalize", "wait", "resume_finalize", "done", "blocker"] | None = None
+    next_action: Literal["continue_pages", "continue_tail", "validate", "finalize", "wait", "resume_finalize", "done", "blocker"] | None = None
+    tail_refs: list[SourceTailRef] = Field(default_factory=list,max_length=4)
     warnings: list[str] = Field(default_factory=list)
     indexing: IndexingStatus | None = None
     source_archive_status: Literal["pending", "verified"] | None = None

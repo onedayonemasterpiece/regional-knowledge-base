@@ -31,7 +31,7 @@ def observer_fingerprint():
     """Exact fixed observation/ACL/catalog implementation, not a supplied pin."""
     root=Path(__file__).parent
     return digest(canonical({name:digest((root/name).read_bytes()) for name in (
-        'kaggle_source_history_native.py','kaggle_source_acl.py','kaggle_database_probe.py','kaggle_domain_schema.py')}))
+        'kaggle_source_history_native.py','source_packet_tails.py','kaggle_source_acl.py','kaggle_database_probe.py','kaggle_domain_schema.py')}))
 
 
 @dataclass(eq=False)
@@ -99,6 +99,20 @@ class NativeSourceHistoryObserver:
     async def _observe(self,frame,args,binding):
         action=args.get('action')
         if action=='open':value=await self._open(binding,args)
+        elif action=='source_tails':
+            if set(args)!={'action','source_id','ingestion_id','nonce'}:
+                raise NativeHistoryError('native_history_arguments')
+            for key in ('source_id','ingestion_id'):
+                if str(UUID(args[key]))!=args[key]:raise NativeHistoryError('native_history_arguments')
+            if type(args['nonce']) is not str or len(args['nonce'])!=32:
+                raise NativeHistoryError('native_history_arguments')
+            from .source_packet_tails import pending_tail_refs
+            async with self.acquire() as connection:
+                async with connection.transaction():
+                    await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+                    await connection.execute("SET LOCAL statement_timeout='2s'")
+                    value=await pending_tail_refs(connection,args['source_id'],args['ingestion_id'])
+            if not self.valid(binding):raise NativeHistoryError('native_history_attachment_changed')
         elif action in ('page','close','abort'):
             session=self._sessions.get(args.get('session'))
             if session is None or session.binding!=binding or session.deadline<=time.monotonic():

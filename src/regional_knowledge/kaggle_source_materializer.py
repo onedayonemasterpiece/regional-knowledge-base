@@ -65,7 +65,7 @@ def _typed(model, raw):
 def materializer_fingerprint():
     root=Path(__file__).parent
     names=('kaggle_source_materializer.py','source_batch_selection.py','source_batch_context.py','kaggle_source_batch.py','source_graph_native.py','source_stage.py',
-        'source_activation.py','stage_graph.py','contracts.py','entity_graph.py',
+        'source_activation.py','stage_graph.py','source_packet_tails.py','contracts.py','entity_graph.py',
         'story_contracts.py','search_material.py','region_policy.py','continuation_context.py',
         'source_manifest.py','kaggle_import_contracts.py','bge_contract.py')
     return digest(canonical({name:digest((root/name).read_bytes()) for name in names}))
@@ -485,7 +485,8 @@ class NativeSourceCompiler:
         receipt=VerifiedOriginalReceipt.from_wire(json.loads(base64.b64decode(source['original_receipt_b64'],validate=True)))
         validation=validate_graph(graph,expected_page_count=receipt.page_count,selected_page_indexes=selected_indexes,
             require_figure_review=not text_only,passage_evidence=passage_evidence,
-            coverage_page_indexes=coverage_page_indexes)
+            coverage_page_indexes=coverage_page_indexes,
+            allow_trailing_uncovered=trusted_packet is not None and research['state']=='pending')
         if not validation.ready:raise failure('native_source_stage_requires_review')
         if research['state']=='complete' and not all(reviews.get(str(p.page_id)) for p in graph.pages):
             raise failure('complete_research_requires_explicit_same_pass_page_review')

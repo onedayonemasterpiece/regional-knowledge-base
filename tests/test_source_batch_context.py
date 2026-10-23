@@ -79,7 +79,9 @@ async def test_explicit_prior_passage_does_not_require_other_prior_regions(missi
     second=exact_batch(1,digest(canonical(first)),start=8,count=1)
     if missing_current_text:
         current_extra=copy.deepcopy(extra)
-        current_extra['source_text']='Current text must still be covered.'
+        current_extra.update(source_text='Current text must still be covered.',reading_order=0)
+        # A current prefix/middle gap cannot use the last-page tail exception.
+        second['model_payload']['pages'][0]['regions'][0]['reading_order']=1
         second['model_payload']['pages'][0]['regions'].append(current_extra)
     prior_id=str(uuid5(UUID(SOURCE),'chunk:1:'+first['model_payload']['chunks'][0]['chunk_key']))
     second['model_payload']['story_candidates']=[dict(candidate_key='episode',title='A source finding',

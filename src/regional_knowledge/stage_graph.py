@@ -574,7 +574,8 @@ def merge_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
 def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reuse_verified: bool = False,
                    selected_page_indexes: frozenset[int] | None = None, require_figure_review: bool = True,
                    passage_evidence: bool = False,
-                   coverage_page_indexes: frozenset[int] | None = None) -> GraphValidation:
+                   coverage_page_indexes: frozenset[int] | None = None,
+                   allow_trailing_uncovered: bool = False) -> GraphValidation:
     errors: list[str] = []
     warnings: list[str] = []
     for bundle in graph.entity_candidates:
@@ -864,6 +865,10 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reu
         and (coverage_page_indexes is None
              or page_index_by_id[region_page[region_id]] in coverage_page_indexes)
     }
+    if allow_trailing_uncovered:
+        from .source_packet_tails import deferred_tail_ranges
+        required_coverage -= deferred_tail_ranges(graph,coverage_page_indexes,
+            fully_covered_regions,source_span_intervals).keys()
     uncovered = sorted(required_coverage - covered_regions)
     if uncovered:
         errors.append(f"uncovered textual regions: {uncovered[:40]}")

@@ -307,7 +307,7 @@ class NativeSourceIntake:
                 raise _failure('native_stage_outcome_differs')
             changes.update(batch_count=doc['batch_index']+1,last_batch_sha256=digest(entry.command.payload),
                 last_request_sha256=self._request_hash(doc),phase='staging',rejected_seal_head=None,
-                rejected_batch_index=None,rejected_reason=None)
+                rejected_batch_index=None,rejected_reason=None,read_completion_requested=0)
             await asyncio.to_thread(self.importer._save,row,phase='staging',
                 research_json=canonical({k:v for k,v in doc['research'].items() if k!='frontier_id'}).decode())
         elif kind=='batch':
@@ -420,6 +420,41 @@ class NativeSourceIntake:
             return self.importer._output(row,'ready' if phase=='sealed' else 'processing',
                 'Accepted batch chain sealed; bounded native materialization and activation still required','finalize',source_archive_status='verified')
         return self.importer._output(row,'staged','Exact model batch retained natively; continue reviewed pages or seal the candidate','validate',source_archive_status='verified')
+
+    async def _tail_output(self, access, row, state):
+        if (not state.get('packet_mode') or not state['batch_count']
+                or state['pending_operation_key'] or state.get('rejected_batch_index') is not None
+                or state['phase'] not in ('staging','finalized')):
+            return None
+        await self._check(access,row)
+        try:
+            from .contracts import SourceTailRef
+            value=await self.startup.history.source_tail_refs(access.binding,row['source_id'],row['ingestion_id'])
+            if set(value)!={'tail_refs','has_more'} or type(value['has_more']) is not bool or len(value['tail_refs'])>4:
+                raise ValueError('source_tail_response_invalid')
+            refs=[SourceTailRef.model_validate(r) for r in value['tail_refs']]
+            if value['has_more'] and not refs:raise ValueError('source_tail_response_invalid')
+            for ref in refs:
+                if (ref.page_id!=str(uuid5(UUID(row['source_id']),f'page:1:{ref.physical_page_index}'))
+                        or ref.region_id!=str(uuid5(UUID(ref.page_id),'region:'+ref.region_key))):
+                    raise ValueError('source_tail_scope_changed')
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            _LOG.warning('source_tail_query state=unavailable ingestion_id=%s error_type=%s',
+                row['ingestion_id'],type(error).__name__)
+            await self._check(access,row)
+            return self.importer._output(row,'processing','Source tail coverage unavailable; resume status',
+                'wait',source_archive_status='verified',warnings=['source_tail_coverage_unavailable'])
+        await self._check(access,row)
+        if refs:
+            _LOG.info('source_tail_query state=pending ingestion_id=%s tails=%s has_more=%s',
+                row['ingestion_id'],len(refs),value['has_more'])
+            return self.importer._output(row,'needs_review',
+                'Resume the exact pending spans with the next reviewed page; select small complete semantic passages, without splitting sentences; do not finalize',
+                'continue_tail',source_archive_status='verified',tail_refs=refs,
+                next_cursor=str(refs[0].physical_page_index+1),warnings=['more_source_tails'] if value['has_more'] else [])
+        return None
 
     async def _recover_orphan(self, access, row, state, kind, key):
         if state['pending_operation_key']: return await self._drive(access,row,state)
@@ -560,6 +595,8 @@ class NativeSourceIntake:
                 return self._output(row,state)
             if state['enriched_batch_count']<state['batch_count'] or not state['read_completion_requested']:
                 return self._output(row,state)
+            tails=await self._tail_output(access,row,state)
+            if tails is not None:return tails
             from .source_batch import FINISH_ROUTE,resolved_command
             key=self._operation(row,'finish')+':'+str(state['command_attempt'])
             state=await self._recover_orphan(access,row,state,'finish',key)
@@ -628,7 +665,9 @@ class NativeSourceIntake:
             if state.get('read_completion_requested') and state['phase']!='finalized':
                 return await self.finalize(access,row)
             state=await self._drive(access,row,state)
-            return self._output(row,await self._packet_progress(access,row,state))
+            state=await self._packet_progress(access,row,state)
+            tails=await self._tail_output(access,row,state)
+            return tails if tails is not None else self._output(row,state)
         if state['pending_kind'] in ('materialize','activate') or state['phase'] in ('materializing','ready_activation'):
             return await self.finalize(access,row)
         if state['phase']=='sealed' and await self._entry(self._operation(row,'materialize',state['next_ordinal'])) is not None:

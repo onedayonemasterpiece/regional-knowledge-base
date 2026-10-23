@@ -62,7 +62,7 @@ async def test_actual_mcp_declarations_teach_both_user_flows(monkeypatch):
     assert "document_id" in ingest.input_schema["properties"]
     assert "document_id" not in ingest.input_schema["required"]
     actions = ingest.output_schema["properties"]["next_action"]["anyOf"][0]["enum"]
-    assert set(actions) == {"continue_pages", "validate", "finalize", "wait", "resume_finalize", "done", "blocker"}
+    assert set(actions) == {"continue_pages", "continue_tail", "validate", "finalize", "wait", "resume_finalize", "done", "blocker"}
     assert "book_find first" in ingest.description
     assert "new attached PDF/DjVu use start" in ingest.description
     assert "model-authored stage" in ingest.description

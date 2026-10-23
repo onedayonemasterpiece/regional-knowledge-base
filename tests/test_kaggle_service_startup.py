@@ -44,6 +44,11 @@ class HistoryAdapter:
         if not self.available:raise OSError('synthetic native observation lost')
         return self.proof
 
+    async def source_tail_refs(self,binding,source_id,ingestion_id):
+        assert self.binding_current(binding)
+        if not self.available or self.revoked:raise OSError('synthetic native observation lost')
+        return dict(tail_refs=[],has_more=False)
+
 
 @pytest_asyncio.fixture
 async def service(target):
