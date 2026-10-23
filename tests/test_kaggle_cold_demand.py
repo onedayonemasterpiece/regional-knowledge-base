@@ -232,7 +232,7 @@ async def test_authorized_concurrent_cold_public_search_returns_one_pending_dema
                    and reply.startup.protocol == 'rkb.startup.v1'
                    and not reply.results and reply.main_state == 'starting'
                    for reply in replies)
-        assert all(reply.startup.eta_seconds is None
+        assert all(reply.startup.eta_seconds == 303
                    and reply.startup.message_ru is not None
                    and reply.startup.message_ru.startswith("Запускаем инфраструктуру")
                    and "минут" not in reply.startup.message_ru
@@ -256,10 +256,13 @@ async def test_startup_status_requires_fresh_public_search_authority(auth,tmp_pa
         principal=SimpleNamespace(access_token=auth.tokens.access_token)
         observed=await backend.startup_status(ref,principal)
         assert observed.status=='pending' and observed.protocol=='rkb.startup.v1'
-        assert observed.eta_seconds is None
+        assert observed.eta_seconds == 303
         assert observed.message_ru is not None
         assert observed.message_ru.startswith("Запускаем инфраструктуру")
-        assert 'eta_seconds' not in observed.model_dump(exclude_none=True)
+        assert observed.model_dump(exclude_none=True)['eta_seconds'] == 303
+        # One pending baseline does not add an ETA to terminal READY/UNAVAILABLE.
+        assert type(observed)(startup_ref=ref,status='ready').eta_seconds is None
+        assert type(observed)(startup_ref=ref,status='unavailable').eta_seconds is None
         with pytest.raises(ToolError,match='access_denied'):
             await backend.startup_status(ref,SimpleNamespace(access_token='invalid-token'))
         with pytest.raises(ToolError,match='invalid_input'):
