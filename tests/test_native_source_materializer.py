@@ -2,10 +2,12 @@
 import copy
 import json
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID,uuid5
 
 from regional_knowledge.source_stage import canonical,digest,ZERO_HASH
-from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler,SourceMaterializationRejected
+from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler,SourceMaterializationRejected,materializer_fingerprint
 from regional_knowledge.source_activation import knowledge_bytes
 from test_source_stage import batch,original,SOURCE,INGESTION
 
@@ -198,3 +200,19 @@ class NativeCompilerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(SourceMaterializationRejected,'native_illustration_activation_unavailable'):
             await self.compiler().compile([raw],source_id=SOURCE,person_id=PERSON,last_batch_sha256=digest(raw))
         self.assertEqual(self.counted,[])
+
+    def test_response_only_startup_status_does_not_change_materializer_fingerprint(self):
+        baseline=materializer_fingerprint()
+        path=Path(materializer_fingerprint.__code__.co_filename).with_name('contracts.py')
+        original_read=Path.read_bytes
+        before=original_read(path)
+        marker=b'class StartupStatus(BaseModel):'
+        self.assertIn(marker,before)
+        after=before.replace(marker,marker+b'\n    synthetic_response_only: bool = False',1)
+        self.assertNotEqual(before,after)
+
+        def read_with_response_edit(candidate):
+            return after if candidate==path else original_read(candidate)
+
+        with patch.object(Path,'read_bytes',read_with_response_edit):
+            self.assertEqual(materializer_fingerprint(),baseline)

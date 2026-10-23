@@ -6,6 +6,7 @@ from functools import wraps
 import logging
 import re
 import os
+import uvicorn
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -1703,17 +1704,26 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
             context=expert_executor_context)
         from .expert_executor_recovery_receiver import ExpertExecutorRecoveryReceiver
         expert_recovery_receiver=ExpertExecutorRecoveryReceiver(expert_result_receiver.context)
-    build_server(profile=profile,target_startup=target_startup,projects_hub_receiver=projects_hub_receiver,
+    mcp=build_server(profile=profile,target_startup=target_startup,
+        projects_hub_receiver=projects_hub_receiver,
         expert_slack_ingress=expert_slack_ingress,
         expert_evidence_receiver=expert_evidence_receiver,
         expert_claim_receiver=expert_claim_receiver,
         expert_result_receiver=expert_result_receiver,
-        expert_recovery_receiver=expert_recovery_receiver).run(
-        transport="streamable-http",
-        stateless_http=True,
-        json_response=True,
-        transport_security=_transport_security(
-            target_startup.config.oauth_provider.resource if target_startup is not None else None),
+        expert_recovery_receiver=expert_recovery_receiver)
+    # The MCP SDK's .run() configures Uvicorn without a graceful timeout.
+    # Keep its actual ASGI app/lifespan and bound only the HTTP connection drain.
+    uvicorn.run(
+        mcp.streamable_http_app(
+            stateless_http=True,
+            json_response=True,
+            transport_security=_transport_security(
+                target_startup.config.oauth_provider.resource if target_startup is not None else None),
+        ),
+        host="127.0.0.1",
+        port=8000,
+        log_level=mcp.settings.log_level.lower(),
+        timeout_graceful_shutdown=10,
     )
 
 
