@@ -123,6 +123,119 @@ async def test_verified_case_apply_requests_early_dataset_saved_only_for_success
 
 
 @pytest.mark.asyncio
+async def test_case_evidence_after_dataset_restore_uses_native_role_and_exact_local_suffix(
+        env,auth,monkeypatch):
+    import base64
+    import hashlib
+    from uuid import UUID
+    from regional_knowledge.control_spool import SourceCursor
+    from regional_knowledge.disagreement_contracts import EvidenceAdd
+    from regional_knowledge.kaggle_apply import ApplyReceipt
+    from regional_knowledge.kaggle_case_contracts import CaseReadRequest,CaseReadResult,canonical
+    from regional_knowledge.kaggle_protocol import TrustedActorContext
+    from test_disagreement_native import SOURCE,PAGE,REGION
+
+    value,principal,binding=await backend(env,auth,monkeypatch,current11=True)
+    async def commit_native(output):
+        entry=await env.spool.get(output['operation_key']);command=entry.command
+        raw=canonical(dict(case_id=command.ids['case_id'],object_id=command.ids['object_id']))
+        body=canonical(dict(command_sha256=entry.command_sha256,person_id=command.person_id,
+            status='applied',result_b64=base64.b64encode(raw).decode()))
+        receipt=ApplyReceipt('db-source',command.operation_key,command.sequence,
+            entry.command_sha256,'applied',body,hashlib.sha256(body).hexdigest(),False)
+        await env.spool.record_apply(command.operation_key,receipt)
+        await env.spool.publish_outcome(command.operation_key,writer_generation='writer-1')
+        return command
+    with capture_read_output() as outputs:
+        created=await value.disagreement_edit('create','case-base-rev1',principal,command=create())
+        outputs[0].release()
+    original=await commit_native(created)
+    case_id=original.ids['case_id']
+    live=[True]
+    control=dict(sequence=1,heads=[])
+    async def restore():
+        cursor=await env.spool.dataset_cursor(binding,control=control,
+            current=lambda candidate:live[0] and candidate is binding)
+        value.startup.coverage=cursor
+        value.startup.binding=binding
+        assert type(cursor) is SourceCursor and cursor.current()
+        return cursor
+    first=await restore()
+    assert first.applied_sequence==first.accepted_sequence==1
+    assert not hasattr(first,'case_state')
+    # An unrelated accepted/applied command is retained as the local suffix,
+    # not installed as another synthetic CaseHistory projection.
+    with capture_read_output() as outputs:
+        next_page=await value.disagreement_edit('create','next-accepted-local-suffix',
+            principal,command=create())
+        outputs[0].release()
+    await commit_native(next_page)
+    current=await restore()
+    assert current.applied_sequence==current.accepted_sequence==2 and not current.pending
+    assert not hasattr(current,'case_state')
+
+    candidate=dict(source_id=SOURCE,content_revision=1,eligibility_revision=1)
+    roles=[4]
+    observations=[]
+    async def native(authority,b,*,case_id,section,candidate_source_id=None,**unused):
+        assert section=='edit_context' and case_id==original.ids['case_id']
+        assert candidate_source_id==SOURCE
+        request=CaseReadRequest(request_id='synthetic-edit-context',connection_generation=b.connection_generation,
+            turn_generation=0,case_id=case_id,section='edit_context',candidate_source_id=candidate_source_id,
+            actor=TrustedActorContext(person_id=authority.person_id,audience=value.destination.key,
+                auth_epoch=authority.auth_revision,visibility_epoch=0),min_data_seq=0,deadline_ms=2000)
+        permit=await value.gate.dispatch(authority,request,b)
+        record=dict(case_id=case_id,case_revision=1,acl_revision=1,event_seq=1,case_role=roles[0],
+            section='edit_context',source_dependencies=[],candidate_dependency=candidate)
+        reply=CaseReadResult(request_id=request.request_id,connection_generation=request.connection_generation,
+            turn_generation=request.turn_generation,status='ok',record_b64=base64.b64encode(canonical(record)).decode(),
+            observed_data_seq=current.applied_sequence,observed_projection_seq=current.applied_sequence,
+            observed_visibility_epoch=1,observed_database_generation='db-source')
+        gated=await value.gate.finish(permit,reply)
+        assert gated.result.status=='ok'
+        observations.append(gated.ticket)
+        return gated
+    monkeypatch.setattr(value,'_native',native)
+    evidence=EvidenceAdd(document_id=UUID(SOURCE),source_revision=1,source_sha256='a'*64,
+        page_id=UUID(PAGE),region_id=UUID(REGION),text_start=0,quote='Synthetic exact source quote.',
+        context='Synthetic original source line.',position_ids=['phase-one'],relation='supports',
+        speaker='Archive author',attribution='direct_statement')
+    with capture_read_output() as outputs:
+        added=await value.disagreement_edit('add_evidence','evidence-after-dataset-restore',
+            principal,case_id=case_id,command=evidence)
+        assert added['status']=='pending' and added['intent_remote_accepted'] and not added['saved']
+        assert added['sequence']==3
+        held=outputs[0]
+        assert held.gate is value.output_gate and held.gate.issuance_current(held.gated.ticket)
+        await held.gate.refresh(held.gated)
+        assert held.gate.issuance_current(held.gated.ticket)
+        env.spool._source_version=object()
+        assert not held.gate.issuance_current(held.gated.ticket)
+        held.release()
+    accepted=await env.spool.get(added['operation_key'])
+    assert accepted.seal_state=='ACCEPTED' and accepted.apply_state=='NOT_SENT'
+    assert accepted.command.ids['case_id']==case_id
+    assert len(observations)>=2
+
+    roles[0]=1  # a verified PG viewer is not a Case contributor
+    with pytest.raises(Exception,match='access_denied'):
+        await value.disagreement_edit('add_evidence','viewer-cannot-append-evidence',
+            principal,case_id=case_id,command=evidence)
+    live[0]=False
+    roles[0]=4
+    with pytest.raises(Exception,match='case_history_unavailable|prior_write_pending'):
+        await value.disagreement_edit('add_evidence','stale-dataset-cannot-append-evidence',
+            principal,case_id=case_id,command=evidence)
+    live[0]=True
+    await env.spool.mark_apply_sent(added['operation_key'])
+    with pytest.raises(Exception,match='prior_write_pending'):
+        await value.disagreement_edit('add_evidence','unknown-apply-cannot-append-evidence',
+            principal,case_id=case_id,command=evidence)
+    with env.q.connect(write=False) as db:
+        assert db.execute("SELECT count(*) FROM rkb_control_operations").fetchone()[0]==3
+
+
+@pytest.mark.asyncio
 async def test_case_create_does_not_require_unrelated_next_page_history_refresh(env,auth,monkeypatch):
     value,principal,b=await backend(env,auth,monkeypatch)
     # Fresh PG binding and authenticated Case actor, but unrelated source
