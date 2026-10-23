@@ -163,6 +163,10 @@ class SourceRestoreCoordinator:
             binding_current=self.current,timeout_seconds=self.config.seconds,snapshot_tickets=tickets,
             dataset_checkpoint=self.config.dataset_checkpoint,
             rebind_current=lambda:self.startup.schema_migrations.resume_attachment())
+        # Retained original jobs can dispatch before any new client page call.
+        # Reuse the configured owner on API restart, not a lazy caller binding.
+        if self.startup.config.import_originals is not None:
+            self.dispatch.original_intake=self.startup.config.import_originals
         self.physical=PhysicalSnapshotRecovery(self.journal,transport,
             WssSnapshotPhases(self.dispatch,operation_key=self.config.operation_key),registry=self.startup.config.spool.registry,
             history_verifier=self.startup.history,maintenance_guard=self._maintenance,current=self.current,
