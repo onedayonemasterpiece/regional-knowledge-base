@@ -55,6 +55,18 @@ def test_search_selector_is_bounded_and_cannot_be_used_as_case_id_bypass(changes
         CaseReadRequest.model_validate(wire)
 
 
+@pytest.mark.parametrize("criteria", [
+    {"search_query": None, "place": "Old Harbour"},
+    {"search_query": None, "source_id": CASE},
+])
+def test_search_by_place_or_source_without_question(criteria):
+    data=search_request().model_dump(mode="json")
+    data.update(criteria)
+    q=CaseReadRequest.model_validate(data)
+    assert q.section=="search" and q.case_id==EMPTY_CASE
+    assert q.search_query is None
+
+
 def test_search_response_disallows_private_fields_duplicates_wrong_cursors():
     q=search_request()
     record=dict(section="search",items=[candidate()],has_more=False,
