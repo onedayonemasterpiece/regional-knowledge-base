@@ -227,8 +227,10 @@ def channel_route(queue, *, read_telemetry=None):
                 if predicate is None or not await queue_call(predicate, run_id, token, generation):
                     return False
                 if shared is not None:
-                    resource = shared.status()['resource']
-                    if resource is not None and resource.run_id == run_id:
+                    state = shared.status()
+                    resource = state['resource']
+                    if (state['document_result_pending'] or
+                            resource is not None and resource.run_id == run_id):
                         return False
                 # Same authenticated WSS, exact run/incarnation, no new frame.
                 # A delivered STOP is not native provider terminal evidence.
