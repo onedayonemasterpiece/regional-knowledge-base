@@ -101,7 +101,7 @@ async def test_174_pages_stage_in_batches_without_native_text_or_book_fetch(inta
 async def test_selected_stage_rejects_unissued_or_changed_provenance(intake,case):
     s=intake;result=await start(s);controller,receipt=issuer(s,result)
     payload=batch(controller,receipt,0,1,issue=case!='unissued')
-     if case=='wrong_original':s.originals.receipts[result.ingestion_id]=replace(receipt,sha256='f'*64)
+    if case=='wrong_original':s.originals.receipts[result.ingestion_id]=replace(receipt,sha256='f'*64)
     if case=='unreviewed':
         payload['pages'][0].update(knowledge_reviewed=False,source_material='preview')
     with pytest.raises((ToolError,OriginalIntakeError)):
