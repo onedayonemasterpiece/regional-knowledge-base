@@ -465,11 +465,20 @@ def channel_route(queue, *, read_telemetry=None):
                             await promote(observed)
                     elif frame['type'] == 'HEARTBEAT':
                         _fields(frame, common, ('diagnostics',))
-                        await queue_call(queue.heartbeat, run_id, token,
+                        heartbeat=await queue_call(queue.heartbeat, run_id, token,
                                          diagnostics=frame.get('diagnostics'),
                                          connection_generation=generation)
-                        await send('HEARTBEAT_ACK', provider_version=(str(observed['provider_version'])
-                                   if observed['provider_version'] is not None else None))
+                        if (isinstance(heartbeat,dict) and heartbeat.get('state')=='draining'
+                                and (shared is None or shared.status()['resource'] is None)):
+                            # The existing exact-owner planned idle drain has
+                            # already fenced new work. Stop THIS incarnation;
+                            # socket close alone is not provider terminal proof.
+                            await send('STOP',run_id=run_id,
+                                launch_nonce=hello['launch_nonce'],
+                                runtime_incarnation=hello['runtime_incarnation'])
+                        else:
+                            await send('HEARTBEAT_ACK', provider_version=(str(observed['provider_version'])
+                                       if observed['provider_version'] is not None else None))
                     elif frame['type']=='SNAPSHOT_UPLOAD_INTENT':
                         _fields(frame,(*common,'request_id','job_id','claim','run_id','launch_nonce',
                             'runtime_incarnation','compute_claim','dispatch_generation','operation_key','size','sha256'))
