@@ -70,8 +70,11 @@ async def test_actual_mcp_graph_call_uses_one_typed_claim_and_current_source_out
         issued=req.scope[_SCOPE_KEY][1];assert issued.gate is startup.gate
         assert issued.gate.issuance_current(issued.gated.ticket)
         startup.config.spool.invalidate_source_history()
+        # Native PG graph records remain readable while an unrelated
+        # source-history renewal fails. Current binding/actor still fence output.
+        assert issued.gate.issuance_current(issued.gated.ticket)
         refreshed=await issued.gate.refresh(issued.gated)
-        assert not refreshed.result.records and refreshed.result.reason=='prior_write_pending'
+        assert refreshed.result.records and refreshed.result.status=='ok'
         issued.gate.release(refreshed.ticket);issued.release();await release(t,dispatched)
     finally:await startup.source_dispatch.aclose();startup.config.spool.close()
 
