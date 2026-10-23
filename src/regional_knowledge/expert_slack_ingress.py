@@ -42,6 +42,14 @@ class ExpertSlackIngress:
         # writer fence if Slack's 2.5s HTTP timeout elapses during SQLite lock
         # contention. The next verified event retry reads the original bytes.
         self._staging_tasks={}
+        self._reply = None
+
+    def bind_search_reply(self, reply):
+        """One opt-in same-owner responder; no automatic provider sender."""
+        if (self._reply is not None or reply.control is not self.control
+                or reply.ingress is not self or not callable(getattr(reply, "notify", None))):
+            raise ValueError("exact existing Slack reply composition required")
+        self._reply = reply
 
     async def __call__(self, request):
         try:
@@ -109,6 +117,10 @@ class ExpertSlackIngress:
                     # received row that could vanish with the DevCoveer disk.
                     return JSONResponse({'error':'remote_intent_pending'},
                         status_code=503,headers={'Cache-Control':'no-store','Retry-After':'1'})
+                if self._reply is not None:
+                    # The signed human event already has remote-covered intake.
+                    # This bounded local wakeup never changes HTTP ACK semantics.
+                    self._reply.notify(outcome['request_id'])
                 return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
         except asyncio.CancelledError:
             raise
