@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 import errno
-import hashlib
 import json
 import math
 import os
@@ -19,7 +18,6 @@ import threading
 import time
 from uuid import uuid4
 
-HOT_SECONDS = 3 * 24 * 60 * 60
 DEFAULT_DISK_BYTES = 32 * 1024 * 1024
 DEFAULT_SEGMENT_BYTES = 256 * 1024
 _EVENTS = frozenset({"read.stage", "read.terminal", "fetch.terminal",
@@ -58,7 +56,11 @@ _RESOURCE_INTEGER_FIELDS = frozenset({
     "pss_kib", "pg_master_rss_kib", "pg_master_hwm_kib", "pg_master_pss_kib"
 })
 _OPAQUE = re.compile(r"^[A-Za-z0-9_.:-]{1,256}$")
-_SHA = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _digest_label(value):
+    return type(value) is str and len(value) == 64 and all(
+        char in "0123456789abcdef" for char in value)
 
 
 def _clean(record: Mapping[str, object], level: str):
@@ -77,8 +79,6 @@ def _clean(record: Mapping[str, object], level: str):
     result = {"schema": "rkb.product.telemetry.v1", "event": record["event"],
               "phase": record["phase"], "status": record["status"], "level": level,
               "timing_semantics": "overlapping_do_not_sum"}
-    if ignored:
-        result["ignored_fields"] = ignored  # Values/field names remain private.
     if record.get("timing_semantics", "overlapping_do_not_sum") != "overlapping_do_not_sum":
         raise ValueError("overlapping stages may not be summed")
     for key in _IDENTIFIERS:
@@ -86,9 +86,11 @@ def _clean(record: Mapping[str, object], level: str):
         if value is None:
             continue
         if type(value) is not str or _OPAQUE.fullmatch(value) is None:
-            raise ValueError("opaque bounded correlation required")
-        if key in ("request_ref", "operation_ref") and _SHA.fullmatch(value) is None:
-            raise ValueError("hashed request/operation identity required")
+            ignored += 1
+            continue
+        if key in ("request_ref", "operation_ref") and not _digest_label(value):
+            ignored += 1  # Do not write a raw request/operation value.
+            continue
         result[key] = value
     for key in ("connection_generation", "turn_generation"):
         value = record.get(key)
@@ -103,14 +105,16 @@ def _clean(record: Mapping[str, object], level: str):
         result["duration_ms"] = round(value, 3)
     if is_resource and "runtime_incarnation" in record:
         value = record["runtime_incarnation"]
-        if type(value) is not str or not 1 <= len(value) <= 256 or re.fullmatch(r"[A-Za-z0-9_.:-]+", value) is None:
-            raise ValueError("bounded internal incarnation required")
-        result["runtime_incarnation"] = value
+        if type(value) is str and 1 <= len(value) <= 256 and _OPAQUE.fullmatch(value):
+            result["runtime_incarnation"] = value
+        else:
+            ignored += 1
     if is_resource and "release_sha256" in record:
         value = record["release_sha256"]
-        if type(value) is not str or _SHA.fullmatch(value) is None:
-            raise ValueError("verified release digest only")
-        result["release_sha256"] = value
+        if _digest_label(value):
+            result["release_sha256"] = value
+        else:
+            ignored += 1  # Do not write unverified release strings.
     if is_resource and "scope" in record:
         if record["scope"] not in ("own_cgroup", "process_only"):
             raise ValueError("fixed resource scope only")
@@ -126,6 +130,8 @@ def _clean(record: Mapping[str, object], level: str):
         if key in ("sample_seq", "sample_time_unix_ms", "received_unix_ms") and value < 1:
             raise ValueError("positive sample identity required")
         result[key] = round(value, 3) if type(value) is float else value
+    if ignored:
+        result["ignored_fields"] = ignored  # Never include the omitted keys/values.
     return result
 
 
@@ -147,7 +153,6 @@ class SegmentedLogSink:
         self.clock = clock
         self._handle = None
         self._path = None
-        self._hash = hashlib.sha256()
         self._size = 0
         self._opened_at = 0.0
         self._used = None
@@ -175,7 +180,6 @@ class SegmentedLogSink:
         os.chmod(self._path, 0o600)
         self._size = 0
         self._opened_at = self.clock()
-        self._hash = hashlib.sha256()
 
     def __call__(self, record: dict[str, object]) -> None:
         self._prepare()
@@ -194,7 +198,6 @@ class SegmentedLogSink:
         self._handle.flush()  # No fsync or durable-accepted claim.
         self._size += len(line)
         self._used += len(line)
-        self._hash.update(line)
         if self._size >= self.segment_bytes:
             self.seal()
 
@@ -202,37 +205,11 @@ class SegmentedLogSink:
         if self._handle is None:
             return None
         self._handle.close()
-        target = self.directory / "sealed" / (
-            "%s-%d-%s.jsonl" % (self._path.stem, self._size, self._hash.hexdigest()))
+        target = self.directory / "sealed" / (self._path.stem + ".jsonl")
         os.replace(self._path, target)
         self._handle = None
         self._path = None
         return target
-
-    def sealed_manifest(self, now: float | None = None):
-        """Operator-side readback contract; no upload, deletion or read-path call."""
-        now = self.clock() if now is None else now
-        folder = self.directory / "sealed"
-        if not folder.is_dir():
-            return []
-        result = []
-        for file in sorted(folder.glob("segment-*.jsonl")):
-            if not file.is_file() or file.is_symlink():
-                continue
-            digest = hashlib.sha256()
-            with file.open("rb") as handle:
-                while chunk := handle.read(65536):
-                    digest.update(chunk)
-            size = file.stat().st_size
-            sha = digest.hexdigest()
-            if not file.name.endswith("-%d-%s.jsonl" % (size, sha)):
-                continue  # Do not claim intact archival source.
-            result.append({"name": file.name, "size_bytes": size, "sha256": sha,
-                           "sealed_unix_ms": int(file.stat().st_mtime * 1000),
-                           "archive_due": now - file.stat().st_mtime >= HOT_SECONDS,
-                           "archived": False})
-        return result
-
 
 class ProductTelemetry:
     """One bounded daemon consumer per host; producers never wait for I/O."""
@@ -297,12 +274,6 @@ class ProductTelemetry:
         return {"emitted": self.emitted, "dropped": self.dropped,
                 "failed": self.failed, "queued": self._queue.qsize(),
                 "sink_disabled": self._disabled}
-
-    def sealed_manifest(self):
-        if isinstance(self._sink, SegmentedLogSink):
-            return self._sink.sealed_manifest()
-        return []
-
 
 _instance: ProductTelemetry | None = None
 _instance_lock = threading.Lock()
