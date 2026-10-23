@@ -199,6 +199,36 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({e.command.route for e in self.spool.entries.values()},
             {STAGE_ROUTE,'source.batch.v1','source.finish.v1'})
 
+    async def test_rejected_packet_stage_keeps_same_import_and_next_explicit_stage_can_retry(self):
+        self.packet_mode();await self.stage();old_key=self.state()['pending_operation_key']
+        self.finish(status='rejected_precondition')
+        entry=self.spool.entries[old_key];raw=canonical({'reason':'native_source_sql_rolled_back'})
+        entry.apply_receipt.outcome=canonical(dict(result_b64=base64.b64encode(raw).decode(),result_sha256=digest(raw)))
+        result=await self.helper.status(self.access,self.row)
+        self.assertEqual(result.warnings,['native_source_sql_rolled_back'])
+        self.assertEqual(self.state()['phase'],'staging');self.assertEqual(self.state()['batch_count'],0)
+        self.assertIsNone(self.state()['pending_operation_key'])
+        # No automatic resend on status, but an explicit normal stage is a
+        # new intent after a known no-effect outcome, on the SAME import.
+        count=len(self.spool.entries);await self.helper.status(self.access,self.row)
+        self.assertEqual(len(self.spool.entries),count)
+        await self.stage()
+        self.assertNotEqual(self.state()['pending_operation_key'],old_key)
+        self.assertEqual(json.loads(self.pending().command.payload)['batch_index'],0)
+        self.assertEqual(entry.apply_receipt.status,'rejected_precondition')
+
+    async def test_finish_refusal_does_not_auto_resend_or_close_the_import(self):
+        self.packet_mode();await self.stage();self.finish();await self.helper.status(self.access,self.row)
+        self.finish();await self.helper.status(self.access,self.row)
+        self.finish();await self.helper.status(self.access,self.row)
+        await self.helper.finalize(self.access,self.row)
+        old_key=self.state()['pending_operation_key'];self.finish(status='rejected_precondition')
+        count=len(self.spool.entries);result=await self.helper.status(self.access,self.row)
+        self.assertEqual(result.state,'staged');self.assertEqual(len(self.spool.entries),count)
+        self.assertEqual(self.state()['read_completion_requested'],0)
+        await self.helper.finalize(self.access,self.row)
+        self.assertNotEqual(self.state()['pending_operation_key'],old_key)
+
     async def test_stage_stores_only_compact_local_progress(self):
         result=await self.stage()
         self.assertEqual(result.state,'processing'); self.assertEqual(len(self.spool.entries),1)
