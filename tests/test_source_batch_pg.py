@@ -8,11 +8,62 @@ from regional_knowledge.kaggle_source_materializer import NativeSourceMaterializ
 from regional_knowledge.source_batch import CODEC,resolved_command
 from regional_knowledge.source_stage import canonical,digest
 from test_native_source_materializer import exact_batch
+from test_source_batch_compiler import passage_link_packet
 from test_source_activation_pg import image_pg_sql18,accepted,stage_command,DB,WRITER,TIME
 from test_source_stage import SOURCE,INGESTION,REQUEST
 from test_source_activation import PERSON
 from test_kaggle_pg_driver import database
 from test_kaggle_apply import PG
+
+
+@PG
+@pytest.mark.asyncio
+async def test_native_passage_links_persist_story_dates_graph_and_exact_replay(image_pg_sql18):
+    """Current compiler → actual PG, with no duplicated evidence quotations."""
+    import json
+    from psycopg.types.json import Jsonb
+    env=image_pg_sql18;doc=passage_link_packet()
+    story=doc['model_payload']['story_candidates'][0]
+    story['event_dates']=[dict(original_date_text='1930',precision='year',calendar='unspecified',
+        date_role='event',year=1930,month=None,day=None,rationale='Synthetic date read from the linked source.',evidence_indexes=[0])]
+    frozen=canonical(doc)
+    assert (await accepted(env,stage_command(doc,1))).status=='applied'
+    prepare,_=native(env)
+    for component in ('text','semantic'):
+        command=packet(env,doc,component);await prepare(command)
+        assert (await accepted(env,command)).status=='applied'
+        assert (await accepted(env,command)).duplicate
+    assert canonical(doc)==frozen
+    async with env['connection'].transaction():
+        saved=await (await env['connection'].execute(
+            "SELECT knowledge FROM rkb_v4.source_batch_prepared WHERE component='semantic'")).fetchone()
+        knowledge=saved[0];encoded=json.dumps(knowledge)
+        assert 'original_excerpt' not in encoded and 'exact_quote' not in encoded
+        assert (await (await env['connection'].execute('SELECT body FROM rkb_v4.story_search')).fetchone())[0]==story['basic_variant']['body']
+        assert (await (await env['connection'].execute('SELECT year FROM rkb_v4.source_event_dates')).fetchone())[0]==1930
+        assert (await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.source_entity_mentions')).fetchone())[0]==1
+        evidence=knowledge['semantic']['findings'][0]['evidence'][0]
+        assert (await (await env['connection'].execute('SELECT rkb_v4.check_source_passage_evidence_v1(%s,%s)',
+            (Jsonb(knowledge),Jsonb(evidence)))).fetchone())==(True,)
+        foreign={**evidence,'passage_id':'00000000-0000-0000-0000-000000000098'}
+        assert (await (await env['connection'].execute('SELECT rkb_v4.check_source_passage_evidence_v1(%s,%s)',
+            (Jsonb(knowledge),Jsonb(foreign)))).fetchone())==(False,)
+    from regional_knowledge.kaggle_source_graph_read import SourceGraphReadRequest,execute_source_graph_read
+    from regional_knowledge.kaggle_fact_contracts import FactReadRequest
+    from regional_knowledge.kaggle_fact_read import execute_fact_read
+    @asynccontextmanager
+    async def acquire():yield env['connection']
+    actor=dict(person_id='synthetic-reader',audience='personal',auth_epoch=1,visibility_epoch=0)
+    identity=dict(request_id='source-link-read',connection_generation=1,turn_generation=1,
+        actor=actor,min_data_seq=0,deadline_ms=2000)
+    entity=knowledge['source_graph']['entities'][0]['entity_id']
+    graph=await execute_source_graph_read(SourceGraphReadRequest(**identity,entity_id=entity,
+        source_id=SOURCE),acquire=acquire)
+    assert graph.status=='ok' and graph.evidence[0].text=='Berlin 1930. Berlin 1933.'
+    assert 'exact_quote' not in json.dumps(graph.model_dump(mode='json'))
+    facts=await execute_fact_read(FactReadRequest(**identity,action='assertions',source_id=SOURCE),acquire=acquire)
+    assert facts.status=='ok' and facts.records[0]['proofs']==[evidence]
+    assert 'original_excerpt' not in json.dumps(facts.model_dump(mode='json'))
 
 
 def packet(env,doc,component='text'):

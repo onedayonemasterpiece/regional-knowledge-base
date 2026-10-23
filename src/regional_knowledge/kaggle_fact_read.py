@@ -43,24 +43,20 @@ def _record(row, action):
             type(ordinal) is not int or not 0 <= ordinal <= 7 or
             not isinstance(proofs, list) or not 1 <= len(proofs) <= 4):
         raise ReadUnavailable('internal_error')
+    links=[]
     for proof in proofs:
-        if (type(proof) is not dict or set(proof) != {'region_id', 'passage_id', 'start', 'end', 'original_excerpt'} or
-                type(proof['original_excerpt']) is not str or not 1 <= len(proof['original_excerpt']) <= 500 or
-                type(proof['start']) is not int or type(proof['end']) is not int or
-                not 0 <= proof['start'] < proof['end'] <= 8000):
+        if type(proof) is not dict:
             raise ReadUnavailable('internal_error')
-        UUID(proof['region_id']); UUID(proof['passage_id'])
+        try:
+            UUID(proof['region_id']); UUID(proof['passage_id'])
+            links.append(dict(region_id=proof['region_id'],passage_id=proof['passage_id']))
+        except (KeyError,ValueError,TypeError):raise ReadUnavailable('internal_error') from None
+    proofs=links
     if action != 'assertions':
         model = StageEventDateInput if action == 'calendar' else StageObservationInput
         if model.model_validate(fact).model_dump(mode='json') != fact:
             raise ReadUnavailable('internal_error')
         if action == 'calendar' and (fact['precision'] != 'day' or fact['date_role'] != 'event'):
-            raise ReadUnavailable('internal_error')
-        literal = fact['original_date_text'] if action == 'calendar' else fact['original_value_text']
-        if not any(literal in proof['original_excerpt'] for proof in proofs):
-            raise ReadUnavailable('internal_error')
-        if action == 'observations' and fact['period_text'] != 'unknown' and not any(
-                fact['period_text'] in proof['original_excerpt'] for proof in proofs):
             raise ReadUnavailable('internal_error')
     identifier = assertion_id if action == 'assertions' else f'{assertion_id}:{"d" if action == "calendar" else "o"}{ordinal}'
     record = dict(id=identifier, source_id=source_id, source_revision=revision,

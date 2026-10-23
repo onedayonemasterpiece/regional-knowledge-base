@@ -51,6 +51,8 @@ DevCoveer raw spool: стартовый горизонт 4 часа, hard byte c
 
 Canonical source data и serving projections находятся в одной PG БД. Searchable поля типизированы; JSONB нужен для переменного provenance, не для обхода всех dossier snapshots при каждом запросе.
 
+Новые native packet evidence — ссылки на passage/page/region. Для собственного пакета модель указывает `chunk_key`, для ранее принятого фрагмента — `chunk_id`; текст читается существующим `fetch`. Проверка формы выполняется в Python, SQL сохраняет принадлежность ссылок источнику и права повторного использования сущностей. Новые findings/graph не сохраняют копии `original_excerpt`/`exact_quote` и не требуют единственности цитаты. Исторические принятые байты и legacy whole-book replay сохраняют прежнюю интерпретацию; новая семантика вводится отдельной упорядоченной миграцией SQL028, без изменения SQL001–027. Это описание кода не подтверждает его установку в живой notebook.
+
 | Данные | Минимальные ключи / индексы |
 |---|---|
 | document / revision / region / passage | PK/FK; source SHA, revision и exact locators; B-tree по document, revision, ordinal для book scope и продолжения. |

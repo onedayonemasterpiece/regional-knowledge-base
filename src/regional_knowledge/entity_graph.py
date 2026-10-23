@@ -46,7 +46,7 @@ class GraphEvidence(Strict):
     chunk_id:UUID
     page_id:UUID
     region_id:UUID
-    exact_quote:str=Field(min_length=1,max_length=2000)
+    exact_quote:str|None=Field(default=None,min_length=1,max_length=2000)
 
 class ResearchSource(Strict):
     """Model-consulted context, not a quotation from the imported book."""
@@ -129,7 +129,7 @@ class GraphBundle(Strict):
 def entity_id(document_id:UUID,key:str)->UUID:
     return uuid5(document_id,'entity:'+key)
 
-def validate_staged_bundle(bundle:GraphBundle,graph)->None:
+def validate_staged_bundle(bundle:GraphBundle,graph,*,passage_evidence=False)->None:
     # Relation-only batches may refer to existing identities but still need
     # genuine evidence in this staged source.
     chunks={c.chunk_id:c for c in graph.chunks}
@@ -138,7 +138,14 @@ def validate_staged_bundle(bundle:GraphBundle,graph)->None:
     for e in evidence:
         c=chunks.get(e.chunk_id)
         region=next((r for p in graph.pages if p.page_id==e.page_id for r in p.regions if r.region_id==e.region_id),None)
+        if passage_evidence:
+            if (region is None or c is None or e.page_id not in c.page_ids
+                    or e.region_id not in [*c.region_ids,*c.footnote_region_ids]):
+                raise ValueError('graph evidence must reference a staged source passage/page/region')
+            continue
+        if e.exact_quote is None:raise ValueError('legacy graph evidence requires its accepted quote')
         if graph.pages and (region is None or e.exact_quote not in region.source_text):raise ValueError('graph quote must match the exact source region')
         if c is None or e.page_id not in c.page_ids or e.region_id not in c.region_ids or e.exact_quote not in c.text:raise ValueError('graph evidence must reference exact staged chunk/page/region material')
+    if passage_evidence:return
     for node in bundle.entities:
         if node.exact_source_spelling not in node.evidence.exact_quote:raise ValueError('source spelling absent from evidence quote')

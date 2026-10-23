@@ -19,6 +19,23 @@ from .kaggle_query import ReadUnavailable,_frontier,_identity
 SOURCE_GRAPH_READER_FUNCTIONS=('read_source_graph_v1(uuid,uuid,text,uuid,text,integer)',)
 
 
+def _source_evidence(data,action):
+    if action in ('entity','list'):
+        return (data.get('mention') or data['mentions'][0])['evidence']
+    if action=='relations':return data['evidence'][0]
+    if action in ('mentions','aliases'):return data['evidence']
+    return None
+
+
+def _passage_refs(value):
+    """Project old stored proofs to links without rewriting their saved bytes."""
+    if isinstance(value,dict):
+        omitted={'exact_quote','start','end','source_region_sha256'} if 'chunk_id' in value else set()
+        return {key:_passage_refs(item) for key,item in value.items() if key not in omitted}
+    if isinstance(value,list):return [_passage_refs(item) for item in value]
+    return value
+
+
 
 class SourceGraphReadRequest(ReadIdentity):
     type:Literal['SOURCE_GRAPH_READ']='SOURCE_GRAPH_READ'
@@ -88,19 +105,22 @@ class SourceGraphReadResult(ReadIdentity):
             if record['entity_id'] is not None:exact_uuid(record['entity_id'])
             try:
                 data=record['data'];action=record['action']
+                proof=_source_evidence(data,action)
+                quote=proof.get('exact_quote') if proof is not None else data['text']
+                if proof is not None:
+                    for key in ('chunk_id','page_id','region_id'):exact_uuid(proof[key])
                 if action in ('entity','list'):
-                    key=data['key'];quote=data['mention']['evidence']['exact_quote']
+                    key=data['key']
                     if data['entity_id']!=record['entity_id'] or data['kind'] not in ('person','organization','event','historical_thread','poi_ref'):
                         raise ValueError('source entity identity differs')
                 elif action in ('mentions','aliases','relations'):
                     field={'mentions':'mention_id','aliases':'alias_id','relations':'relation_id'}[action]
                     key=data[field];exact_uuid(key)
-                    quote=data['evidence'][0]['exact_quote'] if action=='relations' else data['evidence']['exact_quote']
                 elif action=='poi_facts':
                     key=data['candidate_id'];exact_uuid(key);quote=data['text']
                     if data['geometry_acceptance']!='source_hypothesis_not_owner_geometry':raise ValueError('source geometry hypothesis required')
                 else:raise ValueError('fixed source graph action required')
-                if record['id']!=record['source_id']+':'+key or item.text!=quote:
+                if record['id']!=record['source_id']+':'+key or quote is not None and item.text!=quote:
                     raise ValueError('source graph identity/evidence text differs')
             except (KeyError,TypeError,IndexError):
                 raise ValueError('invalid source graph record material') from None
@@ -158,6 +178,10 @@ def _record(row,request):
     if request.entity_id is not None and entity!=request.entity_id:raise ReadUnavailable('internal_error')
     if request.source_id is not None and source!=request.source_id:raise ReadUnavailable('internal_error')
     if request.action=='relations' and request.entity_id not in (data.get('source_id'),data.get('target_id')):raise ReadUnavailable('internal_error')
+    proof=_source_evidence(data,request.action)
+    if proof is not None and proof.get('exact_quote') is not None and text!=proof['exact_quote']:
+        raise ReadUnavailable('internal_error')
+    data=_passage_refs(data)
     ident=source+':'+key
     record=dict(id=ident,source_id=source,source_revision=revision,entity_id=entity,action=request.action,data=data,
         semantic_status='model_authored_source_claim_not_verified_identity_or_geometry')
