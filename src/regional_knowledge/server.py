@@ -1680,6 +1680,16 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
         from .expert_slack_composition import compose_expert_evidence_receiver
         expert_evidence_receiver=compose_expert_evidence_receiver(
             target_startup=target_startup,expert_slack_ingress=expert_slack_ingress)
+    # An opt-in already-provisioned Slack bot can answer bounded source search
+    # on the existing server. Do not enable expert_executor_* agent routes.
+    reply_config=os.getenv('RKB_EXPERT_SLACK_REPLY_CONFIG','').strip()
+    if reply_config:
+        if expert_slack_ingress is None or expert_evidence_receiver is None:
+            raise RuntimeError('Slack search reply requires existing signed ingress and evidence reader')
+        from .expert_slack_search_reply import configured_expert_slack_search_reply
+        reply=configured_expert_slack_search_reply(
+            expert_slack_ingress,expert_evidence_receiver,reply_config)
+        expert_slack_ingress.bind_search_reply(reply)
     expert_claim_receiver=expert_result_receiver=expert_recovery_receiver=None
     if expert_executor_context is not None:
         if expert_slack_ingress is None or target_startup is None:
