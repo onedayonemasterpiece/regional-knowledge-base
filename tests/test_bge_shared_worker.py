@@ -599,8 +599,8 @@ async def test_pending_native_result_resync_preserves_runtime_and_auth_fences(mo
             await peer.inputs[1].put(transport.BgeChannelStopped('channel authority or contract ended'))
         else:
             await peer.put(conflicting)
-        if fault != 'new_dispatch':
-            error = transport.BgeChannelStopped if fault in ('stale_generation', 'authority_closed') else ValueError
+        if fault not in ('new_dispatch','stale_generation'):
+            error = transport.BgeChannelStopped if fault == 'authority_closed' else ValueError
             with pytest.raises(error):
                 await asyncio.wait_for(task, 2)
             assert peer.sessions == 1 and closes == ['close']

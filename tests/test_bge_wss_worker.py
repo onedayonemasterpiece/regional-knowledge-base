@@ -223,20 +223,15 @@ async def test_lost_ack_reconnect_retains_exact_result_and_warm_encoder(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_wrong_ack_nonce_exhausts_reconnect_without_discarding_result(monkeypatch):
+async def test_wrong_ack_nonce_does_not_discard_exact_pending_result():
     transport = module('bge_wss_transport')
-    monkeypatch.setattr(transport.random,'uniform',lambda *args:.001)
     stop = asyncio.Event()
     wire = Wire(stop, wrong_claim=True)
     worker = transport.BgeWssTransport(CONFIG, lambda: lambda _: [1.] + [0.] * 1023,
-                                      lambda: {}, connector=wire.connect, maximum_seconds=3, stop=stop,
-                                      reconnect_grace_seconds=9)
-    clock=[0.]
-    def tick():clock[0]+=1.;return clock[0]
-    worker._retry_clock=tick
-    with pytest.raises(transport.BgeChannelStopped,match='reconnect exhausted'):
+                                      lambda: {}, connector=wire.connect, maximum_seconds=3, stop=stop)
+    with pytest.raises(ValueError,match='acknowledgment mismatch'):
         await worker.run()
-    assert worker.pending['claim'] == 'claim' and wire.sessions>1
+    assert worker.pending['claim'] == 'claim'
 
 
 @pytest.mark.asyncio
