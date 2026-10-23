@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import asyncio
+from functools import wraps
 import logging
+import re
 import os
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -140,6 +142,78 @@ def _book_page_tool_result(ingestion_id, batch):
     for page in batch.pages:
         content.append(Image(data=page.data, format=page.mime_type.removeprefix('image/')).to_image_content())
     return CallToolResult(content=content)
+
+
+# Only the two book MCP tool boundaries use this normalization. Inner importer
+# decisions, original receipts, permissions and wire schemas remain untouched.
+_BOOK_ERROR_STATUSES = frozenset({
+    "invalid_query", "denied", "unavailable", "pending", "unknown",
+    "failed", "rejected", "error",
+})
+_BOOK_STABLE_REASON = re.compile(r"^[a-z][a-z0-9_]{0,95}$")
+# These pre-existing server-local ToolErrors have no structured status yet.
+_BOOK_LOCAL_REASONS = {
+    "telegram_original_requires_target_start_without_attachment": "invalid_query",
+    "source_import_must_use_one_input_location": "invalid_query",
+    "invalid_source_import_input": "invalid_query",
+    "catalog_update_requires_metadata_only_stage": "invalid_query",
+    "stage_file_cannot_mix_with_inline_payload": "invalid_query",
+    "stage_file_invalid": "invalid_query",
+    "stage_file_schema": "invalid_query",
+    "stage_file_ingestion_or_revision_mismatch": "invalid_query",
+    "stage_file_must_be_json_not_original_source": "invalid_query",
+    "file_only_supported_for_start_reprocess_or_stage": "invalid_query",
+    "source_import_requires_configured_target_importer": "unavailable",
+    "owned_ingestion_required": "denied",
+}
+
+
+def _book_mcp_error(exc: Exception) -> ToolError:
+    """Keep existing domain status/reason; never serialize exception messages."""
+    status, reason, error_class = "unknown", "internal_error", "internal"
+    if isinstance(exc, ToolError):
+        error_class, reason = "domain", "domain_error"
+        raw = str(exc)
+        if len(raw) <= 1024:
+            try:
+                record = json.loads(raw)
+            except (ValueError, TypeError):
+                record = None
+            if type(record) is dict:
+                candidate_status, candidate_reason = record.get("status"), record.get("reason")
+                if type(candidate_status) is str and candidate_status in _BOOK_ERROR_STATUSES:
+                    status = candidate_status  # Not all errors mean a final rejection.
+                    if (type(candidate_reason) is str and
+                            _BOOK_STABLE_REASON.fullmatch(candidate_reason)):
+                        reason = candidate_reason
+            else:
+                # A few existing local errors are plain static labels. Their
+                # trailing Pydantic/user details must not escape the server.
+                label = raw.partition(":")[0]
+                if label in _BOOK_LOCAL_REASONS:
+                    status, reason = _BOOK_LOCAL_REASONS[label], label
+    elif isinstance(exc, PermissionError):
+        status, reason, error_class = "denied", "access_denied", "access"
+    elif isinstance(exc, TimeoutError):
+        status, reason, error_class = "unknown", "transport_timeout", "transport"
+    elif isinstance(exc, (ConnectionError, OSError)):
+        status, reason, error_class = "unknown", "transport_unavailable", "transport"
+    # For every other exception the operation's effect is UNKNOWN, not rejected.
+    return ToolError(json.dumps({"status": status, "reason": reason,
+                                 "error_class": error_class}, separators=(",", ":")))
+
+
+def _book_mcp_error_boundary(handler):
+    """Preserve the registered tool signature while fencing error disclosure."""
+    @wraps(handler)
+    async def call(*args, **kwargs):
+        try:
+            return await handler(*args, **kwargs)
+        except asyncio.CancelledError:
+            raise  # A cancelled call proves neither failure nor completion.
+        except Exception as exc:
+            raise _book_mcp_error(exc) from None
+    return call
 
 
 def _transport_security(resource_url: str | None = None) -> TransportSecuritySettings:
@@ -357,14 +431,20 @@ def build_server(
     mcp = KnowledgeMCPServer(
         "Regional Knowledge Base",
         instructions=(
-            ("This configured target's fresh-source importer accepts PDF attachments up to 2 MiB and 32 pages, "
-             "in batches of at most 8 staged pages. HTML, DjVu, reprocess, catalog corrections and entity/POI mutations "
-             "are unavailable on this bounded path. Start requires source_import.public_rights with an explicit "
-             "verified public-distribution basis. Follow every book_pages continuation before using source text. "
+            ("The configured native importer supports PDF and DjVu originals up to 128 MiB and 2500 physical pages, "
+             "subject to the verified original intake. Stage at most 8 selected, model-reviewed pages per native batch; "
+             "book_pages currently returns one visual page per call, regardless of requested batch_size. "
+             "The current activation is shared-searchable, NOT owner-private: even an authenticated owner-personal "
+             "start requires source_import.public_rights with a verified public-distribution basis. "
+             "Do not infer rights or call an import private merely from owner authentication. "
+             "For an existing accepted source, use book_find and the supported reprocess/rechunk path; do not "
+             "request a new upload unless the verified archived original is unavailable. "
+             "Follow every book_pages continuation before using clipped source text. "
              "Stage exact observed native blocks or unique source spans with their actual bounding boxes; "
              "source_import.research must contain the calling model's explicit state and reachable continuation. "
-             "Story candidates may supply a basic_variant with the actual authored body and complete evidence map; "
-             "a summary never becomes a narrative. A facts_only outcome or needs_context frontier is explicit model work. "
+             "Only when sufficient evidence supports an actual narrative may story candidates supply "
+             "basic_variant.body with a complete evidence map. Otherwise omit basic_variant and explicitly "
+             "report needs_context or facts_only; never invent a body from title or summary. "
              "Finalized source activation does not establish retrieval acceptance or exhaustive semantic coverage. "
              if selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None else "") +
             "Search and retrieve sourced regional knowledge. Use search before fetch. "
@@ -474,7 +554,14 @@ def build_server(
             if worker_queue.path.resolve() != Path(os.environ['RKB_BGE_QUEUE_PATH']).resolve():
                 raise RuntimeError('backend and channel must share the same owned queue')
         register_routes(mcp,worker_queue)
-        mcp._bge_channel_route = channel_route(worker_queue,read_telemetry=read_telemetry)
+        # PR301 adds this optional native route argument. Both merge orders
+        # keep one bounded product sink and leave legacy channels unchanged.
+        from inspect import signature
+        channel_options = {'read_telemetry': read_telemetry}
+        if 'product_telemetry' in signature(channel_route).parameters:
+            from .product_telemetry import get_product_telemetry
+            channel_options['product_telemetry'] = get_product_telemetry()
+        mcp._bge_channel_route = channel_route(worker_queue, **channel_options)
 
     if projects_hub_receiver is not None:
         from .projects_hub_reader import ProjectsHubReader, PATH
@@ -1108,7 +1195,10 @@ def build_server(
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
     async def fetch(id: str) -> FetchOutput:
-        return await backend.fetch(id, _principal())
+        # Whole authorized fetch including principal resolution; no payload
+        # enters telemetry and the DTO/ACL path is unchanged.
+        from .product_telemetry import observe_async
+        return await observe_async("fetch", lambda: backend.fetch(id, _principal()))
 
     @mcp.tool(title='Read an authorized illustration', description='Return the canonical source crop and labelled caption/model-observation metadata. Model observation is not printed evidence. No OCR or inference.', annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
     async def illustration_fetch(id: str) -> list[TextContent | ImageContent]:
@@ -1172,7 +1262,18 @@ def build_server(
     @mcp.tool(
         title="Add, reprocess or continue a book",
         description=(
-            "Carry one book/journal ingestion goal. For a new attached PDF/DjVu use start, "
+            "Carry one book/journal ingestion goal. For the configured Kaggle native target, PDF/DjVu originals "
+            "may be up to 128 MiB and 2500 physical pages subject to verified intake; each native stage "
+            "contains at most 8 selected, model-reviewed pages (not an 8-page book limit). "
+            "Start currently requires source_import.public_rights with a verified public-distribution basis, "
+            "including on the owner-personal route, because accepted text enters shared search. "
+            "Neither missing rights nor owner OAuth implies permission to publish a private original. "
+            "Pass the optional top-level source_import or compatible metadata.source_import, not both. "
+            "When sufficient evidence supports an authored narrative, supply "
+            "story_candidates.basic_variant.body and evidence-mapped blocks for the complete body. "
+            "Otherwise OMIT basic_variant, explicitly set narrative_outcome=needs_context or facts_only, "
+            "and preserve the evidence gap instead of inventing prose; title/summary are not body. "
+            "For a new attached PDF/DjVu use start, "
             "then book_pages plus model-authored stage, validate and finalize while following "
             "next_action. For an existing book named by the user, call book_find first and "
             "use reprocess with its document_id; reprocess opens the verified archived source "
@@ -1190,7 +1291,10 @@ def build_server(
             "to start one newer archived-source revision instead of resuming the pending job. "
             "For a large model-authored batch, stage may use file=one UTF-8 JSON attachment "
             "instead of inline arrays. That JSON must contain ingestion_id, source_revision and "
-            "the same stage fields, with at most 8 pages, 100 chunks and 12 stories, <=1 MiB. "
+            "the same stage fields, with at most 8 pages, 100 chunks and 12 stories, <=1 MiB "
+            "(stage-file TRANSPORT bound only). Native admission separately limits the entire canonical "
+            "source-stage envelope to <=700 KiB, INCLUDING issued image receipts, source metadata "
+            "and model payload: a valid 1 MiB stage file is not guaranteed native acceptance. "
             "Never mix a stage file with inline metadata/arrays or put an original PDF in stage. "
             "File transport does not replace model source review or automatically mark pages reviewed. "
             "Finalization alone activates "
@@ -1243,6 +1347,7 @@ def build_server(
         ),
         meta={"openai/fileParams": ["file"]},
     )
+    @_book_mcp_error_boundary
     async def book_ingest(
         command: Literal["start", "reprocess", "rechunk", "stage", "validate", "finalize", "status"],
         file: ChatFile | None = None,
@@ -1255,8 +1360,16 @@ def build_server(
         poi_facts: list[StagePoiFactInput] | None = None,
         poi_media_links: list[StagePoiMediaLinkInput] | None = None,
         entity_candidates: GraphBundle | None = None,
-        story_candidates: Annotated[list[StageStoryCandidateInput], Field(max_length=12)] | None = None,
-        source_import: TargetSourceImportInput | None = None,
+        story_candidates: Annotated[list[StageStoryCandidateInput], Field(max_length=12,
+            description="Model-authored evidence-grounded candidates: when evidence is sufficient, "
+                "supply basic_variant.body and complete evidence-mapped basic_variant.blocks. "
+                "Otherwise omit basic_variant and explicitly mark narrative_outcome=needs_context "
+                "or facts_only; never fabricate a body from title or summary.")] | None = None,
+        source_import: Annotated[TargetSourceImportInput | None, Field(
+            description="Native import options: start currently requires public_rights with verified "
+                "public-distribution basis, even for owner-personal calls. Stage may carry model-authored "
+                "research continuation. metadata.source_import is a compatibility alternative; do not "
+                "pass both.")] = None,
         telegram_original: TelegramOriginalInput | None = None,
     ) -> BookIngestOutput:
         if telegram_original is not None and (selected != 'kaggle_source' or command != 'start' or file is not None):
@@ -1421,6 +1534,7 @@ def build_server(
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
+    @_book_mcp_error_boundary
     async def book_pages(
         ingestion_id: str,
         cursor: str | None = None,
