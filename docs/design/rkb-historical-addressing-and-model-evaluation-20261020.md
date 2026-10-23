@@ -80,7 +80,7 @@ Historic/current name, адрес или exact Street Story POI → тот же 
 | **GEO-C post-P0** | Independent owner Cartography geometry, typed precision/epoch/split/renumber, traceable evidence и ambiguous cases | Псевдоточность одного растра или скана |
 | **P2/P3 условно** | Held-out source/address/epoch family failures и observed latency/CPU/quality vs baseline exact aliases/optional `pg_trgm`/BGE; тест нового ranking/model только по доказанной категории miss | Автоматическая fine-tune/специализированная нейромодель |
 
-**Protected** v4 readiness gates не ослабляются; Stage-P0 принимается отдельно от полной book-quality/restore/scale readiness. В этой docs работе нет PG schema/benchmark, source/SQL changes, P0 deployment, Kaggle/provider call, new services, backfill/reimport или historical E2E.
+**Гейты применяются только к связанному с ними действию.** Первая принятая страница → обычный MCP source search не ждёт GEO bootstrap, повторной проверки всей истории, полной книги, картографии, Story/Case и общекорпусных scale/quality экспериментов. Проверки actor authentication, текущих ACL и private Case grants, точных source/UNKNOWN receipts и действующей durable write boundary остаются обязательными там, где их действительно использует операция. Собственные quality/latency/capacity критерии проверяются при соответствующей продуктовой вехе, но не становятся глобальным барьером посторонних путей. В этом документальном раунде нет PG schema/benchmark, source/SQL changes, P0 deployment, Kaggle/provider call, новых сервисов, backfill/reimport или historical E2E.
 
 ## 7. Решения для review и дальнейшей постановки
 
