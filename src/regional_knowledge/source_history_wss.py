@@ -8,7 +8,7 @@ import json
 import secrets
 
 from .control_spool import SourceChange,SpoolConflict,_command,_database,_uuid
-from .source_history_verifier import NativeSourceHistoryVerifier,_Coverage,_json,_hash,_source_origin_required,DEFAULT_HISTORY_BYTES
+from .source_history_verifier import NativeSourceHistoryVerifier,_Coverage,_json,_hash,_source_origin_required,_read_pending,DEFAULT_HISTORY_BYTES
 from .source_read_gate import binding_key
 from .kaggle_recovery_dispatch import RecoveryPhaseDispatch
 
@@ -272,7 +272,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                         if h.dependency is None or h.dependency.scope_class!='public_source' or not _source_origin_required(c):continue
                         source=c.ids['source_id'];old=changes.get(source)
                         changes[source]=SourceChange(source,c.sequence,_hash(c.encode()),bool(h.dependency.restriction or old and old.restriction),
-                            bool(not durable or old and old.pending),False)
+                            bool(_read_pending(c,outcome,durable) or old and old.pending),False)
                     if mode=='renew':pending=list(previous.pending)
                     if s._writing or s._source_version is not version or not self.binding_current(binding):
                         raise SpoolConflict('source prefix changed during native verification')

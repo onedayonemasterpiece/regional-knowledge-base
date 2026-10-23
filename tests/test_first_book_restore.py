@@ -451,7 +451,8 @@ async def test_dataset2_history_verifies_original_receipts_with_only_current_rou
         assert coverage.current() and coverage.applied_sequence==24
         assert len(coverage.pending)==4  # New outcomes await a real Dataset checkpoint.
         assert set(registry.handlers)=={handler.route for handler in registry.handlers.values()}
-        assert len(registry.handlers)==13
+        from regional_knowledge.kaggle_native_source_bindings import NATIVE_ROUTES
+        assert set(registry.handlers)==NATIVE_ROUTES
         assert all(s.native.ledger[n]==receipt for n,receipt in s.original_receipts.items())
         for command in s.originals:
             retained=await env.spool.get(command.operation_key)
