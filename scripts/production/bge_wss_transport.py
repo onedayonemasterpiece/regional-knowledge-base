@@ -493,7 +493,9 @@ class BgeWssTransport:
             nonlocal ready_confirmed, telegram_request_pending
             while True:
                 frame = await receive()
-                if type(frame.get('connection_generation')) is not int or frame['connection_generation'] != generation:
+                if type(frame.get('connection_generation')) is not int:
+                    raise ValueError('integer channel generation required')
+                if frame['connection_generation'] != generation:
                     raise ConnectionError('stale channel generation')
                 kind = frame.get('type')
                 if self.shared_reads and kind == 'RESOURCE_PROBE':
@@ -735,9 +737,6 @@ class BgeWssTransport:
                             try:
                                 await self._session(socket)
                             except (ValueError,KeyError,TypeError,UnicodeError):
-                                # Reject malformed/stale wire data without
-                                # discarding an exact unacknowledged result or
-                                # killing the warm process. Never log payloads.
                                 raise ConnectionError('channel protocol validation failed') from None
                         if self.stop.is_set():
                             break
