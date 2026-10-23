@@ -372,6 +372,10 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
             async with connection.transaction():
                 stage = 'settings'
                 await _settings(connection)
+                if command.route == 'source.activate.v1':
+                    # One atomic whole-book projection is a bounded bulk write.
+                    # Lock waits and ordinary commands retain their small limits.
+                    await connection.execute("SELECT set_config('statement_timeout','60000ms',true)")
                 stage = 'writer_state'
                 state = await _state(connection, database_generation, writer_generation)
                 stage = 'existing_outcome'

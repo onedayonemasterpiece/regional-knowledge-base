@@ -209,6 +209,27 @@ async def test_current_manifest_lookup_keeps_latest_explicit_page_correction(ima
 
 @PG
 @pytest.mark.asyncio
+async def test_indexed_passage_validation_rejects_duplicate_and_missing_identities(image_pg_sql18):
+    env=image_pg_sql18;_,_,doc=synthetic_knowledge(2)
+    async def checked(value):
+        return (await (await env['connection'].execute(
+            'SELECT rkb_v4.check_source_image_passages_v1(%s)',(Jsonb(value),))).fetchone())[0]
+    assert await checked(doc) is True
+    for collection,key in (('passages','passage_id'),('regions','region_id')):
+        changed=copy.deepcopy(doc)
+        rows=changed['passages'] if collection=='passages' else changed['semantic']['regions']
+        rows[1][key]=rows[0][key]
+        assert await checked(changed) is False
+    changed=copy.deepcopy(doc);changed['passages'][0]['passage_id']='00000000-0000-0000-0000-000000000099'
+    assert await checked(changed) is False
+    changed=copy.deepcopy(doc);changed['semantic']['regions'][0]['region_id']='00000000-0000-0000-0000-000000000099'
+    assert await checked(changed) is False
+    changed=copy.deepcopy(doc);changed['passages'][0]['body']='Forged source text.'
+    assert await checked(changed) is False
+
+
+@PG
+@pytest.mark.asyncio
 async def test_174_page_candidate_is_searchable_only_after_all_local_inputs_and_atomic_activation(image_pg):
     env=image_pg;chain,head,doc=synthetic_knowledge(story=True);await stage_all(env,chain)
     h=await prepare(env,chain,head,doc)
