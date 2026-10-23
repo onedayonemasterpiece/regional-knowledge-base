@@ -159,6 +159,8 @@ async def test_existing_queue_and_native_probe_form_one_exact_health_response(ta
             binding_current=lambda b: current_binding(target.queue) == b)
     result = await collect_health(queue=target.queue, native_probe=observe, controller_state='active')
     assert result['read_ready'] and result['postgres']['sql_response']
+    assert 'saved_seq' in result['postgres']
+    assert result['postgres']['saved_seq'] is None  # no verified Dataset base in fixture
     assert result['notebook']['provider_version'] == int(expected.provider_version)
     assert result['notebook']['heartbeat_age_seconds'] == 0
     assert result['notebook']['source'] == 'controller_queue'
@@ -229,7 +231,8 @@ def test_public_heartbeat_health_reports_runtime_observation_without_identifiers
     assert result['source'] == 'heartbeat_observation'
     assert result['notebook']['status'] == 'ready'
     assert result['notebook']['provider_version'] == int(expected.provider_version)
-    assert set(result['postgres']) == {'schema_version', 'applied_seq', 'projection_seq'}
+    assert set(result['postgres']) == {'schema_version', 'applied_seq', 'projection_seq', 'saved_seq'}
+    assert result['postgres']['saved_seq'] is None
     assert result['read_ready'] == (result.get('reason') is None)
     text = json.dumps(result)
     for secret in (expected.run_id, expected.runtime_incarnation, 'token', 'launch_nonce', 'provider_ref'):
@@ -285,3 +288,18 @@ async def test_native_server_statement_timeout_is_sanitized(target):
     assert result.reason == 'pg_timeout' and not result.ready
     assert 'private' not in json.dumps(result.wire())
     assert native.acquired == native.released == 1
+
+
+def test_health_saved_seq_is_only_verified_dataset_pointer_not_live_applied_cursor(tmp_path):
+    """The status reader does no provider I/O and never guesses a moving PG head."""
+    from types import SimpleNamespace as NS
+    from regional_knowledge.kaggle_health import _verified_saved_seq
+    from test_dataset_recovery_store import prepared
+
+    p=prepared(tmp_path)
+    generation=p.checkpoint.database_generation
+    assert _verified_saved_seq(p.q,NS(database_generation=generation))==p.checkpoint.base_sequence
+    # A different writer generation has no verified pointer in this queue.
+    assert _verified_saved_seq(p.q,NS(database_generation='other-generation')) is None
+    # No status read promotes or mutates the current checkpoint version.
+    assert p.store.latest_checkpoint==p.checkpoint

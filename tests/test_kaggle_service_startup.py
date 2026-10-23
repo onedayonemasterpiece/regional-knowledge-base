@@ -323,20 +323,22 @@ async def test_normal_maintenance_reconciles_publication_before_native_history(s
 @pytest.mark.asyncio
 async def test_pending_dataset_checkpoint_keeps_verified_reads_open(service):
     """A checkpoint stopped before promotion is retried; it does not close reads."""
-    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
     s=service;startup=s.startup;s.adapter.available=True
     class Pending:
         calls=0
-        async def refresh(self,binding):
+        def kick(self,binding):
             Pending.calls+=1
-            raise CheckpointPending('JournalConflict','dataset_native_snapshot_readback_changed')
+            return True  # Dataset publication continues outside maintenance
+        async def aclose(self):pass
     async with startup.lifespan(None):
         assert startup.reads_current()
         startup.dataset_checkpoints=Pending()
         assert await startup.refresh() and startup.reads_current() and Pending.calls==1
-        # Any other failure keeps the previous fail-closed behaviour.
+        # An unexpected failure to *schedule* the single-flight checkpoint
+        # still fails closed, rather than reporting healthy stale coverage.
         class Broken:
-            async def refresh(self,binding):raise RuntimeError('post-promotion settle failed')
+            def kick(self,binding):raise RuntimeError('checkpoint scheduler failed')
+            async def aclose(self):pass
         startup.dataset_checkpoints=Broken()
         assert not await startup.refresh() and not startup.reads_current()
 
@@ -380,3 +382,53 @@ async def test_unchanged_geo_denial_is_not_retried_every_tick(service,monkeypatc
         startup.config.spool._source_covered_sequence+=1
         assert await startup.refresh() and Gate.calls==3  # new spool sequence retries at once
         assert startup.reads_current()
+
+
+@pytest.mark.asyncio
+async def test_existing_planned_stop_waits_for_checkpoint_outcome_before_nine_hours(tmp_path):
+    from regional_knowledge.bge_queue import BgeQueue
+    now=[100.]
+    queue=BgeQueue(tmp_path/'stop-checkpoint.sqlite',clock=lambda:now[0])
+    with queue.connect() as db:
+        run_id=queue._new_run(db,now[0])
+    binding=SimpleNamespace(run_id=run_id,connection_generation=1)
+    events=[]
+    class Checkpoint:
+        async def before_stop(self,binding):
+            events.append(('checkpoint',binding.run_id))
+            await asyncio.sleep(0)
+            return True
+    fake=SimpleNamespace(dataset_checkpoints=Checkpoint(),binding=binding,
+        config=SimpleNamespace(queue=queue))
+    assert await TargetServiceStartup.before_planned_stop(fake,run_id,1)
+    assert events==[('checkpoint',run_id)]
+    # Invalid attachment must never borrow another owner's stop checkpoint.
+    with pytest.raises(RuntimeError,match='stop_binding_changed'):
+        await TargetServiceStartup.before_planned_stop(fake,run_id,2)
+    now[0]+=9*3600
+    with pytest.raises(TimeoutError,match='nine_hour_limit'):
+        await TargetServiceStartup.before_planned_stop(fake,run_id,1)
+    assert events==[('checkpoint',run_id)]
+
+
+@pytest.mark.asyncio
+async def test_successor_stop_waits_previous_run_existing_checkpoint_not_new_writer(tmp_path):
+    from regional_knowledge.bge_queue import BgeQueue
+    queue=BgeQueue(tmp_path/'successor-stop.sqlite',clock=lambda:100.)
+    with queue.connect() as db:
+        previous=queue._new_run(db,100.)
+    old=SimpleNamespace(run_id=previous,connection_generation=4)
+    newer=SimpleNamespace(run_id='next-writer',connection_generation=5)
+    observed=[]
+    class OldPending:
+        _task_binding=old
+        _task=object()
+        async def before_stop(self,binding):
+            observed.append(binding)
+            return True
+    fake=SimpleNamespace(dataset_checkpoints=OldPending(),binding=newer,
+        config=SimpleNamespace(queue=queue))
+    assert await TargetServiceStartup.before_planned_stop(fake,previous,4)
+    assert observed==[old]
+    with pytest.raises(RuntimeError,match='stop_binding_changed'):
+        await TargetServiceStartup.before_planned_stop(fake,previous,999)

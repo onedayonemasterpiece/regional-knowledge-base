@@ -88,10 +88,19 @@ class SourceDatasetSeed:
 
     async def _prepare_prefix(self,proof):pass
 
+    # The one-time first seed still owns the full intake barrier. Only the
+    # work-cycle subclass permits concurrent application under a physical
+    # WAL-consistent backup, with a short protected prefix selection below.
+    concurrent_capture=False
+
     @asynccontextmanager
     async def capture_guard(self,binding):
         async with self.startup.config.spool._lock:
             yield
+
+    @asynccontextmanager
+    async def prefix_guard(self,binding):
+        yield
 
     async def _capture(self,physical,bridge,binding,sequence):
         return await physical.native.capture(binding,versions=dict(self.config.versions),expected_sequence=sequence)
@@ -141,18 +150,26 @@ class SourceDatasetSeed:
             # directly to Kaggle. No provider credential reaches the notebook.
             bridge.snapshot_tickets = self.tickets
             async with self.capture_guard(binding):
-                proof = self.startup.history._coverage
+                proof = self.startup.coverage
                 await self._prepare_prefix(proof)
-                if not self._prefix_ready(proof):
-                    raise SnapshotError('dataset_seed_requires_drained_prefix')
-                control = self._control(physical,proof)
+                # Read the old accepted/applied boundary and its compact source
+                # heads under ONE short spool exclusion. Release it BEFORE the
+                # physical pg_basebackup and Dataset publication so later
+                # accepted commands can advance while this prefix is saved.
+                async with self.prefix_guard(binding):
+                    if proof is not self.startup.coverage or not self._prefix_ready(proof):
+                        raise SnapshotError('dataset_seed_requires_drained_prefix')
+                    if await self.startup.config.spool.journal.head()!=proof.head:
+                        raise SnapshotError('dataset_seed_capture_prefix_changed')
+                    control = self._control(physical,proof)
                 descriptor = await self._capture(physical,bridge,binding,proof.applied_sequence)
                 if (descriptor['database_generation'] != proof.database_generation
                         or descriptor['writer_generation'] != self.startup.config.writer_generation
                         or descriptor['applied_sequence'] != proof.applied_sequence
                         or descriptor['versions'] != self.config.versions
                         or not self.startup.binding_current(binding)
-                        or await self.startup.config.spool.journal.head()!=proof.head):
+                        or (not self.concurrent_capture and
+                            await self.startup.config.spool.journal.head()!=proof.head)):
                     raise SnapshotError('dataset_seed_capture_prefix_changed')
                 archive = self.tickets.uploaded_file(BlobRef(**descriptor['blob']))
                 control_ref = dict(key=self.startup.config.spool.journal.prefix+'/source-base-control/'+sha(control),

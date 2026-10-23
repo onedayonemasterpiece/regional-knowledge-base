@@ -22,7 +22,7 @@ async def test_dataset_ready_routes_without_opening_history(service):
     startup.restorer=SimpleNamespace(complete=True,proof=SimpleNamespace(
         applied_sequence=0,control=json.dumps(dict(sequence=0,heads=[])).encode()))
     async def no_checkpoint(binding):return False
-    startup.dataset_checkpoints=SimpleNamespace(refresh=no_checkpoint)
+    startup.dataset_checkpoints=SimpleNamespace(refresh=no_checkpoint,kick=lambda binding:None)
     startup.running=True
     assert not s.adapter.available
     assert await startup.refresh()

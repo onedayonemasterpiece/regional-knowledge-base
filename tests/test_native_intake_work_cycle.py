@@ -93,3 +93,29 @@ async def test_activation_still_requires_remote_settlement_of_candidate_prefix(a
         await e.helper._stage_exact(e.access,e.row,kind='activate',key='must-not-activate',route='source.activate.v1',
             payload=activation_payload([batch(count=1)],digest(e.command.payload)),builder=resolved_activation_command)
     assert (await e.spool.scope_state())['sequence']==before['sequence']
+
+
+@pytest.mark.asyncio
+async def test_reading_finish_applied_not_dataset_saved_continues_and_forces_snapshot(applied_candidate,monkeypatch):
+    """Native finish APPLIED is not cloud Saved and never waits for Dataset."""
+    e=applied_candidate;requests=[]
+    e.startup.dataset_checkpoints=NS(kick=lambda binding,planned_stop=False:
+        requests.append((binding,planned_stop)))
+    monkeypatch.setattr(e.helper,'_result',lambda entry:{
+        'source_id':e.row['source_id'],'ingestion_id':e.row['ingestion_id'],
+        'read_complete':True})
+    monkeypatch.setattr(e.helper.importer,'_save',lambda row,**changes:row|changes,raising=False)
+    state=e.helper._update(e.row,pending_operation_key='finish-key',pending_kind='finish')
+    known=NS(outcome_state='NOT_SENT',accepted=object(),seal_state='ACCEPTED',
+        apply_state='APPLIED',apply_receipt=NS(status='applied'),
+        command=NS(payload='{}',operation_key='finish-key'))
+    assert e.helper._can_settle(state,known)
+    # A previously accepted but still claimed or UNKNOWN result is NOT applied.
+    assert not e.helper._can_settle(state,NS(**(known.__dict__|{'apply_state':'SENT_UNKNOWN'})))
+    assert not e.helper._can_settle(state,NS(**(known.__dict__|{'seal_state':'SENT_UNKNOWN'})))
+    assert not e.helper._can_settle(state,NS(**(known.__dict__|{'apply_receipt':None})))
+    assert not e.helper._can_settle(state,NS(**(known.__dict__|{'outcome_state':'SENT_UNKNOWN'})))
+    result=await e.helper._settle(e.access,e.row,state,known)
+    assert result['phase']=='finalized' and result['pending_operation_key'] is None
+    assert requests==[(e.access.binding,True)]  # schedule only; no provider wait
+    assert (await e.spool.get(e.command.operation_key)).outcome_state=='NOT_SENT'

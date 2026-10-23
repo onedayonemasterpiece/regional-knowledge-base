@@ -195,9 +195,13 @@ class NativeSourceIntake:
     def _can_settle(state,entry):
         if entry.outcome_state=='DURABLE':return True
         if state.get('packet_mode') and state['pending_kind']=='finish':
+            # A native reading-completion commit is useful immediately at
+            # APPLIED. Dataset Saved is a later, independently observed
+            # checkpoint; UNKNOWN, unaccepted and unproved apply stay pending.
             return (entry.outcome_state=='NOT_SENT' and entry.accepted is not None and entry.seal_state=='ACCEPTED'
-                and entry.apply_receipt is not None and getattr(entry,'apply_state',None)=='REJECTED_PRECONDITION'
-                and entry.apply_receipt.status=='rejected_precondition')
+                and entry.apply_receipt is not None and
+                (getattr(entry,'apply_state',None),entry.apply_receipt.status) in
+                    (('APPLIED','applied'),('REJECTED_PRECONDITION','rejected_precondition')))
         if state['pending_kind']=='batch' or state.get('packet_mode') and state['pending_kind']=='stage':
             return (entry.outcome_state=='NOT_SENT' and entry.accepted is not None and entry.seal_state=='ACCEPTED'
                 and entry.apply_receipt is not None and
@@ -345,13 +349,20 @@ class NativeSourceIntake:
             await asyncio.to_thread(self.importer._save,row,phase='finalized')
         else: raise _failure('native_pending_operation_invalid')
         updated=await asyncio.to_thread(self._update,row,**changes)
+        if kind=='finish':
+            # Reading completion is APPLIED in native PG, not yet Dataset
+            # Saved. Schedule the existing capture owner, never wait for it
+            # in the import tool call or manufacture an outcome receipt.
+            checkpoint=getattr(self.startup,'dataset_checkpoints',None)
+            if checkpoint is not None:
+                checkpoint.kick(access.binding,planned_stop=True)
         _LOG.info('native_intake_progress ingestion_id=%s kind=%s remote_durable=%s next_ordinal=%s',
             row['ingestion_id'],kind,entry.outcome_state=='DURABLE',updated['next_ordinal'])
         # Applied != Saved: log only, do not modify actual remote receipt.
         from .product_telemetry import emit_product_event
         emit_product_event({'event':'import.phase','phase':{
             'stage':'stage','seal':'seal','materialize':'materialize',
-            'activate':'activation','batch':'stage','finish':'saved'}[kind], 'status':'applied',
+            'activate':'activation','batch':'stage','finish':'stage'}[kind], 'status':'applied',
             'operation_ref':hashlib.sha256(entry.command.operation_key.encode()).hexdigest()})
         return updated
 

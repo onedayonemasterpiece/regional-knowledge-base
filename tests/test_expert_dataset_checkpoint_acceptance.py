@@ -138,7 +138,7 @@ def composition(owner, env, tmp_path, monkeypatch):
         pending=old_proof.pending,
         current=lambda:writer.current(database_generation=writer.database_generation,
                                       writer_generation=writer.writer_generation))
-    p.startup.history._coverage=p.proof
+    p.startup.coverage=p.proof
     p.startup.config.queue=q
     p.startup.config.spool=spool
     p.startup.config.writer_owner=writer
@@ -147,7 +147,7 @@ def composition(owner, env, tmp_path, monkeypatch):
     # A fixture-local startup description is built with the genuine writer
     # fence from inception; no production runtime method is monkeypatched.
     original_startup=p.startup
-    p.startup=NS(config=original_startup.config,history=original_startup.history,
+    p.startup=NS(config=original_startup.config,history=original_startup.history,coverage=p.proof,
         restorer=original_startup.restorer,
         binding_current=lambda binding:(
             p.alive and binding is p.binding and writer.current(
@@ -164,7 +164,7 @@ def composition(owner, env, tmp_path, monkeypatch):
             blob=dict(key=ticket.key,size=ticket.size,sha256=ticket.sha256,
                       native_version='fixture'))
     monkeypatch.setattr(_WorkCycleCapture,'_capture',fake_native_capture)
-    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0])
+    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],quiet_seconds=30)
     assert p.owner.store is store
     local=NS(p=env.p,q=q,spool=spool,journal=journal)
     ctl,credentials,_=_prepare(local)
@@ -292,7 +292,7 @@ async def test_lost_publish_ack_retains_original_version_and_single_signed_event
         assert p.store.latest_checkpoint.dataset_version==1
         assert not p.store.remote_durable(key,original)
         assert (await post(app,raw,headers)).status_code==503
-        p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0])
+        p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],quiet_seconds=30)
         assert await p.owner.refresh(p.binding)
         assert p.store.latest_checkpoint.dataset_version==2
         assert p.store.remote_durable(key,original)

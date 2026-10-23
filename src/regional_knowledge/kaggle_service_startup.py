@@ -460,14 +460,10 @@ class TargetServiceStartup:
                 self.schema_migrations.kick(self.binding)
                 return self.reads_current()
             if self.dataset_checkpoints is not None:
-                from .kaggle_dataset_checkpoint import CheckpointPending
-                try:
-                    if await self.dataset_checkpoints.refresh(self.binding):
-                        self.coverage=await self._dataset_coverage(self.binding)
-                except CheckpointPending as exc:
-                    # The pointer did not move and the verified prefix is
-                    # unchanged: keep reads on the current base, retry later.
-                    _LOG.warning('target_dataset_checkpoint state=pending reason=%s',exc.args[0])
+                # Kaggle Dataset can take minutes to become ready. Capture
+                # continues through the existing background owner, never
+                # holding the source-history maintenance tick or import stage.
+                self.dataset_checkpoints.kick(self.binding)
             if self.dataset_seed is not None:
                 await self.dataset_seed.capture_once(self.binding)
                 # Seed publication does not authorize an S3-backed importer.
@@ -520,6 +516,38 @@ class TargetServiceStartup:
             await asyncio.sleep(self.config.refresh_seconds)
             await self.refresh()
 
+    async def before_planned_stop(self,run_id,connection_generation):
+        """Await current Dataset outcome on the EXISTING authenticated STOP path.
+
+        Do not extend the nine-hour run for provider publication. A former
+        writer may await its already-started task but cannot create a new
+        archive after attachment retirement; failure is reported, not Saved.
+        """
+        checkpoint=self.dataset_checkpoints
+        if checkpoint is None:return None
+        # During a normal successor rotation self.binding can already point
+        # to the NEW run. Still await the exact existing old-run checkpoint
+        # task; never use that old task to grant a new capture/promotion.
+        binding=self.binding
+        if (binding is None or binding.run_id!=run_id
+                or binding.connection_generation!=connection_generation):
+            binding=getattr(checkpoint,'_task_binding',None)
+            task=getattr(checkpoint,'_task',None)
+            if (binding is None or task is None
+                    or binding.run_id!=run_id
+                    or binding.connection_generation!=connection_generation):
+                raise RuntimeError('dataset_checkpoint_stop_binding_changed')
+        queue=self.config.queue
+        with queue.connect(write=False) as db:
+            run=db.execute('SELECT started FROM runs WHERE id=?',(run_id,)).fetchone()
+        if run is None:
+            raise RuntimeError('dataset_checkpoint_stop_run_missing')
+        remaining=9*3600-(queue.clock()-run['started'])
+        if remaining<=0:
+            raise TimeoutError('dataset_checkpoint_nine_hour_limit')
+        async with asyncio.timeout(remaining):
+            return await checkpoint.before_stop(binding)
+
     @asynccontextmanager
     async def lifespan(self,server):
         if self.running or self.closed:raise RuntimeError('one target service lifespan required')
@@ -529,6 +557,18 @@ class TargetServiceStartup:
             self._maintenance=asyncio.create_task(self._maintain(initial=self.restorer is not None),name='rkb-source-history-maintenance')
             yield self
         finally:
+            # Cooperative shutdown still requests the existing forced
+            # checkpoint before retiring the current writer. An unavailable
+            # Dataset leaves the old saved_seq truthful and the local tail
+            # intact; provider STOP is never misrepresented as a new Saved.
+            if (self.dataset_checkpoints is not None and self.binding is not None
+                    and self.reads_current()):
+                try:
+                    await self.before_planned_stop(self.binding.run_id,self.binding.connection_generation)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    _LOG.warning('target_dataset_checkpoint state=stop_pending reason=%s',type(exc).__name__)
             self.running=False;self.coverage=None;self.gate.invalidate()
             if self.geo_gate is not None:self.geo_gate.invalidate()
             self.case_gate.invalidate()
@@ -536,6 +576,7 @@ class TargetServiceStartup:
                 self._maintenance.cancel()
                 try:await self._maintenance
                 except asyncio.CancelledError:pass
+            if self.dataset_checkpoints is not None:await self.dataset_checkpoints.aclose()
             await self.schema_migrations.aclose()
             if self.geo_installer is not None:await self.geo_installer.aclose()
             if self.snapshot is not None:await self.snapshot.aclose()

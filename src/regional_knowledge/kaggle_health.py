@@ -54,6 +54,30 @@ async def probe_database_health(*, acquire, binding, binding_current, timeout_se
     return DatabaseHealth(binding, **observed)
 
 
+def _verified_saved_seq(queue,binding):
+    """Read the promoted Dataset pointer, not native applied_seq or upload ACK.
+
+    Missing/ambiguous generation bindings are unknown, never guessed Saved.
+    No Dataset operation, provider request or write occurs on a status read.
+    """
+    try:
+        from .kaggle_dataset_base import DatasetCheckpoint
+        with queue.connect(write=False) as db:
+            table=db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='rkb_dataset_recovery_store'").fetchone()
+            if table is None:return None
+            rows=db.execute('SELECT checkpoint_json,latest_json FROM rkb_dataset_recovery_store').fetchall()
+        matches=[]
+        for row in rows:
+            raw=row['latest_json'] or row['checkpoint_json']
+            cp=DatasetCheckpoint.from_wire(json.loads(raw))
+            if cp.database_generation==binding.database_generation:
+                matches.append(cp.base_sequence)
+        return matches[0] if len(matches)==1 else None
+    except Exception:
+        return None
+
+
 def _control_snapshot(queue):
     """Never queue.status(): that API can perform maintenance and allocate work."""
     with queue.connect(write=False) as db:
@@ -103,7 +127,9 @@ async def collect_health(*, queue, native_probe, controller_state='unknown', tim
                 elif await asyncio.to_thread(current_binding, queue) != binding:
                     output['reason'] = 'attachment_changed'
                 else:
-                    output.update(postgres=observed.wire(), read_ready=observed.ready, reason=observed.reason)
+                    postgres=observed.wire()
+                    postgres['saved_seq']=await asyncio.to_thread(_verified_saved_seq,queue,binding)
+                    output.update(postgres=postgres, read_ready=observed.ready, reason=observed.reason)
     except asyncio.CancelledError:
         raise
     except TimeoutError:
@@ -144,6 +170,7 @@ def heartbeat_health(queue):
         health['reason'] = 'attachment_changed'
         return health
     postgres = {key: observed.get(key) for key in ('schema_version', 'applied_seq', 'projection_seq')}
+    postgres['saved_seq'] = _verified_saved_seq(queue,binding)
     health['postgres'] = postgres
     applied, projection = postgres['applied_seq'], postgres['projection_seq']
     if type(applied) is not int or type(projection) is not int:

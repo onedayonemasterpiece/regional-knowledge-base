@@ -191,3 +191,42 @@ def test_actual_old_and_successor_channels_stop_only_predecessor(tmp_path):
                     assert db.execute("SELECT launch_state FROM runs WHERE id=?",(old,)).fetchone()[0]=='dispatched'
                 send(next_socket,next_gen,'HEARTBEAT')
                 assert next_socket.receive_json()['type']=='HEARTBEAT_ACK'
+
+
+def test_existing_authenticated_stop_waits_for_checkpoint_outcome():
+    """One WSS STOP, with no new frame or manager; awaited before send."""
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+    from regional_knowledge.bge_channel import channel_route
+    calls=[]
+    async def pre_stop(run_id,generation):
+        calls.append(('before',run_id,generation))
+        await asyncio.sleep(.01)
+        calls.append(('settled',run_id,generation))
+    queue=PlannedQueue()
+    with TestClient(Starlette(routes=[channel_route(queue,before_stop=pre_stop)])) as app:
+        with app.websocket_connect('/bge-worker/channel',headers={'Authorization':'Bearer secret'}) as socket:
+            generation=attach(socket)['connection_generation']
+            assert ready(socket,generation)['status']=='ready'
+            queue.current=False
+            assert socket.receive_json()==expected_stop(generation)
+    assert calls==[('before','run',generation),('settled','run',generation)]
+
+
+def test_existing_authenticated_stop_waits_for_checkpoint_error_then_stops():
+    """Failed cloud durability is reported, not re-sent or faked as Saved."""
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+    from regional_knowledge.bge_channel import channel_route
+    calls=[]
+    async def pre_stop(run_id,generation):
+        calls.append((run_id,generation))
+        raise TimeoutError('synthetic Dataset publication pending')
+    queue=PlannedQueue()
+    with TestClient(Starlette(routes=[channel_route(queue,before_stop=pre_stop)])) as app:
+        with app.websocket_connect('/bge-worker/channel',headers={'Authorization':'Bearer secret'}) as socket:
+            generation=attach(socket)['connection_generation']
+            assert ready(socket,generation)['status']=='ready'
+            queue.current=False
+            assert socket.receive_json()==expected_stop(generation)
+    assert calls==[('run',generation)]
