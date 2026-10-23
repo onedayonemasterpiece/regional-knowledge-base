@@ -407,3 +407,20 @@ async def test_existing_planned_idle_drain_forces_checkpoint_before_quiet_timeou
     assert p.owner.saved_seq==7
     assert p.store.remote_durable(key,b'pending')
     assert p.calls==['capture','finalize','verify']
+
+
+@pytest.mark.asyncio
+async def test_existing_successor_reservation_forces_checkpoint_before_writer_handover(tmp_path,monkeypatch):
+    """A serving READY writer begins upload before its replacement is promoted."""
+    p=control_cycle(tmp_path,monkeypatch,interval=1800,quiet=900)
+    key=await put_control(p)
+    with p.q.connect() as db:
+        db.execute('CREATE TABLE control(id INTEGER PRIMARY KEY,current_run TEXT,successor TEXT)')
+        db.execute("INSERT INTO control VALUES(1,'run',NULL)")
+    assert not await p.owner.refresh(p.binding)
+    p.clock[0]=15
+    with p.q.connect() as db:
+        db.execute("UPDATE control SET successor='successor-run' WHERE id=1")
+    assert await p.owner.refresh(p.binding)
+    assert p.store.remote_durable(key,b'pending')
+    assert p.calls==['capture','finalize','verify']
