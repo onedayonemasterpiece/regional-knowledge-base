@@ -26,6 +26,15 @@ class CheckpointPending(Exception):
 
 
 class _WorkCycleCapture(SourceDatasetSeed):
+    concurrent_capture=True
+
+    @asynccontextmanager
+    async def prefix_guard(self,binding):
+        async with self.startup.config.spool._lock:
+            if not self.startup.binding_current(binding):
+                raise SnapshotError('dataset_checkpoint_writer_changed')
+            yield
+
     @asynccontextmanager
     async def capture_guard(self,binding):
         """Do not hold source-intake admission across a large Dataset upload.
