@@ -76,3 +76,21 @@ async def test_case_native_pg_actor_role_serves_with_no_global_history_and_denie
         observed_visibility_epoch=0,observed_database_generation='db-source')
     rejected=await gate.finish(permit,denied)
     assert rejected.result.status=='denied' and rejected.result.record is None
+
+
+@pytest.mark.asyncio
+async def test_private_case_grant_revoke_before_final_issuance_cannot_leak(env,auth,monkeypatch):
+    gate,actor,binding,_=await case_setup(env,auth)
+    env.spool.invalidate_source_history()
+    pending_revoke=[False]
+    monkeypatch.setattr(gate,'_case_restriction_after',
+        lambda case_id,sequence:pending_revoke[0])
+    permit=await gate.dispatch(actor,request(),binding)
+    granted=await gate.finish(permit,case_result(header()))
+    assert granted.result.status=='ok' and gate.issuance_current(granted.ticket)
+    pending_revoke[0]=True
+    assert not gate.issuance_current(granted.ticket)
+    renewed=await gate.refresh(granted)
+    assert renewed.result.status=='denied'
+    assert renewed.result.record is None
+    assert renewed.result.reason=='access_denied'
