@@ -367,9 +367,7 @@ class BgeWssTransport:
         if job['kind'] in ('source_command','recovery_phase'):
             handler=self._native_handler(job)
             if handler is None:raise ValueError('fixed native executor unavailable')
-            if job['kind']=='recovery_phase' and self.snapshot_channel is not None:
-                with self.snapshot_channel.assignment(job):receipt=await handler(job)
-            elif job['kind']=='source_command':
+            if job['kind']=='source_command':
                 from regional_knowledge.kaggle_apply import ApplyUnknown, ApplyExecutionError
                 try:
                     receipt=await handler(job)
@@ -398,7 +396,25 @@ class BgeWssTransport:
                     # Keep the original job/claim fenced against re-execute;
                     # release only its completed compute permit for reads.
                     return
-            else:receipt=await handler(job)
+            else:
+                try:
+                    if job['kind']=='recovery_phase' and self.snapshot_channel is not None:
+                        with self.snapshot_channel.assignment(job):receipt=await handler(job)
+                    else:
+                        receipt=await handler(job)
+                except Exception as error:
+                    from regional_knowledge.recovery_journal import StaleWriter
+                    # Actor/permission and stale writer are authority fences,
+                    # not ordinary job failures. Keep their old fail-closed path.
+                    if isinstance(error,(PermissionError,StaleWriter)):
+                        raise
+                    print(json.dumps({'event':'native_job_outcome_unresolved',
+                        'job_id':job['id'],'kind':job['kind'],'phase':job.get('phase'),
+                        'error_class':type(error).__name__},separators=(',',':')),flush=True)
+                    # Unknown effects retain the original assignment; no
+                    # fake receipt/ACK. The completed task releases compute
+                    # capacity for independent reads in this warm process.
+                    return
             self.pending=dict(job_id=job['id'],claim=job['claim'],receipt=receipt,
                 **{key:job[key] for key in ('run_id','launch_nonce','runtime_incarnation',
                     'compute_claim','dispatch_generation')})
