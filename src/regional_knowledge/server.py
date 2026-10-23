@@ -474,23 +474,6 @@ def build_server(
     mcp = KnowledgeMCPServer(
         "Regional Knowledge Base",
         instructions=(
-            ("The configured native importer supports PDF and DjVu originals up to 128 MiB and 2500 physical pages, "
-             "subject to the verified original intake. Stage at most 8 selected, model-reviewed pages per native batch; "
-             "book_pages currently returns one visual page per call, regardless of requested batch_size. "
-             "Ordinary owner-only import is shared-searchable, NOT owner-private: the authorized owner "
-             "attests legality once, without a mandatory per-book public_rights declaration or a new "
-             "legal verification step. Optional legacy source_import.public_rights remains supported. "
-             "Owner authentication never grants private Case or original-document reads to others. "
-             "For an existing accepted source, use book_find and the supported reprocess/rechunk path; do not "
-             "request a new upload unless the verified archived original is unavailable. "
-             "Follow every book_pages continuation before using clipped source text. "
-             "Stage exact observed native blocks or unique source spans with their actual bounding boxes; "
-             "source_import.research must contain the calling model's explicit state and reachable continuation. "
-             "Only when sufficient evidence supports an actual narrative may story candidates supply "
-             "basic_variant.body with a complete evidence map. Otherwise omit basic_variant and explicitly "
-             "report needs_context or facts_only; never invent a body from title or summary. "
-             "Finalized source activation does not establish retrieval acceptance or exhaustive semantic coverage. "
-             if selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None else "") +
             "Search and retrieve sourced regional knowledge. Use search before fetch. "
             "When a user asks to add an attached PDF/DjVu book, start ingestion and carry "
             "it through book_pages, model review/stage, validate and finalize by following "
