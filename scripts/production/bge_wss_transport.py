@@ -728,6 +728,18 @@ class BgeWssTransport:
                     # authenticated control session earns a fresh retry budget.
                     if self._retry_clock()-connected_at>=30:
                         self._reconnect_attempt=0;self._outage_started=None
+                elif kind=='STOP':
+                    if (set(frame)!={'type','protocol_version','connection_generation',
+                            'run_id','launch_nonce','runtime_incarnation'}
+                            or tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))
+                                !=(self.config['run_id'],self.config['launch_nonce'],self.incarnation)):
+                        raise ValueError('exact authenticated worker STOP required')
+                    # An unacknowledged result, native effect, forwarded encode
+                    # or queued assignment must not be interrupted by a STOP.
+                    if (self.job is None and self.pending is None and self.resource is None
+                            and self.waiting_job is None
+                            and not any(not task.done() for task in self.forwards)):
+                        self.stop.set()
                 else:
                     raise ValueError('unexpected channel frame')
 
