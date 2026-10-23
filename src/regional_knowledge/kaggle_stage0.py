@@ -129,6 +129,7 @@ class Stage0Spec:
     packages: Mapping[str,str]
     install_bytes: int
     total_seconds: int = 900
+    preinstalled: object = None
 
     def __post_init__(self):
         if (type(self.downloads) is not tuple or not 0<=len(self.downloads)<=MAX_FILES
@@ -163,6 +164,12 @@ class Stage0Spec:
             normalized.add(canonical)
         _integer(self.install_bytes,0,MAX_TOTAL_BYTES)
         _integer(self.total_seconds,1,3600)
+        if self.preinstalled is not None:
+            from .kaggle_stage0_preinstalled import validate_pin
+            if self.wheels or any(item.name.endswith('.whl') for item in self.downloads):
+                raise ValueError('preinstalled_archive_replaces_wheels')
+            pinned=validate_pin(self.preinstalled,self.downloads,packages,self.install_bytes)
+            object.__setattr__(self,'preinstalled',MappingProxyType(pinned))
         object.__setattr__(self,'packages',MappingProxyType(dict(sorted(packages.items()))))
 
     @property
@@ -179,13 +186,18 @@ class Stage0Spec:
             # Exact selected download references; never infer/install every
             # downloaded .whl. Cached-only wheels retain the legacy name form.
             wheels={'download_indices':[positions[name] for name in wheels]}
-        return dict(downloads=[value.wire() for value in self.downloads],wheels=wheels,
+        result=dict(downloads=[value.wire() for value in self.downloads],wheels=wheels,
                     packages=dict(self.packages),install_bytes=self.install_bytes,total_seconds=self.total_seconds)
+        if self.preinstalled is not None:
+            result['preinstalled']=dict(self.preinstalled,
+                environment=dict(self.preinstalled['environment']))
+        return result
 
     @classmethod
     def from_wire(cls,value):
+        fields={'downloads','wheels','packages','install_bytes','total_seconds'}
         if (type(value) is not dict
-                or set(value)!={'downloads','wheels','packages','install_bytes','total_seconds'}
+                or set(value) not in (fields,fields|{'preinstalled'})
                 or type(value['downloads']) is not list or len(value['downloads'])>MAX_FILES):
             raise ValueError('stage0_invalid_plan')
         downloads=tuple(Stage0Download.from_wire(item) for item in value['downloads'])
@@ -201,7 +213,8 @@ class Stage0Spec:
             wheels=[downloads[index].name for index in indices]
         if type(wheels) is not list:
             raise ValueError('stage0_invalid_plan')
-        return cls(downloads,tuple(wheels),value['packages'],value['install_bytes'],value['total_seconds'])
+        return cls(downloads,tuple(wheels),value['packages'],value['install_bytes'],
+                   value['total_seconds'],value.get('preinstalled'))
 
 
 def _remaining(deadline):
@@ -507,7 +520,12 @@ def prepare_stage0(prepared_model:dict,plan:dict,*,run_id=None)->dict:
                         else:
                             dataset_bytes+=item.size;dataset_files+=1
             with bootstrap_stage(run_id,'stage0_install') if run_id is not None else nullcontext():
-                installed=_install(root_fd,root,spec,inventory,deadline)
+                if spec.preinstalled is not None:
+                    from .kaggle_stage0_preinstalled import activate
+                    activate(root,spec.preinstalled,spec.packages,deadline)
+                    installed=False  # The immutable closure is activated; pip never runs.
+                else:
+                    installed=_install(root_fd,root,spec,inventory,deadline)
             _remaining(deadline)
             plan_hash=hashlib.sha256(json.dumps(spec.wire(),sort_keys=True,separators=(',',':')).encode()).hexdigest()
             manifest=dict(codec='rkb.stage0.v1',plan_sha256=plan_hash,packages=dict(spec.packages))
