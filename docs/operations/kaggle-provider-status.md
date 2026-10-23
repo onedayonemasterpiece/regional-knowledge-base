@@ -46,10 +46,13 @@ status, session log stream, then source again, each with the identical explicit
 `version_label=v<N>`. Source must contain the exact stored RUN_CONFIG run ID and
 launch nonce (including an absent nonce for legacy HTTP), metadata must identify
 the stored owner/slug, and both source hashes must match. Native status must be
-ERROR or COMPLETE. The *stream* response must be HTTP 200 with JSON content type
+ERROR, COMPLETE or CANCEL_ACKNOWLEDGED. The *stream* response must be HTTP 200 with JSON content type
 and a nonempty array of valid native `{stream_name,time,data}` records. Ordinary
 output/download JSON, error envelopes, empty logs, SSE, EOF and cancellation ACKs
-are not proof. Missing/invalid/oversized evidence leaves UNKNOWN.
+alone are not proof. An acknowledged cancellation plus the exact session's
+post-termination JSON log fallback satisfies the same source/freshness checks;
+the controller does not normalize an ACK into a terminal result without logs.
+Missing/invalid/oversized evidence leaves UNKNOWN.
 
 The adapter bounds logs to 256 KiB and each source response to 2 MiB (observation
 budgets, not book limits). It wraps only its fresh pinned SDK client's send
