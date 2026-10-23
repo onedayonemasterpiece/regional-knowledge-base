@@ -196,19 +196,28 @@ async def execute_source_graph_read(request:SourceGraphReadRequest,*,acquire):
                             except (ValueError,TypeError,KeyError):raise ReadUnavailable('invalid_input') from None
                         records=[];evidence=[];positions=[];used=0;next_cursor=None
                         filtered=request.action=='list' and (request.kinds is not None or bool(request.query))
-                        # Existing indexed ACL-checked native keyset returns <=4
-                        # records at once. Scan at most eight pages in the same
-                        # read-only snapshot; an incomplete scan returns a cursor
-                        # rather than falsely claiming no matching entities.
+                        # SQL022 uses fixed PG lower + German/Greek name folds
+                        # and applies both selectors before LIMIT, so a
+                        # sparse hit takes one source-scoped PG page. Pre-022
+                        # workers retain the original bounded keyset fallback:
+                        # a new handler may be staged before its DDL is applied.
+                        sql_prefilter=filtered and installed[0]>=22
                         after_page=after
-                        for page in range(8 if filtered else 1):
-                            await execute('SELECT * FROM rkb_v4.read_source_graph_v1(%s::uuid,%s::uuid,%s,%s::uuid,%s,%s)',
-                                (request.entity_id,request.source_id,request.action,*after_page,request.limit+1))
+                        for page in range(1 if sql_prefilter else 8 if filtered else 1):
+                            if sql_prefilter:
+                                await execute('SELECT * FROM rkb_v4.read_source_graph_filtered_v1(%s::uuid,%s::uuid,%s,%s::text[],%s,%s)',
+                                    (request.source_id,*after_page,
+                                     list(request.kinds) if request.kinds is not None else None,
+                                     request.query.strip() if request.query else None,
+                                     request.limit+1))
+                            else:
+                                await execute('SELECT * FROM rkb_v4.read_source_graph_v1(%s::uuid,%s::uuid,%s,%s::uuid,%s,%s)',
+                                    (request.entity_id,request.source_id,request.action,*after_page,request.limit+1))
                             rows=await cursor.fetchall()
                             if len(rows)>request.limit+1:raise ReadUnavailable('internal_error')
                             for offset,row in enumerate(rows[:request.limit] if not filtered else rows):
                                 record,item,position=_record(row,request)
-                                if filtered and not _matches_list(record,request):
+                                if filtered and not sql_prefilter and not _matches_list(record,request):
                                     after_page=position
                                     continue
                                 size=len(canonical(record))+len(canonical(item.model_dump(mode='json')))
