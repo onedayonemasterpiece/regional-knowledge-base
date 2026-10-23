@@ -178,34 +178,25 @@ class NativeOriginalIntake:
             if len(self._requests)>=4096:raise OriginalIntakeError('original_retention_bound')
             self._requests[key]=request
             started = time.monotonic()
-            phase = {'original_acquire':'acquire','original_archive':'archive',
-                     'original_verify':'verify','original_pages':'pages'}[frame['phase']]
             operation_ref = digest(key.encode())
-            from .product_telemetry import emit_product_event
-            emit_product_event({'event':'import.phase','phase':phase,'status':'started',
-                'run_id':self.identity[0],'operation_ref':operation_ref},level='debug')
             _LOG.info('native_original_phase state=start run_id=%s phase=%s operation_sha256=%s',self.identity[0],frame['phase'],operation_ref)
             try:
                 async with asyncio.timeout(self.config.seconds):value=await self._execute(frame)
-            except asyncio.CancelledError:
-                emit_product_event({'event':'import.phase','phase':phase,'status':'cancelled',
-                    'run_id':self.identity[0],'operation_ref':operation_ref,
-                    'duration_ms':(time.monotonic()-started)*1000})
-                raise
+            except asyncio.CancelledError:raise
             except OriginalIntakeRejected as exc:value={'error':exc.code,'terminal':True}
             except OriginalIntakeError as exc:value={'error':str(exc)}
-            except Exception:value={'error':'original_intake_unavailable'}
+            except Exception as exc:
+                value={'error':'original_intake_unavailable','error_class':type(exc).__name__}
+                _LOG.warning('native_original_phase state=unavailable run_id=%s phase=%s operation_sha256=%s error_class=%s',
+                    self.identity[0],frame['phase'],operation_ref,type(exc).__name__)
             result=dict(phase=frame['phase'],request_sha256=request,value=value)
             if len(canonical(result))>120*1024:raise OriginalIntakeError('original_result_bound')
             if value.get('error')=='original_telegram_binding_required':
                 self._prebinding_retry.add(key)  # Retain exact fingerprint, no native effect occurred.
             else:self._results[key]=result
-            status=('rejected' if value.get('terminal') is True else 'unavailable') if 'error' in value else 'ok'
             elapsed_ms=(time.monotonic()-started)*1000
             _LOG.info('native_original_phase state=%s run_id=%s phase=%s operation_sha256=%s elapsed_ms=%.3f',
                 'unavailable' if 'error' in value else 'complete',self.identity[0],frame['phase'],operation_ref,elapsed_ms)
-            emit_product_event({'event':'import.phase','phase':phase,'status':status,
-                'run_id':self.identity[0],'operation_ref':operation_ref,'duration_ms':elapsed_ms})
             return result
 
     def _record(self,args):
