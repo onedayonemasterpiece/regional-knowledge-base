@@ -96,7 +96,9 @@ def materializer_fingerprint():
                 and isinstance(node.targets[0],ast.Name) else None)
             if key in required:
                 # Hash original source bytes, not Python-version-specific AST dumps.
-                selected[key]=digest(b''.join(lines[node.lineno-1:node.end_lineno]))
+                first=(min([node.lineno,*(item.lineno for item in node.decorator_list)])
+                    if isinstance(node,ast.ClassDef) else node.lineno)
+                selected[key]=digest(b''.join(lines[first-1:node.end_lineno]))
         if set(selected)!=set(required):
             raise ValueError('native_compiler_input_contract_missing: '+name)
         hashes[name]=digest(canonical(selected))
