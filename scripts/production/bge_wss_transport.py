@@ -370,14 +370,15 @@ class BgeWssTransport:
             if job['kind']=='recovery_phase' and self.snapshot_channel is not None:
                 with self.snapshot_channel.assignment(job):receipt=await handler(job)
             elif job['kind']=='source_command':
-                from regional_knowledge.kaggle_apply import ApplyUnknown
+                from regional_knowledge.kaggle_apply import ApplyUnknown, ApplyExecutionError
                 try:
                     receipt=await handler(job)
-                except ApplyUnknown:
-                    # Compute has ended, but the exact accepted source operation
-                    # may have committed. No receipt or terminal ACK is known.
-                    # Retain self.job/claim to fence replay; the existing task
-                    # completion releases only the compute permit for reads.
+                except (ApplyUnknown, ApplyExecutionError):
+                    # Compute has ended, but there is no COMMITTED canonical
+                    # source receipt: commit may be unknown, or the rejected
+                    # ledger insert itself failed. Never invent an ACK.
+                    # Keep the original job/claim fenced against re-execute;
+                    # release only its completed compute permit for reads.
                     return
             else:receipt=await handler(job)
             self.pending=dict(job_id=job['id'],claim=job['claim'],receipt=receipt,

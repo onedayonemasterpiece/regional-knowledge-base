@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from regional_knowledge.kaggle_apply import ApplyUnknown
+from regional_knowledge.kaggle_apply import ApplyUnknown, ApplyExecutionError
 from regional_knowledge.kaggle_bootstrap import PreparedRuntime
 from test_bge_shared_worker import Peer, query, result
 from test_bge_wss_worker import CONFIG, module
@@ -16,7 +16,8 @@ from test_kaggle_bootstrap import candidate
 
 
 @pytest.mark.asyncio
-async def test_source_commit_unknown_keeps_warm_run_and_exact_job_unsettled_for_reconciliation(monkeypatch):
+@pytest.mark.parametrize('error_type',[ApplyUnknown,ApplyExecutionError])
+async def test_source_without_committed_receipt_keeps_warm_run_and_original_job(monkeypatch,error_type):
     transport=module('bge_wss_transport')
     peer=Peer();stop=asyncio.Event();calls=[];loads=[];closes=[]
     monkeypatch.setattr(transport.random,'uniform',lambda *_:.0001)
@@ -27,7 +28,7 @@ async def test_source_commit_unknown_keeps_warm_run_and_exact_job_unsettled_for_
 
     async def source(frame):
         calls.append((frame['id'],frame['claim'],frame['command_sha256']))
-        raise ApplyUnknown('synthetic lost commit response — original operation must reconcile')
+        raise error_type('synthetic failed apply without canonical committed receipt')
 
     async def prepare(encoder,**identity):
         return PreparedRuntime(read,candidate(),source)
