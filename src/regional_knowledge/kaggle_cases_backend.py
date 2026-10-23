@@ -247,9 +247,15 @@ class KaggleCasesBackend:
             query=CaseReadRequest(request_id='case-write-check',connection_generation=binding.connection_generation,turn_generation=0,
                 case_id=command.ids['case_id'],actor=TrustedActorContext(person_id=authority.person_id,
                     audience=self.destination.key,auth_epoch=authority.auth_revision,visibility_epoch=0),min_data_seq=0,deadline_ms=1)
-            facts=await self.gate._facts(query,authority,anchor,case)
-            if not self.gate._current(facts):raise failure('case_history_unavailable')
-            if any(change.restriction for change in facts.sources.changes):raise failure('evidence_withdrawn')
+            # Existing Case ACL is actor-scoped. Only restrictions on this
+            # Case or its accepted source dependencies may stop the write;
+            # an unrelated incoming page does not make the Case stale.
+            if self.gate._case_restriction_after(command.ids['case_id'],getattr(anchor,'applied_sequence',0)):
+                raise failure('prior_write_pending')
+            if case['sources'] and self.spool._barriers_for(tuple(sorted(case['sources']))).barriers:
+                barriers=self.spool._barriers_for(tuple(sorted(case['sources']))).barriers
+                if any(item.restriction_active for item in barriers):
+                    raise failure('evidence_withdrawn')
         if (self.spool._writing or self.spool._source_anchor is not anchor
                 or self.spool._source_version is not version):raise failure('prior_write_pending')
         return anchor,version
@@ -438,7 +444,12 @@ class KaggleCasesBackend:
                         collected=True
                     if entry is None and not collected:
                         scope=await self.spool.scope_state()
-                        if scope['pending'] or scope['unknown'] or scope['sequence']!=scope['accepted_sequence']:raise failure('prior_write_pending')
+                        # An already accepted unrelated page may be awaiting
+                        # PG/Dataset outcome. Journal predecessor proof permits
+                        # the next Case intent, not a fictitious applied/Saved
+                        # receipt. UNKNOWN or an unaccepted seal still blocks.
+                        if scope['unknown'] or scope['sequence']!=scope['accepted_sequence']:
+                            raise failure('prior_write_pending')
                         head=await self.spool.journal.head();sequence=head.reference.last_sequence if head else 0
                         if sequence!=scope['accepted_sequence']:raise failure('case_history_unavailable')
                         revisions={h.revisions for h in self.spool.registry.handlers.values() if h.route.startswith('disagreement.')}
