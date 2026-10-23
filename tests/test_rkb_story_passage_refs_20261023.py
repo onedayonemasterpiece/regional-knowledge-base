@@ -14,6 +14,7 @@ from test_source_batch_pg import native, packet
 from test_source_activation_pg import image_pg_sql18, accepted, stage_command
 from test_native_source_materializer import exact_batch
 from test_kaggle_apply import PG
+from test_kaggle_pg_driver import database  # fixture backing image_pg_sql18
 
 @PG
 @pytest.mark.asyncio
