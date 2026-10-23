@@ -136,9 +136,9 @@ def test_bad_manifest_accelerator_and_unversioned_sources_refused(bundle,tmp_pat
     with pytest.raises(ValueError,match='preinstalled_archive_replaces_wheels'):
         Stage0Spec(spec.downloads,('other.whl',),spec.packages,spec.install_bytes,
             preinstalled=result['preinstalled'])
-    wrong,_=plan(working,archive,result,url='https://public.example/archive')
-    # Constructing the HTTPS candidate itself must refuse a preinstalled pin.
-    assert wrong is None
+    # A mutable public URL cannot masquerade as an immutable Dataset version.
+    with pytest.raises(ValueError,match='preinstalled_requires_versioned_dataset'):
+        plan(working,archive,result,url='https://public.example/archive')
 
 
 def test_build_refuses_dependency_symlink_and_gpu_wheel(bundle,tmp_path):
