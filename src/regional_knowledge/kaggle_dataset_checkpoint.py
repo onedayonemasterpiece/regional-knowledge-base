@@ -239,11 +239,17 @@ class SourceDatasetCheckpoints:
             self._force_after=False
 
     async def before_stop(self,binding):
-        """Try an explicit checkpoint before cooperative shutdown, not after STOP."""
+        """Wait for the one existing in-flight checkpoint, then force if current.
+
+        The caller applies the remaining nine-hour run budget. A retired owner
+        never starts a new publication; it may only await its retained task.
+        """
         task=self._task
         if task is not None and not task.done():
             self._force_after=True
             await task
+        if not self.startup.binding_current(binding):
+            raise CheckpointPending('dataset_checkpoint_writer_changed')
         return await self.refresh(binding,planned_stop=True)
 
     async def aclose(self):
@@ -298,15 +304,19 @@ class SourceDatasetCheckpoints:
                 "AND state IN ('publishing','published') ORDER BY rowid LIMIT 1",
                 (self.store.publisher.ref,)).fetchone()
             meta=db.execute('SELECT sequence FROM rkb_control_spool_meta WHERE id=1').fetchone()
-            from .bge_queue import MAX_LIFETIME
             run_id=getattr(binding,'run_id',None)
             if run_id is not None:
                 run=db.execute('SELECT started,status FROM runs WHERE id=?',(run_id,)).fetchone()
-                # The existing controller marks an operator-approved idle
-                # drain before sending its authenticated STOP. Request the
-                # checkpoint on that same owner while the binding is current.
-                planned_stop=planned_stop or (run is not None and
-                    (run['status']=='draining' or queue.clock()-run['started']>=MAX_LIFETIME-600))
+                owner=db.execute('SELECT current_run,successor FROM control WHERE id=1').fetchone() if (
+                    db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='control'").fetchone()
+                ) else None
+                # Request BEFORE successor promotion retires this binding.
+                # Existing nine-hour planned rotation leaves a finite window
+                # for an asynchronous upload, without extending notebook life.
+                planned_stop=planned_stop or (run is not None and (
+                    run['status']=='draining'
+                    or queue.clock()-run['started']>=9*3600-900
+                    or owner is not None and owner['current_run']==run_id and owner['successor'] is not None))
         if retained is None:
             late_outcomes=self.store.pending_outcomes()
             try:control=self.store.pending_control()
