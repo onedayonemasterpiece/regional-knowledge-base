@@ -6,13 +6,30 @@ import psycopg
 from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 from .kaggle_case_contracts import CaseReadRequest,CaseReadResult,canonical
-from .kaggle_query import ReadUnavailable,_frontier,_identity
+from .kaggle_query import ReadUnavailable,_identity
 
 CASE_READER_FUNCTIONS=(
     'verify_disagreement_origins_v1(uuid[])',
     'read_disagreement_v1(uuid,uuid,text,bigint,integer,bigint,uuid,bigint,uuid)',
     'read_disagreement_operation_v1(uuid,uuid,text)',
 )
+
+ 
+async def _case_pg_frontier(cursor,execute,request,observed):
+    # A PG MVCC snapshot plus the current native actor/Case role is sufficient
+    # to read existing Case evidence. Unrelated source packet/projection lag
+    # must not hide previously visible cases during the next page stage.
+    await execute("""SELECT s.applied_seq,f.projection_seq,f.visibility_epoch,
+                           s.database_generation
+        FROM rkb_v4.recovery_state s CROSS JOIN rkb_v4.read_frontier f
+        WHERE s.singleton AND f.singleton""")
+    row=await cursor.fetchone()
+    if (row is None or row[0] is None or row[1] is None
+            or row[2] is None or row[3] is None):
+        raise ReadUnavailable('not_ready')
+    observed.update(data=row[0],projection=row[1],visibility=row[2],database=row[3])
+    if min(row[0],row[1])<request.min_data_seq:
+        raise ReadUnavailable('projection_lag')
 
 
 async def execute_case_read(request,*,acquire):
@@ -33,11 +50,57 @@ async def execute_case_read(request,*,acquire):
                         async def execute(statement,params=()):
                             await cursor.execute("SELECT set_config('statement_timeout',%s,true)",(str(max(1,int((deadline-loop.time())*1000))),))
                             await cursor.execute(statement,params)
-                        await _frontier(cursor,execute,request,observed,require_dense=False)
+                        await _case_pg_frontier(cursor,execute,request,observed)
                         await execute('SELECT max(version) FROM rkb_v4.schema_migrations')
                         installed=await cursor.fetchone()
                         if not installed or type(installed[0]) is not int or installed[0]<10:
                             raise ReadUnavailable('not_ready')
+                        if request.section=='search':
+                            # Existing Case ACL/source authority, not a new model or
+                            # backend dedup decision. PG candidates are for the
+                            # calling model to evaluate by question/place/source.
+                            await execute("""
+                                SELECT c.case_id, c.revision, c.acl_revision, c.event_seq, c.state,
+                                  left(c.data->>'question',2000),left(coalesce(c.data->>'context',''),1000),
+                                  rkb_v4.case_sources_v1(c.case_id)
+                                FROM rkb_v4.disagreement_cases c
+                                WHERE rkb_v4.case_role_v1(c.case_id,%s::uuid)>=1
+                                  AND rkb_v4.case_sources_v1(c.case_id) IS NOT NULL
+                                  AND c.case_id>%s::uuid
+                                  AND (%s='' OR position(lower(%s) in lower(
+                                      coalesce(c.data->>'question','')||' '||
+                                      coalesce(c.data->>'context',''))) > 0)
+                                  AND (%s='' OR position(lower(%s) in lower(
+                                      coalesce(c.data->>'question','')||' '||
+                                      coalesce(c.data->>'context',''))) > 0)
+                                  AND (%s::uuid IS NULL OR EXISTS(
+                                      SELECT 1 FROM rkb_v4.disagreement_evidence e
+                                      WHERE e.case_id=c.case_id AND e.source_id=%s::uuid))
+                                ORDER BY c.case_id LIMIT %s
+                            """,(request.actor.person_id,request.after_case_id or '00000000-0000-0000-0000-000000000000',
+                                 request.search_query or '',request.search_query or '',
+                                 request.place or '',request.place or '',
+                                 request.source_id,request.source_id,request.limit+1))
+                            rows=await cursor.fetchall()
+                            selected=rows[:request.limit]
+                            candidates=[dict(case_id=str(row[0]),case_revision=row[1],acl_revision=row[2],
+                                event_seq=row[3],state=row[4],question=row[5],context=row[6],
+                                source_dependencies=row[7])
+                                for row in selected]
+                            # Origin/provenance check limited to actual returned IDs.
+                            if candidates:
+                                await execute('SELECT rkb_v4.verify_disagreement_origins_v1(%s::uuid[])',
+                                    ([item['case_id'] for item in candidates],))
+                                if await cursor.fetchone()!=(True,):raise ReadUnavailable('not_ready')
+                            record=dict(section='search',items=candidates,has_more=len(rows)>request.limit,
+                                next_after_case=candidates[-1]['case_id'] if candidates else None)
+                            result=CaseReadResult(**_identity(request),status='ok',
+                                record_b64=base64.b64encode(canonical(record)).decode(),
+                                observed_data_seq=observed['data'],observed_projection_seq=observed['projection'],
+                                observed_visibility_epoch=observed['visibility'],
+                                observed_database_generation=observed['database'])
+                            if loop.time()>=deadline:raise TimeoutError
+                            return result
                         await execute('SELECT rkb_v4.verify_disagreement_origins_v1(%s::uuid[])',([request.case_id],))
                         if await cursor.fetchone()!=(True,):raise ReadUnavailable('not_ready')
                         if request.section=='operation':
