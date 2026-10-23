@@ -115,7 +115,7 @@ async def configure_native_roles(admin,*,selected_sql,dbname,create_roles=True):
         await admin.execute('GRANT SELECT ON '+','.join('rkb_v4.'+name for name in sorted(TABLES_11))+' TO rkb_reader')
         domain_functions+=('read_source_graph_v1(uuid,uuid,text,uuid,text,integer)','read_geo_identity_v1(uuid,uuid,text,text,text,integer,uuid,integer)',
             'read_geo_members_v1(uuid,uuid,text,text,integer)')
-    if len(selected_sql)>=13:
+    if len(selected_sql)>=30:
         # Story evidence needs only page identity/index, never raw model or image bytes.
         await admin.execute('GRANT SELECT(source_id,page_id,physical_page_index) '
             'ON rkb_v4.source_stage_pages TO rkb_reader')
