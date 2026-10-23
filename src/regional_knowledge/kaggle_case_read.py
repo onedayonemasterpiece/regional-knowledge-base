@@ -84,7 +84,8 @@ async def execute_case_read(request,*,acquire):
                             rows=await cursor.fetchall()
                             selected=rows[:request.limit]
                             candidates=[dict(case_id=str(row[0]),case_revision=row[1],acl_revision=row[2],
-                                event_seq=row[3],state=row[4],question=row[5],context=row[6])
+                                event_seq=row[3],state=row[4],question=row[5],context=row[6],
+                                source_dependencies=row[7])
                                 for row in selected]
                             # Origin/provenance check limited to actual returned IDs.
                             if candidates:
