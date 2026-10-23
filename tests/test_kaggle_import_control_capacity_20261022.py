@@ -88,19 +88,19 @@ async def test_sequential_100_owner_intakes_after_32_completed_rows_preserve_his
     with s.t.queue.connect(write=False) as db:
         assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 100
 
-    # Real native owner exclusion remains; an UNKNOWN/unsettled live import
-    # must keep its row and reject a new unrelated original.
+    # A verified original no longer holds the owner's upload slot while its
+    # source research is still open. Both existing identities remain usable.
     current = await start(s, file_id='currently-unsettled-original')
     active = s.importer._row(s.principal.subject, current.ingestion_id)
     assert active['phase'] == 'staging'
-    with pytest.raises(ToolError, match='another_native_ingestion_active'):
-        await start(s, file_id='must-not-start-concurrently')
+    following=await start(s, file_id='next-verified-upload')
+    assert following.ingestion_id!=current.ingestion_id
     with s.t.queue.connect(write=False) as db:
         assert db.execute("""
             SELECT count(*) FROM rkb_source_intake_control
             WHERE phase NOT IN ('finalized','failed')
-        """).fetchone()[0] == 1
-        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 101
+        """).fetchone()[0] == 2
+        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 102
     # The active row remains addressable and its original receipt unchanged.
     assert s.importer._row(s.principal.subject,current.ingestion_id)['phase'] == 'staging'
     assert s.originals.receipts[current.ingestion_id].source_id == current.document_id

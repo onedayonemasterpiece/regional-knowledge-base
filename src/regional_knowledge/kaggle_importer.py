@@ -270,11 +270,13 @@ class KaggleSourceImporter:
             if source_import is not None and source_import.public_rights is not None else None)
         if len(metadata_bytes) > 16384:
             raise failure('small_import_metadata_bound')
-        if self.native_intake is not None:
-            await self.native_intake.retire_inactive_legacy(access)
         with self.queue.connect() as db:
-            prior = db.execute("SELECT * FROM rkb_source_intake_control WHERE person_id=? AND file_id=? AND phase<>'failed' ORDER BY updated DESC LIMIT 1",
-                (actor, file.file_id)).fetchone()
+            # Deduplicate current packet intake. Older whole-book candidates
+            # remain addressable by their own IDs without a start-time rewrite.
+            prior = db.execute("SELECT c.* FROM rkb_source_intake_control c WHERE person_id=? AND file_id=? AND phase<>'failed' "
+                + ("AND NOT EXISTS(SELECT 1 FROM rkb_native_source_intake_state n WHERE n.ingestion_id=c.ingestion_id "
+                   "AND n.packet_mode=0 AND n.phase NOT IN ('finalized','failed')) " if self.native_intake is not None else "")
+                + "ORDER BY updated DESC LIMIT 1", (actor, file.file_id)).fetchone()
             if prior is not None:
                 # Absence of a redundant rights declaration never rewrites an
                 # existing receipt; an explicitly different declaration does.
@@ -286,7 +288,7 @@ class KaggleSourceImporter:
             else:
                 rights = rights if rights is not None else OWNER_IMPORT_ATTESTATION
                 if self.native_intake is not None and db.execute(
-                        "SELECT 1 FROM rkb_source_intake_control WHERE person_id=? AND phase NOT IN ('finalized','failed') LIMIT 1",
+                        "SELECT 1 FROM rkb_source_intake_control WHERE person_id=? AND phase='acquiring' LIMIT 1",
                         (actor,)).fetchone():
                     raise failure('another_native_ingestion_active')
                 source_id, ingestion_id, request_id = (str(uuid4()) for _ in range(3))

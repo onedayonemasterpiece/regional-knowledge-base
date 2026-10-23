@@ -83,8 +83,10 @@ class NativeSourceIntake:
                 CHECK(batch_count BETWEEN 0 AND 2500),CHECK(next_ordinal>=0),
                 CHECK((pending_operation_key IS NULL)=(pending_kind IS NULL)),
                 CHECK(phase IN ('staging','sealed','materializing','ready_activation','finalized','failed')))''')
-            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS rkb_native_one_owner_intake "
-                "ON rkb_native_source_intake_state(person_id) WHERE phase NOT IN ('finalized','failed')")
+            # Source research can outlive its completed original upload.
+            # The importer serializes acquisition; per-source progress keeps
+            # its own primary/unique identity without an owner-wide stage slot.
+            db.execute('DROP INDEX IF EXISTS rkb_native_one_owner_intake')
             columns={value[1] for value in db.execute('PRAGMA table_info(rkb_native_source_intake_state)')}
             if 'rejected_seal_head' not in columns:
                 db.execute('ALTER TABLE rkb_native_source_intake_state ADD COLUMN rejected_seal_head TEXT')
@@ -99,42 +101,6 @@ class NativeSourceIntake:
         await self.importer._check(access.authority, access.context, access.binding)
         if row is not None and row['person_id']!=access.authority.person_id:
             raise _failure('owned_ingestion_required',status='denied')
-
-    async def retire_inactive_legacy(self, access):
-        """An obsolete inactive intake must not monopolize ordinary start.
-
-        Keep its accepted inputs and receipts. An uncertain operation or an
-        already-published source is never retired by this compatibility path.
-        """
-        await self._check(access)
-        with self.queue.connect(write=False) as db:
-            pending_ids=[r[0] for r in db.execute('''SELECT ingestion_id FROM rkb_native_source_intake_state
-                WHERE person_id=? AND packet_mode=0 AND pending_operation_key IS NOT NULL
-                AND phase NOT IN ('finalized','failed')''',(access.authority.person_id,))]
-        for ingestion_id in pending_ids:
-            row=await asyncio.to_thread(self.importer._row,access.authority.person_id,ingestion_id)
-            state=await asyncio.to_thread(self._state,row)
-            entry=await self._entry(state['pending_operation_key'])
-            if entry is not None and entry.outcome_state=='DURABLE':
-                # Settle only a known receipt. Starting another import must
-                # never dispatch an abandoned older command as a side effect.
-                await self._settle(access,row,state,entry)
-        with self.queue.connect(write=False) as db:
-            ids=[r[0] for r in db.execute('''SELECT st.ingestion_id FROM rkb_native_source_intake_state st
-                WHERE st.person_id=? AND st.packet_mode=0 AND st.phase NOT IN ('finalized','failed')
-                AND st.pending_operation_key IS NULL
-                AND NOT EXISTS(SELECT 1 FROM rkb_control_operations op WHERE op.source_id=st.source_id
-                    AND (op.seal_state<>'ACCEPTED' OR op.apply_state NOT IN ('APPLIED','REJECTED_PRECONDITION')
-                        OR op.outcome_state<>'DURABLE'))
-                AND NOT EXISTS(SELECT 1 FROM rkb_control_operations op WHERE op.source_id=st.source_id
-                    AND op.apply_state='APPLIED' AND json_extract(CAST(op.command_bytes AS TEXT),'$.route')='source.activate.v1')''',
-                (access.authority.person_id,))]
-        for ingestion_id in ids:
-            row=await asyncio.to_thread(self.importer._row,access.authority.person_id,ingestion_id)
-            await self._check(access,row)
-            await asyncio.to_thread(self.importer._save,row,phase='failed')
-            await asyncio.to_thread(self._update,row,phase='failed')
-            _LOG.info('native_intake_progress ingestion_id=%s state=inactive_legacy_retired',ingestion_id)
 
     def _state(self, row, *, create=False):
         with self.queue.connect(write=create) as db:
@@ -643,6 +609,8 @@ class NativeSourceIntake:
                 # back into perpetual processing on the next MCP status.
                 original=await self.importer.originals.status(access.context,row['ingestion_id'])
                 return await self.importer._original_pending(row,original)
+            if receipt is not None and row['phase']=='acquiring':
+                row=await asyncio.to_thread(self.importer._save,row,phase='staging')
             return self.importer._output(row,'staged' if receipt else 'processing',
                 'Review issued pages and stage exact model input' if receipt else 'Verified original pending',
                 'continue_pages' if receipt else 'wait',source_archive_status='verified' if receipt else 'pending')
