@@ -345,6 +345,13 @@ class NativeSourceIntake:
             await asyncio.to_thread(self.importer._save,row,phase='finalized')
         else: raise _failure('native_pending_operation_invalid')
         updated=await asyncio.to_thread(self._update,row,**changes)
+        if kind=='finish':
+            # Reading completion is APPLIED in native PG, not yet Dataset
+            # Saved. Schedule the existing capture owner, never wait for it
+            # in the import tool call or manufacture an outcome receipt.
+            checkpoint=getattr(self.startup,'dataset_checkpoints',None)
+            if checkpoint is not None:
+                checkpoint.kick(access.binding,planned_stop=True)
         _LOG.info('native_intake_progress ingestion_id=%s kind=%s remote_durable=%s next_ordinal=%s',
             row['ingestion_id'],kind,entry.outcome_state=='DURABLE',updated['next_ordinal'])
         # Applied != Saved: log only, do not modify actual remote receipt.
