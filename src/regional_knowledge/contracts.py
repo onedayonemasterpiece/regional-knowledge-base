@@ -234,8 +234,8 @@ class StageIllustrationInput(BaseModel):
 
 
 class StagePageInput(BaseModel):
-    # Optional legacy image receipt echo; the server resolves issued pixels
-    # from the owned ingestion/page index. This does not certify model text.
+    # Optional legacy image receipt echo. Native stage resolves issued pixels
+    # by owned ingestion/page index; this never certifies model-authored text.
     source_image_receipt_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     # Same-pass semantic episode review; true with no candidates is an explicit
     # reviewed-empty page, not a claim that all possible stories were found.
