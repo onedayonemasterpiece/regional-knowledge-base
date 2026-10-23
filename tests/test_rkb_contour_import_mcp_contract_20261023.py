@@ -91,6 +91,9 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "correct and retry that page under the SAME ingestion" in native_text
     assert "optional semantic, story and illustration enrichment does not undo accepted text" in native_text
     assert "Return processing/wait/UNKNOWN/pending truthfully" in native_text
+    assert "On the first stage set source_import.research" in native_text
+    assert "pending with the exact owned book_pages continuation" in native_text
+    assert "On first stage supply source_import.research" in native.instructions
     assert "General Case discovery/search is not presently registered" in native_text
     assert "book_pages (default 1 page, maximum requested 4" in native.instructions
     assert "Otherwise omit basic_variant" in native.instructions
