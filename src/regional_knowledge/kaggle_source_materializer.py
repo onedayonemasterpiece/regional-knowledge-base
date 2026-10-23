@@ -10,6 +10,8 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
+import time
 from pathlib import Path
 from uuid import UUID, uuid5
 from pydantic import Field
@@ -24,6 +26,8 @@ from .source_activation import build_image_manifest, knowledge_bytes, PROJECTION
 from .source_graph_native import resolve_native_source_graph
 from .stage_graph import StagedGraph, IngestStagePayload, compile_model_stage, validate_graph
 from .story_contracts import StageStoryCandidateInput
+
+_LOG = logging.getLogger(__name__)
 
 
 class SourceMaterializationRejected(ValueError):
@@ -606,10 +610,13 @@ class NativeSourceMaterializer:
                 last_batch_sha256=doc['last_batch_sha256'],include_illustrations=True)
             knowledge=knowledge_bytes(resolved)
             self._current()
+            started=time.monotonic()
             try:
                 async with acquire() as connection:
                     async with connection.transaction():
-                        await connection.execute("SET LOCAL statement_timeout='5s'")
+                        # One whole-book preparation has a separate bounded
+                        # write budget; ordinary input/read queries stay at 5s.
+                        await connection.execute("SET LOCAL statement_timeout='60s'")
                         row=await (await connection.execute('''SELECT rkb_v4.prepare_source_activation_with_illustrations_v1(
                             %s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s)''',
                             (*exact,knowledge,database.database_generation,
@@ -618,7 +625,11 @@ class NativeSourceMaterializer:
                         candidate=await (await connection.execute(candidate_query,exact)).fetchone()
                         if candidate is None or candidate[0]!=digest(knowledge):
                             raise failure('native_source_candidate_binding')
+                _LOG.info('native_source_candidate state=prepared sequence=%s elapsed_seconds=%.3f knowledge_bytes=%s total_inputs=%s',
+                    command.sequence,time.monotonic()-started,len(knowledge),candidate[1])
             except Exception as error:
+                _LOG.warning('native_source_candidate state=failed sequence=%s elapsed_seconds=%.3f error_type=%s sqlstate=%s',
+                    command.sequence,time.monotonic()-started,type(error).__name__,getattr(error,'sqlstate',None))
                 if getattr(error,'sqlstate',None)=='22023':
                     raise failure('native_source_stage_requires_review') from None
                 raise
