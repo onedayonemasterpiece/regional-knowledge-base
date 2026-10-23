@@ -8,7 +8,7 @@ import base64
 
 import pytest
 
-from regional_knowledge.control_spool import SpoolConflict, SpoolDenied
+from regional_knowledge.control_spool import SpoolConflict
 from regional_knowledge.kaggle_apply import ApplyReceipt, ApplyConflict
 from regional_knowledge.kaggle_source_commands import canonical, digest
 from regional_knowledge.recovery_journal import JournalCorrupt, StoredObject
@@ -56,7 +56,9 @@ async def test_expired_retained_prefix_uses_only_small_valid_suffix_not_lifetime
         renewed=await p.v.restore(p.b)
         assert renewed.current() and renewed.accepted_sequence==2
         assert renewed.applied_sequence==1 and len(renewed.pending)==1
-        assert traversed==[new_seal.manifest]
+        # Journal head readback and exact suffix verification may each inspect
+        # the same new segment; neither may traverse the verified old prefix.
+        assert 1<=len(traversed)<=2 and set(traversed)=={new_seal.manifest}
         assert p.calls[-3]['mode']=='delta'
         assert p.v._native_prefix is not None
     finally:await p.n.aclose()
