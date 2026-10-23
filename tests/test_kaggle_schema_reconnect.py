@@ -98,6 +98,7 @@ async def test_lost_receipt_after_worker_promotion_reconciles_before_ready_then_
     p=await owners(queue,ident,nonce,monkeypatch)
     initial,db,version,startup,owner,bridge,worker,effects,checkpoints,key,migrated=(
         p.initial,p.db,p.version,p.startup,p.owner,p.bridge,p.worker,p.effects,p.checkpoints,p.key,p.migrated)
+    proof=startup.coverage  # Retain the actual pre-disconnect synthetic cursor.
     producer=asyncio.create_task(owner.advance(initial))
     async def next_work():
         for _ in range(200):
