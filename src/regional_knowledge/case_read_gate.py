@@ -131,6 +131,32 @@ class CaseReadGate(SourceReadGate):
         if result.status!='ok':
             read.facts,read.result=None,result
             return result
+        if q.section=='search':
+            try:
+                record=validate_case_record(q,result.record)
+                if (result.observed_database_generation!=read.key[3]
+                        or result.observed_data_seq is None or result.observed_data_seq<q.min_data_seq
+                        or result.observed_projection_seq is None or result.observed_projection_seq<q.min_data_seq
+                        or result.observed_visibility_epoch is None):
+                    raise ValueError('native Case search binding differs')
+                cases=tuple(item['case_id'] for item in record['items'])
+                # Only affected Case grant/revoke intents may invalidate a
+                # candidate. An unrelated next-page stage never closes search.
+                if any(self._case_restriction_after(case_id,result.observed_data_seq)
+                       for case_id in cases):
+                    result=self._closed(result,'access_denied')
+            except (ValueError,TypeError,KeyError,AttributeError):
+                result=self._closed(result,'internal_error')
+                cases=()
+            await self._authority(read.authority,q)
+            if not self._binding(read):raise SourceGateDenied('runtime binding changed')
+            if result.status=='ok' and any(
+                    self._case_restriction_after(case_id,result.observed_data_seq)
+                    for case_id in cases):
+                result=self._closed(result,'access_denied')
+            read.facts=(cases,result.observed_data_seq) if result.status=='ok' else None
+            read.result=result
+            return result
         try:
             record=validate_case_record(q,result.record)
             if (record.get('case_id')!=q.case_id or result.observed_database_generation!=read.key[3]
@@ -181,6 +207,11 @@ class CaseReadGate(SourceReadGate):
     def issuance_current(self,ticket):
         read=self._tickets.get(ticket)
         try:
+            if read is not None and read.query.section=='search' and read.facts is not None:
+                cases,sequence=read.facts
+                return bool(self._binding(read) and read.result is not None
+                    and not any(self._case_restriction_after(case_id,sequence)
+                                for case_id in cases))
             return bool(read is not None and self._binding(read) and read.result is not None
                 and (read.facts is None or not self._case_restriction_after(*read.facts)))
         except Exception:return False
