@@ -372,10 +372,15 @@ class NativeSourceCompiler:
         self._current()
         if type(batches) is not list or not 1<=len(batches)<=2500:
             raise failure('native_source_batch_chain_required')
+        documents=[validate_stage_payload(raw,source_id=source_id) for raw in batches]
+        # The model can explicitly replace a chunk under its stable key after
+        # seal rejects it. Do not compile the superseded invalid selection before
+        # its correction is reached; the accepted batch chain stays unchanged.
+        latest_chunks={chunk['chunk_key']:index for index,doc in enumerate(documents)
+            for chunk in doc['model_payload']['chunks']}
         graph=NativeStagedGraph(revision=1)
         source=None;previous=ZERO_HASH;images={};reviews={};candidates={};research=None;raw_poi_locators={}
-        for index,raw in enumerate(batches):
-            doc=validate_stage_payload(raw,source_id=source_id)
+        for index,(raw,doc) in enumerate(zip(batches,documents,strict=True)):
             if doc['batch_index']!=index or doc['previous_batch_sha256']!=previous:
                 raise failure('native_source_batch_chain_changed')
             previous=digest(raw)
@@ -384,6 +389,7 @@ class NativeSourceCompiler:
             payload=doc['model_payload']
             pages=[_typed(StagePageInput,p) for p in payload['pages']]
             chunks=[_typed(StageChunkInput,c) for c in payload['chunks']]
+            chunks=[chunk for chunk in chunks if latest_chunks[chunk.chunk_key]==index]
             facts=[_typed(StagePoiFactInput,f) for f in payload.get('poi_facts',[])]
             media=[_typed(StagePoiMediaLinkInput,m) for m in payload.get('poi_media_links',[])]
             for item in payload.get('poi_media_links',[]):
@@ -396,7 +402,9 @@ class NativeSourceCompiler:
             bundle=_typed(GraphBundle,payload['entity_candidates']) if payload.get('entity_candidates') else None
             graph=refresh_native_graph_evidence(graph,bundle)
             if bundle is not None:
-                validate_staged_bundle(bundle,graph)
+                # Evidence is checked against the final corrected graph below.
+                # refresh_native_graph_evidence requires explicit same-identity
+                # replacements; unresolved evidence still rejects before tokens.
                 key=graph_digest(bundle.model_dump(mode='json'))
                 if key not in {graph_digest(b.model_dump(mode='json')) for b in graph.entity_candidates}:
                     graph.entity_candidates.append(bundle)

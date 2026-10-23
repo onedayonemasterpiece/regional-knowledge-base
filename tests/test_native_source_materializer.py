@@ -70,6 +70,60 @@ class NativeCompilerTests(unittest.IsolatedAsyncioTestCase):
             await self.compiler().compile([raw],source_id=SOURCE,person_id=PERSON,last_batch_sha256='e'*64)
         self.assertEqual(self.counted,[])
 
+    async def test_explicit_chunk_correction_repairs_invalid_prior_selection(self):
+        first=exact_batch(count=1,receipt=original(page_count=1))
+        page=first['model_payload']['pages'][0]
+        note=copy.deepcopy(page['regions'][0])
+        note.update(region_key='note',kind='footnote',reading_order=1,source_text='Synthetic editorial note.')
+        page['regions'].append(note)
+        first['model_payload']['chunks'][0].pop('region_refs')
+        first['model_payload']['chunks'][0]['span_refs']=[dict(page_id=page['page_id'],region_key='note',
+            start=0,end=len(note['source_text']),source_text_sha256=digest(note['source_text'].encode()))]
+        raw1=canonical(first)
+        compiler=self.compiler()
+        with self.assertRaises(SourceMaterializationRejected):
+            await compiler.compile([raw1],source_id=SOURCE,person_id=PERSON,last_batch_sha256=digest(raw1))
+        self.assertEqual(self.counted,[])
+        second=copy.deepcopy(first);second.update(batch_index=1,previous_batch_sha256=digest(raw1))
+        chunk=second['model_payload']['chunks'][0];chunk.pop('span_refs')
+        chunk['region_refs']=[dict(page_id=page['page_id'],region_key='body'),dict(page_id=page['page_id'],region_key='note')]
+        raw2=canonical(second)
+        resolved=await self.compiler().compile([raw1,raw2],source_id=SOURCE,person_id=PERSON,last_batch_sha256=digest(raw2))
+        self.assertEqual(len(resolved['passages']),1)
+        self.assertIn(note['source_text'],resolved['passages'][0]['body'])
+        # Another key does not supersede the invalid accepted selection.
+        second['model_payload']['chunks'][0]['chunk_key']='different-selection'
+        raw2=canonical(second);compiler=self.compiler()
+        with self.assertRaises(SourceMaterializationRejected):
+            await compiler.compile([raw1,raw2],source_id=SOURCE,person_id=PERSON,last_batch_sha256=digest(raw2))
+        self.assertEqual(self.counted,[])
+
+    async def test_explicit_later_graph_correction_keeps_final_evidence_checks(self):
+        first=exact_batch(count=1,receipt=original(page_count=1))
+        page=first['model_payload']['pages'][0];page['regions'][0]['source_text']+='\n'
+        text=page['regions'][0]['source_text']
+        first['model_payload']['entity_candidates']=dict(entities=[dict(key='synthetic-person',kind='person',
+            canonical_label='Synthetic person',exact_source_spelling='Synthetic',
+            evidence=dict(chunk_id=str(uuid5(UUID(SOURCE),'chunk:1:page-0')),page_id=page['page_id'],
+                region_id=str(uuid5(UUID(page['page_id']),'region:body')),exact_quote=text))])
+        raw1=canonical(first)
+        second=copy.deepcopy(first);second.update(batch_index=1,previous_batch_sha256=digest(raw1))
+        second['model_payload']['entity_candidates']['entities'][0]['evidence']['exact_quote']=text.strip()
+        raw2=canonical(second)
+        resolved=await self.compiler().compile([raw1,raw2],source_id=SOURCE,person_id=PERSON,last_batch_sha256=digest(raw2))
+        self.assertEqual(len(resolved['source_graph']['entities']),1)
+        second['model_payload']['entity_candidates']=None
+        raw2=canonical(second);compiler=self.compiler()
+        with self.assertRaises(SourceMaterializationRejected):
+            await compiler.compile([raw1,raw2],source_id=SOURCE,person_id=PERSON,last_batch_sha256=digest(raw2))
+        self.assertEqual(self.counted,[])
+        second['model_payload']['entity_candidates']=copy.deepcopy(first['model_payload']['entity_candidates'])
+        node=second['model_payload']['entity_candidates']['entities'][0]
+        node['evidence']['exact_quote']=text.strip();node['entity_id']='00000000-0000-0000-0000-000000000111'
+        raw2=canonical(second)
+        with self.assertRaisesRegex(SourceMaterializationRejected,'correction_identity_changed'):
+            await self.compiler().compile([raw1,raw2],source_id=SOURCE,person_id=PERSON,last_batch_sha256=digest(raw2))
+
     async def test_missing_pages_not_activated_by_partial_seal(self):
         raw=canonical(exact_batch(count=1))
         with self.assertRaises(SourceMaterializationRejected):
