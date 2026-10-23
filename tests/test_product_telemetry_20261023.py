@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import errno
-import hashlib
 import json
 import os
 import threading
@@ -28,14 +27,15 @@ def test_strict_whitelist_modes_and_counter_visibility():
     assert sink.try_emit(dict(event(), token="BEARER-SECRET"))
     assert sink.try_emit(dict(event(), signed_url="https://private.example/?token=secret"))
     assert not sink.try_emit(dict(event(), duration_ms=float("nan")))
-    assert not sink.try_emit(dict(event(), request_ref="raw-person-id"))
+    assert sink.try_emit(dict(event(), request_ref="raw-person-id"))
     sink._queue.join()
-    assert len(seen) == 4
+    assert len(seen) == 5
     assert seen[0]["trace_id"] == "a" * 32
     assert seen[0]["timing_semantics"] == "overlapping_do_not_sum"
     assert all(r.get("ignored_fields") == 1 for r in seen[1:])
-    assert all(k not in json.dumps(seen) for k in ("PRIVATE", "BEARER", "secret"))
-    assert sink.failed == 2 and sink.dropped == 0
+    assert all(k not in json.dumps(seen) for k in ("PRIVATE", "BEARER", "secret", "raw-person-id"))
+    assert all("request_ref" not in row for row in seen)
+    assert sink.failed == 1 and sink.dropped == 0
     debug_records = []
     debug = telemetry.ProductTelemetry(mode="debug", sink=debug_records.append)
     assert debug.try_emit({"event":"resource.sample", "phase":"resource",
@@ -95,7 +95,7 @@ def test_enospc_and_sink_exceptions_stop_retrying_without_deleting_events():
     assert sink.counters()["emitted"] == 1
 
 
-def test_segment_hash_budget_sealed_handoff_and_three_day_hot_policy(tmp_path):
+def test_bounded_sealed_segments_preserve_older_records_without_archive(tmp_path):
     spool = telemetry.SegmentedLogSink(tmp_path / "logs", segment_bytes=1024,
                                        disk_limit_bytes=2048)
     clean = telemetry._clean(event(), "standard")
@@ -109,26 +109,22 @@ def test_segment_hash_budget_sealed_handoff_and_three_day_hot_policy(tmp_path):
             break
     assert sent >= 4
     spool.seal()
-    manifest = spool.sealed_manifest()
-    assert manifest and sum(row["size_bytes"] for row in manifest) <= 2048
-    assert all(row["archived"] is False and row["archive_due"] is False for row in manifest)
-    for row in manifest:
-        data = (tmp_path / "logs" / "sealed" / row["name"]).read_bytes()
-        assert hashlib.sha256(data).hexdigest() == row["sha256"]
-        assert row["size_bytes"] == len(data)
-        assert b"query" not in data and b"token" not in data
+    folder = tmp_path / "logs" / "sealed"
+    sealed = sorted(folder.glob("segment-*.jsonl"))
+    assert sealed and sum(path.stat().st_size for path in sealed) <= 2048
+    assert all(path.read_bytes().endswith(b"\n") for path in sealed)
+    assert all(b"query" not in path.read_bytes() and b"token" not in path.read_bytes()
+               for path in sealed)
     assert not list((tmp_path / "logs").glob("*.open"))
-    old_at = time.time() - telemetry.HOT_SECONDS - 10
-    for row in manifest:
-        os.utime(tmp_path / "logs" / "sealed" / row["name"], (old_at, old_at))
-    older = spool.sealed_manifest()
-    assert all(row["archive_due"] and not row["archived"] for row in older)
-    assert len(list((tmp_path / "logs" / "sealed").glob("*.jsonl"))) == len(manifest)
-    # Old segments deliberately still consume disk budget, never auto-GC.
+    # Three-day operator hot horizon is not automatic deletion or publication.
+    old_at = time.time() - 3 * 24 * 3600 - 10
+    for path in sealed:
+        os.utime(path, (old_at, old_at))
+    assert sorted(folder.glob("segment-*.jsonl")) == sealed
+    # Old unarchived segments still consume cap; additional writes drop.
     with pytest.raises(OSError) as error:
         spool(clean)
     assert error.value.errno == errno.ENOSPC
-
 
 @pytest.mark.asyncio
 async def test_outer_fetch_success_failure_and_cancellation_keep_result_and_error(monkeypatch):
@@ -196,6 +192,13 @@ def test_actual_resource_schema_routes_numbers_into_single_sink():
     sink._queue.join()
     assert "contains credentials" not in json.dumps(records)
     assert records[-1]["ignored_fields"] == 1
+    # A malformed provider/release label is discarded, without losing the
+    # usable sample or writing the suspicious string to local logs.
+    assert sink.try_emit(dict(event, release_sha256="private-token-not-a-hash"))
+    sink._queue.join()
+    assert records[-1]["ignored_fields"] == 1
+    assert "release_sha256" not in records[-1]
+    assert "private-token-not-a-hash" not in json.dumps(records)
 
 
 def test_server_binds_product_sink_to_resource_channel_when_supported(monkeypatch):
