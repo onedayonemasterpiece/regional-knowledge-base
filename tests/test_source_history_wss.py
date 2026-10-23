@@ -38,10 +38,10 @@ class NativePg(Pg):
     async def execute(self,sql,args=None):return await self.cursor().execute(sql,args)
 
 
-def pair(e,*,lease_seconds=10,schema_revision=None,geo_bootstrap_operation_keys=()):
+def pair(e,*,lease_seconds=10,schema_revision=None,geo_bootstrap_operation_keys=(),extra_routes=()):
     b=binding();pg=NativePg();database=SimpleNamespace(schema_version=int(schema_revision.split('-')[3]) if schema_revision is not None else 16,database_generation='db-source',writer_generation='writer-1')
     if schema_revision is not None:database.schema_revision=schema_revision
-    routes=('source.search','source.fetch','source.withdraw')
+    routes=('source.search','source.fetch','source.withdraw')+extra_routes
     if schema_revision in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):
         routes=routes+('source.import','story.get','story.history','story.search','story.variants',
             'source.fact_read','source.calendar','source.observations')
