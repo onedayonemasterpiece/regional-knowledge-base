@@ -61,33 +61,7 @@ BEGIN
            OR length(item->>'locator') NOT BETWEEN 1 AND 1000
            OR jsonb_typeof(item->'body') IS DISTINCT FROM 'string'
            OR length(item->>'body') NOT BETWEEN 1 AND 16000
-           OR item->>'language' !~ '^[a-z][a-z0-9-]{1,23}
-           OR jsonb_typeof(item->'language') IS DISTINCT FROM 'string'
-           OR jsonb_typeof(item->'input_tokens') IS DISTINCT FROM 'number'
-           OR item->>'input_tokens' !~ '^[1-9][0-9]{0,2}$'
-           OR (item->>'input_tokens')::integer NOT BETWEEN 1 AND 512
-           THEN RETURN false; END IF;
-        passage:=(item->>'passage_id')::uuid;
-        IF passage::text<>item->>'passage_id' OR passage=ANY(seen)
-           THEN RETURN false; END IF;
-        seen:=array_append(seen,passage); ordinal_index:=ordinal_index+1;
-    END LOOP;
-    IF jsonb_typeof(research) IS DISTINCT FROM 'object'
-       OR NOT research ?& ARRAY['frontier_id','state','continuation']
-       OR research-ARRAY['frontier_id','state','continuation']<>'{}'::jsonb
-       OR jsonb_typeof(research->'frontier_id') IS DISTINCT FROM 'string'
-       OR (research->>'frontier_id')::uuid::text<>research->>'frontier_id'
-       OR research->>'state' NOT IN ('pending','complete')
-       OR jsonb_typeof(research->'state') IS DISTINCT FROM 'string'
-       OR jsonb_typeof(research->'continuation') IS DISTINCT FROM 'object'
-       OR octet_length((research->'continuation')::text)>65536
-       OR (research->>'state'='pending' AND research->'continuation'='{}'::jsonb) THEN RETURN false; END IF;
-    RETURN true;
-EXCEPTION WHEN data_exception THEN
-    RETURN false;
-END $$;
-
-
+           OR item->>'language' !~ '^[a-z][a-z0-9-]{1,23}$'
            OR jsonb_typeof(item->'language') IS DISTINCT FROM 'string'
            OR jsonb_typeof(item->'input_tokens') IS DISTINCT FROM 'number'
            OR item->>'input_tokens' !~ '^[1-9][0-9]{0,2}$'
