@@ -200,6 +200,21 @@ class SourceReadFacts:
     _version: object
 
 
+@dataclass(frozen=True)
+class SourceCursor:
+    """Current Dataset prefix plus locally retained native apply receipts."""
+    database_generation: str
+    binding: object
+    head: object
+    accepted_sequence: int
+    applied_sequence: int
+    pending: tuple
+    _current: object
+
+    def current(self):
+        return self._current(self.binding)
+
+
 class ControlSpool:
     def __init__(self,queue,participants: Participants,journal: RecoveryJournal,registry: HandlerRegistry,
                  *,max_bytes=512*1024*1024,raw_retention_seconds=4*3600,clock=time.time):
@@ -415,6 +430,42 @@ class ControlSpool:
     def invalidate_source_history(self):
         """Trusted controller calls BEFORE DDL/grant/generation/route changes."""
         self._active();self._source_anchor=None;self._source_version=object()
+
+    async def dataset_cursor(self,binding,*,control,head,current):
+        """Use the restored cursor; do not re-certify historical operations.
+
+        Control is already read from the verified Dataset or physical restore.
+        Only its unsaved local suffix can advance the known applied floor.
+        A lost apply response remains pending until ordinary reconciliation.
+        """
+        async with self._lock:
+            if not current(binding):raise SpoolConflict('current Dataset binding required')
+            base=control['sequence']
+            accepted=head.reference.last_sequence if head is not None else 0
+            if accepted<base:raise SpoolConflict('Dataset cursor exceeds current journal')
+            anchor=self._source_anchor
+            if not isinstance(anchor,SourceCursor) or anchor.binding!=binding:
+                changes=tuple(SourceChange(source,sequence,digest,bool(restriction),bool(pending),bool(unknown))
+                    for source,sequence,digest,restriction,pending,unknown in control['heads'])
+                await self._write(self._replace_source_heads,changes)
+            applied,pending=await _database(self._dataset_cursor_suffix,base,accepted)
+            cursor=SourceCursor(binding.database_generation,binding,head,accepted,applied,pending,current)
+            if cursor!=anchor:
+                self._source_anchor=cursor;self._source_version=object()
+            self._source_head=head.reference if head else None
+            self._source_covered_sequence=accepted
+            return self._source_anchor
+
+    def _dataset_cursor_suffix(self,base,accepted):
+        applied=base;pending=[]
+        with self._db() as db:
+            for row in db.execute('SELECT sequence,seal_state,apply_state,command_bytes,outcome_bytes '
+                    'FROM rkb_control_operations WHERE sequence>? AND sequence<=? ORDER BY sequence',
+                    (base,accepted)):
+                known=row['seal_state']=='ACCEPTED' and row['apply_state'] in ('APPLIED','REJECTED_PRECONDITION')
+                if row['sequence']==applied+1 and known:applied=row['sequence']
+                if not known:pending.append((bytes(row['command_bytes']),row['outcome_bytes'],False))
+        return applied,tuple(pending)
 
     def _advance_source_acceptance(self,command,predecessor,seal):
         if self._source_anchor is None or command.sequence<=self._source_covered_sequence:return
