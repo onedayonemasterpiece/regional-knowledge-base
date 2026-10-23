@@ -516,7 +516,7 @@ class KaggleCasesBackend:
                 or type(limit) is not int or not 1<=limit<=8):
             raise failure('invalid_input','invalid_query')
         return await self._read(principal,case_id='00000000-0000-0000-0000-000000000000',
-            section='search',search_query=query.strip(),place=place,
+            section='search',search_query=query.strip() or None,place=place,
             source_id=source_id,after_case_id=after_case_id,limit=limit)
 
     async def disagreement_get(self,case_id,principal,*,section='case',after_seq=0,limit=20,revision=None):
