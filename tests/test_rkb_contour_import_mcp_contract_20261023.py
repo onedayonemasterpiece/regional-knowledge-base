@@ -120,6 +120,21 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         "force a whole packet into one chunk",
     ):
         assert expected in chunk_guidance, expected
+    assert chunk_guidance.count("If book_ingest(status) returns next_action=continue_tail") == 1
+    for expected in (
+        "tail_refs (page_id, physical_page_index, region_id, region_key, source_text_sha256, start, end",
+        "exact Unicode codepoint offsets in the original source region",
+        "contiguous uncovered body suffix", "book_pages at next_cursor",
+        "small, sentence-complete semantic chunks",
+        "ordered exact span_refs or region_refs",
+        "retaining prior page/region/span provenance", "current span_refs wire",
+        "Stage only newly issued, visually reviewed page(s) in a 1-4-page packet",
+        "do not re-stage the accepted prior page",
+        "split sentences, invent missing text",
+        "system-chosen split/merge boundaries",
+        "finalize while status still indicates continue_tail",
+    ):
+        assert expected in chunk_guidance, expected
     assert "When the evidence does not support such a body, omit basic_variant" in native.instructions
     assert "Finalization alone activates" not in native.instructions
     # Cold search continuation is one native instruction, not a new method.
