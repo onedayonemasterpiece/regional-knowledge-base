@@ -171,3 +171,36 @@ async def test_story_completed_on_next_page_persists_body_and_both_passage_refs(
         assert len({e['region_id'] for e in evidence})==2
         assert await (await env['connection'].execute('SELECT body FROM rkb_v4.story_search')).fetchone()==(body,)
         assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.source_story_pending')).fetchone()==(0,)
+
+@PG
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('metadata_language','stored_language','expected_config'), [
+    ('ru','ru','pg_catalog.russian'),
+    ('de','de','pg_catalog.german'),
+    ('en','en','pg_catalog.simple'),
+    ('en-US','en','pg_catalog.simple'),
+    ('fr','fr','pg_catalog.simple'),
+    ('und','und','pg_catalog.simple'),
+    ('simple','simple','pg_catalog.simple'),
+])
+async def test_current_packet_preserves_language_with_simple_fallback(
+        image_pg_sql18,metadata_language,stored_language,expected_config):
+    """Actual SQL027 packet acceptance, search and replay on the disposable PG17 fixture."""
+    env=image_pg_sql18;doc=exact_batch(count=1)
+    doc['source']['metadata']['language']=metadata_language
+    assert (await accepted(env,stage_command(doc,1))).status=='applied'
+    prepare,_=native(env)
+    command=packet(env,doc)
+    await prepare(command)
+    assert (await accepted(env,command)).status=='applied'
+    assert (await accepted(env,command)).duplicate
+    async with env['connection'].transaction():
+        row=await (await env['connection'].execute(
+            """SELECT language,config=%s::regconfig,passage_id
+               FROM rkb_v4.passage_search WHERE source_id=%s""",
+            (expected_config,SOURCE))).fetchone()
+        assert row is not None and row[:2]==(stored_language,True)
+        hits=await (await env['connection'].execute(
+            'SELECT passage_id FROM rkb_v4.lexical_candidates(%s,20)',
+            ('synthetic',))).fetchall()
+        assert row[2] in {hit[0] for hit in hits}

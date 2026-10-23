@@ -12,6 +12,7 @@ import copy
 import hashlib
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from uuid import UUID, uuid5
@@ -483,7 +484,7 @@ class NativeSourceCompiler:
             raise failure('complete_research_requires_explicit_same_pass_page_review')
         metadata=StartMetadataInput.model_validate(source['metadata'])
         language=(metadata.language or '').lower().replace('_','-').split('-',1)[0]
-        language=language if language in ('ru','de') else 'simple'
+        language=language if re.fullmatch(r'[a-z][a-z0-9-]{1,23}',language) else 'simple'
         pages={str(p.page_id):p for p in graph.pages}
         counts=await self._counts([chunk.text for chunk in graph.chunks])
         passages=[]
