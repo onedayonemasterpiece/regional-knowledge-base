@@ -84,7 +84,7 @@ def test_ordinary_import_requires_current_source_history_not_geo_proof():
     seen=[]
     def installation(actual,operations):
         seen.append((actual,operations));return current[0]
-    startup=SimpleNamespace(reads_current=lambda:True,gate=SimpleNamespace(graph_supported=lambda:True),
+    startup=SimpleNamespace(reads_current=lambda:True,binding_current=lambda binding:True,gate=SimpleNamespace(graph_supported=lambda:True),
         binding=binding,config=SimpleNamespace(geo_manifest_operation_keys=keys),geo_gate=None)
     assert TargetServiceStartup.imports_current(startup) and startup.reads_current()
     startup.geo_gate=SimpleNamespace(installation_current=installation)
