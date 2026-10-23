@@ -373,7 +373,25 @@ class BgeWssTransport:
                 from regional_knowledge.kaggle_apply import ApplyUnknown, ApplyExecutionError
                 try:
                     receipt=await handler(job)
-                except (ApplyUnknown, ApplyExecutionError):
+                except (ApplyUnknown, ApplyExecutionError) as error:
+                    # The command's exact operation key is inside its bounded
+                    # accepted bytes, not a standalone WSS frame field.
+                    # Never print source payloads, exception text or query data.
+                    import base64
+                    operation_key=None
+                    try:
+                        command=json.loads(base64.b64decode(job['command_b64'],validate=True))
+                        candidate=command.get('operation_key') if type(command) is dict else None
+                        if (type(candidate) is str and 1<=len(candidate)<=256
+                                and all(c in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:'
+                                        for c in candidate)):
+                            operation_key=candidate
+                    except (KeyError,ValueError,TypeError,UnicodeError,RecursionError):
+                        pass  # Diagnostics must never change the UNKNOWN result.
+                    print(json.dumps({'event':'source_command_outcome_unresolved',
+                        'job_id':job['id'],'operation_key':operation_key,
+                        'error_class':'ApplyUnknown' if isinstance(error,ApplyUnknown) else 'ApplyExecutionError'},
+                        separators=(',',':')),flush=True)
                     # Compute has ended, but there is no COMMITTED canonical
                     # source receipt: commit may be unknown, or the rejected
                     # ledger insert itself failed. Never invent an ACK.

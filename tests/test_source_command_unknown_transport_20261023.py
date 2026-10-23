@@ -5,6 +5,8 @@ exercises the actual existing WSS native-result/compute/replay boundary only.
 No provider, notebook, model, database or remote controller is started.
 """
 import asyncio
+import base64
+import json
 
 import pytest
 
@@ -94,3 +96,40 @@ async def test_source_without_committed_receipt_keeps_warm_run_and_original_job(
         stop.set()
         await asyncio.wait_for(task,3)
     assert loads==['load'] and closes==['closed']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('error_type',[ApplyUnknown,ApplyExecutionError])
+@pytest.mark.parametrize('operation_key,safe_key',[
+    ('source:batch:51','source:batch:51'),
+    ('https://private.invalid/?token=confidential',None),
+])
+async def test_source_command_unresolved_diagnostic_redacts_sensitive_bytes(
+        capsys,error_type,operation_key,safe_key):
+    """One bounded JSON record, no private payload, query, tokens or error text."""
+    secret='private-query bearer-token=very-secret'
+    accepted=dict(codec='rkb.exact-command.v1',operation_key=operation_key,
+        payload_b64=base64.b64encode(secret.encode()).decode(),
+        request_id=secret,ids={'private':secret})
+    encoded=base64.b64encode(json.dumps(accepted).encode()).decode()
+    job=dict(kind='source_command',id='job-safe-42',claim='original-claim',
+        command_b64=encoded,command_sha256='a'*64)
+    async def read(frame,*,encode):return result(frame)
+    async def fail(frame):raise error_type('private error detail: '+secret)
+    worker=module('bge_wss_transport').BgeWssTransport(
+        dict(CONFIG,shared_reads=True),lambda:lambda text:[1.]+[0.]*1023,
+        lambda:{},query_handler=read)
+    worker.source_handler=fail
+    await worker._encode(job)
+    captured=capsys.readouterr()
+    lines=captured.out.splitlines()
+    assert len(lines)==1
+    assert json.loads(lines[0])==dict(event='source_command_outcome_unresolved',
+        job_id='job-safe-42',operation_key=safe_key,error_class=error_type.__name__)
+    assert secret not in captured.out+captured.err
+    assert 'confidential' not in captured.out+captured.err
+    assert 'private.invalid' not in captured.out+captured.err
+    assert encoded not in captured.out+captured.err
+    assert 'request_id' not in captured.out+captured.err
+    assert 'payload_b64' not in captured.out+captured.err
+    assert worker.pending is None  # No fabricated canonical receipt.
