@@ -416,6 +416,14 @@ class SourceReadGate:
         try:
             if read is not None and type(read.query) is AcceptanceReadRequest:
                 self._require_acceptance(read.authority,read.query,read.binding)
+            if (read is not None and type(read.query) is EditorialReadRequest
+                    and read.query.view=='edit_context'):
+                # Retained Story EDIT document jobs are writes: do not permit
+                # execution after the exact source-history proof has expired.
+                # Public Story get/history/variants remain PG-only.
+                anchor=self.spool._source_anchor
+                if anchor is None or not anchor.current():
+                    return False
             return bool(read is not None and self._binding(read)
                 and read.result is not None
                 and not self._restricted_sources(read.facts or ()))
