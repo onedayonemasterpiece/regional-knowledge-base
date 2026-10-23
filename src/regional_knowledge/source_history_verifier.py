@@ -19,7 +19,7 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 
 from .control_spool import SourceChange, SpoolConflict, _command, _database, _uuid
-from .control_spool import READ_ADDITIVE_ROUTES
+from .control_spool import READ_ADDITIVE_ROUTES,INACTIVE_SOURCE_ROUTES
 from .kaggle_database_probe import NativeDatabaseProbe
 from .kaggle_domain_schema import TABLES_13,TABLES_14
 from .kaggle_schema_migrate import latest_schema_version
@@ -39,11 +39,6 @@ def _json(value):
 
 def _hash(data):
     return hashlib.sha256(data).hexdigest()
-
-
-# Stage, seal and materialization own inactive candidate data. Their accepted
-# receipts participate in the global prefix without asserting a public source.
-INACTIVE_SOURCE_ROUTES=frozenset({'source.stage.v1','source.stage.seal.v1','source.materialize.v1'})
 
 
 def _source_origin_required(command):

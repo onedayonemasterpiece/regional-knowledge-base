@@ -39,6 +39,8 @@ _LOG=logging.getLogger(__name__)
 # Only these additive packet operations become read-safe after exact apply;
 # withdrawal and all other mutations retain their existing durable barrier.
 READ_ADDITIVE_ROUTES=frozenset({'source.stage.v1','source.batch.v1','source.finish.v1'})
+# These commands own inactive candidate data, rather than public source heads.
+INACTIVE_SOURCE_ROUTES=frozenset({'source.stage.v1','source.stage.seal.v1','source.materialize.v1'})
 
 def _read_safe_sql(prefix=''):
     return (f"({prefix}seal_state='ACCEPTED' AND {prefix}apply_state IN ('APPLIED','REJECTED_PRECONDITION') "
@@ -209,6 +211,7 @@ class SourceCursor:
     accepted_sequence: int
     applied_sequence: int
     pending: tuple
+    source_heads: tuple
     _current: object
 
     def current(self):
@@ -431,41 +434,51 @@ class ControlSpool:
         """Trusted controller calls BEFORE DDL/grant/generation/route changes."""
         self._active();self._source_anchor=None;self._source_version=object()
 
-    async def dataset_cursor(self,binding,*,control,head,current):
+    async def dataset_cursor(self,binding,*,control,current):
         """Use the restored cursor; do not re-certify historical operations.
 
         Control is already read from the verified Dataset or physical restore.
         Only its unsaved local suffix can advance the known applied floor.
         A lost apply response remains pending until ordinary reconciliation.
         """
+        self._active()
         async with self._lock:
             if not current(binding):raise SpoolConflict('current Dataset binding required')
+            head=await self.journal.head()
             base=control['sequence']
             accepted=head.reference.last_sequence if head is not None else 0
             if accepted<base:raise SpoolConflict('Dataset cursor exceeds current journal')
             anchor=self._source_anchor
-            if not isinstance(anchor,SourceCursor) or anchor.binding!=binding:
-                changes=tuple(SourceChange(source,sequence,digest,bool(restriction),bool(pending),bool(unknown))
-                    for source,sequence,digest,restriction,pending,unknown in control['heads'])
-                await self._write(self._replace_source_heads,changes)
-            applied,pending=await _database(self._dataset_cursor_suffix,base,accepted)
-            cursor=SourceCursor(binding.database_generation,binding,head,accepted,applied,pending,current)
+            applied,pending,changes=await _database(self._dataset_cursor_suffix,control,accepted)
+            cursor=SourceCursor(binding.database_generation,binding,head,accepted,applied,pending,changes,current)
             if cursor!=anchor:
+                await self._write(self._replace_source_heads,changes)
                 self._source_anchor=cursor;self._source_version=object()
             self._source_head=head.reference if head else None
             self._source_covered_sequence=accepted
             return self._source_anchor
 
-    def _dataset_cursor_suffix(self,base,accepted):
-        applied=base;pending=[]
+    def _dataset_cursor_suffix(self,control,accepted):
+        base=control['sequence'];applied=base;pending=[]
+        changes={row[0]:SourceChange(row[0],row[1],row[2],bool(row[3]),bool(row[4]),bool(row[5]))
+            for row in control['heads']}
         with self._db() as db:
-            for row in db.execute('SELECT sequence,seal_state,apply_state,command_bytes,outcome_bytes '
+            for row in db.execute('SELECT sequence,seal_state,apply_state,command_bytes,outcome_bytes,'
+                    'source_id,command_sha256,dependency_bytes,'
+                    "json_extract(CAST(command_bytes AS TEXT),'$.route') AS route,"
+                    f'{_read_pending_sql()} AS read_pending,{_read_unknown_sql()} AS read_unknown '
                     'FROM rkb_control_operations WHERE sequence>? AND sequence<=? ORDER BY sequence',
                     (base,accepted)):
                 known=row['seal_state']=='ACCEPTED' and row['apply_state'] in ('APPLIED','REJECTED_PRECONDITION')
                 if row['sequence']==applied+1 and known:applied=row['sequence']
                 if not known:pending.append((bytes(row['command_bytes']),row['outcome_bytes'],False))
-        return applied,tuple(pending)
+                dependency=json.loads(row['dependency_bytes'])
+                if dependency['scope_class']!='public_source' or row['route'] in INACTIVE_SOURCE_ROUTES:continue
+                source=row['source_id'];old=changes.get(source)
+                changes[source]=SourceChange(source,row['sequence'],row['command_sha256'],
+                    bool(dependency['restriction'] or old and old.restriction),
+                    bool(row['read_pending'] or old and old.pending),bool(row['read_unknown'] or old and old.unknown))
+        return applied,tuple(pending),tuple(changes[k]for k in sorted(changes))
 
     def _advance_source_acceptance(self,command,predecessor,seal):
         if self._source_anchor is None or command.sequence<=self._source_covered_sequence:return

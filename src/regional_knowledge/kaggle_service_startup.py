@@ -378,8 +378,7 @@ class TargetServiceStartup:
             if self.geo_gate is not None:self.geo_gate.invalidate()
             self.case_gate.invalidate()
         self.binding=binding
-        cursor=await spool.dataset_cursor(binding,control=control,
-            head=await spool.journal.head(),current=self.binding_current)
+        cursor=await spool.dataset_cursor(binding,control=control,current=self.binding_current)
         if cursor is not self.coverage:
             _LOG.info('target_dataset_cursor run_id=%s dataset_version=%s accepted_seq=%s applied_seq=%s pending_count=%s',
                 binding.run_id,checkpoint.dataset_version,cursor.accepted_sequence,cursor.applied_sequence,len(cursor.pending))
