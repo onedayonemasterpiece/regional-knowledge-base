@@ -530,7 +530,7 @@ async def test_native_diagnostics_only_after_wire_send_and_blocked_drain_does_no
     def drain(frame):
         calls.append(frame['request_id'])
         entered.set()
-        release.wait(2)  # Broken diagnostic consumer must not hold WSS/query result.
+        release.wait(5)  # Broken optional collector must not hold either read.
         return []
     async def prepare(*args,**kwargs):return PreparedRuntime(handler,candidate(),read_event_drain=drain)
     worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),lambda:lambda text:[1.]+[0.]*1023,lambda:{},
@@ -542,6 +542,14 @@ async def test_native_diagnostics_only_after_wire_send_and_blocked_drain_does_no
         assert value['status']=='degraded' and 'read_events' not in value
         assert len(json.dumps(value).encode())<=262144
         assert await asyncio.to_thread(entered.wait,1)
+        assert calls==['native-event-query']
+        # A second authorized read is still delivered while the first
+        # diagnostic drain is blocked. Do not create another background drain.
+        await peer.put(query(request='native-event-query-2',turn=2,claim='native-claim-2'))
+        second=await asyncio.wait_for(peer.wait('QUERY_RESULT',
+            predicate=lambda f:f['request_id']=='native-event-query-2'),1)
+        assert second['status']=='degraded' and 'read_events' not in second
+        assert not worker._read_telemetry_export.done()
         assert calls==['native-event-query']
     finally:
         release.set();stop.set();await task
