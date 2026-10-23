@@ -47,7 +47,7 @@ class CaseReadGate(SourceReadGate):
     def _policy(self,query,authority):
         anchor=self.spool._source_anchor
         state=getattr(anchor,'case_state',None)
-        if anchor is None or not anchor.current() or type(state) is not CaseHistory:return None,None,0
+        if anchor is None or type(state) is not CaseHistory:return None,None,0
         case=state.cases.get(query.case_id)
         if case is None:raise SourceGateDenied('Case access unavailable')
         role=4 if case['owner']==authority.person_id else {'viewer':1,'contributor':2,'curator':3,'manager':4}.get(case['grants'].get(authority.person_id),0)
