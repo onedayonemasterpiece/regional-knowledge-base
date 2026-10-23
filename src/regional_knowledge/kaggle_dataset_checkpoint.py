@@ -26,6 +26,21 @@ class CheckpointPending(Exception):
 
 
 class _WorkCycleCapture(SourceDatasetSeed):
+    @asynccontextmanager
+    async def capture_guard(self,binding):
+        """Do not hold source-intake admission across a large Dataset upload.
+
+        Native PG backup has its own consistent WAL image. The existing exact
+        applied-prefix, history-head, owner and Dataset readback checks still
+        reject a moving/incomplete checkpoint; they must never be bypassed to
+        turn an in-flight APPLIED packet into an invented Saved receipt.
+        """
+        if not self.startup.binding_current(binding):
+            raise SnapshotError('dataset_checkpoint_writer_changed')
+        yield
+        if not self.startup.binding_current(binding):
+            raise SnapshotError('dataset_checkpoint_writer_changed')
+
     async def _prepare_prefix(self,proof):
         if proof is None:return
         spool=self.startup.config.spool
@@ -128,13 +143,15 @@ class _SchemaCycleCapture(_WorkCycleCapture):
 
 
 class SourceDatasetCheckpoints:
-    def __init__(self,startup,*,interval_seconds=900,clock=time.monotonic):
+    def __init__(self,startup,*,interval_seconds=1800,quiet_seconds=900,clock=time.monotonic):
         self.startup=startup;self.store=startup.config.spool.journal.store
-        if type(self.store) is not DatasetRecoveryStore or not 1<=interval_seconds<=3600:
+        if (type(self.store) is not DatasetRecoveryStore or not 1<=interval_seconds<=3600
+                or type(quiet_seconds) is not int or not 1<=quiet_seconds<=3600):
             raise TypeError('existing Dataset journal and bounded checkpoint interval required')
-        self.interval,self.clock=interval_seconds,clock
+        self.interval,self.quiet,self.clock=interval_seconds,quiet_seconds,clock
         self.dirty_since=None;self.last_sequence=None;self.last_change=self.clock()
         self.last_control=None;self._refresh_lock=asyncio.Lock()
+        self._task=None;self._force_after=False
         with startup.config.queue.connect() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS rkb_dataset_seed(
                 operation_key TEXT PRIMARY KEY,provider_ref TEXT NOT NULL,
@@ -180,6 +197,54 @@ class SourceDatasetCheckpoints:
         if self._refresh_lock.locked():return False
         async with self._refresh_lock:
             return await self._refresh(binding,planned_stop=planned_stop)
+
+    @property
+    def saved_seq(self):
+        """Only the native-readback-verified Dataset pointer, never PG APPLIED."""
+        return self.store.latest_checkpoint.base_sequence
+
+    def kick(self,binding,*,planned_stop=False):
+        """Use the existing maintenance cycle; one nonblocking capture at a time."""
+        if self._task is not None and not self._task.done():
+            self._force_after = self._force_after or planned_stop
+            return False
+        self._force_after=False
+        self._task=asyncio.create_task(self._background(binding,planned_stop=planned_stop),
+            name='rkb-dataset-work-cycle-checkpoint')
+        return True
+
+    async def _background(self,binding,*,planned_stop):
+        try:
+            try:
+                await self.refresh(binding,planned_stop=planned_stop)
+            except asyncio.CancelledError:raise
+            except Exception as exc:
+                _LOG.warning('target_dataset_checkpoint state=pending reason=%s',type(exc).__name__)
+            if self._force_after and not planned_stop:
+                try:
+                    await self.refresh(binding,planned_stop=True)
+                except asyncio.CancelledError:raise
+                except Exception as exc:
+                    _LOG.warning('target_dataset_checkpoint state=pending reason=%s',type(exc).__name__)
+        finally:
+            self._force_after=False
+
+    async def before_stop(self,binding):
+        """Try an explicit checkpoint before cooperative shutdown, not after STOP."""
+        task=self._task
+        if task is not None and not task.done():
+            self._force_after=True
+            await task
+        return await self.refresh(binding,planned_stop=True)
+
+    async def aclose(self):
+        task=self._task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     async def checkpoint_schema(self,binding,*,schema_version,operation_key,expected_sequence):
         """Immediate forced checkpoint, including unchanged journal sequences.
@@ -244,7 +309,7 @@ class SourceDatasetCheckpoints:
                 and proof.accepted_sequence==proof.applied_sequence)
             # Save at a drained work-cycle boundary, periodically, or before a
             # planned stop. Individual SQL/page operations do not request Saves.
-            if not (batch_complete and self.clock()-self.last_change>=30
+            if not (batch_complete and self.clock()-self.last_change>=self.quiet
                     or planned_stop or self.clock()-self.dirty_since>=self.interval):return False
             operation='dataset-checkpoint:'+sha(encode([self.store.publisher.ref,latest.dataset_version,
                 latest.database_generation,proof.applied_sequence]))
