@@ -427,6 +427,7 @@ async def test_new_upload_preserves_uncertain_legacy_operation_without_replaying
 @pytest.mark.asyncio
 async def test_revocation_during_selected_image_read_prevents_spool_acceptance(native_intake):
     s = native_intake; result = await start(s); payload = batch(s,result,count=1)
+    payload['pages'][0].pop('source_image_receipt_sha256')
     selected = s.originals.selected_image_receipts
     async def revoke(*args):
         values = await selected(*args)
