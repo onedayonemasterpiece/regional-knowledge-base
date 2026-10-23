@@ -57,7 +57,8 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
         original_intake=OriginalIntakeConfig(('https://archive.fixture.invalid',), (('pymupdf','1.28.2'),)))
     if handler_profile=='current':
         target=replace(target,registry_sha256=registry_sha256(),telegram_runtime=True)
-        assert len(current_registry().handlers)==13
+        from regional_knowledge.kaggle_native_source_bindings import NATIVE_ROUTES
+        assert set(current_registry().handlers)==NATIVE_ROUTES
     if restoring:
         from regional_knowledge.kaggle_recovery_composition import SnapshotRecoveryConfig
         from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint,DatasetFile

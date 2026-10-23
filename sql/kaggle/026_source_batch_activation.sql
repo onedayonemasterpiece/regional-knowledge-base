@@ -452,7 +452,7 @@ BEGIN
    OR region->'reading_order' IS DISTINCT FROM raw_region->'reading_order'
    OR region->'column_id' IS DISTINCT FROM coalesce(raw_region->'column_id','null'::jsonb) THEN RETURN false;END IF;
  END LOOP;
- RETURN rkb_v4.(jsonb_array_length(doc->'passages')=0 AND m->'passages'='[]'::jsonb OR rkb_v4.check_source_image_passages_v1(doc));
+ RETURN (jsonb_array_length(doc->'passages')=0 AND m->'passages'='[]'::jsonb OR rkb_v4.check_source_image_passages_v1(doc));
 EXCEPTION WHEN data_exception OR no_data_found OR too_many_rows THEN RETURN false;
 END $$;
 
@@ -1156,3 +1156,41 @@ DO $$ BEGIN
   GRANT EXECUTE ON FUNCTION rkb_v4.source_batch_manifest_v1(uuid) TO rkb_reader;
  END IF;
 END $$;
+
+-- Packet effects and their immutable accepted receipt commit in one native
+-- transaction. Readiness checks those receipts, not the whole book's content.
+CREATE FUNCTION rkb_v4.verify_source_batch_origins_v1(scope uuid[]) RETURNS boolean
+ LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT scope IS NOT NULL AND cardinality(scope)<=10000
+ AND NOT EXISTS(SELECT 1 FROM rkb_v4.source_batch_receipts r
+  LEFT JOIN rkb_v4.applied_ops a ON a.operation_key=r.operation_key AND a.sequence=r.sequence
+  LEFT JOIN rkb_v4.source_batch_prepared p USING(source_id,batch_index)
+  WHERE r.source_id=ANY(scope) AND (a.status IS DISTINCT FROM 'applied'
+   OR a.command_sha256 IS DISTINCT FROM r.command_sha256
+   OR a.command_bytes IS DISTINCT FROM p.command_bytes
+   OR p.knowledge_sha256 IS DISTINCT FROM r.knowledge_sha256
+   OR convert_from(a.command_bytes,'UTF8')::jsonb->>'route' IS DISTINCT FROM 'source.batch.v1'
+   OR convert_from(a.command_bytes,'UTF8')::jsonb->'ids'->>'source_id' IS DISTINCT FROM r.source_id::text))
+$$;
+ALTER FUNCTION rkb_v4.verify_source_story_origins_v4(uuid[]) RENAME TO verify_source_story_origins_before_batches;
+CREATE FUNCTION rkb_v4.verify_source_story_origins_v4(scope uuid[]) RETURNS boolean
+ LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT rkb_v4.verify_source_batch_origins_v1(scope)
+ AND rkb_v4.verify_source_story_origins_before_batches(ARRAY(SELECT x FROM unnest(scope) x
+  WHERE NOT EXISTS(SELECT 1 FROM rkb_v4.source_batch_receipts WHERE source_id=x)))
+$$;
+ALTER FUNCTION rkb_v4.verify_source_graph_origins_v2(uuid[]) RENAME TO verify_source_graph_origins_before_batches;
+CREATE FUNCTION rkb_v4.verify_source_graph_origins_v2(scope uuid[]) RETURNS boolean
+ LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT rkb_v4.verify_source_batch_origins_v1(scope)
+ AND rkb_v4.verify_source_graph_origins_before_batches(ARRAY(SELECT x FROM unnest(scope) x
+  WHERE NOT EXISTS(SELECT 1 FROM rkb_v4.source_batch_receipts WHERE source_id=x)))
+$$;
+ALTER FUNCTION rkb_v4.verify_source_illustration_origins_v1(uuid[]) RENAME TO verify_source_media_origins_before_batches;
+CREATE FUNCTION rkb_v4.verify_source_illustration_origins_v1(scope uuid[]) RETURNS boolean
+ LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT rkb_v4.verify_source_batch_origins_v1(scope)
+ AND rkb_v4.verify_source_media_origins_before_batches(ARRAY(SELECT x FROM unnest(scope) x
+  WHERE NOT EXISTS(SELECT 1 FROM rkb_v4.source_batch_receipts WHERE source_id=x)))
+$$;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA rkb_v4 FROM PUBLIC;
