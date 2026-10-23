@@ -88,7 +88,7 @@ def _identifier(value):
     return value
 
 
-def channel_route(queue, *, read_telemetry=None):
+def channel_route(queue, *, read_telemetry=None, before_stop=None):
     """Return a native route for the existing MCP ASGI application."""
     async def endpoint(socket):
         # Explicit startup configuration only. Legacy encoding stays on its
@@ -232,6 +232,18 @@ def channel_route(queue, *, read_telemetry=None):
                     if (state['document_result_pending'] or
                             resource is not None and resource.run_id == run_id):
                         return False
+                # Only an authenticated, idle run reaches this point. Await
+                # the existing target checkpoint owner before sending STOP;
+                # success AND explicit failure are terminal for this wait.
+                # The target callback enforces the original nine-hour limit.
+                if before_stop is not None:
+                    try:
+                        await before_stop(run_id,generation)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        logger.warning(json.dumps({'event':'bge_stop_checkpoint',
+                            'run_id':run_id,'outcome':'error','error_type':type(error).__name__}))
                 # Same authenticated WSS, exact run/incarnation, no new frame.
                 # A delivered STOP is not native provider terminal evidence.
                 stop_sent = True
