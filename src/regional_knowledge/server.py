@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import asyncio
+from functools import wraps
 import logging
+import re
 import os
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -140,6 +142,78 @@ def _book_page_tool_result(ingestion_id, batch):
     for page in batch.pages:
         content.append(Image(data=page.data, format=page.mime_type.removeprefix('image/')).to_image_content())
     return CallToolResult(content=content)
+
+
+# Only the two book MCP tool boundaries use this normalization. Inner importer
+# decisions, original receipts, permissions and wire schemas remain untouched.
+_BOOK_ERROR_STATUSES = frozenset({
+    "invalid_query", "denied", "unavailable", "pending", "unknown",
+    "failed", "rejected", "error",
+})
+_BOOK_STABLE_REASON = re.compile(r"^[a-z][a-z0-9_]{0,95}$")
+# These pre-existing server-local ToolErrors have no structured status yet.
+_BOOK_LOCAL_REASONS = {
+    "telegram_original_requires_target_start_without_attachment": "invalid_query",
+    "source_import_must_use_one_input_location": "invalid_query",
+    "invalid_source_import_input": "invalid_query",
+    "catalog_update_requires_metadata_only_stage": "invalid_query",
+    "stage_file_cannot_mix_with_inline_payload": "invalid_query",
+    "stage_file_invalid": "invalid_query",
+    "stage_file_schema": "invalid_query",
+    "stage_file_ingestion_or_revision_mismatch": "invalid_query",
+    "stage_file_must_be_json_not_original_source": "invalid_query",
+    "file_only_supported_for_start_reprocess_or_stage": "invalid_query",
+    "source_import_requires_configured_target_importer": "unavailable",
+    "owned_ingestion_required": "denied",
+}
+
+
+def _book_mcp_error(exc: Exception) -> ToolError:
+    """Keep existing domain status/reason; never serialize exception messages."""
+    status, reason, error_class = "unknown", "internal_error", "internal"
+    if isinstance(exc, ToolError):
+        error_class, reason = "domain", "domain_error"
+        raw = str(exc)
+        if len(raw) <= 1024:
+            try:
+                record = json.loads(raw)
+            except (ValueError, TypeError):
+                record = None
+            if type(record) is dict:
+                candidate_status, candidate_reason = record.get("status"), record.get("reason")
+                if type(candidate_status) is str and candidate_status in _BOOK_ERROR_STATUSES:
+                    status = candidate_status  # Not all errors mean a final rejection.
+                    if (type(candidate_reason) is str and
+                            _BOOK_STABLE_REASON.fullmatch(candidate_reason)):
+                        reason = candidate_reason
+            else:
+                # A few existing local errors are plain static labels. Their
+                # trailing Pydantic/user details must not escape the server.
+                label = raw.partition(":")[0]
+                if label in _BOOK_LOCAL_REASONS:
+                    status, reason = _BOOK_LOCAL_REASONS[label], label
+    elif isinstance(exc, PermissionError):
+        status, reason, error_class = "denied", "access_denied", "access"
+    elif isinstance(exc, TimeoutError):
+        status, reason, error_class = "unknown", "transport_timeout", "transport"
+    elif isinstance(exc, (ConnectionError, OSError)):
+        status, reason, error_class = "unknown", "transport_unavailable", "transport"
+    # For every other exception the operation's effect is UNKNOWN, not rejected.
+    return ToolError(json.dumps({"status": status, "reason": reason,
+                                 "error_class": error_class}, separators=(",", ":")))
+
+
+def _book_mcp_error_boundary(handler):
+    """Preserve the registered tool signature while fencing error disclosure."""
+    @wraps(handler)
+    async def call(*args, **kwargs):
+        try:
+            return await handler(*args, **kwargs)
+        except asyncio.CancelledError:
+            raise  # A cancelled call proves neither failure nor completion.
+        except Exception as exc:
+            raise _book_mcp_error(exc) from None
+    return call
 
 
 def _transport_security(resource_url: str | None = None) -> TransportSecuritySettings:
@@ -1273,6 +1347,7 @@ def build_server(
         ),
         meta={"openai/fileParams": ["file"]},
     )
+    @_book_mcp_error_boundary
     async def book_ingest(
         command: Literal["start", "reprocess", "rechunk", "stage", "validate", "finalize", "status"],
         file: ChatFile | None = None,
@@ -1459,6 +1534,7 @@ def build_server(
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
+    @_book_mcp_error_boundary
     async def book_pages(
         ingestion_id: str,
         cursor: str | None = None,
