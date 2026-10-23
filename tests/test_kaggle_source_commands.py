@@ -383,6 +383,40 @@ async def test_queued_source_waits_for_history_but_public_read_progresses(accept
 
 
 @pytest.mark.asyncio
+async def test_restored_dataset_cursor_dispatches_pending_command_without_resetting_history_fence(accepted):
+    from regional_knowledge.kaggle_public_backend import TargetReadBinding
+    e=accepted;s=e.s
+    job=await e.bridge.enqueue(s.auth.p.admin,e.command.operation_key,writer_generation='writer-1')
+    # NativeHistoryWSS.bind installed the legacy sentinel, but Dataset restore
+    # never opened a native history session to clear it.
+    e.spool._native_history_unsettled=True
+    assert e.bridge.maintenance_blocks_dispatch()
+    binding=TargetReadBinding(s.run,'incarnation-a',s.generation,'synthetic-db',0,'1')
+    live=[True]
+    def current(b):
+        return (live[0] and b==binding and e.bridge.binding_current(
+            run_id=b.run_id,runtime_incarnation=b.runtime_incarnation,
+            connection_generation=b.connection_generation,
+            database_generation=b.database_generation,writer_generation='writer-1'))
+    cursor=await e.spool.dataset_cursor(binding,control={'sequence':0,'heads':[]},current=current)
+    assert cursor.current() and cursor.accepted_sequence==1 and cursor.applied_sequence==0 and cursor.pending
+    assert e.spool._native_history_unsettled is True  # no manual release of a native fence
+    live[0]=False
+    assert e.bridge.maintenance_blocks_dispatch()  # writer/binding must remain current
+    live[0]=True
+    assert not e.bridge.maintenance_blocks_dispatch()
+    work=await s.a.next_channel_work(s.run,s.token,s.generation)
+    assert work.document_payload['id']==job
+    s.a.discard_unsent(work)
+    with s.q.connect(write=False) as db:
+        assert db.execute('SELECT state FROM jobs WHERE id=?',(job,)).fetchone()[0] in ('pending','claimed')
+    # A lost cursor cannot grant a second dispatch just because the constructor
+    # sentinel is still set; receipt/UNKNOWN checks remain on their old path.
+    e.spool.invalidate_source_history()
+    assert e.bridge.maintenance_blocks_dispatch()
+
+
+@pytest.mark.asyncio
 async def test_recovered_native_outcome_waits_for_dataset_without_redispatch(accepted):
     e=accepted;s=e.s
     job=await e.bridge.enqueue(s.auth.p.admin,e.command.operation_key,writer_generation='writer-1')
