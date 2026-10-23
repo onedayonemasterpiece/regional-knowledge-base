@@ -132,6 +132,23 @@ async def prepare(env,chain,head,doc,*,database_generation=DB,writer_generation=
         return row[0]
 
 
+@PG
+@pytest.mark.asyncio
+async def test_pending_research_finding_prepares_without_plpgsql_alias_collision(image_pg_sql18):
+    env=image_pg_sql18
+    chain,head,doc=synthetic_knowledge(1,story=True)
+    finding=doc['semantic']['findings'][0]
+    doc['semantic']['stories']=[]
+    doc['semantic']['pending']=[dict(candidate_key=finding['candidate_key'],
+        finding_ids=[finding['assertion_id']],reason='needs_context')]
+    await stage_all(env,chain)
+    invalid=copy.deepcopy(doc)
+    invalid['semantic']['pending'][0]['candidate_key']='unrelated'
+    with pytest.raises(psycopg.errors.InvalidParameterValue):
+        await prepare(env,chain,head,invalid)
+    assert await prepare(env,chain,head,doc)==digest(knowledge_bytes(doc))
+
+
 async def install(env,h,ordinal,*,vector=VECTOR):
     async with env['connection'].transaction():
         return (await (await env['connection'].execute('SELECT rkb_v4.install_source_activation_vector_v1(%s,%s,%s,%s::public.vector,%s,%s)',
