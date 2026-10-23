@@ -356,8 +356,14 @@ async def test_packet_progress_and_reading_completion_keep_exact_durability_rece
     completion=await pending(s,result)
     assert completion.command.route=='source.finish.v1'
     await finish(s,result,publish=False)
-    assert (await call(s,result,'status')).state == 'processing'
+    # A native APPLIED reading completion is immediately usable; the cloud
+    # Dataset receipt remains separately pending and never becomes fake Saved.
+    assert (await call(s,result,'status')).state == 'finalized'
+    unpersisted=await s.spool.get(completion.command.operation_key)
+    assert unpersisted.outcome_state == 'NOT_SENT' and unpersisted.remote_outcome is None
     await s.spool.publish_outcome(completion.command.operation_key,writer_generation='writer-1')
+    durable=await s.spool.get(completion.command.operation_key)
+    assert durable.outcome_state == 'DURABLE' and durable.remote_outcome is not None
     assert (await call(s,result,'status')).state == 'finalized'
     assert (await call(s,result,'finalize')).state == 'finalized'
     assert operation_count(s) == 4 and not s.token_calls
