@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/main/docs/testing/rkb-extraction-quality-result-schema-20261023.json",
   "title": "RKB extraction PMI: append-only blind attempt record",
-  "description": "Schema only, NOT RUN. Store one JSONL object per attempted query/arm/replicate after approved multi-source import. Never rewrite prior rows. Gold stays separate from runners. Does not create telemetry/harness. When resources/tokens availability=unavailable, all measures MUST be null with nonempty reason (not zero).",
+  "description": "Schema only, NOT RUN. Store one JSONL object per attempted query/arm/replicate after approved multi-source import. Never rewrite prior rows. Gold stays separate from runners. Does not create telemetry/harness. When resources/tokens availability=unavailable, all measures MUST be null with nonempty reason (not zero). Docs-only schema, NOT RUN. Per-attempt execution outcome differs from original-grounded rubric adjudication. Full frozen multi-source EXECUTION_COMPLETE precedes ADJUDICATION_COMPLETE. Do not derive extraction-completeness gold from the system's own fetch.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -288,7 +288,8 @@
         "cancelled",
         "pending",
         "unknown"
-      ]
+      ],
+      "description": "Single attempt execution outcome only; status=completed is NOT rubric review nor batch ADJUDICATION_COMPLETE. Terminal attempts contribute to EXECUTION_COMPLETE only under complete frozen source×variant×method×neighbor×repeat matrix."
     },
     "error": {
       "type": [
@@ -469,7 +470,8 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "Existing opaque reference to exact observed text: for EQ26-075, persisted Variant.body as returned by authorised existing Story read; for EQ26-076, actual persisted facts_only text/records, or null when absent. Never synthesize a replacement body or add another harness."
         },
         "claim_ref_list": {
           "type": "array",
@@ -481,7 +483,8 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Exact current accepted native source/revision/page/region/passage references from authorised reads, respecting ACL. Public oldid/section is not a native passage ID; do not invent refs."
         },
         "unsupported_claims": {
           "type": [
@@ -497,7 +500,8 @@
           ],
           "minimum": 0
         }
-      }
+      },
+      "description": "References the actual observed answer or persisted extracted artifact, not a newly generated substitute. Diagnostic Story/facts_only cases point to exact existing source-backed bodies/records, kept under original ACL."
     },
     "timings_ms": {
       "type": "object",
@@ -852,7 +856,8 @@
             "provisional",
             "resolved",
             "disputed"
-          ]
+          ],
+          "description": "Independent rubric review state assessed only after multi-source EXECUTION_COMPLETE and raw-output freeze; resolved single row does not establish ADJUDICATION_COMPLETE for a partial batch."
         },
         "reviewer1": {
           "type": [
@@ -897,7 +902,8 @@
             "missing",
             "not_applicable",
             "not_reviewed"
-          ]
+          ],
+          "description": "Compare exact captured answer/body/facts against separately reviewed IMMUTABLE ORIGINAL evidence including missing/import-omitted claims; system fetch cannot be sole original completeness oracle. EQ26-075: participants/action/outcome/follow-on. EQ26-076: all original-listed duties without fabricated Story."
         },
         "provenance_correct": {
           "enum": [
@@ -905,7 +911,8 @@
             "no",
             "partial",
             "not_reviewed"
-          ]
+          ],
+          "description": "Review exact source_id/edition/accepted revision/page/passage/ACL against original oracle plus native read refs; secondary source assertions are not independent historical truth."
         },
         "hallucination": {
           "enum": [
