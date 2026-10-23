@@ -480,7 +480,14 @@ def build_server(
             if worker_queue.path.resolve() != Path(os.environ['RKB_BGE_QUEUE_PATH']).resolve():
                 raise RuntimeError('backend and channel must share the same owned queue')
         register_routes(mcp,worker_queue)
-        mcp._bge_channel_route = channel_route(worker_queue,read_telemetry=read_telemetry)
+        # PR301 adds this optional native route argument. Both merge orders
+        # keep one bounded product sink and leave legacy channels unchanged.
+        from inspect import signature
+        channel_options = {'read_telemetry': read_telemetry}
+        if 'product_telemetry' in signature(channel_route).parameters:
+            from .product_telemetry import get_product_telemetry
+            channel_options['product_telemetry'] = get_product_telemetry()
+        mcp._bge_channel_route = channel_route(worker_queue, **channel_options)
 
     if projects_hub_receiver is not None:
         from .projects_hub_reader import ProjectsHubReader, PATH
@@ -1114,7 +1121,10 @@ def build_server(
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
     async def fetch(id: str) -> FetchOutput:
-        return await backend.fetch(id, _principal())
+        # Whole authorized fetch including principal resolution; no payload
+        # enters telemetry and the DTO/ACL path is unchanged.
+        from .product_telemetry import observe_async
+        return await observe_async("fetch", lambda: backend.fetch(id, _principal()))
 
     @mcp.tool(title='Read an authorized illustration', description='Return the canonical source crop and labelled caption/model-observation metadata. Model observation is not printed evidence. No OCR or inference.', annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
     async def illustration_fetch(id: str) -> list[TextContent | ImageContent]:
