@@ -617,6 +617,9 @@ def build_server(
         # keep one bounded product sink and leave legacy channels unchanged.
         from inspect import signature
         channel_options = {'read_telemetry': read_telemetry}
+        if selected=='kaggle_source' and target_startup.dataset_checkpoints is not None:
+            # One existing WSS STOP lifecycle, not another manager or frame.
+            channel_options['before_stop']=target_startup.before_planned_stop
         if 'product_telemetry' in signature(channel_route).parameters:
             from .product_telemetry import get_product_telemetry
             channel_options['product_telemetry'] = get_product_telemetry()
