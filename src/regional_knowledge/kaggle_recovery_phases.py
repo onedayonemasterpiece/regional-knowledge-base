@@ -233,15 +233,20 @@ class WorkerRecoveryPhases:
                 try:
                     value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
                 except Exception as error:
-                    # A fatal restore failure cannot produce readiness. Wake
-                    # the initialization waiter with that same failure so
-                    # transport cleanup does not spend 900 seconds draining
-                    # a waiter whose producer has already failed.
-                    # finish can be reconciled after a socket handover; do
-                    # not poison that retained session's initialization.
-                    if frame['phase'] in ('prepare','apply') and self._initialized is None:
-                        self._initialization_error=error;self._ready.set()
-                    raise
+                    from .kaggle_apply import ApplyExecutionError
+                    if (frame['phase']=='apply' and self._initialized is not None
+                            and type(error) is ApplyExecutionError):
+                        # The existing PG transaction has rolled back; this
+                        # command is rejected, not the whole warm runtime.
+                        # ApplyUnknown, stale writer and permission failures
+                        # must still escape for exact original reconciliation.
+                        value={'status':'rejected','reason':'native_apply_rolled_back'}
+                    else:
+                        # Pre-ready restore failure must wake the initializer,
+                        # never leave its existing 900s waiter stranded.
+                        if frame['phase'] in ('prepare','apply') and self._initialized is None:
+                            self._initialization_error=error;self._ready.set()
+                        raise
             bounded(value,MAX_PHASE_RESULT_BYTES)
             result={'phase':frame['phase'],'request_sha256':request,'value':value}
             self._results[key]=result
