@@ -51,12 +51,12 @@ async def setup(e,a):
 
 
 @pytest.mark.asyncio
-async def test_uncovered_empty_spool_is_not_complete(env,auth):
+async def test_valid_pg_empty_result_without_source_history_remains_available(env,auth):
     gate,authority,b=await setup(env,auth)
     env.spool.invalidate_source_history()
     permit=await gate.dispatch(authority,query(),b)
     gated=await gate.finish(permit,result())
-    assert gated.result.status=='unavailable' and gated.result.reason=='prior_write_pending'
+    assert gated.result.status=='ok' and not gated.result.prior_write_pending
     assert not gated.result.evidence and gate.issuance_current(gated.ticket)
 
 
@@ -77,13 +77,13 @@ async def test_native_evidence_free_failure_preserves_reason_without_inventing_p
 
 
 @pytest.mark.asyncio
-async def test_broad_topk_omits_pending_A_still_degraded_but_explicit_B_unaffected(env,auth):
+async def test_pending_stage_does_not_hide_prior_pg_topk_or_unrelated_source(env,auth):
     gate,authority,b=await setup(env,auth)
     await stage(env)
     for evidence in ((),(item(OTHER),)):
         permit=await gate.dispatch(authority,query(),b)
         gated=await gate.finish(permit,result(*evidence))
-        assert gated.result.status=='degraded' and gated.result.prior_write_pending
+        assert gated.result.status=='ok' and not gated.result.prior_write_pending
         assert gated.result.evidence==evidence and gate.issuance_current(gated.ticket)
         gate.release(gated.ticket)
     permit=await gate.dispatch(authority,query((OTHER,)),b)
@@ -100,8 +100,8 @@ async def test_whole_cross_source_item_and_all_metadata_continuations_are_remove
     await stage(env)
     gated=await gate.finish(permit,result(item(SOURCE,OTHER,continuation='private-tail'),item(OTHER,id='safe'),
         continuation='unsafe-whole-result'))
-    assert [i.id for i in gated.result.evidence]==['safe']
-    assert gated.result.continuation is None and gated.result.reason=='prior_write_pending'
+    assert [i.id for i in gated.result.evidence]==['passage','safe']
+    assert gated.result.status=='ok' and not gated.result.prior_write_pending
 
 
 @pytest.mark.asyncio
@@ -110,10 +110,10 @@ async def test_final_synchronous_fence_and_refresh_recheck_current_control(env,a
     permit=await gate.dispatch(authority,query(),b)
     gated=await gate.finish(permit,result(item(SOURCE)))
     assert gate.issuance_current(gated.ticket)
-    await stage(env)
-    assert not gate.issuance_current(gated.ticket)
+    await stage(env)  # local uncommitted command does not revoke PG snapshot
+    assert gate.issuance_current(gated.ticket)
     refreshed=await gate.refresh(gated)
-    assert refreshed.result.evidence==() and refreshed.result.prior_write_pending
+    assert len(refreshed.result.evidence)==1 and not refreshed.result.prior_write_pending
     assert not gate.issuance_current(gated.ticket) and gate.issuance_current(refreshed.ticket)
     b.runtime_incarnation='new-incarnation'
     assert not gate.issuance_current(refreshed.ticket)
@@ -220,14 +220,14 @@ async def test_bypassed_native_dependency_contract_fails_closed_before_facts(env
 
 
 @pytest.mark.asyncio
-async def test_inflight_write_is_unavailable_with_no_evidence_instead_of_auth_denied(env,auth):
+async def test_inflight_write_does_not_hide_already_published_pg_evidence(env,auth):
     gate,authority,b=await setup(env,auth)
     permit=await gate.dispatch(authority,query(),b)
     env.spool._writing=1
     try:
         gated=await gate.finish(permit,result(item(SOURCE)))
-        assert gated.result.status=='unavailable' and gated.result.reason=='prior_write_pending'
-        assert not gated.result.evidence and gate.issuance_current(gated.ticket)
+        assert gated.result.status=='ok' and not gated.result.prior_write_pending
+        assert len(gated.result.evidence)==1 and gate.issuance_current(gated.ticket)
     finally:
         env.spool._writing=0
 
@@ -253,7 +253,7 @@ async def test_current_editorial_body_revision_is_fenced_and_removed_after_sourc
         observed_database_generation='db-source')
     gated=await gate.finish(permit,result)
     assert gated.result.record['default_variant_ref']['revision']==2 and gate.issuance_current(gated.ticket)
-    await stage(env)
-    assert not gate.issuance_current(gated.ticket)
-    closed=await gate.refresh(gated)
-    assert closed.result.record is None and not closed.result.evidence and closed.result.prior_write_pending
+    await stage(env)  # no PG withdrawal was applied in this transaction
+    assert gate.issuance_current(gated.ticket)
+    refreshed=await gate.refresh(gated)
+    assert refreshed.result.record is not None and refreshed.result.evidence
