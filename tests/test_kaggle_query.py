@@ -326,12 +326,12 @@ async def test_fresh_frontier_and_minseq_fail_before_encoder_with_actual_cursors
 
 @PG
 @pytest.mark.asyncio
-async def test_real_fused_query_is_honestly_degraded_with_snapshot_source_dependencies(env):
+async def test_real_fused_query_completes_with_snapshot_source_dependencies(env):
     await publish(env)
     telemetry = asyncio.Queue(maxsize=1)
     result = await execute_query(query(filters=QueryFilters(source_ids=(SOURCE,), kinds=("source",))),
         acquire=env["acquire"], tokenizer=tokenizer(), encode=encode, telemetry=telemetry)
-    assert result.status == "degraded" and result.reason == "bounded_retrieval" and result.mode == "hybrid"
+    assert result.status == "ok" and result.reason is None and result.mode == "hybrid"
     assert result.observed_data_seq == result.observed_projection_seq == 5
     assert result.observed_visibility_epoch == 0  # Never echo actor authority epoch999.
     assert result.observed_database_generation == "query-fixture"

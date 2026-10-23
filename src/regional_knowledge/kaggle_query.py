@@ -221,10 +221,14 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
                                           database_generation=observed["database"], text_budget=per_item)
                         budget -= len(entry.text)
                         evidence.append(entry)
-                    result = (AcceptanceReadResult if acceptance else QueryResult)(**_identity(query), status="degraded", mode="hybrid",
+                    # Bounded top-k/ANN is the normal search policy, not an
+                    # observed runtime failure. Recall acceptance is separate.
+                    result = (AcceptanceReadResult if acceptance else QueryResult)(**_identity(query),
+                        status="degraded" if acceptance else "ok", mode="hybrid",
                         **({'ranks':BranchRanks(bge=searched.branch_ranks[0],lexical=searched.branch_ranks[1],
                             fusion=searched.branch_ranks[2])} if acceptance else {}),
-                        reason="bounded_retrieval", evidence=tuple(evidence), observed_data_seq=observed["data"],
+                        reason="bounded_retrieval" if acceptance else None,
+                        evidence=tuple(evidence), observed_data_seq=observed["data"],
                         observed_projection_seq=observed["projection"], observed_visibility_epoch=observed["visibility"],
                         observed_database_generation=observed["database"])
             mark = loop.time()

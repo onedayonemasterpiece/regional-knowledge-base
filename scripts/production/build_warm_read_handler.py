@@ -11,7 +11,7 @@ WIRE_CLASSES=('SourceGraphReadRequest','SourceGraphReadResult')
 MAX_BYTES=512*1024
 
 
-def bundle(query_source,graph_source,baseline_graph_source):
+def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,baseline_executor_source=None):
     graph=ast.parse(graph_source);baseline=ast.parse(baseline_graph_source)
     def wire(tree):
         return {node.name:ast.dump(node,include_attributes=False) for node in tree.body
@@ -19,11 +19,32 @@ def bundle(query_source,graph_source,baseline_graph_source):
     if set(wire(graph))!=set(WIRE_CLASSES) or wire(graph)!=wire(baseline):
         raise ValueError('warm_graph_wire_abi_changed')
     graph.body=[node for node in graph.body if not isinstance(node,ast.ClassDef) or node.name not in WIRE_CLASSES]
+    executor_prefix=''
+    if executor_source is not None:
+        executor=ast.parse(executor_source)
+        baseline_executor=ast.parse(baseline_executor_source)
+        def tokenizer(tree):
+            return [ast.dump(node,include_attributes=False) for node in tree.body
+                if isinstance(node,ast.ClassDef) and node.name=='PinnedTokenizer']
+        if len(tokenizer(executor))!=1 or tokenizer(executor)!=tokenizer(baseline_executor):
+            raise ValueError('warm_query_tokenizer_abi_changed')
+        executor.body=[node for node in executor.body
+            if not isinstance(node,ast.ClassDef) or node.name!='PinnedTokenizer']
+        executor_prefix=(
+            'from .kaggle_query import PinnedTokenizer\n'
+            '_warm_query = dict(__name__=__name__, __package__=__package__, '
+            '__file__=__file__, PinnedTokenizer=PinnedTokenizer)\n'
+            f"exec(compile({ast.unparse(executor)!r}, '<warm-query>', 'exec'), _warm_query)\n")
     query=ast.parse(query_source)
     replaced=0
     class IsolateGraph(ast.NodeTransformer):
         def visit_ImportFrom(self,node):
             nonlocal replaced
+            if executor_source is not None and node.level==1 and node.module=='kaggle_query':
+                if not any(item.name=='execute_query' for item in node.names):return node
+                node.names=[item for item in node.names if item.name!='execute_query']
+                assignment=ast.copy_location(ast.parse("execute_query = _warm_query['execute_query']").body[0],node)
+                return [node,assignment] if node.names else assignment
             if node.level==1 and node.module=='kaggle_source_graph_read' and any(
                     item.name=='execute_source_graph_read' for item in node.names):
                 if len(node.names)!=1 or node.names[0].asname is not None:
@@ -36,6 +57,7 @@ def bundle(query_source,graph_source,baseline_graph_source):
     if replaced!=1:raise ValueError('warm_graph_import_missing')
     query.body=[node for node in query.body if not isinstance(node,ast.ImportFrom) or node.module!='__future__']
     source=("from __future__ import annotations\n"
+        +executor_prefix+
         "from .kaggle_source_graph_read import SourceGraphReadRequest, SourceGraphReadResult\n"
         "_warm_graph = dict(__name__=__name__, __package__=__package__, __file__=__file__, "
         "SourceGraphReadRequest=SourceGraphReadRequest, SourceGraphReadResult=SourceGraphReadResult)\n"
@@ -59,7 +81,7 @@ def main():
     root='src/regional_knowledge/'
     def read(ref,name):return git('show',ref+':'+root+name+'.py')
     source=bundle(read(commit,'kaggle_worker_query'),read(commit,'kaggle_source_graph_read'),
-        read(baseline,'kaggle_source_graph_read'))
+        read(baseline,'kaggle_source_graph_read'),read(commit,'kaggle_query'),read(baseline,'kaggle_query'))
     output=args.output_dir.resolve()
     if not (output/'.artifact.json').is_file():raise ValueError('managed_artifact_directory_required')
     content=source.encode();digest=hashlib.sha256(content).hexdigest()
