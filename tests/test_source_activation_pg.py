@@ -157,6 +157,58 @@ async def install(env,h,ordinal,*,vector=VECTOR):
 
 @PG
 @pytest.mark.asyncio
+async def test_174_page_multi_region_manifest_prepares_with_existing_five_second_budget(image_pg_sql18):
+    from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler
+    env=image_pg_sql18
+    chain,_,_=synthetic_knowledge(174)
+    head='0'*64
+    for data in chain:
+        data['previous_batch_sha256']=head
+        data['model_payload']['chunks']=[]
+        for page in data['model_payload']['pages']:
+            region=page['regions'][0]
+            page['regions']=[]
+            for n in range(8):
+                selected=copy.deepcopy(region)
+                selected.update(region_key=f'body-{n}',reading_order=n,
+                    source_text=(region['source_text']+' ')*8,
+                    bbox=dict(left=100,top=100+n*90,right=900,bottom=180+n*90))
+                page['regions'].append(selected)
+                data['model_payload']['chunks'].append(dict(
+                    chunk_key=f"page-{page['physical_page_index']}-{n}",title='Synthetic chapter',
+                    region_refs=[dict(page_id=page['page_id'],region_key=selected['region_key'])]))
+        head=digest(canonical(data))
+    async def count(text):return 128
+    doc,_=await NativeSourceCompiler(count=count,current=lambda:True).compile(
+        [canonical(data) for data in chain],source_id=SOURCE,person_id=PERSON,
+        last_batch_sha256=head,include_illustrations=True)
+    assert len(doc['passages'])==1392
+    await stage_all(env,chain)
+    async with env['connection'].transaction():
+        await env['connection'].execute("SET LOCAL statement_timeout='5s'")
+        assert await prepare(env,chain,head,doc)==digest(knowledge_bytes(doc))
+
+
+@PG
+@pytest.mark.asyncio
+async def test_current_manifest_lookup_keeps_latest_explicit_page_correction(image_pg_sql18):
+    env=image_pg_sql18;chain,head,doc=synthetic_knowledge(1)
+    await stage_all(env,chain)
+    changed=batch(1,head,count=1,receipt=original(page_count=1))
+    text='The latest explicit model transcription remains authoritative.'
+    changed['model_payload']['pages'][0]['regions'][0]['source_text']=text
+    await stage_all(env,[changed]);head=digest(canonical(changed))
+    with pytest.raises(psycopg.errors.InvalidParameterValue):
+        await prepare(env,chain+[changed],head,doc)
+    doc['passages'][0]['body']=text;doc['semantic']['regions'][0]['source_text']=text
+    doc['semantic']['regions'][0]['source_text_sha256']=digest(text.encode())
+    doc['image_manifest']['regions'][0]['text_sha256']=digest(text.encode())
+    doc['research']=changed['research']
+    assert await prepare(env,chain+[changed],head,doc)==digest(knowledge_bytes(doc))
+
+
+@PG
+@pytest.mark.asyncio
 async def test_174_page_candidate_is_searchable_only_after_all_local_inputs_and_atomic_activation(image_pg):
     env=image_pg;chain,head,doc=synthetic_knowledge(story=True);await stage_all(env,chain)
     h=await prepare(env,chain,head,doc)

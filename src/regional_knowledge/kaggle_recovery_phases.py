@@ -239,7 +239,7 @@ class WorkerRecoveryPhases:
                     # a waiter whose producer has already failed.
                     # finish can be reconciled after a socket handover; do
                     # not poison that retained session's initialization.
-                    if frame['phase']=='prepare' and self._initialized is None:
+                    if frame['phase'] in ('prepare','apply') and self._initialized is None:
                         self._initialization_error=error;self._ready.set()
                     raise
             bounded(value,MAX_PHASE_RESULT_BYTES)

@@ -104,7 +104,8 @@ async def test_dataset_readback_uses_actual_deferred_workspace_resolver(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_failed_prepare_releases_initialization_waiter_without_readiness():
+@pytest.mark.parametrize('phase',['prepare','apply'])
+async def test_failed_restore_releases_initialization_waiter_without_readiness(phase):
     native=object.__new__(NativeSnapshotFactory)
     native.database=database();native.identity=('r','nonce','inc')
     native._current=lambda binding:None
@@ -112,7 +113,7 @@ async def test_failed_prepare_releases_initialization_waiter_without_readiness()
     failure=SnapshotError('synthetic_dataset_mount_failure')
     async def execute(*args):raise failure
     worker._execute=execute
-    phase='prepare';args={}
+    args={}
     frame=dict(type='DISPATCH',protocol_version=2,connection_generation=1,id='job',claim='claim',
         kind='recovery_phase',run_id='r',launch_nonce='nonce',runtime_incarnation='inc',
         database_generation=native.database.database_generation,writer_generation=native.database.writer_generation,
