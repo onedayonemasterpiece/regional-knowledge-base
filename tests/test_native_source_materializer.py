@@ -2,12 +2,16 @@
 import copy
 import json
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID,uuid5
 
 from regional_knowledge.source_stage import canonical,digest,ZERO_HASH
-from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler,SourceMaterializationRejected
+from regional_knowledge.kaggle_source_materializer import (
+    NativeSourceCompiler, SourceMaterializationRejected, materializer_fingerprint,
+)
 from regional_knowledge.source_activation import knowledge_bytes
-from test_source_stage import batch,original,SOURCE,INGESTION
+from test_source_stage import batch,original,SOURCE,INGESTION,REQUEST
 
 PERSON='00000000-0000-0000-0000-000000000099'
 
@@ -198,3 +202,91 @@ class NativeCompilerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(SourceMaterializationRejected,'native_illustration_activation_unavailable'):
             await self.compiler().compile([raw],source_id=SOURCE,person_id=PERSON,last_batch_sha256=digest(raw))
         self.assertEqual(self.counted,[])
+
+
+class MaterializerFingerprintTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def changed_fingerprint(filename, old, new):
+        """Simulate an on-disk source edit without modifying the checkout."""
+        original_read = Path.read_bytes
+        touched = []
+
+        def read_bytes(path):
+            data = original_read(path)
+            if path.name == filename:
+                old_bytes = old.encode()
+                if old_bytes not in data:
+                    raise AssertionError('test edit did not match the pinned compiler source')
+                touched.append(path.name)
+                return data.replace(old_bytes, new.encode(), 1)
+            return data
+
+        with patch.object(Path, 'read_bytes', read_bytes):
+            observed = materializer_fingerprint()
+        return observed, touched
+
+    def test_response_and_noncompiler_edits_do_not_change_fingerprint(self):
+        baseline = materializer_fingerprint()
+        # The shared module has genuine compiler Stage* inputs, but this DTO
+        # is read-only and must not require a materializer restart.
+        edits = (
+            ('contracts.py', 'class StartupStatus(BaseModel):',
+                'class StartupStatus(BaseModel):\n    synthetic_response_field: bool = False', True),
+            ('story_contracts.py', 'class UpsertVariant(Strict):',
+                'class UpsertVariant(Strict):\n    synthetic_editorial_field: bool = False', True),
+            ('kaggle_import_contracts.py', 'class TargetSourceImportInput(ImportInput):',
+                'class TargetSourceImportInput(ImportInput):\n    synthetic_import_field: bool = False', True),
+            ('search_material.py', 'def material(source, illustrations):',
+                'def material(source, illustrations):\n    unused_read_only_flag = True', False),
+        )
+        for filename, old, new, included in edits:
+            with self.subTest(filename=filename):
+                observed, touched = self.changed_fingerprint(filename, old, new)
+                self.assertEqual(observed, baseline)
+                self.assertEqual(bool(touched), included)
+
+    def test_real_compiler_input_and_algorithm_changes_alter_fingerprint(self):
+        baseline = materializer_fingerprint()
+        edits = (
+            ('contracts.py',
+                'span_refs: list[StageRegionSpanRef] = Field(default_factory=list, max_length=100)',
+                'span_refs: list[StageRegionSpanRef] = Field(default_factory=list, max_length=99)'),
+            ('contracts.py', 'if self.start >= self.end:', 'if self.start > self.end:'),
+            ('story_contracts.py',
+                'summary: Annotated[str, Field(min_length=5, max_length=1000)]',
+                'summary: Annotated[str, Field(min_length=5, max_length=999)]'),
+            ('kaggle_import_contracts.py',
+                "if self.state == 'complete':", "if self.state != 'complete':"),
+            ('kaggle_source_materializer.py',
+                'if type(count) is not int or not 1<=count<=MAX_TOKENS:',
+                'if type(count) is not int or not 1<=count<MAX_TOKENS:'),
+        )
+        for filename, old, new in edits:
+            with self.subTest(filename=filename, old=old):
+                observed, touched = self.changed_fingerprint(filename, old, new)
+                self.assertEqual(touched, [filename])
+                self.assertNotEqual(observed, baseline)
+
+    async def test_accepted_packet_mismatch_is_rejected_before_any_private_effect(self):
+        from regional_knowledge.kaggle_source_batch import materialize_packet
+        from regional_knowledge.source_batch import CODEC, resolved_command
+
+        command = resolved_command(
+            source_id=SOURCE, sequence=1, operation_key='synthetic-fingerprint-mismatch',
+            request_id=REQUEST, person_id=PERSON, logical_time='2026-10-23T19:00:00Z',
+            payload=dict(codec=CODEC, ingestion_id=INGESTION, batch_index=0,
+                batch_count=1, last_batch_sha256='a'*64,
+                materializer_sha256='0'*64, component='text'))
+        accepted_bytes = command.encode()
+        acquire_called = []
+
+        def forbidden_acquire():
+            acquire_called.append(True)
+            raise AssertionError('fingerprint mismatch must reject before private IO')
+
+        with self.assertRaisesRegex(PermissionError, '^accepted_native_materializer_unavailable$'):
+            await materialize_packet(object(), command,
+                acquire=forbidden_acquire, database=object())
+        self.assertFalse(acquire_called)
+        # The original captured accepted command is retained, never reminted.
+        self.assertEqual(command.encode(), accepted_bytes)
