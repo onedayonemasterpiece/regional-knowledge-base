@@ -50,6 +50,99 @@ async def owner(auth,tmp_path):
     writer.close();a.close()
 
 
+@pytest.mark.asyncio
+async def test_retired_writer_keeps_old_verified_reads_until_ready_successor_handover(owner):
+    """Synthetic controller a-d: source reads survive retirement; no write resurrection.
+
+    The successor READY below is an authenticated in-memory/SQLite WSS
+    readiness simulation, NOT a PG restore or an actual Kaggle installation.
+    """
+    from regional_knowledge.control_spool import ControlSpool, SourceCursor
+    from regional_knowledge.kaggle_apply import HandlerRegistry
+    from regional_knowledge.kaggle_service_startup import TargetServiceStartup, TargetServiceConfig
+    from regional_knowledge.kaggle_public_backend import current_binding, TargetUnavailable
+    from regional_knowledge.kaggle_protocol import QueryResult
+    from test_kaggle_service_startup import HistoryAdapter
+    from test_control_spool import handler
+    from test_bge_admission import query
+    import time
+
+    e=owner
+    spool=ControlSpool(e.q,e.auth.p.registry,e.j,HandlerRegistry([handler()]))
+    startup=TargetServiceStartup(TargetServiceConfig(e.auth.provider,e.auth.p.registry,
+        e.q,spool,HistoryAdapter(),'writer-1',e.w.current,writer_owner=e.w))
+    startup.running=True
+    binding=current_binding(e.q)
+    startup.binding=binding
+    startup.coverage=SourceCursor('synthetic-db',binding,None,0,0,(),(),
+        startup.read_binding_current)
+    try:
+        assert startup.reads_current() and startup.imports_current()
+        assert startup.binding_current(binding)
+        # a) The verified Saved boundary is assumed by this queue fixture.
+        # The actual retirement is guarded and rejects further publication.
+        await e.w.retire('writer-1')
+        assert not e.w.current(database_generation='synthetic-db',writer_generation='writer-1')
+        assert e.w.retired_serving(binding)
+        assert startup.read_binding_current(binding) and startup.reads_current()
+        assert not startup.binding_current(binding) and not startup.imports_current()
+        assert not startup.command_binding_current(run_id=binding.run_id,
+            runtime_incarnation=binding.runtime_incarnation,
+            connection_generation=binding.connection_generation,
+            database_generation=binding.database_generation,
+            writer_generation='writer-1')
+        with pytest.raises(StaleWriter):
+            await e.s.compare_and_swap(e.key,b'forbidden-after-retire',
+                expected_token=None,writer_generation='writer-1')
+        # Read-only maintenance retains the old cursor while the writer is gone.
+        assert await startup.refresh() and startup.reads_current()
+        # A real existing admission roundtrip must still be possible.
+        context=await e.auth.resolver.resolve_oauth(
+            e.auth.tokens.access_token,destination=e.auth.destination)
+        q=query(context,'retired-writer-read',generation=e.generation)
+        ticket=await e.a.begin_read(context,q,dialog_ref='retired-serving',
+            deadline=time.monotonic()+1.9)
+        work=await e.q.next_channel_work(e.run,e.token,e.generation)
+        assert work is not None and work.kind=='read'
+        e.a.mark_work_sent(work)
+        answer=QueryResult(request_id=work.query.request_id,
+            connection_generation=e.generation,turn_generation=work.query.turn_generation,
+            status='ok',mode='hybrid',observed_data_seq=0,observed_projection_seq=0)
+        assert await e.a.finish_read(e.run,e.token,e.generation,answer)
+        assert (await ticket.result).status=='ok'
+        resource=work.resource
+        assert await e.a.resource_released(e.run,e.token,e.generation,
+            runtime_incarnation=resource.runtime_incarnation,
+            resource_kind='read',resource_id=resource.resource_id,
+            compute_claim=resource.compute_claim,
+            dispatch_generation=resource.dispatch_generation)
+        # b) A separate successor pointer is prepared; serving current is old.
+        with e.q.connect() as db:
+            successor=e.q._new_run(db,e.q.clock())
+            db.execute('UPDATE control SET successor=? WHERE id=1',(successor,))
+        assert current_binding(e.q)==binding
+        assert startup.reads_current() and not startup.imports_current()
+        next_nonce=e.q.prepare_channel(successor)
+        next_token=e.q.launch_claim(successor,provider_ref='owner/stable-slug')
+        assert next_token is not None
+        e.q.launch_record(successor,'owner/stable-slug',provider_version=89)
+        next_gen=e.q.attach_channel(successor,next_token,next_nonce,'next-incarnation')[
+            'connection_generation']
+        assert startup.reads_current()
+        # c) Synthetic READY of the successor executes existing atomic pointer
+        # handover, without reactivating the retired old writer.
+        e.q.heartbeat(successor,next_token,ready=True,connection_generation=next_gen)
+        with e.q.connect(write=False) as db:
+            assert db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]==successor
+            assert db.execute("SELECT status FROM runs WHERE id=?",(e.run,)).fetchone()[0]=='draining'
+        assert not startup.reads_current() and not startup.imports_current()
+        assert not e.w.retired_serving(binding)
+        # d) Existing STOP only becomes eligible after pointer handover.
+        assert e.q.stop_eligible(e.run,e.token,e.generation)
+    finally:
+        await startup.source_dispatch.aclose()
+        spool.close()
+
 def marker(e):
     with e.q.connect(write=False) as db:return db.execute('SELECT publication_json FROM rkb_writer_control').fetchone()[0]
 
