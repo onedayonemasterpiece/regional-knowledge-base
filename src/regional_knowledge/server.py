@@ -184,7 +184,7 @@ def _book_stage_schema_hints(exc: ToolError) -> list[str]:
     if not detail.startswith(prefix) or len(detail) > 1024:
         return []
     hints = []
-    path_pattern = r"(?:[a-z][a-z0-9_]{0,47}|\\*|[0-9]{1,4})(?:\\.(?:[a-z][a-z0-9_]{0,47}|\\*|[0-9]{1,4})){0,7}"
+    path_pattern = r"(?:[a-z][a-z0-9_]{0,47}|\*|[0-9]{1,4})(?:\.(?:[a-z][a-z0-9_]{0,47}|\*|[0-9]{1,4})){0,7}"
     for item in detail[len(prefix):].split("; ")[:2]:
         path, sep, error_type = item.partition(":")
         if (sep and len(item) <= 96 and re.fullmatch(path_pattern, path)
