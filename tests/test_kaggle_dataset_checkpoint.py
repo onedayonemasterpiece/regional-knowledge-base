@@ -63,7 +63,7 @@ async def test_work_cycle_waits_for_quiet_then_resumes_published_version_after_l
             archive_sha256=archive.sha256,archive_size=archive.size)
     startup=NS(config=NS(queue=p.q,spool=NS(journal=NS(store=store,prefix=p.prefix.rstrip('/'))),
         source_restore=NS(versions=versions),history_adapter=NS(database=NS(**versions))),
-        history=NS(schema_version=16,_coverage=proof,catalog_hash=versions['catalog_sha256']),
+        coverage=proof,history=NS(schema_version=16,catalog_hash=versions['catalog_sha256']),
         restorer=NS(dispatch=NS(request=request)),binding_current=lambda binding:True)
     owner=SourceDatasetCheckpoints(startup,clock=lambda:clock[0],quiet_seconds=30)
     assert not await owner.refresh('binding')
@@ -185,7 +185,7 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900,quiet=30):
     spool=NS(journal=RecoveryJournal(p.store,stream='stream'),_lock=asyncio.Lock(),_source_covered_sequence=7)
     p.startup=NS(config=NS(queue=p.q,spool=spool,writer_owner=p.guard,writer_generation='writer',
         source_restore=NS(versions=versions),history_adapter=NS(database=NS(**versions))),
-        history=NS(schema_version=16,_coverage=p.proof,catalog_hash='a'*64,acl_hash='d'*64,registry_hash='e'*64,routes=()),
+        coverage=p.proof,history=NS(schema_version=16,catalog_hash='a'*64,acl_hash='d'*64,registry_hash='e'*64,routes=()),
         restorer=NS(complete=True,physical=NS(journal=spool.journal,
             limits=NS(max_receipts=100,max_control_bytes=1024*1024)),dispatch=NS(request=request)),
         binding_current=lambda binding:p.alive and binding is p.binding)
@@ -275,7 +275,7 @@ async def test_control_native_failure_preserves_current_proof_and_retry_uses_sam
     p=control_cycle(tmp_path,monkeypatch);key=await put_control(p);p.bad_verify=True
     await p.owner.refresh(p.binding);p.clock[0]=31
     with pytest.raises(CheckpointPending):await p.owner.refresh(p.binding)
-    assert p.startup.history._coverage is p.proof and p.proof.current()
+    assert p.startup.coverage is p.proof and p.proof.current()
     assert not p.store.remote_durable(key,b'pending') and p.store.latest_checkpoint.dataset_version==1
     p.bad_verify=False
     assert await p.owner.refresh(p.binding)

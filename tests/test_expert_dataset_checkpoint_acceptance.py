@@ -138,7 +138,7 @@ def composition(owner, env, tmp_path, monkeypatch):
         pending=old_proof.pending,
         current=lambda:writer.current(database_generation=writer.database_generation,
                                       writer_generation=writer.writer_generation))
-    p.startup.history._coverage=p.proof
+    p.startup.coverage=p.proof
     p.startup.config.queue=q
     p.startup.config.spool=spool
     p.startup.config.writer_owner=writer
@@ -147,7 +147,7 @@ def composition(owner, env, tmp_path, monkeypatch):
     # A fixture-local startup description is built with the genuine writer
     # fence from inception; no production runtime method is monkeypatched.
     original_startup=p.startup
-    p.startup=NS(config=original_startup.config,history=original_startup.history,
+    p.startup=NS(config=original_startup.config,history=original_startup.history,coverage=p.proof,
         restorer=original_startup.restorer,
         binding_current=lambda binding:(
             p.alive and binding is p.binding and writer.current(

@@ -214,7 +214,7 @@ async def test_schema_capture_releases_spool_lock_for_same_prefix_read_renewal(e
     owner=NS(pending=lambda:object() if active[0] else None,writes_allowed=lambda:not active[0])
     renewed=NS(database_generation='db',current=lambda:True,accepted_sequence=0,applied_sequence=0)
     startup=NS(config=NS(spool=env.spool,queue=env.q),schema_migrations=owner,
-        history=NS(_coverage=renewed),binding_current=lambda _:True,
+        coverage=renewed,binding_current=lambda _:True,
         restorer=NS(physical=NS(limits=NS(max_receipts=100))))
     capture=object.__new__(_SchemaCycleCapture)
     capture.startup=startup;capture.queue=env.q
