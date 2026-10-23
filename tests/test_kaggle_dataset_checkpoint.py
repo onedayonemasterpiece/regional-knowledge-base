@@ -65,7 +65,7 @@ async def test_work_cycle_waits_for_quiet_then_resumes_published_version_after_l
         source_restore=NS(versions=versions),history_adapter=NS(database=NS(**versions))),
         history=NS(schema_version=16,_coverage=proof,catalog_hash=versions['catalog_sha256']),
         restorer=NS(dispatch=NS(request=request)),binding_current=lambda binding:True)
-    owner=SourceDatasetCheckpoints(startup,clock=lambda:clock[0])
+    owner=SourceDatasetCheckpoints(startup,clock=lambda:clock[0],quiet_seconds=30)
     assert not await owner.refresh('binding')
     clock[0]=29
     assert not await owner.refresh('binding') and not calls
@@ -116,7 +116,7 @@ async def test_capture_materializes_crash_gap_outcome_before_export_and_keeps_it
         assert db.execute('SELECT outcome_state FROM rkb_control_operations').fetchone()[0]=='NOT_SENT'
 
 
-def control_cycle(tmp_path,monkeypatch,*,interval=900):
+def control_cycle(tmp_path,monkeypatch,*,interval=900,quiet=30):
     """Real capture, tickets, store and owner; only native/provider I/O is fake."""
     import asyncio
     from regional_knowledge.kaggle_dataset_checkpoint import _WorkCycleCapture
@@ -189,7 +189,7 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900):
         restorer=NS(complete=True,physical=NS(journal=spool.journal,
             limits=NS(max_receipts=100,max_control_bytes=1024*1024)),dispatch=NS(request=request)),
         binding_current=lambda binding:p.alive and binding is p.binding)
-    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],interval_seconds=interval)
+    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],interval_seconds=interval,quiet_seconds=quiet)
     return p
 
 
@@ -302,3 +302,94 @@ async def test_retired_writer_cannot_capture_or_promote_and_overlapping_tick_doe
     p.alive=True;p.on_verify=None
     assert await p.owner.refresh(p.binding)
     assert p.store.latest_checkpoint.dataset_version==2 and p.calls.count('capture')==1
+
+
+@pytest.mark.asyncio
+async def test_session_checkpoint_waits_15_minutes_of_quiet_not_15_seconds(tmp_path,monkeypatch):
+    p=control_cycle(tmp_path,monkeypatch,interval=1800,quiet=900)
+    await put_control(p)
+    assert not await p.owner.refresh(p.binding)
+    p.clock[0]=899
+    assert not await p.owner.refresh(p.binding) and not p.calls
+    p.clock[0]=900
+    assert await p.owner.refresh(p.binding)
+    assert p.calls==['capture','finalize','verify']
+    assert p.owner.saved_seq==7
+
+
+@pytest.mark.asyncio
+async def test_continuous_writes_request_checkpoint_at_30_minutes_without_faked_rpo(tmp_path,monkeypatch):
+    p=control_cycle(tmp_path,monkeypatch,interval=1800,quiet=900)
+    await put_control(p)
+    assert not await p.owner.refresh(p.binding)
+    for second in (300,600,900,1200,1500,1799):
+        p.clock[0]=second
+        await put_control(p,data=('at-'+str(second)).encode())
+        assert not await p.owner.refresh(p.binding) and not p.calls
+    p.clock[0]=1800
+    await put_control(p,data=b'continuous')
+    assert await p.owner.refresh(p.binding)
+    assert p.owner.saved_seq==7 and p.calls.count('capture')==1
+    # Timer is an attempt cadence, not a guarantee of durable provider bytes.
+    assert p.store.pending_control() is None
+
+
+@pytest.mark.asyncio
+async def test_cooperative_stop_forces_checkpoint_without_waiting_for_quiet(tmp_path,monkeypatch):
+    p=control_cycle(tmp_path,monkeypatch,interval=1800,quiet=900)
+    key=await put_control(p)
+    assert await p.owner.before_stop(p.binding)
+    assert p.owner.saved_seq==7
+    assert p.store.remote_durable(key,b'pending')
+    assert p.calls==['capture','finalize','verify']
+
+
+@pytest.mark.asyncio
+async def test_background_capture_never_holds_intake_lock_and_is_single_flight(tmp_path,monkeypatch):
+    import asyncio
+    from regional_knowledge.kaggle_dataset_checkpoint import _WorkCycleCapture
+
+    p=control_cycle(tmp_path,monkeypatch)
+    await put_control(p)
+    assert not await p.owner.refresh(p.binding)
+    p.clock[0]=31
+    captured=asyncio.Event();resume=asyncio.Event()
+    previous=_WorkCycleCapture._capture
+
+    async def slow_capture(self,*args):
+        captured.set()
+        await resume.wait()
+        return await previous(self,*args)
+
+    monkeypatch.setattr(_WorkCycleCapture,'_capture',slow_capture)
+    assert p.owner.kick(p.binding)
+    await asyncio.wait_for(captured.wait(),timeout=2)
+    # Native APPLIED source stages use this same lock. A Dataset publication
+    # must not own it for an unbounded provider-readiness interval.
+    assert not p.startup.config.spool._lock.locked()
+    await asyncio.wait_for(p.startup.config.spool._lock.acquire(),timeout=.3)
+    p.startup.config.spool._lock.release()
+    assert not p.owner.kick(p.binding)
+    resume.set()
+    await asyncio.wait_for(p.owner._task,timeout=2)
+    assert p.calls==['capture','finalize','verify']
+    assert p.owner.saved_seq==7
+    await p.owner.aclose()
+
+
+@pytest.mark.asyncio
+async def test_failed_dataset_verify_does_not_promote_saved_seq_or_discard_tail(tmp_path,monkeypatch):
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    p=control_cycle(tmp_path,monkeypatch,interval=1800,quiet=900)
+    key=await put_control(p)
+    p.fail_verify=True
+    with pytest.raises(CheckpointPending):
+        await p.owner.refresh(p.binding,planned_stop=True)
+    assert p.owner.saved_seq==7 and p.store.latest_checkpoint.dataset_version==1
+    assert not p.store.remote_durable(key,b'pending')
+    # The ordinary controller restart path resumes the very same version.
+    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0])
+    assert await p.owner.refresh(p.binding)
+    assert p.store.remote_durable(key,b'pending')
+    assert p.owner.saved_seq==7
+    assert p.calls.count('capture')==1
