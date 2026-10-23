@@ -151,6 +151,48 @@ async def test_retained_release_replay_after_reconnect_does_not_free_new_compute
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('observation',['idle','released_busy'])
+@pytest.mark.parametrize('sent',[False,True])
+async def test_late_released_resource_state_does_not_reject_next_assignment(state,observation,sent):
+    s=state
+    ticket=await begin(s,'finished-read')
+    first=await s.q.next_channel_work(s.run,s.token,1);s.a.mark_work_sent(first)
+    assert await s.a.finish_read(s.run,s.token,1,answer(first))
+    assert (await ticket.result).status=='ok'
+    await release(s,first)
+    # RESOURCE_RELEASED lets admission select the next durable job before the
+    # old states() iteration's already queued RESOURCE_STATE reaches receiver.
+    await s.a.register_document_actor(s.auth.p.admin)
+    second=await s.q.next_channel_work(s.run,s.token,1)
+    assert second.kind=='document'
+    if sent:s.a.mark_work_sent(second)
+    before=s.a.status()
+    prior=first.resource
+    fields={} if observation=='idle' else dict(resource_kind=prior.resource_kind,
+        resource_id=prior.resource_id,compute_claim=prior.compute_claim,
+        dispatch_generation=prior.dispatch_generation)
+    await s.a.resource_state(s.run,s.token,1,runtime_incarnation='incarnation-a',
+        state='idle' if observation=='idle' else 'busy',**fields)
+    assert s.a.status()==before
+    assert s.a.status()['resource']==second.resource
+    with pytest.raises(StaleAttachment):
+        await s.a.resource_state(s.run,s.token,1,runtime_incarnation='incarnation-a',
+            state='busy',resource_kind='read',resource_id='unknown-work',
+            compute_claim='unrecognized-claim',dispatch_generation=1)
+    nonce=await s.a.begin_resource_probe(s.run,s.token,1)
+    with pytest.raises(StaleAttachment):
+        await s.a.resource_state(s.run,s.token,1,runtime_incarnation='incarnation-a',
+            state='idle',probe_nonce='wrong-probe')
+    # An actual fresh ordered observation keeps its original authority.
+    current=second.resource
+    await s.a.resource_state(s.run,s.token,1,runtime_incarnation='incarnation-a',
+        state='busy',resource_kind=current.resource_kind,resource_id=current.resource_id,
+        compute_claim=current.compute_claim,dispatch_generation=current.dispatch_generation,
+        probe_nonce=nonce)
+    assert s.a.status()['resource']==second.resource
+
+
+@pytest.mark.asyncio
 async def test_retained_release_after_controller_restart_still_requires_baseline(state):
     s=state
     await begin(s,'completed-offline')
