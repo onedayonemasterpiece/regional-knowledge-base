@@ -486,6 +486,30 @@ class TargetServiceStartup:
             await asyncio.sleep(self.config.refresh_seconds)
             await self.refresh()
 
+    async def before_planned_stop(self,run_id,connection_generation):
+        """Await current Dataset outcome on the EXISTING authenticated STOP path.
+
+        Do not extend the nine-hour run for provider publication. A former
+        writer may await its already-started task but cannot create a new
+        archive after attachment retirement; failure is reported, not Saved.
+        """
+        checkpoint=self.dataset_checkpoints
+        binding=self.binding
+        if checkpoint is None:return None
+        if (binding is None or binding.run_id!=run_id
+                or binding.connection_generation!=connection_generation):
+            raise RuntimeError('dataset_checkpoint_stop_binding_changed')
+        queue=self.config.queue
+        with queue.connect(write=False) as db:
+            run=db.execute('SELECT started FROM runs WHERE id=?',(run_id,)).fetchone()
+        if run is None:
+            raise RuntimeError('dataset_checkpoint_stop_run_missing')
+        remaining=9*3600-(queue.clock()-run['started'])
+        if remaining<=0:
+            raise TimeoutError('dataset_checkpoint_nine_hour_limit')
+        async with asyncio.timeout(remaining):
+            return await checkpoint.before_stop(binding)
+
     @asynccontextmanager
     async def lifespan(self,server):
         if self.running or self.closed:raise RuntimeError('one target service lifespan required')
@@ -502,8 +526,7 @@ class TargetServiceStartup:
             if (self.dataset_checkpoints is not None and self.binding is not None
                     and self.reads_current()):
                 try:
-                    async with asyncio.timeout(30):
-                        await self.dataset_checkpoints.before_stop(self.binding)
+                    await self.before_planned_stop(self.binding.run_id,self.binding.connection_generation)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
