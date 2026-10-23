@@ -107,7 +107,8 @@ async def test_nonowner_cannot_read_list_audit_or_change_and_cannot_forge_owner(
             await server.call_tool('participants_manage',kwargs,_context())
     # A forged owner subject with somebody else's valid bearer is still denied.
     current['principal']=Principal(subject=s.t.auth.p.owner.subject,
-        client_id=s.t.principal.client_id,issuer=s.t.principal.issuer,
+        client_id=s.t.auth.provider.client.client_id,
+        issuer=s.t.auth.provider.issuer,
         access_token=s.t.principal.access_token)
     with pytest.raises(ToolError,match='participants_owner_required'):
         await server.call_tool('participants_manage',{'action':'list'},_context())
