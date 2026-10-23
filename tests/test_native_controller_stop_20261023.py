@@ -83,10 +83,11 @@ def test_claimed_or_pending_work_never_receives_stop():
 async def test_worker_accepts_only_exact_idle_stop_without_pre_ready_cancellation():
     transport = module('bge_wss_transport')
     peer = Peer()
+    async def read(frame, *, encode):
+        return {}
     worker = transport.BgeWssTransport(dict(CONFIG, shared_reads=True),
         lambda: lambda text:[1.] + [0.] * 1023, lambda:{}, connector=peer.connect,
-        query_handler=lambda frame, *, encode: asyncio.sleep(0, result={}),
-        heartbeat_seconds=.01, maximum_seconds=3)
+        query_handler=read, heartbeat_seconds=.01, maximum_seconds=3)
     run = asyncio.create_task(worker.run())
     try:
         await peer.wait('ATTACH')
