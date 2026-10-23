@@ -66,6 +66,60 @@ async def test_normal_create_remote_accepts_once_same_spool_and_queues_exact_nat
 
 
 @pytest.mark.asyncio
+async def test_case_create_does_not_require_unrelated_next_page_history_refresh(env,auth,monkeypatch):
+    value,principal,b=await backend(env,auth,monkeypatch)
+    # Fresh PG binding and authenticated Case actor, but unrelated source
+    # history maintenance is stale while another model page is underway.
+    value.startup.reads_current=lambda:False
+    with capture_read_output() as outputs:
+        first=await value.disagreement_edit('create','case-during-next-page',
+            principal,command=create())
+        assert first['status']=='pending' and first['saved'] is False
+        assert len(outputs)==1
+        outputs[0].release()
+    with capture_read_output() as outputs:
+        again=await value.disagreement_edit('create','case-during-next-page',
+            principal,command=create())
+        assert again['operation_key']==first['operation_key']
+        assert again['status']=='pending' and not again['saved']
+        outputs[0].release()
+    with env.q.connect(write=False) as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+
+
+@pytest.mark.asyncio
+async def test_case_write_after_accepted_unfinished_other_page_keeps_canonical_predecessor(
+        env,auth,monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+    value,principal,b=await backend(env,auth,monkeypatch)
+    original=env.spool.scope_state
+    mode={"unknown":False}
+
+    async def accepted_other_page_state(*args,**kwargs):
+        scope=await original(*args,**kwargs)
+        # Existing journal/accepted_sequence remain exact. The unrelated
+        # packet has an outcome not yet durable; no false Saved is inferred.
+        return {**scope,"pending":True,"pending_count":1,
+                "unknown":mode["unknown"],"unknown_count":int(mode["unknown"])}
+
+    monkeypatch.setattr(env.spool,"scope_state",accepted_other_page_state)
+    with capture_read_output() as output:
+        accepted=await value.disagreement_edit('create','case-after-accepted-page',
+            principal,command=create())
+        assert accepted["status"]=="pending" and not accepted["saved"]
+        output[0].release()
+    with env.q.connect(write=False) as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+
+    mode["unknown"]=True
+    with pytest.raises(ToolError,match='prior_write_pending'):
+        await value.disagreement_edit('create','case-while-unknown-source',
+            principal,command=create())
+    with env.q.connect(write=False) as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+
+
+@pytest.mark.asyncio
 async def test_read_retains_current_gate_until_actual_public_output_and_checks_revocation(env,auth,monkeypatch):
     value,principal,b=await backend(env,auth,monkeypatch)
     async def native(authority,binding,**selector):
@@ -189,7 +243,7 @@ async def test_normal_mcp_case_tools_use_typed_shared_read_and_accepted_dispatch
     from regional_knowledge.kaggle_service_startup import TargetServiceConfig,TargetServiceStartup
     from regional_knowledge.control_spool import ControlSpool
     from regional_knowledge.case_history import project_cases
-    from regional_knowledge.kaggle_case_contracts import CaseReadRequest
+    from regional_knowledge.kaggle_case_contracts import CaseReadRequest,CaseReadResult
     from regional_knowledge.kaggle_public_backend import current_binding
     from regional_knowledge.recovery_journal import RecoveryJournal
     from regional_knowledge.read_issuance import _SCOPE_KEY
@@ -212,7 +266,9 @@ async def test_normal_mcp_case_tools_use_typed_shared_read_and_accepted_dispatch
     server=build_server(target_startup=startup)
     try:
         tools={t.name:t for t in server._tool_manager.list_tools()}
-        assert {'disagreement_get','disagreement_edit','disagreement_contribute','disagreement_conclusion'}<=tools.keys()
+        assert {'disagreement_search','disagreement_get','disagreement_edit',
+                'disagreement_contribute','disagreement_conclusion'}<=tools.keys()
+        assert tools['disagreement_search'].annotations.read_only_hint
         assert tools['disagreement_get'].annotations.read_only_hint
         def request_context(identity):
             request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
@@ -229,6 +285,33 @@ async def test_normal_mcp_case_tools_use_typed_shared_read_and_accepted_dispatch
         assert await s.admission.finish_read(s.run,s.token,s.generation,answer)
         output=await task
         assert CASE in str(output)
+        issued=request.scope[_SCOPE_KEY][1]
+        assert issued.gate is startup.case_gate and issued.gate.issuance_current(issued.gated.ticket)
+        issued.release();await release(s,dispatched)
+        # Actual registered MCP Case subject tool uses the same admitted
+        # CASE_READ transport and actor authority, not a separate endpoint.
+        request,context=request_context('case-mcp-search')
+        task=asyncio.create_task(server.call_tool('disagreement_search',
+            {'query':'Who founded the harbour?','place':'old town','limit':5},context))
+        dispatched=await work(s)
+        assert type(dispatched.query) is CaseReadRequest
+        assert dispatched.query.section=='search'
+        assert dispatched.query.actor.person_id==s.auth.p.other.subject
+        assert dispatched.query.search_query=='Who founded the harbour?'
+        import base64
+        from regional_knowledge.kaggle_case_contracts import canonical
+        case_record=dict(section='search',items=[dict(case_id=CASE,question='Who founded the harbour?',
+            context='Exact attributed dispute',state='open',case_revision=1,acl_revision=1,event_seq=1,
+            source_dependencies=[])],
+            has_more=False,next_after_case=CASE)
+        native=CaseReadResult(request_id=dispatched.query.request_id,
+            connection_generation=s.generation,turn_generation=dispatched.query.turn_generation,
+            status='ok',record_b64=base64.b64encode(canonical(case_record)).decode(),
+            observed_data_seq=7,observed_projection_seq=7,observed_visibility_epoch=1,
+            observed_database_generation='synthetic-db')
+        assert await s.admission.finish_read(s.run,s.token,s.generation,native)
+        output=await task
+        assert 'Who founded the harbour?' in str(output) and CASE in str(output)
         issued=request.scope[_SCOPE_KEY][1]
         assert issued.gate is startup.case_gate and issued.gate.issuance_current(issued.gated.ticket)
         issued.release();await release(s,dispatched)

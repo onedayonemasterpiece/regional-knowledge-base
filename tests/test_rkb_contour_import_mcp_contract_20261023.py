@@ -72,7 +72,7 @@ async def test_target_mcp_advertises_native_book_bounds_and_complete_story_input
     assert "2500 physical pages" in ingest.description
     assert "no per-book public_rights declaration" in ingest.description
     assert "narrative_outcome=needs_context or facts_only" in ingest.description
-    assert "Otherwise omit basic_variant" in server.instructions
+    assert "When the evidence does not support such a body, omit basic_variant" in server.instructions
     assert "2 MiB and 32 pages" not in server.instructions
 
 
@@ -94,12 +94,21 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "On the first stage set source_import.research" in native_text
     assert "pending with the exact owned book_pages continuation" in native_text
     assert "On first stage supply source_import.research" in native.instructions
-    assert "General Case discovery/search is not presently registered" in native_text
+    assert "When disagreement_search is registered" in native_text
     assert "book_pages (default 1 page, maximum requested 4" in native.instructions
     assert "current chunk_key or an already accepted chunk_id" in native.instructions
     assert "exact page/region/quote evidence" not in native.instructions
-    assert "Otherwise omit basic_variant" in native.instructions
+    assert "When the evidence does not support such a body, omit basic_variant" in native.instructions
     assert "Finalization alone activates" not in native.instructions
+    # Conditional Case discovery and existing write workflow must agree in
+    # both native instructions and the displayed book_ingest description.
+    for guidance in (native.instructions, native_text):
+        for action in ("disagreement_search", "disagreement_get",
+                       "disagreement_edit(add_evidence)", "disagreement_edit(create)",
+                       "UNKNOWN", "Saved"):
+            assert action in guidance, action
+    assert "General Case discovery/search is not presently registered" not in native_text
+    assert "General Case discovery/search is a separately unresolved capability gap" not in native.instructions
 
     # Runtime-registered native guidance: v2 replaces the earlier one-line advice.
     instruction = native.instructions
@@ -126,7 +135,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "retain attributed people/events/places and a real body only with sufficient evidence" not in instruction
     # Old whole-book/unsupported command advice is not surfaced to the target.
     for obsolete in ("at most 8", "8 selected", "validate and finalize", "Finalization alone activates",
-                     "reprocess", "rechunk", "story_reconcile", "disagreement_search"):
+                     "reprocess", "rechunk", "story_reconcile"):
         assert obsolete not in native_text, obsolete
         assert obsolete not in native.instructions, obsolete
 
@@ -145,6 +154,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "book_find first" in legacy_ingest.description
     assert "book_ingest(reprocess)" in legacy.instructions
     assert "validate and finalize" in legacy.instructions
+    # This fixture has only original intake, not a configured Case backend;
+    # the PR330 Case-enabled MCP test separately checks search registration.
     assert "disagreement_search" not in native_tools
     pages = native_tools["book_pages"].input_schema["properties"]["batch_size"]
     assert pages["default"] == 1 and pages["minimum"] == 1 and pages["maximum"] == 4
