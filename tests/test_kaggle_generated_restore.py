@@ -2,6 +2,7 @@ from regional_knowledge.kaggle_current_registry import current_registry,registry
 """Generated notebook recovery composition; no native/model/provider effects."""
 import ast
 import asyncio
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -109,8 +110,11 @@ def test_real_generated_restore_entrypoint_waits_native_capability_and_refuses_w
                     raise PermissionError('wrong native capability identity')
                 events.append('verify-capability');return db.connection()
         factory=Factory()
+        control=json.dumps(dict(schema_version=database.schema_version,
+            registry_sha256=registry_sha256(),sequence=0,
+            routes=['source.fetch','source.search','source.withdraw'])).encode()
         cap=VerifiedInitializedDatabase(factory,native,database,
-            identity if not wrong_identity else (identity[0],identity[1],'wrong-incarnation'),None,None,0,b'',None)
+            identity if not wrong_identity else (identity[0],identity[1],'wrong-incarnation'),None,None,0,control,None)
         factory._capabilities.add(cap)
         class Worker:
             async def wait_initialized(self,*identity):
