@@ -38,7 +38,8 @@ def search_request(**changes):
 def candidate(case_id=CASE, **changes):
     return dict(case_id=case_id, question="Who founded the city?",
                 context="Sources disagree on the attributed date.",
-                state="open", case_revision=1, acl_revision=1, event_seq=0, **changes)
+                state="open", case_revision=1, acl_revision=1, event_seq=0,
+                source_dependencies=[], **changes)
 
 
 @pytest.mark.parametrize("changes", [
