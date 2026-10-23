@@ -6,6 +6,7 @@ one resident forward; canonical knowledge excludes only derived embeddings.
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import copy
@@ -64,11 +65,42 @@ def _typed(model, raw):
 
 def materializer_fingerprint():
     root=Path(__file__).parent
-    names=('kaggle_source_materializer.py','source_batch_selection.py','source_batch_context.py','kaggle_source_batch.py','source_graph_native.py','source_stage.py',
-        'source_activation.py','stage_graph.py','source_packet_tails.py','contracts.py','entity_graph.py',
-        'story_contracts.py','search_material.py','region_policy.py','continuation_context.py',
-        'source_manifest.py','kaggle_import_contracts.py','bge_contract.py')
-    return digest(canonical({name:digest((root/name).read_bytes()) for name in names}))
+    # Only code that prepares/lowers source material belongs to this hash.
+    # Shared contracts also hold response/read-only models: fingerprint the
+    # exact compiler inputs there, not the unrelated whole Python modules.
+    names=('kaggle_source_materializer.py','source_batch_selection.py','source_batch_context.py',
+        'kaggle_source_batch.py','source_graph_native.py','source_stage.py',
+        'source_activation.py','stage_graph.py','source_packet_tails.py','entity_graph.py',
+        'source_manifest.py','bge_contract.py')
+    hashes={name:digest((root/name).read_bytes()) for name in names}
+    inputs={
+        'contracts.py': (
+            'RegionKind','RelationKind','BBox','CatalogMetadata','CatalogCorrectionMetadata',
+            'CatalogUpdateInput','StartMetadataInput','StageRegionInput','StageRelationInput',
+            'StageIllustrationInput','StagePageInput','StageRegionRef','StageRegionSpanRef',
+            'StageIllustrationRef','StageChunkInput','PoiLocatorInput','StagePoiFactInput',
+            'StagePoiMediaLinkInput'),
+        'story_contracts.py': (
+            'SmallText','ShortText','Strict','SourceDateFields','SourceObservationFields',
+            'StageStoryEvidenceInput','StageEventDateInput','StageObservationInput',
+            'StageNarrativeBlockInput','StageBasicVariantInput','StageStoryCandidateInput'),
+        'kaggle_import_contracts.py': ('ImportInput','SourceResearchInput'),
+    }
+    for name, required in inputs.items():
+        source=(root/name).read_bytes()
+        lines=source.splitlines(keepends=True)
+        selected={}
+        for node in ast.parse(source,filename=name).body:
+            key=(node.name if isinstance(node,ast.ClassDef) else
+                node.targets[0].id if isinstance(node,ast.Assign) and len(node.targets)==1
+                and isinstance(node.targets[0],ast.Name) else None)
+            if key in required:
+                # Hash original source bytes, not Python-version-specific AST dumps.
+                selected[key]=digest(b''.join(lines[node.lineno-1:node.end_lineno]))
+        if set(selected)!=set(required):
+            raise ValueError('native_compiler_input_contract_missing: '+name)
+        hashes[name]=digest(canonical(selected))
+    return digest(canonical(hashes))
 
 
 def merge_native_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
