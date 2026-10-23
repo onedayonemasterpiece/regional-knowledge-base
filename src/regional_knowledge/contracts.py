@@ -234,8 +234,8 @@ class StageIllustrationInput(BaseModel):
 
 
 class StagePageInput(BaseModel):
-    # Echo the trusted image issuance returned by book_pages. This binds the
-    # selected pixels, not a claim that the supplied transcription is native.
+    # Optional legacy image receipt echo; the server resolves issued pixels
+    # from the owned ingestion/page index. This does not certify model text.
     source_image_receipt_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     # Same-pass semantic episode review; true with no candidates is an explicit
     # reviewed-empty page, not a claim that all possible stories were found.
