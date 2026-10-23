@@ -144,3 +144,50 @@ async def test_external_cancel_remains_external_cancel_not_successful_stop():
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(run, 2)
     assert not worker.stop.is_set()
+
+
+def test_actual_old_and_successor_channels_stop_only_predecessor(tmp_path):
+    """Two real authenticated ASGI sockets, real BgeQueue pointers and claims.
+
+    Synthetic launch metadata only; no provider/notebook, new run stays usable.
+    """
+    from regional_knowledge.bge_queue import BgeQueue
+    from regional_knowledge.bge_contract import REVISION
+    q = BgeQueue(tmp_path/'two-sockets.sqlite', clock=lambda:1000.)
+    with q.connect() as db:
+        old = q._new_run(db, 1000.)
+        db.execute('UPDATE control SET current_run=? WHERE id=1',(old,))
+    token = (q.path.parent/'bge-worker-credentials'/old).read_text()
+    nonce = q.prepare_channel(old)
+    q.launch_record(old, 'owner/fixture-old', provider_version=1)
+    with client(q) as app:
+        with app.websocket_connect('/bge-worker/channel',
+                headers={'Authorization':'Bearer '+token}) as old_socket:
+            old_socket.send_json(dict(type='ATTACH',protocol_version=2,
+                run_id=old,launch_nonce=nonce,runtime_incarnation='old-instance'))
+            old_gen = old_socket.receive_json()['connection_generation']
+            send(old_socket,old_gen,'READY',space=SPACE,model_revision=REVISION)
+            assert old_socket.receive_json()['status']=='ready'
+            with q.connect() as db:
+                successor = q._new_run(db,1000.)
+                db.execute('UPDATE control SET successor=? WHERE id=1',(successor,))
+            new_token = (q.path.parent/'bge-worker-credentials'/successor).read_text()
+            new_nonce = q.prepare_channel(successor)
+            q.launch_record(successor,'owner/fixture-successor',provider_version=2)
+            with app.websocket_connect('/bge-worker/channel',
+                    headers={'Authorization':'Bearer '+new_token}) as next_socket:
+                next_socket.send_json(dict(type='ATTACH',protocol_version=2,
+                    run_id=successor,launch_nonce=new_nonce,
+                    runtime_incarnation='next-instance'))
+                next_gen = next_socket.receive_json()['connection_generation']
+                send(next_socket,next_gen,'READY',space=SPACE,model_revision=REVISION)
+                assert next_socket.receive_json()['status']=='ready'
+                expected = dict(type='STOP',protocol_version=2,
+                    connection_generation=old_gen,run_id=old,launch_nonce=nonce,
+                    runtime_incarnation='old-instance')
+                assert old_socket.receive_json() == expected
+                with q.connect(write=False) as db:
+                    assert db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]==successor
+                    assert db.execute("SELECT launch_state FROM runs WHERE id=?",(old,)).fetchone()[0]=='dispatched'
+                send(next_socket,next_gen,'HEARTBEAT')
+                assert next_socket.receive_json()['type']=='HEARTBEAT_ACK'
