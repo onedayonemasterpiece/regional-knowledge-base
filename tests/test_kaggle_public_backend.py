@@ -372,3 +372,48 @@ async def test_current_story_get_uses_paired_editorial_read_and_keeps_exact_save
         calls[0].release()
     finally:
         if not task.done():task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_catalog_get_uses_same_source_read_channel_with_exact_book_selector(target):
+    from regional_knowledge.kaggle_source_read import SourceReadRequest, SourceReadResult
+    from regional_knowledge.kaggle_protocol import (
+        EvidenceItem,EvidenceMetadata,ItemDependencies,SourceDependency)
+    from regional_knowledge.contracts import CatalogMetadata
+    from test_kaggle_fact_read import SOURCE
+    s=target
+    s.gate.catalog_supported=lambda:True
+    async def get():
+        with capture_read_output() as calls:
+            output=await s.backend.catalog_get(SOURCE,s.principal)
+        return output,calls
+    task=asyncio.create_task(get())
+    item=await work(s)
+    try:
+        assert type(item.query) is SourceReadRequest
+        assert item.query.action=='get' and item.query.document_id==SOURCE
+        assert item.query.query=='' and item.query.limit==1
+        metadata=CatalogMetadata(kind='book',cover_page=0,
+            cover_kind='title_page',publisher='Existing publisher').model_dump(mode='json')
+        record=dict(document_id=SOURCE,kind='book',title='Existing accepted book',
+            authors=['Exact author'],publication_year=1920,language='de',
+            catalog=metadata,active_revision=1,source_format='pdf',
+            source_archive_status='accepted_receipt')
+        dependency=SourceDependency(source_id=SOURCE,content_revision=1,eligibility_revision=7)
+        evidence=EvidenceItem(id=SOURCE,kind='source',text=record['title'],
+            metadata=EvidenceMetadata(title=record['title'],locator='source:'+SOURCE),
+            dependencies=ItemDependencies(source_ids=(SOURCE,),source_revisions=(dependency,),
+                variant_refs=(),grant_refs=()))
+        result=SourceReadResult(request_id=item.query.request_id,
+            connection_generation=s.generation,turn_generation=item.query.turn_generation,
+            status='ok',records=(record,),evidence=(evidence,),
+            observed_data_seq=5,observed_projection_seq=5,observed_visibility_epoch=1,
+            observed_database_generation='synthetic-db')
+        assert await s.admission.finish_read(s.run,s.token,s.generation,result)
+        output,calls=await task
+        assert output['document_id']==SOURCE and output['catalog']['cover_page']==0
+        assert output['status']=='ok' and len(calls)==1
+        calls[0].release()
+    finally:
+        if not task.done():task.cancel()
+        await release(s,item)
