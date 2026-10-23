@@ -36,6 +36,20 @@ def test_previous_service_ignores_stale_backup_created_first(tmp_path):
     with pytest.raises(ValueError,match='exactly one'):m.previous_service_config(tmp_path)
 
 
+def test_successor_schema_comes_from_new_bundle_without_changing_old_checkpoint():
+    m=module();target,service=configs()
+    target['database']['schema_version']=service['database']['schema_version']=21
+    t,s=m.successor_configs(target,service,run_id='r',writer_generation='w',
+        launch_config_sha256='b'*64,release_sha='c'*40,schema_version=23)
+    assert t['database']['schema_version']==s['database']['schema_version']==23
+    assert s['source_restore']=={**service['source_restore'], 'launch_config_sha256':'b'*64,
+        'operation_key':'rkb-restore-ccccccc-r'}
+    assert target['database']['schema_version']==21
+    with pytest.raises(ValueError,match='schema must extend'):
+        m.successor_configs(target,service,run_id='r',writer_generation='w',
+            launch_config_sha256='b'*64,release_sha='c'*40,schema_version=20)
+
+
 def test_successor_changes_only_run_bound_fields():
     m=module();target,service=configs()
     new_target,new_service=m.successor_configs(target,service,run_id='new-run-12345678',

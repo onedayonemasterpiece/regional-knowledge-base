@@ -18,7 +18,7 @@ RUN_FIELDS = ('run_id', 'writer_generation', 'launch_config_sha256', 'operation_
 
 
 def successor_configs(target, service, *, run_id, writer_generation, launch_config_sha256, release_sha,
-                      checkpoint=None):
+                      checkpoint=None, schema_version=None):
     """Previous verified configs with only the run-bound fields replaced.
 
     checkpoint is the store's verified promoted Dataset checkpoint (wire). It
@@ -31,6 +31,12 @@ def successor_configs(target, service, *, run_id, writer_generation, launch_conf
         raise ValueError('previous verified source-service restore config required')
     if target['database']['database_generation'] != service['database']['database_generation']:
         raise ValueError('previous target and source-service differ')
+    if schema_version is not None:
+        previous = target['database']['schema_version']
+        if type(schema_version) is not int or schema_version < previous or service['database']['schema_version'] != previous:
+            raise ValueError('successor schema must extend the same verified restore target')
+        target['database']['schema_version'] = schema_version
+        service['database']['schema_version'] = schema_version
     if checkpoint is not None and checkpoint != target.get('dataset_checkpoint'):
         restore = service['source_restore']
         if (checkpoint['database_generation'] != target['database']['database_generation']
@@ -113,6 +119,7 @@ def main(argv=None):
     spec.loader.exec_module(controller)
     from regional_knowledge.bge_queue import BgeQueue
     from regional_knowledge.kaggle_launch_config import load_target_launch
+    from regional_knowledge.kaggle_schema_migrate import latest_schema_version
     queue = BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
     if args.recover_not_sent_startup:
         print(json.dumps({'recovered_startup': queue.recover_not_sent_startup()}))
@@ -123,7 +130,8 @@ def main(argv=None):
     out = args.previous.parent / f'verified-restore-{args.release_sha[:12]}-{run_id[:8]}'
     out.mkdir(mode=0o700)
     target, _ = successor_configs(previous_target, service, run_id=run_id, writer_generation=writer_generation,
-                                  launch_config_sha256='0' * 64, release_sha=args.release_sha, checkpoint=checkpoint)
+                                  launch_config_sha256='0' * 64, release_sha=args.release_sha, checkpoint=checkpoint,
+                                  schema_version=latest_schema_version())
     write_private(out / 'target.json', target)
     token = (queue.path.parent / 'bge-worker-credentials' / run_id).read_text()
     template = (source / 'scripts/production/bge_kaggle_worker.py').read_text()
@@ -136,7 +144,7 @@ def main(argv=None):
         expected = json.loads(queue._runtime_row(db, run_id)['expected_json'])
     _, service = successor_configs(previous_target, service, run_id=run_id, writer_generation=writer_generation,
                                    launch_config_sha256=expected['hashes']['launch_config'], release_sha=args.release_sha,
-                                   checkpoint=checkpoint)
+                                   checkpoint=checkpoint, schema_version=latest_schema_version())
     service_path = out / f'source-service-{run_id}.json'
     write_private(service_path, service)
     print(json.dumps({'run_id': run_id, 'target': str(out / 'target.json'), 'source_service': str(service_path)}))
