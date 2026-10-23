@@ -35,6 +35,23 @@ WITHDRAW_DEPENDENCY = DependencySpec(SOURCE_WITHDRAW,'public_source',
 _UNSET=object()
 _LOG=logging.getLogger(__name__)
 
+# Dataset persistence and native read visibility are separate observations.
+# Only these additive packet operations become read-safe after exact apply;
+# withdrawal and all other mutations retain their existing durable barrier.
+READ_ADDITIVE_ROUTES=frozenset({'source.stage.v1','source.batch.v1','source.finish.v1'})
+
+def _read_safe_sql(prefix=''):
+    return (f"({prefix}seal_state='ACCEPTED' AND {prefix}apply_state IN ('APPLIED','REJECTED_PRECONDITION') "
+        f"AND json_extract(CAST({prefix}command_bytes AS TEXT),'$.route') IN "
+        "('source.stage.v1','source.batch.v1','source.finish.v1'))")
+
+def _read_pending_sql(prefix=''):
+    return f"({prefix}outcome_state<>'DURABLE' AND NOT {_read_safe_sql(prefix)})"
+
+def _read_unknown_sql(prefix=''):
+    return (f"({prefix}seal_state='SENT_UNKNOWN' OR {prefix}apply_state='SENT_UNKNOWN' OR "
+        f"({prefix}outcome_state='SENT_UNKNOWN' AND NOT {_read_safe_sql(prefix)}))")
+
 
 class SpoolError(RuntimeError):pass
 class SpoolConflict(SpoolError):pass
@@ -249,6 +266,27 @@ class ControlSpool:
                     pending_count=pending_count+(NEW.outcome_state<>'DURABLE')-(OLD.outcome_state<>'DURABLE'),
                     unknown_count=unknown_count+(NEW.seal_state='SENT_UNKNOWN' OR NEW.apply_state='SENT_UNKNOWN' OR NEW.outcome_state='SENT_UNKNOWN')
                     -(OLD.seal_state='SENT_UNKNOWN' OR OLD.apply_state='SENT_UNKNOWN' OR OLD.outcome_state='SENT_UNKNOWN') WHERE id=1;END""")
+                # Rebuild only the derived read counters. Canonical intake and
+                # durability counters above keep their original semantics.
+                for name in ('rkb_control_public_source_insert','rkb_control_public_source_update'):
+                    db.execute('DROP TRIGGER IF EXISTS '+name)
+                db.execute(f'''UPDATE rkb_control_public_source_meta SET
+                    pending_count=(SELECT coalesce(sum({_read_pending_sql()}),0) FROM rkb_control_operations
+                        WHERE json_extract(CAST(dependency_bytes AS TEXT),'$.scope_class')='public_source'),
+                    unknown_count=(SELECT coalesce(sum({_read_unknown_sql()}),0) FROM rkb_control_operations
+                        WHERE json_extract(CAST(dependency_bytes AS TEXT),'$.scope_class')='public_source') WHERE id=1''')
+                db.execute(f'''CREATE TRIGGER rkb_control_public_source_insert AFTER INSERT ON rkb_control_operations
+                    WHEN json_extract(CAST(NEW.dependency_bytes AS TEXT),'$.scope_class')='public_source'
+                    BEGIN UPDATE rkb_control_public_source_meta SET sequence=max(sequence,NEW.sequence),
+                    accepted_sequence=max(accepted_sequence,CASE WHEN NEW.seal_state='ACCEPTED' THEN NEW.sequence ELSE 0 END),
+                    operation_count=operation_count+1,pending_count=pending_count+{_read_pending_sql('NEW.')},
+                    unknown_count=unknown_count+{_read_unknown_sql('NEW.')} WHERE id=1;END''')
+                db.execute(f'''CREATE TRIGGER rkb_control_public_source_update AFTER UPDATE OF seal_state,apply_state,outcome_state ON rkb_control_operations
+                    WHEN json_extract(CAST(NEW.dependency_bytes AS TEXT),'$.scope_class')='public_source'
+                    BEGIN UPDATE rkb_control_public_source_meta SET
+                    accepted_sequence=max(accepted_sequence,CASE WHEN NEW.seal_state='ACCEPTED' THEN NEW.sequence ELSE 0 END),
+                    pending_count=pending_count+{_read_pending_sql('NEW.')}-{_read_pending_sql('OLD.')},
+                    unknown_count=unknown_count+{_read_unknown_sql('NEW.')}-{_read_unknown_sql('OLD.')} WHERE id=1;END''')
                 db.execute('CREATE INDEX IF NOT EXISTS rkb_control_source ON rkb_control_operations(source_id,sequence DESC,operation_key)')
                 db.execute('CREATE INDEX IF NOT EXISTS rkb_control_source_state ON rkb_control_operations(source_id,sequence,seal_state,apply_state,outcome_state)')
                 db.execute('CREATE INDEX IF NOT EXISTS rkb_control_accepted ON rkb_control_operations(source_id,seal_state,sequence DESC,operation_key)')
@@ -891,15 +929,15 @@ class ControlSpool:
                 local=db.execute('SELECT sequence,pending_count,unknown_count FROM rkb_control_public_source_meta WHERE id=1').fetchone()
                 history=db.execute('SELECT sequence,pending_count,unknown_count FROM rkb_control_source_head_meta WHERE id=1').fetchone()
             else:
-                local=scope('rkb_control_operations',"coalesce(max(sequence),0),coalesce(sum(outcome_state<>'DURABLE'),0),coalesce(sum(seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN'),0)")
+                local=scope('rkb_control_operations',f"coalesce(max(sequence),0),coalesce(sum({_read_pending_sql()}),0),coalesce(sum({_read_unknown_sql()}),0)")
                 history=scope('rkb_control_source_heads','coalesce(max(sequence),0),coalesce(sum(pending),0),coalesce(sum(unknown),0)')
             changes=[]
             for source in items:
                 hist=db.execute('SELECT sequence,command_sha256,restriction,pending,unknown FROM rkb_control_source_heads WHERE source_id=?',(source,)).fetchone()
-                local_head=db.execute("""SELECT sequence,command_sha256,
+                local_head=db.execute(f"""SELECT sequence,command_sha256,
                     EXISTS(SELECT 1 FROM rkb_control_operations restrictions WHERE restrictions.source_id=?
-                        AND json_extract(CAST(restrictions.dependency_bytes AS TEXT),'$.restriction')=1),outcome_state<>'DURABLE',
-                    seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN'
+                        AND json_extract(CAST(restrictions.dependency_bytes AS TEXT),'$.restriction')=1),{_read_pending_sql()},
+                    {_read_unknown_sql()}
                     FROM rkb_control_operations WHERE source_id=? ORDER BY sequence DESC LIMIT 1""",(source,source)).fetchone()
                 rows=[r for r in (hist,local_head) if r is not None]
                 if rows:

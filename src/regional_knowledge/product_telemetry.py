@@ -293,6 +293,8 @@ def get_product_telemetry() -> ProductTelemetry:
 
 
 def emit_product_event(record: dict[str, object], *, level: str = "standard") -> bool:
+    if os.getenv("RKB_PRODUCT_LOG_MODE") == "off":
+        return False
     try:
         return get_product_telemetry().try_emit(record, level=level)
     except Exception:

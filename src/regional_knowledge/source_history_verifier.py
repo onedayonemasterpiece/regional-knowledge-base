@@ -19,6 +19,7 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 
 from .control_spool import SourceChange, SpoolConflict, _command, _database, _uuid
+from .control_spool import READ_ADDITIVE_ROUTES
 from .kaggle_database_probe import NativeDatabaseProbe
 from .kaggle_domain_schema import TABLES_13,TABLES_14
 from .kaggle_schema_migrate import latest_schema_version
@@ -47,6 +48,9 @@ INACTIVE_SOURCE_ROUTES=frozenset({'source.stage.v1','source.stage.seal.v1','sour
 
 def _source_origin_required(command):
     return 'source_id' in command.ids and command.route not in INACTIVE_SOURCE_ROUTES
+
+def _read_pending(command,outcome,durable):
+    return not durable and not (outcome is not None and command.route in READ_ADDITIVE_ROUTES)
 
 
 def _receipt_handler_matches(command,handler,recorded_hash,outcome,status,database_generation):
@@ -200,7 +204,7 @@ class NativeSourceHistoryVerifier:
         if dep is None:raise SpoolConflict('unclassified accepted source dependency')
         if dep.scope_class=='public_source':
             expected_route=('source.import' if command.route.startswith('source.import.')
-                or command.route in INACTIVE_SOURCE_ROUTES or command.route=='source.activate.v1' else
+                or command.route in INACTIVE_SOURCE_ROUTES|{'source.activate.v1','source.batch.v1','source.finish.v1'} else
                 {'source.withdraw.v1':'source.withdraw','story.edit.v1':'story.edit','story.access.v1':'story.access'}.get(command.route))
             if expected_route not in self.routes or dep.scope_owner!='shared' or 'source_id' not in dep.resource_keys:
                 raise SpoolConflict('unclassified accepted source dependency')
@@ -386,7 +390,7 @@ class NativeSourceHistoryVerifier:
                                 by_source[source]=SourceChange(source,max(c.sequence,previous.sequence if previous else 0),
                                     _hash(c.encode()) if previous is None or c.sequence>=previous.sequence else previous.command_sha256,
                                     bool(h.dependency.restriction or previous and previous.restriction),
-                                    bool(not durable or previous and previous.pending),False)
+                                    bool(_read_pending(c,outcome,durable) or previous and previous.pending),False)
                             if fields['schema_version'] >= 7:
                                 origins=sorted({c.ids['source_id'] for c,_,_ in known.values()
                                     if _source_origin_required(c) and c.sequence in applied})
@@ -650,7 +654,7 @@ class NativeSourceHistoryVerifier:
                                     used+=len(outcome)
                                     if used>self.max_history_bytes:raise SpoolConflict('native outcome history budget exceeded')
                                     applied[seq]=(oh,bytes(outcome))
-                                    if command.route in ('source.import.v1','source.import.v2','source.import.v3','source.import.v4') and status=='applied':
+                                    if command.route in ('source.import.v1','source.import.v2','source.import.v3','source.import.v4','source.activate.v1','source.batch.v1') and status=='applied':
                                         successful_imports.add(seq)
                                 if count!=applied_seq:raise SpoolConflict('native applied prefix incomplete')
                             changes={}
@@ -670,7 +674,7 @@ class NativeSourceHistoryVerifier:
                                         if remote.data!=_json(expected):raise SpoolConflict('remote outcome differs from native prefix')
                                         durable=True
                                 if not durable:pending.append((command.encode(),handler.fingerprint,manifest))
-                                if command.route in ('source.import.v1','source.import.v2','source.import.v3','source.import.v4') and outcome is not None:
+                                if command.route in ('source.import.v1','source.import.v2','source.import.v3','source.import.v4','source.activate.v1','source.batch.v1') and outcome is not None:
                                     # Native success status is checked independently
                                     # from exact remote outcome durability below.
                                     if command.sequence in successful_imports:
@@ -679,7 +683,7 @@ class NativeSourceHistoryVerifier:
                                 source=command.ids['source_id']; prior=changes.get(source)
                                 changes[source]=SourceChange(source,command.sequence,_hash(command.encode()),
                                     bool(handler.dependency.restriction or prior and prior.restriction),
-                                    bool(not durable or prior and prior.pending),False)
+                                    bool(_read_pending(command,outcome,durable) or prior and prior.pending),False)
                             await cursor.execute('SELECT EXISTS(SELECT 1 FROM rkb_v4.sources '
                                 'WHERE NOT (source_id=ANY(%s::uuid[])))',(imported,))
                             if await cursor.fetchone()!=(False,):

@@ -17,6 +17,18 @@ from pathlib import Path
 RUN_FIELDS = ('run_id', 'writer_generation', 'launch_config_sha256', 'operation_key')
 
 
+def current_code_pins(target, service):
+    """Bind code metadata to this release, preserving the verified data base."""
+    from regional_knowledge.kaggle_current_registry import registry_sha256
+    from regional_knowledge.kaggle_source_history_native import observer_fingerprint
+    target=json.loads(json.dumps(target));service=json.loads(json.dumps(service))
+    registry=registry_sha256()
+    target['registry_sha256']=registry
+    service['registry_sha256']=registry
+    service['observer_sha256']=observer_fingerprint()
+    return target,service
+
+
 def successor_configs(target, service, *, run_id, writer_generation, launch_config_sha256, release_sha,
                       checkpoint=None, schema_version=None):
     """Previous verified configs with only the run-bound fields replaced.
@@ -127,6 +139,7 @@ def main(argv=None):
     checkpoint = verified_latest_checkpoint(queue)
     previous_target = json.loads((args.previous / 'target.json').read_text())
     service = previous_service_config(args.previous)
+    previous_target,service=current_code_pins(previous_target,service)
     out = args.previous.parent / f'verified-restore-{args.release_sha[:12]}-{run_id[:8]}'
     out.mkdir(mode=0o700)
     target, _ = successor_configs(previous_target, service, run_id=run_id, writer_generation=writer_generation,

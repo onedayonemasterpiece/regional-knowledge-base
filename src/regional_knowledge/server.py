@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import asyncio
+from functools import wraps
 import logging
+import re
 import os
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -140,6 +142,118 @@ def _book_page_tool_result(ingestion_id, batch):
     for page in batch.pages:
         content.append(Image(data=page.data, format=page.mime_type.removeprefix('image/')).to_image_content())
     return CallToolResult(content=content)
+
+
+# Only the two book MCP tool boundaries use this normalization. Inner importer
+# decisions, original receipts, permissions and wire schemas remain untouched.
+_BOOK_ERROR_STATUSES = frozenset({
+    "invalid_query", "denied", "unavailable", "pending", "unknown",
+    "failed", "rejected", "error",
+})
+_BOOK_STABLE_REASON = re.compile(r"^[a-z][a-z0-9_]{0,95}$")
+# These pre-existing server-local ToolErrors have no structured status yet.
+_BOOK_LOCAL_REASONS = {
+    "telegram_original_requires_target_start_without_attachment": "invalid_query",
+    "source_import_must_use_one_input_location": "invalid_query",
+    "invalid_source_import_input": "invalid_query",
+    "catalog_update_requires_metadata_only_stage": "invalid_query",
+    "stage_file_cannot_mix_with_inline_payload": "invalid_query",
+    "stage_file_invalid": "invalid_query",
+    "stage_file_schema": "invalid_query",
+    "stage_file_ingestion_or_revision_mismatch": "invalid_query",
+    "stage_file_must_be_json_not_original_source": "invalid_query",
+    "file_only_supported_for_start_reprocess_or_stage": "invalid_query",
+    "source_import_requires_configured_target_importer": "unavailable",
+    "owned_ingestion_required": "denied",
+}
+
+
+def _book_stage_schema_hints(exc: ToolError) -> list[str]:
+    """Only the real StageFile parser's redacted path/type diagnostics."""
+    from .stage_file import StageFileError, parse_stage_file
+    cause = exc.__cause__
+    if type(cause) is not StageFileError:
+        return []
+    origin = cause.__traceback__
+    while origin is not None and origin.tb_next is not None:
+        origin = origin.tb_next
+    if origin is None or origin.tb_frame.f_code is not parse_stage_file.__code__:
+        return []  # A fabricated ToolError/StageFileError is not source evidence.
+    detail = str(cause)
+    prefix = "stage_file_schema: "
+    if not detail.startswith(prefix) or len(detail) > 1024:
+        return []
+    hints = []
+    path_pattern = r"(?:[a-z][a-z0-9_]{0,47}|\*|[0-9]{1,4})(?:\.(?:[a-z][a-z0-9_]{0,47}|\*|[0-9]{1,4})){0,7}"
+    for item in detail[len(prefix):].split("; ")[:2]:
+        path, sep, error_type = item.partition(":")
+        if (sep and len(item) <= 96 and re.fullmatch(path_pattern, path)
+                and re.fullmatch(r"[a-z][a-z0-9_]{0,47}", error_type)):
+            hints.append(item)  # The producer masks unknown field labels as *.
+    return hints
+
+
+def _book_mcp_error(exc: Exception) -> ToolError:
+    """Keep existing domain status/reason; never serialize exception messages."""
+    status, reason, error_class = "unknown", "internal_error", "internal"
+    if isinstance(exc, ToolError):
+        error_class, reason = "domain", "domain_error"
+        raw = str(exc)
+        if len(raw) <= 1024:
+            try:
+                record = json.loads(raw)
+            except (ValueError, TypeError):
+                record = None
+            if type(record) is dict:
+                candidate_status, candidate_reason = record.get("status"), record.get("reason")
+                if type(candidate_status) is str and candidate_status in _BOOK_ERROR_STATUSES:
+                    status = candidate_status  # Not all errors mean a final rejection.
+                    if (type(candidate_reason) is str and
+                            _BOOK_STABLE_REASON.fullmatch(candidate_reason)):
+                        reason = candidate_reason
+            else:
+                # A few existing local errors are plain static labels. Their
+                # trailing Pydantic/user details must not escape the server.
+                label = raw.partition(":")[0]
+                if label in _BOOK_LOCAL_REASONS:
+                    status, reason = _BOOK_LOCAL_REASONS[label], label
+    elif isinstance(exc, PermissionError):
+        status, reason, error_class = "denied", "access_denied", "access"
+    elif (type(exc) is RuntimeError and
+          exc.args == ("authenticated user context is required",)):
+        # Only a raise *inside the existing _principal* proves that backend
+        # execution was never entered. Backend RuntimeErrors with identical
+        # wording must remain UNKNOWN instead of falsely denied.
+        origin = exc.__traceback__
+        while origin is not None and origin.tb_next is not None:
+            origin = origin.tb_next
+        if origin is not None and origin.tb_frame.f_code is _principal.__code__:
+            status, reason, error_class = (
+                "denied", "authenticated_user_context_required", "access")
+    elif isinstance(exc, TimeoutError):
+        status, reason, error_class = "unknown", "transport_timeout", "transport"
+    elif isinstance(exc, (ConnectionError, OSError)):
+        status, reason, error_class = "unknown", "transport_unavailable", "transport"
+    # For every other exception the operation's effect is UNKNOWN, not rejected.
+    response = {"status": status, "reason": reason, "error_class": error_class}
+    if reason == "stage_file_schema" and isinstance(exc, ToolError):
+        hints = _book_stage_schema_hints(exc)
+        if hints:
+            response["hints"] = hints
+    return ToolError(json.dumps(response, separators=(",", ":")))
+
+
+def _book_mcp_error_boundary(handler):
+    """Preserve the registered tool signature while fencing error disclosure."""
+    @wraps(handler)
+    async def call(*args, **kwargs):
+        try:
+            return await handler(*args, **kwargs)
+        except asyncio.CancelledError:
+            raise  # A cancelled call proves neither failure nor completion.
+        except Exception as exc:
+            raise _book_mcp_error(exc) from None
+    return call
 
 
 def _transport_security(resource_url: str | None = None) -> TransportSecuritySettings:
@@ -360,9 +474,10 @@ def build_server(
             ("The configured native importer supports PDF and DjVu originals up to 128 MiB and 2500 physical pages, "
              "subject to the verified original intake. Stage at most 8 selected, model-reviewed pages per native batch; "
              "book_pages currently returns one visual page per call, regardless of requested batch_size. "
-             "The current activation is shared-searchable, NOT owner-private: even an authenticated owner-personal "
-             "start requires source_import.public_rights with a verified public-distribution basis. "
-             "Do not infer rights or call an import private merely from owner authentication. "
+             "Ordinary owner-only import is shared-searchable, NOT owner-private: the authorized owner "
+             "attests legality once, without a mandatory per-book public_rights declaration or a new "
+             "legal verification step. Optional legacy source_import.public_rights remains supported. "
+             "Owner authentication never grants private Case or original-document reads to others. "
              "For an existing accepted source, use book_find and the supported reprocess/rechunk path; do not "
              "request a new upload unless the verified archived original is unavailable. "
              "Follow every book_pages continuation before using clipped source text. "
@@ -1191,9 +1306,10 @@ def build_server(
             "Carry one book/journal ingestion goal. For the configured Kaggle native target, PDF/DjVu originals "
             "may be up to 128 MiB and 2500 physical pages subject to verified intake; each native stage "
             "contains at most 8 selected, model-reviewed pages (not an 8-page book limit). "
-            "Start currently requires source_import.public_rights with a verified public-distribution basis, "
-            "including on the owner-personal route, because accepted text enters shared search. "
-            "Neither missing rights nor owner OAuth implies permission to publish a private original. "
+            "Ordinary owner-only start needs no per-book public_rights declaration; owner-approved legal "
+            "attestation is retained in the existing source envelope for shared search. Optional "
+            "source_import.public_rights stays a compatibility input, not a second legal approval. "
+            "Owner authentication does not bypass other access grants or make private Case data public. "
             "Pass the optional top-level source_import or compatible metadata.source_import, not both. "
             "When sufficient evidence supports an authored narrative, supply "
             "story_candidates.basic_variant.body and evidence-mapped blocks for the complete body. "
@@ -1273,6 +1389,7 @@ def build_server(
         ),
         meta={"openai/fileParams": ["file"]},
     )
+    @_book_mcp_error_boundary
     async def book_ingest(
         command: Literal["start", "reprocess", "rechunk", "stage", "validate", "finalize", "status"],
         file: ChatFile | None = None,
@@ -1291,10 +1408,10 @@ def build_server(
                 "Otherwise omit basic_variant and explicitly mark narrative_outcome=needs_context "
                 "or facts_only; never fabricate a body from title or summary.")] | None = None,
         source_import: Annotated[TargetSourceImportInput | None, Field(
-            description="Native import options: start currently requires public_rights with verified "
-                "public-distribution basis, even for owner-personal calls. Stage may carry model-authored "
-                "research continuation. metadata.source_import is a compatibility alternative; do not "
-                "pass both.")] = None,
+            description="Optional native import options: ordinary owner-only start needs no public_rights "
+                "or research declaration; the owner's legal attestation is retained. Existing "
+                "public_rights and model-authored research remain supported. metadata.source_import "
+                "is a compatibility alternative; do not pass both.")] = None,
         telegram_original: TelegramOriginalInput | None = None,
     ) -> BookIngestOutput:
         if telegram_original is not None and (selected != 'kaggle_source' or command != 'start' or file is not None):
@@ -1452,19 +1569,21 @@ def build_server(
     @mcp.tool(
         title="Read staged book pages",
         description=(
-            "Return the next small batch of staged source pages as model-visible image "
-            "content plus explicit native preview metadata. Read block continuation cursors "
-            "with the same tool before using clipped text. Native extraction never proves "
-            "visual completeness. Use only while parsing an existing ingestion."
+            "Read one model-visible source page by default, at most four requested per call; "
+            "the current native renderer may return only one page even when four are requested. "
+            "Stage each reviewed page ordinarily with its exact source evidence and follow the "
+            "returned page/block continuation cursors before using clipped text. "
+            "Native extraction never proves visual completeness. Use only for an existing ingestion."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
+    @_book_mcp_error_boundary
     async def book_pages(
         ingestion_id: str,
         cursor: str | None = None,
-        batch_size: int = 4,
+        batch_size: Annotated[int, Field(ge=1, le=4)] = 1,
     ) -> list[TextContent | ImageContent]:
-        batch_size = max(1, min(batch_size, 8))
+        batch_size = max(1, min(batch_size, 4))
         batch = await backend.book_pages(
             ingestion_id=ingestion_id,
             principal=_principal(),

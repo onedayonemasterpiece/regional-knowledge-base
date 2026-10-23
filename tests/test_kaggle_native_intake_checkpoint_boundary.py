@@ -19,11 +19,21 @@ from mcp.server.mcpserver.exceptions import ToolError
 from regional_knowledge.source_activation import ACTIVATE_ROUTE, MATERIALIZE_ROUTE
 from regional_knowledge.source_stage import SEAL_ROUTE, STAGE_ROUTE
 from test_kaggle_native_source_importer import (
-    native_intake, start, batch, stage, call, finish, pending, state, operation_count,
+    native_intake, start as current_start, batch, stage, call, finish, pending, state, operation_count,
 )
 from test_kaggle_public_backend import target
 from test_read_authority import auth
 from test_participants import people
+
+
+async def start(s):
+    """Seed the retained pre-packet intake whose receipts these tests resume."""
+    result=await current_start(s)
+    row=s.importer._row(s.principal.subject,result.ingestion_id)
+    s.importer.native_intake._state(row,create=True)
+    with s.t.queue.connect() as db:
+        db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=0 WHERE ingestion_id=?',(result.ingestion_id,))
+    return result
 
 
 def _keys(s):
@@ -153,7 +163,7 @@ async def test_stage_exact_has_its_own_pending_and_coverage_allocation_guards(
         assert applied.outcome_state != 'DURABLE'
         scope = await s.spool.scope_state()
         facts = await s.spool.read_facts(None)
-        assert scope['pending'] is True and facts.pending is True
+        assert scope['pending'] is True and facts.pending is False
         assert scope['unknown'] is False and facts.unknown is False
         expected_reason = 'prior_write_pending'
     else:
