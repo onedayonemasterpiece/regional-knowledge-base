@@ -61,7 +61,8 @@ async def execute_case_read(request,*,acquire):
                             # calling model to evaluate by question/place/source.
                             await execute("""
                                 SELECT c.case_id, c.revision, c.acl_revision, c.event_seq, c.state,
-                                  left(c.data->>'question',2000),left(coalesce(c.data->>'context',''),1000)
+                                  left(c.data->>'question',2000),left(coalesce(c.data->>'context',''),1000),
+                                  rkb_v4.case_sources_v1(c.case_id)
                                 FROM rkb_v4.disagreement_cases c
                                 WHERE rkb_v4.case_role_v1(c.case_id,%s::uuid)>=1
                                   AND rkb_v4.case_sources_v1(c.case_id) IS NOT NULL
