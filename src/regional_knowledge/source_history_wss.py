@@ -112,6 +112,12 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
         if not isinstance(value,dict) or 'error' in value:raise SpoolConflict('native source history observation unavailable')
         return value
 
+    async def source_tail_refs(self,binding,source_id,ingestion_id):
+        # Fresh observation on the existing authenticated maintenance channel;
+        # no open history transaction or persisted domain continuation state.
+        return await self._phase(binding,dict(action='source_tails',source_id=source_id,
+            ingestion_id=ingestion_id,nonce=secrets.token_hex(16)))
+
     async def restore(self,binding):
         # A read capability can expire while its *native* verified prefix still
         # belongs to this exact process/binding. Re-check only the journal tail,

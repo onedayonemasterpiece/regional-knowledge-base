@@ -108,7 +108,12 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         def save(row,**changes):
             self.saved.append(changes); row.update(changes); return row
         def output(row,state,message,action,**kwargs): return NS(state=state,message=message,next_action=action,**kwargs)
-        startup=NS(config=NS(writer_generation='writer'),source_dispatch=NS(enqueue=enqueue),reads_current=lambda:True)
+        self.tails=[];self.tail_query_failed=False
+        async def tails(*args):
+            if self.tail_query_failed:raise TimeoutError('synthetic native query timeout')
+            return dict(tail_refs=self.tails,has_more=False)
+        startup=NS(config=NS(writer_generation='writer'),source_dispatch=NS(enqueue=enqueue),reads_current=lambda:True,
+            history=NS(source_tail_refs=tails))
         self.importer=NS(import_revisions=VERSIONS,queue=self.queue,spool=self.spool,startup=startup,
             _check=check,_receipt=receipt,originals=NS(selected_image_receipts=selected),_save=save,_output=output,
             _revisions=lambda binding:VERSIONS,_intake_coverage_current=lambda binding:True)
@@ -165,6 +170,34 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
 
     def packet_mode(self):
         with self.queue.connect() as db:db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=1')
+
+    async def test_packet_status_exposes_computed_tail_and_finalize_does_not_drop_it(self):
+        from uuid import UUID,uuid5
+        self.packet_mode();await self.stage();self.finish()
+        await self.helper.status(self.access,self.row);self.finish()
+        await self.helper.status(self.access,self.row);self.finish()
+        self.tails=[dict(page_id=self.payload['pages'][0]['page_id'],physical_page_index=0,
+            region_id=str(uuid5(UUID(self.payload['pages'][0]['page_id']),'region:tail')),region_key='tail',source_text_sha256='a'*64,start=0,end=10)]
+        result=await self.helper.status(self.access,self.row)
+        self.assertEqual(result.next_action,'continue_tail');self.assertEqual(result.next_cursor,'1')
+        self.assertEqual(result.tail_refs[0].region_key,'tail')
+        before=len(self.spool.entries)
+        result=await self.helper.finalize(self.access,self.row)
+        self.assertEqual(result.next_action,'continue_tail')
+        self.assertEqual(len(self.spool.entries),before)
+        self.assertIsNone(self.state()['pending_operation_key'])
+        self.tails=[]
+        result=await self.helper.status(self.access,self.row)
+        self.assertEqual(self.pending().command.route,'source.finish.v1')
+
+    async def test_unknown_tail_query_never_claims_complete_coverage(self):
+        self.packet_mode();await self.stage();self.finish()
+        await self.helper.status(self.access,self.row);self.finish()
+        await self.helper.status(self.access,self.row);self.finish()
+        self.tail_query_failed=True
+        result=await self.helper.status(self.access,self.row)
+        self.assertEqual(result.next_action,'wait')
+        self.assertEqual(result.warnings,['source_tail_coverage_unavailable'])
 
     async def test_packet_status_publishes_without_whole_book_validate(self):
         self.packet_mode();await self.stage();self.finish()

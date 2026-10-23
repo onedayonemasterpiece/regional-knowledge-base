@@ -68,6 +68,26 @@ def pair(e,*,lease_seconds=10,schema_revision=None,geo_bootstrap_operation_keys=
 
 
 @pytest.mark.asyncio
+async def test_source_tail_query_reuses_authenticated_phase_without_history_session(env,monkeypatch):
+    from regional_knowledge import source_packet_tails
+    from test_source_stage import SOURCE,INGESTION
+    from regional_knowledge.kaggle_source_acl import NativeHistoryError
+    p=pair(env);seen=[]
+    async def tails(connection,source,ingestion):
+        seen.append((source,ingestion));return dict(tail_refs=[],has_more=False)
+    monkeypatch.setattr(source_packet_tails,'pending_tail_refs',tails)
+    try:
+        assert await p.v.source_tail_refs(p.b,SOURCE,INGESTION)==dict(tail_refs=[],has_more=False)
+        assert seen==[(SOURCE,INGESTION)] and not p.n._sessions
+        assert p.calls[-1]['action']=='source_tails'
+        assert 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY' in p.pg.sql
+        p.n.detached(1)
+        with pytest.raises(NativeHistoryError,match='attachment_changed'):
+            await p.v.source_tail_refs(p.b,SOURCE,INGESTION)
+    finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
 async def test_native_empty_genesis_then_exact_delta_and_cheap_renewal(env):
     p=pair(env)
     try:

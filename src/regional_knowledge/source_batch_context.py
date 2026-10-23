@@ -13,8 +13,11 @@ def chunk_pages(chunk):
 
 async def load_current(connection,raw,source_id,text_only):
     doc=validate_stage_payload(raw,source_id=source_id)
-    if text_only:return copy.deepcopy(doc)
-    model=doc['model_payload'];result=copy.deepcopy(doc)
+    result=copy.deepcopy(doc);model=result['model_payload']
+    if text_only:
+        # Transcription can depend on an accepted page's trailing region.
+        # Optional semantic input still never causes a text-phase lookup.
+        model.update(entity_candidates=None,story_candidates=[],poi_facts=[],poi_media_links=[])
     graph=model.get('entity_candidates') or {}
     nodes={e['key']:e for e in graph.get('entities',[])}
     refs=dict(graph.get('entity_refs',{}));relations=graph.get('relations',[])
