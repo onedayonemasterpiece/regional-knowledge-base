@@ -115,7 +115,9 @@ class KaggleCasesBackend:
         self.output_gate=CaseOperationGate(self)
 
     def _binding_current(self,binding):
-        return self.startup.binding_current(binding) and self.startup.reads_current()
+        # Case actor rights are checked in PG; unrelated history refresh is
+        # not an availability condition for a current PG Case binding.
+        return self.startup.binding_current(binding)
 
     async def _native(self,authority,binding,*,deadline=None,**selector):
         deadline=min(deadline,time.monotonic()+2) if deadline is not None else time.monotonic()+2
@@ -397,7 +399,6 @@ class KaggleCasesBackend:
                       case_revision=0,object_version=0,status_only=False):
         authority=context=binding=entry=gated=None;retained=False;collected=False
         try:
-            if not self.startup.reads_current():raise failure('case_history_unavailable')
             authority=await self.read_authority.resolve_oauth(principal.access_token,destination=self.destination)
             await self.read_authority.require(authority,'case_read')
             if authority.public_only or authority.route not in ('owner','personal','expert'):raise PermissionError('personal Case authority required')
@@ -493,6 +494,16 @@ class KaggleCasesBackend:
         finally:
             if gated is not None:self.gate.release(gated.ticket)
             if authority is not None and not retained:self.read_authority.release(authority)
+
+    async def disagreement_search(self,query,principal,*,place=None,source_id=None,after_case_id=None,limit=5):
+        # Model interprets Case identity; this returns only bounded
+        # actor-authorized question/place/source candidate records.
+        if (type(query) is not str or not query.strip() or not 1<=len(query)<=120
+                or type(limit) is not int or not 1<=limit<=8):
+            raise failure('invalid_input','invalid_query')
+        return await self._read(principal,case_id='00000000-0000-0000-0000-000000000000',
+            section='search',search_query=query.strip(),place=place,
+            source_id=source_id,after_case_id=after_case_id,limit=limit)
 
     async def disagreement_get(self,case_id,principal,*,section='case',after_seq=0,limit=20,revision=None):
         return await self._read(principal,case_id=str(case_id),section=section,after_seq=after_seq,limit=limit,revision=revision)
