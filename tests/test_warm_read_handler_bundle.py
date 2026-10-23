@@ -48,3 +48,33 @@ def test_wire_abi_change_is_not_a_stateless_patch():
     query,graph=sources()
     with pytest.raises(ValueError,match='abi_changed'):
         builder.bundle(query,graph.replace("protocol_version:Literal[2]=2","protocol_version:Literal[3]=3",1),graph)
+
+
+@pytest.mark.asyncio
+async def test_warm_query_uses_reviewed_executor_and_existing_tokenizer_and_stage_collector(monkeypatch):
+    import asyncio
+    from regional_knowledge import kaggle_query as resident
+    from regional_knowledge.query_telemetry import ReadRuntime, bind_read_runtime
+    from test_kaggle_worker_query import Lease, frame, pinned, VECTOR
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('resident query executor must remain untouched')
+    monkeypatch.setattr(resident, 'execute_query', forbidden)
+    worker, graph = sources()
+    executor = (ROOT/'src/regional_knowledge/kaggle_query.py').read_text()
+    source = builder.bundle(worker, graph, graph, executor, executor)
+    module = types.ModuleType('regional_knowledge._warm_query_bundle_test')
+    module.__package__ = 'regional_knowledge'; module.__file__ = '<warm-query-handler>'
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    exec(compile(source, module.__file__, 'exec'), module.__dict__)
+    lease, tokenizer, collector = Lease(), pinned(), asyncio.Queue(maxsize=8)
+    handler = module.KaggleWorkerQuery(acquire=lease.acquire, tokenizer=tokenizer, telemetry=collector)
+    async def encode(text):return VECTOR
+    with bind_read_runtime(ReadRuntime('same-run', 'same-incarnation')):
+        result = await handler(frame(), encode=encode)
+    assert result['status'] == 'ok' and result['reason'] is None
+    assert handler.tokenizer is tokenizer and handler.telemetry is collector
+    assert lease.entered == lease.exited == 1 and resident.execute_query is forbidden
+    terminal = next(event for event in result['read_events'] if event['terminal'])
+    assert {'encode_ms', 'lexical_ms', 'dense_ms', 'hydrate_ms'} <= terminal['stages_ms'].keys()
+    with pytest.raises(ValueError, match='tokenizer_abi_changed'):
+        builder.bundle(worker, graph, graph, executor.replace('tokenizer_sha256: str', 'tokenizer_sha256: int'), executor)

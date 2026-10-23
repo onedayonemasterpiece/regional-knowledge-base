@@ -105,6 +105,17 @@ class KaggleWorkerQuery:
                 diagnostics.finish(status='error', reason='internal_error')
                 raise
             diagnostics.finish(result)
+            # The controller already accepts this fixed, bounded sidecar.
+            # No optional drain/export callback runs before the read reply.
+            if (result.get('type') == 'QUERY_RESULT' and diagnostics.runtime is not None
+                    and self.telemetry is not None):
+                from .query_telemetry import drain_native_read_events
+                try:
+                    events = drain_native_read_events(self.telemetry, result)
+                except Exception:
+                    events = []  # Optional observations cannot replace the read.
+                if events:
+                    result['read_events'] = events
             return result
 
     async def _call(self, frame_dict, *, encode, lease_current=None):

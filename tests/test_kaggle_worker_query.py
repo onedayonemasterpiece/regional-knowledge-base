@@ -91,7 +91,7 @@ async def test_callback_runs_actual_typed_fused_executor_and_returns_strict_boun
     validated = decode_envelope(json.dumps(result).encode())
     assert type(validated) is QueryResult
     assert (validated.request_id, validated.connection_generation, validated.turn_generation) == ('synthetic-read', 4, 9)
-    assert validated.status == 'degraded' and validated.mode == 'hybrid'
+    assert validated.status == 'ok' and validated.reason is None and validated.mode == 'hybrid'
     assert validated.observed_data_seq == validated.observed_projection_seq == 12
     assert validated.observed_database_generation == 'synthetic-db' and validated.observed_visibility_epoch == 3
     assert validated.evidence[0].dependencies.source_revisions[0].eligibility_revision == 7
