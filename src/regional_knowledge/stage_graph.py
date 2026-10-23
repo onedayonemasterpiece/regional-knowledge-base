@@ -573,7 +573,8 @@ def merge_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
 
 def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reuse_verified: bool = False,
                    selected_page_indexes: frozenset[int] | None = None, require_figure_review: bool = True,
-                   passage_evidence: bool = False) -> GraphValidation:
+                   passage_evidence: bool = False,
+                   coverage_page_indexes: frozenset[int] | None = None) -> GraphValidation:
     errors: list[str] = []
     warnings: list[str] = []
     for bundle in graph.entity_candidates:
@@ -597,6 +598,11 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reu
             raise ValueError("exact bounded selected page indexes required")
         expected = set(selected_page_indexes)
     present = set(page_indexes)
+    if coverage_page_indexes is not None:
+        if (type(coverage_page_indexes) is not frozenset or not coverage_page_indexes
+                or any(type(i) is not int for i in coverage_page_indexes)
+                or not coverage_page_indexes <= expected):
+            raise ValueError("coverage pages must be a nonempty subset of selected pages")
     missing = sorted(expected - present)
     extra = sorted(present - expected)
     if missing:
@@ -855,6 +861,8 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reu
         for region_id, region in regions.items()
         if region.kind.value in RETRIEVAL_TEXT_KINDS
         and region.source_text.strip()
+        and (coverage_page_indexes is None
+             or page_index_by_id[region_page[region_id]] in coverage_page_indexes)
     }
     uncovered = sorted(required_coverage - covered_regions)
     if uncovered:

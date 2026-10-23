@@ -1,12 +1,13 @@
 """Current-page references resolve ordinary indexed projections, never history."""
 import base64
+import copy
 from types import SimpleNamespace
 from uuid import UUID,uuid5
 
 import pytest
 
 from regional_knowledge.source_batch_context import load_current
-from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler
+from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler,SourceMaterializationRejected
 from regional_knowledge.source_stage import canonical,digest
 from test_native_source_materializer import exact_batch,SOURCE,PERSON
 
@@ -63,3 +64,42 @@ async def test_current_story_uses_existing_passage_identity_and_only_explicit_pr
     assert expected in {p['passage_id'] for p in result['passages']}
     assert len(result['passages'])==2 and len(result['semantic']['findings'])==1
     assert len(db.queries)==2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('missing_current_text',[False,True])
+async def test_explicit_prior_passage_does_not_require_other_prior_regions(missing_current_text):
+    first=exact_batch(count=1)
+    prior_page=first['model_payload']['pages'][0]
+    extra=copy.deepcopy(prior_page['regions'][0])
+    extra.update(region_key='other',reading_order=1,source_text='Another accepted passage.')
+    prior_page['regions'].append(extra)
+    first['model_payload']['chunks'].append(dict(chunk_key='other-prior',title='Other passage',
+        region_refs=[dict(page_id=prior_page['page_id'],region_key='other')]))
+    second=exact_batch(1,digest(canonical(first)),start=8,count=1)
+    if missing_current_text:
+        current_extra=copy.deepcopy(extra)
+        current_extra['source_text']='Current text must still be covered.'
+        second['model_payload']['pages'][0]['regions'].append(current_extra)
+    prior_id=str(uuid5(UUID(SOURCE),'chunk:1:'+first['model_payload']['chunks'][0]['chunk_key']))
+    second['model_payload']['story_candidates']=[dict(candidate_key='episode',title='A source finding',
+        summary='A finding linked to an accepted passage.',proposition='The source describes the event.',
+        narrative_outcome='facts_only',evidence_refs=[dict(page_id=prior_page['page_id'],region_key='body',chunk_id=prior_id)])]
+    raw=canonical(second)
+    view=await load_current(Connection(first),raw,SOURCE,text_only=False)
+    # The indexed prior UUID lookup returns exactly one passage, although the
+    # accepted page has another region. No old page/history expansion is needed.
+    assert len(view['model_payload']['chunks'])==2
+    counted=[]
+    async def count(text):counted.append(text);return 10
+    compiler=NativeSourceCompiler(count=count,current=lambda:True)
+    if missing_current_text:
+        with pytest.raises(SourceMaterializationRejected,match='native_source_stage_requires_review'):
+            await compiler.compile_current(raw,view,source_id=SOURCE,person_id=PERSON)
+        assert counted==[]
+    else:
+        result,_=await compiler.compile_current(raw,view,source_id=SOURCE,person_id=PERSON)
+        assert len(result['passages'])==2
+        assert prior_id in {p['passage_id'] for p in result['passages']}
+        assert len(result['semantic']['findings'])==1
+        assert 'Another accepted passage.' not in counted

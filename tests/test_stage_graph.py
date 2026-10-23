@@ -168,6 +168,34 @@ def test_validation_accepts_complete_small_graph():
     assert result.ready is True
 
 
+@pytest.mark.parametrize('partial_page',[0,1])
+def test_current_packet_coverage_checks_span_gaps_only_on_current_pages(partial_page):
+    from regional_knowledge.source_stage import digest
+    pages=[page_input(0),page_input(1)]
+    text=pages[partial_page].regions[0].source_text
+    chunks=[chunk_input(0),chunk_input(1)]
+    chunks[partial_page]=StageChunkInput(chunk_key='partial',title='Selected prior text',span_refs=[dict(
+        page_id=page_id(partial_page),region_key='body-1',start=0,end=4,
+        source_text_sha256=digest(text.encode()))])
+    empty=StagedGraph(revision=REVISION)
+    graph=merge_stage(empty,compile_model_stage(empty,document_id=DOCUMENT_ID,
+        revision=REVISION,pages=pages,chunks=chunks))
+    bounded=validate_graph(graph,expected_page_count=2,selected_page_indexes=frozenset({0,1}),
+        coverage_page_indexes=frozenset({1}))
+    assert bounded.ready is (partial_page==0)
+    if partial_page==1:
+        assert any('uncovered source span text' in e for e in bounded.errors)
+    # Default whole-source/legacy validation retains its original strictness.
+    assert not validate_graph(graph,expected_page_count=2).ready
+
+
+@pytest.mark.parametrize('coverage',[frozenset(),frozenset({2}),frozenset({True}),{1}])
+def test_current_coverage_scope_must_be_explicit_and_within_selected_pages(coverage):
+    with pytest.raises(ValueError,match='coverage pages'):
+        validate_graph(StagedGraph(revision=REVISION),expected_page_count=2,
+            selected_page_indexes=frozenset({0,1}),coverage_page_indexes=coverage)
+
+
 def test_multi_page_chunks_and_quality_diagnostics_are_supported():
     pages = [page_input(i) for i in range(6)]
     pages[5] = pages[5].model_copy(update={
