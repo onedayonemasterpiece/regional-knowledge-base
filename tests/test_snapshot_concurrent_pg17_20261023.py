@@ -20,6 +20,7 @@ from regional_knowledge.kaggle_pg_snapshot_native import (
     SnapshotLimits, applied_prefix,
 )
 from test_kaggle_apply import env, item, accepted, apply, facts
+from test_kaggle_pg_driver import database  # existing strictly checked disposable PG17 fixture
 
 pytestmark = [
     pytest.mark.asyncio,
