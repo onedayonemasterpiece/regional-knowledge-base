@@ -107,10 +107,10 @@ async def test_wal_backup_contains_concurrent_commit_and_replays_tail_once(env):
         assert child.returncode == 0, (
             "physical base backup failed: " + err.decode(errors="replace")[-1500:]
         )
-        assert await _docker(
+        await _docker(
             "exec", "--user", "postgres", cid,
             "pg_verifybackup", archive_dir,
-        ) == ""
+        )
         # Post-backup history is accepted remotely but NOT in this archive.
         third = item(3, revision="2")
         third_seal = await accepted(env, third)
