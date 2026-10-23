@@ -20,7 +20,7 @@ from regional_knowledge.kaggle_import_tokenizer import HfImportTokenCounter
 from regional_knowledge.kaggle_native_source_bindings import native_source_handler
 from regional_knowledge.kaggle_public_backend import current_binding
 from regional_knowledge.kaggle_service_startup import TargetServiceConfig, TargetServiceStartup
-from regional_knowledge.original_intake import OriginalIntakeStatus, VerifiedOriginalReceipt, issued_image_receipt
+from regional_knowledge.original_intake import OriginalIntakeError, OriginalIntakeStatus, VerifiedOriginalReceipt, issued_image_receipt
 from regional_knowledge.original_intake_controller import OriginalIntakeController
 from regional_knowledge.read_issuance import capture_read_output
 from regional_knowledge.recovery_journal import RecoveryJournal
@@ -76,7 +76,13 @@ async def native_intake(target, tmp_path):
         assert context.route == 'owner' and context.principal.subject == t.auth.p.owner.subject
         assert 1 <= len(selections) <= 8
         self.selections.append((ingestion_id,selections))
-        return tuple(self.issued[(ingestion_id,index,hash_)] for index,hash_ in selections)
+        values=[]
+        for index,expected in selections:
+            matches=[value for (owner,position,hash_),value in self.issued.items()
+                     if owner==ingestion_id and position==index and (expected is None or hash_==expected)]
+            if len(matches)!=1: raise OriginalIntakeError('original_source_image_not_issued')
+            values.append(matches[0])
+        return tuple(values)
 
     async def native_pages(self, *args, **kwargs):
         pytest.fail('native14 must not auto-fetch the whole original/native-text proof')
@@ -247,6 +253,43 @@ async def test_174_page_original_resumes_44_small_packets_without_dev_graph_or_v
 
 
 @pytest.mark.asyncio
+async def test_issued_native_page_without_model_sha_and_exact_replay(native_intake):
+    s=native_intake; result=await start(s); payload=batch(s,result,count=1)
+    issued_hash=payload['pages'][0].pop('source_image_receipt_sha256')
+    assert (await stage(s,result,payload)).state=='processing'
+    entry=await pending(s,result)
+    frozen=entry.command_bytes; doc=json.loads(entry.command.payload)
+    assert doc['model_payload']['pages'][0]['source_image_receipt_sha256']==issued_hash
+    assert len(doc['issued_images_b64'])==1 and operation_count(s)==1
+    assert (await stage(s,result,payload)).state=='processing'
+    assert (await pending(s,result)).command_bytes==frozen
+    guessed=copy.deepcopy(payload);guessed['pages'][0]['source_image_receipt_sha256']='0'*64
+    assert (await stage(s,result,guessed)).state=='processing'
+    assert (await pending(s,result)).command_bytes==frozen
+    assert operation_count(s)==1
+    await finish(s,result)
+    assert (await call(s,result,'status')).state=='processing'
+    assert (await s.spool.get(entry.command.operation_key)).command_bytes==frozen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case',['unissued','foreign_ingestion','forged_page_id'])
+async def test_native_unissued_foreign_or_forged_page_denied_without_model_sha(native_intake,case):
+    s=native_intake; result=await start(s); payload=batch(s,result,count=1)
+    payload['pages'][0].pop('source_image_receipt_sha256')
+    if case=='unissued':
+        s.originals.issued.clear()
+    elif case=='foreign_ingestion':
+        (ingest,index,image_hash),value=s.originals.issued.popitem()
+        s.originals.issued[('00000000-0000-0000-0000-000000000099',index,image_hash)]=value
+    else:
+        payload['pages'][0]['page_id']='00000000-0000-0000-0000-000000000099'
+    with pytest.raises(ToolError):
+        await stage(s,result,payload)
+    assert operation_count(s)==0 and state(s,result)['pending_operation_key'] is None
+
+
+@pytest.mark.asyncio
 async def test_exact_pending_retry_preserves_request_and_rejects_changed_text(native_intake):
     s = native_intake; result = await start(s); payload = batch(s,result,count=1)
     await stage(s,result,payload)
@@ -384,6 +427,7 @@ async def test_new_upload_preserves_uncertain_legacy_operation_without_replaying
 @pytest.mark.asyncio
 async def test_revocation_during_selected_image_read_prevents_spool_acceptance(native_intake):
     s = native_intake; result = await start(s); payload = batch(s,result,count=1)
+    payload['pages'][0].pop('source_image_receipt_sha256')
     selected = s.originals.selected_image_receipts
     async def revoke(*args):
         values = await selected(*args)

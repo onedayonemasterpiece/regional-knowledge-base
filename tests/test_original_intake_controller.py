@@ -145,6 +145,9 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
             current_binding=lambda:current_binding(e.q),allowed_origins=frozenset({'https://archive.invalid'}))
         issued=await restarted.selected_image_receipts(e.auth.p.admin,INGEST,((0,image_ref),))
         assert issued[0]['image_sha256']==digest(IMAGE)
+        assert await restarted.selected_image_receipts(e.auth.p.admin,INGEST,((0,None),))==issued
+        with pytest.raises(OriginalIntakeError):
+            await restarted.selected_image_receipts(e.auth.p.admin,INGEST,((1,None),))
         assert 'native_text' not in issued[0] and tuple(phases)==before_phases
         with pytest.raises(OriginalIntakeError,match='receipt_changed'):
             await restarted.selected_image_receipts(e.auth.p.admin,INGEST,((0,'f'*64),))

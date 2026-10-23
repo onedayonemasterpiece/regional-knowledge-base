@@ -445,7 +445,13 @@ class NativeSourceIntake:
         pending=await self._entry(state['pending_operation_key'] or self._stage_key(row,state))
         if pending is not None and pending.command.route==STAGE_ROUTE and pending.outcome_state!='DURABLE':
             frozen=json.loads(pending.command.payload)
-            if frozen['model_payload']!=payload or (source_import is not None and source_import.research is not None
+            # The image checksum in accepted bytes is server-issued, never
+            # a value the model must echo on an exact lost-ACK retry.
+            def without_image_echo(model):
+                return {**model,'pages':[{k:v for k,v in page.items()
+                    if k!='source_image_receipt_sha256'} for page in model['pages']]}
+            if (without_image_echo(frozen['model_payload'])!=without_image_echo(payload)
+                    or source_import is not None and source_import.research is not None
                     and {k:v for k,v in frozen['research'].items() if k!='frontier_id'}!=source_import.research.model_dump(mode='json')):
                 raise _failure('native_pending_payload_changed',status='invalid_query')
         state=await self._recover_orphan(access,row,state,'stage',self._stage_key(row,state))
@@ -468,9 +474,13 @@ class NativeSourceIntake:
         limit=4 if state.get('packet_mode') else 8
         if type(payload) is not dict or type(payload.get('pages')) is not list or not 1<=len(payload['pages'])<=limit:
             raise _failure('bounded_model_authored_selected_pages_required',status='invalid_query')
-        selections=tuple((p['physical_page_index'],p['source_image_receipt_sha256']) for p in payload['pages'])
+        selections=tuple((p['physical_page_index'],None) for p in payload['pages'])
         issued=await self.importer.originals.selected_image_receipts(access.context,row['ingestion_id'],selections)
         await self._check(access,row)
+        # Fill the existing SQL/command integrity field from the controller's
+        # authenticated issuance; model-supplied hashes are not authority.
+        for page,image in zip(payload['pages'],issued,strict=True):
+            page['source_image_receipt_sha256']=image['source_image_receipt_sha256']
         metadata=StartMetadataInput.model_validate_json(row['metadata_json']).model_dump(mode='json')
         bibliography='; '.join(filter(None,[', '.join(metadata['authors']),metadata['title'],
             str(metadata['publication_year']) if metadata['publication_year'] else None]))
