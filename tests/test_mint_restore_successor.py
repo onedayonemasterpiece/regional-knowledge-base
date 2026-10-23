@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,16 @@ def configs():
         source_import=dict(launch_config_sha256='a'*64,codec='x'),
         source_restore=dict(launch_config_sha256='a'*64,operation_key='old-op',dataset_checkpoint=dict(dataset_version=1)))
     return target,service
+
+
+def test_previous_service_ignores_stale_backup_created_first(tmp_path):
+    m=module();_,service=configs()
+    stale=dict(service,geo_bootstrap={'obsolete':True})
+    (tmp_path/'source-service-before-effective-geo.private.json').write_text(json.dumps(stale))
+    (tmp_path/'source-service-old-run.json').write_text(json.dumps(service))
+    assert m.previous_service_config(tmp_path)==service
+    (tmp_path/'source-service-other-run.json').write_text(json.dumps(dict(service,run_id='other-run')))
+    with pytest.raises(ValueError,match='exactly one'):m.previous_service_config(tmp_path)
 
 
 def test_successor_changes_only_run_bound_fields():

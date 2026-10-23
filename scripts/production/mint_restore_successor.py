@@ -86,6 +86,18 @@ def write_private(path, value):
     path.chmod(0o600)
 
 
+def previous_service_config(directory):
+    """Select the run config, excluding backups that share its filename prefix."""
+    candidates = []
+    for path in directory.glob('source-service-*.json'):
+        value = json.loads(path.read_text())
+        if path.name == f"source-service-{value.get('run_id')}.json":
+            candidates.append(value)
+    if len(candidates) != 1:
+        raise ValueError('exactly one previous run source-service config required')
+    return candidates[0]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--previous', required=True, type=Path, help='previous verified-restore-* directory')
@@ -106,9 +118,8 @@ def main(argv=None):
         print(json.dumps({'recovered_startup': queue.recover_not_sent_startup()}))
     run_id, writer_generation = pending_successor(queue)
     checkpoint = verified_latest_checkpoint(queue)
-    previous_service = next(args.previous.glob('source-service-*.json'))
     previous_target = json.loads((args.previous / 'target.json').read_text())
-    service = json.loads(previous_service.read_text())
+    service = previous_service_config(args.previous)
     out = args.previous.parent / f'verified-restore-{args.release_sha[:12]}-{run_id[:8]}'
     out.mkdir(mode=0o700)
     target, _ = successor_configs(previous_target, service, run_id=run_id, writer_generation=writer_generation,
