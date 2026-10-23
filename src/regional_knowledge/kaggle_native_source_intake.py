@@ -90,7 +90,8 @@ class NativeSourceIntake:
                 db.execute('ALTER TABLE rkb_native_source_intake_state ADD COLUMN rejected_seal_head TEXT')
             for name, declaration in (('packet_mode','INTEGER NOT NULL DEFAULT 0'),
                     ('published_batch_count','INTEGER NOT NULL DEFAULT 0'),('rejected_batch_index','INTEGER'),
-                    ('read_completion_requested','INTEGER NOT NULL DEFAULT 0'),('enriched_batch_count','INTEGER NOT NULL DEFAULT 0')):
+                    ('read_completion_requested','INTEGER NOT NULL DEFAULT 0'),('enriched_batch_count','INTEGER NOT NULL DEFAULT 0'),
+                    ('command_attempt','INTEGER NOT NULL DEFAULT 0'),('rejected_reason','TEXT')):
                 if name not in columns:
                     db.execute(f'ALTER TABLE rkb_native_source_intake_state ADD COLUMN {name} {declaration}')
 
@@ -158,7 +159,8 @@ class NativeSourceIntake:
         allowed={'batch_count','last_batch_sha256','last_request_sha256','pending_operation_key',
             'pending_kind','phase','seal_sha256','materializer_sha256','next_ordinal','total_inputs','knowledge_sha256'}
         allowed.add('rejected_seal_head')
-        allowed.update({'published_batch_count','enriched_batch_count','rejected_batch_index','read_completion_requested'})
+        allowed.update({'published_batch_count','enriched_batch_count','rejected_batch_index','read_completion_requested',
+            'command_attempt','rejected_reason'})
         if not changes or set(changes)-allowed: raise ValueError('compact native progress fields required')
         with self.queue.connect() as db:
             n=db.execute('UPDATE rkb_native_source_intake_state SET '+','.join(k+'=?' for k in changes)
@@ -186,6 +188,10 @@ class NativeSourceIntake:
             if str(error)=='control operation not found': return None
             raise
 
+    def _stage_key(self,row,state):
+        ordinal=(f"{state['batch_count']}:{state['command_attempt']}" if state.get('packet_mode') else state['batch_count'])
+        return self._operation(row,'stage',ordinal)
+
     @staticmethod
     def _request_hash(doc):
         return digest(canonical({k:v for k,v in doc.items()
@@ -208,7 +214,7 @@ class NativeSourceIntake:
         for pending in rows:
             command=_command(pending['command_bytes'])
             applied=(pending['apply_state']=='APPLIED' or
-                command.route=='source.batch.v1' and pending['apply_state']=='REJECTED_PRECONDITION')
+                command.route in (STAGE_ROUTE,'source.batch.v1','source.finish.v1') and pending['apply_state']=='REJECTED_PRECONDITION')
             if (pending['source_id']!=row['source_id'] or pending['person_id']!=row['person_id']
                     or pending['database_generation']!=access.binding.database_generation
                     or pending['seal_state']!='ACCEPTED' or not applied
@@ -222,7 +228,11 @@ class NativeSourceIntake:
     @staticmethod
     def _can_settle(state,entry):
         if entry.outcome_state=='DURABLE':return True
-        if state['pending_kind']=='batch':
+        if state.get('packet_mode') and state['pending_kind']=='finish':
+            return (entry.outcome_state=='NOT_SENT' and entry.accepted is not None and entry.seal_state=='ACCEPTED'
+                and entry.apply_receipt is not None and getattr(entry,'apply_state',None)=='REJECTED_PRECONDITION'
+                and entry.apply_receipt.status=='rejected_precondition')
+        if state['pending_kind']=='batch' or state.get('packet_mode') and state['pending_kind']=='stage':
             return (entry.outcome_state=='NOT_SENT' and entry.accepted is not None and entry.seal_state=='ACCEPTED'
                 and entry.apply_receipt is not None and
                 (getattr(entry,'apply_state',None),entry.apply_receipt.status) in
@@ -297,12 +307,19 @@ class NativeSourceIntake:
         if entry.apply_receipt.status not in ('applied','rejected_precondition'):
             raise _failure('native_durable_outcome_status_unknown')
         if entry.apply_receipt.status!='applied':
-            if state['pending_kind']=='batch':
+            if state.get('packet_mode') and state['pending_kind'] in ('stage','batch','finish'):
+                kind=state['pending_kind'];reason='native_source_packet_requires_review'
+                raw=json.loads(entry.apply_receipt.outcome)
+                body=base64.b64decode(raw['result_b64'],validate=True)
+                if body and self._result(entry).get('reason')=='native_source_sql_rolled_back':
+                    reason='native_source_sql_rolled_back'
                 # One invalid packet remains an explicit review result. It
                 # neither revokes prior packets nor closes the whole import.
-                return await asyncio.to_thread(self._update,row,phase='staging',pending_operation_key=None,
-                    pending_kind=None,published_batch_count=state['batch_count'],enriched_batch_count=state['batch_count'],
-                    rejected_batch_index=state['batch_count']-1)
+                changes=dict(phase='staging',pending_operation_key=None,pending_kind=None,
+                    rejected_batch_index=max(0,state['batch_count']-1),rejected_reason=reason,
+                    command_attempt=state['command_attempt']+1,read_completion_requested=0)
+                if kind=='batch':changes.update(published_batch_count=state['batch_count'],enriched_batch_count=state['batch_count'])
+                return await asyncio.to_thread(self._update,row,**changes)
             if state['pending_kind']=='seal':
                 # Schema14's native preflight rejects before creating the
                 # immutable candidate. Preserve the rejected accepted receipt,
@@ -323,7 +340,8 @@ class NativeSourceIntake:
                     or result.get('candidate_state')!='staged_inactive'):
                 raise _failure('native_stage_outcome_differs')
             changes.update(batch_count=doc['batch_index']+1,last_batch_sha256=digest(entry.command.payload),
-                last_request_sha256=self._request_hash(doc),phase='staging',rejected_seal_head=None)
+                last_request_sha256=self._request_hash(doc),phase='staging',rejected_seal_head=None,
+                rejected_batch_index=None,rejected_reason=None)
             await asyncio.to_thread(self.importer._save,row,phase='staging',
                 research_json=canonical({k:v for k,v in doc['research'].items() if k!='frontier_id'}).decode())
         elif kind=='batch':
@@ -417,11 +435,16 @@ class NativeSourceIntake:
                 return self.importer._output(row,'processing','Current packet or reading-completion intent pending; resume status',
                     'wait',source_archive_status='verified')
             if state.get('rejected_batch_index') is not None:
-                return self.importer._output(row,'staged','native_source_packet_requires_review: correct this packet; earlier packets remain searchable',
-                    'continue_pages',source_archive_status='verified',warnings=['native_source_packet_requires_review'])
+                reason=state.get('rejected_reason') or 'native_source_packet_requires_review'
+                return self.importer._output(row,'staged',reason+': correct or retry this packet; earlier packets remain searchable',
+                    'continue_pages',source_archive_status='verified',warnings=[reason])
             return self.importer._output(row,'staged','Accepted packet published; continue reading pages. Dataset persistence is periodic.',
                 'continue_pages',source_archive_status='verified')
         if phase=='finalized':
+            if state.get('packet_mode'):
+                return self.importer._output(row,'finalized',
+                    'Reading completed; accepted packets remain searchable and research continuation is retained','done',
+                    source_archive_status='verified',warnings=[])
             return self.importer._output(row,'finalized','Native source activation outcome remotely durable; retrieval acceptance is separate','done',
                 source_archive_status='verified',warnings=[] if self.startup.reads_current() else ['source_history_refresh_pending'])
         if phase=='staging' and state['rejected_seal_head']==state['last_batch_sha256']:
@@ -453,13 +476,13 @@ class NativeSourceIntake:
         if len(raw_payload)>1024*1024: raise _failure('stage_envelope_bound',status='invalid_query')
         payload=json.loads(raw_payload)
         state=await asyncio.to_thread(self._state,row,create=True)
-        pending=await self._entry(state['pending_operation_key'] or self._operation(row,'stage',state['batch_count']))
+        pending=await self._entry(state['pending_operation_key'] or self._stage_key(row,state))
         if pending is not None and pending.command.route==STAGE_ROUTE and pending.outcome_state!='DURABLE':
             frozen=json.loads(pending.command.payload)
             if frozen['model_payload']!=payload or (source_import is not None and source_import.research is not None
                     and {k:v for k,v in frozen['research'].items() if k!='frontier_id'}!=source_import.research.model_dump(mode='json')):
                 raise _failure('native_pending_payload_changed',status='invalid_query')
-        state=await self._recover_orphan(access,row,state,'stage',self._operation(row,'stage',state['batch_count']))
+        state=await self._recover_orphan(access,row,state,'stage',self._stage_key(row,state))
         if state['pending_operation_key'] or state['phase']=='failed': return self._output(row,state)
         if state['phase']!='staging': raise _failure('native_candidate_already_sealed',status='invalid_query')
         receipt=await self.importer._receipt(access,row)
@@ -496,7 +519,7 @@ class NativeSourceIntake:
         if self._request_hash(doc)==state['last_request_sha256']:
             return self._output(row,await self._packet_progress(access,row,state))
         builder=lambda **values: resolved_native_stage_command(route=STAGE_ROUTE,**values)
-        await self._stage_exact(access,row,kind='stage',key=self._operation(row,'stage',state['batch_count']),
+        await self._stage_exact(access,row,kind='stage',key=self._stage_key(row,state),
             route=STAGE_ROUTE,payload=doc,builder=builder)
         await asyncio.to_thread(self.importer._save,row,research_json=canonical(research.model_dump(mode='json')).decode(),phase='staging')
         state=await asyncio.to_thread(self._state,row)
@@ -559,10 +582,10 @@ class NativeSourceIntake:
             state=await self._packet_progress(access,row,await self._drive(access,row,state))
             if state['pending_operation_key'] or state['phase'] in ('failed','finalized'):
                 return self._output(row,state)
-            if state['enriched_batch_count']<state['batch_count']:
+            if state['enriched_batch_count']<state['batch_count'] or not state['read_completion_requested']:
                 return self._output(row,state)
             from .source_batch import FINISH_ROUTE,resolved_command
-            key=self._operation(row,'finish')
+            key=self._operation(row,'finish')+':'+str(state['command_attempt'])
             state=await self._recover_orphan(access,row,state,'finish',key)
             if state['pending_operation_key'] or state['phase']=='finalized':return self._output(row,state)
             scope=await self.spool.scope_state()

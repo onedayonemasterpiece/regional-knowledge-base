@@ -349,7 +349,8 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                          command: ExactCommand, database_generation: str,
                          writer_generation: str, registry: HandlerRegistry,
                          max_command_bytes: int = 1048576,
-                         max_outcome_bytes: int = 1048576) -> ApplyReceipt:
+                         max_outcome_bytes: int = 1048576,
+                         reject_reason: str | None = None) -> ApplyReceipt:
     """Verify remote acceptance before TX, then atomically apply a trusted PG handler.
 
     Functions and registry are trusted deployment artifacts. Both functions must
@@ -358,6 +359,8 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
     """
     _text(database_generation)
     _text(writer_generation)
+    if reject_reason not in (None,'native_source_sql_rolled_back'):
+        raise ValueError('fixed internal source rejection reason required')
     if type(max_outcome_bytes) is not int or not 1 <= max_outcome_bytes <= 1048576:
         raise ValueError("outcome cap must be 1..1048576 bytes")
     command, encoded = _snapshot(command, max_command_bytes)
@@ -406,11 +409,15 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                     await _function_contract(connection, handler.apply, precondition=False)
                     args = (command.payload, Jsonb(dict(command.ids)), Jsonb(dict(command.expected_revisions)), command.logical_time)
                     stage = 'precondition'
-                    checked = await (await connection.execute(sql.SQL("SELECT ") + _call(handler.check), args)).fetchone()
+                    # Only the trusted native source executor supplies this
+                    # after a confirmed rollback. Still verify acceptance,
+                    # writer, exact sequence and duplicate outcomes above.
+                    checked = ((False,) if reject_reason is not None else
+                        await (await connection.execute(sql.SQL("SELECT ") + _call(handler.check), args)).fetchone())
                     if checked is None or type(checked[0]) is not bool:
                         raise ApplyConflict("precondition function must return one boolean")
                     status = "applied" if checked[0] else "rejected_precondition"
-                    result = b""
+                    result = _json({'reason':reject_reason}) if reject_reason is not None else b""
                     after = before
                     if checked[0]:
                         stage = 'effect'
