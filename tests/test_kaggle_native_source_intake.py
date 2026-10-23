@@ -310,6 +310,17 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.state,'staged'); self.assertEqual(self.state()['batch_count'],1)
         self.assertEqual([e.command.route for e in self.spool.entries.values()],[STAGE_ROUTE])
 
+    async def test_rejected_seal_waits_for_dataset_without_new_compute(self):
+        await self.stage();self.finish();await self.helper.validate(self.access,self.row)
+        entry=self.pending();self.finish(status='rejected_precondition')
+        entry.outcome_state='NOT_SENT';entry.apply_state='REJECTED_PRECONDITION'
+        enqueued=len(self.enqueued)
+        result=await self.helper.status(self.access,self.row)
+        self.assertEqual(result.state,'processing')
+        self.assertEqual(len(self.enqueued),enqueued)
+        self.assertEqual(self.state()['pending_operation_key'],entry.command.operation_key)
+        self.assertEqual(entry.outcome_state,'NOT_SENT')
+
     async def test_status_of_sealed_candidate_does_not_begin_materialization(self):
         await self.stage_and_seal(); result=await self.helper.status(self.access,self.row)
         self.assertEqual(result.state,'ready'); self.assertEqual(result.next_action,'finalize')

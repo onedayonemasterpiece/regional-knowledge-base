@@ -242,7 +242,16 @@ class AcceptedSourceDispatch:
         self.queue._source_commands=self
 
     def maintenance_blocks_dispatch(self):
-        return bool(self.spool._lock.locked() or getattr(self.spool,'_native_history_unsettled',False))
+        if self.spool._lock.locked() or getattr(self.spool,'_native_history_unsettled',False):return True
+        # Restore has already computed these exact outcomes. Dataset capture
+        # must finish before old jobs settle; redispatching their old writer
+        # identity would disconnect the healthy recovered worker.
+        with self.queue.connect(write=False) as db:
+            return db.execute("""SELECT 1 FROM jobs j JOIN rkb_control_operations o
+                ON o.operation_key=json_extract(j.identity,'$.operation_key')
+                WHERE j.kind='source_command' AND j.state IN ('pending','claimed')
+                AND o.apply_state IN ('APPLIED','REJECTED_PRECONDITION')
+                LIMIT 1""").fetchone() is not None
 
     async def enqueue(self,context,key,*,writer_generation):
         entry=await self.spool.get(key)

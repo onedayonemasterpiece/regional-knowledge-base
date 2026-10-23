@@ -383,6 +383,27 @@ async def test_queued_source_waits_for_history_but_public_read_progresses(accept
 
 
 @pytest.mark.asyncio
+async def test_recovered_native_outcome_waits_for_dataset_without_redispatch(accepted):
+    e=accepted;s=e.s
+    job=await e.bridge.enqueue(s.auth.p.admin,e.command.operation_key,writer_generation='writer-1')
+    await e.spool.record_apply(e.command.operation_key,native_receipt(e.command,e.handler))
+    assert e.bridge.maintenance_blocks_dispatch()
+    assert await s.a.next_channel_work(s.run,s.token,s.generation) is None
+    with s.q.connect(write=False) as db:
+        assert db.execute('SELECT state FROM jobs WHERE id=?',(job,)).fetchone()[0]=='pending'
+    entry=await e.spool.get(e.command.operation_key)
+    remote=await e.journal.record_outcome(e.seal,command=e.command,database_generation='synthetic-db',
+        outcome=entry.apply_receipt.outcome,writer_generation='writer-1')
+    await e.spool._write(e.spool._durable,e.command.operation_key,remote)
+    assert e.bridge.maintenance_blocks_dispatch()  # job settlement follows durable publication
+    await e.spool._write(e.spool._settle_recovered_jobs,e.command.operation_key)
+    assert not e.bridge.maintenance_blocks_dispatch()
+    assert await s.a.next_channel_work(s.run,s.token,s.generation) is None
+    with s.q.connect(write=False) as db:
+        assert db.execute('SELECT state FROM jobs WHERE id=?',(job,)).fetchone()[0]=='done'
+
+
+@pytest.mark.asyncio
 async def test_history_fence_rechecked_after_source_authorization_await(accepted,monkeypatch):
     e=accepted;s=e.s
     job=await e.bridge.enqueue(s.auth.p.admin,e.command.operation_key,writer_generation='writer-1')
