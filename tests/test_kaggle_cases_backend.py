@@ -66,6 +66,26 @@ async def test_normal_create_remote_accepts_once_same_spool_and_queues_exact_nat
 
 
 @pytest.mark.asyncio
+async def test_case_create_does_not_require_unrelated_next_page_history_refresh(env,auth,monkeypatch):
+    value,principal,b=await backend(env,auth,monkeypatch)
+    # Fresh PG binding and authenticated Case actor, but unrelated source
+    # history maintenance is stale while another model page is underway.
+    value.startup.reads_current=lambda:False
+    with capture_read_output() as outputs:
+        first=await value.disagreement_edit('create','case-during-next-page',
+            principal,command=create())
+        assert first['status']=='pending' and first['saved'] is False
+        assert len(outputs)==1
+        outputs[0].release()
+    again=await value.disagreement_edit('create','case-during-next-page',
+        principal,command=create())
+    assert again['operation_key']==first['operation_key']
+    assert again['status']=='pending' and not again['saved']
+    with env.q.connect(write=False) as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+
+
+@pytest.mark.asyncio
 async def test_read_retains_current_gate_until_actual_public_output_and_checks_revocation(env,auth,monkeypatch):
     value,principal,b=await backend(env,auth,monkeypatch)
     async def native(authority,binding,**selector):
