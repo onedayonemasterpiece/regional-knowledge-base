@@ -14,6 +14,8 @@ from regional_knowledge.participant_contracts import ParticipantGrant
 from regional_knowledge.server import build_server
 from test_kaggle_native_source_importer import native_intake
 from test_kaggle_public_backend import target  # fixture dependency of native_intake
+from test_read_authority import auth  # dependency of target
+from test_participants import people  # dependency of auth
 
 
 def _context():
