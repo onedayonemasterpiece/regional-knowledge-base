@@ -98,6 +98,30 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "book_pages (default 1 page, maximum requested 4" in native.instructions
     assert "Otherwise omit basic_variant" in native.instructions
     assert "Finalization alone activates" not in native.instructions
+
+    # Runtime-registered native guidance: v2 replaces the earlier one-line advice.
+    instruction = native.instructions
+    assert instruction.count("Story body:") == 1
+    for required in (
+        "basic_variant.body for an ordinary reader or visitor",
+        "the same saved text is read, voiced and posted",
+        "usually 2-6 connected sentences",
+        "what was at stake",
+        "Do not split one episode into a body plus separate facts_only candidates",
+        "there is no story quota",
+        "fetch that page with book_pages and stage both pages in one packet (up to 4)",
+        "on this ending page with evidence_refs to the accepted earlier pages",
+        "Write every basic_variant.body in Russian",
+        "German or English originals",
+        "source proof in the original language",
+        "metadata.title", "metadata.authors", "metadata.publication_year",
+        "metadata.language", "metadata.catalog.kind",
+        "editors, translators, publisher, date, edition, identifiers and topics",
+        "metadata.catalog.cover_page", "metadata.catalog.cover_kind",
+        "zero-based physical page index", "leave unsupported fields unset",
+    ):
+        assert required in instruction, required
+    assert "retain attributed people/events/places and a real body only with sufficient evidence" not in instruction
     # Old whole-book/unsupported command advice is not surfaced to the target.
     for obsolete in ("at most 8", "8 selected", "validate and finalize", "Finalization alone activates",
                      "reprocess", "rechunk", "story_reconcile", "disagreement_search"):
